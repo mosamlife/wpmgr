@@ -78,6 +78,8 @@ func (f *fakeRepo) ListEnrolled(_ context.Context) ([]EnrolledSite, error) { ret
 
 func (f *fakeRepo) MarkUnreachable(_ context.Context, _ uuid.UUID) (bool, error) { return true, nil }
 
+func (f *fakeRepo) PruneNonces(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
+
 func orDefault(s string) string {
 	if s == "" {
 		return "pending"

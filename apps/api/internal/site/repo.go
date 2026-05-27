@@ -41,6 +41,12 @@ type Repo interface {
 	// Health job (app.agent GUC, cross-tenant).
 	ListEnrolled(ctx context.Context) ([]EnrolledSite, error)
 	MarkUnreachable(ctx context.Context, siteID uuid.UUID) (bool, error)
+
+	// PruneNonces deletes agent_nonces created before the cutoff (maintenance op
+	// run cross-tenant under the app.agent GUC). Returns the number of rows
+	// deleted. Nonces older than the signature-skew window can never replay, so
+	// deleting them is safe and bounds table growth.
+	PruneNonces(ctx context.Context, before time.Time) (int64, error)
 }
 
 // EnrollInput carries the validated enroll request fields used to create or
@@ -383,6 +389,19 @@ func (r *pgRepo) ListEnrolled(ctx context.Context) ([]EnrolledSite, error) {
 		return nil
 	})
 	return out, err
+}
+
+func (r *pgRepo) PruneNonces(ctx context.Context, before time.Time) (int64, error) {
+	var deleted int64
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		n, err := sqlc.New(tx).PruneAgentNonces(ctx, before)
+		if err != nil {
+			return domain.Internal("nonce_prune_failed", "failed to prune agent nonces").WithCause(err)
+		}
+		deleted = n
+		return nil
+	})
+	return deleted, err
 }
 
 func (r *pgRepo) MarkUnreachable(ctx context.Context, siteID uuid.UUID) (bool, error) {

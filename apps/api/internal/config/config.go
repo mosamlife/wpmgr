@@ -148,6 +148,36 @@ func (c Config) ValidateSessionSecret() error {
 	return nil
 }
 
+// devAgentSigningPrivateKeys is the hardcoded list of known committed dev
+// control-plane signing private keys (base64 std). These ship in .env.example
+// for local development; booting in production with one of them would let
+// anyone who read the public repo forge CP->agent commands, so the server
+// refuses to start. Add any future dev/sample keys here.
+var devAgentSigningPrivateKeys = []string{
+	"aWuH1W3DSfBwuE/V/H9BEmV9IAJfK5d6F2RDfYSj/raBW+b26qHT3spd1gHSw7aXEXxZkg9E9WMspibSjSFsnQ==",
+}
+
+// ValidateAgentSigningKey refuses to boot in production with a known committed
+// dev control-plane signing private key. An empty key keeps the OIDC/CP-signing
+// disabled behavior unchanged (dev convenience), and the check is enforced only
+// in production so dev keeps working with the .env.example value.
+func (c Config) ValidateAgentSigningKey() error {
+	if !c.IsProduction() {
+		return nil
+	}
+	k := c.Agent.SigningPrivateKey
+	if k == "" {
+		// Empty = CP signing disabled; left to other startup wiring.
+		return nil
+	}
+	for _, dev := range devAgentSigningPrivateKeys {
+		if k == dev {
+			return fmt.Errorf("WPMGR_AGENT_SIGNING_PRIVATE_KEY holds a known committed dev key: generate a fresh control-plane Ed25519 keypair for production")
+		}
+	}
+	return nil
+}
+
 func defaults() map[string]any {
 	return map[string]any{
 		"env":                         "development",

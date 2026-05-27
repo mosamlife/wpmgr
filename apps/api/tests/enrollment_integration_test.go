@@ -304,7 +304,7 @@ func TestHealthSweepMarksStale(t *testing.T) {
 		t.Fatalf("age stale site: %v", err)
 	}
 
-	checker := site.NewHealthChecker(repo, 10*time.Minute)
+	checker := site.NewHealthChecker(repo, 10*time.Minute, 5*time.Minute)
 	marked, err := checker.Sweep(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("sweep: %v", err)

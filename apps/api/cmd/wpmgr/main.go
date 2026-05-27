@@ -69,6 +69,12 @@ func run() error {
 		return err
 	}
 
+	// Refuse to boot in production with a known committed dev control-plane
+	// signing key (no-op in development).
+	if err := cfg.ValidateAgentSigningKey(); err != nil {
+		return err
+	}
+
 	// Migrations run with the owner/superuser DSN (creates the app role +
 	// privileged DDL); the application connects with the unprivileged app DSN.
 	// River's own schema is migrated here too, with the same owner DSN.
@@ -150,7 +156,7 @@ func run() error {
 	// unreachable when its agent heartbeat goes stale (freshness-based; active
 	// probing is M5). Started below and stopped on shutdown.
 	siteRepo := site.NewRepo(pool)
-	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter)
+	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
 	riverClient, err := startRiver(ctx, pool.Pool, logger, healthChecker, cfg.Agent.HealthInterval)
 	if err != nil {
 		return err

@@ -81,7 +81,15 @@
   - [x] Reject default WPMGR_SESSION_SECRET; nginx security headers
   - [x] Security review fixes: tenant read scoping (HIGH), invite role-ceiling, OIDC email_verified
   - Known follow-ups: dummy-hash login timing; API-key expiry; tenant-create→creator-membership; SeaweedFS healthcheck flakiness (S3 unused until M4)
-- [ ] M2 — Site registry + agent enrollment
+- [x] M2 — Site registry + agent enrollment ✅ (E2E verified; security review PASS)
+  - [x] Pairing-code enrollment (one-time, hashed, TTL) + public /enroll; per-site Ed25519 (agent gen, CP stores pubkey)
+  - [x] Agent-auth (signed METHOD\nPATH\nTS\nNONCE\nhash; skew + single-use nonce; identity-from-key)
+  - [x] Site metadata sync (WP/PHP/server/themes/plugins/active/multisite) + tags + tag filter
+  - [x] River (ADR-003) wired; 5-min health sweep (heartbeat freshness) + nonce pruning
+  - [x] WordPress agent: enroll/sign/metadata/heartbeat/wp-cron + 30-min auto-deactivate
+  - [x] Frontend: Add-site pairing dialog, health/enrollment badges, site metadata + components
+  - [x] Security: hardened nonce pruning (DoS), prod guard for dev CP signing key
+  - Deferred to M3: enroll/agent RLS policy tenant-predicate (defense-in-depth; correct today via Go filters); agent-key revocation/disabled-site rejection; /enroll edge rate-limiting; force https for agent CP URL outside localhost
 - [ ] M3 — Bulk updates with rollback
 - [ ] M4 — Incremental backups + restore
 - [ ] M5 — Uptime monitoring
