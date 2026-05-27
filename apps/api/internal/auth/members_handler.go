@@ -54,7 +54,7 @@ func (h *MembersHandler) invite(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
 		return
 	}
-	_, m, err := h.svc.Invite(c.Request.Context(), p.TenantID, p.UserID, InviteInput{
+	_, m, err := h.svc.Invite(c.Request.Context(), p.TenantID, p.UserID, authz.Role(p.Role), InviteInput{
 		Email:    body.Email,
 		Password: body.Password,
 		Name:     body.Name,

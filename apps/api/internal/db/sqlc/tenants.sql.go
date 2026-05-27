@@ -53,6 +53,34 @@ func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 	return i, err
 }
 
+const getTenantForUser = `-- name: GetTenantForUser :one
+SELECT t.id, t.name, t.slug, t.created_at, t.updated_at
+FROM tenants t
+JOIN memberships m ON m.tenant_id = t.id
+WHERE t.id = $1 AND m.user_id = $2
+`
+
+type GetTenantForUserParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// GetTenantForUser returns a tenant by id only when the given user is a member.
+// Like ListTenantsForUser it relies on the memberships_self_read policy and must
+// be run via InUserTx; a non-member (or unknown tenant) yields no rows.
+func (q *Queries) GetTenantForUser(ctx context.Context, arg GetTenantForUserParams) (Tenant, error) {
+	row := q.db.QueryRow(ctx, getTenantForUser, arg.ID, arg.UserID)
+	var i Tenant
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listTenants = `-- name: ListTenants :many
 SELECT id, name, slug, created_at, updated_at FROM tenants
 ORDER BY created_at DESC
@@ -66,6 +94,51 @@ type ListTenantsParams struct {
 
 func (q *Queries) ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error) {
 	rows, err := q.db.Query(ctx, listTenants, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Tenant
+	for rows.Next() {
+		var i Tenant
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Slug,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTenantsForUser = `-- name: ListTenantsForUser :many
+SELECT t.id, t.name, t.slug, t.created_at, t.updated_at
+FROM tenants t
+JOIN memberships m ON m.tenant_id = t.id
+WHERE m.user_id = $1
+ORDER BY t.created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListTenantsForUserParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Limit  int32     `json:"limit"`
+	Offset int32     `json:"offset"`
+}
+
+// ListTenantsForUser returns only the tenants the given user is a member of.
+// It joins memberships under the memberships_self_read policy (app.user_id GUC),
+// so it MUST be run via InUserTx; the join itself restricts the result to the
+// caller's own memberships, preventing cross-tenant enumeration.
+func (q *Queries) ListTenantsForUser(ctx context.Context, arg ListTenantsForUserParams) ([]Tenant, error) {
+	rows, err := q.db.Query(ctx, listTenantsForUser, arg.UserID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

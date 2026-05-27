@@ -172,7 +172,7 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 		httpx.Error(c, domain.Unauthorized("oidc_exchange_failed", "OIDC verification failed"))
 		return
 	}
-	res, err := h.svc.UpsertOIDCUser(c.Request.Context(), claims.Issuer, claims.Subject, claims.Email, claims.Name, h.newTenant)
+	res, err := h.svc.UpsertOIDCUser(c.Request.Context(), claims.Issuer, claims.Subject, claims.Email, claims.EmailVerified, claims.Name, h.newTenant)
 	if err != nil {
 		httpx.Error(c, err)
 		return

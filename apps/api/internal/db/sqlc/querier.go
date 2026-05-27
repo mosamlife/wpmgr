@@ -32,6 +32,10 @@ type Querier interface {
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	GetSite(ctx context.Context, arg GetSiteParams) (Site, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
+	// GetTenantForUser returns a tenant by id only when the given user is a member.
+	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
+	// be run via InUserTx; a non-member (or unknown tenant) yields no rows.
+	GetTenantForUser(ctx context.Context, arg GetTenantForUserParams) (Tenant, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
@@ -47,6 +51,11 @@ type Querier interface {
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
+	// ListTenantsForUser returns only the tenants the given user is a member of.
+	// It joins memberships under the memberships_self_read policy (app.user_id GUC),
+	// so it MUST be run via InUserTx; the join itself restricts the result to the
+	// caller's own memberships, preventing cross-tenant enumeration.
+	ListTenantsForUser(ctx context.Context, arg ListTenantsForUserParams) ([]Tenant, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error

@@ -89,7 +89,7 @@ func run() error {
 	validator := domain.NewValidator()
 	clock := domain.SystemClock{}
 
-	tenantSvc := tenant.NewService(tenant.NewRepo(pool.Pool), validator, clock)
+	tenantSvc := tenant.NewService(tenant.NewRepo(pool), validator, clock)
 	siteSvc := site.NewService(site.NewRepo(pool), validator, clock)
 	auditRec := audit.NewRecorder(pool, clock)
 

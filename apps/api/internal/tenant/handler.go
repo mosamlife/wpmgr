@@ -69,12 +69,17 @@ func (h *Handler) create(c *gin.Context) {
 }
 
 func (h *Handler) get(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
 	id, err := uuid.Parse(c.Param("tenantId"))
 	if err != nil {
 		httpx.Error(c, domain.Validation("invalid_tenant_id", "tenantId is not a valid UUID"))
 		return
 	}
-	t, err := h.svc.Get(c.Request.Context(), id)
+	t, err := h.svc.GetForPrincipal(c.Request.Context(), p, id)
 	if err != nil {
 		httpx.Error(c, err)
 		return
@@ -84,9 +89,14 @@ func (h *Handler) get(c *gin.Context) {
 }
 
 func (h *Handler) list(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
 	limit := parseInt32(c.Query("limit"), 50)
 	offset := parseInt32(c.Query("offset"), 0)
-	ts, err := h.svc.List(c.Request.Context(), ListInput{Limit: limit, Offset: offset})
+	ts, err := h.svc.ListForPrincipal(c.Request.Context(), p, ListInput{Limit: limit, Offset: offset})
 	if err != nil {
 		httpx.Error(c, err)
 		return

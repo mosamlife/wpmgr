@@ -175,14 +175,22 @@ type InviteInput struct {
 
 // Invite creates (or reuses) a user and grants them a membership in the given
 // tenant with the requested role. The caller (handler) must have already
-// authorized the actor as admin+ in that tenant. actorID is recorded for audit.
-func (s *Service) Invite(ctx context.Context, tenantID, actorID uuid.UUID, in InviteInput) (User, Membership, error) {
+// authorized the actor as admin+ in that tenant. actorRole is the actor's own
+// role in the tenant and is used to enforce a privilege ceiling: an actor can
+// never grant a role more privileged than its own (so only an owner may grant
+// owner). actorID is recorded for audit.
+func (s *Service) Invite(ctx context.Context, tenantID, actorID uuid.UUID, actorRole authz.Role, in InviteInput) (User, Membership, error) {
 	in.Email = normalizeEmail(in.Email)
 	if !in.Role.Valid() {
 		return User{}, Membership{}, domain.Validation("role_invalid", "invalid role")
 	}
 	if err := s.validator.Struct(in); err != nil {
 		return User{}, Membership{}, err
+	}
+	// Privilege ceiling: the granted role must not exceed the actor's own role.
+	// Without this, an admin could grant owner (privilege escalation).
+	if !actorRole.AtLeast(in.Role) {
+		return User{}, Membership{}, domain.Forbidden("role_grant_exceeds_actor", "you cannot grant a role higher than your own")
 	}
 
 	u, err := s.repo.GetUserByEmail(ctx, in.Email)
@@ -253,7 +261,9 @@ func (s *Service) RoleInTenant(ctx context.Context, userID, tenantID uuid.UUID) 
 // login result.
 func (s *Service) UpsertOIDCUser(
 	ctx context.Context,
-	issuer, subject, email, name string,
+	issuer, subject, email string,
+	emailVerified bool,
+	name string,
 	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
 ) (LoginResult, error) {
 	email = normalizeEmail(email)
@@ -264,8 +274,13 @@ func (s *Service) UpsertOIDCUser(
 		if !ok || de.Kind != domain.KindNotFound {
 			return LoginResult{}, err
 		}
-		// No user by OIDC identity. Try to link to an existing email account.
-		if email != "" {
+		// No user by OIDC identity. We may link this identity to a pre-existing
+		// account that shares the same email ONLY when the IdP asserts the email
+		// is verified. Linking on an unverified email would let an attacker who
+		// controls an external IdP claim an arbitrary address and take over the
+		// matching password account, so on an unverified email we fall through to
+		// creating/keeping a distinct OIDC account instead.
+		if email != "" && emailVerified {
 			if existing, eerr := s.repo.GetUserByEmail(ctx, email); eerr == nil {
 				u, err = s.repo.LinkOIDC(ctx, existing.ID, issuer, subject)
 				if err != nil {

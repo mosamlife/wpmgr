@@ -66,10 +66,11 @@ func (p *OIDCProvider) AuthCodeURL() (url, state, nonce, verifier string, err er
 
 // OIDCClaims are the standard claims we read from a verified ID token.
 type OIDCClaims struct {
-	Subject string
-	Issuer  string
-	Email   string
-	Name    string
+	Subject       string
+	Issuer        string
+	Email         string
+	EmailVerified bool
+	Name          string
 }
 
 // Exchange completes the code exchange and verifies the ID token (signature,
@@ -91,17 +92,19 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, verifier, expectedNon
 		return OIDCClaims{}, fmt.Errorf("oidc nonce mismatch")
 	}
 	var claims struct {
-		Email string `json:"email"`
-		Name  string `json:"name"`
+		Email         string `json:"email"`
+		EmailVerified bool   `json:"email_verified"`
+		Name          string `json:"name"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return OIDCClaims{}, fmt.Errorf("decode id_token claims: %w", err)
 	}
 	return OIDCClaims{
-		Subject: idToken.Subject,
-		Issuer:  idToken.Issuer,
-		Email:   claims.Email,
-		Name:    claims.Name,
+		Subject:       idToken.Subject,
+		Issuer:        idToken.Issuer,
+		Email:         claims.Email,
+		EmailVerified: claims.EmailVerified,
+		Name:          claims.Name,
 	}, nil
 }
 
