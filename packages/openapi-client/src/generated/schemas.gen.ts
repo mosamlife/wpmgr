@@ -116,6 +116,9 @@ export const SiteSchema = {
     "status",
     "wp_version",
     "php_version",
+    "health_status",
+    "multisite",
+    "tags",
     "created_at",
     "updated_at",
   ],
@@ -145,6 +148,40 @@ export const SiteSchema = {
     php_version: {
       type: "string",
     },
+    health_status: {
+      type: "string",
+      enum: ["unknown", "healthy", "unreachable"],
+    },
+    server_info: {
+      type: "string",
+    },
+    multisite: {
+      type: "boolean",
+    },
+    active_theme: {
+      type: "string",
+    },
+    tags: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    enrolled: {
+      type: "boolean",
+      description: "Whether an agent has enrolled this site.",
+    },
+    enrolled_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_seen_at: {
+      type: "string",
+      format: "date-time",
+    },
+    components: {
+      $ref: "#/components/schemas/SiteComponents",
+    },
     created_at: {
       type: "string",
       format: "date-time",
@@ -152,6 +189,211 @@ export const SiteSchema = {
     updated_at: {
       type: "string",
       format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteComponentsSchema = {
+  type: "object",
+  description: "Installed plugin/theme inventory pushed by the agent.",
+  properties: {
+    plugins: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteComponent",
+      },
+    },
+    themes: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteComponent",
+      },
+    },
+  },
+} as const;
+
+export const SiteComponentSchema = {
+  type: "object",
+  required: ["slug"],
+  properties: {
+    slug: {
+      type: "string",
+    },
+    name: {
+      type: "string",
+    },
+    version: {
+      type: "string",
+    },
+    active: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const SiteTagsSchema = {
+  type: "object",
+  required: ["tags"],
+  properties: {
+    tags: {
+      type: "array",
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+      },
+    },
+  },
+} as const;
+
+export const PairingCodeCreateSchema = {
+  type: "object",
+  properties: {
+    site_name: {
+      type: "string",
+      maxLength: 200,
+    },
+    tags: {
+      type: "array",
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+      },
+    },
+  },
+} as const;
+
+export const PairingCodeSchema = {
+  type: "object",
+  required: ["id", "tenant_id", "code", "expires_at", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    code: {
+      type: "string",
+      description:
+        "The one-time plaintext pairing code. Shown ONCE; never stored.",
+    },
+    site_name: {
+      type: "string",
+    },
+    tags: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const EnrollRequestSchema = {
+  type: "object",
+  required: ["pairing_code", "site_url", "agent_public_key"],
+  properties: {
+    pairing_code: {
+      type: "string",
+      maxLength: 128,
+    },
+    site_url: {
+      type: "string",
+      format: "uri",
+      maxLength: 2048,
+    },
+    agent_public_key: {
+      type: "string",
+      description: "The agent's own Ed25519 public key, base64 (std) encoded.",
+    },
+    name: {
+      type: "string",
+      maxLength: 200,
+    },
+    wp_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    php_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    tags: {
+      type: "array",
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+      },
+    },
+  },
+} as const;
+
+export const EnrollResponseSchema = {
+  type: "object",
+  required: ["site_id", "tenant_id", "control_plane_public_key"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    control_plane_public_key: {
+      type: "string",
+      description:
+        "The control plane's Ed25519 PUBLIC signing key (base64 std). The agent\nuses it to verify control-plane->agent commands.\n",
+    },
+  },
+} as const;
+
+export const AgentMetadataSchema = {
+  type: "object",
+  properties: {
+    wp_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    php_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    server_info: {
+      type: "string",
+      maxLength: 512,
+    },
+    multisite: {
+      type: "boolean",
+    },
+    active_theme: {
+      type: "string",
+      maxLength: 200,
+    },
+    plugins: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteComponent",
+      },
+    },
+    themes: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteComponent",
+      },
     },
   },
 } as const;

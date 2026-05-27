@@ -25,6 +25,26 @@ type Config struct {
 	OIDC     OIDCConfig     `koanf:"oidc"`
 	OTel     OTelConfig     `koanf:"otel"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
+	Agent    AgentConfig    `koanf:"agent"`
+}
+
+// AgentConfig holds the control-plane agent-protocol configuration.
+//
+// SigningPrivateKey / SigningPublicKey are the control-plane's OWN Ed25519
+// keypair (base64 std), used to sign CP->agent commands; the public half is
+// returned to the agent at enrollment so it can verify those commands. They are
+// distinct from each site's agent_public_key (agent->CP direction).
+//
+// SignatureSkew bounds how far a signed agent request's timestamp may differ
+// from now (anti-replay window). StaleAfter is the agent-heartbeat freshness
+// threshold: a site whose last_seen_at is older is marked unreachable by the
+// periodic health job. HealthInterval is how often that job runs.
+type AgentConfig struct {
+	SigningPrivateKey string        `koanf:"signing_private_key"`
+	SigningPublicKey  string        `koanf:"signing_public_key"`
+	SignatureSkew     time.Duration `koanf:"signature_skew"`
+	StaleAfter        time.Duration `koanf:"stale_after"`
+	HealthInterval    time.Duration `koanf:"health_interval"`
 }
 
 // DBConfig holds Postgres connection parts.
@@ -153,6 +173,11 @@ func defaults() map[string]any {
 		"otel.exporter_otlp_endpoint": "",
 		"otel.service_name":           "wpmgr-api",
 		"shutdown.timeout":            "15s",
+		"agent.signing_private_key":   "",
+		"agent.signing_public_key":    "",
+		"agent.signature_skew":        "5m",
+		"agent.stale_after":           "10m", // ~2 missed 5-min heartbeats
+		"agent.health_interval":       "5m",
 	}
 }
 
@@ -217,6 +242,8 @@ func mapEnvKey(k string) string {
 		return "db." + strings.TrimPrefix(k, "db_")
 	case strings.HasPrefix(k, "otel_"):
 		return "otel." + strings.TrimPrefix(k, "otel_")
+	case strings.HasPrefix(k, "agent_"):
+		return "agent." + strings.TrimPrefix(k, "agent_")
 	default:
 		return k
 	}

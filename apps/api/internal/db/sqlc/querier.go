@@ -6,17 +6,25 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type Querier interface {
+	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
+	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// Enroll path (app.enroll GUC): mark consumed only if still unconsumed.
+	ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateMembership(ctx context.Context, arg CreateMembershipParams) (Membership, error)
+	// Tenant-scoped (app.tenant_id) — operator generates a code for the tenant.
+	CreatePairingCode(ctx context.Context, arg CreatePairingCodeParams) (PairingCode, error)
 	// tenant_id is supplied explicitly for defense-in-depth; RLS additionally
 	// enforces that it matches the current app.tenant_id setting.
 	CreateSite(ctx context.Context, arg CreateSiteParams) (Site, error)
+	CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnrollParams) (Site, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteMembership(ctx context.Context, arg DeleteMembershipParams) (int64, error)
@@ -30,7 +38,18 @@ type Querier interface {
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	GetLastAuditHash(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
+	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
+	// tenant is known.
+	GetPairingCodeByHash(ctx context.Context, codeHash string) (PairingCode, error)
 	GetSite(ctx context.Context, arg GetSiteParams) (Site, error)
+	// ---------------------------------------------------------------------------
+	// Agent-auth path (app.agent GUC). Resolve a site by its agent public key.
+	// ---------------------------------------------------------------------------
+	GetSiteByAgentKey(ctx context.Context, agentPublicKey string) (Site, error)
+	// ---------------------------------------------------------------------------
+	// Enrollment path (app.enroll GUC). These run before any tenant scope exists.
+	// ---------------------------------------------------------------------------
+	GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLForEnrollParams) (Site, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
 	// GetTenantForUser returns a tenant by id only when the given user is a member.
 	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
@@ -39,11 +58,22 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
+	// Enroll path (app.enroll GUC): record a failed validation attempt.
+	IncrementPairingCodeAttempts(ctx context.Context, id uuid.UUID) (int64, error)
+	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
+	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.
+	InsertAgentNonce(ctx context.Context, arg InsertAgentNonceParams) (int64, error)
 	InsertAuditEntry(ctx context.Context, arg InsertAuditEntryParams) (AuditLog, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
 	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]AuditLog, error)
 	ListAuditEntriesForVerify(ctx context.Context, tenantID uuid.UUID) ([]AuditLog, error)
+	// ---------------------------------------------------------------------------
+	// Health-check job (runs in each enrolled site's tenant scope).
+	// ---------------------------------------------------------------------------
+	// Cross-tenant enumeration for the periodic health job. Runs under the
+	// app.agent GUC (sites_agent policy) since it spans tenants.
+	ListEnrolledSitesAllTenants(ctx context.Context) ([]ListEnrolledSitesAllTenantsRow, error)
 	ListMembershipsForTenant(ctx context.Context, arg ListMembershipsForTenantParams) ([]Membership, error)
 	// ListMembershipsForUser reads the caller's own memberships across all tenants.
 	// It relies on the memberships_self_read policy (app.user_id GUC), so it must be
@@ -56,11 +86,20 @@ type Querier interface {
 	// so it MUST be run via InUserTx; the join itself restricts the result to the
 	// caller's own memberships, preventing cross-tenant enumeration.
 	ListTenantsForUser(ctx context.Context, arg ListTenantsForUserParams) ([]Tenant, error)
+	// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
+	MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error)
+	// Drops nonces older than the freshness window; called opportunistically.
+	PruneAgentNonces(ctx context.Context, createdAt time.Time) (int64, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
+	SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site, error)
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
+	TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (Site, error)
 	TouchUserLogin(ctx context.Context, id uuid.UUID) error
 	UpdateMembershipRole(ctx context.Context, arg UpdateMembershipRoleParams) (Membership, error)
+	// Tenant-scoped metadata update (used by the agent path inside the resolved
+	// site's own tenant scope).
+	UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadataParams) (Site, error)
 }
 
 var _ Querier = (*Queries)(nil)

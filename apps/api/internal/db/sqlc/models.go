@@ -11,6 +11,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AgentNonce struct {
+	ID        uuid.UUID `json:"id"`
+	SiteID    uuid.UUID `json:"site_id"`
+	Nonce     string    `json:"nonce"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type ApiKey struct {
 	ID         uuid.UUID          `json:"id"`
 	TenantID   uuid.UUID          `json:"tenant_id"`
@@ -46,16 +53,38 @@ type Membership struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type PairingCode struct {
+	ID         uuid.UUID          `json:"id"`
+	TenantID   uuid.UUID          `json:"tenant_id"`
+	CodeHash   string             `json:"code_hash"`
+	CreatedBy  pgtype.UUID        `json:"created_by"`
+	SiteName   string             `json:"site_name"`
+	Tags       []string           `json:"tags"`
+	ExpiresAt  time.Time          `json:"expires_at"`
+	ConsumedAt pgtype.Timestamptz `json:"consumed_at"`
+	Attempts   int32              `json:"attempts"`
+	CreatedAt  time.Time          `json:"created_at"`
+}
+
 type Site struct {
-	ID         uuid.UUID `json:"id"`
-	TenantID   uuid.UUID `json:"tenant_id"`
-	Url        string    `json:"url"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	WpVersion  string    `json:"wp_version"`
-	PhpVersion string    `json:"php_version"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID             uuid.UUID          `json:"id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	Url            string             `json:"url"`
+	Name           string             `json:"name"`
+	Status         string             `json:"status"`
+	WpVersion      string             `json:"wp_version"`
+	PhpVersion     string             `json:"php_version"`
+	AgentPublicKey string             `json:"agent_public_key"`
+	EnrolledAt     pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus   string             `json:"health_status"`
+	ServerInfo     string             `json:"server_info"`
+	Multisite      bool               `json:"multisite"`
+	ActiveTheme    string             `json:"active_theme"`
+	Components     []byte             `json:"components"`
+	Tags           []string           `json:"tags"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
 type Tenant struct {

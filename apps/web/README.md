@@ -5,6 +5,10 @@ against the generated API client with **real session-based authentication
 (M1)**: email+password and OIDC login, a `GET /auth/me` session, an API-keys
 management page, and the Sites list/detail flow.
 
+**M2** adds the site **enrollment** UX (one-time agent pairing codes) plus
+expanded site metadata, health, and an installed-component (plugins/themes)
+inventory.
+
 ## Stack
 
 | Concern        | Choice                                                              |
@@ -30,7 +34,8 @@ management page, and the Sites list/detail flow.
   dark CSS variables).
 - shadcn was set up **manually** (no interactive `init`): `components.json`, the
   `cn` util in `src/lib/utils.ts`, and the primitives actually used
-  (`button`, `input`, `label`, `card`, `table`) under `src/components/ui/`.
+  (`button`, `input`, `label`, `card`, `table`, `badge`) under
+  `src/components/ui/`.
 
 ## Routes
 
@@ -42,8 +47,32 @@ management page, and the Sites list/detail flow.
 - `/register` — first-run bootstrap form (`POST /auth/register`). Creates the
   first user + tenant + owner; returns 403 once any user exists.
 - `/settings/api-keys` — list/create/revoke tenant API keys (admin/owner only).
-- `/sites` — sites list (TanStack Query + TanStack Table).
-- `/sites/$siteId` — site detail with loading / error / not-found states.
+- `/sites` — sites list (TanStack Query + TanStack Table) with enrollment +
+  health badges, a relative "last seen", tag chips, a **tag filter** (`?tag=`),
+  and an **Add site** action (operator+). Empty state points to Add site.
+- `/sites/$siteId` — site detail: metadata (WP/PHP/server/multisite/active
+  theme/enrolled/last-seen/health), an editable **tags** section (PUT tags,
+  optimistic), and a table of installed plugins/themes. Loading / error /
+  not-found states throughout.
+
+### Site enrollment (pairing codes)
+
+There is no manual "create site" form in the UI; sites are **enrolled** by the
+WPMgr Agent plugin using a one-time pairing code:
+
+1. On `/sites`, an operator+ clicks **Add site** and (optionally) supplies a
+   site name and tags via a react-hook-form + Zod dialog.
+2. The app POSTs `/api/v1/sites/pairing-codes` and shows the returned **code
+   exactly once** in a dialog: copyable, with a "shown once" warning, a live
+   **expiry countdown**, and install instructions (install the Agent plugin,
+   enter the control-plane URL, paste the code).
+
+The action is gated to operator/admin/owner via the active-tenant role from
+`/auth/me` (`canOperate()`); the backend enforces the role regardless.
+
+Health renders as a color-coded `Badge` (healthy = green, unreachable = red,
+unknown = gray); enrollment as Enrolled / Pending. Components are flattened into
+one table (name, type, version, active).
 
 ### Auth & the route guard
 
@@ -77,8 +106,10 @@ facade in `packages/openapi-client/src/index.ts`.
 In the app, `src/lib/api.ts` points the client `baseUrl` at `/api` (proxied to
 the backend in dev via `vite.config.ts`). The Sites query hooks
 (`src/features/sites/use-sites.ts`) call the generated `listSites` / `getSite` /
-`deleteSite` operations and adapt them into TanStack Query
-`useSites()` / `useSite(id)` / `useDeleteSite()` hooks.
+`deleteSite` / `createPairingCode` / `setSiteTags` operations and adapt them
+into TanStack Query hooks: `useSites(tag?)` / `useSite(id)` / `useDeleteSite()`
+/ `usePairingCode()` / `useSetSiteTags()` (optimistic). Server state stays in
+TanStack Query — never Zustand.
 
 Regenerate the client after the contract changes:
 

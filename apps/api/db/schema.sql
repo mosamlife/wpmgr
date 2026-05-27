@@ -38,12 +38,37 @@ CREATE TABLE sites (
     status      text        NOT NULL DEFAULT 'pending',
     wp_version  text        NOT NULL DEFAULT '',
     php_version text        NOT NULL DEFAULT '',
+    -- M2 enrollment + agent identity.
+    -- agent_public_key is the agent's own Ed25519 public key (base64 std), stored
+    -- so the control plane can verify signed agent->CP requests. Empty until the
+    -- site is enrolled; rotated on re-enrollment.
+    agent_public_key text       NOT NULL DEFAULT '',
+    enrolled_at      timestamptz,
+    last_seen_at     timestamptz,
+    -- health_status reflects agent heartbeat freshness (M2): unknown until first
+    -- contact, healthy while heartbeats are fresh, unreachable when stale. Active
+    -- external probing is deferred to M5.
+    health_status text NOT NULL DEFAULT 'unknown',
+    -- M2 site metadata pushed by the agent.
+    server_info text    NOT NULL DEFAULT '',
+    multisite   boolean NOT NULL DEFAULT false,
+    active_theme text   NOT NULL DEFAULT '',
+    -- components holds the installed plugins/themes inventory as JSONB (M2): a
+    -- normalized child table can come later; JSONB is sufficient for M2.
+    components  jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    tags        text[]      NOT NULL DEFAULT '{}',
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX sites_tenant_id_idx ON sites (tenant_id);
 CREATE UNIQUE INDEX sites_tenant_id_url_key ON sites (tenant_id, url);
+-- GIN index over tags so tenant-scoped tag filtering stays cheap.
+CREATE INDEX sites_tags_idx ON sites USING gin (tags);
+-- Resolve an enrolled site by its agent public key (agent-auth path). Unique
+-- across the deployment: a given keypair identifies exactly one site.
+CREATE UNIQUE INDEX sites_agent_public_key_key ON sites (agent_public_key)
+    WHERE agent_public_key <> '';
 
 -- ---------------------------------------------------------------------------
 -- Row-Level Security
@@ -61,6 +86,22 @@ ALTER TABLE sites FORCE ROW LEVEL SECURITY;
 CREATE POLICY sites_tenant_isolation ON sites
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- M2 enrollment: /enroll resolves/creates/attaches a site by URL BEFORE any
+-- tenant scope exists (the agent presents only a pairing code). This policy
+-- permits the full enroll lifecycle on sites when the app.enroll GUC is 'on'
+-- (set transaction-locally by InEnrollTx). Scope is otherwise unchanged.
+CREATE POLICY sites_enroll ON sites
+    USING (current_setting('app.enroll', true) = 'on')
+    WITH CHECK (current_setting('app.enroll', true) = 'on');
+
+-- M2 agent-auth: an authenticated agent->CP request is identified by the site's
+-- agent_public_key, resolved before any tenant scope. This policy permits the
+-- agent path (metadata/heartbeat updates) when the app.agent GUC is 'on' (set
+-- transaction-locally by InAgentTx). The resolved site's tenant is then trusted.
+CREATE POLICY sites_agent ON sites
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- users
@@ -187,3 +228,69 @@ ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
 CREATE POLICY audit_log_tenant_isolation ON audit_log
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- pairing_codes  (M2 — agent enrollment)
+-- ---------------------------------------------------------------------------
+-- A one-time, short-TTL, high-entropy code an operator generates for a tenant.
+-- An (untrusted) agent presents it once at /enroll to bind itself to the
+-- tenant. We store only a sha256 hash of the code; the plaintext is shown once.
+-- Tenant-scoped + RLS for the operator-facing creation/listing path.
+CREATE TABLE pairing_codes (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    code_hash    text        NOT NULL,
+    created_by   uuid        REFERENCES users (id) ON DELETE SET NULL,
+    site_name    text        NOT NULL DEFAULT '',
+    tags         text[]      NOT NULL DEFAULT '{}',
+    expires_at   timestamptz NOT NULL,
+    consumed_at  timestamptz,
+    attempts     integer     NOT NULL DEFAULT 0,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+-- code_hash is globally unique so /enroll can resolve a presented code to its
+-- tenant before any tenant scope exists (mirrors api_keys prefix lookup).
+CREATE UNIQUE INDEX pairing_codes_code_hash_key ON pairing_codes (code_hash);
+CREATE INDEX pairing_codes_tenant_id_idx ON pairing_codes (tenant_id);
+
+ALTER TABLE pairing_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pairing_codes FORCE ROW LEVEL SECURITY;
+CREATE POLICY pairing_codes_tenant_isolation ON pairing_codes
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- The /enroll endpoint is PUBLIC (the agent has no session/tenant yet) and must
+-- resolve + consume a code by its (globally unique) hash before the tenant is
+-- known. This narrow policy permits SELECT/INSERT/UPDATE only when the
+-- app.enroll GUC is 'on' (set transaction-locally by InEnrollTx, immediately
+-- around the enroll work). It exposes only the by-hash path.
+CREATE POLICY pairing_codes_enroll ON pairing_codes
+    USING (current_setting('app.enroll', true) = 'on')
+    WITH CHECK (current_setting('app.enroll', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- agent_nonces  (M2 — agent-auth anti-replay)
+-- ---------------------------------------------------------------------------
+-- Each signed agent->CP request carries a unique nonce (jti). We persist seen
+-- nonces within the signature freshness window so a captured request cannot be
+-- replayed. Rows are scoped to a site and pruned by created_at. Resolution of
+-- the verifying request happens outside any tenant scope (the agent presents no
+-- tenant), so this table is gated by the same app.enroll/app.agent GUC.
+CREATE TABLE agent_nonces (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    site_id    uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    nonce      text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX agent_nonces_site_nonce_key ON agent_nonces (site_id, nonce);
+CREATE INDEX agent_nonces_created_at_idx ON agent_nonces (created_at);
+
+-- agent_nonces is written/read only on the agent-auth path, which has no tenant
+-- scope. Gate it on the app.agent GUC ('on' inside InAgentTx). No tenant policy
+-- is needed: the agent identity is the site, resolved by public key.
+ALTER TABLE agent_nonces ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_nonces FORCE ROW LEVEL SECURITY;
+CREATE POLICY agent_nonces_agent ON agent_nonces
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');

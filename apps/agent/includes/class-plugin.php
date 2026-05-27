@@ -15,6 +15,7 @@ namespace WPMgr\Agent;
 use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
 use WPMgr\Agent\Commands\InfoCommand;
+use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Commands\ScanCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 
@@ -31,14 +32,29 @@ final class Plugin
 
     private Router $router;
 
+    private Settings $settings;
+
+    private Signer $signer;
+
+    private Enrollment $enrollment;
+
+    private Scheduler $scheduler;
+
+    private Admin $admin;
+
     /**
      * Private constructor wires the object graph.
      */
     private function __construct()
     {
-        $this->keystore  = new Keystore();
-        $this->connector = new Connector($this->keystore);
-        $this->router    = new Router($this->connector, $this->commands());
+        $this->keystore   = new Keystore();
+        $this->connector  = new Connector($this->keystore);
+        $this->router     = new Router($this->connector, $this->commands());
+        $this->settings   = new Settings();
+        $this->signer     = new Signer($this->keystore);
+        $this->enrollment = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand());
+        $this->scheduler  = new Scheduler($this->settings, $this->enrollment);
+        $this->admin      = new Admin($this->settings, $this->enrollment);
     }
 
     /**
@@ -65,8 +81,15 @@ final class Plugin
     {
         add_action('rest_api_init', [$this->router, 'registerRoutes']);
 
+        $this->scheduler->registerHooks();
+
+        if (function_exists('is_admin') && is_admin()) {
+            $this->admin->registerHooks();
+        }
+
         if (defined('WPMGR_AGENT_FILE')) {
             register_activation_hook(WPMGR_AGENT_FILE, [$this, 'activate']);
+            register_deactivation_hook(WPMGR_AGENT_FILE, [$this, 'deactivate']);
         }
     }
 
@@ -83,6 +106,21 @@ final class Plugin
         if ($this->keystore->getSiteKeypair() === null) {
             $this->keystore->generateSiteKeypair();
         }
+
+        // Record first-activation time and schedule reporting + safety events.
+        $now = time();
+        $this->settings->markActivated($now);
+        $this->scheduler->scheduleEvents($now);
+    }
+
+    /**
+     * Deactivation hook: clear all scheduled cron events.
+     *
+     * @return void
+     */
+    public function deactivate(): void
+    {
+        $this->scheduler->clearEvents();
     }
 
     /**
@@ -131,6 +169,7 @@ final class Plugin
             new BackupCommand(),
             new UpdateCommand(),
             new ScanCommand(),
+            new MetadataCommand(),
         ];
     }
 

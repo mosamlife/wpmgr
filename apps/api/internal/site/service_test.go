@@ -46,6 +46,38 @@ func (f *fakeRepo) Delete(_ context.Context, _, _ uuid.UUID) error {
 	return f.deleteErr
 }
 
+// M2 methods — unit tests below exercise Create/Get/List/Delete only; the
+// enrollment/agent/health paths are covered by the integration tests.
+func (f *fakeRepo) SetTags(_ context.Context, in SetTagsInput) (Site, error) {
+	return Site{ID: in.SiteID, TenantID: in.TenantID, Tags: in.Tags}, nil
+}
+
+func (f *fakeRepo) CreatePairingCode(_ context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error) {
+	return PairingCode{ID: uuid.New(), TenantID: in.TenantID, ExpiresAt: expiresAt}, nil
+}
+
+func (f *fakeRepo) Enroll(_ context.Context, _ string, in EnrollInput) (Site, error) {
+	return Site{ID: uuid.New(), URL: in.URL, AgentPublicKey: in.AgentPublicKey}, nil
+}
+
+func (f *fakeRepo) GetByAgentKey(_ context.Context, key string) (Site, error) {
+	return Site{ID: uuid.New(), AgentPublicKey: key}, nil
+}
+
+func (f *fakeRepo) UpdateMetadata(_ context.Context, tenantID, siteID uuid.UUID, _ Metadata, _ []byte) (Site, error) {
+	return Site{ID: siteID, TenantID: tenantID}, nil
+}
+
+func (f *fakeRepo) TouchSeen(_ context.Context, _, _ uuid.UUID) error { return nil }
+
+func (f *fakeRepo) RecordNonce(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeRepo) ListEnrolled(_ context.Context) ([]EnrolledSite, error) { return nil, nil }
+
+func (f *fakeRepo) MarkUnreachable(_ context.Context, _ uuid.UUID) (bool, error) { return true, nil }
+
 func orDefault(s string) string {
 	if s == "" {
 		return "pending"

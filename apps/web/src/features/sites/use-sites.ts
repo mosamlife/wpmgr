@@ -9,7 +9,11 @@ import {
   listSites,
   getSite,
   deleteSite,
+  createPairingCode,
+  setSiteTags,
   type Site,
+  type PairingCode,
+  type PairingCodeCreate,
   type ApiError,
 } from "@wpmgr/api";
 
@@ -20,7 +24,8 @@ import {
 
 export const sitesKeys = {
   all: ["sites"] as const,
-  list: () => [...sitesKeys.all, "list"] as const,
+  lists: () => [...sitesKeys.all, "list"] as const,
+  list: (tag?: string) => [...sitesKeys.lists(), { tag: tag ?? null }] as const,
   detail: (id: string) => [...sitesKeys.all, "detail", id] as const,
 };
 
@@ -32,11 +37,18 @@ export class NotFoundError extends Error {
   }
 }
 
-export function useSites(): UseQueryResult<Site[], Error> {
+/**
+ * List sites, optionally filtered by a single tag (?tag=). Passing an empty or
+ * undefined tag lists all sites.
+ */
+export function useSites(tag?: string): UseQueryResult<Site[], Error> {
+  const trimmed = tag?.trim() ? tag.trim() : undefined;
   return useQuery({
-    queryKey: sitesKeys.list(),
+    queryKey: sitesKeys.list(trimmed),
     queryFn: async () => {
-      const { data, error } = await listSites();
+      const { data, error } = await listSites(
+        trimmed ? { query: { tag: trimmed } } : {},
+      );
       if (error) throw toError(error);
       return data?.items ?? [];
     },
@@ -68,6 +80,82 @@ export function useDeleteSite(): UseMutationResult<void, Error, string> {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: sitesKeys.all });
+    },
+  });
+}
+
+/**
+ * Generate a one-time agent pairing code. The plaintext `code` is returned ONCE
+ * and is never retrievable again — callers must surface it immediately. We do
+ * NOT cache it. A new pairing code can create a new (pending) site, so we
+ * invalidate the sites lists on success.
+ */
+export function usePairingCode(): UseMutationResult<
+  PairingCode,
+  Error,
+  PairingCodeCreate
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: PairingCodeCreate) => {
+      const { data, error } = await createPairingCode({ body });
+      if (error) throw toError(error);
+      if (!data) throw new Error("Empty response");
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: sitesKeys.lists() });
+    },
+  });
+}
+
+/**
+ * Replace the tag set on a site (PUT tags). Optimistically updates the cached
+ * detail entry, then reconciles with the server response and invalidates lists
+ * (tag filters may now match differently).
+ */
+export function useSetSiteTags(): UseMutationResult<
+  Site,
+  Error,
+  { siteId: string; tags: string[] },
+  { previous: Site | undefined }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ siteId, tags }) => {
+      const { data, error, response } = await setSiteTags({
+        path: { siteId },
+        body: { tags },
+      });
+      if (response?.status === 404) throw new NotFoundError("Site not found");
+      if (error) throw toError(error);
+      if (!data) throw new Error("Empty response");
+      return data;
+    },
+    onMutate: async ({ siteId, tags }) => {
+      await queryClient.cancelQueries({ queryKey: sitesKeys.detail(siteId) });
+      const previous = queryClient.getQueryData<Site>(
+        sitesKeys.detail(siteId),
+      );
+      if (previous) {
+        queryClient.setQueryData<Site>(sitesKeys.detail(siteId), {
+          ...previous,
+          tags,
+        });
+      }
+      return { previous };
+    },
+    onError: (_error, { siteId }, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(sitesKeys.detail(siteId), context.previous);
+      }
+    },
+    onSuccess: (site) => {
+      queryClient.setQueryData(sitesKeys.detail(site.id), site);
+    },
+    onSettled: (_data, _error, { siteId }) => {
+      void queryClient.invalidateQueries({ queryKey: sitesKeys.detail(siteId) });
+      void queryClient.invalidateQueries({ queryKey: sitesKeys.lists() });
     },
   });
 }

@@ -2,14 +2,20 @@ package site
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 
 	"github.com/google/uuid"
 
+	agentpkg "github.com/mosamlife/wpmgr/apps/api/internal/agent"
+	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // Service holds site business logic. All operations require a tenant ID, which
-// the handler derives from request context (tenant middleware).
+// the handler derives from request context (tenant middleware) — except the
+// enrollment and agent paths, which resolve the tenant from a pairing code or
+// the agent's verified identity respectively.
 type Service struct {
 	repo      Repo
 	validator *domain.Validator
@@ -40,7 +46,7 @@ func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (Site, error)
 	return s.repo.Get(ctx, tenantID, id)
 }
 
-// List returns a page of the tenant's sites.
+// List returns a page of the tenant's sites, optionally filtered by tag.
 func (s *Service) List(ctx context.Context, in ListInput) ([]Site, error) {
 	if in.TenantID == uuid.Nil {
 		return nil, domain.Forbidden("tenant_required", "a tenant context is required")
@@ -55,6 +61,160 @@ func (s *Service) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 		return domain.Forbidden("tenant_required", "a tenant context is required")
 	}
 	return s.repo.Delete(ctx, tenantID, id)
+}
+
+// SetTags replaces the tag set on a tenant-scoped site (deduplicated, trimmed).
+func (s *Service) SetTags(ctx context.Context, in SetTagsInput) (Site, error) {
+	if in.TenantID == uuid.Nil {
+		return Site{}, domain.Forbidden("tenant_required", "a tenant context is required")
+	}
+	in.Tags = normalizeTags(in.Tags)
+	if err := s.validator.Struct(in); err != nil {
+		return Site{}, err
+	}
+	return s.repo.SetTags(ctx, in)
+}
+
+// CreatePairingCode generates a one-time, short-TTL pairing code for the tenant
+// and returns the plaintext (shown once) plus the stored record.
+func (s *Service) CreatePairingCode(ctx context.Context, in CreatePairingCodeInput) (CreatedPairingCode, error) {
+	if in.TenantID == uuid.Nil {
+		return CreatedPairingCode{}, domain.Forbidden("tenant_required", "a tenant context is required")
+	}
+	in.Tags = normalizeTags(in.Tags)
+	if err := s.validator.Struct(in); err != nil {
+		return CreatedPairingCode{}, err
+	}
+	plaintext, err := generatePairingCode()
+	if err != nil {
+		return CreatedPairingCode{}, domain.Internal("pairing_code_gen_failed", "failed to generate pairing code").WithCause(err)
+	}
+	expiresAt := s.clock.Now().Add(pairingCodeTTL)
+	pc, err := s.repo.CreatePairingCode(ctx, in, hashPairingCode(plaintext), expiresAt)
+	if err != nil {
+		return CreatedPairingCode{}, err
+	}
+	return CreatedPairingCode{Code: pc, Plaintext: plaintext}, nil
+}
+
+// EnrollRequest is the validated public /enroll input.
+type EnrollRequest struct {
+	PairingCode    string `validate:"required,max=128"`
+	SiteURL        string `validate:"required,url,max=2048"`
+	AgentPublicKey string `validate:"required,base64"`
+	Name           string `validate:"max=200"`
+	WPVersion      string `validate:"max=32"`
+	PHPVersion     string `validate:"max=32"`
+	Tags           []string
+}
+
+// Enroll validates an enroll request, verifies the agent public key is a
+// well-formed Ed25519 key, then resolves+consumes the code and creates/attaches
+// the site (rotating the agent key on re-enrollment). The tenant is derived
+// entirely from the pairing code — never from the caller.
+func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (Site, error) {
+	if err := s.validator.Struct(req); err != nil {
+		return Site{}, err
+	}
+	// Reject a syntactically valid base64 that is not a 32-byte Ed25519 key.
+	if _, err := agentpkg.DecodePublicKey(req.AgentPublicKey); err != nil {
+		return Site{}, domain.Validation("agent_public_key_invalid", "agent_public_key is not a valid Ed25519 public key")
+	}
+	return s.repo.Enroll(ctx, hashPairingCode(req.PairingCode), EnrollInput{
+		URL:            req.SiteURL,
+		Name:           req.Name,
+		AgentPublicKey: req.AgentPublicKey,
+		WPVersion:      req.WPVersion,
+		PHPVersion:     req.PHPVersion,
+		Tags:           normalizeTags(req.Tags),
+	})
+}
+
+// ResolveByAgentKey resolves an enrolled site by its agent public key,
+// satisfying agent.SiteResolver. The returned identity drives the agent-auth
+// middleware (site + tenant come from the verified key).
+func (s *Service) ResolveByAgentKey(ctx context.Context, agentPublicKey string) (agentpkg.Identity, error) {
+	site, err := s.repo.GetByAgentKey(ctx, agentPublicKey)
+	if err != nil {
+		return agentpkg.Identity{}, err
+	}
+	return agentpkg.Identity{SiteID: site.ID, TenantID: site.TenantID}, nil
+}
+
+// RecordNonce records an anti-replay nonce for a site (agent.SiteResolver).
+func (s *Service) RecordNonce(ctx context.Context, siteID uuid.UUID, nonce string) (bool, error) {
+	return s.repo.RecordNonce(ctx, siteID, nonce)
+}
+
+// ApplyAgentMetadata adapts agent-package metadata to the site domain and
+// returns the updated site in OpenAPI form, satisfying agent.MetadataSink.
+func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m agentpkg.Metadata) (gen.Site, error) {
+	out, err := s.ApplyMetadata(ctx, tenantID, siteID, Metadata{
+		WPVersion:   m.WPVersion,
+		PHPVersion:  m.PHPVersion,
+		ServerInfo:  m.ServerInfo,
+		Multisite:   m.Multisite,
+		ActiveTheme: m.ActiveTheme,
+		Plugins:     fromAgentComponents(m.Plugins),
+		Themes:      fromAgentComponents(m.Themes),
+	})
+	if err != nil {
+		return gen.Site{}, err
+	}
+	return toAPI(out), nil
+}
+
+func fromAgentComponents(cs []agentpkg.Component) []Component {
+	out := make([]Component, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, Component{Slug: c.Slug, Name: c.Name, Version: c.Version, Active: c.Active})
+	}
+	return out
+}
+
+// ApplyMetadata validates and stores agent-pushed metadata for a site, updating
+// liveness + health. Runs in the resolved site's tenant scope.
+func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m Metadata) (Site, error) {
+	if err := s.validator.Struct(m); err != nil {
+		return Site{}, err
+	}
+	components, err := json.Marshal(map[string]any{
+		"plugins": orEmptyComponents(m.Plugins),
+		"themes":  orEmptyComponents(m.Themes),
+	})
+	if err != nil {
+		return Site{}, domain.Internal("components_marshal_failed", "failed to encode site components").WithCause(err)
+	}
+	return s.repo.UpdateMetadata(ctx, tenantID, siteID, m, components)
+}
+
+// Heartbeat updates only liveness/health for a site.
+func (s *Service) Heartbeat(ctx context.Context, tenantID, siteID uuid.UUID) error {
+	return s.repo.TouchSeen(ctx, tenantID, siteID)
+}
+
+func orEmptyComponents(c []Component) []Component {
+	if c == nil {
+		return []Component{}
+	}
+	return c
+}
+
+func normalizeTags(tags []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
 }
 
 func normalizePage(limit, offset int32) (int32, int32) {

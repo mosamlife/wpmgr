@@ -187,6 +187,53 @@ on server startup (`db.Pool.Migrate`); `wpmgr-cli migrate` applies them too.
 - `GET /api/v1/api-keys`, `POST /api/v1/api-keys`, `DELETE /api/v1/api-keys/{apiKeyId}` (admin+).
 - `GET /api/v1/audit`, `GET /api/v1/audit/verify` (admin+).
 
+### Site registry & agent enrollment (M2)
+
+- **Pairing-code enrollment**: `POST /api/v1/sites/pairing-codes` (operator+)
+  generates a one-time, ~15-min, high-entropy code (only a sha256 hash is stored;
+  the plaintext is shown once). An agent calls the PUBLIC `POST /enroll` with
+  `{pairing_code, site_url, agent_public_key, ...}`; the tenant is derived from
+  the code, the site is created (or, if the URL already exists, its agent key is
+  rotated — re-enrollment is idempotent), the code is consumed (single-use,
+  attempt-capped), and the response returns the control-plane PUBLIC signing key
+  + the site id. Codes are resolved by hash before any tenant scope exists via
+  the `app.enroll` GUC (`InEnrollTx`) and the `sites_enroll` / `pairing_codes_enroll`
+  policies, mirroring the api-key prefix-lookup pattern.
+- **Agent authentication (agent → CP)**: an Ed25519 *signed-request* scheme. The
+  agent sends four headers — `X-WPMgr-Agent-Key` (its base64 Ed25519 public key,
+  identifying the site), `X-WPMgr-Timestamp` (Unix seconds), `X-WPMgr-Nonce`
+  (unique per request), `X-WPMgr-Signature` (base64 Ed25519 sig) — over the
+  canonical message `METHOD\nPATH\nTIMESTAMP\nNONCE\nhex(sha256(body))`. The
+  middleware verifies the signature against the site's stored key, enforces a
+  timestamp window (`WPMGR_AGENT_SIGNATURE_SKEW`) and single-use nonce
+  (`agent_nonces`), and resolves site+tenant from the verified key — never a
+  header. Endpoints: `POST /agent/v1/metadata` (push WP/PHP/server/plugins/
+  themes/active-theme/multisite; sets `last_seen_at` + `health_status=healthy`)
+  and `POST /agent/v1/heartbeat` (liveness). Both run under `app.agent`
+  (`InAgentTx`) + the `sites_agent` / `agent_nonces_agent` policies.
+- **Tags**: `sites.tags text[]` (GIN-indexed). `PUT /api/v1/sites/{siteId}/tags`
+  (operator+) replaces the set; `GET /api/v1/sites?tag=` filters. Tenant-scoped.
+- **Connection health (River, ADR-003 — first use)**: River's schema is migrated
+  with the migration-owner DSN at startup (`rivermigrate`), and a worker pool
+  runs a periodic job (`WPMGR_AGENT_HEALTH_INTERVAL`, default 5m) that marks any
+  enrolled site whose `last_seen_at` is older than `WPMGR_AGENT_STALE_AFTER`
+  (default 10m ≈ 2 missed heartbeats) as `health_status=unreachable`. **M2 health
+  is heartbeat-freshness only; active external probing is deferred to M5.** The
+  River client stops gracefully with the HTTP server.
+- **Audit**: `site.enrolled`, `pairing_code.created`, `site.tags.set` are recorded
+  via the audit Recorder.
+
+### New M2 env vars
+
+`WPMGR_AGENT_SIGNING_PRIVATE_KEY` / `WPMGR_AGENT_SIGNING_PUBLIC_KEY` (the control
+plane's own base64 Ed25519 keypair for CP→agent commands; the public half is
+returned at enrollment — empty disables it cleanly in dev, a malformed public key
+fails boot), `WPMGR_AGENT_SIGNATURE_SKEW` (default `5m`), `WPMGR_AGENT_STALE_AFTER`
+(default `10m`), `WPMGR_AGENT_HEALTH_INTERVAL` (default `5m`). River reuses the
+existing `WPMGR_DB_*` (app) and `WPMGR_DB_MIGRATION_DSN` (owner, for River's
+migrations) connection strings; **the migration owner role must own River's
+tables so the M1 `ALTER DEFAULT PRIVILEGES` grant covers them for `wpmgr_app`.**
+
 ### New M1 env vars
 
 `WPMGR_DB_MIGRATION_DSN` (optional owner DSN for migrations; falls back to the

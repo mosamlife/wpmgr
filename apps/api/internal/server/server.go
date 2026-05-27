@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -37,6 +38,8 @@ type Deps struct {
 	AuditH      *audit.Handler
 	TenantH     *tenant.Handler
 	SiteH       *site.Handler
+	AgentAuth   *agent.Authenticator
+	AgentH      *agent.Handler
 	ServiceName string
 	Version     string
 }
@@ -78,6 +81,18 @@ func New(deps Deps) *Server {
 
 	// Public auth endpoints (login/register/logout/me + OIDC).
 	deps.AuthH.Register(engine)
+
+	// Public agent enrollment (no session/tenant; the pairing code authorizes).
+	deps.SiteH.RegisterPublic(engine)
+
+	// Agent-authenticated endpoints: the agent authenticator verifies an Ed25519
+	// signed request and resolves the site/tenant from the verified key — this
+	// group does NOT use the session/API-key principal chain.
+	if deps.AgentAuth != nil && deps.AgentH != nil {
+		agentGroup := engine.Group("/agent/v1")
+		agentGroup.Use(deps.AgentAuth.Authenticate())
+		deps.AgentH.Register(agentGroup)
+	}
 
 	// Everything under /api/v1 requires an authenticated principal with an
 	// active tenant; finer per-route RBAC is applied by each handler.

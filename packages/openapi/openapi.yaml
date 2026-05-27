@@ -507,6 +507,13 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Offset"
+        - name: tag
+          in: query
+          required: false
+          description: Filter to sites carrying this tag.
+          schema:
+            type: string
+            maxLength: 64
       responses:
         "200":
           description: A page of sites
@@ -514,6 +521,160 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SiteList"
+  /api/v1/sites/pairing-codes:
+    post:
+      operationId: createPairingCode
+      summary: Generate a one-time agent pairing code
+      description: |
+        Generates a short-lived, single-use, high-entropy pairing code for the
+        current tenant. The plaintext code is returned ONCE in this response and
+        is never retrievable again. An agent presents it to POST /enroll. Requires
+        operator+.
+      tags: [sites]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairingCodeCreate"
+      responses:
+        "201":
+          description: Pairing code created (plaintext shown once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairingCode"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/tags:
+    put:
+      operationId: setSiteTags
+      summary: Replace the tag set on a site
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteTags"
+      responses:
+        "200":
+          description: The updated site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /enroll:
+    post:
+      operationId: enroll
+      summary: Agent enrollment (public)
+      description: |
+        Called by an agent (NOT an authenticated control-plane user) to enroll a
+        site using a pairing code. The tenant is derived entirely from the code.
+        On success the site is created (or, if the URL already exists for the
+        tenant, its agent key is rotated) and the control-plane PUBLIC signing
+        key is returned so the agent can verify CP->agent commands. The code is
+        consumed (single-use).
+      tags: [agent]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrollRequest"
+      responses:
+        "200":
+          description: Enrolled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrollResponse"
+        "401":
+          description: Invalid or expired pairing code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Pairing code already used, or agent key already bound
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/metadata:
+    post:
+      operationId: agentMetadata
+      summary: Push site metadata (agent-authenticated)
+      description: |
+        Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
+        security scheme). The site + tenant are resolved from the verified agent
+        identity, never from a header. Updates last_seen_at and marks the site
+        healthy.
+      tags: [agent]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentMetadata"
+      responses:
+        "200":
+          description: Metadata stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/heartbeat:
+    post:
+      operationId: agentHeartbeat
+      summary: Liveness heartbeat (agent-authenticated)
+      description: |
+        Lightweight liveness ping. Authenticated via the Ed25519 signed-request
+        scheme; updates last_seen_at for the resolved site.
+      tags: [agent]
+      security:
+        - AgentSignature: []
+      responses:
+        "204":
+          description: Heartbeat recorded
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}:
     get:
       operationId: getSite
@@ -591,6 +752,20 @@ components:
       schema:
         type: string
         format: uuid
+  securitySchemes:
+    AgentSignature:
+      type: apiKey
+      in: header
+      name: X-WPMgr-Signature
+      description: |
+        Ed25519 signed-request authentication for agent->control-plane calls. The
+        agent sends four headers: X-WPMgr-Agent-Key (its base64 Ed25519 public
+        key, identifying the enrolled site), X-WPMgr-Timestamp (Unix seconds),
+        X-WPMgr-Nonce (a unique per-request token), and X-WPMgr-Signature (the
+        base64 Ed25519 signature over the canonical message
+        "METHOD\nPATH\nTIMESTAMP\nNONCE\nhex(sha256(body))"). The control plane
+        rejects stale timestamps and replayed nonces. (apiKey type is the closest
+        OpenAPI 3.1 primitive for this header-carried signature scheme.)
   schemas:
     Health:
       type: object
@@ -666,7 +841,7 @@ components:
     Site:
       type: object
       required:
-        [id, tenant_id, url, name, status, wp_version, php_version, created_at, updated_at]
+        [id, tenant_id, url, name, status, wp_version, php_version, health_status, multisite, tags, created_at, updated_at]
       properties:
         id:
           type: string
@@ -686,12 +861,176 @@ components:
           type: string
         php_version:
           type: string
+        health_status:
+          type: string
+          enum: [unknown, healthy, unreachable]
+        server_info:
+          type: string
+        multisite:
+          type: boolean
+        active_theme:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        enrolled:
+          type: boolean
+          description: Whether an agent has enrolled this site.
+        enrolled_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        components:
+          $ref: "#/components/schemas/SiteComponents"
         created_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+    SiteComponents:
+      type: object
+      description: Installed plugin/theme inventory pushed by the agent.
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteComponent"
+        themes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteComponent"
+    SiteComponent:
+      type: object
+      required: [slug]
+      properties:
+        slug:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        active:
+          type: boolean
+    SiteTags:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+    PairingCodeCreate:
+      type: object
+      properties:
+        site_name:
+          type: string
+          maxLength: 200
+        tags:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+    PairingCode:
+      type: object
+      required: [id, tenant_id, code, expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          description: The one-time plaintext pairing code. Shown ONCE; never stored.
+        site_name:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    EnrollRequest:
+      type: object
+      required: [pairing_code, site_url, agent_public_key]
+      properties:
+        pairing_code:
+          type: string
+          maxLength: 128
+        site_url:
+          type: string
+          format: uri
+          maxLength: 2048
+        agent_public_key:
+          type: string
+          description: The agent's own Ed25519 public key, base64 (std) encoded.
+        name:
+          type: string
+          maxLength: 200
+        wp_version:
+          type: string
+          maxLength: 32
+        php_version:
+          type: string
+          maxLength: 32
+        tags:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+    EnrollResponse:
+      type: object
+      required: [site_id, tenant_id, control_plane_public_key]
+      properties:
+        site_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        control_plane_public_key:
+          type: string
+          description: |
+            The control plane's Ed25519 PUBLIC signing key (base64 std). The agent
+            uses it to verify control-plane->agent commands.
+    AgentMetadata:
+      type: object
+      properties:
+        wp_version:
+          type: string
+          maxLength: 32
+        php_version:
+          type: string
+          maxLength: 32
+        server_info:
+          type: string
+          maxLength: 512
+        multisite:
+          type: boolean
+        active_theme:
+          type: string
+          maxLength: 200
+        plugins:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteComponent"
+        themes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteComponent"
     SiteCreate:
       type: object
       required: [url, name]

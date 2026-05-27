@@ -15,13 +15,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-const statusLabels: Record<Site["status"], string> = {
-  pending: "Pending",
-  active: "Active",
-  error: "Error",
-  disabled: "Disabled",
-};
+import { Badge } from "@/components/ui/badge";
+import { relativeTime } from "@/lib/utils";
+import { HealthBadge, EnrollmentBadge } from "@/features/sites/site-badges";
 
 const columns: ColumnDef<Site>[] = [
   {
@@ -47,12 +43,48 @@ const columns: ColumnDef<Site>[] = [
     ),
   },
   {
-    accessorKey: "status",
-    header: "Status",
-    cell: ({ row }) => statusLabels[row.original.status],
+    id: "enrollment",
+    header: "Enrollment",
+    cell: ({ row }) => <EnrollmentBadge site={row.original} />,
   },
-  { accessorKey: "wp_version", header: "WP" },
-  { accessorKey: "php_version", header: "PHP" },
+  {
+    accessorKey: "health_status",
+    header: "Health",
+    cell: ({ row }) => <HealthBadge status={row.original.health_status} />,
+  },
+  {
+    id: "last_seen",
+    header: "Last seen",
+    cell: ({ row }) => {
+      const rel = relativeTime(row.original.last_seen_at);
+      return rel ? (
+        <time
+          dateTime={row.original.last_seen_at}
+          className="text-[var(--color-muted-foreground)]"
+        >
+          {rel}
+        </time>
+      ) : (
+        <span className="text-[var(--color-muted-foreground)]">—</span>
+      );
+    },
+  },
+  {
+    id: "tags",
+    header: "Tags",
+    cell: ({ row }) =>
+      row.original.tags.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {row.original.tags.map((tag) => (
+            <Badge key={tag} variant="outline">
+              {tag}
+            </Badge>
+          ))}
+        </div>
+      ) : (
+        <span className="text-[var(--color-muted-foreground)]">—</span>
+      ),
+  },
 ];
 
 export function SitesTable({ sites }: { sites: Site[] }) {

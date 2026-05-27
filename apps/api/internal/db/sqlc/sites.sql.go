@@ -9,12 +9,68 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const attachAgentToSite = `-- name: AttachAgentToSite :one
+UPDATE sites
+SET agent_public_key = $3,
+    status = 'active',
+    enrolled_at = now(),
+    last_seen_at = now(),
+    health_status = 'healthy',
+    wp_version = $4,
+    php_version = $5,
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+`
+
+type AttachAgentToSiteParams struct {
+	ID             uuid.UUID `json:"id"`
+	TenantID       uuid.UUID `json:"tenant_id"`
+	AgentPublicKey string    `json:"agent_public_key"`
+	WpVersion      string    `json:"wp_version"`
+	PhpVersion     string    `json:"php_version"`
+}
+
+// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
+func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error) {
+	row := q.db.QueryRow(ctx, attachAgentToSite,
+		arg.ID,
+		arg.TenantID,
+		arg.AgentPublicKey,
+		arg.WpVersion,
+		arg.PhpVersion,
+	)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
 
 const createSite = `-- name: CreateSite :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
 `
 
 type CreateSiteParams struct {
@@ -46,6 +102,66 @@ func (q *Queries) CreateSite(ctx context.Context, arg CreateSiteParams) (Site, e
 		&i.Status,
 		&i.WpVersion,
 		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createSiteForEnroll = `-- name: CreateSiteForEnroll :one
+INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
+                   agent_public_key, enrolled_at, last_seen_at, health_status, tags)
+VALUES ($1, $2, $3, 'active', $4, $5, $6, now(), now(), 'healthy', $7)
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+`
+
+type CreateSiteForEnrollParams struct {
+	TenantID       uuid.UUID `json:"tenant_id"`
+	Url            string    `json:"url"`
+	Name           string    `json:"name"`
+	WpVersion      string    `json:"wp_version"`
+	PhpVersion     string    `json:"php_version"`
+	AgentPublicKey string    `json:"agent_public_key"`
+	Tags           []string  `json:"tags"`
+}
+
+func (q *Queries) CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnrollParams) (Site, error) {
+	row := q.db.QueryRow(ctx, createSiteForEnroll,
+		arg.TenantID,
+		arg.Url,
+		arg.Name,
+		arg.WpVersion,
+		arg.PhpVersion,
+		arg.AgentPublicKey,
+		arg.Tags,
+	)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -71,7 +187,7 @@ func (q *Queries) DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, 
 }
 
 const getSite = `-- name: GetSite :one
-SELECT id, tenant_id, url, name, status, wp_version, php_version, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -91,15 +207,143 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (Site, error) 
 		&i.Status,
 		&i.WpVersion,
 		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
+const getSiteByAgentKey = `-- name: GetSiteByAgentKey :one
+
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
+WHERE agent_public_key = $1 AND agent_public_key <> ''
+`
+
+// ---------------------------------------------------------------------------
+// Agent-auth path (app.agent GUC). Resolve a site by its agent public key.
+// ---------------------------------------------------------------------------
+func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) (Site, error) {
+	row := q.db.QueryRow(ctx, getSiteByAgentKey, agentPublicKey)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getSiteByURLForEnroll = `-- name: GetSiteByURLForEnroll :one
+
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
+WHERE tenant_id = $1 AND url = $2
+`
+
+type GetSiteByURLForEnrollParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	Url      string    `json:"url"`
+}
+
+// ---------------------------------------------------------------------------
+// Enrollment path (app.enroll GUC). These run before any tenant scope exists.
+// ---------------------------------------------------------------------------
+func (q *Queries) GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLForEnrollParams) (Site, error) {
+	row := q.db.QueryRow(ctx, getSiteByURLForEnroll, arg.TenantID, arg.Url)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listEnrolledSitesAllTenants = `-- name: ListEnrolledSitesAllTenants :many
+
+SELECT id, tenant_id, last_seen_at, health_status FROM sites
+WHERE enrolled_at IS NOT NULL
+`
+
+type ListEnrolledSitesAllTenantsRow struct {
+	ID           uuid.UUID          `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus string             `json:"health_status"`
+}
+
+// ---------------------------------------------------------------------------
+// Health-check job (runs in each enrolled site's tenant scope).
+// ---------------------------------------------------------------------------
+// Cross-tenant enumeration for the periodic health job. Runs under the
+// app.agent GUC (sites_agent policy) since it spans tenants.
+func (q *Queries) ListEnrolledSitesAllTenants(ctx context.Context) ([]ListEnrolledSitesAllTenantsRow, error) {
+	rows, err := q.db.Query(ctx, listEnrolledSitesAllTenants)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEnrolledSitesAllTenantsRow
+	for rows.Next() {
+		var i ListEnrolledSitesAllTenantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LastSeenAt,
+			&i.HealthStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSites = `-- name: ListSites :many
-SELECT id, tenant_id, url, name, status, wp_version, php_version, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
 WHERE tenant_id = $1
+  AND ($4::text IS NULL OR $4::text = ANY (tags))
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
 `
@@ -108,10 +352,16 @@ type ListSitesParams struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 	Limit    int32     `json:"limit"`
 	Offset   int32     `json:"offset"`
+	Tag      *string   `json:"tag"`
 }
 
 func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error) {
-	rows, err := q.db.Query(ctx, listSites, arg.TenantID, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listSites,
+		arg.TenantID,
+		arg.Limit,
+		arg.Offset,
+		arg.Tag,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +377,15 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, e
 			&i.Status,
 			&i.WpVersion,
 			&i.PhpVersion,
+			&i.AgentPublicKey,
+			&i.EnrolledAt,
+			&i.LastSeenAt,
+			&i.HealthStatus,
+			&i.ServerInfo,
+			&i.Multisite,
+			&i.ActiveTheme,
+			&i.Components,
+			&i.Tags,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -138,4 +397,161 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const markSiteUnreachable = `-- name: MarkSiteUnreachable :execrows
+UPDATE sites
+SET health_status = 'unreachable', updated_at = now()
+WHERE id = $1 AND health_status <> 'unreachable'
+`
+
+// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
+func (q *Queries) MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markSiteUnreachable, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setSiteTags = `-- name: SetSiteTags :one
+UPDATE sites
+SET tags = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+`
+
+type SetSiteTagsParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	Tags     []string  `json:"tags"`
+}
+
+func (q *Queries) SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site, error) {
+	row := q.db.QueryRow(ctx, setSiteTags, arg.ID, arg.TenantID, arg.Tags)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const touchSiteSeen = `-- name: TouchSiteSeen :one
+UPDATE sites
+SET last_seen_at = now(),
+    health_status = 'healthy',
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+`
+
+type TouchSiteSeenParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (Site, error) {
+	row := q.db.QueryRow(ctx, touchSiteSeen, arg.ID, arg.TenantID)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateSiteMetadata = `-- name: UpdateSiteMetadata :one
+UPDATE sites
+SET wp_version   = $3,
+    php_version  = $4,
+    server_info  = $5,
+    multisite    = $6,
+    active_theme = $7,
+    components   = $8,
+    last_seen_at = now(),
+    health_status = 'healthy',
+    updated_at   = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+`
+
+type UpdateSiteMetadataParams struct {
+	ID          uuid.UUID `json:"id"`
+	TenantID    uuid.UUID `json:"tenant_id"`
+	WpVersion   string    `json:"wp_version"`
+	PhpVersion  string    `json:"php_version"`
+	ServerInfo  string    `json:"server_info"`
+	Multisite   bool      `json:"multisite"`
+	ActiveTheme string    `json:"active_theme"`
+	Components  []byte    `json:"components"`
+}
+
+// Tenant-scoped metadata update (used by the agent path inside the resolved
+// site's own tenant scope).
+func (q *Queries) UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadataParams) (Site, error) {
+	row := q.db.QueryRow(ctx, updateSiteMetadata,
+		arg.ID,
+		arg.TenantID,
+		arg.WpVersion,
+		arg.PhpVersion,
+		arg.ServerInfo,
+		arg.Multisite,
+		arg.ActiveTheme,
+		arg.Components,
+	)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

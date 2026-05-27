@@ -152,3 +152,12 @@ export function canManage(me: Me | null | undefined): boolean {
   const role = activeRole(me);
   return role === "owner" || role === "admin";
 }
+
+/**
+ * Whether the user may perform operator-level actions such as generating site
+ * pairing codes (owner, admin, or operator). The backend enforces this too.
+ */
+export function canOperate(me: Me | null | undefined): boolean {
+  const role = activeRole(me);
+  return role === "owner" || role === "admin" || role === "operator";
+}

@@ -41,6 +41,10 @@ const (
 	ActionSiteCreate   = "site.create"
 	ActionSiteDelete   = "site.delete"
 	ActionTenantCreate = "tenant.create"
+
+	ActionSiteEnrolled       = "site.enrolled"
+	ActionPairingCodeCreated = "pairing_code.created"
+	ActionSiteTagsSet        = "site.tags.set"
 )
 
 // Entry is one audit record.

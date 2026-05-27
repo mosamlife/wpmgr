@@ -11,6 +11,125 @@ import (
 	"github.com/google/uuid"
 )
 
+// AgentHeartbeatNoContent is response for AgentHeartbeat operation.
+type AgentHeartbeatNoContent struct{}
+
+func (*AgentHeartbeatNoContent) agentHeartbeatRes() {}
+
+// Ref: #/components/schemas/AgentMetadata
+type AgentMetadata struct {
+	WpVersion   OptString       `json:"wp_version"`
+	PhpVersion  OptString       `json:"php_version"`
+	ServerInfo  OptString       `json:"server_info"`
+	Multisite   OptBool         `json:"multisite"`
+	ActiveTheme OptString       `json:"active_theme"`
+	Plugins     []SiteComponent `json:"plugins"`
+	Themes      []SiteComponent `json:"themes"`
+}
+
+// GetWpVersion returns the value of WpVersion.
+func (s *AgentMetadata) GetWpVersion() OptString {
+	return s.WpVersion
+}
+
+// GetPhpVersion returns the value of PhpVersion.
+func (s *AgentMetadata) GetPhpVersion() OptString {
+	return s.PhpVersion
+}
+
+// GetServerInfo returns the value of ServerInfo.
+func (s *AgentMetadata) GetServerInfo() OptString {
+	return s.ServerInfo
+}
+
+// GetMultisite returns the value of Multisite.
+func (s *AgentMetadata) GetMultisite() OptBool {
+	return s.Multisite
+}
+
+// GetActiveTheme returns the value of ActiveTheme.
+func (s *AgentMetadata) GetActiveTheme() OptString {
+	return s.ActiveTheme
+}
+
+// GetPlugins returns the value of Plugins.
+func (s *AgentMetadata) GetPlugins() []SiteComponent {
+	return s.Plugins
+}
+
+// GetThemes returns the value of Themes.
+func (s *AgentMetadata) GetThemes() []SiteComponent {
+	return s.Themes
+}
+
+// SetWpVersion sets the value of WpVersion.
+func (s *AgentMetadata) SetWpVersion(val OptString) {
+	s.WpVersion = val
+}
+
+// SetPhpVersion sets the value of PhpVersion.
+func (s *AgentMetadata) SetPhpVersion(val OptString) {
+	s.PhpVersion = val
+}
+
+// SetServerInfo sets the value of ServerInfo.
+func (s *AgentMetadata) SetServerInfo(val OptString) {
+	s.ServerInfo = val
+}
+
+// SetMultisite sets the value of Multisite.
+func (s *AgentMetadata) SetMultisite(val OptBool) {
+	s.Multisite = val
+}
+
+// SetActiveTheme sets the value of ActiveTheme.
+func (s *AgentMetadata) SetActiveTheme(val OptString) {
+	s.ActiveTheme = val
+}
+
+// SetPlugins sets the value of Plugins.
+func (s *AgentMetadata) SetPlugins(val []SiteComponent) {
+	s.Plugins = val
+}
+
+// SetThemes sets the value of Themes.
+func (s *AgentMetadata) SetThemes(val []SiteComponent) {
+	s.Themes = val
+}
+
+type AgentMetadataUnauthorized Error
+
+func (*AgentMetadataUnauthorized) agentMetadataRes() {}
+
+type AgentMetadataUnprocessableEntity Error
+
+func (*AgentMetadataUnprocessableEntity) agentMetadataRes() {}
+
+type AgentSignature struct {
+	APIKey string
+	Roles  []string
+}
+
+// GetAPIKey returns the value of APIKey.
+func (s *AgentSignature) GetAPIKey() string {
+	return s.APIKey
+}
+
+// GetRoles returns the value of Roles.
+func (s *AgentSignature) GetRoles() []string {
+	return s.Roles
+}
+
+// SetAPIKey sets the value of APIKey.
+func (s *AgentSignature) SetAPIKey(val string) {
+	s.APIKey = val
+}
+
+// SetRoles sets the value of Roles.
+func (s *AgentSignature) SetRoles(val []string) {
+	s.Roles = val
+}
+
 // Ref: #/components/schemas/ApiKey
 type ApiKey struct {
 	ID         uuid.UUID   `json:"id"`
@@ -389,6 +508,141 @@ type DeleteSiteNoContent struct{}
 
 func (*DeleteSiteNoContent) deleteSiteRes() {}
 
+type EnrollConflict Error
+
+func (*EnrollConflict) enrollRes() {}
+
+// Ref: #/components/schemas/EnrollRequest
+type EnrollRequest struct {
+	PairingCode string  `json:"pairing_code"`
+	SiteURL     url.URL `json:"site_url"`
+	// The agent's own Ed25519 public key, base64 (std) encoded.
+	AgentPublicKey string    `json:"agent_public_key"`
+	Name           OptString `json:"name"`
+	WpVersion      OptString `json:"wp_version"`
+	PhpVersion     OptString `json:"php_version"`
+	Tags           []string  `json:"tags"`
+}
+
+// GetPairingCode returns the value of PairingCode.
+func (s *EnrollRequest) GetPairingCode() string {
+	return s.PairingCode
+}
+
+// GetSiteURL returns the value of SiteURL.
+func (s *EnrollRequest) GetSiteURL() url.URL {
+	return s.SiteURL
+}
+
+// GetAgentPublicKey returns the value of AgentPublicKey.
+func (s *EnrollRequest) GetAgentPublicKey() string {
+	return s.AgentPublicKey
+}
+
+// GetName returns the value of Name.
+func (s *EnrollRequest) GetName() OptString {
+	return s.Name
+}
+
+// GetWpVersion returns the value of WpVersion.
+func (s *EnrollRequest) GetWpVersion() OptString {
+	return s.WpVersion
+}
+
+// GetPhpVersion returns the value of PhpVersion.
+func (s *EnrollRequest) GetPhpVersion() OptString {
+	return s.PhpVersion
+}
+
+// GetTags returns the value of Tags.
+func (s *EnrollRequest) GetTags() []string {
+	return s.Tags
+}
+
+// SetPairingCode sets the value of PairingCode.
+func (s *EnrollRequest) SetPairingCode(val string) {
+	s.PairingCode = val
+}
+
+// SetSiteURL sets the value of SiteURL.
+func (s *EnrollRequest) SetSiteURL(val url.URL) {
+	s.SiteURL = val
+}
+
+// SetAgentPublicKey sets the value of AgentPublicKey.
+func (s *EnrollRequest) SetAgentPublicKey(val string) {
+	s.AgentPublicKey = val
+}
+
+// SetName sets the value of Name.
+func (s *EnrollRequest) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetWpVersion sets the value of WpVersion.
+func (s *EnrollRequest) SetWpVersion(val OptString) {
+	s.WpVersion = val
+}
+
+// SetPhpVersion sets the value of PhpVersion.
+func (s *EnrollRequest) SetPhpVersion(val OptString) {
+	s.PhpVersion = val
+}
+
+// SetTags sets the value of Tags.
+func (s *EnrollRequest) SetTags(val []string) {
+	s.Tags = val
+}
+
+// Ref: #/components/schemas/EnrollResponse
+type EnrollResponse struct {
+	SiteID   uuid.UUID `json:"site_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	// The control plane's Ed25519 PUBLIC signing key (base64 std). The agent
+	// uses it to verify control-plane->agent commands.
+	ControlPlanePublicKey string `json:"control_plane_public_key"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *EnrollResponse) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *EnrollResponse) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetControlPlanePublicKey returns the value of ControlPlanePublicKey.
+func (s *EnrollResponse) GetControlPlanePublicKey() string {
+	return s.ControlPlanePublicKey
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *EnrollResponse) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *EnrollResponse) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetControlPlanePublicKey sets the value of ControlPlanePublicKey.
+func (s *EnrollResponse) SetControlPlanePublicKey(val string) {
+	s.ControlPlanePublicKey = val
+}
+
+func (*EnrollResponse) enrollRes() {}
+
+type EnrollUnauthorized Error
+
+func (*EnrollUnauthorized) enrollRes() {}
+
+type EnrollUnprocessableEntity Error
+
+func (*EnrollUnprocessableEntity) enrollRes() {}
+
 // Ref: #/components/schemas/Error
 type Error struct {
 	// Stable machine-readable error code.
@@ -428,12 +682,15 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 	s.Details = val
 }
 
-func (*Error) deleteSiteRes() {}
-func (*Error) getMeRes()      {}
-func (*Error) getSiteRes()    {}
-func (*Error) getTenantRes()  {}
-func (*Error) logoutRes()     {}
-func (*Error) oidcLoginRes()  {}
+func (*Error) agentHeartbeatRes()    {}
+func (*Error) createPairingCodeRes() {}
+func (*Error) deleteSiteRes()        {}
+func (*Error) getMeRes()             {}
+func (*Error) getSiteRes()           {}
+func (*Error) getTenantRes()         {}
+func (*Error) logoutRes()            {}
+func (*Error) oidcLoginRes()         {}
+func (*Error) setSiteTagsRes()       {}
 
 type ErrorDetails map[string]jx.Raw
 
@@ -798,6 +1055,52 @@ func (o OptAuditEntryMetadata) Or(d AuditEntryMetadata) AuditEntryMetadata {
 	return d
 }
 
+// NewOptBool returns new OptBool with value set to v.
+func NewOptBool(v bool) OptBool {
+	return OptBool{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBool is optional bool.
+type OptBool struct {
+	Value bool
+	Set   bool
+}
+
+// IsSet returns true if OptBool was set.
+func (o OptBool) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBool) Reset() {
+	var v bool
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBool) SetTo(v bool) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBool) Get() (v bool, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBool) Or(d bool) bool {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptDateTime returns new OptDateTime with value set to v.
 func NewOptDateTime(v time.Time) OptDateTime {
 	return OptDateTime{
@@ -936,6 +1239,52 @@ func (o OptInt32) Or(d int32) int32 {
 	return d
 }
 
+// NewOptPairingCodeCreate returns new OptPairingCodeCreate with value set to v.
+func NewOptPairingCodeCreate(v PairingCodeCreate) OptPairingCodeCreate {
+	return OptPairingCodeCreate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptPairingCodeCreate is optional PairingCodeCreate.
+type OptPairingCodeCreate struct {
+	Value PairingCodeCreate
+	Set   bool
+}
+
+// IsSet returns true if OptPairingCodeCreate was set.
+func (o OptPairingCodeCreate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptPairingCodeCreate) Reset() {
+	var v PairingCodeCreate
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptPairingCodeCreate) SetTo(v PairingCodeCreate) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptPairingCodeCreate) Get() (v PairingCodeCreate, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptPairingCodeCreate) Or(d PairingCodeCreate) PairingCodeCreate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptRole returns new OptRole with value set to v.
 func NewOptRole(v Role) OptRole {
 	return OptRole{
@@ -976,6 +1325,52 @@ func (o OptRole) Get() (v Role, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptRole) Or(d Role) Role {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSiteComponents returns new OptSiteComponents with value set to v.
+func NewOptSiteComponents(v SiteComponents) OptSiteComponents {
+	return OptSiteComponents{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteComponents is optional SiteComponents.
+type OptSiteComponents struct {
+	Value SiteComponents
+	Set   bool
+}
+
+// IsSet returns true if OptSiteComponents was set.
+func (o OptSiteComponents) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteComponents) Reset() {
+	var v SiteComponents
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteComponents) SetTo(v SiteComponents) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteComponents) Get() (v SiteComponents, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteComponents) Or(d SiteComponents) SiteComponents {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -1118,6 +1513,116 @@ func (o OptUUID) Or(d uuid.UUID) uuid.UUID {
 		return v
 	}
 	return d
+}
+
+// Ref: #/components/schemas/PairingCode
+type PairingCode struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	// The one-time plaintext pairing code. Shown ONCE; never stored.
+	Code      string    `json:"code"`
+	SiteName  OptString `json:"site_name"`
+	Tags      []string  `json:"tags"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *PairingCode) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *PairingCode) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetCode returns the value of Code.
+func (s *PairingCode) GetCode() string {
+	return s.Code
+}
+
+// GetSiteName returns the value of SiteName.
+func (s *PairingCode) GetSiteName() OptString {
+	return s.SiteName
+}
+
+// GetTags returns the value of Tags.
+func (s *PairingCode) GetTags() []string {
+	return s.Tags
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *PairingCode) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *PairingCode) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *PairingCode) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *PairingCode) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetCode sets the value of Code.
+func (s *PairingCode) SetCode(val string) {
+	s.Code = val
+}
+
+// SetSiteName sets the value of SiteName.
+func (s *PairingCode) SetSiteName(val OptString) {
+	s.SiteName = val
+}
+
+// SetTags sets the value of Tags.
+func (s *PairingCode) SetTags(val []string) {
+	s.Tags = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *PairingCode) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *PairingCode) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+func (*PairingCode) createPairingCodeRes() {}
+
+// Ref: #/components/schemas/PairingCodeCreate
+type PairingCodeCreate struct {
+	SiteName OptString `json:"site_name"`
+	Tags     []string  `json:"tags"`
+}
+
+// GetSiteName returns the value of SiteName.
+func (s *PairingCodeCreate) GetSiteName() OptString {
+	return s.SiteName
+}
+
+// GetTags returns the value of Tags.
+func (s *PairingCodeCreate) GetTags() []string {
+	return s.Tags
+}
+
+// SetSiteName sets the value of SiteName.
+func (s *PairingCodeCreate) SetSiteName(val OptString) {
+	s.SiteName = val
+}
+
+// SetTags sets the value of Tags.
+func (s *PairingCodeCreate) SetTags(val []string) {
+	s.Tags = val
 }
 
 // Ref: #/components/schemas/Readiness
@@ -1344,15 +1849,25 @@ func (s *Role) UnmarshalText(data []byte) error {
 
 // Ref: #/components/schemas/Site
 type Site struct {
-	ID         uuid.UUID  `json:"id"`
-	TenantID   uuid.UUID  `json:"tenant_id"`
-	URL        url.URL    `json:"url"`
-	Name       string     `json:"name"`
-	Status     SiteStatus `json:"status"`
-	WpVersion  string     `json:"wp_version"`
-	PhpVersion string     `json:"php_version"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID           uuid.UUID        `json:"id"`
+	TenantID     uuid.UUID        `json:"tenant_id"`
+	URL          url.URL          `json:"url"`
+	Name         string           `json:"name"`
+	Status       SiteStatus       `json:"status"`
+	WpVersion    string           `json:"wp_version"`
+	PhpVersion   string           `json:"php_version"`
+	HealthStatus SiteHealthStatus `json:"health_status"`
+	ServerInfo   OptString        `json:"server_info"`
+	Multisite    bool             `json:"multisite"`
+	ActiveTheme  OptString        `json:"active_theme"`
+	Tags         []string         `json:"tags"`
+	// Whether an agent has enrolled this site.
+	Enrolled   OptBool           `json:"enrolled"`
+	EnrolledAt OptDateTime       `json:"enrolled_at"`
+	LastSeenAt OptDateTime       `json:"last_seen_at"`
+	Components OptSiteComponents `json:"components"`
+	CreatedAt  time.Time         `json:"created_at"`
+	UpdatedAt  time.Time         `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -1388,6 +1903,51 @@ func (s *Site) GetWpVersion() string {
 // GetPhpVersion returns the value of PhpVersion.
 func (s *Site) GetPhpVersion() string {
 	return s.PhpVersion
+}
+
+// GetHealthStatus returns the value of HealthStatus.
+func (s *Site) GetHealthStatus() SiteHealthStatus {
+	return s.HealthStatus
+}
+
+// GetServerInfo returns the value of ServerInfo.
+func (s *Site) GetServerInfo() OptString {
+	return s.ServerInfo
+}
+
+// GetMultisite returns the value of Multisite.
+func (s *Site) GetMultisite() bool {
+	return s.Multisite
+}
+
+// GetActiveTheme returns the value of ActiveTheme.
+func (s *Site) GetActiveTheme() OptString {
+	return s.ActiveTheme
+}
+
+// GetTags returns the value of Tags.
+func (s *Site) GetTags() []string {
+	return s.Tags
+}
+
+// GetEnrolled returns the value of Enrolled.
+func (s *Site) GetEnrolled() OptBool {
+	return s.Enrolled
+}
+
+// GetEnrolledAt returns the value of EnrolledAt.
+func (s *Site) GetEnrolledAt() OptDateTime {
+	return s.EnrolledAt
+}
+
+// GetLastSeenAt returns the value of LastSeenAt.
+func (s *Site) GetLastSeenAt() OptDateTime {
+	return s.LastSeenAt
+}
+
+// GetComponents returns the value of Components.
+func (s *Site) GetComponents() OptSiteComponents {
+	return s.Components
 }
 
 // GetCreatedAt returns the value of CreatedAt.
@@ -1435,6 +1995,51 @@ func (s *Site) SetPhpVersion(val string) {
 	s.PhpVersion = val
 }
 
+// SetHealthStatus sets the value of HealthStatus.
+func (s *Site) SetHealthStatus(val SiteHealthStatus) {
+	s.HealthStatus = val
+}
+
+// SetServerInfo sets the value of ServerInfo.
+func (s *Site) SetServerInfo(val OptString) {
+	s.ServerInfo = val
+}
+
+// SetMultisite sets the value of Multisite.
+func (s *Site) SetMultisite(val bool) {
+	s.Multisite = val
+}
+
+// SetActiveTheme sets the value of ActiveTheme.
+func (s *Site) SetActiveTheme(val OptString) {
+	s.ActiveTheme = val
+}
+
+// SetTags sets the value of Tags.
+func (s *Site) SetTags(val []string) {
+	s.Tags = val
+}
+
+// SetEnrolled sets the value of Enrolled.
+func (s *Site) SetEnrolled(val OptBool) {
+	s.Enrolled = val
+}
+
+// SetEnrolledAt sets the value of EnrolledAt.
+func (s *Site) SetEnrolledAt(val OptDateTime) {
+	s.EnrolledAt = val
+}
+
+// SetLastSeenAt sets the value of LastSeenAt.
+func (s *Site) SetLastSeenAt(val OptDateTime) {
+	s.LastSeenAt = val
+}
+
+// SetComponents sets the value of Components.
+func (s *Site) SetComponents(val OptSiteComponents) {
+	s.Components = val
+}
+
 // SetCreatedAt sets the value of CreatedAt.
 func (s *Site) SetCreatedAt(val time.Time) {
 	s.CreatedAt = val
@@ -1445,8 +2050,85 @@ func (s *Site) SetUpdatedAt(val time.Time) {
 	s.UpdatedAt = val
 }
 
-func (*Site) createSiteRes() {}
-func (*Site) getSiteRes()    {}
+func (*Site) agentMetadataRes() {}
+func (*Site) createSiteRes()    {}
+func (*Site) getSiteRes()       {}
+func (*Site) setSiteTagsRes()   {}
+
+// Ref: #/components/schemas/SiteComponent
+type SiteComponent struct {
+	Slug    string    `json:"slug"`
+	Name    OptString `json:"name"`
+	Version OptString `json:"version"`
+	Active  OptBool   `json:"active"`
+}
+
+// GetSlug returns the value of Slug.
+func (s *SiteComponent) GetSlug() string {
+	return s.Slug
+}
+
+// GetName returns the value of Name.
+func (s *SiteComponent) GetName() OptString {
+	return s.Name
+}
+
+// GetVersion returns the value of Version.
+func (s *SiteComponent) GetVersion() OptString {
+	return s.Version
+}
+
+// GetActive returns the value of Active.
+func (s *SiteComponent) GetActive() OptBool {
+	return s.Active
+}
+
+// SetSlug sets the value of Slug.
+func (s *SiteComponent) SetSlug(val string) {
+	s.Slug = val
+}
+
+// SetName sets the value of Name.
+func (s *SiteComponent) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetVersion sets the value of Version.
+func (s *SiteComponent) SetVersion(val OptString) {
+	s.Version = val
+}
+
+// SetActive sets the value of Active.
+func (s *SiteComponent) SetActive(val OptBool) {
+	s.Active = val
+}
+
+// Installed plugin/theme inventory pushed by the agent.
+// Ref: #/components/schemas/SiteComponents
+type SiteComponents struct {
+	Plugins []SiteComponent `json:"plugins"`
+	Themes  []SiteComponent `json:"themes"`
+}
+
+// GetPlugins returns the value of Plugins.
+func (s *SiteComponents) GetPlugins() []SiteComponent {
+	return s.Plugins
+}
+
+// GetThemes returns the value of Themes.
+func (s *SiteComponents) GetThemes() []SiteComponent {
+	return s.Themes
+}
+
+// SetPlugins sets the value of Plugins.
+func (s *SiteComponents) SetPlugins(val []SiteComponent) {
+	s.Plugins = val
+}
+
+// SetThemes sets the value of Themes.
+func (s *SiteComponents) SetThemes(val []SiteComponent) {
+	s.Themes = val
+}
 
 // Ref: #/components/schemas/SiteCreate
 type SiteCreate struct {
@@ -1562,6 +2244,54 @@ func (s *SiteCreateStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+type SiteHealthStatus string
+
+const (
+	SiteHealthStatusUnknown     SiteHealthStatus = "unknown"
+	SiteHealthStatusHealthy     SiteHealthStatus = "healthy"
+	SiteHealthStatusUnreachable SiteHealthStatus = "unreachable"
+)
+
+// AllValues returns all SiteHealthStatus values.
+func (SiteHealthStatus) AllValues() []SiteHealthStatus {
+	return []SiteHealthStatus{
+		SiteHealthStatusUnknown,
+		SiteHealthStatusHealthy,
+		SiteHealthStatusUnreachable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteHealthStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteHealthStatusUnknown:
+		return []byte(s), nil
+	case SiteHealthStatusHealthy:
+		return []byte(s), nil
+	case SiteHealthStatusUnreachable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteHealthStatus) UnmarshalText(data []byte) error {
+	switch SiteHealthStatus(data) {
+	case SiteHealthStatusUnknown:
+		*s = SiteHealthStatusUnknown
+		return nil
+	case SiteHealthStatusHealthy:
+		*s = SiteHealthStatusHealthy
+		return nil
+	case SiteHealthStatusUnreachable:
+		*s = SiteHealthStatusUnreachable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Ref: #/components/schemas/SiteList
 type SiteList struct {
 	Items []Site `json:"items"`
@@ -1630,6 +2360,21 @@ func (s *SiteStatus) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// Ref: #/components/schemas/SiteTags
+type SiteTags struct {
+	Tags []string `json:"tags"`
+}
+
+// GetTags returns the value of Tags.
+func (s *SiteTags) GetTags() []string {
+	return s.Tags
+}
+
+// SetTags sets the value of Tags.
+func (s *SiteTags) SetTags(val []string) {
+	s.Tags = val
 }
 
 // Ref: #/components/schemas/Tenant

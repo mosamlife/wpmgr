@@ -3,9 +3,18 @@
 import type { Client, Options as Options2, TDataShape } from "./client";
 import { client } from "./client.gen";
 import type {
+  AgentHeartbeatData,
+  AgentHeartbeatErrors,
+  AgentHeartbeatResponses,
+  AgentMetadataData,
+  AgentMetadataErrors,
+  AgentMetadataResponses,
   CreateApiKeyData,
   CreateApiKeyErrors,
   CreateApiKeyResponses,
+  CreatePairingCodeData,
+  CreatePairingCodeErrors,
+  CreatePairingCodeResponses,
   CreateSiteData,
   CreateSiteErrors,
   CreateSiteResponses,
@@ -15,6 +24,9 @@ import type {
   DeleteSiteData,
   DeleteSiteErrors,
   DeleteSiteResponses,
+  EnrollData,
+  EnrollErrors,
+  EnrollResponses,
   GetHealthzData,
   GetHealthzResponses,
   GetMeData,
@@ -62,6 +74,9 @@ import type {
   RevokeApiKeyData,
   RevokeApiKeyErrors,
   RevokeApiKeyResponses,
+  SetSiteTagsData,
+  SetSiteTagsErrors,
+  SetSiteTagsResponses,
   VerifyAuditData,
   VerifyAuditErrors,
   VerifyAuditResponses,
@@ -365,6 +380,119 @@ export const createSite = <ThrowOnError extends boolean = false>(
       "Content-Type": "application/json",
       ...options.headers,
     },
+  });
+
+/**
+ * Generate a one-time agent pairing code
+ *
+ * Generates a short-lived, single-use, high-entropy pairing code for the
+ * current tenant. The plaintext code is returned ONCE in this response and
+ * is never retrievable again. An agent presents it to POST /enroll. Requires
+ * operator+.
+ *
+ */
+export const createPairingCode = <ThrowOnError extends boolean = false>(
+  options?: Options<CreatePairingCodeData, ThrowOnError>,
+) =>
+  (options?.client ?? client).post<
+    CreatePairingCodeResponses,
+    CreatePairingCodeErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/pairing-codes",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+  });
+
+/**
+ * Replace the tag set on a site
+ */
+export const setSiteTags = <ThrowOnError extends boolean = false>(
+  options: Options<SetSiteTagsData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    SetSiteTagsResponses,
+    SetSiteTagsErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/tags",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Agent enrollment (public)
+ *
+ * Called by an agent (NOT an authenticated control-plane user) to enroll a
+ * site using a pairing code. The tenant is derived entirely from the code.
+ * On success the site is created (or, if the URL already exists for the
+ * tenant, its agent key is rotated) and the control-plane PUBLIC signing
+ * key is returned so the agent can verify CP->agent commands. The code is
+ * consumed (single-use).
+ *
+ */
+export const enroll = <ThrowOnError extends boolean = false>(
+  options: Options<EnrollData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<EnrollResponses, EnrollErrors, ThrowOnError>({
+    url: "/enroll",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Push site metadata (agent-authenticated)
+ *
+ * Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
+ * security scheme). The site + tenant are resolved from the verified agent
+ * identity, never from a header. Updates last_seen_at and marks the site
+ * healthy.
+ *
+ */
+export const agentMetadata = <ThrowOnError extends boolean = false>(
+  options: Options<AgentMetadataData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    AgentMetadataResponses,
+    AgentMetadataErrors,
+    ThrowOnError
+  >({
+    security: [{ name: "X-WPMgr-Signature", type: "apiKey" }],
+    url: "/agent/v1/metadata",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Liveness heartbeat (agent-authenticated)
+ *
+ * Lightweight liveness ping. Authenticated via the Ed25519 signed-request
+ * scheme; updates last_seen_at for the resolved site.
+ *
+ */
+export const agentHeartbeat = <ThrowOnError extends boolean = false>(
+  options?: Options<AgentHeartbeatData, ThrowOnError>,
+) =>
+  (options?.client ?? client).post<
+    AgentHeartbeatResponses,
+    AgentHeartbeatErrors,
+    ThrowOnError
+  >({
+    security: [{ name: "X-WPMgr-Signature", type: "apiKey" }],
+    url: "/agent/v1/heartbeat",
+    ...options,
   });
 
 /**

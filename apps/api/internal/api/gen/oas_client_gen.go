@@ -11,6 +11,7 @@ import (
 	"github.com/go-faster/errors"
 	"github.com/ogen-go/ogen/conv"
 	ht "github.com/ogen-go/ogen/http"
+	"github.com/ogen-go/ogen/ogenerrors"
 	"github.com/ogen-go/ogen/otelogen"
 	"github.com/ogen-go/ogen/uri"
 	"go.opentelemetry.io/otel/attribute"
@@ -27,12 +28,37 @@ func trimTrailingSlashes(u *url.URL) {
 
 // Invoker invokes operations described by OpenAPI v3 specification.
 type Invoker interface {
+	// AgentHeartbeat invokes agentHeartbeat operation.
+	//
+	// Lightweight liveness ping. Authenticated via the Ed25519 signed-request
+	// scheme; updates last_seen_at for the resolved site.
+	//
+	// POST /agent/v1/heartbeat
+	AgentHeartbeat(ctx context.Context) (AgentHeartbeatRes, error)
+	// AgentMetadata invokes agentMetadata operation.
+	//
+	// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
+	// security scheme). The site + tenant are resolved from the verified agent
+	// identity, never from a header. Updates last_seen_at and marks the site
+	// healthy.
+	//
+	// POST /agent/v1/metadata
+	AgentMetadata(ctx context.Context, request *AgentMetadata) (AgentMetadataRes, error)
 	// CreateApiKey invokes createApiKey operation.
 	//
 	// Create an API key (admin+); the secret is shown once.
 	//
 	// POST /api/v1/api-keys
 	CreateApiKey(ctx context.Context, request *ApiKeyCreate) (CreateApiKeyRes, error)
+	// CreatePairingCode invokes createPairingCode operation.
+	//
+	// Generates a short-lived, single-use, high-entropy pairing code for the
+	// current tenant. The plaintext code is returned ONCE in this response and
+	// is never retrievable again. An agent presents it to POST /enroll. Requires
+	// operator+.
+	//
+	// POST /api/v1/sites/pairing-codes
+	CreatePairingCode(ctx context.Context, request OptPairingCodeCreate) (CreatePairingCodeRes, error)
 	// CreateSite invokes createSite operation.
 	//
 	// Creates a site belonging to the tenant in the request context.
@@ -51,6 +77,17 @@ type Invoker interface {
 	//
 	// DELETE /api/v1/sites/{siteId}
 	DeleteSite(ctx context.Context, params DeleteSiteParams) (DeleteSiteRes, error)
+	// Enroll invokes enroll operation.
+	//
+	// Called by an agent (NOT an authenticated control-plane user) to enroll a
+	// site using a pairing code. The tenant is derived entirely from the code.
+	// On success the site is created (or, if the URL already exists for the
+	// tenant, its agent key is rotated) and the control-plane PUBLIC signing
+	// key is returned so the agent can verify CP->agent commands. The code is
+	// consumed (single-use).
+	//
+	// POST /enroll
+	Enroll(ctx context.Context, request *EnrollRequest) (EnrollRes, error)
 	// GetHealthz invokes getHealthz operation.
 	//
 	// Liveness probe.
@@ -155,6 +192,12 @@ type Invoker interface {
 	//
 	// DELETE /api/v1/api-keys/{apiKeyId}
 	RevokeApiKey(ctx context.Context, params RevokeApiKeyParams) (RevokeApiKeyRes, error)
+	// SetSiteTags invokes setSiteTags operation.
+	//
+	// Replace the tag set on a site.
+	//
+	// PUT /api/v1/sites/{siteId}/tags
+	SetSiteTags(ctx context.Context, request *SiteTags, params SetSiteTagsParams) (SetSiteTagsRes, error)
 	// VerifyAudit invokes verifyAudit operation.
 	//
 	// Verify the integrity of the audit hash-chain (admin+).
@@ -166,11 +209,12 @@ type Invoker interface {
 // Client implements OAS client.
 type Client struct {
 	serverURL *url.URL
+	sec       SecuritySource
 	baseClient
 }
 
 // NewClient initializes new Client defined by OAS.
-func NewClient(serverURL string, opts ...ClientOption) (*Client, error) {
+func NewClient(serverURL string, sec SecuritySource, opts ...ClientOption) (*Client, error) {
 	u, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, err
@@ -183,6 +227,7 @@ func NewClient(serverURL string, opts ...ClientOption) (*Client, error) {
 	}
 	return &Client{
 		serverURL:  u,
+		sec:        sec,
 		baseClient: c,
 	}, nil
 }
@@ -200,6 +245,227 @@ func (c *Client) requestURL(ctx context.Context) *url.URL {
 		return c.serverURL
 	}
 	return u
+}
+
+// AgentHeartbeat invokes agentHeartbeat operation.
+//
+// Lightweight liveness ping. Authenticated via the Ed25519 signed-request
+// scheme; updates last_seen_at for the resolved site.
+//
+// POST /agent/v1/heartbeat
+func (c *Client) AgentHeartbeat(ctx context.Context) (AgentHeartbeatRes, error) {
+	res, err := c.sendAgentHeartbeat(ctx)
+	return res, err
+}
+
+func (c *Client) sendAgentHeartbeat(ctx context.Context) (res AgentHeartbeatRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("agentHeartbeat"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/agent/v1/heartbeat"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, AgentHeartbeatOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/agent/v1/heartbeat"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+			stage = "Security:AgentSignature"
+			switch err := c.securityAgentSignature(ctx, AgentHeartbeatOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"AgentSignature\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeAgentHeartbeatResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// AgentMetadata invokes agentMetadata operation.
+//
+// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
+// security scheme). The site + tenant are resolved from the verified agent
+// identity, never from a header. Updates last_seen_at and marks the site
+// healthy.
+//
+// POST /agent/v1/metadata
+func (c *Client) AgentMetadata(ctx context.Context, request *AgentMetadata) (AgentMetadataRes, error) {
+	res, err := c.sendAgentMetadata(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendAgentMetadata(ctx context.Context, request *AgentMetadata) (res AgentMetadataRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("agentMetadata"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/agent/v1/metadata"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, AgentMetadataOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/agent/v1/metadata"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeAgentMetadataRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+			stage = "Security:AgentSignature"
+			switch err := c.securityAgentSignature(ctx, AgentMetadataOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"AgentSignature\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeAgentMetadataResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
 }
 
 // CreateApiKey invokes createApiKey operation.
@@ -272,6 +538,86 @@ func (c *Client) sendCreateApiKey(ctx context.Context, request *ApiKeyCreate) (r
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateApiKeyResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CreatePairingCode invokes createPairingCode operation.
+//
+// Generates a short-lived, single-use, high-entropy pairing code for the
+// current tenant. The plaintext code is returned ONCE in this response and
+// is never retrievable again. An agent presents it to POST /enroll. Requires
+// operator+.
+//
+// POST /api/v1/sites/pairing-codes
+func (c *Client) CreatePairingCode(ctx context.Context, request OptPairingCodeCreate) (CreatePairingCodeRes, error) {
+	res, err := c.sendCreatePairingCode(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendCreatePairingCode(ctx context.Context, request OptPairingCodeCreate) (res CreatePairingCodeRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createPairingCode"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/pairing-codes"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreatePairingCodeOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/sites/pairing-codes"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreatePairingCodeRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreatePairingCodeResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -518,6 +864,88 @@ func (c *Client) sendDeleteSite(ctx context.Context, params DeleteSiteParams) (r
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// Enroll invokes enroll operation.
+//
+// Called by an agent (NOT an authenticated control-plane user) to enroll a
+// site using a pairing code. The tenant is derived entirely from the code.
+// On success the site is created (or, if the URL already exists for the
+// tenant, its agent key is rotated) and the control-plane PUBLIC signing
+// key is returned so the agent can verify CP->agent commands. The code is
+// consumed (single-use).
+//
+// POST /enroll
+func (c *Client) Enroll(ctx context.Context, request *EnrollRequest) (EnrollRes, error) {
+	res, err := c.sendEnroll(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendEnroll(ctx context.Context, request *EnrollRequest) (res EnrollRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("enroll"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/enroll"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, EnrollOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/enroll"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeEnrollRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeEnrollResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -1431,6 +1859,23 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 			return res, errors.Wrap(err, "encode query")
 		}
 	}
+	{
+		// Encode "tag" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "tag",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Tag.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
 	u.RawQuery = q.Values().Encode()
 
 	stage = "EncodeRequest"
@@ -2069,6 +2514,102 @@ func (c *Client) sendRevokeApiKey(ctx context.Context, params RevokeApiKeyParams
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeApiKeyResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SetSiteTags invokes setSiteTags operation.
+//
+// Replace the tag set on a site.
+//
+// PUT /api/v1/sites/{siteId}/tags
+func (c *Client) SetSiteTags(ctx context.Context, request *SiteTags, params SetSiteTagsParams) (SetSiteTagsRes, error) {
+	res, err := c.sendSetSiteTags(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendSetSiteTags(ctx context.Context, request *SiteTags, params SetSiteTagsParams) (res SetSiteTagsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("setSiteTags"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/tags"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SetSiteTagsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/tags"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeSetSiteTagsRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSetSiteTagsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

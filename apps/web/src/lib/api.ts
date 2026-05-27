@@ -13,4 +13,12 @@ export function configureApiClient(): void {
   });
 }
 
-export type { Site, SiteList, ApiError } from "@wpmgr/api";
+export type {
+  Site,
+  SiteList,
+  SiteComponent,
+  SiteComponents,
+  PairingCode,
+  PairingCodeCreate,
+  ApiError,
+} from "@wpmgr/api";

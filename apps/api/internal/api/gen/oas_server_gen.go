@@ -8,12 +8,37 @@ import (
 
 // Handler handles operations described by OpenAPI v3 specification.
 type Handler interface {
+	// AgentHeartbeat implements agentHeartbeat operation.
+	//
+	// Lightweight liveness ping. Authenticated via the Ed25519 signed-request
+	// scheme; updates last_seen_at for the resolved site.
+	//
+	// POST /agent/v1/heartbeat
+	AgentHeartbeat(ctx context.Context) (AgentHeartbeatRes, error)
+	// AgentMetadata implements agentMetadata operation.
+	//
+	// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
+	// security scheme). The site + tenant are resolved from the verified agent
+	// identity, never from a header. Updates last_seen_at and marks the site
+	// healthy.
+	//
+	// POST /agent/v1/metadata
+	AgentMetadata(ctx context.Context, req *AgentMetadata) (AgentMetadataRes, error)
 	// CreateApiKey implements createApiKey operation.
 	//
 	// Create an API key (admin+); the secret is shown once.
 	//
 	// POST /api/v1/api-keys
 	CreateApiKey(ctx context.Context, req *ApiKeyCreate) (CreateApiKeyRes, error)
+	// CreatePairingCode implements createPairingCode operation.
+	//
+	// Generates a short-lived, single-use, high-entropy pairing code for the
+	// current tenant. The plaintext code is returned ONCE in this response and
+	// is never retrievable again. An agent presents it to POST /enroll. Requires
+	// operator+.
+	//
+	// POST /api/v1/sites/pairing-codes
+	CreatePairingCode(ctx context.Context, req OptPairingCodeCreate) (CreatePairingCodeRes, error)
 	// CreateSite implements createSite operation.
 	//
 	// Creates a site belonging to the tenant in the request context.
@@ -32,6 +57,17 @@ type Handler interface {
 	//
 	// DELETE /api/v1/sites/{siteId}
 	DeleteSite(ctx context.Context, params DeleteSiteParams) (DeleteSiteRes, error)
+	// Enroll implements enroll operation.
+	//
+	// Called by an agent (NOT an authenticated control-plane user) to enroll a
+	// site using a pairing code. The tenant is derived entirely from the code.
+	// On success the site is created (or, if the URL already exists for the
+	// tenant, its agent key is rotated) and the control-plane PUBLIC signing
+	// key is returned so the agent can verify CP->agent commands. The code is
+	// consumed (single-use).
+	//
+	// POST /enroll
+	Enroll(ctx context.Context, req *EnrollRequest) (EnrollRes, error)
 	// GetHealthz implements getHealthz operation.
 	//
 	// Liveness probe.
@@ -136,6 +172,12 @@ type Handler interface {
 	//
 	// DELETE /api/v1/api-keys/{apiKeyId}
 	RevokeApiKey(ctx context.Context, params RevokeApiKeyParams) (RevokeApiKeyRes, error)
+	// SetSiteTags implements setSiteTags operation.
+	//
+	// Replace the tag set on a site.
+	//
+	// PUT /api/v1/sites/{siteId}/tags
+	SetSiteTags(ctx context.Context, req *SiteTags, params SetSiteTagsParams) (SetSiteTagsRes, error)
 	// VerifyAudit implements verifyAudit operation.
 	//
 	// Verify the integrity of the audit hash-chain (admin+).
@@ -147,18 +189,20 @@ type Handler interface {
 // Server implements http server based on OpenAPI v3 specification and
 // calls Handler to handle requests.
 type Server struct {
-	h Handler
+	h   Handler
+	sec SecurityHandler
 	baseServer
 }
 
 // NewServer creates new Server.
-func NewServer(h Handler, opts ...ServerOption) (*Server, error) {
+func NewServer(h Handler, sec SecurityHandler, opts ...ServerOption) (*Server, error) {
 	s, err := newServerConfig(opts...).baseServer()
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
 		h:          h,
+		sec:        sec,
 		baseServer: s,
 	}, nil
 }

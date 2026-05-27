@@ -55,8 +55,91 @@ export type Site = {
   status: "pending" | "active" | "error" | "disabled";
   wp_version: string;
   php_version: string;
+  health_status: "unknown" | "healthy" | "unreachable";
+  server_info?: string;
+  multisite: boolean;
+  active_theme?: string;
+  tags: Array<string>;
+  /**
+   * Whether an agent has enrolled this site.
+   */
+  enrolled?: boolean;
+  enrolled_at?: string;
+  last_seen_at?: string;
+  components?: SiteComponents;
   created_at: string;
   updated_at: string;
+};
+
+/**
+ * Installed plugin/theme inventory pushed by the agent.
+ */
+export type SiteComponents = {
+  plugins?: Array<SiteComponent>;
+  themes?: Array<SiteComponent>;
+};
+
+export type SiteComponent = {
+  slug: string;
+  name?: string;
+  version?: string;
+  active?: boolean;
+};
+
+export type SiteTags = {
+  tags: Array<string>;
+};
+
+export type PairingCodeCreate = {
+  site_name?: string;
+  tags?: Array<string>;
+};
+
+export type PairingCode = {
+  id: string;
+  tenant_id: string;
+  /**
+   * The one-time plaintext pairing code. Shown ONCE; never stored.
+   */
+  code: string;
+  site_name?: string;
+  tags?: Array<string>;
+  expires_at: string;
+  created_at: string;
+};
+
+export type EnrollRequest = {
+  pairing_code: string;
+  site_url: string;
+  /**
+   * The agent's own Ed25519 public key, base64 (std) encoded.
+   */
+  agent_public_key: string;
+  name?: string;
+  wp_version?: string;
+  php_version?: string;
+  tags?: Array<string>;
+};
+
+export type EnrollResponse = {
+  site_id: string;
+  tenant_id: string;
+  /**
+   * The control plane's Ed25519 PUBLIC signing key (base64 std). The agent
+   * uses it to verify control-plane->agent commands.
+   *
+   */
+  control_plane_public_key: string;
+};
+
+export type AgentMetadata = {
+  wp_version?: string;
+  php_version?: string;
+  server_info?: string;
+  multisite?: boolean;
+  active_theme?: string;
+  plugins?: Array<SiteComponent>;
+  themes?: Array<SiteComponent>;
 };
 
 export type SiteCreate = {
@@ -709,6 +792,10 @@ export type ListSitesData = {
   query?: {
     limit?: number;
     offset?: number;
+    /**
+     * Filter to sites carrying this tag.
+     */
+    tag?: string;
   };
   url: "/api/v1/sites";
 };
@@ -750,6 +837,151 @@ export type CreateSiteResponses = {
 };
 
 export type CreateSiteResponse = CreateSiteResponses[keyof CreateSiteResponses];
+
+export type CreatePairingCodeData = {
+  body?: PairingCodeCreate;
+  path?: never;
+  query?: never;
+  url: "/api/v1/sites/pairing-codes";
+};
+
+export type CreatePairingCodeErrors = {
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreatePairingCodeError =
+  CreatePairingCodeErrors[keyof CreatePairingCodeErrors];
+
+export type CreatePairingCodeResponses = {
+  /**
+   * Pairing code created (plaintext shown once)
+   */
+  201: PairingCode;
+};
+
+export type CreatePairingCodeResponse =
+  CreatePairingCodeResponses[keyof CreatePairingCodeResponses];
+
+export type SetSiteTagsData = {
+  body: SiteTags;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/tags";
+};
+
+export type SetSiteTagsErrors = {
+  /**
+   * Site not found
+   */
+  404: Error;
+};
+
+export type SetSiteTagsError = SetSiteTagsErrors[keyof SetSiteTagsErrors];
+
+export type SetSiteTagsResponses = {
+  /**
+   * The updated site
+   */
+  200: Site;
+};
+
+export type SetSiteTagsResponse =
+  SetSiteTagsResponses[keyof SetSiteTagsResponses];
+
+export type EnrollData = {
+  body: EnrollRequest;
+  path?: never;
+  query?: never;
+  url: "/enroll";
+};
+
+export type EnrollErrors = {
+  /**
+   * Invalid or expired pairing code
+   */
+  401: Error;
+  /**
+   * Pairing code already used, or agent key already bound
+   */
+  409: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type EnrollError = EnrollErrors[keyof EnrollErrors];
+
+export type EnrollResponses = {
+  /**
+   * Enrolled
+   */
+  200: EnrollResponse;
+};
+
+export type EnrollResponse2 = EnrollResponses[keyof EnrollResponses];
+
+export type AgentMetadataData = {
+  body: AgentMetadata;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/metadata";
+};
+
+export type AgentMetadataErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type AgentMetadataError = AgentMetadataErrors[keyof AgentMetadataErrors];
+
+export type AgentMetadataResponses = {
+  /**
+   * Metadata stored
+   */
+  200: Site;
+};
+
+export type AgentMetadataResponse =
+  AgentMetadataResponses[keyof AgentMetadataResponses];
+
+export type AgentHeartbeatData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/heartbeat";
+};
+
+export type AgentHeartbeatErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+};
+
+export type AgentHeartbeatError =
+  AgentHeartbeatErrors[keyof AgentHeartbeatErrors];
+
+export type AgentHeartbeatResponses = {
+  /**
+   * Heartbeat recorded
+   */
+  204: void;
+};
+
+export type AgentHeartbeatResponse =
+  AgentHeartbeatResponses[keyof AgentHeartbeatResponses];
 
 export type DeleteSiteData = {
   body?: never;

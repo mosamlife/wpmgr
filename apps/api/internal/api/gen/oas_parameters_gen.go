@@ -739,6 +739,8 @@ func decodeListMembersParams(args [0]string, argsEscaped bool, r *http.Request) 
 type ListSitesParams struct {
 	Limit  OptInt32 `json:",omitempty,omitzero"`
 	Offset OptInt32 `json:",omitempty,omitzero"`
+	// Filter to sites carrying this tag.
+	Tag OptString `json:",omitempty,omitzero"`
 }
 
 func unpackListSitesParams(packed middleware.Parameters) (params ListSitesParams) {
@@ -758,6 +760,15 @@ func unpackListSitesParams(packed middleware.Parameters) (params ListSitesParams
 		}
 		if v, ok := packed[key]; ok {
 			params.Offset = v.(OptInt32)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "tag",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Tag = v.(OptString)
 		}
 	}
 	return params
@@ -903,6 +914,74 @@ func decodeListSitesParams(args [0]string, argsEscaped bool, r *http.Request) (p
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "offset",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Decode query: tag.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "tag",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotTagVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotTagVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Tag.SetTo(paramsDotTagVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Tag.Get(); ok {
+					if err := func() error {
+						if err := (validate.String{
+							MinLength:     0,
+							MinLengthSet:  false,
+							MaxLength:     64,
+							MaxLengthSet:  true,
+							Email:         false,
+							Hostname:      false,
+							Regex:         nil,
+							MinNumeric:    0,
+							MinNumericSet: false,
+							MaxNumeric:    0,
+							MaxNumericSet: false,
+						}).Validate(string(value)); err != nil {
+							return errors.Wrap(err, "string")
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tag",
 			In:   "query",
 			Err:  err,
 		}
@@ -1258,6 +1337,71 @@ func decodeRevokeApiKeyParams(args [1]string, argsEscaped bool, r *http.Request)
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "apiKeyId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// SetSiteTagsParams is parameters of setSiteTags operation.
+type SetSiteTagsParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackSetSiteTagsParams(packed middleware.Parameters) (params SetSiteTagsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeSetSiteTagsParams(args [1]string, argsEscaped bool, r *http.Request) (params SetSiteTagsParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
 			In:   "path",
 			Err:  err,
 		}

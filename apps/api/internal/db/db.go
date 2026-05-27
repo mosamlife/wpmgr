@@ -168,6 +168,54 @@ func (p *Pool) InUserTx(ctx context.Context, userID uuid.UUID, fn func(tx pgx.Tx
 	return nil
 }
 
+// InEnrollTx runs fn inside a transaction with the app.enroll GUC set to 'on',
+// enabling the sites_enroll and pairing_codes_enroll policies. This is the one
+// place pairing codes and sites are resolved/created/attached BEFORE a tenant
+// scope exists: the /enroll endpoint is public (the agent has only a code), so
+// the code's hash is the bootstrap. fn must do nothing but enrollment work.
+func (p *Pool) InEnrollTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.enroll', 'on', true)"); err != nil {
+		return fmt.Errorf("set app.enroll: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// InAgentTx runs fn inside a transaction with the app.agent GUC set to 'on',
+// enabling the sites_agent and agent_nonces_agent policies. An authenticated
+// agent->CP request resolves its identity (the site) by the stored agent public
+// key, which precedes any tenant scope; the cross-tenant health job also uses
+// this scope. fn must confine itself to agent-path work.
+func (p *Pool) InAgentTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.agent', 'on', true)"); err != nil {
+		return fmt.Errorf("set app.agent: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
 // InAPIKeyLookupTx runs fn inside a transaction with the app.apikey_lookup GUC
 // set to 'on', enabling the api_keys_prefix_lookup SELECT-only policy. This is
 // the one place a key may be read before its tenant is known; fn must do

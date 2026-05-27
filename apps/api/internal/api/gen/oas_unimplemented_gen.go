@@ -13,12 +13,46 @@ type UnimplementedHandler struct{}
 
 var _ Handler = UnimplementedHandler{}
 
+// AgentHeartbeat implements agentHeartbeat operation.
+//
+// Lightweight liveness ping. Authenticated via the Ed25519 signed-request
+// scheme; updates last_seen_at for the resolved site.
+//
+// POST /agent/v1/heartbeat
+func (UnimplementedHandler) AgentHeartbeat(ctx context.Context) (r AgentHeartbeatRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentMetadata implements agentMetadata operation.
+//
+// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
+// security scheme). The site + tenant are resolved from the verified agent
+// identity, never from a header. Updates last_seen_at and marks the site
+// healthy.
+//
+// POST /agent/v1/metadata
+func (UnimplementedHandler) AgentMetadata(ctx context.Context, req *AgentMetadata) (r AgentMetadataRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // CreateApiKey implements createApiKey operation.
 //
 // Create an API key (admin+); the secret is shown once.
 //
 // POST /api/v1/api-keys
 func (UnimplementedHandler) CreateApiKey(ctx context.Context, req *ApiKeyCreate) (r CreateApiKeyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// CreatePairingCode implements createPairingCode operation.
+//
+// Generates a short-lived, single-use, high-entropy pairing code for the
+// current tenant. The plaintext code is returned ONCE in this response and
+// is never retrievable again. An agent presents it to POST /enroll. Requires
+// operator+.
+//
+// POST /api/v1/sites/pairing-codes
+func (UnimplementedHandler) CreatePairingCode(ctx context.Context, req OptPairingCodeCreate) (r CreatePairingCodeRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -46,6 +80,20 @@ func (UnimplementedHandler) CreateTenant(ctx context.Context, req *TenantCreate)
 //
 // DELETE /api/v1/sites/{siteId}
 func (UnimplementedHandler) DeleteSite(ctx context.Context, params DeleteSiteParams) (r DeleteSiteRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// Enroll implements enroll operation.
+//
+// Called by an agent (NOT an authenticated control-plane user) to enroll a
+// site using a pairing code. The tenant is derived entirely from the code.
+// On success the site is created (or, if the URL already exists for the
+// tenant, its agent key is rotated) and the control-plane PUBLIC signing
+// key is returned so the agent can verify CP->agent commands. The code is
+// consumed (single-use).
+//
+// POST /enroll
+func (UnimplementedHandler) Enroll(ctx context.Context, req *EnrollRequest) (r EnrollRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -201,6 +249,15 @@ func (UnimplementedHandler) Register(ctx context.Context, req *RegisterRequest) 
 //
 // DELETE /api/v1/api-keys/{apiKeyId}
 func (UnimplementedHandler) RevokeApiKey(ctx context.Context, params RevokeApiKeyParams) (r RevokeApiKeyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// SetSiteTags implements setSiteTags operation.
+//
+// Replace the tag set on a site.
+//
+// PUT /api/v1/sites/{siteId}/tags
+func (UnimplementedHandler) SetSiteTags(ctx context.Context, req *SiteTags, params SetSiteTagsParams) (r SetSiteTagsRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

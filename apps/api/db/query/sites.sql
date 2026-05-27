@@ -12,9 +12,92 @@ WHERE id = $1 AND tenant_id = $2;
 -- name: ListSites :many
 SELECT * FROM sites
 WHERE tenant_id = $1
+  AND (sqlc.narg('tag')::text IS NULL OR sqlc.narg('tag')::text = ANY (tags))
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: DeleteSite :execrows
 DELETE FROM sites
 WHERE id = $1 AND tenant_id = $2;
+
+-- name: SetSiteTags :one
+UPDATE sites
+SET tags = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING *;
+
+-- name: UpdateSiteMetadata :one
+-- Tenant-scoped metadata update (used by the agent path inside the resolved
+-- site's own tenant scope).
+UPDATE sites
+SET wp_version   = $3,
+    php_version  = $4,
+    server_info  = $5,
+    multisite    = $6,
+    active_theme = $7,
+    components   = $8,
+    last_seen_at = now(),
+    health_status = 'healthy',
+    updated_at   = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING *;
+
+-- name: TouchSiteSeen :one
+UPDATE sites
+SET last_seen_at = now(),
+    health_status = 'healthy',
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING *;
+
+-- ---------------------------------------------------------------------------
+-- Enrollment path (app.enroll GUC). These run before any tenant scope exists.
+-- ---------------------------------------------------------------------------
+
+-- name: GetSiteByURLForEnroll :one
+SELECT * FROM sites
+WHERE tenant_id = $1 AND url = $2;
+
+-- name: CreateSiteForEnroll :one
+INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
+                   agent_public_key, enrolled_at, last_seen_at, health_status, tags)
+VALUES ($1, $2, $3, 'active', $4, $5, $6, now(), now(), 'healthy', $7)
+RETURNING *;
+
+-- name: AttachAgentToSite :one
+-- Re-enrollment: rotate the agent key and mark the site active/enrolled again.
+UPDATE sites
+SET agent_public_key = $3,
+    status = 'active',
+    enrolled_at = now(),
+    last_seen_at = now(),
+    health_status = 'healthy',
+    wp_version = $4,
+    php_version = $5,
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING *;
+
+-- ---------------------------------------------------------------------------
+-- Agent-auth path (app.agent GUC). Resolve a site by its agent public key.
+-- ---------------------------------------------------------------------------
+
+-- name: GetSiteByAgentKey :one
+SELECT * FROM sites
+WHERE agent_public_key = $1 AND agent_public_key <> '';
+
+-- ---------------------------------------------------------------------------
+-- Health-check job (runs in each enrolled site's tenant scope).
+-- ---------------------------------------------------------------------------
+
+-- name: ListEnrolledSitesAllTenants :many
+-- Cross-tenant enumeration for the periodic health job. Runs under the
+-- app.agent GUC (sites_agent policy) since it spans tenants.
+SELECT id, tenant_id, last_seen_at, health_status FROM sites
+WHERE enrolled_at IS NOT NULL;
+
+-- name: MarkSiteUnreachable :execrows
+-- Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
+UPDATE sites
+SET health_status = 'unreachable', updated_at = now()
+WHERE id = $1 AND health_status <> 'unreachable';

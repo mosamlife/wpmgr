@@ -5,13 +5,21 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
@@ -63,11 +71,16 @@ func run() error {
 
 	// Migrations run with the owner/superuser DSN (creates the app role +
 	// privileged DDL); the application connects with the unprivileged app DSN.
+	// River's own schema is migrated here too, with the same owner DSN.
 	migPool, err := db.Connect(ctx, cfg.DB.MigrateDSN())
 	if err != nil {
 		return err
 	}
 	if err := migPool.Migrate(ctx); err != nil {
+		migPool.Close()
+		return err
+	}
+	if err := migrateRiver(ctx, migPool.Pool); err != nil {
 		migPool.Close()
 		return err
 	}
@@ -123,6 +136,33 @@ func run() error {
 
 	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc)
 
+	// Agent protocol: the control plane's PUBLIC signing key is handed to agents
+	// at enrollment so they can verify CP->agent commands. Validate the keypair
+	// up front so misconfiguration fails fast rather than at first enroll.
+	cpPublicKey, err := agentSigningPublicKey(cfg.Agent)
+	if err != nil {
+		return err
+	}
+	agentAuthn := agent.NewAuthenticator(siteSvc, clock, cfg.Agent.SignatureSkew)
+	agentH := agent.NewHandler(siteSvc)
+
+	// River: connection-health worker pool. The health job marks a site
+	// unreachable when its agent heartbeat goes stale (freshness-based; active
+	// probing is M5). Started below and stopped on shutdown.
+	siteRepo := site.NewRepo(pool)
+	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter)
+	riverClient, err := startRiver(ctx, pool.Pool, logger, healthChecker, cfg.Agent.HealthInterval)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout)
+		defer cancel()
+		if err := riverClient.Stop(stopCtx); err != nil {
+			logger.Warn("river stop", slog.Any("error", err))
+		}
+	}()
+
 	srv := server.New(server.Deps{
 		Config:      cfg,
 		Logger:      logger,
@@ -134,12 +174,76 @@ func run() error {
 		APIKeyH:     apikey.NewHandler(apiKeySvc, auditRec),
 		AuditH:      audit.NewHandler(auditRec),
 		TenantH:     tenant.NewHandler(tenantSvc, auditRec),
-		SiteH:       site.NewHandler(siteSvc, auditRec),
+		SiteH:       site.NewHandler(siteSvc, auditRec, cpPublicKey),
+		AgentAuth:   agentAuthn,
+		AgentH:      agentH,
 		ServiceName: cfg.OTel.ServiceName,
 		Version:     version,
 	})
 
 	return srv.Run(ctx)
+}
+
+// agentSigningPublicKey validates the control-plane Ed25519 signing keypair from
+// config and returns the base64 public half handed to agents at enrollment. An
+// empty keypair is permitted in dev (returns ""), but a malformed one fails.
+func agentSigningPublicKey(cfg config.AgentConfig) (string, error) {
+	if cfg.SigningPublicKey == "" && cfg.SigningPrivateKey == "" {
+		return "", nil
+	}
+	if _, err := agent.DecodePublicKey(cfg.SigningPublicKey); err != nil {
+		return "", fmt.Errorf("invalid WPMGR_AGENT_SIGNING_PUBLIC_KEY: %w", err)
+	}
+	return cfg.SigningPublicKey, nil
+}
+
+// migrateRiver applies River's own schema using the migration-owner pool.
+func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		return fmt.Errorf("river migrator: %w", err)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		return fmt.Errorf("river migrate: %w", err)
+	}
+	return nil
+}
+
+// startRiver builds and starts the River client with the health-check worker
+// and a periodic job that runs every interval. The client uses the application
+// pool (RLS-bound); the health job's queries run under the app.agent GUC.
+func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, checker *site.HealthChecker, interval time.Duration) (*river.Client[pgx.Tx], error) {
+	workers := river.NewWorkers()
+	river.AddWorker(workers, site.NewHealthCheckWorker(checker))
+
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Logger: logger,
+		Queues: map[string]river.QueueConfig{
+			river.QueueDefault: {MaxWorkers: 5},
+		},
+		Workers: workers,
+		PeriodicJobs: []*river.PeriodicJob{
+			river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return site.HealthCheckArgs{}, nil
+				},
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("river client: %w", err)
+	}
+	if err := client.Start(ctx); err != nil {
+		return nil, fmt.Errorf("river start: %w", err)
+	}
+	logger.Info("river worker pool started", slog.Duration("health_interval", interval))
+	return client, nil
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

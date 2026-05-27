@@ -42,6 +42,8 @@ export {
   createSite,
   getSite,
   deleteSite,
+  createPairingCode,
+  setSiteTags,
 } from "./generated/sdk.gen";
 
 // --- Domain + request/response types ----------------------------------------
@@ -49,6 +51,11 @@ export type {
   Site,
   SiteCreate,
   SiteList,
+  SiteComponent,
+  SiteComponents,
+  SiteTags,
+  PairingCode,
+  PairingCodeCreate,
   Tenant,
   TenantCreate,
   TenantList,
@@ -81,6 +88,10 @@ export type {
   DeleteSiteData,
   CreateSiteData,
   CreateSiteResponse,
+  CreatePairingCodeData,
+  CreatePairingCodeResponse,
+  SetSiteTagsData,
+  SetSiteTagsResponse,
   LoginData,
   RegisterData,
   GetMeResponse,
