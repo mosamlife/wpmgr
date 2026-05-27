@@ -294,3 +294,74 @@ ALTER TABLE agent_nonces FORCE ROW LEVEL SECURITY;
 CREATE POLICY agent_nonces_agent ON agent_nonces
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- update_runs  (M3 — bulk plugin/theme/core updates with rollback)
+-- ---------------------------------------------------------------------------
+-- An update_run groups a single operator-initiated bulk update across one or
+-- more sites/items into a unit with an overall status. Each (site, item) pair
+-- becomes an update_task. Tenant-scoped + RLS so a run (and its tasks) is only
+-- visible within the owning tenant.
+CREATE TABLE update_runs (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    -- created_by is the acting user (NULL for an API-key principal); SET NULL on
+    -- user deletion so the run history survives.
+    created_by   uuid        REFERENCES users (id) ON DELETE SET NULL,
+    -- status: pending (created, tasks enqueued), running (>=1 task running),
+    -- completed (all tasks reached a terminal state). The worker advances it.
+    status       text        NOT NULL DEFAULT 'pending',
+    dry_run      boolean     NOT NULL DEFAULT false,
+    -- scheduled_at is when the run should execute; NULL/now() means immediately.
+    scheduled_at timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX update_runs_tenant_id_created_at_idx ON update_runs (tenant_id, created_at DESC);
+
+ALTER TABLE update_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE update_runs FORCE ROW LEVEL SECURITY;
+CREATE POLICY update_runs_tenant_isolation ON update_runs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- update_tasks  (M3)
+-- ---------------------------------------------------------------------------
+-- One unit of work: apply one item (a plugin/theme/core) on one site. Carries
+-- the from/to versions and a per-task terminal status. Tenant-scoped + RLS; the
+-- redundant tenant_id (also on the parent run) lets the RLS policy and the
+-- worker's by-key updates stay tenant-scoped without a join.
+CREATE TABLE update_tasks (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id       uuid        NOT NULL REFERENCES update_runs (id) ON DELETE CASCADE,
+    tenant_id    uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id      uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    -- target_type: plugin | theme | core. target_slug is the plugin/theme slug;
+    -- for core it is the sentinel 'core'.
+    target_type  text        NOT NULL,
+    target_slug  text        NOT NULL,
+    -- desired_version is the operator's requested target ('latest' or a pin).
+    desired_version text     NOT NULL DEFAULT 'latest',
+    from_version text        NOT NULL DEFAULT '',
+    to_version   text        NOT NULL DEFAULT '',
+    -- status: pending | running | succeeded | failed | rolled_back | skipped.
+    status       text        NOT NULL DEFAULT 'pending',
+    detail       text        NOT NULL DEFAULT '',
+    error        text        NOT NULL DEFAULT '',
+    started_at   timestamptz,
+    finished_at  timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX update_tasks_run_id_idx ON update_tasks (run_id);
+CREATE INDEX update_tasks_tenant_id_idx ON update_tasks (tenant_id);
+CREATE INDEX update_tasks_site_id_idx ON update_tasks (site_id);
+
+ALTER TABLE update_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE update_tasks FORCE ROW LEVEL SECURITY;
+CREATE POLICY update_tasks_tenant_isolation ON update_tasks
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);

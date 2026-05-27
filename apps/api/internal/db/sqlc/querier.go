@@ -16,6 +16,11 @@ type Querier interface {
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
 	// Enroll path (app.enroll GUC): mark consumed only if still unconsumed.
 	ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, error)
+	// Best-effort per-tenant in-flight task count, used by the parallelism guard so
+	// one tenant cannot saturate the worker pool. Runs in the tenant's RLS scope.
+	CountRunningTasksForTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// Counts tasks not yet in a terminal state, used to decide when a run completes.
+	CountUnfinishedTasksForRun(ctx context.Context, arg CountUnfinishedTasksForRunParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateMembership(ctx context.Context, arg CreateMembershipParams) (Membership, error)
@@ -26,9 +31,18 @@ type Querier interface {
 	CreateSite(ctx context.Context, arg CreateSiteParams) (Site, error)
 	CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnrollParams) (Site, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
+	// M3 bulk-update queries. Every statement is tenant-scoped both explicitly
+	// (tenant_id in the WHERE/VALUES) and by RLS (the app.tenant_id policy).
+	// tenant_id is supplied explicitly for defense-in-depth; RLS additionally
+	// enforces it matches the current app.tenant_id setting.
+	CreateUpdateRun(ctx context.Context, arg CreateUpdateRunParams) (UpdateRun, error)
+	CreateUpdateTask(ctx context.Context, arg CreateUpdateTaskParams) (UpdateTask, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteMembership(ctx context.Context, arg DeleteMembershipParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	// Records a terminal task state (succeeded|failed|rolled_back|skipped) with the
+	// resolved versions and any detail/error. Tenant-scoped by id+tenant_id.
+	FinishUpdateTask(ctx context.Context, arg FinishUpdateTaskParams) (UpdateTask, error)
 	GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (ApiKey, error)
 	// GetAPIKeyByPrefix resolves a presented key by its unique prefix. This runs
 	// WITHOUT a tenant GUC (the auth layer does not yet know the tenant), so it must
@@ -55,6 +69,8 @@ type Querier interface {
 	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
 	// be run via InUserTx; a non-member (or unknown tenant) yields no rows.
 	GetTenantForUser(ctx context.Context, arg GetTenantForUserParams) (Tenant, error)
+	GetUpdateRun(ctx context.Context, arg GetUpdateRunParams) (UpdateRun, error)
+	GetUpdateTask(ctx context.Context, arg GetUpdateTaskParams) (UpdateTask, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
@@ -86,12 +102,16 @@ type Querier interface {
 	// so it MUST be run via InUserTx; the join itself restricts the result to the
 	// caller's own memberships, preventing cross-tenant enumeration.
 	ListTenantsForUser(ctx context.Context, arg ListTenantsForUserParams) ([]Tenant, error)
+	ListUpdateRuns(ctx context.Context, arg ListUpdateRunsParams) ([]UpdateRun, error)
+	ListUpdateTasksForRun(ctx context.Context, arg ListUpdateTasksForRunParams) ([]UpdateTask, error)
 	// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
 	MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error)
+	MarkUpdateTaskRunning(ctx context.Context, arg MarkUpdateTaskRunningParams) (UpdateTask, error)
 	// Drops nonces older than the freshness window; called opportunistically.
 	PruneAgentNonces(ctx context.Context, createdAt time.Time) (int64, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
 	SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site, error)
+	SetUpdateRunStatus(ctx context.Context, arg SetUpdateRunStatusParams) (UpdateRun, error)
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
 	TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (Site, error)

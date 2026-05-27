@@ -8,6 +8,7 @@
 package site
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,6 +69,23 @@ type Component struct {
 	Name    string `json:"name" validate:"max=200"`
 	Version string `json:"version" validate:"max=64"`
 	Active  bool   `json:"active"`
+}
+
+// ParsedComponents decodes the site's JSONB component inventory into plugins
+// and themes. A malformed/empty inventory yields empty slices (never an error)
+// — callers use it only to seed best-effort from-versions.
+func (s Site) ParsedComponents() (plugins, themes []Component) {
+	if len(s.Components) == 0 {
+		return nil, nil
+	}
+	var comp struct {
+		Plugins []Component `json:"plugins"`
+		Themes  []Component `json:"themes"`
+	}
+	if json.Unmarshal(s.Components, &comp) != nil {
+		return nil, nil
+	}
+	return comp.Plugins, comp.Themes
 }
 
 // Metadata is the site inventory an authenticated agent pushes.

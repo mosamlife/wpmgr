@@ -51,6 +51,17 @@ type Handler interface {
 	//
 	// POST /api/v1/tenants
 	CreateTenant(ctx context.Context, req *TenantCreate) (CreateTenantRes, error)
+	// CreateUpdateRun implements createUpdateRun operation.
+	//
+	// Creates an update run targeting a selection of sites (by site_ids OR by
+	// tag) and a set of items (plugins/themes/core, each with a desired version
+	// or "latest"). One task is created per (site, item) and a background job is
+	// enqueued per task (respecting a per-tenant parallelism limit). When
+	// dry_run is true the agent is asked what WOULD change and the site is not
+	// mutated. Requires operator+.
+	//
+	// POST /api/v1/updates
+	CreateUpdateRun(ctx context.Context, req *UpdateRunCreate) (CreateUpdateRunRes, error)
 	// DeleteSite implements deleteSite operation.
 	//
 	// Delete a site.
@@ -98,6 +109,12 @@ type Handler interface {
 	//
 	// GET /api/v1/tenants/{tenantId}
 	GetTenant(ctx context.Context, params GetTenantParams) (GetTenantRes, error)
+	// GetUpdateRun implements getUpdateRun operation.
+	//
+	// Get an update run with its tasks.
+	//
+	// GET /api/v1/updates/{runId}
+	GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (GetUpdateRunRes, error)
 	// InviteMember implements inviteMember operation.
 	//
 	// Invite/create a member in the active tenant (admin+).
@@ -134,6 +151,12 @@ type Handler interface {
 	//
 	// GET /api/v1/tenants
 	ListTenants(ctx context.Context, params ListTenantsParams) (*TenantList, error)
+	// ListUpdateRuns implements listUpdateRuns operation.
+	//
+	// List update runs for the current tenant.
+	//
+	// GET /api/v1/updates
+	ListUpdateRuns(ctx context.Context, params ListUpdateRunsParams) (*UpdateRunList, error)
 	// Login implements login operation.
 	//
 	// Email + password login.

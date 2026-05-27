@@ -71,6 +71,17 @@ type Invoker interface {
 	//
 	// POST /api/v1/tenants
 	CreateTenant(ctx context.Context, request *TenantCreate) (CreateTenantRes, error)
+	// CreateUpdateRun invokes createUpdateRun operation.
+	//
+	// Creates an update run targeting a selection of sites (by site_ids OR by
+	// tag) and a set of items (plugins/themes/core, each with a desired version
+	// or "latest"). One task is created per (site, item) and a background job is
+	// enqueued per task (respecting a per-tenant parallelism limit). When
+	// dry_run is true the agent is asked what WOULD change and the site is not
+	// mutated. Requires operator+.
+	//
+	// POST /api/v1/updates
+	CreateUpdateRun(ctx context.Context, request *UpdateRunCreate) (CreateUpdateRunRes, error)
 	// DeleteSite invokes deleteSite operation.
 	//
 	// Delete a site.
@@ -118,6 +129,12 @@ type Invoker interface {
 	//
 	// GET /api/v1/tenants/{tenantId}
 	GetTenant(ctx context.Context, params GetTenantParams) (GetTenantRes, error)
+	// GetUpdateRun invokes getUpdateRun operation.
+	//
+	// Get an update run with its tasks.
+	//
+	// GET /api/v1/updates/{runId}
+	GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (GetUpdateRunRes, error)
 	// InviteMember invokes inviteMember operation.
 	//
 	// Invite/create a member in the active tenant (admin+).
@@ -154,6 +171,12 @@ type Invoker interface {
 	//
 	// GET /api/v1/tenants
 	ListTenants(ctx context.Context, params ListTenantsParams) (*TenantList, error)
+	// ListUpdateRuns invokes listUpdateRuns operation.
+	//
+	// List update runs for the current tenant.
+	//
+	// GET /api/v1/updates
+	ListUpdateRuns(ctx context.Context, params ListUpdateRunsParams) (*UpdateRunList, error)
 	// Login invokes login operation.
 	//
 	// Email + password login.
@@ -779,6 +802,88 @@ func (c *Client) sendCreateTenant(ctx context.Context, request *TenantCreate) (r
 	return result, nil
 }
 
+// CreateUpdateRun invokes createUpdateRun operation.
+//
+// Creates an update run targeting a selection of sites (by site_ids OR by
+// tag) and a set of items (plugins/themes/core, each with a desired version
+// or "latest"). One task is created per (site, item) and a background job is
+// enqueued per task (respecting a per-tenant parallelism limit). When
+// dry_run is true the agent is asked what WOULD change and the site is not
+// mutated. Requires operator+.
+//
+// POST /api/v1/updates
+func (c *Client) CreateUpdateRun(ctx context.Context, request *UpdateRunCreate) (CreateUpdateRunRes, error) {
+	res, err := c.sendCreateUpdateRun(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendCreateUpdateRun(ctx context.Context, request *UpdateRunCreate) (res CreateUpdateRunRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createUpdateRun"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/updates"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateUpdateRunOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/updates"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateUpdateRunRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateUpdateRunResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // DeleteSite invokes deleteSite operation.
 //
 // Delete a site.
@@ -1352,6 +1457,98 @@ func (c *Client) sendGetTenant(ctx context.Context, params GetTenantParams) (res
 
 	stage = "DecodeResponse"
 	result, err := decodeGetTenantResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetUpdateRun invokes getUpdateRun operation.
+//
+// Get an update run with its tasks.
+//
+// GET /api/v1/updates/{runId}
+func (c *Client) GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (GetUpdateRunRes, error) {
+	res, err := c.sendGetUpdateRun(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetUpdateRun(ctx context.Context, params GetUpdateRunParams) (res GetUpdateRunRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getUpdateRun"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/updates/{runId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetUpdateRunOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/api/v1/updates/"
+	{
+		// Encode "runId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "runId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.RunId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetUpdateRunResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -2006,6 +2203,118 @@ func (c *Client) sendListTenants(ctx context.Context, params ListTenantsParams) 
 
 	stage = "DecodeResponse"
 	result, err := decodeListTenantsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListUpdateRuns invokes listUpdateRuns operation.
+//
+// List update runs for the current tenant.
+//
+// GET /api/v1/updates
+func (c *Client) ListUpdateRuns(ctx context.Context, params ListUpdateRunsParams) (*UpdateRunList, error) {
+	res, err := c.sendListUpdateRuns(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListUpdateRuns(ctx context.Context, params ListUpdateRunsParams) (res *UpdateRunList, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listUpdateRuns"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/updates"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListUpdateRunsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/updates"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "offset" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Offset.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListUpdateRunsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

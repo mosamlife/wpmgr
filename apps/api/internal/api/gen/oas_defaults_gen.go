@@ -9,3 +9,11 @@ func (s *SiteCreate) setDefaults() {
 		s.Status.SetTo(val)
 	}
 }
+
+// setDefaults set default value of fields.
+func (s *UpdateRunCreate) setDefaults() {
+	{
+		val := bool(false)
+		s.DryRun.SetTo(val)
+	}
+}

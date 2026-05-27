@@ -26,6 +26,20 @@ type Config struct {
 	OTel     OTelConfig     `koanf:"otel"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
 	Agent    AgentConfig    `koanf:"agent"`
+	Update   UpdateConfig   `koanf:"update"`
+}
+
+// UpdateConfig holds the M3 bulk-update orchestration tuning.
+//
+// PerTenantParallelism caps how many of one tenant's update tasks run
+// concurrently so a tenant with many sites cannot starve other tenants of the
+// shared worker pool (enforced via per-tenant River queue shards plus an
+// in-worker guard). HTTPTimeout/HTTPRetries tune the SSRF-hardened client used
+// for CP->agent commands and post-update health probes.
+type UpdateConfig struct {
+	PerTenantParallelism int           `koanf:"per_tenant_parallelism"`
+	HTTPTimeout          time.Duration `koanf:"http_timeout"`
+	HTTPRetries          int           `koanf:"http_retries"`
 }
 
 // AgentConfig holds the control-plane agent-protocol configuration.
@@ -180,34 +194,37 @@ func (c Config) ValidateAgentSigningKey() error {
 
 func defaults() map[string]any {
 	return map[string]any{
-		"env":                         "development",
-		"http_addr":                   ":8080",
-		"log_level":                   "info",
-		"db.host":                     "localhost",
-		"db.port":                     5432,
-		"db.user":                     "wpmgr",
-		"db.password":                 "wpmgr",
-		"db.name":                     "wpmgr",
-		"db.sslmode":                  "disable",
-		"db.migration_dsn":            "",
-		"db.allow_rls_bypass_role":    false,
-		"redis.addr":                  "localhost:6379",
-		"redis.password":              "",
-		"auth.session_secret":         "",
-		"auth.idle_timeout":           "168h", // 7 days idle
-		"auth.absolute_expiry":        "720h", // 30 days hard cap
-		"oidc.issuer":                 "",
-		"oidc.client_id":              "",
-		"oidc.client_secret":          "",
-		"oidc.redirect_url":           "",
-		"otel.exporter_otlp_endpoint": "",
-		"otel.service_name":           "wpmgr-api",
-		"shutdown.timeout":            "15s",
-		"agent.signing_private_key":   "",
-		"agent.signing_public_key":    "",
-		"agent.signature_skew":        "5m",
-		"agent.stale_after":           "10m", // ~2 missed 5-min heartbeats
-		"agent.health_interval":       "5m",
+		"env":                           "development",
+		"http_addr":                     ":8080",
+		"log_level":                     "info",
+		"db.host":                       "localhost",
+		"db.port":                       5432,
+		"db.user":                       "wpmgr",
+		"db.password":                   "wpmgr",
+		"db.name":                       "wpmgr",
+		"db.sslmode":                    "disable",
+		"db.migration_dsn":              "",
+		"db.allow_rls_bypass_role":      false,
+		"redis.addr":                    "localhost:6379",
+		"redis.password":                "",
+		"auth.session_secret":           "",
+		"auth.idle_timeout":             "168h", // 7 days idle
+		"auth.absolute_expiry":          "720h", // 30 days hard cap
+		"oidc.issuer":                   "",
+		"oidc.client_id":                "",
+		"oidc.client_secret":            "",
+		"oidc.redirect_url":             "",
+		"otel.exporter_otlp_endpoint":   "",
+		"otel.service_name":             "wpmgr-api",
+		"shutdown.timeout":              "15s",
+		"agent.signing_private_key":     "",
+		"agent.signing_public_key":      "",
+		"agent.signature_skew":          "5m",
+		"agent.stale_after":             "10m", // ~2 missed 5-min heartbeats
+		"agent.health_interval":         "5m",
+		"update.per_tenant_parallelism": 5,
+		"update.http_timeout":           "30s",
+		"update.http_retries":           2,
 	}
 }
 
@@ -274,6 +291,8 @@ func mapEnvKey(k string) string {
 		return "otel." + strings.TrimPrefix(k, "otel_")
 	case strings.HasPrefix(k, "agent_"):
 		return "agent." + strings.TrimPrefix(k, "agent_")
+	case strings.HasPrefix(k, "update_"):
+		return "update." + strings.TrimPrefix(k, "update_")
 	default:
 		return k
 	}

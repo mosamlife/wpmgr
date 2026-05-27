@@ -74,6 +74,20 @@ func (UnimplementedHandler) CreateTenant(ctx context.Context, req *TenantCreate)
 	return r, ht.ErrNotImplemented
 }
 
+// CreateUpdateRun implements createUpdateRun operation.
+//
+// Creates an update run targeting a selection of sites (by site_ids OR by
+// tag) and a set of items (plugins/themes/core, each with a desired version
+// or "latest"). One task is created per (site, item) and a background job is
+// enqueued per task (respecting a per-tenant parallelism limit). When
+// dry_run is true the agent is asked what WOULD change and the site is not
+// mutated. Requires operator+.
+//
+// POST /api/v1/updates
+func (UnimplementedHandler) CreateUpdateRun(ctx context.Context, req *UpdateRunCreate) (r CreateUpdateRunRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // DeleteSite implements deleteSite operation.
 //
 // Delete a site.
@@ -142,6 +156,15 @@ func (UnimplementedHandler) GetTenant(ctx context.Context, params GetTenantParam
 	return r, ht.ErrNotImplemented
 }
 
+// GetUpdateRun implements getUpdateRun operation.
+//
+// Get an update run with its tasks.
+//
+// GET /api/v1/updates/{runId}
+func (UnimplementedHandler) GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (r GetUpdateRunRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // InviteMember implements inviteMember operation.
 //
 // Invite/create a member in the active tenant (admin+).
@@ -193,6 +216,15 @@ func (UnimplementedHandler) ListSites(ctx context.Context, params ListSitesParam
 //
 // GET /api/v1/tenants
 func (UnimplementedHandler) ListTenants(ctx context.Context, params ListTenantsParams) (r *TenantList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListUpdateRuns implements listUpdateRuns operation.
+//
+// List update runs for the current tenant.
+//
+// GET /api/v1/updates
+func (UnimplementedHandler) ListUpdateRuns(ctx context.Context, params ListUpdateRunsParams) (r *UpdateRunList, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

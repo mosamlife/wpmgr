@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   flexRender,
   getCoreRowModel,
@@ -16,10 +17,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { relativeTime } from "@/lib/utils";
 import { HealthBadge, EnrollmentBadge } from "@/features/sites/site-badges";
 
-const columns: ColumnDef<Site>[] = [
+const baseColumns: ColumnDef<Site>[] = [
   {
     accessorKey: "name",
     header: "Name",
@@ -87,7 +89,46 @@ const columns: ColumnDef<Site>[] = [
   },
 ];
 
-export function SitesTable({ sites }: { sites: Site[] }) {
+export interface SitesTableSelection {
+  selected: Set<string>;
+  onToggle: (siteId: string) => void;
+  onToggleAll: (siteIds: string[], select: boolean) => void;
+}
+
+export function SitesTable({
+  sites,
+  selection,
+}: {
+  sites: Site[];
+  // When provided, a leading checkbox column enables multi-select for the bulk
+  // update wizard.
+  selection?: SitesTableSelection;
+}) {
+  const columns = useMemo<ColumnDef<Site>[]>(() => {
+    if (!selection) return baseColumns;
+    const allIds = sites.map((s) => s.id);
+    const allSelected =
+      allIds.length > 0 && allIds.every((id) => selection.selected.has(id));
+    const selectColumn: ColumnDef<Site> = {
+      id: "select",
+      header: () => (
+        <Checkbox
+          aria-label="Select all sites"
+          checked={allSelected}
+          onChange={(e) => selection.onToggleAll(allIds, e.target.checked)}
+        />
+      ),
+      cell: ({ row }) => (
+        <Checkbox
+          aria-label={`Select ${row.original.name}`}
+          checked={selection.selected.has(row.original.id)}
+          onChange={() => selection.onToggle(row.original.id)}
+        />
+      ),
+    };
+    return [selectColumn, ...baseColumns];
+  }, [selection, sites]);
+
   const table = useReactTable({
     data: sites,
     columns,
@@ -116,7 +157,12 @@ export function SitesTable({ sites }: { sites: Site[] }) {
         </TableHeader>
         <TableBody>
           {table.getRowModel().rows.map((row) => (
-            <TableRow key={row.id}>
+            <TableRow
+              key={row.id}
+              data-state={
+                selection?.selected.has(row.original.id) ? "selected" : undefined
+              }
+            >
               {row.getVisibleCells().map((cell) => (
                 <TableCell key={cell.id}>
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}

@@ -9,13 +9,18 @@ management page, and the Sites list/detail flow.
 expanded site metadata, health, and an installed-component (plugins/themes)
 inventory.
 
+**M3** adds **bulk updates**: a wizard to update WordPress core / named
+plugins / themes across many sites (selected by checkbox or by tag), a
+dry-run preview, optional scheduling, and a run-detail page with **live
+progress** over Server-Sent Events (with a polling fallback).
+
 ## Stack
 
 | Concern        | Choice                                                              |
 | -------------- | ------------------------------------------------------------------- |
 | Build / dev    | Vite 6 + React 19 + TypeScript (strict)                             |
 | Router         | TanStack Router — **file-based** via `@tanstack/router-plugin/vite` |
-| Server state   | TanStack Query v5 (REST; SSE later)                                 |
+| Server state   | TanStack Query v5 (REST + SSE for live update progress)            |
 | API client     | `@wpmgr/api` — generated from the OpenAPI spec with Hey API         |
 | UI components  | shadcn/ui (Radix + Tailwind), manual setup                          |
 | Styling        | **Tailwind v4** via `@tailwindcss/vite` (CSS-based config)          |
@@ -34,8 +39,8 @@ inventory.
   dark CSS variables).
 - shadcn was set up **manually** (no interactive `init`): `components.json`, the
   `cn` util in `src/lib/utils.ts`, and the primitives actually used
-  (`button`, `input`, `label`, `card`, `table`, `badge`) under
-  `src/components/ui/`.
+  (`button`, `input`, `label`, `card`, `table`, `badge`, plus the M3
+  `checkbox` and `progress` primitives) under `src/components/ui/`.
 
 ## Routes
 
@@ -54,6 +59,55 @@ inventory.
   theme/enrolled/last-seen/health), an editable **tags** section (PUT tags,
   optimistic), and a table of installed plugins/themes. Loading / error /
   not-found states throughout.
+- `/updates` — list of recent bulk-update runs (status, dry-run/live, task
+  count, created, link to detail).
+- `/updates/$runId` — run detail with a **live** task table (site, target,
+  from→to version, color-coded status) and a progress summary. Subscribes to
+  the SSE event stream; falls back to polling if SSE fails.
+
+### Bulk updates (M3)
+
+The bulk-update **wizard** (operator+) is launched from `/sites`:
+
+1. Select one or more sites with the per-row checkboxes (a "Select all"
+   header checkbox is provided), **or** apply a tag filter and choose "Update
+   all tagged …". Both paths open the same wizard.
+2. The wizard collects what to update — **WordPress core**, plugins/themes
+   seeded from the selected sites' reported components (checkboxes), and/or
+   extra plugin slugs typed free-form — each defaulting to version `latest`.
+3. A **dry-run** toggle (default **on**) makes the first submit a safe preview;
+   an optional **schedule** (`datetime-local`, sent as ISO `schedule_at`) defers
+   the run. Submitting POSTs `/api/v1/updates` and navigates to the run detail.
+
+The wizard is gated to operator/admin/owner via `canOperate()`; the backend
+enforces the role regardless.
+
+#### Live progress (SSE + cache reconciliation + fallback)
+
+The run-detail page reconciles two sources into the **same** TanStack Query
+cache entry (`["updates","detail",runId]`):
+
+- An initial (and `useUpdateRun`) **GET `/updates/{runId}`** seeds the run + its
+  tasks. `useCreateUpdateRun` also pre-seeds this entry from the POST response,
+  so the detail page renders instantly after submit.
+- `useRunEventStream` opens a browser **`EventSource`** against
+  `/api/v1/updates/{runId}/events`. It is same-origin (Vite proxies `/api`), so
+  the `wpmgr_session` cookie flows automatically (`withCredentials: true`) — the
+  generated fetch client does not model SSE, hence the raw `EventSource`.
+- Each `data:` line is a JSON **`UpdateEvent`**
+  (`{ run_id, task_id, site_id, target_type, target_slug, status, from_version?,
+  to_version?, detail?, run_status }`). On each event we **patch** the cached run
+  in place (`applyEvent`): the matching task's status/versions are updated (or a
+  new task appended), and the run-level `status` is set from `run_status`.
+  Heartbeat/`:`-comment frames parse-fail and are ignored.
+- The stream is closed on unmount and once `run_status === "completed"`.
+- If the `EventSource` errors (proxy/unsupported), we close it and flip the
+  transport state to **polling**, which enables `useUpdateRun({ poll: true })`
+  to refetch the detail every 2s until the run completes. A small live/polling
+  indicator reflects the current transport.
+
+Task statuses are color-coded: succeeded = green, failed = red, rolled_back =
+amber, running = blue (pulsing), skipped/pending = muted.
 
 ### Site enrollment (pairing codes)
 
@@ -110,6 +164,13 @@ the backend in dev via `vite.config.ts`). The Sites query hooks
 into TanStack Query hooks: `useSites(tag?)` / `useSite(id)` / `useDeleteSite()`
 / `usePairingCode()` / `useSetSiteTags()` (optimistic). Server state stays in
 TanStack Query — never Zustand.
+
+The Updates hooks (`src/features/updates/use-updates.ts`) similarly wrap the
+generated `createUpdateRun` / `listUpdateRuns` / `getUpdateRun` operations
+(`useCreateUpdateRun()` / `useUpdateRuns()` / `useUpdateRun(id, { poll })`).
+The SSE stream is **not** part of the generated client — it is consumed via the
+browser `EventSource` in `useRunEventStream`, which patches `UpdateEvent` deltas
+straight into the run-detail cache (see "Live progress" above).
 
 Regenerate the client after the contract changes:
 

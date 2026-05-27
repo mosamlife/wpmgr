@@ -21,6 +21,9 @@ import type {
   CreateTenantData,
   CreateTenantErrors,
   CreateTenantResponses,
+  CreateUpdateRunData,
+  CreateUpdateRunErrors,
+  CreateUpdateRunResponses,
   DeleteSiteData,
   DeleteSiteErrors,
   DeleteSiteResponses,
@@ -41,6 +44,9 @@ import type {
   GetTenantData,
   GetTenantErrors,
   GetTenantResponses,
+  GetUpdateRunData,
+  GetUpdateRunErrors,
+  GetUpdateRunResponses,
   InviteMemberData,
   InviteMemberErrors,
   InviteMemberResponses,
@@ -57,6 +63,8 @@ import type {
   ListSitesResponses,
   ListTenantsData,
   ListTenantsResponses,
+  ListUpdateRunsData,
+  ListUpdateRunsResponses,
   LoginData,
   LoginErrors,
   LoginResponses,
@@ -77,6 +85,10 @@ import type {
   SetSiteTagsData,
   SetSiteTagsErrors,
   SetSiteTagsResponses,
+  StreamUpdateRunEventsData,
+  StreamUpdateRunEventsErrors,
+  StreamUpdateRunEventsResponse,
+  StreamUpdateRunEventsResponses,
   VerifyAuditData,
   VerifyAuditErrors,
   VerifyAuditResponses,
@@ -516,3 +528,77 @@ export const getSite = <ThrowOnError extends boolean = false>(
   (options.client ?? client).get<GetSiteResponses, GetSiteErrors, ThrowOnError>(
     { url: "/api/v1/sites/{siteId}", ...options },
   );
+
+/**
+ * List update runs for the current tenant
+ */
+export const listUpdateRuns = <ThrowOnError extends boolean = false>(
+  options?: Options<ListUpdateRunsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListUpdateRunsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/updates", ...options });
+
+/**
+ * Start a bulk update run
+ *
+ * Creates an update run targeting a selection of sites (by site_ids OR by
+ * tag) and a set of items (plugins/themes/core, each with a desired version
+ * or "latest"). One task is created per (site, item) and a background job is
+ * enqueued per task (respecting a per-tenant parallelism limit). When
+ * dry_run is true the agent is asked what WOULD change and the site is not
+ * mutated. Requires operator+.
+ *
+ */
+export const createUpdateRun = <ThrowOnError extends boolean = false>(
+  options: Options<CreateUpdateRunData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateUpdateRunResponses,
+    CreateUpdateRunErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/updates",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Get an update run with its tasks
+ */
+export const getUpdateRun = <ThrowOnError extends boolean = false>(
+  options: Options<GetUpdateRunData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetUpdateRunResponses,
+    GetUpdateRunErrors,
+    ThrowOnError
+  >({ url: "/api/v1/updates/{runId}", ...options });
+
+/**
+ * Stream live update-task status changes (SSE)
+ *
+ * Server-Sent Events stream (text/event-stream) of task status transitions
+ * for a run, for live progress. Each `data:` line is a JSON UpdateEvent.
+ * The stream emits periodic heartbeat comment lines (":\n") and ends when
+ * the run reaches a terminal state or the client disconnects. Requires
+ * viewer+.
+ *
+ */
+export const streamUpdateRunEvents = <ThrowOnError extends boolean = false>(
+  options: Options<
+    StreamUpdateRunEventsData,
+    ThrowOnError,
+    StreamUpdateRunEventsResponse
+  >,
+) =>
+  (options.client ?? client).sse.get<
+    StreamUpdateRunEventsResponses,
+    StreamUpdateRunEventsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/updates/{runId}/events", ...options });

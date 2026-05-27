@@ -95,6 +95,36 @@ type Tenant struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type UpdateRun struct {
+	ID          uuid.UUID          `json:"id"`
+	TenantID    uuid.UUID          `json:"tenant_id"`
+	CreatedBy   pgtype.UUID        `json:"created_by"`
+	Status      string             `json:"status"`
+	DryRun      bool               `json:"dry_run"`
+	ScheduledAt pgtype.Timestamptz `json:"scheduled_at"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+}
+
+type UpdateTask struct {
+	ID             uuid.UUID          `json:"id"`
+	RunID          uuid.UUID          `json:"run_id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	SiteID         uuid.UUID          `json:"site_id"`
+	TargetType     string             `json:"target_type"`
+	TargetSlug     string             `json:"target_slug"`
+	DesiredVersion string             `json:"desired_version"`
+	FromVersion    string             `json:"from_version"`
+	ToVersion      string             `json:"to_version"`
+	Status         string             `json:"status"`
+	Detail         string             `json:"detail"`
+	Error          string             `json:"error"`
+	StartedAt      pgtype.Timestamptz `json:"started_at"`
+	FinishedAt     pgtype.Timestamptz `json:"finished_at"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+}
+
 type User struct {
 	ID           uuid.UUID          `json:"id"`
 	Email        string             `json:"email"`

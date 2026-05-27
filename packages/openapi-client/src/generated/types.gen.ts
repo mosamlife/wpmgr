@@ -261,6 +261,109 @@ export type AuditVerify = {
   broken_at?: string;
 };
 
+/**
+ * One thing to update on a site.
+ */
+export type UpdateItem = {
+  type: "plugin" | "theme" | "core";
+  /**
+   * Plugin/theme slug. Ignored (forced to "core") when type is core.
+   */
+  slug?: string;
+  /**
+   * Desired version, "latest" or an explicit pin. Defaults to latest.
+   */
+  version?: string;
+};
+
+/**
+ * Request to start a bulk update run. Provide EITHER site_ids OR tag to
+ * select target sites (not both).
+ *
+ */
+export type UpdateRunCreate = {
+  /**
+   * Explicit target site IDs.
+   */
+  site_ids?: Array<string>;
+  /**
+   * Target all enrolled sites carrying this tag.
+   */
+  tag?: string;
+  items: Array<UpdateItem>;
+  /**
+   * When true, do not mutate sites; report what would change.
+   */
+  dry_run?: boolean;
+  /**
+   * Optional time to run; omitted/now means immediately.
+   */
+  schedule_at?: string;
+};
+
+export type UpdateTask = {
+  id: string;
+  run_id: string;
+  tenant_id: string;
+  site_id: string;
+  target_type: "plugin" | "theme" | "core";
+  target_slug: string;
+  desired_version?: string;
+  from_version?: string;
+  to_version?: string;
+  status:
+    | "pending"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "rolled_back"
+    | "skipped";
+  detail?: string;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UpdateRun = {
+  id: string;
+  tenant_id: string;
+  created_by?: string;
+  status: "pending" | "running" | "completed";
+  dry_run: boolean;
+  scheduled_at?: string;
+  created_at: string;
+  updated_at: string;
+  tasks?: Array<UpdateTask>;
+};
+
+export type UpdateRunList = {
+  items: Array<UpdateRun>;
+};
+
+/**
+ * One task-status transition streamed over SSE.
+ */
+export type UpdateEvent = {
+  run_id: string;
+  task_id: string;
+  site_id: string;
+  target_type: "plugin" | "theme" | "core";
+  target_slug: string;
+  status:
+    | "pending"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "rolled_back"
+    | "skipped";
+  from_version?: string;
+  to_version?: string;
+  detail?: string;
+  run_status: "pending" | "running" | "completed";
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -270,6 +373,8 @@ export type TenantId = string;
 export type SiteId = string;
 
 export type ApiKeyId = string;
+
+export type RunId = string;
 
 export type GetHealthzData = {
   body?: never;
@@ -1036,3 +1141,110 @@ export type GetSiteResponses = {
 };
 
 export type GetSiteResponse = GetSiteResponses[keyof GetSiteResponses];
+
+export type ListUpdateRunsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/updates";
+};
+
+export type ListUpdateRunsResponses = {
+  /**
+   * A page of update runs
+   */
+  200: UpdateRunList;
+};
+
+export type ListUpdateRunsResponse =
+  ListUpdateRunsResponses[keyof ListUpdateRunsResponses];
+
+export type CreateUpdateRunData = {
+  body: UpdateRunCreate;
+  path?: never;
+  query?: never;
+  url: "/api/v1/updates";
+};
+
+export type CreateUpdateRunErrors = {
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateUpdateRunError =
+  CreateUpdateRunErrors[keyof CreateUpdateRunErrors];
+
+export type CreateUpdateRunResponses = {
+  /**
+   * Update run created (tasks enqueued)
+   */
+  201: UpdateRun;
+};
+
+export type CreateUpdateRunResponse =
+  CreateUpdateRunResponses[keyof CreateUpdateRunResponses];
+
+export type GetUpdateRunData = {
+  body?: never;
+  path: {
+    runId: string;
+  };
+  query?: never;
+  url: "/api/v1/updates/{runId}";
+};
+
+export type GetUpdateRunErrors = {
+  /**
+   * Update run not found
+   */
+  404: Error;
+};
+
+export type GetUpdateRunError = GetUpdateRunErrors[keyof GetUpdateRunErrors];
+
+export type GetUpdateRunResponses = {
+  /**
+   * The update run and its per-(site,item) tasks
+   */
+  200: UpdateRun;
+};
+
+export type GetUpdateRunResponse =
+  GetUpdateRunResponses[keyof GetUpdateRunResponses];
+
+export type StreamUpdateRunEventsData = {
+  body?: never;
+  path: {
+    runId: string;
+  };
+  query?: never;
+  url: "/api/v1/updates/{runId}/events";
+};
+
+export type StreamUpdateRunEventsErrors = {
+  /**
+   * Update run not found
+   */
+  404: Error;
+};
+
+export type StreamUpdateRunEventsError =
+  StreamUpdateRunEventsErrors[keyof StreamUpdateRunEventsErrors];
+
+export type StreamUpdateRunEventsResponses = {
+  /**
+   * An event stream. Media type text/event-stream; each event payload is
+   * an UpdateEvent JSON object. Documented here as the UpdateEvent schema
+   * for clients/codegen even though the transport is SSE, not JSON.
+   *
+   */
+  200: UpdateEvent;
+};
+
+export type StreamUpdateRunEventsResponse =
+  StreamUpdateRunEventsResponses[keyof StreamUpdateRunEventsResponses];

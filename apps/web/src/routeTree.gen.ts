@@ -13,7 +13,9 @@ import { Route as RegisterRouteImport } from './routes/register'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthedUpdatesIndexRouteImport } from './routes/_authed/updates/index'
 import { Route as AuthedSitesIndexRouteImport } from './routes/_authed/sites/index'
+import { Route as AuthedUpdatesRunIdRouteImport } from './routes/_authed/updates/$runId'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
 import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
 
@@ -36,9 +38,19 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthedUpdatesIndexRoute = AuthedUpdatesIndexRouteImport.update({
+  id: '/updates/',
+  path: '/updates/',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedSitesIndexRoute = AuthedSitesIndexRouteImport.update({
   id: '/sites/',
   path: '/sites/',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedUpdatesRunIdRoute = AuthedUpdatesRunIdRouteImport.update({
+  id: '/updates/$runId',
+  path: '/updates/$runId',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedSitesSiteIdRoute = AuthedSitesSiteIdRouteImport.update({
@@ -58,7 +70,9 @@ export interface FileRoutesByFullPath {
   '/register': typeof RegisterRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRoute
+  '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/sites/': typeof AuthedSitesIndexRoute
+  '/updates/': typeof AuthedUpdatesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -66,7 +80,9 @@ export interface FileRoutesByTo {
   '/register': typeof RegisterRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRoute
+  '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/sites': typeof AuthedSitesIndexRoute
+  '/updates': typeof AuthedUpdatesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -76,7 +92,9 @@ export interface FileRoutesById {
   '/register': typeof RegisterRoute
   '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRoute
+  '/_authed/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/_authed/sites/': typeof AuthedSitesIndexRoute
+  '/_authed/updates/': typeof AuthedUpdatesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -86,7 +104,9 @@ export interface FileRouteTypes {
     | '/register'
     | '/settings/api-keys'
     | '/sites/$siteId'
+    | '/updates/$runId'
     | '/sites/'
+    | '/updates/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -94,7 +114,9 @@ export interface FileRouteTypes {
     | '/register'
     | '/settings/api-keys'
     | '/sites/$siteId'
+    | '/updates/$runId'
     | '/sites'
+    | '/updates'
   id:
     | '__root__'
     | '/'
@@ -103,7 +125,9 @@ export interface FileRouteTypes {
     | '/register'
     | '/_authed/settings/api-keys'
     | '/_authed/sites/$siteId'
+    | '/_authed/updates/$runId'
     | '/_authed/sites/'
+    | '/_authed/updates/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -143,11 +167,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authed/updates/': {
+      id: '/_authed/updates/'
+      path: '/updates'
+      fullPath: '/updates/'
+      preLoaderRoute: typeof AuthedUpdatesIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/sites/': {
       id: '/_authed/sites/'
       path: '/sites'
       fullPath: '/sites/'
       preLoaderRoute: typeof AuthedSitesIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/updates/$runId': {
+      id: '/_authed/updates/$runId'
+      path: '/updates/$runId'
+      fullPath: '/updates/$runId'
+      preLoaderRoute: typeof AuthedUpdatesRunIdRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/sites/$siteId': {
@@ -170,13 +208,17 @@ declare module '@tanstack/react-router' {
 interface AuthedRouteChildren {
   AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
   AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRoute
+  AuthedUpdatesRunIdRoute: typeof AuthedUpdatesRunIdRoute
   AuthedSitesIndexRoute: typeof AuthedSitesIndexRoute
+  AuthedUpdatesIndexRoute: typeof AuthedUpdatesIndexRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
   AuthedSitesSiteIdRoute: AuthedSitesSiteIdRoute,
+  AuthedUpdatesRunIdRoute: AuthedUpdatesRunIdRoute,
   AuthedSitesIndexRoute: AuthedSitesIndexRoute,
+  AuthedUpdatesIndexRoute: AuthedUpdatesIndexRoute,
 }
 
 const AuthedRouteWithChildren =

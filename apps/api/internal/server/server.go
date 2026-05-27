@@ -23,6 +23,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
+	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 )
 
 // Deps are the server's wired dependencies.
@@ -38,6 +39,7 @@ type Deps struct {
 	AuditH      *audit.Handler
 	TenantH     *tenant.Handler
 	SiteH       *site.Handler
+	UpdateH     *update.Handler
 	AgentAuth   *agent.Authenticator
 	AgentH      *agent.Handler
 	ServiceName string
@@ -103,6 +105,9 @@ func New(deps Deps) *Server {
 	deps.MembersH.Register(v1)
 	deps.APIKeyH.Register(v1)
 	deps.AuditH.Register(v1)
+	if deps.UpdateH != nil {
+		deps.UpdateH.Register(v1)
+	}
 
 	return s
 }

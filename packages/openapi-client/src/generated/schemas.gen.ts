@@ -754,3 +754,272 @@ export const AuditVerifySchema = {
     },
   },
 } as const;
+
+export const UpdateItemSchema = {
+  type: "object",
+  required: ["type"],
+  description: "One thing to update on a site.",
+  properties: {
+    type: {
+      type: "string",
+      enum: ["plugin", "theme", "core"],
+    },
+    slug: {
+      type: "string",
+      maxLength: 200,
+      description:
+        'Plugin/theme slug. Ignored (forced to "core") when type is core.',
+    },
+    version: {
+      type: "string",
+      maxLength: 64,
+      description:
+        'Desired version, "latest" or an explicit pin. Defaults to latest.',
+    },
+  },
+} as const;
+
+export const UpdateRunCreateSchema = {
+  type: "object",
+  required: ["items"],
+  description:
+    "Request to start a bulk update run. Provide EITHER site_ids OR tag to\nselect target sites (not both).\n",
+  properties: {
+    site_ids: {
+      type: "array",
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+      description: "Explicit target site IDs.",
+    },
+    tag: {
+      type: "string",
+      maxLength: 64,
+      description: "Target all enrolled sites carrying this tag.",
+    },
+    items: {
+      type: "array",
+      minItems: 1,
+      maxItems: 200,
+      items: {
+        $ref: "#/components/schemas/UpdateItem",
+      },
+    },
+    dry_run: {
+      type: "boolean",
+      default: false,
+      description: "When true, do not mutate sites; report what would change.",
+    },
+    schedule_at: {
+      type: "string",
+      format: "date-time",
+      description: "Optional time to run; omitted/now means immediately.",
+    },
+  },
+} as const;
+
+export const UpdateTaskSchema = {
+  type: "object",
+  required: [
+    "id",
+    "run_id",
+    "tenant_id",
+    "site_id",
+    "target_type",
+    "target_slug",
+    "status",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    run_id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    target_type: {
+      type: "string",
+      enum: ["plugin", "theme", "core"],
+    },
+    target_slug: {
+      type: "string",
+    },
+    desired_version: {
+      type: "string",
+    },
+    from_version: {
+      type: "string",
+    },
+    to_version: {
+      type: "string",
+    },
+    status: {
+      type: "string",
+      enum: [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "rolled_back",
+        "skipped",
+      ],
+    },
+    detail: {
+      type: "string",
+    },
+    error: {
+      type: "string",
+    },
+    started_at: {
+      type: "string",
+      format: "date-time",
+    },
+    finished_at: {
+      type: "string",
+      format: "date-time",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const UpdateRunSchema = {
+  type: "object",
+  required: [
+    "id",
+    "tenant_id",
+    "status",
+    "dry_run",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    created_by: {
+      type: "string",
+      format: "uuid",
+    },
+    status: {
+      type: "string",
+      enum: ["pending", "running", "completed"],
+    },
+    dry_run: {
+      type: "boolean",
+    },
+    scheduled_at: {
+      type: "string",
+      format: "date-time",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+    tasks: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/UpdateTask",
+      },
+    },
+  },
+} as const;
+
+export const UpdateRunListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/UpdateRun",
+      },
+    },
+  },
+} as const;
+
+export const UpdateEventSchema = {
+  type: "object",
+  description: "One task-status transition streamed over SSE.",
+  required: [
+    "run_id",
+    "task_id",
+    "site_id",
+    "target_type",
+    "target_slug",
+    "status",
+    "run_status",
+  ],
+  properties: {
+    run_id: {
+      type: "string",
+      format: "uuid",
+    },
+    task_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    target_type: {
+      type: "string",
+      enum: ["plugin", "theme", "core"],
+    },
+    target_slug: {
+      type: "string",
+    },
+    status: {
+      type: "string",
+      enum: [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "rolled_back",
+        "skipped",
+      ],
+    },
+    from_version: {
+      type: "string",
+    },
+    to_version: {
+      type: "string",
+    },
+    detail: {
+      type: "string",
+    },
+    run_status: {
+      type: "string",
+      enum: ["pending", "running", "completed"],
+    },
+  },
+} as const;

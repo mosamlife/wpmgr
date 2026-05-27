@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Globe, LogOut, KeyRound } from "lucide-react";
+import { Globe, LogOut, KeyRound, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
@@ -72,6 +72,15 @@ export function AppShell({ children }: { children: ReactNode }) {
                 className="block rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
               >
                 Sites
+              </Link>
+            </li>
+            <li>
+              <Link
+                to="/updates"
+                className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
+              >
+                <RefreshCw aria-hidden="true" className="size-4" />
+                Updates
               </Link>
             </li>
             {showKeys ? (

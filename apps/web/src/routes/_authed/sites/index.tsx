@@ -1,14 +1,22 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Search, X } from "lucide-react";
+import { Search, X, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSites } from "@/features/sites/use-sites";
-import { SitesTable } from "@/features/sites/sites-table";
+import {
+  SitesTable,
+  type SitesTableSelection,
+} from "@/features/sites/sites-table";
 import { AddSiteDialog } from "@/features/sites/add-site-dialog";
+import {
+  UpdateWizard,
+  type WizardTarget,
+} from "@/features/updates/update-wizard";
 import { useMe, canOperate } from "@/features/auth/use-auth";
+import type { Site } from "@wpmgr/api";
 
 export const Route = createFileRoute("/_authed/sites/")({
   component: SitesPage,
@@ -26,6 +34,34 @@ function SitesPage() {
   const { data: sites, isPending, isError, error, refetch } =
     useSites(appliedTag);
 
+  // Multi-select state for the bulk update wizard (operator+ only).
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [wizardTarget, setWizardTarget] = useState<WizardTarget | null>(null);
+
+  const selection: SitesTableSelection | undefined = operate
+    ? {
+        selected,
+        onToggle: (id) =>
+          setSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+          }),
+        onToggleAll: (ids, select) =>
+          setSelected((prev) => {
+            const next = new Set(prev);
+            for (const id of ids) {
+              if (select) next.add(id);
+              else next.delete(id);
+            }
+            return next;
+          }),
+      }
+    : undefined;
+
+  const selectedSites: Site[] = (sites ?? []).filter((s) => selected.has(s.id));
+
   function applyFilter(e: React.FormEvent) {
     e.preventDefault();
     setAppliedTag(tagInput.trim());
@@ -34,6 +70,15 @@ function SitesPage() {
   function clearFilter() {
     setTagInput("");
     setAppliedTag("");
+  }
+
+  function openWizardForSelection() {
+    setWizardTarget({ kind: "sites", siteIds: Array.from(selected) });
+  }
+
+  function openWizardForTag() {
+    if (!appliedTag) return;
+    setWizardTarget({ kind: "tag", tag: appliedTag });
   }
 
   return (
@@ -78,6 +123,34 @@ function SitesPage() {
         </p>
       ) : null}
 
+      {operate ? (
+        <div
+          className="flex flex-wrap items-center gap-2"
+          role="region"
+          aria-label="Bulk actions"
+        >
+          <Button
+            type="button"
+            size="sm"
+            onClick={openWizardForSelection}
+            disabled={selected.size === 0}
+          >
+            <RefreshCw aria-hidden="true" />
+            Update {selected.size} selected
+          </Button>
+          {appliedTag ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={openWizardForTag}
+            >
+              Update all tagged “{appliedTag}”
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
       {isPending ? (
         <p role="status" className="text-[var(--color-muted-foreground)]">
           Loading sites…
@@ -114,8 +187,21 @@ function SitesPage() {
           )}
         </div>
       ) : (
-        <SitesTable sites={sites} />
+        <SitesTable sites={sites} selection={selection} />
       )}
+
+      {operate ? (
+        <UpdateWizard
+          open={wizardTarget !== null}
+          onClose={() => setWizardTarget(null)}
+          target={wizardTarget}
+          sites={
+            wizardTarget?.kind === "sites" && selectedSites.length > 0
+              ? selectedSites
+              : (sites ?? [])
+          }
+        />
+      ) : null}
     </section>
   );
 }

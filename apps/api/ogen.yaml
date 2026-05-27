@@ -2,4 +2,12 @@
 # Default generation produces typed models, request/response validation,
 # a server interface, and a client. We consume the types + validation and
 # wire handlers under Gin (ogen's own router is not mounted).
-generator: {}
+#
+# The SSE endpoint (GET /api/v1/updates/{runId}/events) uses text/event-stream,
+# which ogen cannot model as a typed operation. We still document its event
+# payload as the UpdateEvent schema (generated as a normal type) and handle the
+# streaming transport by hand in the Gin handler, so we tell ogen to skip the
+# unsupported content type rather than fail generation.
+generator:
+  ignore_not_implemented:
+    - "unsupported content types"

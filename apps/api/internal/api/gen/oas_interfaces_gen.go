@@ -25,6 +25,10 @@ type CreateTenantRes interface {
 	createTenantRes()
 }
 
+type CreateUpdateRunRes interface {
+	createUpdateRunRes()
+}
+
 type DeleteSiteRes interface {
 	deleteSiteRes()
 }
@@ -47,6 +51,10 @@ type GetSiteRes interface {
 
 type GetTenantRes interface {
 	getTenantRes()
+}
+
+type GetUpdateRunRes interface {
+	getUpdateRunRes()
 }
 
 type InviteMemberRes interface {

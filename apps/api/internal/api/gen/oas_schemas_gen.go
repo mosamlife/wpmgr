@@ -684,10 +684,12 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 
 func (*Error) agentHeartbeatRes()    {}
 func (*Error) createPairingCodeRes() {}
+func (*Error) createUpdateRunRes()   {}
 func (*Error) deleteSiteRes()        {}
 func (*Error) getMeRes()             {}
 func (*Error) getSiteRes()           {}
 func (*Error) getTenantRes()         {}
+func (*Error) getUpdateRunRes()      {}
 func (*Error) logoutRes()            {}
 func (*Error) oidcLoginRes()         {}
 func (*Error) setSiteTagsRes()       {}
@@ -2478,6 +2480,625 @@ func (s *TenantList) GetItems() []Tenant {
 // SetItems sets the value of Items.
 func (s *TenantList) SetItems(val []Tenant) {
 	s.Items = val
+}
+
+// One thing to update on a site.
+// Ref: #/components/schemas/UpdateItem
+type UpdateItem struct {
+	Type UpdateItemType `json:"type"`
+	// Plugin/theme slug. Ignored (forced to "core") when type is core.
+	Slug OptString `json:"slug"`
+	// Desired version, "latest" or an explicit pin. Defaults to latest.
+	Version OptString `json:"version"`
+}
+
+// GetType returns the value of Type.
+func (s *UpdateItem) GetType() UpdateItemType {
+	return s.Type
+}
+
+// GetSlug returns the value of Slug.
+func (s *UpdateItem) GetSlug() OptString {
+	return s.Slug
+}
+
+// GetVersion returns the value of Version.
+func (s *UpdateItem) GetVersion() OptString {
+	return s.Version
+}
+
+// SetType sets the value of Type.
+func (s *UpdateItem) SetType(val UpdateItemType) {
+	s.Type = val
+}
+
+// SetSlug sets the value of Slug.
+func (s *UpdateItem) SetSlug(val OptString) {
+	s.Slug = val
+}
+
+// SetVersion sets the value of Version.
+func (s *UpdateItem) SetVersion(val OptString) {
+	s.Version = val
+}
+
+type UpdateItemType string
+
+const (
+	UpdateItemTypePlugin UpdateItemType = "plugin"
+	UpdateItemTypeTheme  UpdateItemType = "theme"
+	UpdateItemTypeCore   UpdateItemType = "core"
+)
+
+// AllValues returns all UpdateItemType values.
+func (UpdateItemType) AllValues() []UpdateItemType {
+	return []UpdateItemType{
+		UpdateItemTypePlugin,
+		UpdateItemTypeTheme,
+		UpdateItemTypeCore,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateItemType) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateItemTypePlugin:
+		return []byte(s), nil
+	case UpdateItemTypeTheme:
+		return []byte(s), nil
+	case UpdateItemTypeCore:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateItemType) UnmarshalText(data []byte) error {
+	switch UpdateItemType(data) {
+	case UpdateItemTypePlugin:
+		*s = UpdateItemTypePlugin
+		return nil
+	case UpdateItemTypeTheme:
+		*s = UpdateItemTypeTheme
+		return nil
+	case UpdateItemTypeCore:
+		*s = UpdateItemTypeCore
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/UpdateRun
+type UpdateRun struct {
+	ID          uuid.UUID       `json:"id"`
+	TenantID    uuid.UUID       `json:"tenant_id"`
+	CreatedBy   OptUUID         `json:"created_by"`
+	Status      UpdateRunStatus `json:"status"`
+	DryRun      bool            `json:"dry_run"`
+	ScheduledAt OptDateTime     `json:"scheduled_at"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	Tasks       []UpdateTask    `json:"tasks"`
+}
+
+// GetID returns the value of ID.
+func (s *UpdateRun) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *UpdateRun) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetCreatedBy returns the value of CreatedBy.
+func (s *UpdateRun) GetCreatedBy() OptUUID {
+	return s.CreatedBy
+}
+
+// GetStatus returns the value of Status.
+func (s *UpdateRun) GetStatus() UpdateRunStatus {
+	return s.Status
+}
+
+// GetDryRun returns the value of DryRun.
+func (s *UpdateRun) GetDryRun() bool {
+	return s.DryRun
+}
+
+// GetScheduledAt returns the value of ScheduledAt.
+func (s *UpdateRun) GetScheduledAt() OptDateTime {
+	return s.ScheduledAt
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *UpdateRun) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *UpdateRun) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// GetTasks returns the value of Tasks.
+func (s *UpdateRun) GetTasks() []UpdateTask {
+	return s.Tasks
+}
+
+// SetID sets the value of ID.
+func (s *UpdateRun) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *UpdateRun) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetCreatedBy sets the value of CreatedBy.
+func (s *UpdateRun) SetCreatedBy(val OptUUID) {
+	s.CreatedBy = val
+}
+
+// SetStatus sets the value of Status.
+func (s *UpdateRun) SetStatus(val UpdateRunStatus) {
+	s.Status = val
+}
+
+// SetDryRun sets the value of DryRun.
+func (s *UpdateRun) SetDryRun(val bool) {
+	s.DryRun = val
+}
+
+// SetScheduledAt sets the value of ScheduledAt.
+func (s *UpdateRun) SetScheduledAt(val OptDateTime) {
+	s.ScheduledAt = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *UpdateRun) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *UpdateRun) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+// SetTasks sets the value of Tasks.
+func (s *UpdateRun) SetTasks(val []UpdateTask) {
+	s.Tasks = val
+}
+
+func (*UpdateRun) createUpdateRunRes() {}
+func (*UpdateRun) getUpdateRunRes()    {}
+
+// Request to start a bulk update run. Provide EITHER site_ids OR tag to
+// select target sites (not both).
+// Ref: #/components/schemas/UpdateRunCreate
+type UpdateRunCreate struct {
+	// Explicit target site IDs.
+	SiteIds []uuid.UUID `json:"site_ids"`
+	// Target all enrolled sites carrying this tag.
+	Tag   OptString    `json:"tag"`
+	Items []UpdateItem `json:"items"`
+	// When true, do not mutate sites; report what would change.
+	DryRun OptBool `json:"dry_run"`
+	// Optional time to run; omitted/now means immediately.
+	ScheduleAt OptDateTime `json:"schedule_at"`
+}
+
+// GetSiteIds returns the value of SiteIds.
+func (s *UpdateRunCreate) GetSiteIds() []uuid.UUID {
+	return s.SiteIds
+}
+
+// GetTag returns the value of Tag.
+func (s *UpdateRunCreate) GetTag() OptString {
+	return s.Tag
+}
+
+// GetItems returns the value of Items.
+func (s *UpdateRunCreate) GetItems() []UpdateItem {
+	return s.Items
+}
+
+// GetDryRun returns the value of DryRun.
+func (s *UpdateRunCreate) GetDryRun() OptBool {
+	return s.DryRun
+}
+
+// GetScheduleAt returns the value of ScheduleAt.
+func (s *UpdateRunCreate) GetScheduleAt() OptDateTime {
+	return s.ScheduleAt
+}
+
+// SetSiteIds sets the value of SiteIds.
+func (s *UpdateRunCreate) SetSiteIds(val []uuid.UUID) {
+	s.SiteIds = val
+}
+
+// SetTag sets the value of Tag.
+func (s *UpdateRunCreate) SetTag(val OptString) {
+	s.Tag = val
+}
+
+// SetItems sets the value of Items.
+func (s *UpdateRunCreate) SetItems(val []UpdateItem) {
+	s.Items = val
+}
+
+// SetDryRun sets the value of DryRun.
+func (s *UpdateRunCreate) SetDryRun(val OptBool) {
+	s.DryRun = val
+}
+
+// SetScheduleAt sets the value of ScheduleAt.
+func (s *UpdateRunCreate) SetScheduleAt(val OptDateTime) {
+	s.ScheduleAt = val
+}
+
+// Ref: #/components/schemas/UpdateRunList
+type UpdateRunList struct {
+	Items []UpdateRun `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *UpdateRunList) GetItems() []UpdateRun {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *UpdateRunList) SetItems(val []UpdateRun) {
+	s.Items = val
+}
+
+type UpdateRunStatus string
+
+const (
+	UpdateRunStatusPending   UpdateRunStatus = "pending"
+	UpdateRunStatusRunning   UpdateRunStatus = "running"
+	UpdateRunStatusCompleted UpdateRunStatus = "completed"
+)
+
+// AllValues returns all UpdateRunStatus values.
+func (UpdateRunStatus) AllValues() []UpdateRunStatus {
+	return []UpdateRunStatus{
+		UpdateRunStatusPending,
+		UpdateRunStatusRunning,
+		UpdateRunStatusCompleted,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateRunStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateRunStatusPending:
+		return []byte(s), nil
+	case UpdateRunStatusRunning:
+		return []byte(s), nil
+	case UpdateRunStatusCompleted:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateRunStatus) UnmarshalText(data []byte) error {
+	switch UpdateRunStatus(data) {
+	case UpdateRunStatusPending:
+		*s = UpdateRunStatusPending
+		return nil
+	case UpdateRunStatusRunning:
+		*s = UpdateRunStatusRunning
+		return nil
+	case UpdateRunStatusCompleted:
+		*s = UpdateRunStatusCompleted
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/UpdateTask
+type UpdateTask struct {
+	ID             uuid.UUID            `json:"id"`
+	RunID          uuid.UUID            `json:"run_id"`
+	TenantID       uuid.UUID            `json:"tenant_id"`
+	SiteID         uuid.UUID            `json:"site_id"`
+	TargetType     UpdateTaskTargetType `json:"target_type"`
+	TargetSlug     string               `json:"target_slug"`
+	DesiredVersion OptString            `json:"desired_version"`
+	FromVersion    OptString            `json:"from_version"`
+	ToVersion      OptString            `json:"to_version"`
+	Status         UpdateTaskStatus     `json:"status"`
+	Detail         OptString            `json:"detail"`
+	Error          OptString            `json:"error"`
+	StartedAt      OptDateTime          `json:"started_at"`
+	FinishedAt     OptDateTime          `json:"finished_at"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+}
+
+// GetID returns the value of ID.
+func (s *UpdateTask) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetRunID returns the value of RunID.
+func (s *UpdateTask) GetRunID() uuid.UUID {
+	return s.RunID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *UpdateTask) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *UpdateTask) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetTargetType returns the value of TargetType.
+func (s *UpdateTask) GetTargetType() UpdateTaskTargetType {
+	return s.TargetType
+}
+
+// GetTargetSlug returns the value of TargetSlug.
+func (s *UpdateTask) GetTargetSlug() string {
+	return s.TargetSlug
+}
+
+// GetDesiredVersion returns the value of DesiredVersion.
+func (s *UpdateTask) GetDesiredVersion() OptString {
+	return s.DesiredVersion
+}
+
+// GetFromVersion returns the value of FromVersion.
+func (s *UpdateTask) GetFromVersion() OptString {
+	return s.FromVersion
+}
+
+// GetToVersion returns the value of ToVersion.
+func (s *UpdateTask) GetToVersion() OptString {
+	return s.ToVersion
+}
+
+// GetStatus returns the value of Status.
+func (s *UpdateTask) GetStatus() UpdateTaskStatus {
+	return s.Status
+}
+
+// GetDetail returns the value of Detail.
+func (s *UpdateTask) GetDetail() OptString {
+	return s.Detail
+}
+
+// GetError returns the value of Error.
+func (s *UpdateTask) GetError() OptString {
+	return s.Error
+}
+
+// GetStartedAt returns the value of StartedAt.
+func (s *UpdateTask) GetStartedAt() OptDateTime {
+	return s.StartedAt
+}
+
+// GetFinishedAt returns the value of FinishedAt.
+func (s *UpdateTask) GetFinishedAt() OptDateTime {
+	return s.FinishedAt
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *UpdateTask) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *UpdateTask) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetID sets the value of ID.
+func (s *UpdateTask) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetRunID sets the value of RunID.
+func (s *UpdateTask) SetRunID(val uuid.UUID) {
+	s.RunID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *UpdateTask) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *UpdateTask) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetTargetType sets the value of TargetType.
+func (s *UpdateTask) SetTargetType(val UpdateTaskTargetType) {
+	s.TargetType = val
+}
+
+// SetTargetSlug sets the value of TargetSlug.
+func (s *UpdateTask) SetTargetSlug(val string) {
+	s.TargetSlug = val
+}
+
+// SetDesiredVersion sets the value of DesiredVersion.
+func (s *UpdateTask) SetDesiredVersion(val OptString) {
+	s.DesiredVersion = val
+}
+
+// SetFromVersion sets the value of FromVersion.
+func (s *UpdateTask) SetFromVersion(val OptString) {
+	s.FromVersion = val
+}
+
+// SetToVersion sets the value of ToVersion.
+func (s *UpdateTask) SetToVersion(val OptString) {
+	s.ToVersion = val
+}
+
+// SetStatus sets the value of Status.
+func (s *UpdateTask) SetStatus(val UpdateTaskStatus) {
+	s.Status = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *UpdateTask) SetDetail(val OptString) {
+	s.Detail = val
+}
+
+// SetError sets the value of Error.
+func (s *UpdateTask) SetError(val OptString) {
+	s.Error = val
+}
+
+// SetStartedAt sets the value of StartedAt.
+func (s *UpdateTask) SetStartedAt(val OptDateTime) {
+	s.StartedAt = val
+}
+
+// SetFinishedAt sets the value of FinishedAt.
+func (s *UpdateTask) SetFinishedAt(val OptDateTime) {
+	s.FinishedAt = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *UpdateTask) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *UpdateTask) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+type UpdateTaskStatus string
+
+const (
+	UpdateTaskStatusPending    UpdateTaskStatus = "pending"
+	UpdateTaskStatusRunning    UpdateTaskStatus = "running"
+	UpdateTaskStatusSucceeded  UpdateTaskStatus = "succeeded"
+	UpdateTaskStatusFailed     UpdateTaskStatus = "failed"
+	UpdateTaskStatusRolledBack UpdateTaskStatus = "rolled_back"
+	UpdateTaskStatusSkipped    UpdateTaskStatus = "skipped"
+)
+
+// AllValues returns all UpdateTaskStatus values.
+func (UpdateTaskStatus) AllValues() []UpdateTaskStatus {
+	return []UpdateTaskStatus{
+		UpdateTaskStatusPending,
+		UpdateTaskStatusRunning,
+		UpdateTaskStatusSucceeded,
+		UpdateTaskStatusFailed,
+		UpdateTaskStatusRolledBack,
+		UpdateTaskStatusSkipped,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateTaskStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateTaskStatusPending:
+		return []byte(s), nil
+	case UpdateTaskStatusRunning:
+		return []byte(s), nil
+	case UpdateTaskStatusSucceeded:
+		return []byte(s), nil
+	case UpdateTaskStatusFailed:
+		return []byte(s), nil
+	case UpdateTaskStatusRolledBack:
+		return []byte(s), nil
+	case UpdateTaskStatusSkipped:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateTaskStatus) UnmarshalText(data []byte) error {
+	switch UpdateTaskStatus(data) {
+	case UpdateTaskStatusPending:
+		*s = UpdateTaskStatusPending
+		return nil
+	case UpdateTaskStatusRunning:
+		*s = UpdateTaskStatusRunning
+		return nil
+	case UpdateTaskStatusSucceeded:
+		*s = UpdateTaskStatusSucceeded
+		return nil
+	case UpdateTaskStatusFailed:
+		*s = UpdateTaskStatusFailed
+		return nil
+	case UpdateTaskStatusRolledBack:
+		*s = UpdateTaskStatusRolledBack
+		return nil
+	case UpdateTaskStatusSkipped:
+		*s = UpdateTaskStatusSkipped
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type UpdateTaskTargetType string
+
+const (
+	UpdateTaskTargetTypePlugin UpdateTaskTargetType = "plugin"
+	UpdateTaskTargetTypeTheme  UpdateTaskTargetType = "theme"
+	UpdateTaskTargetTypeCore   UpdateTaskTargetType = "core"
+)
+
+// AllValues returns all UpdateTaskTargetType values.
+func (UpdateTaskTargetType) AllValues() []UpdateTaskTargetType {
+	return []UpdateTaskTargetType{
+		UpdateTaskTargetTypePlugin,
+		UpdateTaskTargetTypeTheme,
+		UpdateTaskTargetTypeCore,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateTaskTargetType) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateTaskTargetTypePlugin:
+		return []byte(s), nil
+	case UpdateTaskTargetTypeTheme:
+		return []byte(s), nil
+	case UpdateTaskTargetTypeCore:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateTaskTargetType) UnmarshalText(data []byte) error {
+	switch UpdateTaskTargetType(data) {
+	case UpdateTaskTargetTypePlugin:
+		*s = UpdateTaskTargetTypePlugin
+		return nil
+	case UpdateTaskTargetTypeTheme:
+		*s = UpdateTaskTargetTypeTheme
+		return nil
+	case UpdateTaskTargetTypeCore:
+		*s = UpdateTaskTargetTypeCore
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/User

@@ -20,17 +20,20 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/telemetry"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
+	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 )
 
 // version is overridden at build time via -ldflags.
@@ -152,15 +155,49 @@ func run() error {
 	agentAuthn := agent.NewAuthenticator(siteSvc, clock, cfg.Agent.SignatureSkew)
 	agentH := agent.NewHandler(siteSvc)
 
-	// River: connection-health worker pool. The health job marks a site
-	// unreachable when its agent heartbeat goes stale (freshness-based; active
-	// probing is M5). Started below and stopped on shutdown.
+	// M3 bulk updates: the SSRF-hardened HTTP client (ADR-009) for all outbound
+	// calls to agent/site URLs, the CP->agent command client (mints the signed
+	// EdDSA JWT), the post-update health prober, the in-process SSE hub, and the
+	// tenant-scoped update repo. The command signer is built from the CP signing
+	// private key; an empty key disables minting (the worker will then fail
+	// update commands loudly rather than send unsigned ones).
+	ssrfClient := httpclient.New(httpclient.Config{
+		Timeout:    cfg.Update.HTTPTimeout,
+		MaxRetries: cfg.Update.HTTPRetries,
+	})
+	var commander update.Commander
+	if cfg.Agent.SigningPrivateKey != "" {
+		signer, serr := agentcmd.NewSigner(cfg.Agent.SigningPrivateKey)
+		if serr != nil {
+			return fmt.Errorf("build command signer: %w", serr)
+		}
+		commander = agentcmd.NewClient(ssrfClient, signer)
+	} else {
+		logger.Warn("WPMGR_AGENT_SIGNING_PRIVATE_KEY is empty: CP->agent update commands are disabled")
+		commander = disabledCommander{}
+	}
+	prober := agentcmd.NewProbe(ssrfClient)
+	updateHub := update.NewHub()
+	updateRepo := update.NewRepo(pool)
+	sitesLookup := newSiteLookup(siteSvc)
+	updateWorker := update.NewWorker(updateRepo, sitesLookup, commander, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
+
+	// River: connection-health worker pool plus the M3 update-task workers. The
+	// health job marks a site unreachable when its agent heartbeat goes stale
+	// (freshness-based; active probing is M5). Update tasks run on per-tenant
+	// queue shards so one tenant cannot starve another. Started below, stopped on
+	// shutdown.
 	siteRepo := site.NewRepo(pool)
 	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
-	riverClient, err := startRiver(ctx, pool.Pool, logger, healthChecker, cfg.Agent.HealthInterval)
+	riverClient, err := startRiver(ctx, pool.Pool, logger, healthChecker, cfg.Agent.HealthInterval, updateWorker, cfg.Update.PerTenantParallelism)
 	if err != nil {
 		return err
 	}
+
+	// The enqueuer needs the started River client; the update service needs the
+	// enqueuer. Wire them after the client is up.
+	updateSvc := update.NewService(updateRepo, sitesLookup, update.NewRiverEnqueuer(riverClient), validator, clock)
+	updateH := update.NewHandler(updateSvc, updateHub, auditRec)
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout)
 		defer cancel()
@@ -181,6 +218,7 @@ func run() error {
 		AuditH:      audit.NewHandler(auditRec),
 		TenantH:     tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:       site.NewHandler(siteSvc, auditRec, cpPublicKey),
+		UpdateH:     updateH,
 		AgentAuth:   agentAuthn,
 		AgentH:      agentH,
 		ServiceName: cfg.OTel.ServiceName,
@@ -215,22 +253,36 @@ func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// startRiver builds and starts the River client with the health-check worker
-// and a periodic job that runs every interval. The client uses the application
-// pool (RLS-bound); the health job's queries run under the app.agent GUC.
-func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, checker *site.HealthChecker, interval time.Duration) (*river.Client[pgx.Tx], error) {
+// startRiver builds and starts the River client with the health-check worker, a
+// periodic health job, and the M3 update-task worker on per-tenant queue shards.
+// The client uses the application pool (RLS-bound); the health job's queries run
+// under the app.agent GUC, while update tasks run tenant-scoped (the worker sets
+// app.tenant_id per task via the repo). perTenantParallelism caps each tenant
+// shard's concurrent workers so one tenant cannot starve others.
+func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, checker *site.HealthChecker, interval time.Duration, updateWorker *update.Worker, perTenantParallelism int) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, site.NewHealthCheckWorker(checker))
+	river.AddWorker(workers, updateWorker)
 
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
+	if perTenantParallelism <= 0 {
+		perTenantParallelism = 5
+	}
+
+	queues := map[string]river.QueueConfig{
+		river.QueueDefault: {MaxWorkers: 5},
+	}
+	// One bounded queue per tenant shard: MaxWorkers caps a single tenant's
+	// concurrency to the per-tenant parallelism limit.
+	for _, q := range update.QueueNames() {
+		queues[q] = river.QueueConfig{MaxWorkers: perTenantParallelism}
+	}
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Logger: logger,
-		Queues: map[string]river.QueueConfig{
-			river.QueueDefault: {MaxWorkers: 5},
-		},
+		Logger:  logger,
+		Queues:  queues,
 		Workers: workers,
 		PeriodicJobs: []*river.PeriodicJob{
 			river.NewPeriodicJob(
@@ -248,8 +300,22 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, ch
 	if err := client.Start(ctx); err != nil {
 		return nil, fmt.Errorf("river start: %w", err)
 	}
-	logger.Info("river worker pool started", slog.Duration("health_interval", interval))
+	logger.Info("river worker pool started",
+		slog.Duration("health_interval", interval),
+		slog.Int("update_per_tenant_parallelism", perTenantParallelism))
 	return client, nil
+}
+
+// disabledCommander is the no-op Commander used when no CP signing key is
+// configured: it refuses to send commands rather than sending unsigned ones.
+type disabledCommander struct{}
+
+func (disabledCommander) Update(_ context.Context, _ string, _ agentcmd.UpdateRequest) (agentcmd.UpdateResponse, error) {
+	return agentcmd.UpdateResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) Rollback(_ context.Context, _ string, _ agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error) {
+	return agentcmd.RollbackResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

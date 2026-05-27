@@ -16,6 +16,7 @@ use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
 use WPMgr\Agent\Commands\InfoCommand;
 use WPMgr\Agent\Commands\MetadataCommand;
+use WPMgr\Agent\Commands\RollbackCommand;
 use WPMgr\Agent\Commands\ScanCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 
@@ -168,6 +169,7 @@ final class Plugin
             new InfoCommand(),
             new BackupCommand(),
             new UpdateCommand(),
+            new RollbackCommand(),
             new ScanCommand(),
             new MetadataCommand(),
         ];

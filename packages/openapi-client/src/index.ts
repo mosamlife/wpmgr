@@ -44,6 +44,10 @@ export {
   deleteSite,
   createPairingCode,
   setSiteTags,
+  // updates
+  createUpdateRun,
+  listUpdateRuns,
+  getUpdateRun,
 } from "./generated/sdk.gen";
 
 // --- Domain + request/response types ----------------------------------------
@@ -56,6 +60,13 @@ export type {
   SiteTags,
   PairingCode,
   PairingCodeCreate,
+  // updates
+  UpdateItem,
+  UpdateRun,
+  UpdateRunCreate,
+  UpdateRunList,
+  UpdateTask,
+  UpdateEvent,
   Tenant,
   TenantCreate,
   TenantList,
@@ -99,4 +110,11 @@ export type {
   CreateApiKeyData,
   CreateApiKeyResponse,
   RevokeApiKeyData,
+  // updates request/response shapes
+  CreateUpdateRunData,
+  CreateUpdateRunResponse,
+  ListUpdateRunsData,
+  ListUpdateRunsResponse,
+  GetUpdateRunData,
+  GetUpdateRunResponse,
 } from "./generated/types.gen";

@@ -710,6 +710,100 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/updates:
+    post:
+      operationId: createUpdateRun
+      summary: Start a bulk update run
+      description: |
+        Creates an update run targeting a selection of sites (by site_ids OR by
+        tag) and a set of items (plugins/themes/core, each with a desired version
+        or "latest"). One task is created per (site, item) and a background job is
+        enqueued per task (respecting a per-tenant parallelism limit). When
+        dry_run is true the agent is asked what WOULD change and the site is not
+        mutated. Requires operator+.
+      tags: [updates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRunCreate"
+      responses:
+        "201":
+          description: Update run created (tasks enqueued)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateRun"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: listUpdateRuns
+      summary: List update runs for the current tenant
+      tags: [updates]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of update runs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateRunList"
+  /api/v1/updates/{runId}:
+    get:
+      operationId: getUpdateRun
+      summary: Get an update run with its tasks
+      tags: [updates]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: The update run and its per-(site,item) tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateRun"
+        "404":
+          description: Update run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/updates/{runId}/events:
+    get:
+      operationId: streamUpdateRunEvents
+      summary: Stream live update-task status changes (SSE)
+      description: |
+        Server-Sent Events stream (text/event-stream) of task status transitions
+        for a run, for live progress. Each `data:` line is a JSON UpdateEvent.
+        The stream emits periodic heartbeat comment lines (":\n") and ends when
+        the run reaches a terminal state or the client disconnects. Requires
+        viewer+.
+      tags: [updates]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: |
+            An event stream. Media type text/event-stream; each event payload is
+            an UpdateEvent JSON object. Documented here as the UpdateEvent schema
+            for clients/codegen even though the transport is SSE, not JSON.
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/UpdateEvent"
+        "404":
+          description: Update run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     Limit:
@@ -747,6 +841,13 @@ components:
         format: uuid
     ApiKeyId:
       name: apiKeyId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RunId:
+      name: runId
       in: path
       required: true
       schema:
@@ -1266,3 +1367,166 @@ components:
         broken_at:
           type: string
           format: uuid
+    UpdateItem:
+      type: object
+      required: [type]
+      description: One thing to update on a site.
+      properties:
+        type:
+          type: string
+          enum: [plugin, theme, core]
+        slug:
+          type: string
+          maxLength: 200
+          description: Plugin/theme slug. Ignored (forced to "core") when type is core.
+        version:
+          type: string
+          maxLength: 64
+          description: Desired version, "latest" or an explicit pin. Defaults to latest.
+    UpdateRunCreate:
+      type: object
+      required: [items]
+      description: |
+        Request to start a bulk update run. Provide EITHER site_ids OR tag to
+        select target sites (not both).
+      properties:
+        site_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Explicit target site IDs.
+        tag:
+          type: string
+          maxLength: 64
+          description: Target all enrolled sites carrying this tag.
+        items:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/UpdateItem"
+        dry_run:
+          type: boolean
+          default: false
+          description: When true, do not mutate sites; report what would change.
+        schedule_at:
+          type: string
+          format: date-time
+          description: Optional time to run; omitted/now means immediately.
+    UpdateTask:
+      type: object
+      required: [id, run_id, tenant_id, site_id, target_type, target_slug, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        target_type:
+          type: string
+          enum: [plugin, theme, core]
+        target_slug:
+          type: string
+        desired_version:
+          type: string
+        from_version:
+          type: string
+        to_version:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, rolled_back, skipped]
+        detail:
+          type: string
+        error:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    UpdateRun:
+      type: object
+      required: [id, tenant_id, status, dry_run, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        created_by:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, running, completed]
+        dry_run:
+          type: boolean
+        scheduled_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpdateTask"
+    UpdateRunList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpdateRun"
+    UpdateEvent:
+      type: object
+      description: One task-status transition streamed over SSE.
+      required: [run_id, task_id, site_id, target_type, target_slug, status, run_status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        target_type:
+          type: string
+          enum: [plugin, theme, core]
+        target_slug:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, rolled_back, skipped]
+        from_version:
+          type: string
+        to_version:
+          type: string
+        detail:
+          type: string
+        run_status:
+          type: string
+          enum: [pending, running, completed]
