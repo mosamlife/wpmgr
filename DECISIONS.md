@@ -44,6 +44,10 @@ stay in place with a `Superseded` status and a pointer to the replacement.
 | E2E | Playwright | ADR-020 |
 | PHP testing | PHPUnit (+ Brain Monkey, PHPUnit Polyfills) | ADR-021 |
 | PHP static analysis | PHPStan (+ WordPress stubs) | ADR-022 |
+| OIDC client (Go) | coreos/go-oidc v3 + golang.org/x/oauth2 | ADR-023 |
+| Sessions | alexedwards/scs (Redis store, pgx fallback) | ADR-024 |
+| Password hashing | alexedwards/argon2id (Argon2id, OWASP) | ADR-025 |
+| Self-host IdP | Dex | ADR-026 |
 
 ## Phase 3 risk register
 
@@ -462,3 +466,77 @@ before/within Phase 4:
 
 - **Decision:** **PHPStan**, because its WordPress integration is the ecosystem standard and is materially better resourced: `php-stubs/wordpress-stubs` plus `szepeviktor/phpstan-wordpress` give hook/filter docblock validation and dynamic return types that Psalm's slower-cadence plugin doesn't match. PHPStan ships near-weekly with a large team and full PHP 8.5 support, vs Psalm's single-maintainer model. Both MIT and within the freshness rule, but PHPStan wins decisively on WP ecosystem fit and maintenance depth. Adopt at level 8+, raising toward max on crypto/REST modules.
 - **Consequences:** Add `phpstan/phpstan`, `php-stubs/wordpress-stubs`, `szepeviktor/phpstan-wordpress` as dev deps; configure stubs in `phpstan.neon`. **Bus-factor risk** (risk register item 5): the WP stubs/extension maintainer signaled possible discontinuation without funding — budget sponsorship or be ready to vendor/fork. PHPStan lacks Psalm's built-in taint analysis, so security review of crypto/REST paths shouldn't rely on static analysis alone.
+
+## ADR-023: Go OIDC / OAuth2 Relying-Party (client) — coreos/go-oidc v3 + golang.org/x/oauth2
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** M1 needs a relying-party (client) to run the OIDC authorization-code flow against a bundled IdP (self-host) and managed social/enterprise providers (hosted), and to validate ID tokens (signature, issuer, audience, nonce, expiry) with JWKS rotation. We do not need to *be* an IdP. Candidates: coreos/go-oidc (+ x/oauth2), zitadel/oidc, Ory (fosite/hydra are OP-side, wrong fit).
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **coreos/go-oidc v3 (+ x/oauth2)** | 5 | 5 | 5 | 5 | 5 | ~2.4k★, Apache-2.0, releases through Apr 2026; de-facto Go RP, thin wrapper over x/oauth2 |
+| zitadel/oidc v3 | 4 | 5 | 4 | 4 | 5 | OIDF-certified RP, Apache-2.0 (library distinct from the AGPL server), but bundles an OP we don't need |
+| Ory fosite/hydra | 4 | 4 | 2 | 2 | 3 | OP/authorization-server frameworks, not a drop-in RP |
+
+  Sources: [coreos/go-oidc](https://github.com/coreos/go-oidc), [x/oauth2](https://pkg.go.dev/golang.org/x/oauth2), [zitadel/oidc](https://github.com/zitadel/oidc).
+
+- **Decision:** **coreos/go-oidc v3 + golang.org/x/oauth2**, the boring, proven, minimal RP: token verification + JWKS handling, delegating the OAuth2 dance to the standard x/oauth2 (thin, swappable), Apache-2.0, actively released into 2026. zitadel/oidc is a fine OIDF-certified alternative but bundles a full OP as dead weight.
+- **Consequences:** We own a little glue (state/nonce/PKCE, cookie handling) that zitadel/oidc would provide. Provider discovery via `oidc.NewProvider` supports per-tenant issuers cheaply. Swapping to zitadel/oidc later is low-cost (both standard OIDC).
+
+## ADR-024: Session Management — alexedwards/scs (Redis store, pgx fallback)
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Sessions must survive across horizontally-scaled API instances, support immediate logout/revocation (hard requirement for an audited admin SaaS), and reuse Redis + Postgres already in the stack. Stateless signed-JWT cookies can't be revoked before expiry without a server-side denylist (which reintroduces shared state), so they fail the revocation requirement. Candidates: alexedwards/scs, gorilla/sessions, stateless JWT cookies.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **alexedwards/scs v2 (+ redisstore/pgxstore)** | 5 | 5 | 5 | 5 | 5 | Stable, stores released Oct 2025; opaque cookie + server-side state = instant revocation; MIT |
+| gorilla/sessions | 3 | 4 | 3 | 3 | 5 | BSD-3; revocation only via client cookie MaxAge; weaker multi-instance story |
+| Stateless JWT cookies | n/a | 5 | 3 | 2 | 5 | No shared state but no real revocation without a denylist — fails requirement |
+
+  Sources: [alexedwards/scs](https://github.com/alexedwards/scs), [scs redisstore](https://github.com/alexedwards/scs/tree/master/redisstore).
+
+- **Decision:** **alexedwards/scs v2 with a Redis store (primary), pgxstore as fallback** — opaque session ID in the cookie, all state server-side → true cross-instance sessions and O(1) revocation/logout, reusing Redis (TTL-native) and Postgres. Stable, MIT.
+- **Consequences:** Redis joins the auth hot path; self-hosters without Redis switch the store to pgxstore via SCS's pluggable interface (one line). Revocation = delete the server-side record. Cookie flags (Secure/HttpOnly/SameSite) and idle/absolute timeouts centralized in the SessionManager.
+
+## ADR-025: Password Hashing — alexedwards/argon2id (Argon2id)
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Email+password is a fallback path. OWASP's current Password Storage Cheat Sheet names Argon2id first-choice (min 19 MiB, t=2, p=1), scrypt secondary, bcrypt legacy-only (and 72-byte input limit). Candidates: alexedwards/argon2id (wraps x/crypto/argon2), raw x/crypto/argon2, x/crypto/bcrypt, x/crypto/scrypt.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **alexedwards/argon2id** | 5 | 5 | 5 | 5 | 5 | MIT; enforces Argon2id + CSPRNG salt, params encoded in hash, bcrypt-style Compare API |
+| x/crypto/argon2 (raw) | 5 | 5 | 3 | 5 | 5 | BSD-3, Go team; OWASP top choice but hand-roll salt/encode/verify |
+| x/crypto/bcrypt | 5 | 4 | 5 | 5 | 5 | BSD-3; OWASP legacy-only; 72-byte limit |
+| x/crypto/scrypt | 5 | 4 | 3 | 4 | 5 | BSD-3; acceptable fallback, raw API |
+
+  Sources: [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [alexedwards/argon2id](https://github.com/alexedwards/argon2id).
+
+- **Decision:** **alexedwards/argon2id** (thin MIT wrapper over the Go team's x/crypto/argon2): OWASP-recommended Argon2id with footgun-proof ergonomics — secure salts, self-describing params (enables transparent re-hash/upgrade), bcrypt-style API. Security surface is the standard implementation underneath.
+- **Consequences:** Set params ≥ OWASP 19 MiB / t=2 / p=1 and benchmark on target hardware. Params embedded in the hash enable raising cost over time and re-hashing on next login. bcrypt explicitly rejected for new accounts.
+
+## ADR-026: Self-Host Bundled IdP — Dex
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Self-hosters need an IdP in our docker-compose: lightweight, OSS-license-compatible, supporting upstream social/enterprise connectors (Google/GitHub/OIDC/SAML/LDAP), speaking standard OIDC so our RP (ADR-023) works unchanged against it and identically against managed providers on hosted. Candidates: Dex, Keycloak, Authentik, Zitadel.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **Dex** | 5 | 5 | 4 | 5 | 5 | Apache-2.0, Go, CNCF; lightweight stateless broker, pluggable connectors; released through May 2026 |
+| Authentik | 5 | 3 | 4 | 4 | 4 | MIT core + enterprise split; Python+TS multi-service; breaking upgrades reported |
+| Zitadel | 5 | 4 | 4 | 4 | 5 | Go single-binary; relicensed to AGPLv3 (2025-03-31); heavier, needs HTTP/2 proxy |
+| Keycloak | 5 | 2 | 3 | 5 | 5 | Apache-2.0, full-featured; JVM, resource-intensive |
+
+  Sources: [Dex](https://github.com/dexidp/dex), [dexidp.io](https://dexidp.io/).
+
+- **Decision:** **Dex** — purpose-built lightweight Apache-2.0 OIDC shim, trivially bundled in docker-compose, federating to upstream providers while presenting one standard OIDC interface. The same coreos/go-oidc RP works against Dex (self-host) and managed Google/Okta/Entra (hosted) with only issuer/client config changes. Keycloak too heavy; Authentik multi-service with risky upgrades + license split; Zitadel heavier with AGPL-server questions.
+- **Consequences:** Dex's local password store is minimal, so WPMgr owns the email+password DB and credential UX (ADR-025), using Dex as the OIDC broker/federation layer. Dex needs a persistent backend (our Postgres). Operators can point the RP at their own Keycloak/Authentik/Zitadel with no code change. Richer self-service flows can layer on or swap IdP later without touching the RP contract.

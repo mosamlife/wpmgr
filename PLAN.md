@@ -57,8 +57,8 @@
 - [x] Infra skeleton (distroless Dockerfiles, compose w/ SeaweedFS, observability profile, CI)
 - [x] Docs skeleton (README, architecture, install, agent, contributing, security, api)
 - [x] Security review → PASS (no high/critical); 2 items carried to M1 (below)
-- [ ] Full-stack `docker compose up` E2E verification
-- [ ] User approval to proceed
+- [x] Full-stack `docker compose up` E2E verification (healthz/readyz 200, CRUD, cross-tenant denied)
+- [x] User approval to proceed
 
 ### Security carry-forward into Phase 5/M1 (from Phase 4 review)
 - [ ] Enforce NOSUPERUSER/NOBYPASSRLS app DB role at startup (hard-fail) + split migration DSN from app DSN (currently only a startup WARNING — `db.WarnIfRLSBypassRole`)
@@ -68,7 +68,17 @@
 - [ ] Add security-headers middleware + CORS allowlist once SPA origin is finalized
 
 ## Phase 5 — V0 Feature Build
-- [ ] M1 — Auth + tenant + RBAC
+- [ ] M1 — Auth + tenant + RBAC (in progress)
+  - [x] ADR-023 OIDC client · ADR-024 sessions · ADR-025 password hash · ADR-026 Dex
+  - [ ] Non-superuser app DB role + migration/app DSN split + startup hard-fail (sec carry-forward)
+  - [ ] Email+password (argon2id) + OIDC (go-oidc) login; SCS Redis sessions
+  - [ ] Replace X-Tenant-ID stub → session-derived tenant + membership (sec carry-forward)
+  - [ ] RBAC roles owner/admin/operator/viewer + permission matrix middleware
+  - [ ] Tenant-scoped API keys (hashed)
+  - [ ] Append-only hash-chained audit log
+  - [ ] Dex in docker-compose for self-host OIDC
+  - [ ] RLS isolation tests prove cross-tenant denial; frontend real login
+  - [ ] Reject default WPMGR_SESSION_SECRET; security-headers middleware
 - [ ] M2 — Site registry + agent enrollment
 - [ ] M3 — Bulk updates with rollback
 - [ ] M4 — Incremental backups + restore
