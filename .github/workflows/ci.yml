@@ -1,12 +1,111 @@
-# Placeholder workflow — the real ci pipeline is built by the devops-engineer
-# in Phase 4 (lint, typecheck, test, build / container push / SBOM + scan).
 name: ci
 
 on:
-  workflow_dispatch:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  placeholder:
+  # ---- Go API ----
+  go:
+    name: Go (apps/api)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: apps/api/go.sum
+
+      # Build the api module on its own (workspace disabled) so it does not
+      # depend on sibling modules in the go.work set.
+      - name: Build
+        env:
+          GOWORK: "off"
+        run: go build ./...
+
+      - name: Vet
+        env:
+          GOWORK: "off"
+        run: go vet ./...
+
+      - name: Test
+        env:
+          GOWORK: "off"
+        run: go test ./...
+
+  # ---- JS / web ----
+  js:
+    name: JS (web)
     runs-on: ubuntu-latest
     steps:
-      - run: echo "ci pipeline lands in Phase 4"
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm -w run lint
+
+      - name: Typecheck
+        run: pnpm --filter @wpmgr/web typecheck
+
+      - name: Build
+        run: pnpm --filter @wpmgr/web build
+
+  # ---- PHP agent ----
+  php:
+    name: PHP (agent)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: sodium, openssl
+          tools: composer:v2
+          coverage: none
+
+      - name: Get composer cache dir
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('apps/agent/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Test
+        run: composer test

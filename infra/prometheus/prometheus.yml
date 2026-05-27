@@ -1,0 +1,24 @@
+# Prometheus scrape config for the WPMgr stack.
+# Consumed by the grafana/otel-lgtm bundle (observability profile).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus self-scrape.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # WPMgr API — exposes Prometheus metrics (e.g. /metrics) on :8080.
+  - job_name: wpmgr-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8080"]
+        labels:
+          service: wpmgr-api
+
+  # OTel Collector metrics exposed by the otel-lgtm bundle.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["localhost:8888"]

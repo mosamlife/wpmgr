@@ -1,0 +1,183 @@
+# WPMgr — full self-host stack.
+#
+# Base profile: postgres, redis, seaweedfs (S3 gateway), clickhouse, api, web.
+# Optional "observability" profile adds a grafana/otel-lgtm backend.
+#
+# Image tags are pinned (no :latest). Bring up with:
+#   docker compose -f infra/docker-compose.yml up
+# With observability:
+#   docker compose -f infra/docker-compose.yml --profile observability up
+
+name: wpmgr
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${WPMGR_DB_USER:-wpmgr}
+      POSTGRES_PASSWORD: ${WPMGR_DB_PASSWORD:-wpmgr}
+      POSTGRES_DB: ${WPMGR_DB_NAME:-wpmgr}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WPMGR_DB_USER:-wpmgr} -d ${WPMGR_DB_NAME:-wpmgr}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # SeaweedFS in S3-gateway mode (Apache-2.0). Replaces MinIO (server EOL).
+  # S3 API is exposed on :8333 with path-style addressing.
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.80
+    restart: unless-stopped
+    command:
+      - server
+      - -s3
+      - -dir=/data
+      - -s3.config=/etc/seaweedfs/s3.json
+    ports:
+      - "8333:8333"
+    volumes:
+      - seaweedfs-data:/data
+      - ./seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      # The S3 gateway answers /status with 200 once up.
+      test: ["CMD", "wget", "-qO-", "http://localhost:8333/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # One-shot init: create the wpmgr-backups bucket via the S3 gateway.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:3.80
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "seeding S3 bucket '${WPMGR_S3_BUCKET:-wpmgr-backups}'..."
+        # 'weed shell' talks to the master+filer running inside the server
+        # container. s3.bucket.create is idempotent enough for a seed step.
+        printf 's3.bucket.create -name %s\n' "${WPMGR_S3_BUCKET:-wpmgr-backups}" \
+          | weed shell -master=seaweedfs:9333 -filer=seaweedfs:8888 \
+          || echo "bucket seed attempted (it may already exist) — continuing"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${WPMGR_CLICKHOUSE_DB:-wpmgr_metrics}
+      CLICKHOUSE_USER: ${WPMGR_CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${WPMGR_CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    image: wpmgr-api:dev
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      WPMGR_HTTP_ADDR: ":8080"
+      WPMGR_DB_HOST: postgres
+      WPMGR_DB_PORT: "5432"
+      WPMGR_DB_USER: ${WPMGR_DB_USER:-wpmgr}
+      WPMGR_DB_PASSWORD: ${WPMGR_DB_PASSWORD:-wpmgr}
+      WPMGR_DB_NAME: ${WPMGR_DB_NAME:-wpmgr}
+      WPMGR_DB_SSLMODE: ${WPMGR_DB_SSLMODE:-disable}
+      WPMGR_REDIS_ADDR: redis:6379
+      WPMGR_S3_ENDPOINT: http://seaweedfs:8333
+      WPMGR_S3_REGION: ${WPMGR_S3_REGION:-us-east-1}
+      WPMGR_S3_BUCKET: ${WPMGR_S3_BUCKET:-wpmgr-backups}
+      WPMGR_S3_ACCESS_KEY: ${WPMGR_S3_ACCESS_KEY:-wpmgr}
+      WPMGR_S3_SECRET_KEY: ${WPMGR_S3_SECRET_KEY:-wpmgr-dev-secret}
+      WPMGR_S3_FORCE_PATH_STYLE: "true"
+      WPMGR_CLICKHOUSE_ADDR: clickhouse:9000
+      WPMGR_CLICKHOUSE_DB: ${WPMGR_CLICKHOUSE_DB:-wpmgr_metrics}
+      WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT: ${WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
+      WPMGR_OTEL_SERVICE_NAME: ${WPMGR_OTEL_SERVICE_NAME:-wpmgr-api}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    # NOTE: no healthcheck here yet — the distroless image has no shell and the
+    # binary does not expose a self-probe subcommand. Once the real server lands
+    # (GET /healthz, GET /readyz), add an HTTP healthcheck (e.g. via a small
+    # busybox sidecar or by embedding a `wpmgr healthcheck` subcommand). TODO.
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.web
+    image: wpmgr-web:dev
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+
+  # ---- observability (opt-in: --profile observability) ----
+  # grafana/otel-lgtm bundles OTel Collector + Tempo + Prometheus + Grafana.
+  otel-lgtm:
+    image: grafana/otel-lgtm:0.8.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      # Mount our prometheus scrape + grafana provisioning into the bundle.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - otel-lgtm-data:/data
+      - ./prometheus/prometheus.yml:/otel-lgtm/prometheus.yaml:ro
+      - ./grafana/provisioning:/otel-lgtm/grafana/conf/provisioning/custom:ro
+      - ./grafana/dashboards:/otel-lgtm/grafana/dashboards:ro
+    ports:
+      - "3000:3000"   # Grafana UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+
+volumes:
+  postgres-data:
+  redis-data:
+  seaweedfs-data:
+  clickhouse-data:
+  otel-lgtm-data:

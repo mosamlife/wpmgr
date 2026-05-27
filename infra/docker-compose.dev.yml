@@ -1,0 +1,56 @@
+# WPMgr — local development overrides.
+#
+# Layer on top of docker-compose.yml:
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up
+#
+# This exposes backing-service ports to the host and runs the api/web from
+# source with live reload instead of the production images.
+
+name: wpmgr
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  clickhouse:
+    ports:
+      - "8123:8123"   # HTTP
+      - "9000:9000"   # native
+
+  # Run the API from source with the Go toolchain (live `go run`).
+  # Mounts the api module so edits are picked up on container restart.
+  api:
+    build: !reset null
+    image: golang:1.26
+    working_dir: /src/apps/api
+    environment:
+      GOWORK: "off"
+      WPMGR_ENV: development
+      WPMGR_LOG_LEVEL: debug
+    volumes:
+      - ../apps/api:/src/apps/api
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    command: ["go", "run", "./cmd/wpmgr"]
+
+  # Run the Vite dev server (HMR) on port 5173 instead of the nginx image.
+  web:
+    build: !reset null
+    image: node:22-alpine
+    working_dir: /repo/apps/web
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+    volumes:
+      - ../:/repo
+    ports: !override
+      - "5173:5173"
+    command: ["sh", "-c", "corepack enable && pnpm install && pnpm --filter @wpmgr/web dev --host 0.0.0.0"]
+
+volumes:
+  go-mod-cache:
+  go-build-cache:

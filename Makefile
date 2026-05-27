@@ -13,9 +13,29 @@ help: ## Show this help
 bootstrap: ## First-time dev setup
 	./scripts/bootstrap.sh
 
+COMPOSE := docker compose -f infra/docker-compose.yml
+COMPOSE_DEV := $(COMPOSE) -f infra/docker-compose.dev.yml
+
 .PHONY: dev
 dev: ## Run full stack for local development
-	docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up
+	$(COMPOSE_DEV) up
+
+.PHONY: up
+up: ## Run the production-style stack (built images)
+	$(COMPOSE) up -d
+
+.PHONY: down
+down: ## Stop the local stack
+	$(COMPOSE_DEV) down
+
+.PHONY: observability
+observability: ## Run the stack with the observability profile (otel-lgtm)
+	$(COMPOSE) --profile observability up -d
+
+.PHONY: docker-build
+docker-build: ## Build the api + web container images
+	docker build -f infra/Dockerfile.api -t wpmgr-api:dev .
+	docker build -f infra/Dockerfile.web -t wpmgr-web:dev .
 
 .PHONY: build
 build: build-api build-web ## Build everything

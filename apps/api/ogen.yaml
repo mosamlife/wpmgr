@@ -1,0 +1,5 @@
+# ogen generator configuration. See https://ogen.dev/docs/configuration
+# Default generation produces typed models, request/response validation,
+# a server interface, and a client. We consume the types + validation and
+# wire handlers under Gin (ogen's own router is not mounted).
+generator: {}

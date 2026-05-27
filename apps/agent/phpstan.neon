@@ -1,0 +1,15 @@
+includes:
+    - vendor/szepeviktor/phpstan-wordpress/extension.neon
+
+parameters:
+    level: 8
+    phpVersion: 80000
+    paths:
+        - includes
+        - wpmgr-agent.php
+    bootstrapFiles:
+        - tests/phpstan-bootstrap.php
+    treatPhpDocTypesAsCertain: false
+    # The crypto/auth core (class-connector.php, class-keystore.php) is held to
+    # the strictest standard available at level 8; no per-file relaxations are
+    # applied to those files.

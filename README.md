@@ -14,9 +14,9 @@ Open-source, self-hostable WordPress management for agencies — a modern altern
 | Incremental encrypted backups | ✅ | ✅ | ✅ | ✅ |
 | Uptime monitoring | ✅ | ✅ | ✅ | add-on |
 | Vulnerability scanning | ✅ | ✅ | ✅ | add-on |
-| Visual regression on update | ✅ (V1) | ❌ | ❌ | ❌ |
-| AI update advisor | ✅ (V1) | ❌ | ❌ | ❌ |
-| Terraform provider / GitOps | ✅ (V2) | ❌ | ❌ | ❌ |
+| Visual regression on update | ✅ (Roadmap V1) | ❌ | ❌ | ❌ |
+| AI update advisor | ✅ (Roadmap V1) | ❌ | ❌ | ❌ |
+| Terraform provider / GitOps | ✅ (Roadmap V2) | ❌ | ❌ | ❌ |
 
 ## Architecture
 
@@ -31,12 +31,13 @@ See [docs/architecture.md](./docs/architecture.md).
 
 ## Quickstart (self-host)
 
-> Lands in Phase 4. Target:
->
-> ```bash
-> cp .env.example .env
-> docker compose -f infra/docker-compose.yml up -d
-> ```
+```bash
+cp .env.example .env
+docker compose -f infra/docker-compose.yml up -d
+curl localhost:8080/healthz   # {"status":"ok"}
+```
+
+Full instructions: [docs/install.md](./docs/install.md).
 
 ## Repository layout
 
@@ -60,6 +61,15 @@ make build       # build api + web
 
 - Control plane + dashboard: **AGPL-3.0-only** ([LICENSE](./LICENSE))
 - Agent plugin + JS tracker: **MIT** ([LICENSE-AGENT](./LICENSE-AGENT))
+
+## Docs
+
+- [Install (self-host)](./docs/install.md)
+- [Architecture](./docs/architecture.md)
+- [API](./docs/api.md)
+- [WordPress agent](./docs/agent.md)
+- [Contributing](./docs/contributing.md)
+- [Security](./docs/security.md)
 
 ## Links
 

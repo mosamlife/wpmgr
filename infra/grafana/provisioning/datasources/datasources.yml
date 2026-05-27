@@ -1,0 +1,18 @@
+# Grafana datasource provisioning for the WPMgr observability profile.
+# The grafana/otel-lgtm bundle runs Prometheus and Tempo locally; these point
+# Grafana at them so dashboards work out of the box.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://localhost:9090
+    isDefault: true
+    editable: true
+
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://localhost:3200
+    editable: true

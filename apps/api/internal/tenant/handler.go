@@ -1,0 +1,100 @@
+package tenant
+
+import (
+	"net/http"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
+)
+
+// Handler serves the tenant HTTP endpoints. Responses use the ogen-generated
+// types so the wire shape matches the OpenAPI contract exactly.
+type Handler struct {
+	svc *Service
+}
+
+// NewHandler builds a tenant Handler.
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
+}
+
+// Register mounts the tenant routes on the given router group (/api/v1).
+func (h *Handler) Register(r *gin.RouterGroup) {
+	r.POST("/tenants", h.create)
+	r.GET("/tenants", h.list)
+	r.GET("/tenants/:tenantId", h.get)
+}
+
+type createTenantRequest struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+func (h *Handler) create(c *gin.Context) {
+	var req createTenantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+	t, err := h.svc.Create(c.Request.Context(), CreateInput{Name: req.Name, Slug: req.Slug})
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, toAPI(t))
+}
+
+func (h *Handler) get(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("tenantId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_tenant_id", "tenantId is not a valid UUID"))
+		return
+	}
+	t, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, toAPI(t))
+}
+
+func (h *Handler) list(c *gin.Context) {
+	limit := parseInt32(c.Query("limit"), 50)
+	offset := parseInt32(c.Query("offset"), 0)
+	ts, err := h.svc.List(c.Request.Context(), ListInput{Limit: limit, Offset: offset})
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	items := make([]gen.Tenant, 0, len(ts))
+	for _, t := range ts {
+		items = append(items, toAPI(t))
+	}
+	c.JSON(http.StatusOK, gen.TenantList{Items: items})
+}
+
+func toAPI(t Tenant) gen.Tenant {
+	return gen.Tenant{
+		ID:        t.ID,
+		Name:      t.Name,
+		Slug:      t.Slug,
+		CreatedAt: t.CreatedAt,
+		UpdatedAt: t.UpdatedAt,
+	}
+}
+
+func parseInt32(s string, def int32) int32 {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(s, 10, 32)
+	if err != nil {
+		return def
+	}
+	return int32(n)
+}

@@ -1,0 +1,13 @@
+# Grafana dashboard provider — loads JSON dashboards from disk.
+apiVersion: 1
+
+providers:
+  - name: wpmgr
+    orgId: 1
+    folder: WPMgr
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /otel-lgtm/grafana/dashboards
+      foldersFromFilesStructure: true

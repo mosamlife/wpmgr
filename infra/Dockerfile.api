@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1
+
+# ---- build stage ----
+# Multi-stage build of the WPMgr control-plane API (cmd/wpmgr).
+# Build context is the repo root so the Go workspace (go.work + sibling
+# modules) is available; we build the apps/api module with the workspace
+# disabled (GOWORK=off) so only its own go.mod/go.sum are needed.
+FROM golang:1.26 AS build
+
+ENV CGO_ENABLED=0 \
+    GOWORK=off \
+    GOOS=linux
+
+WORKDIR /src
+
+# Cache module downloads. The api module's go.mod/go.sum are the only ones
+# needed when GOWORK=off. (go.sum may not exist yet during early phases;
+# the wildcard tolerates that.)
+COPY apps/api/go.mod apps/api/go.su[m] ./apps/api/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd apps/api && go mod download || true
+
+# Copy the api module source.
+COPY apps/api ./apps/api
+
+ARG VERSION=0.0.0-dev
+
+# Build a static binary. -trimpath + stripped symbols for a lean image.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd apps/api && \
+    go build -trimpath \
+        -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/wpmgr ./cmd/wpmgr
+
+# ---- final stage ----
+# Distroless static, running as the built-in nonroot user (uid 65532).
+FROM gcr.io/distroless/static:nonroot
+
+WORKDIR /
+COPY --from=build /out/wpmgr /usr/local/bin/wpmgr
+
+USER nonroot:nonroot
+EXPOSE 8080
+
+ENV WPMGR_HTTP_ADDR=:8080
+
+ENTRYPOINT ["/usr/local/bin/wpmgr"]

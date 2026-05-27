@@ -5,7 +5,14 @@
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "generate": "echo 'codegen wired in Phase 4 (ADR-004 / ADR-013)'"
+    "generate": "openapi-ts"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "^0.97.3",
+    "typescript": "^5.7.2"
   }
 }
