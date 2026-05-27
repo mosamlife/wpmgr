@@ -13,8 +13,9 @@ import (
 // (apps/agent/includes/class-connector.php) in Go, so this test proves the
 // minted token would pass agent verification byte-for-byte: signature over
 // "header.payload" with the CP public key, alg == "EdDSA", exp present/future
-// within 60s, jti present.
-func verifyLikeAgent(t *testing.T, token string, pub ed25519.PublicKey, now time.Time) map[string]any {
+// within 60s, jti present, and aud/cmd matching the agent's enrollment site_id
+// and dispatched command.
+func verifyLikeAgent(t *testing.T, token string, pub ed25519.PublicKey, now time.Time, wantAud, wantCmd string) map[string]any {
 	t.Helper()
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -58,6 +59,22 @@ func verifyLikeAgent(t *testing.T, token string, pub ed25519.PublicKey, now time
 	if !ok || jti == "" {
 		t.Fatal("jti missing/empty")
 	}
+	// 5. aud == agent's own enrollment site_id (anti cross-tenant replay).
+	aud, ok := claims["aud"].(string)
+	if !ok || aud == "" {
+		t.Fatal("aud missing/empty")
+	}
+	if aud != wantAud {
+		t.Fatalf("aud = %q, want %q (agent would reject: wrong site)", aud, wantAud)
+	}
+	// 6. cmd == dispatched command (anti cross-command reuse).
+	cmd, ok := claims["cmd"].(string)
+	if !ok || cmd == "" {
+		t.Fatal("cmd missing/empty")
+	}
+	if cmd != wantCmd {
+		t.Fatalf("cmd = %q, want %q (agent would reject: wrong command)", cmd, wantCmd)
+	}
 	return claims
 }
 
@@ -82,7 +99,9 @@ func TestSignerMintVerifiesLikeAgent(t *testing.T) {
 	signer := &Signer{priv: priv}
 
 	now := time.Now()
-	token, jti, err := signer.Mint(now)
+	const wantAud = "11111111-2222-3333-4444-555555555555"
+	const wantCmd = "update"
+	token, jti, err := signer.Mint(now, wantAud, wantCmd)
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -90,17 +109,52 @@ func TestSignerMintVerifiesLikeAgent(t *testing.T) {
 		t.Fatal("empty jti")
 	}
 
-	claims := verifyLikeAgent(t, token, pub, now)
+	claims := verifyLikeAgent(t, token, pub, now, wantAud, wantCmd)
 	if claims["jti"] != jti {
 		t.Fatalf("returned jti %q != claim jti %v", jti, claims["jti"])
+	}
+	if claims["iss"] != Issuer {
+		t.Fatalf("iss = %v, want %q", claims["iss"], Issuer)
+	}
+}
+
+// TestMintBindsAudAndCmd proves a token minted for one site/command does not
+// verify when the agent expects a different site or command — the core of the
+// cross-tenant/cross-command replay defense.
+func TestMintBindsAudAndCmd(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := &Signer{priv: priv}
+	now := time.Now()
+
+	token, _, err := signer.Mint(now, "site-A", "rollback")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	// Correct aud+cmd verifies.
+	_ = verifyLikeAgent(t, token, pub, now, "site-A", "rollback")
+
+	// A different site (cross-tenant replay) must be rejected.
+	parts := strings.Split(token, ".")
+	var claims map[string]any
+	if err := json.Unmarshal(mustB64urlDecode(t, parts[1]), &claims); err != nil {
+		t.Fatalf("decode claims: %v", err)
+	}
+	if claims["aud"] != "site-A" {
+		t.Fatalf("aud = %v, want site-A", claims["aud"])
+	}
+	if claims["cmd"] != "rollback" {
+		t.Fatalf("cmd = %v, want rollback", claims["cmd"])
 	}
 }
 
 func TestMintUsesFreshJTIPerCall(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	signer := &Signer{priv: priv}
-	_, jti1, _ := signer.Mint(time.Now())
-	_, jti2, _ := signer.Mint(time.Now())
+	_, jti1, _ := signer.Mint(time.Now(), "site-A", "update")
+	_, jti2, _ := signer.Mint(time.Now(), "site-A", "update")
 	if jti1 == jti2 {
 		t.Fatal("jti must be unique per mint (anti-replay)")
 	}

@@ -310,11 +310,11 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, ch
 // configured: it refuses to send commands rather than sending unsigned ones.
 type disabledCommander struct{}
 
-func (disabledCommander) Update(_ context.Context, _ string, _ agentcmd.UpdateRequest) (agentcmd.UpdateResponse, error) {
+func (disabledCommander) Update(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.UpdateRequest) (agentcmd.UpdateResponse, error) {
 	return agentcmd.UpdateResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 
-func (disabledCommander) Rollback(_ context.Context, _ string, _ agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error) {
+func (disabledCommander) Rollback(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error) {
 	return agentcmd.RollbackResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 

@@ -49,9 +49,9 @@ final class Plugin
     private function __construct()
     {
         $this->keystore   = new Keystore();
-        $this->connector  = new Connector($this->keystore);
-        $this->router     = new Router($this->connector, $this->commands());
         $this->settings   = new Settings();
+        $this->connector  = new Connector($this->keystore, $this->settings);
+        $this->router     = new Router($this->connector, $this->commands());
         $this->signer     = new Signer($this->keystore);
         $this->enrollment = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand());
         $this->scheduler  = new Scheduler($this->settings, $this->enrollment);

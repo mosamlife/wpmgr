@@ -11,6 +11,24 @@ package agentcmd
 //   Header:  Authorization: Bearer <minted EdDSA JWT>   (see jwt.go)
 //   Body:    application/json — the request structs below.
 //   Response: 200 with the response structs below; non-200 ⇒ command failed.
+//
+// AUTHORITATIVE JWT CLAIM SET (the agent verifies these byte-for-byte; see
+// jwt.go for how they are minted). JOSE header is {"alg":"EdDSA","typ":"JWT"};
+// the signature is Ed25519 over the ASCII "base64url(header).base64url(payload)"
+// signing input with the control-plane private key, base64url no-pad. Payload:
+//
+//	jti  string  fresh random 128-bit value, lowercase hex (32 chars). Single-use
+//	             within the exp window (agent anti-replay).
+//	exp  number  Unix seconds. now < exp <= now+60. (CP mints now+45s.)
+//	iat  number  Unix seconds the token was minted.
+//	iss  string  "wpmgr-control-plane" (provenance; informational).
+//	aud  string  the TARGET site's canonical lowercase UUID string. The agent
+//	             MUST reject unless aud == its own enrollment site_id. This binds
+//	             the token to one site and defeats cross-tenant replay under the
+//	             single global CP signing keypair.
+//	cmd  string  the dispatched command name, exactly "update" or "rollback".
+//	             The agent MUST reject unless cmd == the command path segment it
+//	             is serving. This defeats cross-command reuse of a captured token.
 
 // TargetType identifies what an update item targets.
 const (

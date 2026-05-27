@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 )
 
@@ -43,27 +45,31 @@ func NewClient(http Doer, signer *Signer) *Client {
 func (c *Client) SetClock(now func() time.Time) { c.clock = now }
 
 // Update sends the signed `update` command to the site's agent and returns the
-// parsed response.
-func (c *Client) Update(ctx context.Context, siteURL string, req UpdateRequest) (UpdateResponse, error) {
+// parsed response. siteID is the target site's stable enrollment UUID; it is
+// bound into the JWT's aud claim so the agent rejects a token minted for a
+// different site (anti cross-tenant replay).
+func (c *Client) Update(ctx context.Context, siteID uuid.UUID, siteURL string, req UpdateRequest) (UpdateResponse, error) {
 	var out UpdateResponse
-	if err := c.post(ctx, siteURL, "update", req, &out); err != nil {
+	if err := c.post(ctx, siteID, siteURL, "update", req, &out); err != nil {
 		return UpdateResponse{}, err
 	}
 	return out, nil
 }
 
-// Rollback sends the signed `rollback` command to the site's agent.
-func (c *Client) Rollback(ctx context.Context, siteURL string, req RollbackRequest) (RollbackResponse, error) {
+// Rollback sends the signed `rollback` command to the site's agent. siteID is
+// the target site's stable enrollment UUID, bound into the JWT's aud claim.
+func (c *Client) Rollback(ctx context.Context, siteID uuid.UUID, siteURL string, req RollbackRequest) (RollbackResponse, error) {
 	var out RollbackResponse
-	if err := c.post(ctx, siteURL, "rollback", req, &out); err != nil {
+	if err := c.post(ctx, siteID, siteURL, "rollback", req, &out); err != nil {
 		return RollbackResponse{}, err
 	}
 	return out, nil
 }
 
-// post mints a fresh JWT, POSTs body to the named command endpoint at siteURL,
-// and decodes the JSON response into out. A non-2xx response is an error.
-func (c *Client) post(ctx context.Context, siteURL, command string, body, out any) error {
+// post mints a fresh JWT bound to siteID (aud) and command (cmd), POSTs body to
+// the named command endpoint at siteURL, and decodes the JSON response into
+// out. A non-2xx response is an error.
+func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command string, body, out any) error {
 	endpoint, err := joinCommandURL(siteURL, command)
 	if err != nil {
 		return err
@@ -74,7 +80,7 @@ func (c *Client) post(ctx context.Context, siteURL, command string, body, out an
 		return fmt.Errorf("marshal %s command: %w", command, err)
 	}
 
-	token, _, err := c.signer.Mint(c.clock())
+	token, _, err := c.signer.Mint(c.clock(), siteID.String(), command)
 	if err != nil {
 		return fmt.Errorf("mint command jwt: %w", err)
 	}

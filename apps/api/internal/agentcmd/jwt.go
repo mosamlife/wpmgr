@@ -9,15 +9,20 @@
 //	base64url(header) . base64url(payload) . base64url(Ed25519(signingInput))
 //
 //	header  = {"alg":"EdDSA","typ":"JWT"}     (agent checks alg == "EdDSA")
-//	payload = {"jti": "...", "exp": <unix>}    (agent checks exp window + jti)
+//	payload = {"jti","exp","iat","iss","aud","cmd"}  (agent checks exp window,
+//	          jti, aud == own enrollment site_id, cmd == dispatched command)
 //	sig     = Ed25519 detached signature over the ASCII "header.payload" string,
 //	          using the control-plane signing PRIVATE key, base64url(no pad).
 //
 // The agent (Connector::verify) requires: exp present and numeric, exp > now,
-// exp <= now+60s, jti present/non-empty (anti-replay), and a valid signature
-// over the signing input with the stored CP public key. We therefore set exp to
-// now+JWTTTL (<= 60s) and a fresh random jti per command. iss/aud are included
-// for forward-compatibility but the current agent does not require them.
+// exp <= now+60s, jti present/non-empty (anti-replay), aud == its own
+// enrollment site_id, cmd == the dispatched command path segment, and a valid
+// signature over the signing input with the stored CP public key. We therefore
+// set exp to now+JWTTTL (<= 60s), a fresh random jti per command, aud to the
+// target site's canonical UUID string, and cmd to the literal command name.
+// Binding aud+cmd defeats cross-tenant/cross-command replay of a captured token
+// under the single global CP signing keypair (see contract.go for the exact,
+// authoritative claim set the agent mirrors).
 package agentcmd
 
 import (
@@ -74,19 +79,28 @@ type jwtHeader struct {
 	Typ string `json:"typ"`
 }
 
-// jwtClaims is the minimal claim set the agent requires plus provenance fields.
+// jwtClaims is the claim set the agent requires plus provenance fields. aud
+// binds the token to a single target site (the agent's stable enrollment
+// site_id) and cmd binds it to a single command, so a captured token cannot be
+// replayed against a different tenant's site or repurposed for a different
+// command within the exp window.
 type jwtClaims struct {
 	JTI string `json:"jti"`
 	Exp int64  `json:"exp"`
 	Iat int64  `json:"iat"`
 	Iss string `json:"iss"`
+	Aud string `json:"aud"`
+	Cmd string `json:"cmd"`
 }
 
-// Mint produces a signed compact JWT valid for JWTTTL from now. jti is a fresh
-// random 128-bit value (hex) so each command is single-use under the agent's
-// anti-replay window. The returned jti lets the caller correlate/log without
-// re-parsing the token.
-func (s *Signer) Mint(now time.Time) (token string, jti string, err error) {
+// Mint produces a signed compact JWT valid for JWTTTL from now, bound to the
+// target site (aud) and the named command (cmd). jti is a fresh random 128-bit
+// value (hex) so each command is single-use under the agent's anti-replay
+// window. aud MUST be the target site's canonical lowercase UUID string (the
+// agent compares it to its own enrollment site_id); cmd MUST be the literal
+// command name ("update"|"rollback") matching the dispatched path segment. The
+// returned jti lets the caller correlate/log without re-parsing the token.
+func (s *Signer) Mint(now time.Time, aud, cmd string) (token string, jti string, err error) {
 	jtiBytes := make([]byte, 16)
 	if _, err := rand.Read(jtiBytes); err != nil {
 		return "", "", fmt.Errorf("generate jti: %w", err)
@@ -99,6 +113,8 @@ func (s *Signer) Mint(now time.Time) (token string, jti string, err error) {
 		Exp: now.Add(JWTTTL).Unix(),
 		Iat: now.Unix(),
 		Iss: Issuer,
+		Aud: aud,
+		Cmd: cmd,
 	}
 
 	headerJSON, err := json.Marshal(header)

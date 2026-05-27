@@ -77,6 +77,9 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (Run, []Task
 	if len(in.Items) == 0 {
 		return Run{}, nil, domain.Validation("items_required", "at least one update item is required")
 	}
+	if err := validateItems(in.Items); err != nil {
+		return Run{}, nil, err
+	}
 
 	sites, err := s.resolveSites(ctx, in)
 	if err != nil {

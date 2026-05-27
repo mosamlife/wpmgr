@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,6 +39,14 @@ type fakeAgent struct {
 	rollbackCalls int32
 	dryRunSeen    bool
 	snapshotSeen  bool
+	// expectAud is the enrollment site_id the agent verifies the JWT aud against
+	// (set by the test after enrollment). authErr records any aud/cmd mismatch
+	// observed on a command so the test can assert the worker bound them.
+	expectAud string
+	updateAud string
+	updateCmd string
+	rbAud     string
+	rbCmd     string
 
 	// homepageStatus is returned for GET / (the health probe). 0 ⇒ 200.
 	homepageStatus int
@@ -60,13 +69,18 @@ func newFakeAgent(t *testing.T) *fakeAgent {
 		atomic.AddInt32(&fa.updateCalls, 1)
 		var req agentcmd.UpdateRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		aud, cmd := bearerAudCmd(r)
 		fa.mu.Lock()
 		fa.dryRunSeen = req.DryRun
 		fa.snapshotSeen = req.Snapshot
+		fa.updateAud = aud
+		fa.updateCmd = cmd
+		expect := fa.expectAud
 		resp := fa.updateResp
 		fa.mu.Unlock()
-		// Require a Bearer token (the signed JWT) — the real agent rejects without it.
-		if r.Header.Get("Authorization") == "" {
+		// Mirror the real agent: require a Bearer token whose aud == this site's
+		// enrollment id and cmd == the dispatched command. Reject otherwise.
+		if r.Header.Get("Authorization") == "" || (expect != "" && aud != expect) || cmd != "update" {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -74,9 +88,17 @@ func newFakeAgent(t *testing.T) *fakeAgent {
 	})
 	mux.HandleFunc("/wp-json/wpmgr/v1/command/rollback", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&fa.rollbackCalls, 1)
+		aud, cmd := bearerAudCmd(r)
 		fa.mu.Lock()
+		fa.rbAud = aud
+		fa.rbCmd = cmd
+		expect := fa.expectAud
 		resp := fa.rollbackResp
 		fa.mu.Unlock()
+		if r.Header.Get("Authorization") == "" || (expect != "" && aud != expect) || cmd != "rollback" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		writeJSON(w, resp)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +126,45 @@ func (fa *fakeAgent) setHomepage(status int, body string) {
 	fa.homepageStatus = status
 	fa.homepageBody = body
 	fa.mu.Unlock()
+}
+
+// setExpectAud sets the enrollment site_id the fake agent verifies the command
+// JWT's aud claim against (mirrors the real agent binding to its own site_id).
+func (fa *fakeAgent) setExpectAud(aud string) {
+	fa.mu.Lock()
+	fa.expectAud = aud
+	fa.mu.Unlock()
+}
+
+// bearerAudCmd extracts the aud and cmd claims from the request's Bearer JWT
+// (no signature verification needed here — we only assert the worker bound the
+// claims; jwt_test.go proves the signature/verify contract).
+func bearerAudCmd(r *http.Request) (aud, cmd string) {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, prefix) {
+		return "", ""
+	}
+	parts := strings.Split(strings.TrimPrefix(h, prefix), ".")
+	if len(parts) != 3 {
+		return "", ""
+	}
+	p := parts[1]
+	if m := len(p) % 4; m != 0 {
+		p += strings.Repeat("=", 4-m)
+	}
+	raw, err := base64.URLEncoding.DecodeString(p)
+	if err != nil {
+		return "", ""
+	}
+	var claims struct {
+		Aud string `json:"aud"`
+		Cmd string `json:"cmd"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return "", ""
+	}
+	return claims.Aud, claims.Cmd
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -295,6 +356,7 @@ func TestUpdateRunHappyPath(t *testing.T) {
 
 	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
 	s := enrollFakeSite(t, pool, tenant, fa.url())
+	fa.setExpectAud(s.ID.String())
 
 	run, tasks, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
 		TenantID: tenant,
@@ -325,6 +387,16 @@ func TestUpdateRunHappyPath(t *testing.T) {
 	if !fa.snapshotSeen {
 		t.Fatal("worker must request a pre-update snapshot on a real update")
 	}
+	// The worker must bind the command JWT to this site (aud) and command (cmd).
+	fa.mu.Lock()
+	gotAud, gotCmd := fa.updateAud, fa.updateCmd
+	fa.mu.Unlock()
+	if gotAud != s.ID.String() {
+		t.Fatalf("update JWT aud = %q, want site id %q", gotAud, s.ID.String())
+	}
+	if gotCmd != "update" {
+		t.Fatalf("update JWT cmd = %q, want update", gotCmd)
+	}
 }
 
 // TestUpdateAutoRollback: agent reports a successful update, but the post-update
@@ -338,6 +410,7 @@ func TestUpdateAutoRollback(t *testing.T) {
 
 	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
 	s := enrollFakeSite(t, pool, tenant, fa.url())
+	fa.setExpectAud(s.ID.String())
 
 	run, _, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
 		TenantID: tenant,
@@ -356,6 +429,16 @@ func TestUpdateAutoRollback(t *testing.T) {
 	if atomic.LoadInt32(&fa.rollbackCalls) != 1 {
 		t.Fatalf("rollback called %d times, want 1", fa.rollbackCalls)
 	}
+	// The rollback command JWT must also be bound to this site and command.
+	fa.mu.Lock()
+	rbAud, rbCmd := fa.rbAud, fa.rbCmd
+	fa.mu.Unlock()
+	if rbAud != s.ID.String() {
+		t.Fatalf("rollback JWT aud = %q, want site id %q", rbAud, s.ID.String())
+	}
+	if rbCmd != "rollback" {
+		t.Fatalf("rollback JWT cmd = %q, want rollback", rbCmd)
+	}
 }
 
 // TestUpdateDryRunDoesNotMutate: a dry-run must call the agent with dry_run=true
@@ -372,6 +455,7 @@ func TestUpdateDryRunDoesNotMutate(t *testing.T) {
 
 	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
 	s := enrollFakeSite(t, pool, tenant, fa.url())
+	fa.setExpectAud(s.ID.String())
 
 	run, _, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
 		TenantID: tenant,

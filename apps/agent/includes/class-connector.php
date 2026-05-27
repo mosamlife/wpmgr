@@ -11,6 +11,11 @@
  *   - Anti-replay: each token carries a unique `jti`. We reject a token whose
  *     `jti` has been seen inside the replay window, whose `exp` is in the past,
  *     or whose `exp` is more than 60s in the future (clock-skew clamp).
+ *   - Tenant + command binding: a command token additionally carries `aud`
+ *     (this site's enrolled UUID) and `cmd` (the command name). Both are
+ *     REQUIRED and checked after the signature/temporal/replay gates so a
+ *     captured token cannot be replayed to another tenant's site or routed to
+ *     a different command within its exp window.
  *
  * No RSA. No phpseclib. Ed25519 only.
  *
@@ -37,12 +42,16 @@ final class Connector
 
     private Keystore $keystore;
 
+    private Settings $settings;
+
     /**
      * @param Keystore $keystore Provides the control-plane public key.
+     * @param Settings $settings Provides this site's enrolled UUID (the JWT `aud`).
      */
-    public function __construct(Keystore $keystore)
+    public function __construct(Keystore $keystore, Settings $settings)
     {
         $this->keystore = $keystore;
+        $this->settings = $settings;
     }
 
     /**
@@ -114,6 +123,53 @@ final class Connector
         }
 
         $this->recordJti($jti, $exp, $now);
+
+        return $claims;
+    }
+
+    /**
+     * Verify a command token, additionally binding it to THIS site (`aud`) and
+     * to the specific command being dispatched (`cmd`).
+     *
+     * Runs the full signature + temporal + anti-replay verification first (so
+     * nothing in the payload is trusted before the Ed25519 signature passes),
+     * then REQUIRES and checks the `aud` and `cmd` claims:
+     *   - `aud` (string) must equal this site's enrolled UUID (hash_equals).
+     *   - `cmd` (string) must equal the command name being invoked (hash_equals).
+     * Both claims are mandatory; a token missing either is rejected.
+     *
+     * @param string   $jwt         Compact token.
+     * @param string   $expectedCmd Command name from the route (e.g. "update").
+     * @param int|null $now         Override "current time" (testing).
+     * @return array<string,mixed> The validated claim set on success.
+     * @throws \RuntimeException With a generic message on ANY failure.
+     */
+    public function verifyCommand(string $jwt, string $expectedCmd, ?int $now = null): array
+    {
+        $claims = $this->verify($jwt, $now);
+
+        // ---- 5. Tenant binding: aud must equal this site's enrolled UUID. ----
+        $siteId = $this->settings->siteId();
+        if ($siteId === '') {
+            throw new \RuntimeException('WPMgr Agent: site not enrolled.');
+        }
+        if (!isset($claims['aud']) || !is_string($claims['aud']) || $claims['aud'] === '') {
+            throw new \RuntimeException('WPMgr Agent: missing aud.');
+        }
+        if (!hash_equals($siteId, $claims['aud'])) {
+            throw new \RuntimeException('WPMgr Agent: aud mismatch.');
+        }
+
+        // ---- 6. Command binding: cmd must equal the invoked command. ----
+        if ($expectedCmd === '') {
+            throw new \RuntimeException('WPMgr Agent: missing expected command.');
+        }
+        if (!isset($claims['cmd']) || !is_string($claims['cmd']) || $claims['cmd'] === '') {
+            throw new \RuntimeException('WPMgr Agent: missing cmd.');
+        }
+        if (!hash_equals($expectedCmd, $claims['cmd'])) {
+            throw new \RuntimeException('WPMgr Agent: cmd mismatch.');
+        }
 
         return $claims;
     }

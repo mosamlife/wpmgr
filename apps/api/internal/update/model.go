@@ -10,9 +10,12 @@
 package update
 
 import (
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // Run statuses.
@@ -76,6 +79,34 @@ type Item struct {
 	Type    string `json:"type" validate:"required,oneof=plugin theme core"`
 	Slug    string `json:"slug" validate:"max=200"`
 	Version string `json:"version" validate:"max=64"`
+}
+
+// versionPattern bounds the update version to "latest" or a conservative
+// version-pin charset (leading alnum then a small safe set). It deliberately
+// forbids whitespace, ';', '&', and '--' so a value cannot smuggle extra
+// arguments into the agent's WP-CLI invocation (e.g. "latest --activate" or
+// "1.0; rm -rf"). The agent re-validates as defense-in-depth (ADR contract).
+var versionPattern = regexp.MustCompile(`^(latest|[0-9][0-9A-Za-z.\-]{0,63})$`)
+
+// slugPattern bounds plugin/theme slugs to a safe filesystem-ish charset,
+// optionally one path segment (e.g. "akismet" or "akismet/akismet"). No spaces,
+// shell metacharacters, or path traversal sequences are allowed.
+var slugPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$`)
+
+// validateItems enforces the CP-side safe charset on each update item's version
+// and slug AFTER normalization, returning a KindValidation (HTTP 422) domain
+// error on the first offending value. This is the control-plane guard against
+// argument injection into the agent's WP-CLI; the agent validates again.
+func validateItems(items []Item) error {
+	for _, it := range items {
+		if len(it.Slug) > 200 || !slugPattern.MatchString(it.Slug) {
+			return domain.Validation("invalid_slug", "update item slug contains an unsafe value: "+it.Slug)
+		}
+		if it.Version != "" && !versionPattern.MatchString(it.Version) {
+			return domain.Validation("invalid_version", "update item version contains an unsafe value: "+it.Version)
+		}
+	}
+	return nil
 }
 
 // CreateRunInput is the validated input for creating an update run. Exactly one

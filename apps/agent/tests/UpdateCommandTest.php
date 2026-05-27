@@ -294,4 +294,67 @@ final class UpdateCommandTest extends TestCase
     {
         $this->assertSame('update', (new UpdateCommand())->name());
     }
+
+    // ---- version argument-injection validation ----------------------------
+
+    /**
+     * @dataProvider unsafeVersions
+     */
+    public function test_runner_rejects_unsafe_version_string(string $version): void
+    {
+        $this->assertFalse(UpdateRunner::isValidVersion($version));
+
+        // apply() must refuse to invoke WP-CLI/upgrader for an unsafe version.
+        $runner = new UpdateRunner();
+        $out    = $runner->apply('plugin', 'akismet/akismet.php', $version);
+        $this->assertFalse($out['ok']);
+
+        // forceCore() (the PHP-fallback offer-URL path) must reject it too.
+        $core = $runner->forceCore($version);
+        $this->assertFalse($core['ok']);
+    }
+
+    /**
+     * @return array<int,array{0:string}>
+     */
+    public static function unsafeVersions(): array
+    {
+        return [
+            ['1.0 --activate'],
+            ['latest --activate'],
+            ['--activate'],
+            ['1.0;rm -rf /'],
+            ['1.0 && echo pwned'],
+            ['1.0|whoami'],
+            ['1.0`id`'],
+            [' 1.0'],
+            ['v1.0'], // must start with a digit
+            [''],
+        ];
+    }
+
+    public function test_runner_accepts_safe_versions(): void
+    {
+        $this->assertTrue(UpdateRunner::isValidVersion('latest'));
+        $this->assertTrue(UpdateRunner::isValidVersion('1.0'));
+        $this->assertTrue(UpdateRunner::isValidVersion('6.4.3'));
+        $this->assertTrue(UpdateRunner::isValidVersion('5.3-beta1'));
+    }
+
+    public function test_command_marks_item_failed_for_version_with_spaces(): void
+    {
+        // Use a REAL runner (not the spy) so the version validation in apply()
+        // is exercised; wpCliAvailable() is false outside a WP-CLI context.
+        $runner = new UpdateRunner();
+        $cmd    = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [
+                ['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '1.0 --activate'],
+            ],
+        ]);
+
+        $this->assertFalse($out['ok']);
+        $this->assertSame('failed', $out['results'][0]['status']);
+    }
 }

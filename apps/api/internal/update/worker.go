@@ -65,10 +65,12 @@ func QueueNames() []string {
 	return names
 }
 
-// Commander sends signed CP->agent update/rollback commands.
+// Commander sends signed CP->agent update/rollback commands. siteID is the
+// target site's stable enrollment UUID, bound into the command JWT's aud claim
+// so a captured token cannot be replayed against a different tenant's site.
 type Commander interface {
-	Update(ctx context.Context, siteURL string, req agentcmd.UpdateRequest) (agentcmd.UpdateResponse, error)
-	Rollback(ctx context.Context, siteURL string, req agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error)
+	Update(ctx context.Context, siteID uuid.UUID, siteURL string, req agentcmd.UpdateRequest) (agentcmd.UpdateResponse, error)
+	Rollback(ctx context.Context, siteID uuid.UUID, siteURL string, req agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error)
 }
 
 // HealthProber probes a site's homepage for post-update health.
@@ -150,7 +152,7 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 
 // runDry asks the agent what WOULD change without mutating the site.
 func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem) error {
-	resp, err := w.cmd.Update(ctx, siteURL, agentcmd.UpdateRequest{DryRun: true, Snapshot: false, Items: []agentcmd.UpdateItem{item}})
+	resp, err := w.cmd.Update(ctx, task.SiteID, siteURL, agentcmd.UpdateRequest{DryRun: true, Snapshot: false, Items: []agentcmd.UpdateItem{item}})
 	if err != nil {
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "dry-run command failed", err.Error())
 	}
@@ -168,7 +170,7 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 // runApply executes the real update: snapshot + apply, then health-probe and
 // auto-rollback on a broken site.
 func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem) error {
-	resp, err := w.cmd.Update(ctx, siteURL, agentcmd.UpdateRequest{DryRun: false, Snapshot: true, Items: []agentcmd.UpdateItem{item}})
+	resp, err := w.cmd.Update(ctx, task.SiteID, siteURL, agentcmd.UpdateRequest{DryRun: false, Snapshot: true, Items: []agentcmd.UpdateItem{item}})
 	if err != nil {
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "update command failed", err.Error())
 	}
@@ -198,7 +200,7 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 // rollback issues the signed rollback command and records the rolled_back state.
 func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, reason string) error {
 	from := fromOr(res.FromVersion, task.FromVersion)
-	_, rbErr := w.cmd.Rollback(ctx, siteURL, agentcmd.RollbackRequest{
+	_, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
 		Type:       item.Type,
 		Slug:       item.Slug,
 		SnapshotID: res.SnapshotID,

@@ -13,6 +13,7 @@ use Brain\Monkey;
 use Brain\Monkey\Functions;
 use WPMgr\Agent\Connector;
 use WPMgr\Agent\Keystore;
+use WPMgr\Agent\Settings;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -34,6 +35,9 @@ final class ConnectorTest extends TestCase
     private Keystore $keystore;
 
     private Connector $connector;
+
+    /** This site's enrolled UUID (the expected JWT `aud`). */
+    private string $siteId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
     protected function set_up(): void
     {
@@ -62,7 +66,10 @@ final class ConnectorTest extends TestCase
         $this->keystore = new Keystore();
         $this->keystore->storeControlPlanePublicKey($this->cpPublic);
 
-        $this->connector = new Connector($this->keystore);
+        // Persist this site's enrolled UUID so Settings::siteId() returns it.
+        $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
+
+        $this->connector = new Connector($this->keystore, new Settings());
 
         // Fresh fake $wpdb per test.
         $GLOBALS['wpdb'] = new FakeWpdb();
@@ -192,5 +199,80 @@ final class ConnectorTest extends TestCase
     {
         $this->expectException(\RuntimeException::class);
         $this->connector->verify('not-a-jwt');
+    }
+
+    // ---- aud + cmd binding (verifyCommand) --------------------------------
+
+    public function test_command_token_with_correct_aud_and_cmd_verifies(): void
+    {
+        $now = 1_700_000_000;
+        $jwt = $this->makeJwt([
+            'jti' => 'cmd-ok-1',
+            'iat' => $now,
+            'iss' => 'wpmgr-control-plane',
+            'exp' => $now + 30,
+            'aud' => $this->siteId,
+            'cmd' => 'update',
+        ]);
+
+        $claims = $this->connector->verifyCommand($jwt, 'update', $now);
+
+        $this->assertSame($this->siteId, $claims['aud']);
+        $this->assertSame('update', $claims['cmd']);
+    }
+
+    public function test_command_token_for_another_sites_aud_is_rejected(): void
+    {
+        $now = 1_700_000_000;
+        $jwt = $this->makeJwt([
+            'jti' => 'cmd-wrongaud-1',
+            'exp' => $now + 30,
+            'aud' => '11111111-2222-3333-4444-555555555555', // a different tenant's site
+            'cmd' => 'update',
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->connector->verifyCommand($jwt, 'update', $now);
+    }
+
+    public function test_command_token_minted_for_update_is_rejected_on_rollback_route(): void
+    {
+        $now = 1_700_000_000;
+        // Token legitimately minted for "update" but replayed to the "rollback" route.
+        $jwt = $this->makeJwt([
+            'jti' => 'cmd-wrongcmd-1',
+            'exp' => $now + 30,
+            'aud' => $this->siteId,
+            'cmd' => 'update',
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->connector->verifyCommand($jwt, 'rollback', $now);
+    }
+
+    public function test_command_token_missing_aud_is_rejected(): void
+    {
+        $now = 1_700_000_000;
+        $jwt = $this->makeJwt([
+            'jti' => 'cmd-noaud-1',
+            'exp' => $now + 30,
+            'cmd' => 'update',
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->connector->verifyCommand($jwt, 'update', $now);
+    }
+
+    public function test_command_token_missing_cmd_is_rejected(): void
+    {
+        $now = 1_700_000_000;
+        $jwt = $this->makeJwt([
+            'jti' => 'cmd-nocmd-1',
+            'exp' => $now + 30,
+            'aud' => $this->siteId,
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->connector->verifyCommand($jwt, 'update', $now);
     }
 }

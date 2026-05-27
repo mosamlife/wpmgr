@@ -20,6 +20,25 @@ namespace WPMgr\Agent\Support;
 class UpdateRunner
 {
     /**
+     * Validate an untrusted version string before it reaches WP-CLI argv or an
+     * upgrader offer URL. Accepts only the literal "latest" or a token that
+     * starts with a digit and contains only [0-9A-Za-z.-] (no spaces, no flag
+     * separators), which blocks argument injection such as "latest --activate"
+     * or "1.0 --activate".
+     *
+     * @param string $version Raw requested version.
+     * @return bool True when safe to use.
+     */
+    public static function isValidVersion(string $version): bool
+    {
+        if ($version === 'latest') {
+            return true;
+        }
+
+        return preg_match('#^[0-9][0-9A-Za-z.\-]*$#', $version) === 1;
+    }
+
+    /**
      * Resolve the currently installed version of an item.
      *
      * @param string $type plugin|theme|core.
@@ -90,6 +109,10 @@ class UpdateRunner
      */
     public function apply(string $type, string $slug, string $version): array
     {
+        if (!self::isValidVersion($version)) {
+            return ['ok' => false, 'log' => 'Rejected unsafe version string.'];
+        }
+
         if ($this->wpCliAvailable()) {
             return $this->applyViaWpCli($type, $slug, $version);
         }
@@ -108,6 +131,12 @@ class UpdateRunner
      */
     public function forceCore(string $version): array
     {
+        // forceCore always targets an explicit version; "latest" is not a valid
+        // rollback target and the literal must never reach the offer URL / argv.
+        if ($version === 'latest' || !self::isValidVersion($version)) {
+            return ['ok' => false, 'log' => 'Rejected unsafe version string.'];
+        }
+
         if ($this->wpCliAvailable()) {
             return $this->runWpCli([
                 'core',

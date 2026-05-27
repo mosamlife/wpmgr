@@ -96,8 +96,18 @@ final class Router
             return $this->forbidden('missing_token');
         }
 
+        // For the command route the {command} segment names the action being
+        // invoked; thread it into verification so the token's `cmd` claim is
+        // bound to THIS command and its `aud` claim is bound to THIS site.
+        $command = $request->get_param('command');
+        $command = is_string($command) ? $command : '';
+
         try {
-            $claims = $this->connector->verify($token);
+            if ($command !== '') {
+                $claims = $this->connector->verifyCommand($token, $command);
+            } else {
+                $claims = $this->connector->verify($token);
+            }
         } catch (\Throwable $e) {
             // Never leak the specific failure reason to the caller.
             return $this->forbidden('invalid_token');
