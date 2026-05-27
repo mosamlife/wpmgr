@@ -90,7 +90,16 @@
   - [x] Frontend: Add-site pairing dialog, health/enrollment badges, site metadata + components
   - [x] Security: hardened nonce pruning (DoS), prod guard for dev CP signing key
   - Deferred to M3: enroll/agent RLS policy tenant-predicate (defense-in-depth; correct today via Go filters); agent-key revocation/disabled-site rejection; /enroll edge rate-limiting; force https for agent CP URL outside localhost
-- [ ] M3 — Bulk updates with rollback
+- [x] M3 — Bulk updates with rollback ✅ (E2E smoke + security review PASS after fixes)
+  - [x] Update orchestrator (River, per-tenant parallelism) + update_runs/update_tasks (RLS)
+  - [x] SSRF-hardened HTTP client (ADR-009) for all CP→agent/site calls
+  - [x] CP→agent signed command channel (EdDSA JWT bound to aud=site + cmd); update/rollback
+  - [x] Agent: WP-CLI + PHP-fallback update/rollback, pre-update snapshots (path-traversal safe)
+  - [x] Post-update health probe + auto-rollback on 5xx/fatal
+  - [x] Bulk UI: multi-select/tag, dry-run default, schedule; live SSE progress + polling fallback
+  - [x] Update history (from→to version diffs); audit events
+  - [x] Security fixes: JWT site+command binding (HIGH cross-tenant replay), version/slug validation (MED)
+  - Deferred to later: per-run SSE subscriber cap (LOW); full backup-primitive snapshot integration after M4
 - [ ] M4 — Incremental backups + restore
 - [ ] M5 — Uptime monitoring
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
