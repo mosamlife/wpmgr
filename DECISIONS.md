@@ -50,14 +50,15 @@ stay in place with a `Superseded` status and a pointer to the replacement.
 Cross-cutting findings surfaced during research that need a decision or follow-up
 before/within Phase 4:
 
-1. **MinIO server is no longer maintained (HIGH).** The MinIO server community edition
-   went maintenance-only in late 2025 and the repo was marked no-longer-maintained /
-   archived ~2026-02-12 ([minio/minio#21714](https://github.com/minio/minio/issues/21714)).
-   The *client* SDK `minio-go` is unaffected, and our client choice (aws-sdk-go-v2,
-   ADR-010) is vendor-neutral. But the **locked stack names "MinIO for self-host"** —
-   the self-host object-storage *server* should be re-evaluated: SeaweedFS (Apache-2.0,
-   Go), Garage (AGPLv3 — license-aligned), or RustFS. All speak the S3 API, so the
-   `blobstore` interface keeps us decoupled. **Needs user decision.**
+1. **MinIO server is no longer maintained (HIGH) — RESOLVED 2026-05-27.** The MinIO
+   server community edition went maintenance-only in late 2025 and the repo was marked
+   no-longer-maintained / archived ~2026-02-12
+   ([minio/minio#21714](https://github.com/minio/minio/issues/21714)). The *client* SDK
+   choice (aws-sdk-go-v2, ADR-010) is vendor-neutral and unaffected.
+   **Decision: replace MinIO with [SeaweedFS](https://github.com/seaweedfs/seaweedfs)
+   (Apache-2.0, Go, actively maintained) as the self-host S3-compatible object store.**
+   Phase 4 docker-compose ships SeaweedFS in S3-gateway mode; the `blobstore` interface
+   keeps Garage/RustFS/AWS S3 as drop-in alternatives.
 2. **Atlas is open-core (MEDIUM).** We restrict ourselves to the Apache-2.0 Community
    Edition and must avoid Pro/EULA-gated features to stay fully OSS. Fallback: goose
    (plain portable SQL migrations). See ADR-002.

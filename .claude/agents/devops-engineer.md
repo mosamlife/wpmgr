@@ -8,7 +8,7 @@ model: sonnet
 You own WPMgr infrastructure.
 
 Responsibilities:
-- `infra/docker-compose.yml` — one-command self-host (Postgres, Redis, MinIO, ClickHouse, API, web).
+- `infra/docker-compose.yml` — one-command self-host (Postgres, Redis, SeaweedFS, ClickHouse, API, web). SeaweedFS runs in S3-gateway mode (port 8333); see ADR-010 + risk register.
 - `infra/Dockerfile.api`, `infra/Dockerfile.web` — multi-stage, distroless where possible.
 - `.github/workflows/` — CI (lint, typecheck, test, build), CD (container build/push), release (binaries + agent zip).
 - `turbo.json` — `lint`, `test`, `build`, `dev` pipelines.

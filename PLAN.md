@@ -47,7 +47,8 @@
 - [x] ADR-020 E2E → **Playwright**
 - [x] ADR-021 PHP testing → **PHPUnit** (+ Brain Monkey, Polyfills)
 - [x] ADR-022 PHP static analysis → **PHPStan** (+ WP stubs)
-- [ ] User approval to proceed (resolve risk register item 1: self-host object store)
+- [x] Risk register item 1 resolved → **SeaweedFS** for self-host object store
+- [ ] User approval to proceed
 
 ## Phase 4 — V0 Skeleton
 - [ ] Backend skeleton
