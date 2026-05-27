@@ -1,0 +1,11 @@
+{
+  "extends": "@wpmgr/tsconfig/react.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"]
+}

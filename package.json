@@ -1,0 +1,27 @@
+{
+  "name": "wpmgr",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Open-source self-hostable WordPress management platform",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@11.1.1",
+  "engines": {
+    "node": ">=22.13.0",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md,yaml,yml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,md,yaml,yml}\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3"
+  }
+}

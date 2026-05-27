@@ -16,12 +16,12 @@
 - [x] docs-writer
 
 ## Phase 2 — Repo Bootstrap
-- [ ] Root files (LICENSE, README, .gitignore, etc.)
-- [ ] Turborepo + pnpm workspace
-- [ ] Go workspace
-- [ ] apps/ scaffolds
-- [ ] packages/ scaffolds
-- [ ] infra/ scaffolds
+- [x] Root files (LICENSE, README, .gitignore, etc.)
+- [x] Turborepo + pnpm workspace
+- [x] Go workspace
+- [x] apps/ scaffolds
+- [x] packages/ scaffolds
+- [x] infra/ scaffolds
 - [ ] User approval to proceed
 
 ## Phase 3 — Tech Stack ADRs

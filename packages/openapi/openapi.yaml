@@ -1,0 +1,38 @@
+openapi: 3.1.0
+info:
+  title: WPMgr API
+  version: 0.0.0
+  description: |
+    Control-plane REST API for WPMgr. This is the single source of truth for
+    both the Go server types and the generated TypeScript client. Real paths
+    and schemas are filled in during Phase 4 (skeleton) and Phase 5 (features).
+  license:
+    name: AGPL-3.0-only
+    url: https://www.gnu.org/licenses/agpl-3.0.txt
+servers:
+  - url: http://localhost:8080
+    description: Local development
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness probe
+      tags: [system]
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+components:
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string

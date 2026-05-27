@@ -1,0 +1,10 @@
+{
+  "name": "@wpmgr/tsconfig",
+  "version": "0.0.0",
+  "private": true,
+  "files": ["base.json", "react.json"],
+  "exports": {
+    "./base.json": "./base.json",
+    "./react.json": "./react.json"
+  }
+}

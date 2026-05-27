@@ -1,0 +1,21 @@
+# Normalize line endings
+* text=auto eol=lf
+
+*.go    text eol=lf
+*.php   text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.sh    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# Binary
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.zip   binary
+*.woff2 binary
+
+# Generated — collapse in diffs
+packages/openapi-client/** linguist-generated=true
+go.work.sum linguist-generated=true

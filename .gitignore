@@ -1,0 +1,48 @@
+# ---- Go ----
+/apps/api/bin/
+/apps/cli/bin/
+*.exe
+*.test
+*.out
+coverage.txt
+coverage.html
+go.work.sum
+
+# ---- Node / pnpm ----
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+.vite/
+playwright-report/
+test-results/
+.eslintcache
+
+# ---- PHP / Composer ----
+/apps/agent/vendor/
+composer.lock
+.phpunit.result.cache
+.phpunit.cache/
+
+# ---- Env / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/testdata/**/*.key
+secrets/
+keys/
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Build artifacts ----
+/release/
+/sbom/
+*.zip
+!apps/agent/**/*.zip

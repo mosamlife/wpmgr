@@ -1,0 +1,6 @@
+packages:
+  - "apps/web"
+  - "apps/tracker"
+  - "packages/*"
+allowBuilds:
+  esbuild: true

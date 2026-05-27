@@ -1,0 +1,13 @@
+# Default owner for everything
+*                       @mosamlife
+
+# Domain ownership
+/apps/api/              @mosamlife
+/apps/web/              @mosamlife
+/apps/agent/            @mosamlife
+/infra/                 @mosamlife
+/.github/               @mosamlife
+
+# Security-sensitive areas require extra review
+/apps/api/internal/auth/    @mosamlife
+/apps/api/internal/agent/   @mosamlife

@@ -1,0 +1,14 @@
+{
+  "name": "@wpmgr/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional shared React component library (built as needed)",
+  "main": "src/index.ts",
+  "scripts": {
+    "lint": "echo 'noop'",
+    "typecheck": "echo 'noop'",
+    "build": "echo 'noop'",
+    "test": "echo 'noop'"
+  }
+}

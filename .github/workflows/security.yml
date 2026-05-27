@@ -1,0 +1,12 @@
+# Placeholder workflow — the real security pipeline is built by the devops-engineer
+# in Phase 4 (lint, typecheck, test, build / container push / SBOM + scan).
+name: security
+
+on:
+  workflow_dispatch:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "security pipeline lands in Phase 4"
