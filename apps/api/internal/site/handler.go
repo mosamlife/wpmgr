@@ -64,7 +64,10 @@ func (h *Handler) create(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toAPI(s))
+	// Pass a pointer: ogen's MarshalJSON is on *gen.Site, so a non-addressable
+	// value would fall back to struct reflection and emit url.URL as an object.
+	out := toAPI(s)
+	c.JSON(http.StatusCreated, &out)
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -83,7 +86,8 @@ func (h *Handler) get(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toAPI(s))
+	out := toAPI(s)
+	c.JSON(http.StatusOK, &out)
 }
 
 func (h *Handler) list(c *gin.Context) {

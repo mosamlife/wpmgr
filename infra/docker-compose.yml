@@ -61,7 +61,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 40s
 
   # One-shot init: create the wpmgr-backups bucket via the S3 gateway.
   seaweedfs-init:
@@ -138,7 +138,9 @@ services:
       redis:
         condition: service_healthy
       seaweedfs:
-        condition: service_healthy
+        # API does not use object storage until backups (M4); only require it to
+        # have started, so slow S3-gateway warmup never blocks the control plane.
+        condition: service_started
     # NOTE: no healthcheck here yet — the distroless image has no shell and the
     # binary does not expose a self-probe subcommand. Once the real server lands
     # (GET /healthz, GET /readyz), add an HTTP healthcheck (e.g. via a small

@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,6 +44,26 @@ func Connect(ctx context.Context, dsn string) (*Pool, error) {
 // Ping verifies the pool can reach the database (used by /readyz).
 func (p *Pool) Ping(ctx context.Context) error {
 	return p.Pool.Ping(ctx)
+}
+
+// WarnIfRLSBypassRole logs a warning if the application's connecting role is a
+// superuser or has BYPASSRLS, because either silently voids Row-Level Security —
+// the tenant_id WHERE filter would become the ONLY isolation. The app should
+// connect as a dedicated NOSUPERUSER NOBYPASSRLS role. Phase 5 (M1) will turn
+// this into a hard boot failure and split the migration DSN from the app DSN.
+func (p *Pool) WarnIfRLSBypassRole(ctx context.Context, logger *slog.Logger) {
+	var super, bypass bool
+	err := p.QueryRow(ctx,
+		`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+	).Scan(&super, &bypass)
+	if err != nil {
+		logger.Warn("could not verify DB role RLS posture", slog.Any("error", err))
+		return
+	}
+	if super || bypass {
+		logger.Warn("application DB role bypasses Row-Level Security — tenant isolation is NOT enforced by RLS; connect as a NOSUPERUSER NOBYPASSRLS role before production",
+			slog.Bool("rolsuper", super), slog.Bool("rolbypassrls", bypass))
+	}
 }
 
 // InTenantTx runs fn inside a transaction with app.tenant_id set to the given

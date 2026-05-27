@@ -61,6 +61,10 @@ func run() error {
 	}
 	logger.Info("migrations applied")
 
+	// Warn (loudly) if the app DB role can bypass RLS. Hard-fail + DSN split
+	// is a Phase 5 / M1 hardening item (see security review).
+	pool.WarnIfRLSBypassRole(ctx, logger)
+
 	validator := domain.NewValidator()
 	clock := domain.SystemClock{}
 

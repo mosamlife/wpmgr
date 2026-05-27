@@ -46,7 +46,9 @@ func (h *Handler) create(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toAPI(t))
+	// Pointer so ogen's *Tenant MarshalJSON is used (consistent with list).
+	out := toAPI(t)
+	c.JSON(http.StatusCreated, &out)
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -60,7 +62,8 @@ func (h *Handler) get(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toAPI(t))
+	out := toAPI(t)
+	c.JSON(http.StatusOK, &out)
 }
 
 func (h *Handler) list(c *gin.Context) {

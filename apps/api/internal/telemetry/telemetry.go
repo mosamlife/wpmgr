@@ -35,10 +35,12 @@ type Provider struct {
 // Init configures the global tracer provider and propagators. The returned
 // Provider's Shutdown must be called on exit to flush spans.
 func Init(ctx context.Context, cfg Config) (*Provider, error) {
+	// NewSchemaless (no schema URL) avoids a "conflicting Schema URL" error when
+	// merging with resource.Default(), whose bundled semconv version may differ
+	// from ours. Default()'s schema URL is kept; we only contribute attributes.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+		resource.NewSchemaless(
 			semconv.ServiceName(cfg.ServiceName),
 		),
 	)

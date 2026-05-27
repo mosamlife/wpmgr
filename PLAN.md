@@ -51,13 +51,21 @@
 - [ ] User approval to proceed
 
 ## Phase 4 — V0 Skeleton
-- [ ] Backend skeleton
-- [ ] Agent skeleton
-- [ ] Frontend skeleton
-- [ ] Infra skeleton
-- [ ] Docs skeleton
-- [ ] Security review
+- [x] Backend skeleton (Gin, pgx, Atlas, sqlc, ogen, tenant+site CRUD, RLS, /healthz+/readyz)
+- [x] Agent skeleton (PHP plugin, Ed25519 verify, AES-GCM keystore, jti anti-replay, wpmgr/v1)
+- [x] Frontend skeleton (TanStack Router/Query, shadcn/Tailwind v4, @wpmgr/api, login+sites)
+- [x] Infra skeleton (distroless Dockerfiles, compose w/ SeaweedFS, observability profile, CI)
+- [x] Docs skeleton (README, architecture, install, agent, contributing, security, api)
+- [x] Security review → PASS (no high/critical); 2 items carried to M1 (below)
+- [ ] Full-stack `docker compose up` E2E verification
 - [ ] User approval to proceed
+
+### Security carry-forward into Phase 5/M1 (from Phase 4 review)
+- [ ] Enforce NOSUPERUSER/NOBYPASSRLS app DB role at startup (hard-fail) + split migration DSN from app DSN (currently only a startup WARNING — `db.WarnIfRLSBypassRole`)
+- [ ] Replace unauthenticated `X-Tenant-ID` header stub in `middleware.Tenant()` with session-derived tenant (must land with auth)
+- [ ] Apply ADR-009 SSRF-hardened transport to webhooks / agent calls / backup URLs
+- [ ] Reject default `WPMGR_SESSION_SECRET` and enforce ≥32 bytes at startup
+- [ ] Add security-headers middleware + CORS allowlist once SPA origin is finalized
 
 ## Phase 5 — V0 Feature Build
 - [ ] M1 — Auth + tenant + RBAC
