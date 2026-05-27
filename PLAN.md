@@ -25,29 +25,29 @@
 - [ ] User approval to proceed
 
 ## Phase 3 — Tech Stack ADRs
-- [ ] ADR-001 ORM/query layer — sqlc vs Bun vs Ent vs GORM
-- [ ] ADR-002 Migration tool — goose vs golang-migrate vs Atlas
-- [ ] ADR-003 Job queue — River vs Asynq vs Temporal vs Postgres LISTEN/NOTIFY
-- [ ] ADR-004 OpenAPI codegen (Go) — oapi-codegen vs ogen vs huma
-- [ ] ADR-005 Validation (Go) — go-playground/validator vs ozzo-validation vs Cue
-- [ ] ADR-006 Logging (Go) — log/slog vs zerolog vs zap
-- [ ] ADR-007 Config (Go) — koanf vs Viper vs envconfig
-- [ ] ADR-008 WebSocket (Go) — coder/websocket vs gorilla/websocket vs gobwas/ws
-- [ ] ADR-009 HTTP client (Go) — net/http vs resty vs req
-- [ ] ADR-010 S3 client (Go) — aws-sdk-go-v2 vs minio-go
-- [ ] ADR-011 OTel stack — Gin OTel middleware + collector + Tempo/Jaeger
-- [ ] ADR-012 Frontend router — TanStack Router vs React Router 7
-- [ ] ADR-013 Frontend data fetching — TanStack Query vs SWR
-- [ ] ADR-014 Component lib — shadcn/ui vs Park UI vs Mantine vs Radix-only
-- [ ] ADR-015 Forms — react-hook-form vs TanStack Form
-- [ ] ADR-016 Validation (TS) — Zod vs Valibot vs ArkType
-- [ ] ADR-017 State (TS) — Zustand vs Jotai vs Redux Toolkit
-- [ ] ADR-018 Charts — Recharts vs Tremor vs visx vs ECharts
-- [ ] ADR-019 i18n — Lingui vs react-i18next vs Paraglide
-- [ ] ADR-020 E2E — Playwright vs Cypress
-- [ ] ADR-021 PHP testing — PHPUnit vs Pest
-- [ ] ADR-022 PHP static analysis — PHPStan vs Psalm
-- [ ] User approval to proceed
+- [x] ADR-001 ORM/query layer → **sqlc** (+ pgx/v5)
+- [x] ADR-002 Migration tool → **Atlas CE** (Apache-2.0 only; fallback goose)
+- [x] ADR-003 Job queue → **River** (Postgres-native)
+- [x] ADR-004 OpenAPI codegen (Go) → **ogen** (isolate from Gin)
+- [x] ADR-005 Validation (Go) → **go-playground/validator**
+- [x] ADR-006 Logging (Go) → **log/slog**
+- [x] ADR-007 Config (Go) → **koanf**
+- [x] ADR-008 WebSocket (Go) → **coder/websocket**
+- [x] ADR-009 HTTP client (Go) → **net/http + SSRF transport**
+- [x] ADR-010 S3 client (Go) → **aws-sdk-go-v2** (⚠ MinIO server EOL — see risk register)
+- [x] ADR-011 OTel stack → **OTel SDK + otelgin → Collector → Tempo + Prometheus + Grafana**
+- [x] ADR-012 Frontend router → **TanStack Router**
+- [x] ADR-013 Frontend data fetching → **TanStack Query v5**
+- [x] ADR-014 Component lib → **shadcn/ui + Radix + TanStack Table**
+- [x] ADR-015 Forms → **react-hook-form**
+- [x] ADR-016 Validation (TS) → **Zod 4**
+- [x] ADR-017 State (TS) → **Zustand**
+- [x] ADR-018 Charts → **Tremor** (on Recharts)
+- [x] ADR-019 i18n → **Lingui v5**
+- [x] ADR-020 E2E → **Playwright**
+- [x] ADR-021 PHP testing → **PHPUnit** (+ Brain Monkey, Polyfills)
+- [x] ADR-022 PHP static analysis → **PHPStan** (+ WP stubs)
+- [ ] User approval to proceed (resolve risk register item 1: self-host object store)
 
 ## Phase 4 — V0 Skeleton
 - [ ] Backend skeleton
