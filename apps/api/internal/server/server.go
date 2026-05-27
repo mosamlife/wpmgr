@@ -13,6 +13,10 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
+	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
@@ -25,6 +29,12 @@ type Deps struct {
 	Config      config.Config
 	Logger      *slog.Logger
 	Pool        *db.Pool
+	Sessions    *auth.SessionManager
+	Auth        *middleware.Authenticator
+	AuthH       *auth.Handler
+	MembersH    *auth.MembersHandler
+	APIKeyH     *apikey.Handler
+	AuditH      *audit.Handler
 	TenantH     *tenant.Handler
 	SiteH       *site.Handler
 	ServiceName string
@@ -50,7 +60,8 @@ func New(deps Deps) *Server {
 		otelgin.Middleware(deps.ServiceName),
 		middleware.Logger(deps.Logger),
 		middleware.Recovery(deps.Logger),
-		middleware.Tenant(),
+		deps.Sessions.LoadAndSave(),
+		deps.Auth.Authenticate(),
 	)
 
 	s := &Server{
@@ -65,9 +76,18 @@ func New(deps Deps) *Server {
 
 	s.registerSystem(engine)
 
+	// Public auth endpoints (login/register/logout/me + OIDC).
+	deps.AuthH.Register(engine)
+
+	// Everything under /api/v1 requires an authenticated principal with an
+	// active tenant; finer per-route RBAC is applied by each handler.
 	v1 := engine.Group("/api/v1")
+	v1.Use(authz.RequireAuth(), authz.RequireTenant())
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)
+	deps.MembersH.Register(v1)
+	deps.APIKeyH.Register(v1)
+	deps.AuditH.Register(v1)
 
 	return s
 }

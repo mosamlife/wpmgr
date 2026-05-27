@@ -44,6 +44,367 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Readiness"
+  /auth/register:
+    post:
+      operationId: register
+      summary: Register (first-run bootstrap or invited)
+      description: |
+        On first run (zero users) this creates the first user, a tenant, and an
+        owner membership. Once any user exists, open registration is closed and
+        this returns 403; new users are added via the authenticated invite flow.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User registered and session established
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "403":
+          description: Open registration is closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/login:
+    post:
+      operationId: login
+      summary: Email + password login
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated; session cookie set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Destroy the current session
+      tags: [auth]
+      responses:
+        "204":
+          description: Logged out
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/me:
+    get:
+      operationId: getMe
+      summary: Current user, memberships, and active tenant
+      tags: [auth]
+      responses:
+        "200":
+          description: The authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/oidc/login:
+    get:
+      operationId: oidcLogin
+      summary: Begin OIDC login (redirect to provider)
+      description: Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
+      tags: [auth]
+      responses:
+        "302":
+          description: Redirect to the OIDC provider
+        "501":
+          description: OIDC is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/oidc/callback:
+    get:
+      operationId: oidcCallback
+      summary: OIDC redirect callback
+      tags: [auth]
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Authenticated via OIDC; session cookie set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          description: OIDC verification failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: OIDC is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/members:
+    get:
+      operationId: listMembers
+      summary: List members of the active tenant
+      tags: [members]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of memberships
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MembershipList"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: inviteMember
+      summary: Invite/create a member in the active tenant (admin+)
+      tags: [members]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteRequest"
+      responses:
+        "201":
+          description: Member added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Membership"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already a member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/api-keys:
+    get:
+      operationId: listApiKeys
+      summary: List API keys for the active tenant (admin+)
+      tags: [api-keys]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of API keys (no secrets)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyList"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: createApiKey
+      summary: Create an API key (admin+); the secret is shown once
+      tags: [api-keys]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyCreate"
+      responses:
+        "201":
+          description: API key created; token returned once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/api-keys/{apiKeyId}:
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke an API key (admin+)
+      tags: [api-keys]
+      parameters:
+        - $ref: "#/components/parameters/ApiKeyId"
+      responses:
+        "204":
+          description: API key revoked
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/audit:
+    get:
+      operationId: listAudit
+      summary: List the active tenant's audit log (admin+)
+      tags: [audit]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of audit entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditList"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/audit/verify:
+    get:
+      operationId: verifyAudit
+      summary: Verify the integrity of the audit hash-chain (admin+)
+      tags: [audit]
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditVerify"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/tenants:
     post:
       operationId: createTenant
@@ -223,6 +584,13 @@ components:
       schema:
         type: string
         format: uuid
+    ApiKeyId:
+      name: apiKeyId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   schemas:
     Health:
       type: object
@@ -355,3 +723,207 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Site"
+    Role:
+      type: string
+      enum: [owner, admin, operator, viewer]
+    User:
+      type: object
+      required: [id, email, name, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type: string
+          format: date-time
+    Membership:
+      type: object
+      required: [user_id, tenant_id, role]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/Role"
+    MembershipList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Membership"
+    Me:
+      type: object
+      required: [user, memberships]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/Membership"
+        active_tenant_id:
+          type: string
+          format: uuid
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 12
+          maxLength: 200
+        name:
+          type: string
+          maxLength: 200
+        tenant_name:
+          type: string
+          maxLength: 200
+        tenant_slug:
+          type: string
+          maxLength: 64
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    InviteRequest:
+      type: object
+      required: [email, password, role]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 12
+          maxLength: 200
+        name:
+          type: string
+          maxLength: 200
+        role:
+          $ref: "#/components/schemas/Role"
+    ApiKey:
+      type: object
+      required: [id, tenant_id, name, prefix, role, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        prefix:
+          type: string
+        role:
+          $ref: "#/components/schemas/Role"
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+    ApiKeyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiKey"
+    ApiKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        role:
+          $ref: "#/components/schemas/Role"
+    ApiKeyCreated:
+      type: object
+      required: [api_key, token]
+      properties:
+        api_key:
+          $ref: "#/components/schemas/ApiKey"
+        token:
+          type: string
+          description: The full API key, shown only once at creation.
+    AuditEntry:
+      type: object
+      required:
+        [id, tenant_id, actor_type, actor_id, action, target_type, target_id, hash, prev_hash, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        actor_type:
+          type: string
+        actor_id:
+          type: string
+        action:
+          type: string
+        target_type:
+          type: string
+        target_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        prev_hash:
+          type: string
+        hash:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    AuditList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEntry"
+    AuditVerify:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        broken_at:
+          type: string
+          format: uuid

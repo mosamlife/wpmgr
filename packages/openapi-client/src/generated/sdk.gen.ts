@@ -3,6 +3,9 @@
 import type { Client, Options as Options2, TDataShape } from "./client";
 import { client } from "./client.gen";
 import type {
+  CreateApiKeyData,
+  CreateApiKeyErrors,
+  CreateApiKeyResponses,
   CreateSiteData,
   CreateSiteErrors,
   CreateSiteResponses,
@@ -14,6 +17,9 @@ import type {
   DeleteSiteResponses,
   GetHealthzData,
   GetHealthzResponses,
+  GetMeData,
+  GetMeErrors,
+  GetMeResponses,
   GetReadyzData,
   GetReadyzErrors,
   GetReadyzResponses,
@@ -23,10 +29,42 @@ import type {
   GetTenantData,
   GetTenantErrors,
   GetTenantResponses,
+  InviteMemberData,
+  InviteMemberErrors,
+  InviteMemberResponses,
+  ListApiKeysData,
+  ListApiKeysErrors,
+  ListApiKeysResponses,
+  ListAuditData,
+  ListAuditErrors,
+  ListAuditResponses,
+  ListMembersData,
+  ListMembersErrors,
+  ListMembersResponses,
   ListSitesData,
   ListSitesResponses,
   ListTenantsData,
   ListTenantsResponses,
+  LoginData,
+  LoginErrors,
+  LoginResponses,
+  LogoutData,
+  LogoutErrors,
+  LogoutResponses,
+  OidcCallbackData,
+  OidcCallbackErrors,
+  OidcCallbackResponses,
+  OidcLoginData,
+  OidcLoginErrors,
+  RegisterData,
+  RegisterErrors,
+  RegisterResponses,
+  RevokeApiKeyData,
+  RevokeApiKeyErrors,
+  RevokeApiKeyResponses,
+  VerifyAuditData,
+  VerifyAuditErrors,
+  VerifyAuditResponses,
 } from "./types.gen";
 
 export type Options<
@@ -71,6 +109,189 @@ export const getReadyz = <ThrowOnError extends boolean = false>(
     GetReadyzErrors,
     ThrowOnError
   >({ url: "/readyz", ...options });
+
+/**
+ * Register (first-run bootstrap or invited)
+ *
+ * On first run (zero users) this creates the first user, a tenant, and an
+ * owner membership. Once any user exists, open registration is closed and
+ * this returns 403; new users are added via the authenticated invite flow.
+ *
+ */
+export const register = <ThrowOnError extends boolean = false>(
+  options: Options<RegisterData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RegisterResponses,
+    RegisterErrors,
+    ThrowOnError
+  >({
+    url: "/auth/register",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Email + password login
+ */
+export const login = <ThrowOnError extends boolean = false>(
+  options: Options<LoginData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<LoginResponses, LoginErrors, ThrowOnError>({
+    url: "/auth/login",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Destroy the current session
+ */
+export const logout = <ThrowOnError extends boolean = false>(
+  options?: Options<LogoutData, ThrowOnError>,
+) =>
+  (options?.client ?? client).post<LogoutResponses, LogoutErrors, ThrowOnError>(
+    { url: "/auth/logout", ...options },
+  );
+
+/**
+ * Current user, memberships, and active tenant
+ */
+export const getMe = <ThrowOnError extends boolean = false>(
+  options?: Options<GetMeData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<GetMeResponses, GetMeErrors, ThrowOnError>({
+    url: "/auth/me",
+    ...options,
+  });
+
+/**
+ * Begin OIDC login (redirect to provider)
+ *
+ * Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
+ */
+export const oidcLogin = <ThrowOnError extends boolean = false>(
+  options?: Options<OidcLoginData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<unknown, OidcLoginErrors, ThrowOnError>({
+    url: "/auth/oidc/login",
+    ...options,
+  });
+
+/**
+ * OIDC redirect callback
+ */
+export const oidcCallback = <ThrowOnError extends boolean = false>(
+  options?: Options<OidcCallbackData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    OidcCallbackResponses,
+    OidcCallbackErrors,
+    ThrowOnError
+  >({ url: "/auth/oidc/callback", ...options });
+
+/**
+ * List members of the active tenant
+ */
+export const listMembers = <ThrowOnError extends boolean = false>(
+  options?: Options<ListMembersData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListMembersResponses,
+    ListMembersErrors,
+    ThrowOnError
+  >({ url: "/api/v1/members", ...options });
+
+/**
+ * Invite/create a member in the active tenant (admin+)
+ */
+export const inviteMember = <ThrowOnError extends boolean = false>(
+  options: Options<InviteMemberData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    InviteMemberResponses,
+    InviteMemberErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/members",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List API keys for the active tenant (admin+)
+ */
+export const listApiKeys = <ThrowOnError extends boolean = false>(
+  options?: Options<ListApiKeysData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListApiKeysResponses,
+    ListApiKeysErrors,
+    ThrowOnError
+  >({ url: "/api/v1/api-keys", ...options });
+
+/**
+ * Create an API key (admin+); the secret is shown once
+ */
+export const createApiKey = <ThrowOnError extends boolean = false>(
+  options: Options<CreateApiKeyData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateApiKeyResponses,
+    CreateApiKeyErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/api-keys",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Revoke an API key (admin+)
+ */
+export const revokeApiKey = <ThrowOnError extends boolean = false>(
+  options: Options<RevokeApiKeyData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    RevokeApiKeyResponses,
+    RevokeApiKeyErrors,
+    ThrowOnError
+  >({ url: "/api/v1/api-keys/{apiKeyId}", ...options });
+
+/**
+ * List the active tenant's audit log (admin+)
+ */
+export const listAudit = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAuditData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAuditResponses,
+    ListAuditErrors,
+    ThrowOnError
+  >({ url: "/api/v1/audit", ...options });
+
+/**
+ * Verify the integrity of the audit hash-chain (admin+)
+ */
+export const verifyAudit = <ThrowOnError extends boolean = false>(
+  options?: Options<VerifyAuditData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    VerifyAuditResponses,
+    VerifyAuditErrors,
+    ThrowOnError
+  >({ url: "/api/v1/audit/verify", ...options });
 
 /**
  * List tenants

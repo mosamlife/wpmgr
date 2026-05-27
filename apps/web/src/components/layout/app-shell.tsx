@@ -1,21 +1,27 @@
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Globe, LogOut } from "lucide-react";
+import { Globe, LogOut, KeyRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { useSessionStore } from "@/lib/session-store";
+import { useMe, useLogout, activeRole, canManage } from "@/features/auth/use-auth";
 
 // Authenticated app shell: semantic landmarks (banner header, nav sidebar,
-// main). Used by the routes nested under the protected layout.
+// main). The header shows the logged-in user, their active tenant role, and a
+// working logout. Auth state comes from TanStack Query (GET /auth/me) — the
+// guard guarantees `me` is present by the time this renders.
 export function AppShell({ children }: { children: ReactNode }) {
-  const session = useSessionStore((s) => s.session);
-  const signOut = useSessionStore((s) => s.signOut);
+  const { data: me } = useMe();
+  const logout = useLogout();
   const navigate = useNavigate();
 
+  const role = activeRole(me);
+  const showKeys = canManage(me);
+
   function handleLogout() {
-    signOut();
-    void navigate({ to: "/login" });
+    logout.mutate(undefined, {
+      onSettled: () => void navigate({ to: "/login" }),
+    });
   }
 
   return (
@@ -29,10 +35,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Globe aria-hidden="true" className="size-5" />
           <span>WPMgr</span>
         </Link>
-        <div className="flex items-center gap-2">
-          {session ? (
+        <div className="flex items-center gap-3">
+          {me ? (
             <span className="hidden text-sm text-[var(--color-muted-foreground)] sm:inline">
-              {session.email}
+              {me.user.email}
+              {role ? (
+                <span className="ml-2 rounded-full bg-[var(--color-accent)] px-2 py-0.5 text-xs capitalize">
+                  {role}
+                </span>
+              ) : null}
             </span>
           ) : null}
           <ThemeToggle />
@@ -40,6 +51,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             variant="outline"
             size="sm"
             onClick={handleLogout}
+            disabled={logout.isPending}
             aria-label="Log out"
           >
             <LogOut aria-hidden="true" />
@@ -62,6 +74,17 @@ export function AppShell({ children }: { children: ReactNode }) {
                 Sites
               </Link>
             </li>
+            {showKeys ? (
+              <li>
+                <Link
+                  to="/settings/api-keys"
+                  className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
+                >
+                  <KeyRound aria-hidden="true" className="size-4" />
+                  API keys
+                </Link>
+              </li>
+            ) : null}
           </ul>
         </nav>
 

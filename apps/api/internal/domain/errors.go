@@ -24,6 +24,10 @@ const (
 	KindValidation
 	// KindForbidden indicates the caller lacks permission (HTTP 403).
 	KindForbidden
+	// KindUnauthorized indicates the caller is not authenticated (HTTP 401).
+	KindUnauthorized
+	// KindUnavailable indicates a dependency/feature is disabled (HTTP 501/503).
+	KindUnavailable
 )
 
 // Error is a domain error carrying a Kind, a stable machine code, a
@@ -71,6 +75,16 @@ func Forbidden(code, msg string) *Error {
 	return &Error{Kind: KindForbidden, Code: code, Message: msg}
 }
 
+// Unauthorized builds a KindUnauthorized error.
+func Unauthorized(code, msg string) *Error {
+	return &Error{Kind: KindUnauthorized, Code: code, Message: msg}
+}
+
+// Unavailable builds a KindUnavailable error (e.g. a disabled feature).
+func Unavailable(code, msg string) *Error {
+	return &Error{Kind: KindUnavailable, Code: code, Message: msg}
+}
+
 // Internal builds a KindInternal error.
 func Internal(code, msg string) *Error {
 	return &Error{Kind: KindInternal, Code: code, Message: msg}
@@ -89,6 +103,10 @@ func HTTPStatus(err error) int {
 			return http.StatusUnprocessableEntity
 		case KindForbidden:
 			return http.StatusForbidden
+		case KindUnauthorized:
+			return http.StatusUnauthorized
+		case KindUnavailable:
+			return http.StatusNotImplemented
 		default:
 			return http.StatusInternalServerError
 		}

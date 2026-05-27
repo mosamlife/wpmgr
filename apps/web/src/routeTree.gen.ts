@@ -9,12 +9,19 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as RegisterRouteImport } from './routes/register'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthedSitesIndexRouteImport } from './routes/_authed/sites/index'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
+import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
 
+const RegisterRoute = RegisterRouteImport.update({
+  id: '/register',
+  path: '/register',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -39,16 +46,25 @@ const AuthedSitesSiteIdRoute = AuthedSitesSiteIdRouteImport.update({
   path: '/sites/$siteId',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedSettingsApiKeysRoute = AuthedSettingsApiKeysRouteImport.update({
+  id: '/settings/api-keys',
+  path: '/settings/api-keys',
+  getParentRoute: () => AuthedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/register': typeof RegisterRoute
+  '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRoute
   '/sites/': typeof AuthedSitesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/register': typeof RegisterRoute
+  '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRoute
   '/sites': typeof AuthedSitesIndexRoute
 }
@@ -57,19 +73,35 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
+  '/register': typeof RegisterRoute
+  '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRoute
   '/_authed/sites/': typeof AuthedSitesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/sites/$siteId' | '/sites/'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/register'
+    | '/settings/api-keys'
+    | '/sites/$siteId'
+    | '/sites/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/sites/$siteId' | '/sites'
+  to:
+    | '/'
+    | '/login'
+    | '/register'
+    | '/settings/api-keys'
+    | '/sites/$siteId'
+    | '/sites'
   id:
     | '__root__'
     | '/'
     | '/_authed'
     | '/login'
+    | '/register'
+    | '/_authed/settings/api-keys'
     | '/_authed/sites/$siteId'
     | '/_authed/sites/'
   fileRoutesById: FileRoutesById
@@ -78,10 +110,18 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthedRoute: typeof AuthedRouteWithChildren
   LoginRoute: typeof LoginRoute
+  RegisterRoute: typeof RegisterRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/register': {
+      id: '/register'
+      path: '/register'
+      fullPath: '/register'
+      preLoaderRoute: typeof RegisterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -117,15 +157,24 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSitesSiteIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/settings/api-keys': {
+      id: '/_authed/settings/api-keys'
+      path: '/settings/api-keys'
+      fullPath: '/settings/api-keys'
+      preLoaderRoute: typeof AuthedSettingsApiKeysRouteImport
+      parentRoute: typeof AuthedRoute
+    }
   }
 }
 
 interface AuthedRouteChildren {
+  AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
   AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRoute
   AuthedSitesIndexRoute: typeof AuthedSitesIndexRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
   AuthedSitesSiteIdRoute: AuthedSitesSiteIdRoute,
   AuthedSitesIndexRoute: AuthedSitesIndexRoute,
 }
@@ -137,6 +186,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthedRoute: AuthedRouteWithChildren,
   LoginRoute: LoginRoute,
+  RegisterRoute: RegisterRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

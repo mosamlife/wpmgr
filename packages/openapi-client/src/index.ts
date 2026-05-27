@@ -16,9 +16,28 @@ export type { Config, ClientOptions } from "./generated/client";
 export {
   getHealthz,
   getReadyz,
+  // auth
+  register,
+  login,
+  logout,
+  getMe,
+  oidcLogin,
+  oidcCallback,
+  // members
+  listMembers,
+  inviteMember,
+  // api keys
+  listApiKeys,
+  createApiKey,
+  revokeApiKey,
+  // audit
+  listAudit,
+  verifyAudit,
+  // tenants
   listTenants,
   createTenant,
   getTenant,
+  // sites
   listSites,
   createSite,
   getSite,
@@ -36,6 +55,25 @@ export type {
   Health,
   Readiness,
   Error as ApiError,
+  // auth
+  Me,
+  User,
+  Role,
+  Membership,
+  MembershipList,
+  LoginRequest,
+  RegisterRequest,
+  InviteRequest,
+  // api keys
+  ApiKey,
+  ApiKeyList,
+  ApiKeyCreate,
+  ApiKeyCreated,
+  // audit
+  AuditEntry,
+  AuditList,
+  AuditVerify,
+  // request/response shapes
   ListSitesData,
   ListSitesResponse,
   GetSiteData,
@@ -43,4 +81,11 @@ export type {
   DeleteSiteData,
   CreateSiteData,
   CreateSiteResponse,
+  LoginData,
+  RegisterData,
+  GetMeResponse,
+  ListApiKeysResponse,
+  CreateApiKeyData,
+  CreateApiKeyResponse,
+  RevokeApiKeyData,
 } from "./generated/types.gen";

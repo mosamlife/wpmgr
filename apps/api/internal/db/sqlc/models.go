@@ -8,7 +8,43 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type ApiKey struct {
+	ID         uuid.UUID          `json:"id"`
+	TenantID   uuid.UUID          `json:"tenant_id"`
+	Name       string             `json:"name"`
+	Prefix     string             `json:"prefix"`
+	KeyHash    string             `json:"key_hash"`
+	Role       string             `json:"role"`
+	CreatedAt  time.Time          `json:"created_at"`
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+}
+
+type AuditLog struct {
+	ID         uuid.UUID `json:"id"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	ActorType  string    `json:"actor_type"`
+	ActorID    string    `json:"actor_id"`
+	Action     string    `json:"action"`
+	TargetType string    `json:"target_type"`
+	TargetID   string    `json:"target_id"`
+	Metadata   []byte    `json:"metadata"`
+	PrevHash   string    `json:"prev_hash"`
+	Hash       string    `json:"hash"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type Membership struct {
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 type Site struct {
 	ID         uuid.UUID `json:"id"`
@@ -28,4 +64,16 @@ type Tenant struct {
 	Slug      string    `json:"slug"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type User struct {
+	ID           uuid.UUID          `json:"id"`
+	Email        string             `json:"email"`
+	PasswordHash *string            `json:"password_hash"`
+	OidcSubject  *string            `json:"oidc_subject"`
+	OidcIssuer   *string            `json:"oidc_issuer"`
+	Name         string             `json:"name"`
+	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }

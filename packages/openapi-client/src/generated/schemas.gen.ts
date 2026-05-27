@@ -199,3 +199,316 @@ export const SiteListSchema = {
     },
   },
 } as const;
+
+export const RoleSchema = {
+  type: "string",
+  enum: ["owner", "admin", "operator", "viewer"],
+} as const;
+
+export const UserSchema = {
+  type: "object",
+  required: ["id", "email", "name", "created_at", "updated_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    email: {
+      type: "string",
+      format: "email",
+    },
+    name: {
+      type: "string",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_login_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const MembershipSchema = {
+  type: "object",
+  required: ["user_id", "tenant_id", "role"],
+  properties: {
+    user_id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    role: {
+      $ref: "#/components/schemas/Role",
+    },
+  },
+} as const;
+
+export const MembershipListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/Membership",
+      },
+    },
+  },
+} as const;
+
+export const MeSchema = {
+  type: "object",
+  required: ["user", "memberships"],
+  properties: {
+    user: {
+      $ref: "#/components/schemas/User",
+    },
+    memberships: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/Membership",
+      },
+    },
+    active_tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+  },
+} as const;
+
+export const LoginRequestSchema = {
+  type: "object",
+  required: ["email", "password"],
+  properties: {
+    email: {
+      type: "string",
+      format: "email",
+    },
+    password: {
+      type: "string",
+      minLength: 1,
+    },
+  },
+} as const;
+
+export const RegisterRequestSchema = {
+  type: "object",
+  required: ["email", "password"],
+  properties: {
+    email: {
+      type: "string",
+      format: "email",
+    },
+    password: {
+      type: "string",
+      minLength: 12,
+      maxLength: 200,
+    },
+    name: {
+      type: "string",
+      maxLength: 200,
+    },
+    tenant_name: {
+      type: "string",
+      maxLength: 200,
+    },
+    tenant_slug: {
+      type: "string",
+      maxLength: 64,
+      pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    },
+  },
+} as const;
+
+export const InviteRequestSchema = {
+  type: "object",
+  required: ["email", "password", "role"],
+  properties: {
+    email: {
+      type: "string",
+      format: "email",
+    },
+    password: {
+      type: "string",
+      minLength: 12,
+      maxLength: 200,
+    },
+    name: {
+      type: "string",
+      maxLength: 200,
+    },
+    role: {
+      $ref: "#/components/schemas/Role",
+    },
+  },
+} as const;
+
+export const ApiKeySchema = {
+  type: "object",
+  required: ["id", "tenant_id", "name", "prefix", "role", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+    },
+    prefix: {
+      type: "string",
+    },
+    role: {
+      $ref: "#/components/schemas/Role",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_used_at: {
+      type: "string",
+      format: "date-time",
+    },
+    revoked_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const ApiKeyListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ApiKey",
+      },
+    },
+  },
+} as const;
+
+export const ApiKeyCreateSchema = {
+  type: "object",
+  required: ["name"],
+  properties: {
+    name: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+    },
+    role: {
+      $ref: "#/components/schemas/Role",
+    },
+  },
+} as const;
+
+export const ApiKeyCreatedSchema = {
+  type: "object",
+  required: ["api_key", "token"],
+  properties: {
+    api_key: {
+      $ref: "#/components/schemas/ApiKey",
+    },
+    token: {
+      type: "string",
+      description: "The full API key, shown only once at creation.",
+    },
+  },
+} as const;
+
+export const AuditEntrySchema = {
+  type: "object",
+  required: [
+    "id",
+    "tenant_id",
+    "actor_type",
+    "actor_id",
+    "action",
+    "target_type",
+    "target_id",
+    "hash",
+    "prev_hash",
+    "created_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    actor_type: {
+      type: "string",
+    },
+    actor_id: {
+      type: "string",
+    },
+    action: {
+      type: "string",
+    },
+    target_type: {
+      type: "string",
+    },
+    target_id: {
+      type: "string",
+    },
+    metadata: {
+      type: "object",
+      additionalProperties: true,
+    },
+    prev_hash: {
+      type: "string",
+    },
+    hash: {
+      type: "string",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AuditListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AuditEntry",
+      },
+    },
+  },
+} as const;
+
+export const AuditVerifySchema = {
+  type: "object",
+  required: ["ok"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    broken_at: {
+      type: "string",
+      format: "uuid",
+    },
+  },
+} as const;

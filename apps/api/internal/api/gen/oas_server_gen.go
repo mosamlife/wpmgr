@@ -8,6 +8,12 @@ import (
 
 // Handler handles operations described by OpenAPI v3 specification.
 type Handler interface {
+	// CreateApiKey implements createApiKey operation.
+	//
+	// Create an API key (admin+); the secret is shown once.
+	//
+	// POST /api/v1/api-keys
+	CreateApiKey(ctx context.Context, req *ApiKeyCreate) (CreateApiKeyRes, error)
 	// CreateSite implements createSite operation.
 	//
 	// Creates a site belonging to the tenant in the request context.
@@ -32,6 +38,12 @@ type Handler interface {
 	//
 	// GET /healthz
 	GetHealthz(ctx context.Context) (*Health, error)
+	// GetMe implements getMe operation.
+	//
+	// Current user, memberships, and active tenant.
+	//
+	// GET /auth/me
+	GetMe(ctx context.Context) (GetMeRes, error)
 	// GetReadyz implements getReadyz operation.
 	//
 	// Returns 200 when the service can serve traffic (DB reachable).
@@ -50,6 +62,30 @@ type Handler interface {
 	//
 	// GET /api/v1/tenants/{tenantId}
 	GetTenant(ctx context.Context, params GetTenantParams) (GetTenantRes, error)
+	// InviteMember implements inviteMember operation.
+	//
+	// Invite/create a member in the active tenant (admin+).
+	//
+	// POST /api/v1/members
+	InviteMember(ctx context.Context, req *InviteRequest) (InviteMemberRes, error)
+	// ListApiKeys implements listApiKeys operation.
+	//
+	// List API keys for the active tenant (admin+).
+	//
+	// GET /api/v1/api-keys
+	ListApiKeys(ctx context.Context, params ListApiKeysParams) (ListApiKeysRes, error)
+	// ListAudit implements listAudit operation.
+	//
+	// List the active tenant's audit log (admin+).
+	//
+	// GET /api/v1/audit
+	ListAudit(ctx context.Context, params ListAuditParams) (ListAuditRes, error)
+	// ListMembers implements listMembers operation.
+	//
+	// List members of the active tenant.
+	//
+	// GET /api/v1/members
+	ListMembers(ctx context.Context, params ListMembersParams) (ListMembersRes, error)
 	// ListSites implements listSites operation.
 	//
 	// List sites for the current tenant.
@@ -62,6 +98,50 @@ type Handler interface {
 	//
 	// GET /api/v1/tenants
 	ListTenants(ctx context.Context, params ListTenantsParams) (*TenantList, error)
+	// Login implements login operation.
+	//
+	// Email + password login.
+	//
+	// POST /auth/login
+	Login(ctx context.Context, req *LoginRequest) (LoginRes, error)
+	// Logout implements logout operation.
+	//
+	// Destroy the current session.
+	//
+	// POST /auth/logout
+	Logout(ctx context.Context) (LogoutRes, error)
+	// OidcCallback implements oidcCallback operation.
+	//
+	// OIDC redirect callback.
+	//
+	// GET /auth/oidc/callback
+	OidcCallback(ctx context.Context, params OidcCallbackParams) (OidcCallbackRes, error)
+	// OidcLogin implements oidcLogin operation.
+	//
+	// Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
+	//
+	// GET /auth/oidc/login
+	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	// Register implements register operation.
+	//
+	// On first run (zero users) this creates the first user, a tenant, and an
+	// owner membership. Once any user exists, open registration is closed and
+	// this returns 403; new users are added via the authenticated invite flow.
+	//
+	// POST /auth/register
+	Register(ctx context.Context, req *RegisterRequest) (RegisterRes, error)
+	// RevokeApiKey implements revokeApiKey operation.
+	//
+	// Revoke an API key (admin+).
+	//
+	// DELETE /api/v1/api-keys/{apiKeyId}
+	RevokeApiKey(ctx context.Context, params RevokeApiKeyParams) (RevokeApiKeyRes, error)
+	// VerifyAudit implements verifyAudit operation.
+	//
+	// Verify the integrity of the audit hash-chain (admin+).
+	//
+	// GET /api/v1/audit/verify
+	VerifyAudit(ctx context.Context) (VerifyAuditRes, error)
 }
 
 // Server implements http server based on OpenAPI v3 specification and

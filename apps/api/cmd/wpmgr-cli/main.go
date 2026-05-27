@@ -41,7 +41,8 @@ func migrate() error {
 		return err
 	}
 	ctx := context.Background()
-	pool, err := db.Connect(ctx, cfg.DB.DSN())
+	// Migrations run with the owner/superuser DSN (falls back to the app DSN).
+	pool, err := db.Connect(ctx, cfg.DB.MigrateDSN())
 	if err != nil {
 		return err
 	}

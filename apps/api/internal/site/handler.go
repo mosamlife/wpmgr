@@ -9,28 +9,51 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
 // Handler serves the site HTTP endpoints under /api/v1/sites. The active tenant
-// is taken from request context (tenant middleware); a missing tenant yields
-// 403 via the service layer.
+// is taken from the authenticated principal (auth middleware); a missing tenant
+// yields 403 via the service layer.
 type Handler struct {
-	svc *Service
+	svc   *Service
+	audit *audit.Recorder
 }
 
 // NewHandler builds a site Handler.
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc *Service, rec *audit.Recorder) *Handler {
+	return &Handler{svc: svc, audit: rec}
 }
 
-// Register mounts the site routes on the given /api/v1 router group.
+func (h *Handler) record(c *gin.Context, action, siteID string) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		return
+	}
+	actor := audit.ActorUser
+	if p.Type == domain.PrincipalAPIKey {
+		actor = audit.ActorAPIKey
+	}
+	_, _ = h.audit.Record(c.Request.Context(), audit.Event{
+		TenantID:   p.TenantID,
+		ActorType:  actor,
+		ActorID:    p.ActorID(),
+		Action:     action,
+		TargetType: "site",
+		TargetID:   siteID,
+	})
+}
+
+// Register mounts the site routes on the given /api/v1 router group. Reads
+// require viewer+; create/delete require operator+ (site:write).
 func (h *Handler) Register(r *gin.RouterGroup) {
-	r.POST("/sites", h.create)
-	r.GET("/sites", h.list)
-	r.GET("/sites/:siteId", h.get)
-	r.DELETE("/sites/:siteId", h.delete)
+	r.POST("/sites", authz.RequirePermission(authz.PermSiteWrite), h.create)
+	r.GET("/sites", authz.RequirePermission(authz.PermSiteRead), h.list)
+	r.GET("/sites/:siteId", authz.RequirePermission(authz.PermSiteRead), h.get)
+	r.DELETE("/sites/:siteId", authz.RequirePermission(authz.PermSiteWrite), h.delete)
 }
 
 type createSiteRequest struct {
@@ -64,6 +87,7 @@ func (h *Handler) create(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	h.record(c, audit.ActionSiteCreate, s.ID.String())
 	// Pass a pointer: ogen's MarshalJSON is on *gen.Site, so a non-addressable
 	// value would fall back to struct reflection and emit url.URL as an object.
 	out := toAPI(s)
@@ -127,6 +151,7 @@ func (h *Handler) delete(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	h.record(c, audit.ActionSiteDelete, id.String())
 	c.Status(http.StatusNoContent)
 }
 

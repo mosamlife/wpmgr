@@ -15,13 +15,22 @@ services:
     image: postgres:16.4-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${WPMGR_DB_USER:-wpmgr}
-      POSTGRES_PASSWORD: ${WPMGR_DB_PASSWORD:-wpmgr}
+      # OWNER role (privileged). Decoupled from WPMGR_DB_USER, which the app uses
+      # for its UNPRIVILEGED wpmgr_app role — do not conflate the two.
+      POSTGRES_USER: ${WPMGR_DB_OWNER_USER:-wpmgr}
+      POSTGRES_PASSWORD: ${WPMGR_DB_OWNER_PASSWORD:-wpmgr}
       POSTGRES_DB: ${WPMGR_DB_NAME:-wpmgr}
+      # Consumed by the first-init script below to create the app login role.
+      WPMGR_DB_APP_USER: wpmgr_app
+      WPMGR_DB_APP_PASSWORD: ${WPMGR_DB_APP_PASSWORD:-wpmgr-app-dev-secret}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Runs ONCE on an empty data volume: provisions the unprivileged
+      # wpmgr_app LOGIN role (NOSUPERUSER NOBYPASSRLS) before migrations run.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${WPMGR_DB_USER:-wpmgr} -d ${WPMGR_DB_NAME:-wpmgr}"]
+      # pg_isready against the OWNER role (postgres image's POSTGRES_USER).
+      test: ["CMD-SHELL", "pg_isready -U ${WPMGR_DB_OWNER_USER:-wpmgr} -d ${WPMGR_DB_NAME:-wpmgr}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -115,10 +124,36 @@ services:
       WPMGR_HTTP_ADDR: ":8080"
       WPMGR_DB_HOST: postgres
       WPMGR_DB_PORT: "5432"
-      WPMGR_DB_USER: ${WPMGR_DB_USER:-wpmgr}
-      WPMGR_DB_PASSWORD: ${WPMGR_DB_PASSWORD:-wpmgr}
+      # --- Two-DSN model (M1) -------------------------------------------------
+      # APP connection: the unprivileged, NOSUPERUSER NOBYPASSRLS login role
+      # created by infra/postgres/init/01-app-role.sh. RLS is the real tenant
+      # isolation backstop, so the app deliberately runs as a non-superuser.
+      WPMGR_DB_USER: wpmgr_app
+      WPMGR_DB_PASSWORD: ${WPMGR_DB_APP_PASSWORD:-wpmgr-app-dev-secret}
       WPMGR_DB_NAME: ${WPMGR_DB_NAME:-wpmgr}
       WPMGR_DB_SSLMODE: ${WPMGR_DB_SSLMODE:-disable}
+      # MIGRATION connection: the privileged owner/superuser (the role the
+      # postgres image created from POSTGRES_USER). Used ONLY to run migrations,
+      # which CREATE ROLE wpmgr_app IF NOT EXISTS (a no-op since init made it)
+      # and GRANT it table/sequence privileges. The owner password here MUST
+      # equal the postgres service's POSTGRES_PASSWORD — both read
+      # ${WPMGR_DB_PASSWORD:-wpmgr}, so they stay in sync.
+      WPMGR_DB_MIGRATION_DSN: postgres://${WPMGR_DB_OWNER_USER:-wpmgr}:${WPMGR_DB_OWNER_PASSWORD:-wpmgr}@postgres:5432/${WPMGR_DB_NAME:-wpmgr}?sslmode=${WPMGR_DB_SSLMODE:-disable}
+      # App role is non-superuser now, so it must NOT be allowed to bypass RLS.
+      WPMGR_ALLOW_RLS_BYPASS_ROLE: "false"
+      # --- Sessions -----------------------------------------------------------
+      # REQUIRED, >=32 bytes. The app refuses to boot on the placeholder or
+      # anything shorter. This is a FIXED DEV value — production MUST override it
+      # (e.g. via .env / secret manager): openssl rand -base64 48
+      WPMGR_SESSION_SECRET: ${WPMGR_SESSION_SECRET:-ZGV2LW9ubHktc2Vzc2lvbi1zZWNyZXQtZG8tbm90LXVzZS1pbi1wcm9kdWN0aW9uLTQ4Ynl0ZXM=}
+      # --- OIDC (Dex) ---------------------------------------------------------
+      # Issuer must match Dex's configured issuer AND be reachable from this
+      # container; dex.localhost is mapped to host-gateway via extra_hosts below
+      # (see infra/dex/config.yaml for the full rationale).
+      WPMGR_OIDC_ISSUER: ${WPMGR_OIDC_ISSUER:-http://dex.localhost:5556/dex}
+      WPMGR_OIDC_CLIENT_ID: ${WPMGR_OIDC_CLIENT_ID:-wpmgr}
+      WPMGR_OIDC_CLIENT_SECRET: ${WPMGR_OIDC_CLIENT_SECRET:-wpmgr-oidc-dev-secret}
+      WPMGR_OIDC_REDIRECT_URL: ${WPMGR_OIDC_REDIRECT_URL:-http://localhost:8080/auth/oidc/callback}
       WPMGR_REDIS_ADDR: redis:6379
       WPMGR_S3_ENDPOINT: http://seaweedfs:8333
       WPMGR_S3_REGION: ${WPMGR_S3_REGION:-us-east-1}
@@ -132,10 +167,17 @@ services:
       WPMGR_OTEL_SERVICE_NAME: ${WPMGR_OTEL_SERVICE_NAME:-wpmgr-api}
     ports:
       - "8080:8080"
+    # Make `dex.localhost` (the OIDC issuer host) resolve to the host gateway so
+    # the api container reaches the same published Dex (:5556) that the browser
+    # reaches via loopback. Keeps the issuer string identical on both sides.
+    extra_hosts:
+      - "dex.localhost:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      dex:
         condition: service_healthy
       seaweedfs:
         # API does not use object storage until backups (M4); only require it to
@@ -145,6 +187,27 @@ services:
     # binary does not expose a self-probe subcommand. Once the real server lands
     # (GET /healthz, GET /readyz), add an HTTP healthcheck (e.g. via a small
     # busybox sidecar or by embedding a `wpmgr healthcheck` subcommand). TODO.
+
+  # Dex — self-host OIDC IdP (ADR-026, Apache-2.0). Part of the BASE stack
+  # because auth is core. Config + dev static client/password live in
+  # infra/dex/config.yaml. Issuer is http://dex.localhost:5556/dex (see that
+  # file for the issuer-URL rationale). SQLite storage in a named volume.
+  dex:
+    image: dexidp/dex:v2.41.1
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dex/config.yaml:/etc/dex/config.yaml:ro
+      - dex-data:/var/dex
+    ports:
+      - "5556:5556"
+    healthcheck:
+      # Dex serves a healthz endpoint on its telemetry listener (:5558).
+      test: ["CMD", "wget", "-qO-", "http://localhost:5558/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   web:
     build:
@@ -182,4 +245,5 @@ volumes:
   redis-data:
   seaweedfs-data:
   clickhouse-data:
+  dex-data:
   otel-lgtm-data:

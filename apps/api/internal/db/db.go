@@ -46,24 +46,39 @@ func (p *Pool) Ping(ctx context.Context) error {
 	return p.Pool.Ping(ctx)
 }
 
-// WarnIfRLSBypassRole logs a warning if the application's connecting role is a
-// superuser or has BYPASSRLS, because either silently voids Row-Level Security —
-// the tenant_id WHERE filter would become the ONLY isolation. The app should
-// connect as a dedicated NOSUPERUSER NOBYPASSRLS role. Phase 5 (M1) will turn
-// this into a hard boot failure and split the migration DSN from the app DSN.
-func (p *Pool) WarnIfRLSBypassRole(ctx context.Context, logger *slog.Logger) {
+// EnforceRLSRole hard-fails startup when the application's connecting role is a
+// superuser or has BYPASSRLS, because either silently voids Row-Level Security:
+// the tenant_id WHERE filter would become the ONLY isolation. The app must
+// connect as a dedicated NOSUPERUSER NOBYPASSRLS role.
+//
+// allowBypass is the explicit escape hatch (WPMGR_ALLOW_RLS_BYPASS_ROLE=true)
+// for single-node dev that shares the bootstrap superuser; when set, a bypassing
+// role is downgraded from a boot failure to a loud warning. It must never be
+// enabled in production.
+func (p *Pool) EnforceRLSRole(ctx context.Context, logger *slog.Logger, allowBypass bool) error {
 	var super, bypass bool
 	err := p.QueryRow(ctx,
 		`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
 	).Scan(&super, &bypass)
 	if err != nil {
-		logger.Warn("could not verify DB role RLS posture", slog.Any("error", err))
-		return
+		return fmt.Errorf("verify DB role RLS posture: %w", err)
 	}
-	if super || bypass {
-		logger.Warn("application DB role bypasses Row-Level Security — tenant isolation is NOT enforced by RLS; connect as a NOSUPERUSER NOBYPASSRLS role before production",
+	if !super && !bypass {
+		return nil
+	}
+	if allowBypass {
+		logger.Warn("RLS BYPASS ESCAPE HATCH ENABLED: application DB role bypasses Row-Level Security and tenant isolation is NOT enforced by RLS — this is permitted ONLY because WPMGR_ALLOW_RLS_BYPASS_ROLE=true; never use this in production",
 			slog.Bool("rolsuper", super), slog.Bool("rolbypassrls", bypass))
+		return nil
 	}
+	return fmt.Errorf("application DB role %q bypasses Row-Level Security (rolsuper=%t rolbypassrls=%t): connect as a NOSUPERUSER NOBYPASSRLS role (e.g. wpmgr_app), or set WPMGR_ALLOW_RLS_BYPASS_ROLE=true for single-node dev",
+		currentUserName(ctx, p), super, bypass)
+}
+
+func currentUserName(ctx context.Context, p *Pool) string {
+	var name string
+	_ = p.QueryRow(ctx, "SELECT current_user").Scan(&name)
+	return name
 }
 
 // InTenantTx runs fn inside a transaction with app.tenant_id set to the given
@@ -100,6 +115,78 @@ func (p *Pool) InTenantTx(ctx context.Context, tenantID uuid.UUID, fn func(tx pg
 func setTenant(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID.String()); err != nil {
 		return fmt.Errorf("set app.tenant_id: %w", err)
+	}
+	return nil
+}
+
+// InTenantTxAsUser runs fn inside a transaction with BOTH app.tenant_id and
+// app.user_id set. The user GUC enables the memberships_self_read policy in
+// addition to the per-tenant isolation policy — used where a tenant-scoped
+// operation also needs to read the acting user's own membership rows.
+func (p *Pool) InTenantTxAsUser(ctx context.Context, tenantID, userID uuid.UUID, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := setTenant(ctx, tx, tenantID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.user_id', $1, true)", userID.String()); err != nil {
+		return fmt.Errorf("set app.user_id: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// InUserTx runs fn inside a transaction with app.user_id set (and no tenant
+// GUC), enabling the memberships_self_read policy so a principal can enumerate
+// its own memberships across every tenant. Used by /auth/me and tenant
+// switching, before any active tenant is known.
+func (p *Pool) InUserTx(ctx context.Context, userID uuid.UUID, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.user_id', $1, true)", userID.String()); err != nil {
+		return fmt.Errorf("set app.user_id: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// InAPIKeyLookupTx runs fn inside a transaction with the app.apikey_lookup GUC
+// set to 'on', enabling the api_keys_prefix_lookup SELECT-only policy. This is
+// the one place a key may be read before its tenant is known; fn must do
+// nothing but resolve a key by its (unique) prefix.
+func (p *Pool) InAPIKeyLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.apikey_lookup', 'on', true)"); err != nil {
+		return fmt.Errorf("set app.apikey_lookup: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
 	}
 	return nil
 }

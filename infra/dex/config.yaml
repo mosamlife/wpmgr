@@ -1,0 +1,58 @@
+# WPMgr — Dex (self-host OIDC IdP, ADR-026, Apache-2.0) dev configuration.
+#
+# ISSUER URL CHOICE (read before changing):
+#   The OIDC issuer must be ONE string that resolves to this same Dex instance
+#   from BOTH the end-user's browser AND the WPMgr api container, because:
+#     * the browser is redirected to <issuer>/auth to log in, and
+#     * the api (OIDC relying party) fetches <issuer>/.well-known/openid-configuration
+#       and then validates that the id_token `iss` claim equals <issuer>.
+#   Dex itself also refuses to serve discovery unless the request matches its
+#   configured `issuer`. So the value has to be identical everywhere.
+#
+#   We use `http://dex.localhost:5556/dex`:
+#     * The browser/host resolves any *.localhost name to loopback (RFC 6761),
+#       and Dex's port 5556 is published to the host -> reaches Dex.
+#     * The api CONTAINER gets an extra_hosts entry `dex.localhost:host-gateway`
+#       (see docker-compose.yml), so the same name routes to the host gateway and
+#       hits the published 5556 -> reaches the same Dex.
+#   One issuer string, consistent for both sides, no /etc/hosts edits needed.
+#
+# Storage: SQLite in a named volume (simplest for dev; swap to Postgres for prod).
+issuer: http://dex.localhost:5556/dex
+
+storage:
+  type: sqlite3
+  config:
+    file: /var/dex/dex.db
+
+# Dex listens on all interfaces inside the container; published as 5556 on host.
+web:
+  http: 0.0.0.0:5556
+
+# Telemetry endpoint (also used by the container healthcheck).
+telemetry:
+  http: 0.0.0.0:5558
+
+oauth2:
+  # Skip the "grant access?" approval screen for first-party dev clients.
+  skipApprovalScreen: true
+
+# Static OIDC client for the WPMgr control plane.
+staticClients:
+  - id: wpmgr
+    name: WPMgr
+    secret: wpmgr-oidc-dev-secret
+    redirectURIs:
+      - http://localhost:8080/auth/oidc/callback
+
+# Local password database so the login flow is testable end to end without an
+# upstream IdP. Dev credentials below — DO NOT use in production.
+enablePasswordDB: true
+staticPasswords:
+  # email:    admin@wpmgr.dev
+  # password: password
+  # bcrypt hash generated with: htpasswd -nbBC 10 "" password
+  - email: "admin@wpmgr.dev"
+    hash: "$2a$10$Dfir7c2N/g9wBJ8QaLJQceBQoDM0JiBSEvmiQWpztFLtvaBLuePpa"
+    username: "admin"
+    userID: "00000000-0000-0000-0000-000000000001"

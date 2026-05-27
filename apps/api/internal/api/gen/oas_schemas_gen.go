@@ -11,6 +11,363 @@ import (
 	"github.com/google/uuid"
 )
 
+// Ref: #/components/schemas/ApiKey
+type ApiKey struct {
+	ID         uuid.UUID   `json:"id"`
+	TenantID   uuid.UUID   `json:"tenant_id"`
+	Name       string      `json:"name"`
+	Prefix     string      `json:"prefix"`
+	Role       Role        `json:"role"`
+	CreatedAt  time.Time   `json:"created_at"`
+	LastUsedAt OptDateTime `json:"last_used_at"`
+	RevokedAt  OptDateTime `json:"revoked_at"`
+}
+
+// GetID returns the value of ID.
+func (s *ApiKey) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *ApiKey) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetName returns the value of Name.
+func (s *ApiKey) GetName() string {
+	return s.Name
+}
+
+// GetPrefix returns the value of Prefix.
+func (s *ApiKey) GetPrefix() string {
+	return s.Prefix
+}
+
+// GetRole returns the value of Role.
+func (s *ApiKey) GetRole() Role {
+	return s.Role
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *ApiKey) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetLastUsedAt returns the value of LastUsedAt.
+func (s *ApiKey) GetLastUsedAt() OptDateTime {
+	return s.LastUsedAt
+}
+
+// GetRevokedAt returns the value of RevokedAt.
+func (s *ApiKey) GetRevokedAt() OptDateTime {
+	return s.RevokedAt
+}
+
+// SetID sets the value of ID.
+func (s *ApiKey) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *ApiKey) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetName sets the value of Name.
+func (s *ApiKey) SetName(val string) {
+	s.Name = val
+}
+
+// SetPrefix sets the value of Prefix.
+func (s *ApiKey) SetPrefix(val string) {
+	s.Prefix = val
+}
+
+// SetRole sets the value of Role.
+func (s *ApiKey) SetRole(val Role) {
+	s.Role = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *ApiKey) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetLastUsedAt sets the value of LastUsedAt.
+func (s *ApiKey) SetLastUsedAt(val OptDateTime) {
+	s.LastUsedAt = val
+}
+
+// SetRevokedAt sets the value of RevokedAt.
+func (s *ApiKey) SetRevokedAt(val OptDateTime) {
+	s.RevokedAt = val
+}
+
+// Ref: #/components/schemas/ApiKeyCreate
+type ApiKeyCreate struct {
+	Name string  `json:"name"`
+	Role OptRole `json:"role"`
+}
+
+// GetName returns the value of Name.
+func (s *ApiKeyCreate) GetName() string {
+	return s.Name
+}
+
+// GetRole returns the value of Role.
+func (s *ApiKeyCreate) GetRole() OptRole {
+	return s.Role
+}
+
+// SetName sets the value of Name.
+func (s *ApiKeyCreate) SetName(val string) {
+	s.Name = val
+}
+
+// SetRole sets the value of Role.
+func (s *ApiKeyCreate) SetRole(val OptRole) {
+	s.Role = val
+}
+
+// Ref: #/components/schemas/ApiKeyCreated
+type ApiKeyCreated struct {
+	APIKey ApiKey `json:"api_key"`
+	// The full API key, shown only once at creation.
+	Token string `json:"token"`
+}
+
+// GetAPIKey returns the value of APIKey.
+func (s *ApiKeyCreated) GetAPIKey() ApiKey {
+	return s.APIKey
+}
+
+// GetToken returns the value of Token.
+func (s *ApiKeyCreated) GetToken() string {
+	return s.Token
+}
+
+// SetAPIKey sets the value of APIKey.
+func (s *ApiKeyCreated) SetAPIKey(val ApiKey) {
+	s.APIKey = val
+}
+
+// SetToken sets the value of Token.
+func (s *ApiKeyCreated) SetToken(val string) {
+	s.Token = val
+}
+
+func (*ApiKeyCreated) createApiKeyRes() {}
+
+// Ref: #/components/schemas/ApiKeyList
+type ApiKeyList struct {
+	Items []ApiKey `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ApiKeyList) GetItems() []ApiKey {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ApiKeyList) SetItems(val []ApiKey) {
+	s.Items = val
+}
+
+func (*ApiKeyList) listApiKeysRes() {}
+
+// Ref: #/components/schemas/AuditEntry
+type AuditEntry struct {
+	ID         uuid.UUID             `json:"id"`
+	TenantID   uuid.UUID             `json:"tenant_id"`
+	ActorType  string                `json:"actor_type"`
+	ActorID    string                `json:"actor_id"`
+	Action     string                `json:"action"`
+	TargetType string                `json:"target_type"`
+	TargetID   string                `json:"target_id"`
+	Metadata   OptAuditEntryMetadata `json:"metadata"`
+	PrevHash   string                `json:"prev_hash"`
+	Hash       string                `json:"hash"`
+	CreatedAt  time.Time             `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *AuditEntry) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AuditEntry) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetActorType returns the value of ActorType.
+func (s *AuditEntry) GetActorType() string {
+	return s.ActorType
+}
+
+// GetActorID returns the value of ActorID.
+func (s *AuditEntry) GetActorID() string {
+	return s.ActorID
+}
+
+// GetAction returns the value of Action.
+func (s *AuditEntry) GetAction() string {
+	return s.Action
+}
+
+// GetTargetType returns the value of TargetType.
+func (s *AuditEntry) GetTargetType() string {
+	return s.TargetType
+}
+
+// GetTargetID returns the value of TargetID.
+func (s *AuditEntry) GetTargetID() string {
+	return s.TargetID
+}
+
+// GetMetadata returns the value of Metadata.
+func (s *AuditEntry) GetMetadata() OptAuditEntryMetadata {
+	return s.Metadata
+}
+
+// GetPrevHash returns the value of PrevHash.
+func (s *AuditEntry) GetPrevHash() string {
+	return s.PrevHash
+}
+
+// GetHash returns the value of Hash.
+func (s *AuditEntry) GetHash() string {
+	return s.Hash
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AuditEntry) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *AuditEntry) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AuditEntry) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetActorType sets the value of ActorType.
+func (s *AuditEntry) SetActorType(val string) {
+	s.ActorType = val
+}
+
+// SetActorID sets the value of ActorID.
+func (s *AuditEntry) SetActorID(val string) {
+	s.ActorID = val
+}
+
+// SetAction sets the value of Action.
+func (s *AuditEntry) SetAction(val string) {
+	s.Action = val
+}
+
+// SetTargetType sets the value of TargetType.
+func (s *AuditEntry) SetTargetType(val string) {
+	s.TargetType = val
+}
+
+// SetTargetID sets the value of TargetID.
+func (s *AuditEntry) SetTargetID(val string) {
+	s.TargetID = val
+}
+
+// SetMetadata sets the value of Metadata.
+func (s *AuditEntry) SetMetadata(val OptAuditEntryMetadata) {
+	s.Metadata = val
+}
+
+// SetPrevHash sets the value of PrevHash.
+func (s *AuditEntry) SetPrevHash(val string) {
+	s.PrevHash = val
+}
+
+// SetHash sets the value of Hash.
+func (s *AuditEntry) SetHash(val string) {
+	s.Hash = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AuditEntry) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+type AuditEntryMetadata map[string]jx.Raw
+
+func (s *AuditEntryMetadata) init() AuditEntryMetadata {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+// Ref: #/components/schemas/AuditList
+type AuditList struct {
+	Items []AuditEntry `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *AuditList) GetItems() []AuditEntry {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *AuditList) SetItems(val []AuditEntry) {
+	s.Items = val
+}
+
+func (*AuditList) listAuditRes() {}
+
+// Ref: #/components/schemas/AuditVerify
+type AuditVerify struct {
+	Ok       bool    `json:"ok"`
+	BrokenAt OptUUID `json:"broken_at"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AuditVerify) GetOk() bool {
+	return s.Ok
+}
+
+// GetBrokenAt returns the value of BrokenAt.
+func (s *AuditVerify) GetBrokenAt() OptUUID {
+	return s.BrokenAt
+}
+
+// SetOk sets the value of Ok.
+func (s *AuditVerify) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetBrokenAt sets the value of BrokenAt.
+func (s *AuditVerify) SetBrokenAt(val OptUUID) {
+	s.BrokenAt = val
+}
+
+func (*AuditVerify) verifyAuditRes() {}
+
+type CreateApiKeyForbidden Error
+
+func (*CreateApiKeyForbidden) createApiKeyRes() {}
+
+type CreateApiKeyUnauthorized Error
+
+func (*CreateApiKeyUnauthorized) createApiKeyRes() {}
+
+type CreateApiKeyUnprocessableEntity Error
+
+func (*CreateApiKeyUnprocessableEntity) createApiKeyRes() {}
+
 type CreateSiteConflict Error
 
 func (*CreateSiteConflict) createSiteRes() {}
@@ -72,8 +429,11 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 }
 
 func (*Error) deleteSiteRes() {}
+func (*Error) getMeRes()      {}
 func (*Error) getSiteRes()    {}
 func (*Error) getTenantRes()  {}
+func (*Error) logoutRes()     {}
+func (*Error) oidcLoginRes()  {}
 
 type ErrorDetails map[string]jx.Raw
 
@@ -152,6 +512,336 @@ func (s *HealthStatus) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+type InviteMemberConflict Error
+
+func (*InviteMemberConflict) inviteMemberRes() {}
+
+type InviteMemberForbidden Error
+
+func (*InviteMemberForbidden) inviteMemberRes() {}
+
+type InviteMemberUnauthorized Error
+
+func (*InviteMemberUnauthorized) inviteMemberRes() {}
+
+type InviteMemberUnprocessableEntity Error
+
+func (*InviteMemberUnprocessableEntity) inviteMemberRes() {}
+
+// Ref: #/components/schemas/InviteRequest
+type InviteRequest struct {
+	Email    string    `json:"email"`
+	Password string    `json:"password"`
+	Name     OptString `json:"name"`
+	Role     Role      `json:"role"`
+}
+
+// GetEmail returns the value of Email.
+func (s *InviteRequest) GetEmail() string {
+	return s.Email
+}
+
+// GetPassword returns the value of Password.
+func (s *InviteRequest) GetPassword() string {
+	return s.Password
+}
+
+// GetName returns the value of Name.
+func (s *InviteRequest) GetName() OptString {
+	return s.Name
+}
+
+// GetRole returns the value of Role.
+func (s *InviteRequest) GetRole() Role {
+	return s.Role
+}
+
+// SetEmail sets the value of Email.
+func (s *InviteRequest) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetPassword sets the value of Password.
+func (s *InviteRequest) SetPassword(val string) {
+	s.Password = val
+}
+
+// SetName sets the value of Name.
+func (s *InviteRequest) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetRole sets the value of Role.
+func (s *InviteRequest) SetRole(val Role) {
+	s.Role = val
+}
+
+type ListApiKeysForbidden Error
+
+func (*ListApiKeysForbidden) listApiKeysRes() {}
+
+type ListApiKeysUnauthorized Error
+
+func (*ListApiKeysUnauthorized) listApiKeysRes() {}
+
+type ListAuditForbidden Error
+
+func (*ListAuditForbidden) listAuditRes() {}
+
+type ListAuditUnauthorized Error
+
+func (*ListAuditUnauthorized) listAuditRes() {}
+
+type ListMembersForbidden Error
+
+func (*ListMembersForbidden) listMembersRes() {}
+
+type ListMembersUnauthorized Error
+
+func (*ListMembersUnauthorized) listMembersRes() {}
+
+// Ref: #/components/schemas/LoginRequest
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// GetEmail returns the value of Email.
+func (s *LoginRequest) GetEmail() string {
+	return s.Email
+}
+
+// GetPassword returns the value of Password.
+func (s *LoginRequest) GetPassword() string {
+	return s.Password
+}
+
+// SetEmail sets the value of Email.
+func (s *LoginRequest) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetPassword sets the value of Password.
+func (s *LoginRequest) SetPassword(val string) {
+	s.Password = val
+}
+
+type LoginUnauthorized Error
+
+func (*LoginUnauthorized) loginRes() {}
+
+type LoginUnprocessableEntity Error
+
+func (*LoginUnprocessableEntity) loginRes() {}
+
+// LogoutNoContent is response for Logout operation.
+type LogoutNoContent struct{}
+
+func (*LogoutNoContent) logoutRes() {}
+
+// Ref: #/components/schemas/Me
+type Me struct {
+	User           User         `json:"user"`
+	Memberships    []Membership `json:"memberships"`
+	ActiveTenantID OptUUID      `json:"active_tenant_id"`
+}
+
+// GetUser returns the value of User.
+func (s *Me) GetUser() User {
+	return s.User
+}
+
+// GetMemberships returns the value of Memberships.
+func (s *Me) GetMemberships() []Membership {
+	return s.Memberships
+}
+
+// GetActiveTenantID returns the value of ActiveTenantID.
+func (s *Me) GetActiveTenantID() OptUUID {
+	return s.ActiveTenantID
+}
+
+// SetUser sets the value of User.
+func (s *Me) SetUser(val User) {
+	s.User = val
+}
+
+// SetMemberships sets the value of Memberships.
+func (s *Me) SetMemberships(val []Membership) {
+	s.Memberships = val
+}
+
+// SetActiveTenantID sets the value of ActiveTenantID.
+func (s *Me) SetActiveTenantID(val OptUUID) {
+	s.ActiveTenantID = val
+}
+
+func (*Me) getMeRes()        {}
+func (*Me) loginRes()        {}
+func (*Me) oidcCallbackRes() {}
+func (*Me) registerRes()     {}
+
+// Ref: #/components/schemas/Membership
+type Membership struct {
+	UserID   uuid.UUID `json:"user_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	Role     Role      `json:"role"`
+}
+
+// GetUserID returns the value of UserID.
+func (s *Membership) GetUserID() uuid.UUID {
+	return s.UserID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *Membership) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetRole returns the value of Role.
+func (s *Membership) GetRole() Role {
+	return s.Role
+}
+
+// SetUserID sets the value of UserID.
+func (s *Membership) SetUserID(val uuid.UUID) {
+	s.UserID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *Membership) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetRole sets the value of Role.
+func (s *Membership) SetRole(val Role) {
+	s.Role = val
+}
+
+func (*Membership) inviteMemberRes() {}
+
+// Ref: #/components/schemas/MembershipList
+type MembershipList struct {
+	Items []Membership `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *MembershipList) GetItems() []Membership {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *MembershipList) SetItems(val []Membership) {
+	s.Items = val
+}
+
+func (*MembershipList) listMembersRes() {}
+
+type OidcCallbackNotImplemented Error
+
+func (*OidcCallbackNotImplemented) oidcCallbackRes() {}
+
+type OidcCallbackUnauthorized Error
+
+func (*OidcCallbackUnauthorized) oidcCallbackRes() {}
+
+// OidcLoginFound is response for OidcLogin operation.
+type OidcLoginFound struct{}
+
+func (*OidcLoginFound) oidcLoginRes() {}
+
+// NewOptAuditEntryMetadata returns new OptAuditEntryMetadata with value set to v.
+func NewOptAuditEntryMetadata(v AuditEntryMetadata) OptAuditEntryMetadata {
+	return OptAuditEntryMetadata{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuditEntryMetadata is optional AuditEntryMetadata.
+type OptAuditEntryMetadata struct {
+	Value AuditEntryMetadata
+	Set   bool
+}
+
+// IsSet returns true if OptAuditEntryMetadata was set.
+func (o OptAuditEntryMetadata) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuditEntryMetadata) Reset() {
+	var v AuditEntryMetadata
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuditEntryMetadata) SetTo(v AuditEntryMetadata) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuditEntryMetadata) Get() (v AuditEntryMetadata, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuditEntryMetadata) Or(d AuditEntryMetadata) AuditEntryMetadata {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptDateTime returns new OptDateTime with value set to v.
+func NewOptDateTime(v time.Time) OptDateTime {
+	return OptDateTime{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptDateTime is optional time.Time.
+type OptDateTime struct {
+	Value time.Time
+	Set   bool
+}
+
+// IsSet returns true if OptDateTime was set.
+func (o OptDateTime) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptDateTime) Reset() {
+	var v time.Time
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptDateTime) SetTo(v time.Time) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptDateTime) Get() (v time.Time, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptDateTime) Or(d time.Time) time.Time {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
 }
 
 // NewOptErrorDetails returns new OptErrorDetails with value set to v.
@@ -240,6 +930,52 @@ func (o OptInt32) Get() (v int32, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptInt32) Or(d int32) int32 {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRole returns new OptRole with value set to v.
+func NewOptRole(v Role) OptRole {
+	return OptRole{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRole is optional Role.
+type OptRole struct {
+	Value Role
+	Set   bool
+}
+
+// IsSet returns true if OptRole was set.
+func (o OptRole) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRole) Reset() {
+	var v Role
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRole) SetTo(v Role) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRole) Get() (v Role, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRole) Or(d Role) Role {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -338,6 +1074,52 @@ func (o OptString) Or(d string) string {
 	return d
 }
 
+// NewOptUUID returns new OptUUID with value set to v.
+func NewOptUUID(v uuid.UUID) OptUUID {
+	return OptUUID{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptUUID is optional uuid.UUID.
+type OptUUID struct {
+	Value uuid.UUID
+	Set   bool
+}
+
+// IsSet returns true if OptUUID was set.
+func (o OptUUID) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptUUID) Reset() {
+	var v uuid.UUID
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptUUID) SetTo(v uuid.UUID) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptUUID) Get() (v uuid.UUID, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptUUID) Or(d uuid.UUID) uuid.UUID {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // Ref: #/components/schemas/Readiness
 type Readiness struct {
 	Status ReadinessStatus `json:"status"`
@@ -410,6 +1192,150 @@ func (s *ReadinessStatus) UnmarshalText(data []byte) error {
 		return nil
 	case ReadinessStatusDegraded:
 		*s = ReadinessStatusDegraded
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RegisterConflict Error
+
+func (*RegisterConflict) registerRes() {}
+
+type RegisterForbidden Error
+
+func (*RegisterForbidden) registerRes() {}
+
+// Ref: #/components/schemas/RegisterRequest
+type RegisterRequest struct {
+	Email      string    `json:"email"`
+	Password   string    `json:"password"`
+	Name       OptString `json:"name"`
+	TenantName OptString `json:"tenant_name"`
+	TenantSlug OptString `json:"tenant_slug"`
+}
+
+// GetEmail returns the value of Email.
+func (s *RegisterRequest) GetEmail() string {
+	return s.Email
+}
+
+// GetPassword returns the value of Password.
+func (s *RegisterRequest) GetPassword() string {
+	return s.Password
+}
+
+// GetName returns the value of Name.
+func (s *RegisterRequest) GetName() OptString {
+	return s.Name
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *RegisterRequest) GetTenantName() OptString {
+	return s.TenantName
+}
+
+// GetTenantSlug returns the value of TenantSlug.
+func (s *RegisterRequest) GetTenantSlug() OptString {
+	return s.TenantSlug
+}
+
+// SetEmail sets the value of Email.
+func (s *RegisterRequest) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetPassword sets the value of Password.
+func (s *RegisterRequest) SetPassword(val string) {
+	s.Password = val
+}
+
+// SetName sets the value of Name.
+func (s *RegisterRequest) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *RegisterRequest) SetTenantName(val OptString) {
+	s.TenantName = val
+}
+
+// SetTenantSlug sets the value of TenantSlug.
+func (s *RegisterRequest) SetTenantSlug(val OptString) {
+	s.TenantSlug = val
+}
+
+type RegisterUnprocessableEntity Error
+
+func (*RegisterUnprocessableEntity) registerRes() {}
+
+type RevokeApiKeyForbidden Error
+
+func (*RevokeApiKeyForbidden) revokeApiKeyRes() {}
+
+// RevokeApiKeyNoContent is response for RevokeApiKey operation.
+type RevokeApiKeyNoContent struct{}
+
+func (*RevokeApiKeyNoContent) revokeApiKeyRes() {}
+
+type RevokeApiKeyNotFound Error
+
+func (*RevokeApiKeyNotFound) revokeApiKeyRes() {}
+
+type RevokeApiKeyUnauthorized Error
+
+func (*RevokeApiKeyUnauthorized) revokeApiKeyRes() {}
+
+// Ref: #/components/schemas/Role
+type Role string
+
+const (
+	RoleOwner    Role = "owner"
+	RoleAdmin    Role = "admin"
+	RoleOperator Role = "operator"
+	RoleViewer   Role = "viewer"
+)
+
+// AllValues returns all Role values.
+func (Role) AllValues() []Role {
+	return []Role{
+		RoleOwner,
+		RoleAdmin,
+		RoleOperator,
+		RoleViewer,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s Role) MarshalText() ([]byte, error) {
+	switch s {
+	case RoleOwner:
+		return []byte(s), nil
+	case RoleAdmin:
+		return []byte(s), nil
+	case RoleOperator:
+		return []byte(s), nil
+	case RoleViewer:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *Role) UnmarshalText(data []byte) error {
+	switch Role(data) {
+	case RoleOwner:
+		*s = RoleOwner
+		return nil
+	case RoleAdmin:
+		*s = RoleAdmin
+		return nil
+	case RoleOperator:
+		*s = RoleOperator
+		return nil
+	case RoleViewer:
+		*s = RoleViewer
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -808,3 +1734,81 @@ func (s *TenantList) GetItems() []Tenant {
 func (s *TenantList) SetItems(val []Tenant) {
 	s.Items = val
 }
+
+// Ref: #/components/schemas/User
+type User struct {
+	ID          uuid.UUID   `json:"id"`
+	Email       string      `json:"email"`
+	Name        string      `json:"name"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+	LastLoginAt OptDateTime `json:"last_login_at"`
+}
+
+// GetID returns the value of ID.
+func (s *User) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetEmail returns the value of Email.
+func (s *User) GetEmail() string {
+	return s.Email
+}
+
+// GetName returns the value of Name.
+func (s *User) GetName() string {
+	return s.Name
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *User) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *User) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// GetLastLoginAt returns the value of LastLoginAt.
+func (s *User) GetLastLoginAt() OptDateTime {
+	return s.LastLoginAt
+}
+
+// SetID sets the value of ID.
+func (s *User) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetEmail sets the value of Email.
+func (s *User) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetName sets the value of Name.
+func (s *User) SetName(val string) {
+	s.Name = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *User) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *User) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+// SetLastLoginAt sets the value of LastLoginAt.
+func (s *User) SetLastLoginAt(val OptDateTime) {
+	s.LastLoginAt = val
+}
+
+type VerifyAuditForbidden Error
+
+func (*VerifyAuditForbidden) verifyAuditRes() {}
+
+type VerifyAuditUnauthorized Error
+
+func (*VerifyAuditUnauthorized) verifyAuditRes() {}

@@ -10,9 +10,15 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/telemetry"
@@ -50,33 +56,85 @@ func run() error {
 	}
 	defer func() { _ = tp.Shutdown(context.Background()) }()
 
+	// Refuse to boot with a weak/placeholder session secret.
+	if err := cfg.ValidateSessionSecret(); err != nil {
+		return err
+	}
+
+	// Migrations run with the owner/superuser DSN (creates the app role +
+	// privileged DDL); the application connects with the unprivileged app DSN.
+	migPool, err := db.Connect(ctx, cfg.DB.MigrateDSN())
+	if err != nil {
+		return err
+	}
+	if err := migPool.Migrate(ctx); err != nil {
+		migPool.Close()
+		return err
+	}
+	migPool.Close()
+	logger.Info("migrations applied")
+
 	pool, err := db.Connect(ctx, cfg.DB.DSN())
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	if err := pool.Migrate(ctx); err != nil {
+	// Hard-fail if the application role bypasses RLS (overridable for dev via
+	// WPMGR_ALLOW_RLS_BYPASS_ROLE=true).
+	if err := pool.EnforceRLSRole(ctx, logger, cfg.DB.AllowRLSBypassRole); err != nil {
 		return err
 	}
-	logger.Info("migrations applied")
-
-	// Warn (loudly) if the app DB role can bypass RLS. Hard-fail + DSN split
-	// is a Phase 5 / M1 hardening item (see security review).
-	pool.WarnIfRLSBypassRole(ctx, logger)
 
 	validator := domain.NewValidator()
 	clock := domain.SystemClock{}
 
 	tenantSvc := tenant.NewService(tenant.NewRepo(pool.Pool), validator, clock)
 	siteSvc := site.NewService(site.NewRepo(pool), validator, clock)
+	auditRec := audit.NewRecorder(pool, clock)
+
+	// A narrow tenant-creation capability handed to the auth domain (bootstrap +
+	// OIDC first-login) without coupling it to the tenant package internals.
+	newTenant := func(ctx context.Context, name, slug string) (uuid.UUID, error) {
+		t, err := tenantSvc.Create(ctx, tenant.CreateInput{Name: name, Slug: slug})
+		if err != nil {
+			return uuid.Nil, err
+		}
+		return t.ID, nil
+	}
+
+	authRepo := auth.NewRepo(pool)
+	authSvc := auth.NewService(authRepo, auditRec, validator)
+	apiKeySvc := apikey.NewService(pool)
+
+	oidcProvider, err := auth.NewOIDCProvider(ctx, cfg.OIDC)
+	if err != nil {
+		// Discovery failure should not silently disable OIDC; surface it.
+		return err
+	}
+	if oidcProvider.Enabled() {
+		logger.Info("OIDC relying party enabled", slog.String("issuer", cfg.OIDC.Issuer))
+	} else {
+		logger.Info("OIDC disabled (no issuer configured); email+password only")
+	}
+
+	redisPool := auth.NewRedisPool(cfg.Redis.Addr, cfg.Redis.Password)
+	sessions := auth.NewRedisSessionManager(redisPool, cfg.Auth.IdleTimeout, cfg.Auth.AbsoluteExpiry, cfg.IsProduction())
+
+	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc)
 
 	srv := server.New(server.Deps{
 		Config:      cfg,
 		Logger:      logger,
 		Pool:        pool,
-		TenantH:     tenant.NewHandler(tenantSvc),
-		SiteH:       site.NewHandler(siteSvc),
+		Sessions:    sessions,
+		Auth:        authn,
+		AuthH:       auth.NewHandler(authSvc, sessions, oidcProvider, newTenant),
+		MembersH:    auth.NewMembersHandler(authSvc),
+		APIKeyH:     apikey.NewHandler(apiKeySvc, auditRec),
+		AuditH:      audit.NewHandler(auditRec),
+		TenantH:     tenant.NewHandler(tenantSvc, auditRec),
+		SiteH:       site.NewHandler(siteSvc, auditRec),
 		ServiceName: cfg.OTel.ServiceName,
 		Version:     version,
 	})

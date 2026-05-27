@@ -8,6 +8,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
@@ -15,19 +17,21 @@ import (
 // Handler serves the tenant HTTP endpoints. Responses use the ogen-generated
 // types so the wire shape matches the OpenAPI contract exactly.
 type Handler struct {
-	svc *Service
+	svc   *Service
+	audit *audit.Recorder
 }
 
 // NewHandler builds a tenant Handler.
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc *Service, rec *audit.Recorder) *Handler {
+	return &Handler{svc: svc, audit: rec}
 }
 
 // Register mounts the tenant routes on the given router group (/api/v1).
+// Tenant management requires owner; reads require viewer+ within a tenant.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	r.POST("/tenants", h.create)
-	r.GET("/tenants", h.list)
-	r.GET("/tenants/:tenantId", h.get)
+	r.POST("/tenants", authz.RequirePermission(authz.PermTenantManage), h.create)
+	r.GET("/tenants", authz.RequirePermission(authz.PermSiteRead), h.list)
+	r.GET("/tenants/:tenantId", authz.RequirePermission(authz.PermSiteRead), h.get)
 }
 
 type createTenantRequest struct {
@@ -45,6 +49,19 @@ func (h *Handler) create(c *gin.Context) {
 	if err != nil {
 		httpx.Error(c, err)
 		return
+	}
+	// Record against the actor's current active tenant (the new tenant has no
+	// chain yet and the actor has no membership in it).
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok && p.TenantID != uuid.Nil {
+		_, _ = h.audit.Record(c.Request.Context(), audit.Event{
+			TenantID:   p.TenantID,
+			ActorType:  audit.ActorUser,
+			ActorID:    p.ActorID(),
+			Action:     audit.ActionTenantCreate,
+			TargetType: "tenant",
+			TargetID:   t.ID.String(),
+			Metadata:   map[string]any{"slug": t.Slug},
+		})
 	}
 	// Pointer so ogen's *Tenant MarshalJSON is used (consistent with list).
 	out := toAPI(t)

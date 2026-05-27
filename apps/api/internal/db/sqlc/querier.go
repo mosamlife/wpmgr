@@ -11,15 +11,47 @@ import (
 )
 
 type Querier interface {
+	CountUsers(ctx context.Context) (int64, error)
+	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
+	CreateMembership(ctx context.Context, arg CreateMembershipParams) (Membership, error)
 	// tenant_id is supplied explicitly for defense-in-depth; RLS additionally
 	// enforces that it matches the current app.tenant_id setting.
 	CreateSite(ctx context.Context, arg CreateSiteParams) (Site, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
+	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeleteMembership(ctx context.Context, arg DeleteMembershipParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (ApiKey, error)
+	// GetAPIKeyByPrefix resolves a presented key by its unique prefix. This runs
+	// WITHOUT a tenant GUC (the auth layer does not yet know the tenant), so it must
+	// be executed via InAdminTx which sets app.tenant_id to the row's own tenant is
+	// impossible chicken/egg — instead this query is run with RLS disabled scope by
+	// using the prefix-unique lookup helper that sets the GUC after. See repo.
+	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	GetLastAuditHash(ctx context.Context, tenantID uuid.UUID) (string, error)
+	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	GetSite(ctx context.Context, arg GetSiteParams) (Site, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
+	GetUserByEmail(ctx context.Context, email string) (User, error)
+	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
+	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
+	InsertAuditEntry(ctx context.Context, arg InsertAuditEntryParams) (AuditLog, error)
+	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
+	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
+	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]AuditLog, error)
+	ListAuditEntriesForVerify(ctx context.Context, tenantID uuid.UUID) ([]AuditLog, error)
+	ListMembershipsForTenant(ctx context.Context, arg ListMembershipsForTenantParams) ([]Membership, error)
+	// ListMembershipsForUser reads the caller's own memberships across all tenants.
+	// It relies on the memberships_self_read policy (app.user_id GUC), so it must be
+	// run via InUserTx, not InTenantTx.
+	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
+	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
+	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
+	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
+	TouchUserLogin(ctx context.Context, id uuid.UUID) error
+	UpdateMembershipRole(ctx context.Context, arg UpdateMembershipRoleParams) (Membership, error)
 }
 
 var _ Querier = (*Queries)(nil)

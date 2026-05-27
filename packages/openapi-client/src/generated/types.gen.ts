@@ -71,6 +71,113 @@ export type SiteList = {
   items: Array<Site>;
 };
 
+export const Role = {
+  OWNER: "owner",
+  ADMIN: "admin",
+  OPERATOR: "operator",
+  VIEWER: "viewer",
+} as const;
+
+export type Role = (typeof Role)[keyof typeof Role];
+
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  last_login_at?: string;
+};
+
+export type Membership = {
+  user_id: string;
+  tenant_id: string;
+  role: Role;
+};
+
+export type MembershipList = {
+  items: Array<Membership>;
+};
+
+export type Me = {
+  user: User;
+  memberships: Array<Membership>;
+  active_tenant_id?: string;
+};
+
+export type LoginRequest = {
+  email: string;
+  password: string;
+};
+
+export type RegisterRequest = {
+  email: string;
+  password: string;
+  name?: string;
+  tenant_name?: string;
+  tenant_slug?: string;
+};
+
+export type InviteRequest = {
+  email: string;
+  password: string;
+  name?: string;
+  role: Role;
+};
+
+export type ApiKey = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  prefix: string;
+  role: Role;
+  created_at: string;
+  last_used_at?: string;
+  revoked_at?: string;
+};
+
+export type ApiKeyList = {
+  items: Array<ApiKey>;
+};
+
+export type ApiKeyCreate = {
+  name: string;
+  role?: Role;
+};
+
+export type ApiKeyCreated = {
+  api_key: ApiKey;
+  /**
+   * The full API key, shown only once at creation.
+   */
+  token: string;
+};
+
+export type AuditEntry = {
+  id: string;
+  tenant_id: string;
+  actor_type: string;
+  actor_id: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  metadata?: {
+    [key: string]: unknown;
+  };
+  prev_hash: string;
+  hash: string;
+  created_at: string;
+};
+
+export type AuditList = {
+  items: Array<AuditEntry>;
+};
+
+export type AuditVerify = {
+  ok: boolean;
+  broken_at?: string;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -78,6 +185,8 @@ export type Offset = number;
 export type TenantId = string;
 
 export type SiteId = string;
+
+export type ApiKeyId = string;
 
 export type GetHealthzData = {
   body?: never;
@@ -119,6 +228,403 @@ export type GetReadyzResponses = {
 };
 
 export type GetReadyzResponse = GetReadyzResponses[keyof GetReadyzResponses];
+
+export type RegisterData = {
+  body: RegisterRequest;
+  path?: never;
+  query?: never;
+  url: "/auth/register";
+};
+
+export type RegisterErrors = {
+  /**
+   * Open registration is closed
+   */
+  403: Error;
+  /**
+   * Email already exists
+   */
+  409: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type RegisterError = RegisterErrors[keyof RegisterErrors];
+
+export type RegisterResponses = {
+  /**
+   * User registered and session established
+   */
+  201: Me;
+};
+
+export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
+
+export type LoginData = {
+  body: LoginRequest;
+  path?: never;
+  query?: never;
+  url: "/auth/login";
+};
+
+export type LoginErrors = {
+  /**
+   * Invalid credentials
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type LoginError = LoginErrors[keyof LoginErrors];
+
+export type LoginResponses = {
+  /**
+   * Authenticated; session cookie set
+   */
+  200: Me;
+};
+
+export type LoginResponse = LoginResponses[keyof LoginResponses];
+
+export type LogoutData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/logout";
+};
+
+export type LogoutErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type LogoutError = LogoutErrors[keyof LogoutErrors];
+
+export type LogoutResponses = {
+  /**
+   * Logged out
+   */
+  204: void;
+};
+
+export type LogoutResponse = LogoutResponses[keyof LogoutResponses];
+
+export type GetMeData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/me";
+};
+
+export type GetMeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type GetMeError = GetMeErrors[keyof GetMeErrors];
+
+export type GetMeResponses = {
+  /**
+   * The authenticated user
+   */
+  200: Me;
+};
+
+export type GetMeResponse = GetMeResponses[keyof GetMeResponses];
+
+export type OidcLoginData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/oidc/login";
+};
+
+export type OidcLoginErrors = {
+  /**
+   * OIDC is not configured
+   */
+  501: Error;
+};
+
+export type OidcLoginError = OidcLoginErrors[keyof OidcLoginErrors];
+
+export type OidcCallbackData = {
+  body?: never;
+  path?: never;
+  query?: {
+    code?: string;
+    state?: string;
+  };
+  url: "/auth/oidc/callback";
+};
+
+export type OidcCallbackErrors = {
+  /**
+   * OIDC verification failed
+   */
+  401: Error;
+  /**
+   * OIDC is not configured
+   */
+  501: Error;
+};
+
+export type OidcCallbackError = OidcCallbackErrors[keyof OidcCallbackErrors];
+
+export type OidcCallbackResponses = {
+  /**
+   * Authenticated via OIDC; session cookie set
+   */
+  200: Me;
+};
+
+export type OidcCallbackResponse =
+  OidcCallbackResponses[keyof OidcCallbackResponses];
+
+export type ListMembersData = {
+  body?: never;
+  path?: never;
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/members";
+};
+
+export type ListMembersErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListMembersError = ListMembersErrors[keyof ListMembersErrors];
+
+export type ListMembersResponses = {
+  /**
+   * A page of memberships
+   */
+  200: MembershipList;
+};
+
+export type ListMembersResponse =
+  ListMembersResponses[keyof ListMembersResponses];
+
+export type InviteMemberData = {
+  body: InviteRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/members";
+};
+
+export type InviteMemberErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Already a member
+   */
+  409: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type InviteMemberError = InviteMemberErrors[keyof InviteMemberErrors];
+
+export type InviteMemberResponses = {
+  /**
+   * Member added
+   */
+  201: Membership;
+};
+
+export type InviteMemberResponse =
+  InviteMemberResponses[keyof InviteMemberResponses];
+
+export type ListApiKeysData = {
+  body?: never;
+  path?: never;
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/api-keys";
+};
+
+export type ListApiKeysErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListApiKeysError = ListApiKeysErrors[keyof ListApiKeysErrors];
+
+export type ListApiKeysResponses = {
+  /**
+   * A page of API keys (no secrets)
+   */
+  200: ApiKeyList;
+};
+
+export type ListApiKeysResponse =
+  ListApiKeysResponses[keyof ListApiKeysResponses];
+
+export type CreateApiKeyData = {
+  body: ApiKeyCreate;
+  path?: never;
+  query?: never;
+  url: "/api/v1/api-keys";
+};
+
+export type CreateApiKeyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateApiKeyError = CreateApiKeyErrors[keyof CreateApiKeyErrors];
+
+export type CreateApiKeyResponses = {
+  /**
+   * API key created; token returned once
+   */
+  201: ApiKeyCreated;
+};
+
+export type CreateApiKeyResponse =
+  CreateApiKeyResponses[keyof CreateApiKeyResponses];
+
+export type RevokeApiKeyData = {
+  body?: never;
+  path: {
+    apiKeyId: string;
+  };
+  query?: never;
+  url: "/api/v1/api-keys/{apiKeyId}";
+};
+
+export type RevokeApiKeyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * API key not found
+   */
+  404: Error;
+};
+
+export type RevokeApiKeyError = RevokeApiKeyErrors[keyof RevokeApiKeyErrors];
+
+export type RevokeApiKeyResponses = {
+  /**
+   * API key revoked
+   */
+  204: void;
+};
+
+export type RevokeApiKeyResponse =
+  RevokeApiKeyResponses[keyof RevokeApiKeyResponses];
+
+export type ListAuditData = {
+  body?: never;
+  path?: never;
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/audit";
+};
+
+export type ListAuditErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListAuditError = ListAuditErrors[keyof ListAuditErrors];
+
+export type ListAuditResponses = {
+  /**
+   * A page of audit entries
+   */
+  200: AuditList;
+};
+
+export type ListAuditResponse = ListAuditResponses[keyof ListAuditResponses];
+
+export type VerifyAuditData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/audit/verify";
+};
+
+export type VerifyAuditErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type VerifyAuditError = VerifyAuditErrors[keyof VerifyAuditErrors];
+
+export type VerifyAuditResponses = {
+  /**
+   * Verification result
+   */
+  200: AuditVerify;
+};
+
+export type VerifyAuditResponse =
+  VerifyAuditResponses[keyof VerifyAuditResponses];
 
 export type ListTenantsData = {
   body?: never;

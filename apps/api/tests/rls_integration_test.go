@@ -61,11 +61,17 @@ func startPostgres(t *testing.T) *db.Pool {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// Provision a non-superuser application role and grant table access.
+	// The auth migration already created the wpmgr_app role (NOLOGIN, no
+	// password) and granted it table privileges. Here we just give it a login +
+	// password so the test can connect AS that non-superuser role. (Grants for
+	// any pre-auth-migration tables are reasserted to be safe.)
 	for _, stmt := range []string{
-		"CREATE ROLE wpmgr_app LOGIN PASSWORD 'app' NOSUPERUSER NOBYPASSRLS",
+		"ALTER ROLE wpmgr_app LOGIN PASSWORD 'app'",
 		"GRANT USAGE ON SCHEMA public TO wpmgr_app",
 		"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO wpmgr_app",
+		// audit_log is append-only: re-revoke mutation in case the blanket grant
+		// above re-added it.
+		"REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM wpmgr_app",
 	} {
 		if _, err := adminPool.Exec(ctx, stmt); err != nil {
 			t.Fatalf("provision app role (%q): %v", stmt, err)
@@ -79,6 +85,29 @@ func startPostgres(t *testing.T) *db.Pool {
 		t.Fatalf("connect app: %v", err)
 	}
 	t.Cleanup(pool.Close)
+
+	adminDSNs[pool] = adminDSN
+	t.Cleanup(func() { delete(adminDSNs, pool) })
+	return pool
+}
+
+// adminDSNs maps an app pool to its container's superuser DSN, so tests that
+// must act outside the app's RLS/privilege constraints (e.g. tampering with the
+// append-only audit_log) can open a superuser connection.
+var adminDSNs = map[*db.Pool]string{}
+
+// connectAdmin opens a superuser pool for the most recently started container.
+// It is only used to simulate out-of-band tampering in tests.
+func connectAdmin(t *testing.T, app *db.Pool) *db.Pool {
+	t.Helper()
+	dsn, ok := adminDSNs[app]
+	if !ok {
+		t.Fatal("no admin DSN recorded for this pool")
+	}
+	pool, err := db.Connect(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect admin: %v", err)
+	}
 	return pool
 }
 

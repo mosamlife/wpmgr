@@ -38,17 +38,78 @@ all tenant-scoped queries within it. Even a query that forgets its `tenant_id`
 filter cannot read or write another tenant's rows.
 
 **The application must connect as a non-superuser, non-`BYPASSRLS` role.**
-Postgres superusers (and `BYPASSRLS` roles) ignore RLS entirely. Use the
-bootstrap superuser only to run migrations and to create the app role, e.g.:
+Postgres superusers (and `BYPASSRLS` roles) ignore RLS entirely.
+
+### Two-DSN model (M1)
+
+There are two connection strings:
+
+| Setting | Role | Used for |
+|---------|------|----------|
+| `WPMGR_DB_*` (→ `DBConfig.DSN()`) | `wpmgr_app` (NOSUPERUSER NOBYPASSRLS) | the running application |
+| `WPMGR_DB_MIGRATION_DSN` (→ `MigrateDSN()`) | owner/superuser | migrations only |
+
+`MigrateDSN()` falls back to the app DSN when `WPMGR_DB_MIGRATION_DSN` is unset
+(single-DSN dev). Migrations run privileged DDL and **create the `wpmgr_app`
+role** (`NOLOGIN NOSUPERUSER NOBYPASSRLS`, idempotent) and grant it the table
+privileges + `ALTER DEFAULT PRIVILEGES`. Deployments/infra provision the role's
+**LOGIN + password** out of band (the migration deliberately does not hard-code a
+password):
 
 ```sql
-CREATE ROLE wpmgr_app LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
-GRANT USAGE ON SCHEMA public TO wpmgr_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO wpmgr_app;
+-- infra step, once, after migrations have created the NOLOGIN role:
+ALTER ROLE wpmgr_app LOGIN PASSWORD '<from-secrets-manager>';
 ```
 
-The RLS integration test (`tests/rls_integration_test.go`) provisions exactly
-such a role and proves cross-tenant SELECT returns zero rows.
+### Hard-fail on RLS-bypassing app role
+
+At startup the app calls `Pool.EnforceRLSRole`: if the connecting role is a
+superuser or has `BYPASSRLS`, the server **refuses to boot**. The single escape
+hatch is `WPMGR_ALLOW_RLS_BYPASS_ROLE=true` (default `false`), intended only for
+single-node dev sharing the bootstrap superuser; when set, the bypass is
+downgraded to a *loud* warning. Never enable it in production.
+
+The RLS integration tests (`tests/*_integration_test.go`) connect as the
+`wpmgr_app` role and prove cross-tenant SELECT on `sites`, `memberships`,
+`api_keys`, and `audit_log` returns zero rows.
+
+### Auth, sessions, RBAC, API keys, audit (M1)
+
+- **Auth**: argon2id password hashing (OWASP 19 MiB/t=2/p=1). `POST /auth/login`,
+  `POST /auth/logout`, `GET /auth/me`, `POST /auth/register` (first-run bootstrap
+  creates the first user + tenant + owner membership; afterwards registration is
+  closed and members are added via `POST /api/v1/members`). OIDC relying party
+  (coreos/go-oidc v3 + x/oauth2, PKCE + state + nonce) at `GET /auth/oidc/login`
+  and `GET /auth/oidc/callback`; disabled cleanly (501) when `WPMGR_OIDC_ISSUER`
+  is unset.
+- **Sessions**: SCS v2 with a Redis store (redigo pool, `WPMGR_REDIS_ADDR`),
+  opaque `wpmgr_session` cookie (HttpOnly, SameSite=Lax, Secure in prod), idle +
+  absolute lifetimes. The session holds `user_id` + `active_tenant_id`. The
+  server refuses to boot if `WPMGR_SESSION_SECRET` is empty, a `change-me*`
+  placeholder, or shorter than 32 bytes.
+- **Tenant context**: the old `X-Tenant-ID` *trust* is gone. The active tenant is
+  derived from the authenticated principal (session's `active_tenant_id`, or the
+  tenant an API key is bound to) and the user's membership is re-verified.
+  A session caller may still pass `X-Tenant-ID` to *select* one of their own
+  tenants, but membership is always checked — the header alone grants nothing.
+- **RBAC**: roles `owner > admin > operator > viewer`. Middleware
+  `authz.RequireRole(min)` / `authz.RequirePermission(perm)`. Matrix:
+
+  | Permission | Min role |
+  |------------|----------|
+  | site:read, member:read, tenant/site reads | viewer |
+  | site:write (create/delete site) | operator |
+  | member:manage, apikey:read, apikey:manage, audit:read | admin |
+  | tenant:manage (create tenant) | owner |
+
+- **API keys**: tenant-scoped. Token format `wpmgr_<prefix>_<secret>`; only a
+  sha256 hash + the prefix are stored, and the full token is returned once at
+  creation. Auth middleware accepts either a session cookie OR
+  `Authorization: Bearer <key>`. `POST/GET/DELETE /api/v1/api-keys` (admin+).
+- **Audit log**: append-only, per-tenant hash-chained (`hash = sha256(prev_hash,
+  tenant, actor, action, target, metadata, created_at)`). `UPDATE`/`DELETE` are
+  revoked from `wpmgr_app`, so the table is insert-only at the privilege level.
+  `GET /api/v1/audit` (paginated) and `GET /api/v1/audit/verify` (admin+).
 
 ## Configuration
 
@@ -116,7 +177,20 @@ on server startup (`db.Pool.Migrate`); `wpmgr-cli migrate` applies them too.
 
 - `GET /healthz` — liveness.
 - `GET /readyz` — readiness (pings the DB; 503 if unreachable).
+- `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`,
+  `GET /auth/oidc/login`, `GET /auth/oidc/callback`.
 - `POST /api/v1/tenants`, `GET /api/v1/tenants`, `GET /api/v1/tenants/{tenantId}`.
 - `POST /api/v1/sites`, `GET /api/v1/sites`, `GET /api/v1/sites/{siteId}`,
-  `DELETE /api/v1/sites/{siteId}` — tenant taken from `X-Tenant-ID` (stub) until
-  auth lands.
+  `DELETE /api/v1/sites/{siteId}` — active tenant + role come from the
+  authenticated principal.
+- `GET /api/v1/members`, `POST /api/v1/members` (admin+).
+- `GET /api/v1/api-keys`, `POST /api/v1/api-keys`, `DELETE /api/v1/api-keys/{apiKeyId}` (admin+).
+- `GET /api/v1/audit`, `GET /api/v1/audit/verify` (admin+).
+
+### New M1 env vars
+
+`WPMGR_DB_MIGRATION_DSN` (optional owner DSN for migrations; falls back to the
+app DSN), `WPMGR_ALLOW_RLS_BYPASS_ROLE` (dev escape hatch, default false),
+`WPMGR_SESSION_SECRET` (≥32 bytes, no `change-me*`), `WPMGR_REDIS_ADDR`,
+`WPMGR_REDIS_PASSWORD`, `WPMGR_OIDC_ISSUER`/`_CLIENT_ID`/`_CLIENT_SECRET`/`_REDIRECT_URL`,
+and optional `WPMGR_AUTH_IDLE_TIMEOUT` / `WPMGR_AUTH_ABSOLUTE_EXPIRY`.

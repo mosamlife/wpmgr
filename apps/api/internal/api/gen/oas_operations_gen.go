@@ -6,13 +6,26 @@ package gen
 type OperationName = string
 
 const (
+	CreateApiKeyOperation OperationName = "CreateApiKey"
 	CreateSiteOperation   OperationName = "CreateSite"
 	CreateTenantOperation OperationName = "CreateTenant"
 	DeleteSiteOperation   OperationName = "DeleteSite"
 	GetHealthzOperation   OperationName = "GetHealthz"
+	GetMeOperation        OperationName = "GetMe"
 	GetReadyzOperation    OperationName = "GetReadyz"
 	GetSiteOperation      OperationName = "GetSite"
 	GetTenantOperation    OperationName = "GetTenant"
+	InviteMemberOperation OperationName = "InviteMember"
+	ListApiKeysOperation  OperationName = "ListApiKeys"
+	ListAuditOperation    OperationName = "ListAudit"
+	ListMembersOperation  OperationName = "ListMembers"
 	ListSitesOperation    OperationName = "ListSites"
 	ListTenantsOperation  OperationName = "ListTenants"
+	LoginOperation        OperationName = "Login"
+	LogoutOperation       OperationName = "Logout"
+	OidcCallbackOperation OperationName = "OidcCallback"
+	OidcLoginOperation    OperationName = "OidcLogin"
+	RegisterOperation     OperationName = "Register"
+	RevokeApiKeyOperation OperationName = "RevokeApiKey"
+	VerifyAuditOperation  OperationName = "VerifyAudit"
 )

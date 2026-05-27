@@ -1,9 +1,9 @@
 # apps/web — WPMgr dashboard (React 19 + Vite)
 
-Control-plane SPA for WPMgr. This is the **Phase 4 frontend skeleton**: the app
-shell, routing, data layer, and a Sites list/detail flow wired against the
-generated API client. Real authentication and the remaining feature domains
-land in Phase 5 / M1.
+Control-plane SPA for WPMgr. The app shell, routing, and data layer are wired
+against the generated API client with **real session-based authentication
+(M1)**: email+password and OIDC login, a `GET /auth/me` session, an API-keys
+management page, and the Sites list/detail flow.
 
 ## Stack
 
@@ -17,7 +17,8 @@ land in Phase 5 / M1.
 | Styling        | **Tailwind v4** via `@tailwindcss/vite` (CSS-based config)          |
 | Heavy tables   | `@tanstack/react-table` (headless)                                  |
 | Forms          | react-hook-form + `@hookform/resolvers` + Zod 4                     |
-| Client/UI state| Zustand (session stub + theme) — **no server state here**           |
+| Auth / session | session cookie + TanStack Query (`GET /auth/me`) — **server state** |
+| Client/UI state| Zustand (theme only) — **no server state here**                     |
 | Dark mode      | class strategy (`.dark` on `<html>`), persisted                     |
 | E2E            | Playwright (Chromium)                                               |
 
@@ -34,13 +35,36 @@ land in Phase 5 / M1.
 ## Routes
 
 - `/` → redirects to `/sites`
-- `/login` — react-hook-form + Zod login form. **Stub only:** sets a fake
-  session in Zustand and routes to `/sites` (no auth endpoint exists yet).
-- `/sites` — sites list (TanStack Query + TanStack Table); has a logout action.
+- `/login` — react-hook-form + Zod login form posting to `POST /auth/login`.
+  Invalid credentials (401) render inline. A **Sign in with SSO** button does a
+  full-page redirect to `/api/auth/oidc/login`; if OIDC is unconfigured the
+  backend returns 501 and the user can navigate back (we don't probe config).
+- `/register` — first-run bootstrap form (`POST /auth/register`). Creates the
+  first user + tenant + owner; returns 403 once any user exists.
+- `/settings/api-keys` — list/create/revoke tenant API keys (admin/owner only).
+- `/sites` — sites list (TanStack Query + TanStack Table).
 - `/sites/$siteId` — site detail with loading / error / not-found states.
 
-The pathless `_authed` layout guards all `/sites*` routes: an empty session
-`beforeLoad`-redirects to `/login`.
+### Auth & the route guard
+
+Auth is **server state**, so the session lives in TanStack Query (not Zustand),
+per the ADRs. The single source of truth is `GET /auth/me`, authenticated by the
+HttpOnly `wpmgr_session` cookie. The generated `@wpmgr/api` client is configured
+with `credentials: "include"` (in `packages/openapi-client/src/client.config.ts`)
+so the cookie flows on every request; there is no `X-Tenant-ID` header.
+
+- `useMe()` reads `/auth/me`; a 401 resolves to `null` (not authenticated).
+- `useLogin()` posts to `/auth/login`, seeds the `me` cache, and navigates to
+  `/sites` (or the `?redirect=` target).
+- `useLogout()` posts to `/auth/logout` and `queryClient.clear()`s all server
+  state, then routes to `/login`.
+
+The pathless `_authed` layout guard (`beforeLoad`) calls `ensureMe()` (a cached
+`/auth/me` read via the router's QueryClient context). When unauthenticated it
+`redirect`s to `/login` carrying the attempted URL in `?redirect=`. The header
+shows the logged-in user, their active-tenant role, and a working logout; the
+API-keys nav entry and the create/revoke controls are hidden for non-admins
+(the backend enforces the role regardless).
 
 ## API client (`@wpmgr/api`)
 

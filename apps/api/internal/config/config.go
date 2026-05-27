@@ -20,11 +20,19 @@ type Config struct {
 	HTTPAddr string         `koanf:"http_addr"`
 	LogLevel string         `koanf:"log_level"`
 	DB       DBConfig       `koanf:"db"`
+	Redis    RedisConfig    `koanf:"redis"`
+	Auth     AuthConfig     `koanf:"auth"`
+	OIDC     OIDCConfig     `koanf:"oidc"`
 	OTel     OTelConfig     `koanf:"otel"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
 }
 
 // DBConfig holds Postgres connection parts.
+//
+// The application connects with the DSN built from these parts (a NOSUPERUSER
+// NOBYPASSRLS role in any sane deployment). Migrations, which must CREATE ROLE
+// and run privileged DDL, use MigrationDSN when set; otherwise they fall back
+// to the app DSN. See apps/api/README.md "Two-DSN model".
 type DBConfig struct {
 	Host     string `koanf:"host"`
 	Port     int    `koanf:"port"`
@@ -32,7 +40,43 @@ type DBConfig struct {
 	Password string `koanf:"password"`
 	Name     string `koanf:"name"`
 	SSLMode  string `koanf:"sslmode"`
+	// MigrationDSN is an explicit owner/superuser connection string used ONLY
+	// to run migrations (which provision roles and privileged DDL). Empty means
+	// "use the app DSN for migrations too" (single-DSN dev fallback).
+	MigrationDSN string `koanf:"migration_dsn"`
+	// AllowRLSBypassRole is the escape hatch that downgrades the
+	// superuser/BYPASSRLS startup check from a hard failure to a loud warning.
+	// Intended only for single-node dev where the app shares the bootstrap
+	// superuser. Defaults to false (hard fail) — never enable in production.
+	AllowRLSBypassRole bool `koanf:"allow_rls_bypass_role"`
 }
+
+// RedisConfig holds the Redis connection used for the session store (SCS).
+type RedisConfig struct {
+	Addr     string `koanf:"addr"`
+	Password string `koanf:"password"`
+}
+
+// AuthConfig holds session/cookie keying and lifetimes.
+type AuthConfig struct {
+	// SessionSecret keys the session store. It MUST be a non-placeholder value
+	// of at least 32 bytes; the server refuses to boot otherwise.
+	SessionSecret  string        `koanf:"session_secret"`
+	IdleTimeout    time.Duration `koanf:"idle_timeout"`
+	AbsoluteExpiry time.Duration `koanf:"absolute_expiry"`
+}
+
+// OIDCConfig holds the OpenID Connect relying-party configuration. When Issuer
+// is empty the OIDC routes are disabled cleanly (email+password still works).
+type OIDCConfig struct {
+	Issuer       string `koanf:"issuer"`
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+	RedirectURL  string `koanf:"redirect_url"`
+}
+
+// Enabled reports whether OIDC is configured.
+func (o OIDCConfig) Enabled() bool { return o.Issuer != "" }
 
 // OTelConfig holds OpenTelemetry export configuration.
 type OTelConfig struct {
@@ -45,7 +89,7 @@ type ShutdownConfig struct {
 	Timeout time.Duration `koanf:"timeout"`
 }
 
-// DSN renders a libpq/pgx connection string from the DB parts.
+// DSN renders the application libpq/pgx connection string from the DB parts.
 func (d DBConfig) DSN() string {
 	return fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
@@ -53,9 +97,35 @@ func (d DBConfig) DSN() string {
 	)
 }
 
+// MigrateDSN returns the connection string used to run migrations: the explicit
+// MigrationDSN (owner/superuser) when set, otherwise the app DSN (dev fallback).
+func (d DBConfig) MigrateDSN() string {
+	if d.MigrationDSN != "" {
+		return d.MigrationDSN
+	}
+	return d.DSN()
+}
+
 // IsProduction reports whether we should emit JSON logs and stricter behavior.
 func (c Config) IsProduction() bool {
 	return strings.EqualFold(c.Env, "production") || strings.EqualFold(c.Env, "prod")
+}
+
+// ValidateSessionSecret refuses weak/placeholder session secrets. The secret
+// keys the session store; an empty, placeholder, or short value is a security
+// hole, so the server must not boot with one.
+func (c Config) ValidateSessionSecret() error {
+	s := c.Auth.SessionSecret
+	if s == "" {
+		return fmt.Errorf("WPMGR_SESSION_SECRET is empty: set a random secret of at least 32 bytes")
+	}
+	if strings.HasPrefix(s, "change-me") {
+		return fmt.Errorf("WPMGR_SESSION_SECRET still holds the placeholder value: set a real random secret of at least 32 bytes")
+	}
+	if len(s) < 32 {
+		return fmt.Errorf("WPMGR_SESSION_SECRET is too short (%d bytes): use at least 32 bytes", len(s))
+	}
+	return nil
 }
 
 func defaults() map[string]any {
@@ -69,6 +139,17 @@ func defaults() map[string]any {
 		"db.password":                 "wpmgr",
 		"db.name":                     "wpmgr",
 		"db.sslmode":                  "disable",
+		"db.migration_dsn":            "",
+		"db.allow_rls_bypass_role":    false,
+		"redis.addr":                  "localhost:6379",
+		"redis.password":              "",
+		"auth.session_secret":         "",
+		"auth.idle_timeout":           "168h", // 7 days idle
+		"auth.absolute_expiry":        "720h", // 30 days hard cap
+		"oidc.issuer":                 "",
+		"oidc.client_id":              "",
+		"oidc.client_secret":          "",
+		"oidc.redirect_url":           "",
 		"otel.exporter_otlp_endpoint": "",
 		"otel.service_name":           "wpmgr-api",
 		"shutdown.timeout":            "15s",
@@ -120,6 +201,18 @@ func mapEnvKey(k string) string {
 		return "log_level"
 	case k == "env":
 		return "env"
+	// Escape hatch: WPMGR_ALLOW_RLS_BYPASS_ROLE -> db.allow_rls_bypass_role.
+	case k == "allow_rls_bypass_role":
+		return "db.allow_rls_bypass_role"
+	// WPMGR_SESSION_SECRET -> auth.session_secret.
+	case k == "session_secret":
+		return "auth.session_secret"
+	case strings.HasPrefix(k, "auth_"):
+		return "auth." + strings.TrimPrefix(k, "auth_")
+	case strings.HasPrefix(k, "oidc_"):
+		return "oidc." + strings.TrimPrefix(k, "oidc_")
+	case strings.HasPrefix(k, "redis_"):
+		return "redis." + strings.TrimPrefix(k, "redis_")
 	case strings.HasPrefix(k, "db_"):
 		return "db." + strings.TrimPrefix(k, "db_")
 	case strings.HasPrefix(k, "otel_"):

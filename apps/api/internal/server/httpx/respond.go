@@ -17,9 +17,10 @@ func Error(c *gin.Context, err error) {
 	body := gen.Error{Code: "internal_error", Message: "internal server error"}
 	if de, ok := domain.AsDomain(err); ok {
 		body.Code = de.Code
-		// Only expose the message for client-correctable errors; for 5xx keep
-		// it generic to avoid leaking internals.
-		if status < 500 {
+		// Expose the message for every domain Kind except the catch-all internal
+		// error, whose message may leak internals. 4xx and the explicit 501
+		// (feature disabled) carry caller-actionable, safe messages.
+		if de.Kind != domain.KindInternal {
 			body.Message = de.Message
 		}
 	}

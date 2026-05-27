@@ -17,10 +17,6 @@ import (
 // HeaderRequestID is the inbound/outbound correlation header.
 const HeaderRequestID = "X-Request-ID"
 
-// HeaderTenantID is the (stub) header carrying the active tenant. In a later
-// phase this is derived from the authenticated session instead.
-const HeaderTenantID = "X-Tenant-ID"
-
 const ctxRequestID = "request_id"
 
 // RequestID assigns a request ID (honoring an inbound X-Request-ID), stores it
@@ -100,21 +96,6 @@ func Recovery(log *slog.Logger) gin.HandlerFunc {
 				}
 			}
 		}()
-		c.Next()
-	}
-}
-
-// Tenant extracts the tenant ID from the X-Tenant-ID header (stub) and places
-// it on the request context. Requests without a valid tenant header proceed
-// without a tenant; handlers that require one enforce it themselves.
-func Tenant() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		raw := c.GetHeader(HeaderTenantID)
-		if raw != "" {
-			if id, err := uuid.Parse(raw); err == nil {
-				c.Request = c.Request.WithContext(domain.WithTenantID(c.Request.Context(), id))
-			}
-		}
 		c.Next()
 	}
 }

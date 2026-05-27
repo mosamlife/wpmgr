@@ -13,6 +13,15 @@ type UnimplementedHandler struct{}
 
 var _ Handler = UnimplementedHandler{}
 
+// CreateApiKey implements createApiKey operation.
+//
+// Create an API key (admin+); the secret is shown once.
+//
+// POST /api/v1/api-keys
+func (UnimplementedHandler) CreateApiKey(ctx context.Context, req *ApiKeyCreate) (r CreateApiKeyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // CreateSite implements createSite operation.
 //
 // Creates a site belonging to the tenant in the request context.
@@ -49,6 +58,15 @@ func (UnimplementedHandler) GetHealthz(ctx context.Context) (r *Health, _ error)
 	return r, ht.ErrNotImplemented
 }
 
+// GetMe implements getMe operation.
+//
+// Current user, memberships, and active tenant.
+//
+// GET /auth/me
+func (UnimplementedHandler) GetMe(ctx context.Context) (r GetMeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetReadyz implements getReadyz operation.
 //
 // Returns 200 when the service can serve traffic (DB reachable).
@@ -76,6 +94,42 @@ func (UnimplementedHandler) GetTenant(ctx context.Context, params GetTenantParam
 	return r, ht.ErrNotImplemented
 }
 
+// InviteMember implements inviteMember operation.
+//
+// Invite/create a member in the active tenant (admin+).
+//
+// POST /api/v1/members
+func (UnimplementedHandler) InviteMember(ctx context.Context, req *InviteRequest) (r InviteMemberRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListApiKeys implements listApiKeys operation.
+//
+// List API keys for the active tenant (admin+).
+//
+// GET /api/v1/api-keys
+func (UnimplementedHandler) ListApiKeys(ctx context.Context, params ListApiKeysParams) (r ListApiKeysRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListAudit implements listAudit operation.
+//
+// List the active tenant's audit log (admin+).
+//
+// GET /api/v1/audit
+func (UnimplementedHandler) ListAudit(ctx context.Context, params ListAuditParams) (r ListAuditRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListMembers implements listMembers operation.
+//
+// List members of the active tenant.
+//
+// GET /api/v1/members
+func (UnimplementedHandler) ListMembers(ctx context.Context, params ListMembersParams) (r ListMembersRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListSites implements listSites operation.
 //
 // List sites for the current tenant.
@@ -91,5 +145,70 @@ func (UnimplementedHandler) ListSites(ctx context.Context, params ListSitesParam
 //
 // GET /api/v1/tenants
 func (UnimplementedHandler) ListTenants(ctx context.Context, params ListTenantsParams) (r *TenantList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// Login implements login operation.
+//
+// Email + password login.
+//
+// POST /auth/login
+func (UnimplementedHandler) Login(ctx context.Context, req *LoginRequest) (r LoginRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// Logout implements logout operation.
+//
+// Destroy the current session.
+//
+// POST /auth/logout
+func (UnimplementedHandler) Logout(ctx context.Context) (r LogoutRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// OidcCallback implements oidcCallback operation.
+//
+// OIDC redirect callback.
+//
+// GET /auth/oidc/callback
+func (UnimplementedHandler) OidcCallback(ctx context.Context, params OidcCallbackParams) (r OidcCallbackRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// OidcLogin implements oidcLogin operation.
+//
+// Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
+//
+// GET /auth/oidc/login
+func (UnimplementedHandler) OidcLogin(ctx context.Context) (r OidcLoginRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// Register implements register operation.
+//
+// On first run (zero users) this creates the first user, a tenant, and an
+// owner membership. Once any user exists, open registration is closed and
+// this returns 403; new users are added via the authenticated invite flow.
+//
+// POST /auth/register
+func (UnimplementedHandler) Register(ctx context.Context, req *RegisterRequest) (r RegisterRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RevokeApiKey implements revokeApiKey operation.
+//
+// Revoke an API key (admin+).
+//
+// DELETE /api/v1/api-keys/{apiKeyId}
+func (UnimplementedHandler) RevokeApiKey(ctx context.Context, params RevokeApiKeyParams) (r RevokeApiKeyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// VerifyAudit implements verifyAudit operation.
+//
+// Verify the integrity of the audit hash-chain (admin+).
+//
+// GET /api/v1/audit/verify
+func (UnimplementedHandler) VerifyAudit(ctx context.Context) (r VerifyAuditRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
