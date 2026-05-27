@@ -68,17 +68,19 @@
 - [ ] Add security-headers middleware + CORS allowlist once SPA origin is finalized
 
 ## Phase 5 — V0 Feature Build
-- [ ] M1 — Auth + tenant + RBAC (in progress)
+- [x] M1 — Auth + tenant + RBAC ✅ (E2E verified; security review PASS after fixes)
   - [x] ADR-023 OIDC client · ADR-024 sessions · ADR-025 password hash · ADR-026 Dex
-  - [ ] Non-superuser app DB role + migration/app DSN split + startup hard-fail (sec carry-forward)
-  - [ ] Email+password (argon2id) + OIDC (go-oidc) login; SCS Redis sessions
-  - [ ] Replace X-Tenant-ID stub → session-derived tenant + membership (sec carry-forward)
-  - [ ] RBAC roles owner/admin/operator/viewer + permission matrix middleware
-  - [ ] Tenant-scoped API keys (hashed)
-  - [ ] Append-only hash-chained audit log
-  - [ ] Dex in docker-compose for self-host OIDC
-  - [ ] RLS isolation tests prove cross-tenant denial; frontend real login
-  - [ ] Reject default WPMGR_SESSION_SECRET; security-headers middleware
+  - [x] Non-superuser app DB role + migration/app DSN split + startup hard-fail
+  - [x] Email+password (argon2id) + OIDC (go-oidc) login; SCS Redis sessions
+  - [x] Replace X-Tenant-ID stub → session-derived tenant + membership
+  - [x] RBAC roles owner/admin/operator/viewer + permission matrix middleware
+  - [x] Tenant-scoped API keys (hashed, shown once)
+  - [x] Append-only hash-chained audit log (+ /audit/verify)
+  - [x] Dex in docker-compose for self-host OIDC
+  - [x] RLS isolation tests prove cross-tenant denial; frontend real login
+  - [x] Reject default WPMGR_SESSION_SECRET; nginx security headers
+  - [x] Security review fixes: tenant read scoping (HIGH), invite role-ceiling, OIDC email_verified
+  - Known follow-ups: dummy-hash login timing; API-key expiry; tenant-create→creator-membership; SeaweedFS healthcheck flakiness (S3 unused until M4)
 - [ ] M2 — Site registry + agent enrollment
 - [ ] M3 — Bulk updates with rollback
 - [ ] M4 — Incremental backups + restore
