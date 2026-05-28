@@ -100,7 +100,17 @@
   - [x] Update history (from→to version diffs); audit events
   - [x] Security fixes: JWT site+command binding (HIGH cross-tenant replay), version/slug validation (MED)
   - Deferred to later: per-run SSE subscriber cap (LOW); full backup-primitive snapshot integration after M4
-- [ ] M4 — Incremental backups + restore
+- [x] M4 — Incremental backups + restore ✅ (E2E enroll-through-nginx verified; security review pending)
+  - [x] blobstore (aws-sdk-go-v2) over SeaweedFS/S3; presigned PUT/GET
+  - [x] blake3 content-addressed ~4MB chunks + per-tenant dedup/refcount; manifests in Postgres
+  - [x] client-side age encryption (CP stores only ciphertext + public recipient; cannot decrypt) — ADR-027
+  - [x] backup (files|db|full) + restore (full|paths|db_tables partial) + per-site schedule
+  - [x] River scheduled backups + retention GC (30d rolling + monthly archive); orphan-chunk deletion
+  - [x] agent: pure-PHP age+blake3 (real-age interop), presign upload, manifest, blake3-verify restore
+  - [x] frontend: backups section, snapshot detail, restore dialog, schedule editor
+  - [x] RLS on all backup tables; audit events
+  - [ ] M4 security review
+  - Also fixed (prod): single-origin API routing (enrollment 405 + dashboard 404); agent keystore portable master key + graceful activation
 - [ ] M5 — Uptime monitoring
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports

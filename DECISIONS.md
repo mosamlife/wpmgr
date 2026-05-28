@@ -540,3 +540,27 @@ before/within Phase 4:
 
 - **Decision:** **Dex** — purpose-built lightweight Apache-2.0 OIDC shim, trivially bundled in docker-compose, federating to upstream providers while presenting one standard OIDC interface. The same coreos/go-oidc RP works against Dex (self-host) and managed Google/Okta/Entra (hosted) with only issuer/client config changes. Keycloak too heavy; Authentik multi-service with risky upgrades + license split; Zitadel heavier with AGPL-server questions.
 - **Consequences:** Dex's local password store is minimal, so WPMgr owns the email+password DB and credential UX (ADR-025), using Dex as the OIDC broker/federation layer. Dex needs a persistent backend (our Postgres). Operators can point the RP at their own Keycloak/Authentik/Zitadel with no code change. Richer self-service flows can layer on or swap IdP later without touching the RP contract.
+
+## ADR-027: Backup crypto/storage libraries (M4)
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** M4 needs client-side backup encryption + content-addressed chunking. The
+  algorithms were already locked in the project's crypto list (blake3, age) and S3
+  client in ADR-010 (aws-sdk-go-v2); this records the concrete library choices.
+- **Decision:**
+  - **age:** `filippo.io/age` (Go, control plane never imports it — the CP holds only
+    the public recipient). On the WordPress agent, age v1 (X25519) is implemented over
+    `ext-sodium` in pure PHP (verified byte-for-byte interop with the canonical `age`
+    binary), so hosts need only ext-sodium — no `age` binary/extension required.
+  - **blake3:** `lukechampine.com/blake3` (Go, agent-side hashing; the CP only stores/
+    validates hex digests). Agent side uses a pure-PHP BLAKE3-256 verified against the
+    official test vectors.
+  - **S3 (ADR-010):** `github.com/aws/aws-sdk-go-v2` + `service/s3` (path-style + custom
+    endpoint for SeaweedFS; presigned PUT/GET).
+- **Consequences:** Encryption is client-side; the control plane and S3 store only
+  ciphertext + the per-site age **public** recipient, so the CP cannot decrypt backups
+  by default (confirmed structurally — neither blake3 nor age is in the CP go.mod).
+  Chunk ids are blake3 of the ciphertext, tenant-namespaced in S3 (`chunks/<tenant>/…`)
+  for dedup + isolation. Operator-escrowed identity (CP-assisted decrypt with explicit
+  consent) is deferred beyond V0.
