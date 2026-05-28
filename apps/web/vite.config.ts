@@ -22,12 +22,18 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: {
-      "/api": {
-        target: process.env.VITE_API_BASE_URL ?? "http://localhost:8080",
-        changeOrigin: true,
-      },
-    },
+    // Proxy every backend surface to the API (mirrors the prod nginx routing).
+    // The client uses same-origin relative paths (baseUrl ""), so each real API
+    // prefix must be forwarded: /api/v1/*, /auth/*, /enroll, /agent/*, health.
+    proxy: Object.fromEntries(
+      ["/api", "/auth", "/enroll", "/agent", "/healthz", "/readyz"].map((p) => [
+        p,
+        {
+          target: process.env.VITE_API_BASE_URL ?? "http://localhost:8080",
+          changeOrigin: true,
+        },
+      ]),
+    ),
   },
   preview: {
     port: 5173,

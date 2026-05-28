@@ -8,8 +8,12 @@
 import { client } from "@wpmgr/api";
 
 export function configureApiClient(): void {
+  // Empty baseUrl: operation paths already include their real prefixes
+  // (/auth/*, /api/v1/*, /enroll, …) and are served from the same origin,
+  // routed to the backend by nginx (prod) / the Vite proxy (dev).
   client.setConfig({
-    baseUrl: "/api",
+    baseUrl: "",
+    credentials: "include",
   });
 }
 
