@@ -46,3 +46,6 @@ Thumbs.db
 /sbom/
 *.zip
 !apps/agent/**/*.zip
+
+# stray compiled binary (build to bin/ instead)
+/apps/api/wpmgr
