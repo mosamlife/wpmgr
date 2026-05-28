@@ -40,6 +40,12 @@ final class Connector
     /** Unqualified jti table name (prefixed at runtime). */
     public const JTI_TABLE = 'wpmgr_agent_jti';
 
+    /** @var array<string, array<string,mixed>> Per-request verified-jti cache. */
+    private static array $verifiedThisRequest = [];
+
+    /** @var float Request marker — resets the cache between HTTP requests. */
+    private static float $cacheEpoch = 0.0;
+
     private Keystore $keystore;
 
     private Settings $settings;
@@ -52,6 +58,33 @@ final class Connector
     {
         $this->keystore = $keystore;
         $this->settings = $settings;
+    }
+
+    /**
+     * Clear the per-request verified-jti cache when the HTTP request changes.
+     * REQUEST_TIME_FLOAT is set by PHP once per HTTP request, so a change means
+     * we're now serving a NEW request (typical in recycled FPM workers) and any
+     * cached verifications from the previous request are stale.
+     */
+    private static function resetCacheIfNewRequest(): void
+    {
+        $epoch = isset($_SERVER['REQUEST_TIME_FLOAT'])
+            ? (float) $_SERVER['REQUEST_TIME_FLOAT']
+            : microtime(true);
+        if ($epoch !== self::$cacheEpoch) {
+            self::$verifiedThisRequest = [];
+            self::$cacheEpoch = $epoch;
+        }
+    }
+
+    /**
+     * Test-only: clear the per-request cache. Real PHP requests reset it via
+     * REQUEST_TIME_FLOAT; tests run in one process and need explicit control.
+     */
+    public static function resetRequestCacheForTesting(): void
+    {
+        self::$verifiedThisRequest = [];
+        self::$cacheEpoch = 0.0;
     }
 
     /**
@@ -118,11 +151,24 @@ final class Connector
         }
         $jti = $claims['jti'];
 
+        // PER-REQUEST CACHE. WordPress's REST framework can invoke a route's
+        // permission_callback more than once per HTTP request (pre-dispatch,
+        // dispatch, OPTIONS preflight, plugin filters). Without this cache the
+        // first call would record the jti and the second call (same request,
+        // same JWT) would see it as replayed -> bogus 403 'token_replay'.
+        // Bounded to one request via REQUEST_TIME_FLOAT (set once per HTTP
+        // request); auto-resets across recycled FPM workers.
+        self::resetCacheIfNewRequest();
+        if (isset(self::$verifiedThisRequest[$jti])) {
+            return self::$verifiedThisRequest[$jti];
+        }
+
         if ($this->isJtiSeen($jti, $now)) {
             throw new \RuntimeException('WPMgr Agent: token replay detected.');
         }
 
         $this->recordJti($jti, $exp, $now);
+        self::$verifiedThisRequest[$jti] = $claims;
 
         return $claims;
     }

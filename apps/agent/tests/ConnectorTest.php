@@ -176,12 +176,32 @@ final class ConnectorTest extends TestCase
         $now = 1_700_000_000;
         $jwt = $this->makeJwt(['jti' => 'replay-1', 'exp' => $now + 30]);
 
-        // First use succeeds.
+        // First use (Request A) succeeds and records the jti in the DB.
         $this->connector->verify($jwt, $now);
 
-        // Second presentation of the same token must be rejected.
+        // Simulate the next presentation arriving in a NEW HTTP request — PHP
+        // normally resets the per-request cache via REQUEST_TIME_FLOAT; tests
+        // run in one process and need explicit control. Across requests, the
+        // recorded jti must be rejected as a real replay.
+        \WPMgr\Agent\Connector::resetRequestCacheForTesting();
         $this->expectException(\RuntimeException::class);
         $this->connector->verify($jwt, $now + 1);
+    }
+
+    public function test_per_request_cache_allows_idempotent_reverify_same_request(): void
+    {
+        // WordPress's REST framework may invoke a route's permission_callback
+        // more than once per HTTP request. The agent's per-request cache must
+        // return the same verified claims without re-recording the jti (which
+        // would falsely trip the replay shield on call #2 within one request).
+        $now = 1_700_000_000;
+        $jwt = $this->makeJwt(['jti' => 'samerequest-1', 'exp' => $now + 30]);
+
+        \WPMgr\Agent\Connector::resetRequestCacheForTesting();
+        $claims1 = $this->connector->verify($jwt, $now);
+        // Same request, same jti — must NOT throw replay; must return same claims.
+        $claims2 = $this->connector->verify($jwt, $now + 1);
+        $this->assertSame($claims1, $claims2);
     }
 
     public function test_rejects_token_with_no_provisioned_key(): void
