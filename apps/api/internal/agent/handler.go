@@ -77,13 +77,18 @@ func (x *flexBool) UnmarshalJSON(b []byte) error {
 // type-strict). All fields optional and shape-tolerant; unknown fields ignored;
 // the service layer sanitizes (truncates/drops) before persisting.
 type metadataDTO struct {
-	WPVersion   flexString     `json:"wp_version"`
-	PHPVersion  flexString     `json:"php_version"`
-	ServerInfo  flexString     `json:"server_info"`
-	Multisite   flexBool       `json:"multisite"`
-	ActiveTheme flexString     `json:"active_theme"`
-	Plugins     []componentDTO `json:"plugins"`
-	Themes      []componentDTO `json:"themes"`
+	WPVersion   flexString `json:"wp_version"`
+	PHPVersion  flexString `json:"php_version"`
+	ServerInfo  flexString `json:"server_info"`
+	Multisite   flexBool   `json:"multisite"`
+	ActiveTheme flexString `json:"active_theme"`
+	// AgeRecipient is the agent's per-site age PUBLIC recipient ("age1…"). The
+	// CP stores it on sites.age_recipient so M4 backups can be triggered without
+	// a separate registration call. Optional; empty/missing leaves the stored
+	// recipient unchanged.
+	AgeRecipient flexString     `json:"age_recipient"`
+	Plugins      []componentDTO `json:"plugins"`
+	Themes       []componentDTO `json:"themes"`
 }
 
 type componentDTO struct {
@@ -102,13 +107,14 @@ func (d metadataDTO) toMetadata() Metadata {
 		return out
 	}
 	return Metadata{
-		WPVersion:   string(d.WPVersion),
-		PHPVersion:  string(d.PHPVersion),
-		ServerInfo:  string(d.ServerInfo),
-		Multisite:   bool(d.Multisite),
-		ActiveTheme: string(d.ActiveTheme),
-		Plugins:     conv(d.Plugins),
-		Themes:      conv(d.Themes),
+		WPVersion:    string(d.WPVersion),
+		PHPVersion:   string(d.PHPVersion),
+		ServerInfo:   string(d.ServerInfo),
+		Multisite:    bool(d.Multisite),
+		ActiveTheme:  string(d.ActiveTheme),
+		AgeRecipient: string(d.AgeRecipient),
+		Plugins:      conv(d.Plugins),
+		Themes:       conv(d.Themes),
 	}
 }
 
@@ -116,13 +122,14 @@ func (d metadataDTO) toMetadata() Metadata {
 // site package imports this package for the signature helpers, so this package
 // must not import site — that would be a cycle).
 type Metadata struct {
-	WPVersion   string
-	PHPVersion  string
-	ServerInfo  string
-	Multisite   bool
-	ActiveTheme string
-	Plugins     []Component
-	Themes      []Component
+	WPVersion    string
+	PHPVersion   string
+	ServerInfo   string
+	Multisite    bool
+	ActiveTheme  string
+	AgeRecipient string // optional; agent's per-site age PUBLIC recipient ("age1…")
+	Plugins      []Component
+	Themes       []Component
 }
 
 // Component is one installed plugin/theme.

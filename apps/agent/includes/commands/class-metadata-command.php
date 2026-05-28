@@ -13,11 +13,24 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Support\AgeIdentity;
+
 /**
  * Builds the site metadata payload.
  */
 final class MetadataCommand implements CommandInterface
 {
+    /**
+     * @param AgeIdentity|null $ageIdentity Optional. When provided, the agent's
+     *   per-site age PUBLIC recipient is included in the payload so the control
+     *   plane stores it on sites.age_recipient (M4 backups need it). Null is
+     *   accepted for back-compat with code paths that don't have the keystore
+     *   wired (existing tests).
+     */
+    public function __construct(private ?AgeIdentity $ageIdentity = null)
+    {
+    }
+
     /**
      * {@inheritDoc}
      */
@@ -48,12 +61,13 @@ final class MetadataCommand implements CommandInterface
      *     multisite:bool,
      *     active_theme:string,
      *     plugins:array<int,array{slug:string,name:string,version:string,active:bool}>,
-     *     themes:array<int,array{slug:string,name:string,version:string,active:bool}>
+     *     themes:array<int,array{slug:string,name:string,version:string,active:bool}>,
+     *     age_recipient?:string
      * }
      */
     public function collect(): array
     {
-        return [
+        $payload = [
             'wp_version'   => $this->wpVersion(),
             'php_version'  => PHP_VERSION,
             'server_info'  => $this->serverSoftware(),
@@ -62,6 +76,20 @@ final class MetadataCommand implements CommandInterface
             'plugins'      => $this->plugins(),
             'themes'       => $this->themes(),
         ];
+        // Surface the agent's age PUBLIC recipient so the CP can register it on
+        // sites.age_recipient (M4 backups refuse otherwise). Best-effort: a
+        // failing ensureRecipient just leaves the key absent for this push.
+        if ($this->ageIdentity !== null) {
+            try {
+                $recipient = $this->ageIdentity->ensureRecipient();
+                if ($recipient !== '') {
+                    $payload['age_recipient'] = $recipient;
+                }
+            } catch (\Throwable $e) {
+                // Swallow — telemetry must not fail the sync.
+            }
+        }
+        return $payload;
     }
 
     /**

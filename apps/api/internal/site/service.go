@@ -178,6 +178,15 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 	if err != nil {
 		return gen.Site{}, err
 	}
+	// Opportunistically register the agent's age recipient (M4 backups need it).
+	// Best-effort: a malformed recipient is silently ignored — the agent will
+	// retry on the next sync, and operators can also set it explicitly elsewhere.
+	if rec := strings.TrimSpace(m.AgeRecipient); rec != "" && len(rec) <= 256 &&
+		strings.HasPrefix(rec, "age1") && out.AgeRecipient != rec {
+		if updated, err := s.repo.SetAgeRecipient(ctx, tenantID, siteID, rec); err == nil {
+			out = updated
+		}
+	}
 	return toAPI(out), nil
 }
 

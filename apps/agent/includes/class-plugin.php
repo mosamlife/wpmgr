@@ -68,7 +68,9 @@ final class Plugin
         $this->connector        = new Connector($this->keystore, $this->settings);
         $this->signer           = new Signer($this->keystore);
         $this->router           = new Router($this->connector, $this->commands());
-        $this->enrollment       = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand());
+        // Metadata pushes include the agent's age PUBLIC recipient so the CP can
+        // register it on sites.age_recipient — M4 backups refuse otherwise.
+        $this->enrollment       = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand(new AgeIdentity($this->keystore)));
         $this->scheduler        = new Scheduler($this->settings, $this->enrollment);
         $this->admin            = new Admin($this->settings, $this->enrollment);
         $this->autologinReplay  = new ReplayCache();
@@ -327,7 +329,7 @@ final class Plugin
             new UpdateCommand(),
             new RollbackCommand(),
             new ScanCommand(),
-            new MetadataCommand(),
+            new MetadataCommand($ageIdentity),
         ];
     }
 
