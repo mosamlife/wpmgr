@@ -1023,3 +1023,277 @@ export const UpdateEventSchema = {
     },
   },
 } as const;
+
+export const BackupCreateSchema = {
+  type: "object",
+  description: "Request to start a backup of a site.",
+  properties: {
+    kind: {
+      type: "string",
+      enum: ["files", "db", "full"],
+      default: "full",
+      description: "What to back up. Defaults to full (files + database).",
+    },
+  },
+} as const;
+
+export const BackupSnapshotSchema = {
+  type: "object",
+  required: [
+    "id",
+    "tenant_id",
+    "site_id",
+    "kind",
+    "status",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    created_by: {
+      type: "string",
+      format: "uuid",
+    },
+    kind: {
+      type: "string",
+      enum: ["files", "db", "full"],
+    },
+    status: {
+      type: "string",
+      enum: ["pending", "running", "completed", "failed"],
+    },
+    age_recipient: {
+      type: "string",
+      description:
+        "The age PUBLIC recipient the chunks were encrypted to (provenance).\nNEVER a private key; the control plane cannot decrypt backups.\n",
+    },
+    total_size: {
+      type: "integer",
+      format: "int64",
+    },
+    chunk_count: {
+      type: "integer",
+      format: "int64",
+    },
+    archived: {
+      type: "boolean",
+      description: "Kept by the monthly-archive retention rule.",
+    },
+    error: {
+      type: "string",
+    },
+    started_at: {
+      type: "string",
+      format: "date-time",
+    },
+    finished_at: {
+      type: "string",
+      format: "date-time",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const BackupSnapshotListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/BackupSnapshot",
+      },
+    },
+  },
+} as const;
+
+export const BackupManifestEntrySchema = {
+  type: "object",
+  required: ["path", "entry_kind", "size", "chunk_count"],
+  description: "One file (or db dump) in a snapshot, summarized.",
+  properties: {
+    path: {
+      type: "string",
+    },
+    entry_kind: {
+      type: "string",
+      enum: ["file", "db"],
+    },
+    table_name: {
+      type: "string",
+      description: "Set for db entries (partial restore-by-table).",
+    },
+    size: {
+      type: "integer",
+      format: "int64",
+    },
+    mode: {
+      type: "integer",
+      format: "int32",
+    },
+    chunk_count: {
+      type: "integer",
+      format: "int32",
+      description: "Number of ordered ciphertext chunks reassembling the path.",
+    },
+  },
+} as const;
+
+export const BackupSnapshotDetailSchema = {
+  type: "object",
+  required: ["snapshot", "entries"],
+  properties: {
+    snapshot: {
+      $ref: "#/components/schemas/BackupSnapshot",
+    },
+    entries: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/BackupManifestEntry",
+      },
+    },
+  },
+} as const;
+
+export const RestoreCreateSchema = {
+  type: "object",
+  description:
+    "Restore selection. Omit both arrays (or set full=true) for a full\nrestore; provide paths for partial file restore, or db_tables for partial\ndb restore.\n",
+  properties: {
+    full: {
+      type: "boolean",
+      default: false,
+    },
+    paths: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description: "Site-relative file paths to restore.",
+    },
+    db_tables: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description: "Database table names to restore.",
+    },
+  },
+} as const;
+
+export const BackupScheduleSchema = {
+  type: "object",
+  required: [
+    "id",
+    "tenant_id",
+    "site_id",
+    "cadence",
+    "kind",
+    "enabled",
+    "retention_days",
+    "monthly_archive_keep",
+    "next_run_at",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    cadence: {
+      type: "string",
+      enum: ["daily", "weekly", "monthly"],
+    },
+    kind: {
+      type: "string",
+      enum: ["files", "db", "full"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    retention_days: {
+      type: "integer",
+      format: "int32",
+    },
+    monthly_archive_keep: {
+      type: "integer",
+      format: "int32",
+    },
+    next_run_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_run_at: {
+      type: "string",
+      format: "date-time",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const BackupScheduleUpdateSchema = {
+  type: "object",
+  description: "Create or update a site's backup schedule (daily default).",
+  properties: {
+    cadence: {
+      type: "string",
+      enum: ["daily", "weekly", "monthly"],
+      default: "daily",
+    },
+    kind: {
+      type: "string",
+      enum: ["files", "db", "full"],
+      default: "full",
+    },
+    enabled: {
+      type: "boolean",
+      default: true,
+    },
+    retention_days: {
+      type: "integer",
+      format: "int32",
+      description:
+        "Rolling-window retention in days. Defaults to the server policy.",
+    },
+    monthly_archive_keep: {
+      type: "integer",
+      format: "int32",
+      description:
+        "Number of monthly-archive snapshots to keep beyond the window.",
+    },
+  },
+} as const;

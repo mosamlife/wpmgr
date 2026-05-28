@@ -14,6 +14,12 @@ plugins / themes across many sites (selected by checkbox or by tag), a
 dry-run preview, optional scheduling, and a run-detail page with **live
 progress** over Server-Sent Events (with a polling fallback).
 
+**M4** adds **backups, restore, and scheduling**: a Backups section on the site
+detail page (snapshot list, "Back up now", and a schedule editor), a dedicated
+snapshot-detail route with a manifest summary, and a destructive **Restore**
+dialog (full / by-path / by-table). In-flight backups and restores are tracked
+by polling until they reach a terminal state.
+
 ## Stack
 
 | Concern        | Choice                                                              |
@@ -57,8 +63,12 @@ progress** over Server-Sent Events (with a polling fallback).
   and an **Add site** action (operator+). Empty state points to Add site.
 - `/sites/$siteId` — site detail: metadata (WP/PHP/server/multisite/active
   theme/enrolled/last-seen/health), an editable **tags** section (PUT tags,
-  optimistic), and a table of installed plugins/themes. Loading / error /
+  optimistic), a table of installed plugins/themes, and a **Backups** section
+  (M4: snapshot list, "Back up now", schedule editor). Loading / error /
   not-found states throughout.
+- `/backups/$snapshotId` — snapshot detail: status/kind badges, a manifest
+  summary (size, chunk count, entries, age recipient), an entries table, and a
+  **Restore** action (operator+). Polls while a backup/restore is in flight.
 - `/updates` — list of recent bulk-update runs (status, dry-run/live, task
   count, created, link to detail).
 - `/updates/$runId` — run detail with a **live** task table (site, target,
@@ -108,6 +118,45 @@ cache entry (`["updates","detail",runId]`):
 
 Task statuses are color-coded: succeeded = green, failed = red, rolled_back =
 amber, running = blue (pulsing), skipped/pending = muted.
+
+### Backups, restore & scheduling (M4)
+
+The **Backups** section on `/sites/$siteId` (in `src/features/backups/`) covers
+the whole snapshot lifecycle. The data hooks (`use-backups.ts`) wrap the
+generated `createBackup` / `listBackups` / `getBackup` / `createRestore` /
+`getBackupSchedule` / `putBackupSchedule` operations as TanStack Query hooks.
+
+- **Snapshot list** — `useBackups(siteId)` lists snapshots with kind, a status
+  badge (pending / running / completed / failed), size, chunk count, and
+  relative created/finished times. The list **polls every 3s** while any
+  snapshot is still in flight, so a freshly triggered backup advances without a
+  manual reload. Each row links to the snapshot detail.
+- **Back up now** (operator+) — a kind selector (full / files / db) plus a
+  button that POSTs `/api/v1/sites/{siteId}/backups`; on success the list is
+  invalidated so the new pending snapshot appears.
+- **Backup schedule** (operator+) — `BackupScheduleEditor` GETs the current
+  schedule (404 → render defaults) and PUTs changes via react-hook-form + Zod:
+  enable toggle, cadence (daily / weekly / monthly), kind, rolling-window
+  retention days, and a count of monthly archives to keep. The cadence/kind/
+  retention fields are disabled when scheduling is off.
+
+The **snapshot detail** route (`/backups/$snapshotId`) shows the manifest
+summary and an entries table (path, file/db, table name, size, chunks). It
+**polls every 2s** via `useBackup` while the snapshot (or an in-progress
+restore) is pending/running, stopping at a terminal state.
+
+The **Restore** dialog (operator+, opened from the snapshot detail) is
+deliberately destructive-by-acknowledgement: it offers a **full** restore, a
+partial restore **by file path**, or **by database table** (textarea, one entry
+per line/comma-separated; known db tables from the manifest are listed as a
+hint). The submit button stays disabled until the user ticks an explicit "this
+overwrites the live site and cannot be undone" checkbox. Submitting POSTs
+`/api/v1/backups/{snapshotId}/restore` (`{ full } | { paths } | { db_tables }`),
+seeds the detail cache with the returned snapshot, and lets polling track the
+restore to completion.
+
+All backup actions are gated to operator/admin/owner via `canOperate()`; the
+backend enforces the role regardless. Viewers see the snapshot list only.
 
 ### Site enrollment (pairing codes)
 
@@ -171,6 +220,14 @@ generated `createUpdateRun` / `listUpdateRuns` / `getUpdateRun` operations
 The SSE stream is **not** part of the generated client — it is consumed via the
 browser `EventSource` in `useRunEventStream`, which patches `UpdateEvent` deltas
 straight into the run-detail cache (see "Live progress" above).
+
+The Backups hooks (`src/features/backups/use-backups.ts`) wrap the generated
+`createBackup` / `listBackups` / `getBackup` / `createRestore` /
+`getBackupSchedule` / `putBackupSchedule` operations as
+`useCreateBackup(siteId)` / `useBackups(siteId)` / `useBackup(snapshotId)` /
+`useCreateRestore(snapshotId)` / `useBackupSchedule(siteId)` /
+`usePutBackupSchedule(siteId)`. The list and detail hooks use Query
+`refetchInterval` to poll while a backup/restore is in flight.
 
 Regenerate the client after the contract changes:
 

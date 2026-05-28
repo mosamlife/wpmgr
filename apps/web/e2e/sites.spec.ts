@@ -74,7 +74,7 @@ const PAIRING_CODE = {
 async function mockApi(page: Page, opts: { authed: boolean }) {
   let authed = opts.authed;
 
-  await page.route("**/api/auth/me", async (route) => {
+  await page.route("**/auth/me", async (route) => {
     if (authed) {
       await route.fulfill({
         status: 200,
@@ -90,7 +90,7 @@ async function mockApi(page: Page, opts: { authed: boolean }) {
     }
   });
 
-  await page.route("**/api/auth/login", async (route) => {
+  await page.route("**/auth/login", async (route) => {
     authed = true;
     await route.fulfill({
       status: 200,

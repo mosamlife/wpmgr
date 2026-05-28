@@ -13,6 +13,7 @@ import { useSite, NotFoundError } from "@/features/sites/use-sites";
 import { HealthBadge, EnrollmentBadge } from "@/features/sites/site-badges";
 import { SiteComponentsTable } from "@/features/sites/site-components-table";
 import { SiteTagsEditor } from "@/features/sites/site-tags-editor";
+import { BackupsSection } from "@/features/backups/backups-section";
 import { useMe, canOperate } from "@/features/auth/use-auth";
 import { relativeTime } from "@/lib/utils";
 import type { Site } from "@wpmgr/api";
@@ -61,7 +62,7 @@ function SiteDetailPage() {
           </div>
         )
       ) : (
-        <SiteDetail site={site} canEditTags={operate} />
+        <SiteDetail site={site} canOperate={operate} />
       )}
     </section>
   );
@@ -69,11 +70,12 @@ function SiteDetailPage() {
 
 function SiteDetail({
   site,
-  canEditTags,
+  canOperate,
 }: {
   site: Site;
-  canEditTags: boolean;
+  canOperate: boolean;
 }) {
+  const canEditTags = canOperate;
   const lastSeen = relativeTime(site.last_seen_at);
   const enrolledAt = relativeTime(site.enrolled_at);
 
@@ -168,6 +170,8 @@ function SiteDetail({
           />
         </CardContent>
       </Card>
+
+      <BackupsSection siteId={site.id} canOperate={canOperate} />
     </div>
   );
 }

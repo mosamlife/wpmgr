@@ -16,9 +16,13 @@ use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
 use WPMgr\Agent\Commands\InfoCommand;
 use WPMgr\Agent\Commands\MetadataCommand;
+use WPMgr\Agent\Commands\RestoreCommand;
 use WPMgr\Agent\Commands\RollbackCommand;
 use WPMgr\Agent\Commands\ScanCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
+use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\BackupSource;
+use WPMgr\Agent\Support\BackupTransport;
 
 /**
  * Top-level plugin orchestrator.
@@ -57,8 +61,8 @@ final class Plugin
         $this->keystore   = new Keystore();
         $this->settings   = new Settings();
         $this->connector  = new Connector($this->keystore, $this->settings);
-        $this->router     = new Router($this->connector, $this->commands());
         $this->signer     = new Signer($this->keystore);
+        $this->router     = new Router($this->connector, $this->commands());
         $this->enrollment = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand());
         $this->scheduler  = new Scheduler($this->settings, $this->enrollment);
         $this->admin      = new Admin($this->settings, $this->enrollment);
@@ -141,6 +145,15 @@ final class Plugin
             // key source surfaces here rather than at request time.
             if ($this->keystore->getSiteKeypair() === null) {
                 $this->keystore->generateSiteKeypair();
+            }
+
+            // Provision the site's age backup-encryption identity (PRIVATE key
+            // stored encrypted; only the PUBLIC recipient is ever shared). Doing
+            // it here means the recipient is available to the admin/CP before the
+            // first backup, and the private key is generated long before any
+            // backup command can run.
+            if (!$this->keystore->hasAgeIdentity()) {
+                (new AgeIdentity($this->keystore))->ensureRecipient();
             }
 
             delete_option(self::OPTION_KEYSTORE_ERROR);
@@ -247,9 +260,17 @@ final class Plugin
      */
     private function commands(): array
     {
+        // Shared backup/restore collaborators. The age identity manager owns the
+        // site's PRIVATE backup key (in the encrypted keystore); the transport
+        // reuses the M2 Ed25519 Signer for the CP callbacks.
+        $ageIdentity = new AgeIdentity($this->keystore);
+        $source      = new BackupSource();
+        $transport   = new BackupTransport($this->signer);
+
         return [
             new InfoCommand(),
-            new BackupCommand(),
+            new BackupCommand($ageIdentity, $source, $transport),
+            new RestoreCommand($ageIdentity, $source, $transport),
             new UpdateCommand(),
             new RollbackCommand(),
             new ScanCommand(),

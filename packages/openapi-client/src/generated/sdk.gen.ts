@@ -12,9 +12,15 @@ import type {
   CreateApiKeyData,
   CreateApiKeyErrors,
   CreateApiKeyResponses,
+  CreateBackupData,
+  CreateBackupErrors,
+  CreateBackupResponses,
   CreatePairingCodeData,
   CreatePairingCodeErrors,
   CreatePairingCodeResponses,
+  CreateRestoreData,
+  CreateRestoreErrors,
+  CreateRestoreResponses,
   CreateSiteData,
   CreateSiteErrors,
   CreateSiteResponses,
@@ -30,6 +36,12 @@ import type {
   EnrollData,
   EnrollErrors,
   EnrollResponses,
+  GetBackupData,
+  GetBackupErrors,
+  GetBackupResponses,
+  GetBackupScheduleData,
+  GetBackupScheduleErrors,
+  GetBackupScheduleResponses,
   GetHealthzData,
   GetHealthzResponses,
   GetMeData,
@@ -56,6 +68,8 @@ import type {
   ListAuditData,
   ListAuditErrors,
   ListAuditResponses,
+  ListBackupsData,
+  ListBackupsResponses,
   ListMembersData,
   ListMembersErrors,
   ListMembersResponses,
@@ -76,6 +90,9 @@ import type {
   OidcCallbackResponses,
   OidcLoginData,
   OidcLoginErrors,
+  PutBackupScheduleData,
+  PutBackupScheduleErrors,
+  PutBackupScheduleResponses,
   RegisterData,
   RegisterErrors,
   RegisterResponses,
@@ -602,3 +619,111 @@ export const streamUpdateRunEvents = <ThrowOnError extends boolean = false>(
     StreamUpdateRunEventsErrors,
     ThrowOnError
   >({ url: "/api/v1/updates/{runId}/events", ...options });
+
+/**
+ * List a site's backup snapshots
+ */
+export const listBackups = <ThrowOnError extends boolean = false>(
+  options: Options<ListBackupsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<ListBackupsResponses, unknown, ThrowOnError>({
+    url: "/api/v1/sites/{siteId}/backups",
+    ...options,
+  });
+
+/**
+ * Start a backup of a site
+ *
+ * Records a pending backup snapshot for the site and enqueues a background
+ * job that dispatches a signed `backup` command to the site's agent. The
+ * agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
+ * and uploads ciphertext directly to object storage via presigned URLs,
+ * then submits the manifest. Incremental: a chunk whose content hash is
+ * already stored is not re-uploaded. Requires operator+.
+ *
+ */
+export const createBackup = <ThrowOnError extends boolean = false>(
+  options: Options<CreateBackupData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateBackupResponses,
+    CreateBackupErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/backups",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Get a backup snapshot with its manifest summary
+ */
+export const getBackup = <ThrowOnError extends boolean = false>(
+  options: Options<GetBackupData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetBackupResponses,
+    GetBackupErrors,
+    ThrowOnError
+  >({ url: "/api/v1/backups/{snapshotId}", ...options });
+
+/**
+ * Restore from a backup snapshot (full or partial)
+ *
+ * Enqueues a restore job. The control plane resolves the (possibly partial)
+ * selection into ordered chunks, issues presigned GET URLs, and dispatches
+ * a signed `restore` command. The agent downloads ciphertext, verifies the
+ * BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+ * reassembles. Supports full, by-path, and by-db-table partial restore.
+ * Requires operator+.
+ *
+ */
+export const createRestore = <ThrowOnError extends boolean = false>(
+  options: Options<CreateRestoreData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateRestoreResponses,
+    CreateRestoreErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/backups/{snapshotId}/restore",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Get a site's backup schedule
+ */
+export const getBackupSchedule = <ThrowOnError extends boolean = false>(
+  options: Options<GetBackupScheduleData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetBackupScheduleResponses,
+    GetBackupScheduleErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/backup-schedule", ...options });
+
+/**
+ * Create or update a site's backup schedule
+ */
+export const putBackupSchedule = <ThrowOnError extends boolean = false>(
+  options: Options<PutBackupScheduleData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    PutBackupScheduleResponses,
+    PutBackupScheduleErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/backup-schedule",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });

@@ -48,6 +48,13 @@ export {
   createUpdateRun,
   listUpdateRuns,
   getUpdateRun,
+  // backups
+  createBackup,
+  listBackups,
+  getBackup,
+  createRestore,
+  getBackupSchedule,
+  putBackupSchedule,
 } from "./generated/sdk.gen";
 
 // --- Domain + request/response types ----------------------------------------
@@ -117,4 +124,26 @@ export type {
   ListUpdateRunsResponse,
   GetUpdateRunData,
   GetUpdateRunResponse,
+  // backups
+  BackupCreate,
+  BackupSnapshot,
+  BackupSnapshotList,
+  BackupManifestEntry,
+  BackupSnapshotDetail,
+  RestoreCreate,
+  BackupSchedule,
+  BackupScheduleUpdate,
+  // backups request/response shapes
+  CreateBackupData,
+  CreateBackupResponse,
+  ListBackupsData,
+  ListBackupsResponse,
+  GetBackupData,
+  GetBackupResponse,
+  CreateRestoreData,
+  CreateRestoreResponse,
+  GetBackupScheduleData,
+  GetBackupScheduleResponse,
+  PutBackupScheduleData,
+  PutBackupScheduleResponse,
 } from "./generated/types.gen";

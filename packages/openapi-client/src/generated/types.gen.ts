@@ -364,6 +364,119 @@ export type UpdateEvent = {
   run_status: "pending" | "running" | "completed";
 };
 
+/**
+ * Request to start a backup of a site.
+ */
+export type BackupCreate = {
+  /**
+   * What to back up. Defaults to full (files + database).
+   */
+  kind?: "files" | "db" | "full";
+};
+
+export type BackupSnapshot = {
+  id: string;
+  tenant_id: string;
+  site_id: string;
+  created_by?: string;
+  kind: "files" | "db" | "full";
+  status: "pending" | "running" | "completed" | "failed";
+  /**
+   * The age PUBLIC recipient the chunks were encrypted to (provenance).
+   * NEVER a private key; the control plane cannot decrypt backups.
+   *
+   */
+  age_recipient?: string;
+  total_size?: number;
+  chunk_count?: number;
+  /**
+   * Kept by the monthly-archive retention rule.
+   */
+  archived?: boolean;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BackupSnapshotList = {
+  items: Array<BackupSnapshot>;
+};
+
+/**
+ * One file (or db dump) in a snapshot, summarized.
+ */
+export type BackupManifestEntry = {
+  path: string;
+  entry_kind: "file" | "db";
+  /**
+   * Set for db entries (partial restore-by-table).
+   */
+  table_name?: string;
+  size: number;
+  mode?: number;
+  /**
+   * Number of ordered ciphertext chunks reassembling the path.
+   */
+  chunk_count: number;
+};
+
+export type BackupSnapshotDetail = {
+  snapshot: BackupSnapshot;
+  entries: Array<BackupManifestEntry>;
+};
+
+/**
+ * Restore selection. Omit both arrays (or set full=true) for a full
+ * restore; provide paths for partial file restore, or db_tables for partial
+ * db restore.
+ *
+ */
+export type RestoreCreate = {
+  full?: boolean;
+  /**
+   * Site-relative file paths to restore.
+   */
+  paths?: Array<string>;
+  /**
+   * Database table names to restore.
+   */
+  db_tables?: Array<string>;
+};
+
+export type BackupSchedule = {
+  id: string;
+  tenant_id: string;
+  site_id: string;
+  cadence: "daily" | "weekly" | "monthly";
+  kind: "files" | "db" | "full";
+  enabled: boolean;
+  retention_days: number;
+  monthly_archive_keep: number;
+  next_run_at: string;
+  last_run_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * Create or update a site's backup schedule (daily default).
+ */
+export type BackupScheduleUpdate = {
+  cadence?: "daily" | "weekly" | "monthly";
+  kind?: "files" | "db" | "full";
+  enabled?: boolean;
+  /**
+   * Rolling-window retention in days. Defaults to the server policy.
+   */
+  retention_days?: number;
+  /**
+   * Number of monthly-archive snapshots to keep beyond the window.
+   */
+  monthly_archive_keep?: number;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -375,6 +488,8 @@ export type SiteId = string;
 export type ApiKeyId = string;
 
 export type RunId = string;
+
+export type SnapshotId = string;
 
 export type GetHealthzData = {
   body?: never;
@@ -1248,3 +1363,166 @@ export type StreamUpdateRunEventsResponses = {
 
 export type StreamUpdateRunEventsResponse =
   StreamUpdateRunEventsResponses[keyof StreamUpdateRunEventsResponses];
+
+export type ListBackupsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/sites/{siteId}/backups";
+};
+
+export type ListBackupsResponses = {
+  /**
+   * A page of backup snapshots
+   */
+  200: BackupSnapshotList;
+};
+
+export type ListBackupsResponse =
+  ListBackupsResponses[keyof ListBackupsResponses];
+
+export type CreateBackupData = {
+  body: BackupCreate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/backups";
+};
+
+export type CreateBackupErrors = {
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateBackupError = CreateBackupErrors[keyof CreateBackupErrors];
+
+export type CreateBackupResponses = {
+  /**
+   * Backup snapshot created (job enqueued)
+   */
+  201: BackupSnapshot;
+};
+
+export type CreateBackupResponse =
+  CreateBackupResponses[keyof CreateBackupResponses];
+
+export type GetBackupData = {
+  body?: never;
+  path: {
+    snapshotId: string;
+  };
+  query?: never;
+  url: "/api/v1/backups/{snapshotId}";
+};
+
+export type GetBackupErrors = {
+  /**
+   * Snapshot not found
+   */
+  404: Error;
+};
+
+export type GetBackupError = GetBackupErrors[keyof GetBackupErrors];
+
+export type GetBackupResponses = {
+  /**
+   * The backup snapshot and its manifest entries
+   */
+  200: BackupSnapshotDetail;
+};
+
+export type GetBackupResponse = GetBackupResponses[keyof GetBackupResponses];
+
+export type CreateRestoreData = {
+  body: RestoreCreate;
+  path: {
+    snapshotId: string;
+  };
+  query?: never;
+  url: "/api/v1/backups/{snapshotId}/restore";
+};
+
+export type CreateRestoreErrors = {
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateRestoreError = CreateRestoreErrors[keyof CreateRestoreErrors];
+
+export type CreateRestoreResponses = {
+  /**
+   * Restore job enqueued
+   */
+  202: BackupSnapshot;
+};
+
+export type CreateRestoreResponse =
+  CreateRestoreResponses[keyof CreateRestoreResponses];
+
+export type GetBackupScheduleData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/backup-schedule";
+};
+
+export type GetBackupScheduleErrors = {
+  /**
+   * No schedule configured for the site
+   */
+  404: Error;
+};
+
+export type GetBackupScheduleError =
+  GetBackupScheduleErrors[keyof GetBackupScheduleErrors];
+
+export type GetBackupScheduleResponses = {
+  /**
+   * The site's backup schedule
+   */
+  200: BackupSchedule;
+};
+
+export type GetBackupScheduleResponse =
+  GetBackupScheduleResponses[keyof GetBackupScheduleResponses];
+
+export type PutBackupScheduleData = {
+  body: BackupScheduleUpdate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/backup-schedule";
+};
+
+export type PutBackupScheduleErrors = {
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type PutBackupScheduleError =
+  PutBackupScheduleErrors[keyof PutBackupScheduleErrors];
+
+export type PutBackupScheduleResponses = {
+  /**
+   * The saved backup schedule
+   */
+  200: BackupSchedule;
+};
+
+export type PutBackupScheduleResponse =
+  PutBackupScheduleResponses[keyof PutBackupScheduleResponses];

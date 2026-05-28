@@ -31,3 +31,19 @@ export function relativeTime(
   if (months < 12) return `${months}mo ago`;
   return `${Math.round(months / 12)}y ago`;
 }
+
+/**
+ * Format a byte count as a human-readable size ("1.2 MB", "512 KB"). Returns
+ * "—" for missing/invalid input so callers can render a placeholder inline.
+ */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || Number.isNaN(bytes) || bytes < 0) return "—";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exp = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  const value = bytes / Math.pow(1024, exp);
+  return `${exp === 0 ? value : value.toFixed(1)} ${units[exp]}`;
+}

@@ -41,6 +41,13 @@ final class Keystore
     public const OPTION_SITE_KEYPAIR = 'wpmgr_agent_site_keypair';
 
     /**
+     * Option name holding the site's age X25519 identity (raw 32-byte secret
+     * scalar), encrypted at rest. This is the PRIVATE backup-decryption key; it
+     * NEVER leaves the keystore and is NEVER transmitted to the control plane.
+     */
+    public const OPTION_AGE_IDENTITY = 'wpmgr_agent_age_identity';
+
+    /**
      * Option pinning which master-key source this install uses, so decrypt
      * always re-derives/reads the exact same key. Value is one of:
      *   ['source' => 'constant']
@@ -219,6 +226,48 @@ final class Keystore
         }
 
         return $this->decrypt($stored);
+    }
+
+    /**
+     * Persist the site's age X25519 secret scalar (raw 32 bytes), encrypted.
+     *
+     * The secret is the ONLY key that can decrypt this site's backups. It is
+     * stored AES-256-GCM-encrypted under the master key, exactly like the
+     * Ed25519 keypair, and is never logged or transmitted.
+     *
+     * @param string $rawSecret Raw 32-byte X25519 scalar.
+     * @return void
+     */
+    public function storeAgeIdentity(string $rawSecret): void
+    {
+        update_option(self::OPTION_AGE_IDENTITY, $this->encrypt($rawSecret), false);
+    }
+
+    /**
+     * Retrieve and decrypt the site's age X25519 secret scalar.
+     *
+     * @return string|null Raw 32-byte X25519 scalar, or null if not provisioned.
+     */
+    public function getAgeIdentity(): ?string
+    {
+        $stored = get_option(self::OPTION_AGE_IDENTITY);
+        if (!is_string($stored) || $stored === '') {
+            return null;
+        }
+
+        return $this->decrypt($stored);
+    }
+
+    /**
+     * Whether an age identity has been provisioned for this site.
+     *
+     * @return bool
+     */
+    public function hasAgeIdentity(): bool
+    {
+        $stored = get_option(self::OPTION_AGE_IDENTITY);
+
+        return is_string($stored) && $stored !== '';
     }
 
     /**
