@@ -32,6 +32,19 @@ type Config struct {
 	ClickHouse ClickHouseConfig `koanf:"clickhouse"`
 	SMTP       SMTPConfig       `koanf:"smtp"`
 	Uptime     UptimeConfig     `koanf:"uptime"`
+	Autologin  AutologinConfig  `koanf:"autologin"`
+}
+
+// AutologinConfig holds the Phase 5.5 one-click login tunables (ADR-031).
+//
+// Require2FAStepUp is a GLOBAL kill-switch that masks the per-site policy's
+// require_2fa_step_up column: when FALSE (the V0 default), the service ignores
+// the per-site flag entirely because the 2FA enrollment system is not built
+// yet. Flipping it to TRUE after 2FA ships does NOT require a schema change —
+// the per-site column is already in place. Today the 409 "2fa_required" path
+// is unreachable; that is intentional and tested.
+type AutologinConfig struct {
+	Require2FAStepUp bool `koanf:"require_2fa_step_up"`
 }
 
 // ClickHouseConfig holds the metrics-store connection (ADR-028). ClickHouse is
@@ -345,6 +358,7 @@ func defaults() map[string]any {
 		"uptime.probe_concurrency":      10,
 		"uptime.alert_interval":         "60s",
 		"uptime.down_threshold":         2,
+		"autologin.require_2fa_step_up": false,
 	}
 }
 
@@ -423,6 +437,8 @@ func mapEnvKey(k string) string {
 		return "smtp." + strings.TrimPrefix(k, "smtp_")
 	case strings.HasPrefix(k, "uptime_"):
 		return "uptime." + strings.TrimPrefix(k, "uptime_")
+	case strings.HasPrefix(k, "autologin_"):
+		return "autologin." + strings.TrimPrefix(k, "autologin_")
 	default:
 		return k
 	}

@@ -604,3 +604,91 @@ CREATE POLICY site_alert_state_tenant_isolation ON site_alert_state
 CREATE POLICY site_alert_state_agent ON site_alert_state
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- autologin_tokens  (Phase 5.5 — One-Click Login)
+-- ---------------------------------------------------------------------------
+-- An operator-minted, single-use, short-TTL nonce that materializes as an
+-- Ed25519 JWT the WordPress agent verifies and consumes to establish an
+-- authenticated wp-admin session. The PG row is the durable source of truth
+-- (atomic consume); a parallel Redis key (autologin:<id>, EX 60s) is the
+-- sub-millisecond hot-path consume — both are SET on mint, atomically GETDEL'd
+-- on consume, and the PG row is UPDATE'd to consumed_at on either path.
+--
+-- The id IS the JWT jti (a base64url-encoded 32-byte random value). Storing the
+-- nonce itself as the PK lets the consume RETURNING re-derive the session
+-- target without any join. The token NEVER contains a session secret — the JWT
+-- carries only the nonce + the target enrollment site_id; everything else (the
+-- target WP login, allowed roles) is read from PG/Redis under the agent path.
+CREATE TABLE autologin_tokens (
+    -- id = base64url(rand_32) — the JWT jti and the Redis key suffix.
+    id                    text        PRIMARY KEY,
+    tenant_id             uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id               uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    initiator_user_id     uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- target_wp_user_login is the WordPress username the agent should log in
+    -- as; empty string means "agent picks the first administrator".
+    target_wp_user_login  text        NOT NULL DEFAULT '',
+    initiator_ip          inet,
+    initiator_user_agent  text        NOT NULL DEFAULT '',
+    expires_at            timestamptz NOT NULL,
+    consumed_at           timestamptz,
+    consumed_from_ip      inet,
+    created_at            timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX autologin_tokens_tenant_id_idx ON autologin_tokens (tenant_id);
+-- Hot path: the consume UPDATE filters on (id) and (consumed_at IS NULL); a
+-- partial index over the unconsumed window keeps this cheap as the table grows.
+CREATE INDEX autologin_tokens_pending_expiry_idx
+    ON autologin_tokens (expires_at) WHERE consumed_at IS NULL;
+
+ALTER TABLE autologin_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE autologin_tokens FORCE ROW LEVEL SECURITY;
+-- Operator-side: tenant isolation. The mint path runs under app.tenant_id.
+CREATE POLICY autologin_tokens_tenant_isolation ON autologin_tokens
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- Agent-side: the consume path resolves a nonce BEFORE any tenant scope exists
+-- (the agent presents the verified site_id + nonce, not a tenant). Mirrors the
+-- sites_agent / agent_nonces_agent pattern. SELECT+UPDATE only — the agent
+-- never inserts/deletes autologin_tokens.
+CREATE POLICY autologin_tokens_agent ON autologin_tokens
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
+CREATE POLICY autologin_tokens_agent_consume ON autologin_tokens
+    FOR UPDATE
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- autologin_policies  (Phase 5.5 — One-Click Login)
+-- ---------------------------------------------------------------------------
+-- One row per site governs the autologin feature for that site: whether it's
+-- enabled, which WP roles the agent is allowed to log in as, whether a 2FA
+-- step-up is required (today inert — feature-flagged off until 2FA exists), and
+-- the maximum acceptable session age in minutes. tenant_id is DENORMALISED from
+-- sites.tenant_id to keep the RLS policy join-free (mirrors the M5
+-- site_alert_state pattern).
+CREATE TABLE autologin_policies (
+    site_id                 uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id               uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    enabled                 boolean     NOT NULL DEFAULT true,
+    allowed_wp_roles        text[]      NOT NULL DEFAULT ARRAY['administrator'],
+    require_2fa_step_up     boolean     NOT NULL DEFAULT false,
+    max_session_age_minutes integer     NOT NULL DEFAULT 30,
+    updated_at              timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX autologin_policies_tenant_id_idx ON autologin_policies (tenant_id);
+
+ALTER TABLE autologin_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE autologin_policies FORCE ROW LEVEL SECURITY;
+CREATE POLICY autologin_policies_tenant_isolation ON autologin_policies
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- The consume path reads allowed_wp_roles cross-tenant under app.agent (the
+-- agent identity is the site, resolved before any tenant scope). SELECT-only.
+CREATE POLICY autologin_policies_agent ON autologin_policies
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');

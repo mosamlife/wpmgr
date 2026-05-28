@@ -619,6 +619,147 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/autologin:
+    post:
+      operationId: createAutologin
+      summary: Mint a one-click login URL into a managed WordPress site
+      description: |
+        Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and
+        returns a redirect URL of the form
+        `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`
+        the operator's browser should follow. The WordPress agent verifies the
+        JWT and POSTs back to `/agent/v1/autologin/consume` to atomically
+        consume the nonce, then establishes a wp-admin session as the requested
+        user (or the first administrator when `target_wp_user_login` is empty).
+
+        Authorization: requires the `site:autologin` permission (owner+admin).
+        Operator and viewer roles are explicitly denied.
+
+        Rate-limited per `(initiator_user_id, site_id)` (10/min) and per
+        `site_id` (30/min). A 429 response carries `retry_after_seconds` in the
+        body and a `Retry-After` header in seconds.
+
+        2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0;
+        the 409 path is unreachable until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP`
+        and the per-site `require_2fa_step_up` policy are true AND a future
+        2FA enrollment system is in place.
+
+        The minted JWT is NEVER returned in the response body apart from
+        being embedded in `redirect_url`; it is NEVER recorded in the audit
+        trail — the audit row stores only the nonce id and outcome.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutologinCreate"
+      responses:
+        "200":
+          description: Autologin minted; follow `redirect_url` to land in wp-admin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutologinResponse"
+        "403":
+          description: |
+            RBAC denied (`rbac_denied`) or autologin disabled by policy
+            (`policy_disabled`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Site not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            A two-factor step-up is required (`2fa_required`). Unreachable
+            today; feature-flagged off until the 2FA system ships.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: |
+            Rate-limited per `(initiator_user_id, site_id)` or per `site_id`.
+            Carries `retry_after_seconds` and a `Retry-After` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutologinRateLimited"
+  /agent/v1/autologin/consume:
+    post:
+      operationId: agentAutologinConsume
+      summary: Consume a one-click login nonce (agent-authenticated)
+      description: |
+        Called by the WordPress agent after it has verified the operator's
+        JWT, to atomically consume the nonce and learn the WP login + the
+        allowed WP roles. The control plane consults Redis (GETDEL) first as
+        the sub-millisecond hot path and falls back to a single
+        `UPDATE autologin_tokens ... RETURNING` in Postgres. Exactly one
+        agent wins the race per nonce.
+
+        The agent is authenticated by the M2 Ed25519 signed-request scheme
+        (see AgentSignature); the verified site identity is compared to the
+        body's `site_id` — a mismatch returns 403 `site_mismatch`. A nonce
+        that never existed, was already consumed, or has expired returns 410
+        `nonce_unavailable` (the three cases are intentionally indistinguishable
+        so the table cannot be probed).
+      tags: [agent]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutologinConsumeRequest"
+      responses:
+        "200":
+          description: Nonce consumed; agent may now establish the wp-admin session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutologinConsumeResponse"
+        "401":
+          description: Agent authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: |
+            The body's `site_id` does not match the agent's verified identity
+            (`site_mismatch`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: |
+            Nonce is unknown, already consumed, or expired (`nonce_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /agent/v1/metadata:
     post:
       operationId: agentMetadata
@@ -2074,3 +2215,103 @@ components:
         enabled:
           type: boolean
           default: true
+    AutologinCreate:
+      type: object
+      description: |
+        Optional inputs for minting an autologin URL. Both fields default to
+        empty: an absent `target_wp_user_login` means "agent picks the first
+        administrator", and an absent `redirect_to` lands the operator on the
+        wp-admin home.
+      properties:
+        target_wp_user_login:
+          type: string
+          maxLength: 60
+          description: |
+            The WordPress username the agent should log the operator in as.
+            Empty -> the agent picks the first administrator on the site.
+        redirect_to:
+          type: string
+          maxLength: 2048
+          description: |
+            Optional URL the agent forwards the operator's browser to after
+            establishing the wp-admin session. The agent may rewrite it to a
+            same-origin URL.
+    AutologinResponse:
+      type: object
+      required: [redirect_url, expires_at]
+      properties:
+        redirect_url:
+          type: string
+          description: |
+            The URL the operator's browser should follow. Shape:
+            `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`.
+            The embedded `token` is a single-use Ed25519 JWT bound to the
+            target site (`aud` = site UUID, `cmd` = "autologin") with a
+            ~60-second TTL. NEVER log or persist this URL — the token is a
+            credential.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the JWT/nonce expires (~60s from mint).
+    AutologinRateLimited:
+      type: object
+      required: [code, message, retry_after_seconds]
+      properties:
+        code:
+          type: string
+          enum: [rate_limited]
+        message:
+          type: string
+        retry_after_seconds:
+          type: integer
+          format: int32
+          description: Smallest seconds to wait before retrying.
+    AutologinConsumeRequest:
+      type: object
+      required: [nonce, site_id]
+      properties:
+        nonce:
+          type: string
+          description: |
+            The base64url-no-pad nonce id from the JWT's `jti` claim. Single-use.
+          minLength: 8
+          maxLength: 256
+        site_id:
+          type: string
+          format: uuid
+          description: |
+            The agent's claimed site_id. MUST equal the site_id derived from
+            the agent's verified Ed25519 identity, else the request is
+            rejected (`site_mismatch`).
+        consumed_from_ip:
+          type: string
+          description: |
+            The IP that initiated the consume (typically the operator's
+            browser as seen by the agent). Optional; the control plane falls
+            back to the request peer IP when absent.
+    AutologinConsumeResponse:
+      type: object
+      required: [ok, target_wp_user_login, allowed_wp_roles, audit_id]
+      properties:
+        ok:
+          type: boolean
+        target_wp_user_login:
+          type: string
+          description: |
+            The WP login the agent should establish a session as. Empty means
+            the agent should pick the first administrator (the policy still
+            constrains which roles are admissible).
+        allowed_wp_roles:
+          type: array
+          items:
+            type: string
+          description: |
+            The WP roles the agent is permitted to log the operator in as
+            (from `autologin_policies.allowed_wp_roles`; defaults to
+            ["administrator"] when no policy row exists).
+        audit_id:
+          type: string
+          format: uuid
+          description: |
+            The audit entry id recorded for the consume; the agent may surface
+            it for correlation but it has no security significance.

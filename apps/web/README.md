@@ -27,6 +27,15 @@ latency/uptime chart), a live up/down **Status** column on the sites list, and a
 tenant **downtime alerts** settings page (`/settings/alerts`, operator+) for the
 email recipients + webhook URL.
 
+**Phase 5.5** adds **one-click login**: a primary **Log in to site** action
+(admin/owner only) on each site row and on the site detail header. POSTs
+`/api/v1/sites/{siteId}/autologin`, receives a short-lived single-use redirect
+URL into the WordPress admin (the agent plugin verifies a signed JWT), and opens
+it in a new tab with `noopener,noreferrer`. A dropdown next to the primary
+button deep-links to `/wp-admin/`, `/wp-admin/plugins.php`, or
+`/wp-admin/themes.php`, and offers a freeform user-picker modal for "log in as
+different user…".
+
 ## Stack
 
 | Concern        | Choice                                                              |
@@ -200,6 +209,52 @@ generated `getSiteUptime` / `getUptimeSummary` / `getAlertConfig` /
   **optimistic** cache update + rollback + invalidate. Recipients are entered as
   a comma/newline-separated list (each validated as an email); the webhook URL is
   optional. The page is gated by `canOperate()`; non-operators get a notice.
+
+### One-click login (Phase 5.5)
+
+A primary action lets admins/owners hop straight into a site's WordPress admin
+without copying credentials, backed by the backend `autologin` endpoint and a
+signed short-lived JWT that the agent plugin verifies.
+
+- **Hook** — `src/features/sites/use-autologin.ts` exposes `useAutoLogin()`
+  (TanStack Query mutation). On success it resolves with
+  `{ redirect_url, expires_at }`; the caller opens `redirect_url` in a new tab
+  (we keep `window.open` out of the hook for testability). The backend errors
+  are mapped to friendly toasts: `rbac_denied`, `policy_disabled`,
+  `2fa_required` (V0 cannot actually emit this — 2FA isn't built — but it's
+  handled defensively), `rate_limited` (uses `retry_after_seconds`), and a
+  generic fallback. The hook also exports `canAutoLogin(me)` (admin+) which
+  mirrors the backend's `PermSiteAutologin` default — defense-in-depth.
+- **Button** — `src/features/sites/auto-login-button.tsx` is a primary
+  "Log in to site" button with an adjoining shadcn DropdownMenu trigger.
+  Dropdown items: open `/wp-admin/`, open Plugins page
+  (`/wp-admin/plugins.php`), open Themes page (`/wp-admin/themes.php`),
+  separator, then "Log in as different user…" (opens the user-picker modal).
+  Disabled while the mutation is pending; a spinner appears in the button.
+  The component renders **nothing** when `canAutoLogin(me)` is false — the
+  action is invisible to viewers.
+- **User picker (V0)** — `src/features/sites/user-picker-modal.tsx` is a
+  freeform `user_login` text input (`react-hook-form` + Zod, max 64 chars,
+  regex `^[a-zA-Z0-9_.\-@]+$`) because the agent does **not** currently sync
+  the WP user list to the control plane. The hint reads: "We'll log you in as
+  this WP user. Leave blank to use the first administrator." When the agent
+  later grows a `users.sync` capability and the SDK exposes a list endpoint,
+  this becomes a real picker; the public `onSubmit` contract (one
+  `target_wp_user_login` string) is intentionally stable.
+- **Per-site auto-login policy** — _TODO._ The canonical OpenAPI spec does
+  not yet expose per-site policy endpoints (allowed_wp_roles,
+  require_2fa_step_up, max_session_age_minutes, enabled). Once the backend
+  ships them, regenerate the SDK and add a **Settings → Auto-login** tab to
+  the site detail page (react-hook-form + Zod). Until then, the per-site
+  default behaviour is what the backend ships globally.
+
+> **Contract note:** the autologin endpoint is not in
+> `packages/openapi/openapi.yaml` at the time of writing (backend task #26).
+> The hook hand-rolls the call through the same runtime fetch `client` the
+> generated SDK uses (cookies, baseUrl, interceptors are uniform). When the
+> backend ships the endpoint and `pnpm --filter @wpmgr/api generate` produces
+> a `createAutoLogin` op, the hand-rolled `client.post(...)` should be
+> swapped for it — the request/response shapes already match.
 
 ### Site enrollment (pairing codes)
 

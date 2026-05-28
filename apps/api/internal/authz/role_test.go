@@ -39,6 +39,10 @@ func TestAllows(t *testing.T) {
 		{"operator cannot read audit", RoleOperator, PermAuditRead, false},
 		{"admin cannot manage tenant", RoleAdmin, PermTenantManage, false},
 		{"owner can manage tenant", RoleOwner, PermTenantManage, true},
+		{"viewer cannot autologin", RoleViewer, PermSiteAutologin, false},
+		{"operator cannot autologin", RoleOperator, PermSiteAutologin, false},
+		{"admin can autologin", RoleAdmin, PermSiteAutologin, true},
+		{"owner can autologin", RoleOwner, PermSiteAutologin, true},
 		{"unknown role denied", Role("bogus"), PermSiteRead, false},
 	}
 	for _, tt := range tests {

@@ -184,3 +184,58 @@ func TestJWTTTLWithinAgentWindow(t *testing.T) {
 		t.Fatalf("JWTTTL %v exceeds agent MAX_FUTURE_EXP of 60s", JWTTTL)
 	}
 }
+
+// TestMintAutologinClaims proves the Phase 5.5 one-click login JWT carries the
+// fixed cmd ("autologin"), the supplied aud (site UUID) and tgt (WP login),
+// and a fresh base64url-no-pad 32-byte jti. The same jti is returned so the
+// caller can persist it as the nonce id without re-parsing the token.
+func TestMintAutologinClaims(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := &Signer{priv: priv}
+	now := time.Now()
+	const wantAud = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const wantTgt = "admin"
+
+	token, jti, err := signer.MintAutologin(now, wantAud, wantTgt)
+	if err != nil {
+		t.Fatalf("mint autologin: %v", err)
+	}
+	if jti == "" {
+		t.Fatal("empty jti")
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(jti); err != nil {
+		t.Fatalf("jti must be base64url-no-pad: %v", err)
+	}
+
+	claims := verifyLikeAgent(t, token, pub, now, wantAud, CmdAutologin)
+	if claims["jti"] != jti {
+		t.Fatalf("returned jti %q != claim jti %v", jti, claims["jti"])
+	}
+	if claims["tgt"] != wantTgt {
+		t.Fatalf("tgt = %v, want %q", claims["tgt"], wantTgt)
+	}
+
+	// Empty target = "agent picks admin"; the tgt claim must be omitted entirely.
+	token2, _, err := signer.MintAutologin(now, wantAud, "")
+	if err != nil {
+		t.Fatalf("mint autologin (empty tgt): %v", err)
+	}
+	claims2 := verifyLikeAgent(t, token2, pub, now, wantAud, CmdAutologin)
+	if _, present := claims2["tgt"]; present {
+		t.Fatalf("tgt claim must be omitted when empty, got %v", claims2["tgt"])
+	}
+}
+
+// TestMintAutologinUsesFreshJTIPerCall guarantees every mint is single-use.
+func TestMintAutologinUsesFreshJTIPerCall(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	signer := &Signer{priv: priv}
+	_, j1, _ := signer.MintAutologin(time.Now(), "site-A", "")
+	_, j2, _ := signer.MintAutologin(time.Now(), "site-A", "")
+	if j1 == j2 {
+		t.Fatal("autologin jti must be unique per mint (anti-replay)")
+	}
+}

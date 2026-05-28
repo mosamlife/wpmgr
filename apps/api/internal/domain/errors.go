@@ -28,6 +28,13 @@ const (
 	KindUnauthorized
 	// KindUnavailable indicates a dependency/feature is disabled (HTTP 501/503).
 	KindUnavailable
+	// KindGone indicates a resource was once present but is no longer available
+	// (HTTP 410). Used by single-shot consume paths (e.g. autologin nonces) so
+	// the caller can distinguish "never existed" from "already used / expired".
+	KindGone
+	// KindRateLimited indicates the request exceeded a per-key rate-limit budget
+	// (HTTP 429). Carries the retry budget in the message.
+	KindRateLimited
 )
 
 // Error is a domain error carrying a Kind, a stable machine code, a
@@ -90,6 +97,19 @@ func Internal(code, msg string) *Error {
 	return &Error{Kind: KindInternal, Code: code, Message: msg}
 }
 
+// Gone builds a KindGone error (HTTP 410). Use for one-shot resources that are
+// no longer present (e.g. a single-use nonce that was already consumed).
+func Gone(code, msg string) *Error {
+	return &Error{Kind: KindGone, Code: code, Message: msg}
+}
+
+// RateLimited builds a KindRateLimited error (HTTP 429). The retryAfter is
+// stashed on the message for transparency; handlers usually surface it as a
+// structured field in the response body too.
+func RateLimited(code, msg string) *Error {
+	return &Error{Kind: KindRateLimited, Code: code, Message: msg}
+}
+
 // HTTPStatus maps an error to an HTTP status code. Non-domain errors are 500.
 func HTTPStatus(err error) int {
 	var de *Error
@@ -107,6 +127,10 @@ func HTTPStatus(err error) int {
 			return http.StatusUnauthorized
 		case KindUnavailable:
 			return http.StatusNotImplemented
+		case KindGone:
+			return http.StatusGone
+		case KindRateLimited:
+			return http.StatusTooManyRequests
 		default:
 			return http.StatusInternalServerError
 		}

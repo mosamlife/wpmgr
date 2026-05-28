@@ -13,6 +13,26 @@ type UnimplementedHandler struct{}
 
 var _ Handler = UnimplementedHandler{}
 
+// AgentAutologinConsume implements agentAutologinConsume operation.
+//
+// Called by the WordPress agent after it has verified the operator's
+// JWT, to atomically consume the nonce and learn the WP login + the
+// allowed WP roles. The control plane consults Redis (GETDEL) first as
+// the sub-millisecond hot path and falls back to a single
+// `UPDATE autologin_tokens ... RETURNING` in Postgres. Exactly one
+// agent wins the race per nonce.
+// The agent is authenticated by the M2 Ed25519 signed-request scheme
+// (see AgentSignature); the verified site identity is compared to the
+// body's `site_id` — a mismatch returns 403 `site_mismatch`. A nonce
+// that never existed, was already consumed, or has expired returns 410
+// `nonce_unavailable` (the three cases are intentionally indistinguishable
+// so the table cannot be probed).
+//
+// POST /agent/v1/autologin/consume
+func (UnimplementedHandler) AgentAutologinConsume(ctx context.Context, req *AutologinConsumeRequest) (r AgentAutologinConsumeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // AgentHeartbeat implements agentHeartbeat operation.
 //
 // Lightweight liveness ping. Authenticated via the Ed25519 signed-request
@@ -41,6 +61,33 @@ func (UnimplementedHandler) AgentMetadata(ctx context.Context, req *AgentMetadat
 //
 // POST /api/v1/api-keys
 func (UnimplementedHandler) CreateApiKey(ctx context.Context, req *ApiKeyCreate) (r CreateApiKeyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// CreateAutologin implements createAutologin operation.
+//
+// Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and
+// returns a redirect URL of the form
+// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`
+// the operator's browser should follow. The WordPress agent verifies the
+// JWT and POSTs back to `/agent/v1/autologin/consume` to atomically
+// consume the nonce, then establishes a wp-admin session as the requested
+// user (or the first administrator when `target_wp_user_login` is empty).
+// Authorization: requires the `site:autologin` permission (owner+admin).
+// Operator and viewer roles are explicitly denied.
+// Rate-limited per `(initiator_user_id, site_id)` (10/min) and per
+// `site_id` (30/min). A 429 response carries `retry_after_seconds` in the
+// body and a `Retry-After` header in seconds.
+// 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0;
+// the 409 path is unreachable until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP`
+// and the per-site `require_2fa_step_up` policy are true AND a future
+// 2FA enrollment system is in place.
+// The minted JWT is NEVER returned in the response body apart from
+// being embedded in `redirect_url`; it is NEVER recorded in the audit
+// trail — the audit row stores only the nonce id and outcome.
+//
+// POST /api/v1/sites/{siteId}/autologin
+func (UnimplementedHandler) CreateAutologin(ctx context.Context, req OptAutologinCreate, params CreateAutologinParams) (r CreateAutologinRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

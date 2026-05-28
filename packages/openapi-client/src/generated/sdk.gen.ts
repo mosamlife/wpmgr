@@ -3,6 +3,9 @@
 import type { Client, Options as Options2, TDataShape } from "./client";
 import { client } from "./client.gen";
 import type {
+  AgentAutologinConsumeData,
+  AgentAutologinConsumeErrors,
+  AgentAutologinConsumeResponses,
   AgentHeartbeatData,
   AgentHeartbeatErrors,
   AgentHeartbeatResponses,
@@ -12,6 +15,9 @@ import type {
   CreateApiKeyData,
   CreateApiKeyErrors,
   CreateApiKeyResponses,
+  CreateAutologinData,
+  CreateAutologinErrors,
+  CreateAutologinResponses,
   CreateBackupData,
   CreateBackupErrors,
   CreateBackupResponses,
@@ -481,6 +487,85 @@ export const enroll = <ThrowOnError extends boolean = false>(
 ) =>
   (options.client ?? client).post<EnrollResponses, EnrollErrors, ThrowOnError>({
     url: "/enroll",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Mint a one-click login URL into a managed WordPress site
+ *
+ * Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and
+ * returns a redirect URL of the form
+ * `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`
+ * the operator's browser should follow. The WordPress agent verifies the
+ * JWT and POSTs back to `/agent/v1/autologin/consume` to atomically
+ * consume the nonce, then establishes a wp-admin session as the requested
+ * user (or the first administrator when `target_wp_user_login` is empty).
+ *
+ * Authorization: requires the `site:autologin` permission (owner+admin).
+ * Operator and viewer roles are explicitly denied.
+ *
+ * Rate-limited per `(initiator_user_id, site_id)` (10/min) and per
+ * `site_id` (30/min). A 429 response carries `retry_after_seconds` in the
+ * body and a `Retry-After` header in seconds.
+ *
+ * 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0;
+ * the 409 path is unreachable until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP`
+ * and the per-site `require_2fa_step_up` policy are true AND a future
+ * 2FA enrollment system is in place.
+ *
+ * The minted JWT is NEVER returned in the response body apart from
+ * being embedded in `redirect_url`; it is NEVER recorded in the audit
+ * trail — the audit row stores only the nonce id and outcome.
+ *
+ */
+export const createAutologin = <ThrowOnError extends boolean = false>(
+  options: Options<CreateAutologinData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateAutologinResponses,
+    CreateAutologinErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/autologin",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Consume a one-click login nonce (agent-authenticated)
+ *
+ * Called by the WordPress agent after it has verified the operator's
+ * JWT, to atomically consume the nonce and learn the WP login + the
+ * allowed WP roles. The control plane consults Redis (GETDEL) first as
+ * the sub-millisecond hot path and falls back to a single
+ * `UPDATE autologin_tokens ... RETURNING` in Postgres. Exactly one
+ * agent wins the race per nonce.
+ *
+ * The agent is authenticated by the M2 Ed25519 signed-request scheme
+ * (see AgentSignature); the verified site identity is compared to the
+ * body's `site_id` — a mismatch returns 403 `site_mismatch`. A nonce
+ * that never existed, was already consumed, or has expired returns 410
+ * `nonce_unavailable` (the three cases are intentionally indistinguishable
+ * so the table cannot be probed).
+ *
+ */
+export const agentAutologinConsume = <ThrowOnError extends boolean = false>(
+  options: Options<AgentAutologinConsumeData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    AgentAutologinConsumeResponses,
+    AgentAutologinConsumeErrors,
+    ThrowOnError
+  >({
+    security: [{ name: "X-WPMgr-Signature", type: "apiKey" }],
+    url: "/agent/v1/autologin/consume",
     ...options,
     headers: {
       "Content-Type": "application/json",

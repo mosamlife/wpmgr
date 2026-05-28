@@ -18,6 +18,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
+	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
@@ -30,25 +31,27 @@ import (
 
 // Deps are the server's wired dependencies.
 type Deps struct {
-	Config       config.Config
-	Logger       *slog.Logger
-	Pool         *db.Pool
-	Sessions     *auth.SessionManager
-	Auth         *middleware.Authenticator
-	AuthH        *auth.Handler
-	MembersH     *auth.MembersHandler
-	APIKeyH      *apikey.Handler
-	AuditH       *audit.Handler
-	TenantH      *tenant.Handler
-	SiteH        *site.Handler
-	UpdateH      *update.Handler
-	BackupH      *backup.Handler
-	BackupAgentH *backup.AgentHandler
-	UptimeH      *uptime.Handler
-	AgentAuth    *agent.Authenticator
-	AgentH       *agent.Handler
-	ServiceName  string
-	Version      string
+	Config          config.Config
+	Logger          *slog.Logger
+	Pool            *db.Pool
+	Sessions        *auth.SessionManager
+	Auth            *middleware.Authenticator
+	AuthH           *auth.Handler
+	MembersH        *auth.MembersHandler
+	APIKeyH         *apikey.Handler
+	AuditH          *audit.Handler
+	TenantH         *tenant.Handler
+	SiteH           *site.Handler
+	UpdateH         *update.Handler
+	BackupH         *backup.Handler
+	BackupAgentH    *backup.AgentHandler
+	UptimeH         *uptime.Handler
+	AutologinH      *autologin.MintHandler
+	AutologinAgentH *autologin.AgentHandler
+	AgentAuth       *agent.Authenticator
+	AgentH          *agent.Handler
+	ServiceName     string
+	Version         string
 }
 
 // Server bundles the HTTP server and its dependencies.
@@ -104,6 +107,9 @@ func New(deps Deps) *Server {
 		if deps.BackupAgentH != nil {
 			deps.BackupAgentH.Register(agentGroup)
 		}
+		if deps.AutologinAgentH != nil {
+			deps.AutologinAgentH.Register(agentGroup)
+		}
 	}
 
 	// Everything under /api/v1 requires an authenticated principal with an
@@ -123,6 +129,9 @@ func New(deps Deps) *Server {
 	}
 	if deps.UptimeH != nil {
 		deps.UptimeH.Register(v1)
+	}
+	if deps.AutologinH != nil {
+		deps.AutologinH.Register(v1)
 	}
 
 	return s

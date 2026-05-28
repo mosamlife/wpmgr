@@ -84,6 +84,11 @@ type jwtHeader struct {
 // site_id) and cmd binds it to a single command, so a captured token cannot be
 // replayed against a different tenant's site or repurposed for a different
 // command within the exp window.
+//
+// Tgt is set ONLY by the "autologin" command (ADR-031): it carries the WP
+// username the agent should establish a session as. An empty Tgt means "agent
+// picks the first administrator". omitempty keeps the claim absent for all
+// other commands so the existing M3/M4 contract is byte-identical.
 type jwtClaims struct {
 	JTI string `json:"jti"`
 	Exp int64  `json:"exp"`
@@ -91,6 +96,7 @@ type jwtClaims struct {
 	Iss string `json:"iss"`
 	Aud string `json:"aud"`
 	Cmd string `json:"cmd"`
+	Tgt string `json:"tgt,omitempty"`
 }
 
 // Mint produces a signed compact JWT valid for JWTTTL from now, bound to the
@@ -106,7 +112,31 @@ func (s *Signer) Mint(now time.Time, aud, cmd string) (token string, jti string,
 		return "", "", fmt.Errorf("generate jti: %w", err)
 	}
 	jti = hex.EncodeToString(jtiBytes)
+	token, err = s.mintWithJTI(now, aud, cmd, jti, "")
+	return token, jti, err
+}
 
+// MintAutologin produces a signed compact JWT for the Phase 5.5 one-click login
+// flow (ADR-031). The jti is a 256-bit random base64url-no-pad value (the
+// caller stores it as the nonce id in PG + Redis and the agent presents it back
+// on the consume callback). aud is the target site's enrollment UUID; tgt is
+// the WP username the agent should log in as ("" = agent picks the first
+// administrator). cmd is fixed to "autologin" so the agent verifier rejects
+// any cross-command reuse of a captured token. Returned jti is the SAME value
+// embedded in the claims, so the caller can persist it without re-parsing.
+func (s *Signer) MintAutologin(now time.Time, aud, targetWPUser string) (token, jti string, err error) {
+	jtiBytes := make([]byte, 32)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return "", "", fmt.Errorf("generate autologin jti: %w", err)
+	}
+	jti = base64.RawURLEncoding.EncodeToString(jtiBytes)
+	token, err = s.mintWithJTI(now, aud, CmdAutologin, jti, targetWPUser)
+	return token, jti, err
+}
+
+// mintWithJTI is the shared signing primitive: marshal header+claims, sign the
+// canonical "header.payload" with the CP private key, return the compact JWT.
+func (s *Signer) mintWithJTI(now time.Time, aud, cmd, jti, tgt string) (string, error) {
 	header := jwtHeader{Alg: "EdDSA", Typ: "JWT"}
 	claims := jwtClaims{
 		JTI: jti,
@@ -115,21 +145,27 @@ func (s *Signer) Mint(now time.Time, aud, cmd string) (token string, jti string,
 		Iss: Issuer,
 		Aud: aud,
 		Cmd: cmd,
+		Tgt: tgt,
 	}
 
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
-		return "", "", fmt.Errorf("marshal jwt header: %w", err)
+		return "", fmt.Errorf("marshal jwt header: %w", err)
 	}
 	claimsJSON, err := json.Marshal(claims)
 	if err != nil {
-		return "", "", fmt.Errorf("marshal jwt claims: %w", err)
+		return "", fmt.Errorf("marshal jwt claims: %w", err)
 	}
 
 	signingInput := b64url(headerJSON) + "." + b64url(claimsJSON)
 	sig := ed25519.Sign(s.priv, []byte(signingInput))
-	return signingInput + "." + b64url(sig), jti, nil
+	return signingInput + "." + b64url(sig), nil
 }
+
+// CmdAutologin is the literal cmd claim value for the Phase 5.5 one-click
+// login JWT (ADR-031). The agent verifier MUST reject a token whose cmd is not
+// exactly this string when serving the autologin REST route.
+const CmdAutologin = "autologin"
 
 // b64url base64url-encodes without padding (the JWS compact-serialization form
 // the agent's base64UrlDecode tolerates — it re-pads on decode).

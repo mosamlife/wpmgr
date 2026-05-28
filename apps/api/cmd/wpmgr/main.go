@@ -24,6 +24,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
+	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
@@ -315,29 +316,82 @@ func run() error {
 		}
 	}()
 
+	// Phase 5.5 One-Click Login (ADR-030/031). Mint+consume require the CP
+	// signing key (the JWT is Ed25519-signed by the same control-plane keypair
+	// used for M3/M4 commands). When the key is empty in dev, the mint endpoint
+	// is wired but every mint will return 500 (the signer interface is satisfied
+	// by a small refusing shim so the rest of the boot still completes). Redis
+	// is the hot-path consume store; when WPMGR_REDIS_ADDR is empty the Redigo
+	// pool still constructs but every Set/GETDEL no-ops -> the service falls
+	// back to the durable PG single-shot consume on every callback.
+	var autologinH *autologin.MintHandler
+	var autologinAgentH *autologin.AgentHandler
+	{
+		var signer autologin.Signer
+		if cfg.Agent.SigningPrivateKey != "" {
+			s, serr := agentcmd.NewSigner(cfg.Agent.SigningPrivateKey)
+			if serr != nil {
+				return fmt.Errorf("build autologin signer: %w", serr)
+			}
+			signer = s
+		} else {
+			logger.Warn("WPMGR_AGENT_SIGNING_PRIVATE_KEY is empty: autologin mint is disabled (the endpoint will return 500)")
+			signer = disabledAutologinSigner{}
+		}
+		store := autologin.NonceStore(autologin.NewRedigoStore(redisPool))
+		if cfg.Redis.Addr == "" {
+			store = autologin.NoopStore{}
+		}
+		limiter := autologin.NewMemoryLimiter()
+		// Janitor stops with the process — no explicit Stop() is required because
+		// the process lives until shutdown; the goroutine is bounded and idle.
+		autologinSvc := autologin.NewService(
+			autologin.NewRepo(pool),
+			store,
+			signer,
+			newAutologinSiteAdapter(siteSvc),
+			limiter,
+			auditRec,
+			clock,
+			autologin.Config{Require2FAStepUp: cfg.Autologin.Require2FAStepUp},
+		)
+		autologinH = autologin.NewMintHandler(autologinSvc)
+		autologinAgentH = autologin.NewAgentHandler(autologinSvc)
+	}
+
 	srv := server.New(server.Deps{
-		Config:       cfg,
-		Logger:       logger,
-		Pool:         pool,
-		Sessions:     sessions,
-		Auth:         authn,
-		AuthH:        auth.NewHandler(authSvc, sessions, oidcProvider, newTenant),
-		MembersH:     auth.NewMembersHandler(authSvc),
-		APIKeyH:      apikey.NewHandler(apiKeySvc, auditRec),
-		AuditH:       audit.NewHandler(auditRec),
-		TenantH:      tenant.NewHandler(tenantSvc, auditRec),
-		SiteH:        site.NewHandler(siteSvc, auditRec, cpPublicKey),
-		UpdateH:      updateH,
-		BackupH:      backupH,
-		BackupAgentH: backupAgentH,
-		UptimeH:      uptimeH,
-		AgentAuth:    agentAuthn,
-		AgentH:       agentH,
-		ServiceName:  cfg.OTel.ServiceName,
-		Version:      version,
+		Config:          cfg,
+		Logger:          logger,
+		Pool:            pool,
+		Sessions:        sessions,
+		Auth:            authn,
+		AuthH:           auth.NewHandler(authSvc, sessions, oidcProvider, newTenant),
+		MembersH:        auth.NewMembersHandler(authSvc),
+		APIKeyH:         apikey.NewHandler(apiKeySvc, auditRec),
+		AuditH:          audit.NewHandler(auditRec),
+		TenantH:         tenant.NewHandler(tenantSvc, auditRec),
+		SiteH:           site.NewHandler(siteSvc, auditRec, cpPublicKey),
+		UpdateH:         updateH,
+		BackupH:         backupH,
+		BackupAgentH:    backupAgentH,
+		UptimeH:         uptimeH,
+		AutologinH:      autologinH,
+		AutologinAgentH: autologinAgentH,
+		AgentAuth:       agentAuthn,
+		AgentH:          agentH,
+		ServiceName:     cfg.OTel.ServiceName,
+		Version:         version,
 	})
 
 	return srv.Run(ctx)
+}
+
+// disabledAutologinSigner refuses to mint when no CP signing key is
+// configured, mirroring disabledCommander for M3/M4.
+type disabledAutologinSigner struct{}
+
+func (disabledAutologinSigner) MintAutologin(_ time.Time, _, _ string) (string, string, error) {
+	return "", "", fmt.Errorf("autologin is disabled: no CP signing key configured")
 }
 
 // agentSigningPublicKey validates the control-plane Ed25519 signing keypair from

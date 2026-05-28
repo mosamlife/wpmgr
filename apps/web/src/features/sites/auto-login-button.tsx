@@ -1,0 +1,165 @@
+import { useCallback, useState } from "react";
+import { ChevronDown, LogIn, Loader2 } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { useMe } from "@/features/auth/use-auth";
+import {
+  autoLoginErrorMessage,
+  canAutoLogin,
+  useAutoLogin,
+  type AutoLoginInput,
+} from "@/features/sites/use-autologin";
+import { UserPickerModal } from "@/features/sites/user-picker-modal";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+
+// Phase 5.5 — One-click login control.
+//
+// Primary action ("Log in to site") POSTs autologin with empty body — the
+// agent picks the first administrator and lands on /wp-admin/. The dropdown
+// exposes deep links to common admin screens and the freeform user picker.
+//
+// Visibility is gated on `canAutoLogin(me)` (admin+); the backend re-checks
+// the role on every call so this is defense-in-depth, not the security
+// boundary.
+
+export interface AutoLoginButtonProps {
+  siteId: string;
+  /** Used to label the user-picker modal heading. */
+  siteName: string;
+  /** Compact variant for table rows. */
+  size?: "sm" | "default";
+  /** Optional extra class on the primary button (for layout). */
+  className?: string;
+}
+
+export function AutoLoginButton({
+  siteId,
+  siteName,
+  size = "default",
+  className,
+}: AutoLoginButtonProps) {
+  const { data: me } = useMe();
+  const mutation = useAutoLogin();
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const openTab = useCallback((url: string) => {
+    // Cross-origin: must use noopener,noreferrer so the WP site cannot grab a
+    // handle back to the dashboard window.
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
+
+  const runAutoLogin = useCallback(
+    (input: Omit<AutoLoginInput, "siteId">) => {
+      toast.message("Opening site…");
+      mutation.mutate(
+        { siteId, ...input },
+        {
+          onSuccess: (data) => {
+            openTab(data.redirect_url);
+          },
+          onError: (err) => {
+            // The mutation only ever throws AutoLoginError (or, defensively,
+            // a network-shape one — also AutoLoginError).
+            toast.error(autoLoginErrorMessage(err));
+          },
+        },
+      );
+    },
+    [mutation, openTab, siteId],
+  );
+
+  // Gate visibility on role. Render nothing if the user cannot autologin —
+  // the action is invisible (not just disabled) for clarity.
+  if (!canAutoLogin(me)) return null;
+
+  const pending = mutation.isPending;
+
+  return (
+    <>
+      <div className={cn("inline-flex items-stretch", className)}>
+        <Button
+          type="button"
+          size={size}
+          onClick={() => runAutoLogin({})}
+          disabled={pending}
+          className="rounded-r-none"
+          aria-label="Log in to site"
+        >
+          {pending ? (
+            <Loader2 aria-hidden="true" className="animate-spin" />
+          ) : (
+            <LogIn aria-hidden="true" />
+          )}
+          Log in to site
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              size={size}
+              disabled={pending}
+              className="rounded-l-none border-l border-[var(--color-primary-foreground)]/20 px-2"
+              aria-label="More log-in options"
+            >
+              <ChevronDown aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                runAutoLogin({ redirect_to: "/wp-admin/" });
+              }}
+            >
+              Open /wp-admin/
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                runAutoLogin({ redirect_to: "/wp-admin/plugins.php" });
+              }}
+            >
+              Open Plugins page
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                runAutoLogin({ redirect_to: "/wp-admin/themes.php" });
+              }}
+            >
+              Open Themes page
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                setPickerOpen(true);
+              }}
+            >
+              Log in as different user…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      <UserPickerModal
+        open={pickerOpen}
+        siteName={siteName}
+        pending={pending}
+        onClose={() => setPickerOpen(false)}
+        onSubmit={(target_wp_user_login) => {
+          setPickerOpen(false);
+          runAutoLogin({ target_wp_user_login });
+        }}
+      />
+    </>
+  );
+}

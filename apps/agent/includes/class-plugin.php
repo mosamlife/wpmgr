@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent;
 
+use WPMgr\Agent\Commands\AutologinCommand;
 use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
 use WPMgr\Agent\Commands\InfoCommand;
@@ -53,19 +54,25 @@ final class Plugin
 
     private Admin $admin;
 
+    private ReplayCache $autologinReplay;
+
+    private AutologinCommand $autologin;
+
     /**
      * Private constructor wires the object graph.
      */
     private function __construct()
     {
-        $this->keystore   = new Keystore();
-        $this->settings   = new Settings();
-        $this->connector  = new Connector($this->keystore, $this->settings);
-        $this->signer     = new Signer($this->keystore);
-        $this->router     = new Router($this->connector, $this->commands());
-        $this->enrollment = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand());
-        $this->scheduler  = new Scheduler($this->settings, $this->enrollment);
-        $this->admin      = new Admin($this->settings, $this->enrollment);
+        $this->keystore         = new Keystore();
+        $this->settings         = new Settings();
+        $this->connector        = new Connector($this->keystore, $this->settings);
+        $this->signer           = new Signer($this->keystore);
+        $this->router           = new Router($this->connector, $this->commands());
+        $this->enrollment       = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand());
+        $this->scheduler        = new Scheduler($this->settings, $this->enrollment);
+        $this->admin            = new Admin($this->settings, $this->enrollment);
+        $this->autologinReplay  = new ReplayCache();
+        $this->autologin        = new AutologinCommand($this->connector, $this->autologinReplay, $this->signer, $this->settings);
     }
 
     /**
@@ -91,6 +98,15 @@ final class Plugin
     private function registerHooks(): void
     {
         add_action('rest_api_init', [$this->router, 'registerRoutes']);
+        add_action('rest_api_init', [$this, 'registerAutologinRoute']);
+
+        // Autologin replay-table maintenance: drop expired rows hourly. The
+        // cron event is scheduled at activation; this hook binds the handler.
+        // Wrap in a void closure: ReplayCache::prune() returns an int (rows
+        // purged), but WP cron callbacks must not return anything.
+        add_action(ReplayCache::HOOK_PRUNE, function (): void {
+            $this->autologinReplay->prune();
+        });
 
         $this->scheduler->registerHooks();
 
@@ -121,6 +137,7 @@ final class Plugin
     public function activate(): void
     {
         $this->createJtiTable();
+        $this->createAutologinReplayTable();
 
         $this->setupKeystore();
 
@@ -128,6 +145,13 @@ final class Plugin
         $now = time();
         $this->settings->markActivated($now);
         $this->scheduler->scheduleEvents($now);
+
+        // Hourly prune of the autologin replay table.
+        if (function_exists('wp_next_scheduled') && function_exists('wp_schedule_event')
+            && wp_next_scheduled(ReplayCache::HOOK_PRUNE) === false
+        ) {
+            wp_schedule_event($now + 60, 'hourly', ReplayCache::HOOK_PRUNE);
+        }
     }
 
     /**
@@ -217,6 +241,76 @@ final class Plugin
     public function deactivate(): void
     {
         $this->scheduler->clearEvents();
+
+        if (function_exists('wp_clear_scheduled_hook')) {
+            wp_clear_scheduled_hook(ReplayCache::HOOK_PRUNE);
+        }
+    }
+
+    /**
+     * Register the GET /wpmgr/v1/autologin route. SEPARATE from the dispatch
+     * router: this route is browser-initiated and the JWT (verified inside the
+     * handler) is the authorization, so permission_callback is __return_true.
+     *
+     * @return void
+     */
+    public function registerAutologinRoute(): void
+    {
+        if (!function_exists('register_rest_route')) {
+            return;
+        }
+
+        register_rest_route(
+            Router::NAMESPACE,
+            '/autologin',
+            [
+                'methods'             => 'GET',
+                'callback'            => [$this->autologin, 'handle'],
+                'permission_callback' => '__return_true',
+                'args'                => [
+                    'token'       => [
+                        'required' => true,
+                        'type'     => 'string',
+                    ],
+                    'redirect_to' => [
+                        'required' => false,
+                        'type'     => 'string',
+                        'default'  => '',
+                    ],
+                ],
+            ]
+        );
+    }
+
+    /**
+     * Create the autologin single-use replay table via dbDelta.
+     *
+     * @return void
+     */
+    private function createAutologinReplayTable(): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+
+        $table   = (isset($wpdb->prefix) ? (string) $wpdb->prefix : 'wp_') . ReplayCache::TABLE;
+        $charset = method_exists($wpdb, 'get_charset_collate') ? $wpdb->get_charset_collate() : '';
+
+        $sql = "CREATE TABLE {$table} (
+            jti_hash CHAR(64) NOT NULL,
+            expires_at BIGINT UNSIGNED NOT NULL,
+            PRIMARY KEY  (jti_hash),
+            KEY expires_at (expires_at)
+        ) {$charset};";
+
+        if (defined('ABSPATH') && file_exists(ABSPATH . 'wp-admin/includes/upgrade.php')) {
+            require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        }
+
+        if (function_exists('dbDelta')) {
+            dbDelta($sql);
+        }
     }
 
     /**

@@ -560,6 +560,101 @@ export type AlertConfigUpdate = {
   enabled?: boolean;
 };
 
+/**
+ * Optional inputs for minting an autologin URL. Both fields default to
+ * empty: an absent `target_wp_user_login` means "agent picks the first
+ * administrator", and an absent `redirect_to` lands the operator on the
+ * wp-admin home.
+ *
+ */
+export type AutologinCreate = {
+  /**
+   * The WordPress username the agent should log the operator in as.
+   * Empty -> the agent picks the first administrator on the site.
+   *
+   */
+  target_wp_user_login?: string;
+  /**
+   * Optional URL the agent forwards the operator's browser to after
+   * establishing the wp-admin session. The agent may rewrite it to a
+   * same-origin URL.
+   *
+   */
+  redirect_to?: string;
+};
+
+export type AutologinResponse = {
+  /**
+   * The URL the operator's browser should follow. Shape:
+   * `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`.
+   * The embedded `token` is a single-use Ed25519 JWT bound to the
+   * target site (`aud` = site UUID, `cmd` = "autologin") with a
+   * ~60-second TTL. NEVER log or persist this URL — the token is a
+   * credential.
+   *
+   */
+  redirect_url: string;
+  /**
+   * When the JWT/nonce expires (~60s from mint).
+   */
+  expires_at: string;
+};
+
+export type AutologinRateLimited = {
+  code: "rate_limited";
+  message: string;
+  /**
+   * Smallest seconds to wait before retrying.
+   */
+  retry_after_seconds: number;
+};
+
+export type AutologinConsumeRequest = {
+  /**
+   * The base64url-no-pad nonce id from the JWT's `jti` claim. Single-use.
+   *
+   */
+  nonce: string;
+  /**
+   * The agent's claimed site_id. MUST equal the site_id derived from
+   * the agent's verified Ed25519 identity, else the request is
+   * rejected (`site_mismatch`).
+   *
+   */
+  site_id: string;
+  /**
+   * The IP that initiated the consume (typically the operator's
+   * browser as seen by the agent). Optional; the control plane falls
+   * back to the request peer IP when absent.
+   *
+   */
+  consumed_from_ip?: string;
+};
+
+export type AutologinConsumeResponse = {
+  ok: boolean;
+  /**
+   * The WP login the agent should establish a session as. Empty means
+   * the agent should pick the first administrator (the policy still
+   * constrains which roles are admissible).
+   *
+   */
+  target_wp_user_login: string;
+  /**
+   * The WP roles the agent is permitted to log the operator in as
+   * (from `autologin_policies.allowed_wp_roles`; defaults to
+   * ["administrator"] when no policy row exists).
+   *
+   */
+  allowed_wp_roles: Array<string>;
+  /**
+   * The audit entry id recorded for the consume; the agent may surface
+   * it for correlation but it has no security significance.
+   *
+   */
+  audit_id: string;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -1228,6 +1323,99 @@ export type EnrollResponses = {
 };
 
 export type EnrollResponse2 = EnrollResponses[keyof EnrollResponses];
+
+export type CreateAutologinData = {
+  body?: AutologinCreate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/autologin";
+};
+
+export type CreateAutologinErrors = {
+  /**
+   * RBAC denied (`rbac_denied`) or autologin disabled by policy
+   * (`policy_disabled`).
+   *
+   */
+  403: Error;
+  /**
+   * Site not found.
+   */
+  404: Error;
+  /**
+   * A two-factor step-up is required (`2fa_required`). Unreachable
+   * today; feature-flagged off until the 2FA system ships.
+   *
+   */
+  409: Error;
+  /**
+   * Validation failed.
+   */
+  422: Error;
+  /**
+   * Rate-limited per `(initiator_user_id, site_id)` or per `site_id`.
+   * Carries `retry_after_seconds` and a `Retry-After` header.
+   *
+   */
+  429: AutologinRateLimited;
+};
+
+export type CreateAutologinError =
+  CreateAutologinErrors[keyof CreateAutologinErrors];
+
+export type CreateAutologinResponses = {
+  /**
+   * Autologin minted; follow `redirect_url` to land in wp-admin.
+   */
+  200: AutologinResponse;
+};
+
+export type CreateAutologinResponse =
+  CreateAutologinResponses[keyof CreateAutologinResponses];
+
+export type AgentAutologinConsumeData = {
+  body: AutologinConsumeRequest;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/autologin/consume";
+};
+
+export type AgentAutologinConsumeErrors = {
+  /**
+   * Agent authentication failed.
+   */
+  401: Error;
+  /**
+   * The body's `site_id` does not match the agent's verified identity
+   * (`site_mismatch`).
+   *
+   */
+  403: Error;
+  /**
+   * Nonce is unknown, already consumed, or expired (`nonce_unavailable`).
+   *
+   */
+  410: Error;
+  /**
+   * Validation failed.
+   */
+  422: Error;
+};
+
+export type AgentAutologinConsumeError =
+  AgentAutologinConsumeErrors[keyof AgentAutologinConsumeErrors];
+
+export type AgentAutologinConsumeResponses = {
+  /**
+   * Nonce consumed; agent may now establish the wp-admin session.
+   */
+  200: AutologinConsumeResponse;
+};
+
+export type AgentAutologinConsumeResponse =
+  AgentAutologinConsumeResponses[keyof AgentAutologinConsumeResponses];
 
 export type AgentMetadataData = {
   body: AgentMetadata;

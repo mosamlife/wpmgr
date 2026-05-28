@@ -13,6 +13,7 @@ import { useSite, NotFoundError } from "@/features/sites/use-sites";
 import { HealthBadge, EnrollmentBadge } from "@/features/sites/site-badges";
 import { SiteComponentsTable } from "@/features/sites/site-components-table";
 import { SiteTagsEditor } from "@/features/sites/site-tags-editor";
+import { AutoLoginButton } from "@/features/sites/auto-login-button";
 import { BackupsSection } from "@/features/backups/backups-section";
 import { UptimeSection } from "@/features/monitoring/uptime-section";
 import { useMe, canOperate } from "@/features/auth/use-auth";
@@ -82,14 +83,19 @@ function SiteDetail({
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 id="site-heading" className="text-2xl font-semibold">
-          {site.name}
-        </h1>
-        <p className="text-[var(--color-muted-foreground)]">{site.url}</p>
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <EnrollmentBadge site={site} />
-          <HealthBadge status={site.health_status} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h1 id="site-heading" className="text-2xl font-semibold">
+            {site.name}
+          </h1>
+          <p className="text-[var(--color-muted-foreground)]">{site.url}</p>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <EnrollmentBadge site={site} />
+            <HealthBadge status={site.health_status} />
+          </div>
+        </div>
+        <div className="shrink-0">
+          <AutoLoginButton siteId={site.id} siteName={site.name} />
         </div>
       </div>
 

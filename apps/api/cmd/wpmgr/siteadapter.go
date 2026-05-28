@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
@@ -118,6 +119,30 @@ func (l *backupSiteLookup) GetBackupSiteInfo(ctx context.Context, tenantID, site
 		AgeRecipient: s.AgeRecipient,
 	}, nil
 }
+
+// autologinSiteAdapter adapts the site service to the autologin package's
+// SiteLookup interface (returns the site URL the operator's browser will
+// redirect to, with RLS-scoped tenant verification).
+type autologinSiteAdapter struct {
+	svc *site.Service
+}
+
+func newAutologinSiteAdapter(svc *site.Service) *autologinSiteAdapter {
+	return &autologinSiteAdapter{svc: svc}
+}
+
+func (a *autologinSiteAdapter) GetSiteForAutologin(ctx context.Context, tenantID, siteID uuid.UUID) (string, bool, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		if de, ok := domain.AsDomain(err); ok && de.Kind == domain.KindNotFound {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return s.URL, true, nil
+}
+
+var _ autologin.SiteLookup = (*autologinSiteAdapter)(nil)
 
 func toSiteInfo(s site.Site) update.SiteInfo {
 	plugins, themes := s.ParsedComponents()

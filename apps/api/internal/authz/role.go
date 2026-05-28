@@ -56,20 +56,27 @@ const (
 	PermAuditRead Permission = "audit:read"
 	// PermTenantManage manages tenant settings.
 	PermTenantManage Permission = "tenant:manage"
+	// PermSiteAutologin mints a one-time autologin URL into a managed WordPress
+	// site. The minted JWT lets the receiving agent establish an authenticated
+	// wp-admin session in the operator's browser. Reserved for owner+admin in V0
+	// (operator/viewer are explicitly excluded; finer per-grant flows are out of
+	// scope for V0).
+	PermSiteAutologin Permission = "site:autologin"
 )
 
 // minRoleFor maps each permission to the minimum role that holds it. The matrix
 // is intentionally simple (role-rank based) for V0; finer-grained grants can be
 // layered later without changing call sites.
 var minRoleFor = map[Permission]Role{
-	PermSiteRead:     RoleViewer,
-	PermSiteWrite:    RoleOperator,
-	PermMemberRead:   RoleViewer,
-	PermMemberManage: RoleAdmin,
-	PermAPIKeyRead:   RoleAdmin,
-	PermAPIKeyManage: RoleAdmin,
-	PermAuditRead:    RoleAdmin,
-	PermTenantManage: RoleOwner,
+	PermSiteRead:      RoleViewer,
+	PermSiteWrite:     RoleOperator,
+	PermMemberRead:    RoleViewer,
+	PermMemberManage:  RoleAdmin,
+	PermAPIKeyRead:    RoleAdmin,
+	PermAPIKeyManage:  RoleAdmin,
+	PermAuditRead:     RoleAdmin,
+	PermTenantManage:  RoleOwner,
+	PermSiteAutologin: RoleAdmin,
 }
 
 // Allows reports whether role r is permitted to perform p.

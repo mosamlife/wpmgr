@@ -28,6 +28,23 @@ func trimTrailingSlashes(u *url.URL) {
 
 // Invoker invokes operations described by OpenAPI v3 specification.
 type Invoker interface {
+	// AgentAutologinConsume invokes agentAutologinConsume operation.
+	//
+	// Called by the WordPress agent after it has verified the operator's
+	// JWT, to atomically consume the nonce and learn the WP login + the
+	// allowed WP roles. The control plane consults Redis (GETDEL) first as
+	// the sub-millisecond hot path and falls back to a single
+	// `UPDATE autologin_tokens ... RETURNING` in Postgres. Exactly one
+	// agent wins the race per nonce.
+	// The agent is authenticated by the M2 Ed25519 signed-request scheme
+	// (see AgentSignature); the verified site identity is compared to the
+	// body's `site_id` — a mismatch returns 403 `site_mismatch`. A nonce
+	// that never existed, was already consumed, or has expired returns 410
+	// `nonce_unavailable` (the three cases are intentionally indistinguishable
+	// so the table cannot be probed).
+	//
+	// POST /agent/v1/autologin/consume
+	AgentAutologinConsume(ctx context.Context, request *AutologinConsumeRequest) (AgentAutologinConsumeRes, error)
 	// AgentHeartbeat invokes agentHeartbeat operation.
 	//
 	// Lightweight liveness ping. Authenticated via the Ed25519 signed-request
@@ -50,6 +67,30 @@ type Invoker interface {
 	//
 	// POST /api/v1/api-keys
 	CreateApiKey(ctx context.Context, request *ApiKeyCreate) (CreateApiKeyRes, error)
+	// CreateAutologin invokes createAutologin operation.
+	//
+	// Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and
+	// returns a redirect URL of the form
+	// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`
+	// the operator's browser should follow. The WordPress agent verifies the
+	// JWT and POSTs back to `/agent/v1/autologin/consume` to atomically
+	// consume the nonce, then establishes a wp-admin session as the requested
+	// user (or the first administrator when `target_wp_user_login` is empty).
+	// Authorization: requires the `site:autologin` permission (owner+admin).
+	// Operator and viewer roles are explicitly denied.
+	// Rate-limited per `(initiator_user_id, site_id)` (10/min) and per
+	// `site_id` (30/min). A 429 response carries `retry_after_seconds` in the
+	// body and a `Retry-After` header in seconds.
+	// 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0;
+	// the 409 path is unreachable until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP`
+	// and the per-site `require_2fa_step_up` policy are true AND a future
+	// 2FA enrollment system is in place.
+	// The minted JWT is NEVER returned in the response body apart from
+	// being embedded in `redirect_url`; it is NEVER recorded in the audit
+	// trail — the audit row stores only the nonce id and outcome.
+	//
+	// POST /api/v1/sites/{siteId}/autologin
+	CreateAutologin(ctx context.Context, request OptAutologinCreate, params CreateAutologinParams) (CreateAutologinRes, error)
 	// CreateBackup invokes createBackup operation.
 	//
 	// Records a pending backup snapshot for the site and enqueues a background
@@ -350,6 +391,127 @@ func (c *Client) requestURL(ctx context.Context) *url.URL {
 	return u
 }
 
+// AgentAutologinConsume invokes agentAutologinConsume operation.
+//
+// Called by the WordPress agent after it has verified the operator's
+// JWT, to atomically consume the nonce and learn the WP login + the
+// allowed WP roles. The control plane consults Redis (GETDEL) first as
+// the sub-millisecond hot path and falls back to a single
+// `UPDATE autologin_tokens ... RETURNING` in Postgres. Exactly one
+// agent wins the race per nonce.
+// The agent is authenticated by the M2 Ed25519 signed-request scheme
+// (see AgentSignature); the verified site identity is compared to the
+// body's `site_id` — a mismatch returns 403 `site_mismatch`. A nonce
+// that never existed, was already consumed, or has expired returns 410
+// `nonce_unavailable` (the three cases are intentionally indistinguishable
+// so the table cannot be probed).
+//
+// POST /agent/v1/autologin/consume
+func (c *Client) AgentAutologinConsume(ctx context.Context, request *AutologinConsumeRequest) (AgentAutologinConsumeRes, error) {
+	res, err := c.sendAgentAutologinConsume(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendAgentAutologinConsume(ctx context.Context, request *AutologinConsumeRequest) (res AgentAutologinConsumeRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("agentAutologinConsume"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/agent/v1/autologin/consume"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, AgentAutologinConsumeOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/agent/v1/autologin/consume"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeAgentAutologinConsumeRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+			stage = "Security:AgentSignature"
+			switch err := c.securityAgentSignature(ctx, AgentAutologinConsumeOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"AgentSignature\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeAgentAutologinConsumeResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // AgentHeartbeat invokes agentHeartbeat operation.
 //
 // Lightweight liveness ping. Authenticated via the Ed25519 signed-request
@@ -641,6 +803,120 @@ func (c *Client) sendCreateApiKey(ctx context.Context, request *ApiKeyCreate) (r
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateApiKeyResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CreateAutologin invokes createAutologin operation.
+//
+// Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and
+// returns a redirect URL of the form
+// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`
+// the operator's browser should follow. The WordPress agent verifies the
+// JWT and POSTs back to `/agent/v1/autologin/consume` to atomically
+// consume the nonce, then establishes a wp-admin session as the requested
+// user (or the first administrator when `target_wp_user_login` is empty).
+// Authorization: requires the `site:autologin` permission (owner+admin).
+// Operator and viewer roles are explicitly denied.
+// Rate-limited per `(initiator_user_id, site_id)` (10/min) and per
+// `site_id` (30/min). A 429 response carries `retry_after_seconds` in the
+// body and a `Retry-After` header in seconds.
+// 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0;
+// the 409 path is unreachable until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP`
+// and the per-site `require_2fa_step_up` policy are true AND a future
+// 2FA enrollment system is in place.
+// The minted JWT is NEVER returned in the response body apart from
+// being embedded in `redirect_url`; it is NEVER recorded in the audit
+// trail — the audit row stores only the nonce id and outcome.
+//
+// POST /api/v1/sites/{siteId}/autologin
+func (c *Client) CreateAutologin(ctx context.Context, request OptAutologinCreate, params CreateAutologinParams) (CreateAutologinRes, error) {
+	res, err := c.sendCreateAutologin(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendCreateAutologin(ctx context.Context, request OptAutologinCreate, params CreateAutologinParams) (res CreateAutologinRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createAutologin"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/autologin"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateAutologinOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/autologin"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateAutologinRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateAutologinResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

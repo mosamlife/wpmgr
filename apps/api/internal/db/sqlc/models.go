@@ -5,6 +5,7 @@
 package sqlc
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,6 +54,30 @@ type AuditLog struct {
 	PrevHash   string    `json:"prev_hash"`
 	Hash       string    `json:"hash"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type AutologinPolicy struct {
+	SiteID               uuid.UUID `json:"site_id"`
+	TenantID             uuid.UUID `json:"tenant_id"`
+	Enabled              bool      `json:"enabled"`
+	AllowedWpRoles       []string  `json:"allowed_wp_roles"`
+	Require2faStepUp     bool      `json:"require_2fa_step_up"`
+	MaxSessionAgeMinutes int32     `json:"max_session_age_minutes"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+type AutologinToken struct {
+	ID                 string             `json:"id"`
+	TenantID           uuid.UUID          `json:"tenant_id"`
+	SiteID             uuid.UUID          `json:"site_id"`
+	InitiatorUserID    uuid.UUID          `json:"initiator_user_id"`
+	TargetWpUserLogin  string             `json:"target_wp_user_login"`
+	InitiatorIp        *netip.Addr        `json:"initiator_ip"`
+	InitiatorUserAgent string             `json:"initiator_user_agent"`
+	ExpiresAt          time.Time          `json:"expires_at"`
+	ConsumedAt         pgtype.Timestamptz `json:"consumed_at"`
+	ConsumedFromIp     *netip.Addr        `json:"consumed_from_ip"`
+	CreatedAt          time.Time          `json:"created_at"`
 }
 
 type BackupChunk struct {

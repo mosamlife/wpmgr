@@ -1472,3 +1472,113 @@ export const AlertConfigUpdateSchema = {
     },
   },
 } as const;
+
+export const AutologinCreateSchema = {
+  type: "object",
+  description:
+    'Optional inputs for minting an autologin URL. Both fields default to\nempty: an absent `target_wp_user_login` means "agent picks the first\nadministrator", and an absent `redirect_to` lands the operator on the\nwp-admin home.\n',
+  properties: {
+    target_wp_user_login: {
+      type: "string",
+      maxLength: 60,
+      description:
+        "The WordPress username the agent should log the operator in as.\nEmpty -> the agent picks the first administrator on the site.\n",
+    },
+    redirect_to: {
+      type: "string",
+      maxLength: 2048,
+      description:
+        "Optional URL the agent forwards the operator's browser to after\nestablishing the wp-admin session. The agent may rewrite it to a\nsame-origin URL.\n",
+    },
+  },
+} as const;
+
+export const AutologinResponseSchema = {
+  type: "object",
+  required: ["redirect_url", "expires_at"],
+  properties: {
+    redirect_url: {
+      type: "string",
+      description:
+        'The URL the operator\'s browser should follow. Shape:\n`{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`.\nThe embedded `token` is a single-use Ed25519 JWT bound to the\ntarget site (`aud` = site UUID, `cmd` = "autologin") with a\n~60-second TTL. NEVER log or persist this URL — the token is a\ncredential.\n',
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+      description: "When the JWT/nonce expires (~60s from mint).",
+    },
+  },
+} as const;
+
+export const AutologinRateLimitedSchema = {
+  type: "object",
+  required: ["code", "message", "retry_after_seconds"],
+  properties: {
+    code: {
+      type: "string",
+      enum: ["rate_limited"],
+    },
+    message: {
+      type: "string",
+    },
+    retry_after_seconds: {
+      type: "integer",
+      format: "int32",
+      description: "Smallest seconds to wait before retrying.",
+    },
+  },
+} as const;
+
+export const AutologinConsumeRequestSchema = {
+  type: "object",
+  required: ["nonce", "site_id"],
+  properties: {
+    nonce: {
+      type: "string",
+      description:
+        "The base64url-no-pad nonce id from the JWT's `jti` claim. Single-use.\n",
+      minLength: 8,
+      maxLength: 256,
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+      description:
+        "The agent's claimed site_id. MUST equal the site_id derived from\nthe agent's verified Ed25519 identity, else the request is\nrejected (`site_mismatch`).\n",
+    },
+    consumed_from_ip: {
+      type: "string",
+      description:
+        "The IP that initiated the consume (typically the operator's\nbrowser as seen by the agent). Optional; the control plane falls\nback to the request peer IP when absent.\n",
+    },
+  },
+} as const;
+
+export const AutologinConsumeResponseSchema = {
+  type: "object",
+  required: ["ok", "target_wp_user_login", "allowed_wp_roles", "audit_id"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    target_wp_user_login: {
+      type: "string",
+      description:
+        "The WP login the agent should establish a session as. Empty means\nthe agent should pick the first administrator (the policy still\nconstrains which roles are admissible).\n",
+    },
+    allowed_wp_roles: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description:
+        'The WP roles the agent is permitted to log the operator in as\n(from `autologin_policies.allowed_wp_roles`; defaults to\n["administrator"] when no policy row exists).\n',
+    },
+    audit_id: {
+      type: "string",
+      format: "uuid",
+      description:
+        "The audit entry id recorded for the consume; the agent may surface\nit for correlation but it has no security significance.\n",
+    },
+  },
+} as const;

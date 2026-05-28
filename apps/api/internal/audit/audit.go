@@ -45,6 +45,25 @@ const (
 	ActionSiteEnrolled       = "site.enrolled"
 	ActionPairingCodeCreated = "pairing_code.created"
 	ActionSiteTagsSet        = "site.tags.set"
+
+	// Phase 5.5 One-Click Login (ADR-031). The nonce id (NOT the JWT) is the
+	// stable correlator across the three events.
+	//
+	// ActionAutologinRequested is recorded on a successful mint. Metadata fields:
+	//   nonce_id (string), site_id (uuid), target_wp_user_login (string,
+	//   may be ""), initiator_ip (string, may be ""), initiator_user_agent
+	//   (string, truncated), expires_at (RFC3339). The minted JWT is NEVER
+	//   echoed into metadata — only the nonce id is recorded.
+	ActionAutologinRequested = "autologin.requested"
+	// ActionAutologinConsumed is recorded when the agent successfully consumes a
+	// minted nonce. Metadata fields: nonce_id, site_id, target_wp_user_login,
+	// consumed_from_ip, hot_path ("redis"|"postgres") so observability can
+	// distinguish the sub-ms Redis path from the PG fallback.
+	ActionAutologinConsumed = "autologin.consumed"
+	// ActionAutologinFailed is recorded on any mint OR consume failure. Metadata
+	// fields: nonce_id (may be ""), site_id (may be uuid.Nil string), code (the
+	// domain error code), stage ("mint"|"consume").
+	ActionAutologinFailed = "autologin.failed"
 )
 
 // Entry is one audit record.

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import {
   flexRender,
   getCoreRowModel,
@@ -104,6 +104,7 @@ export function SitesTable({
   sites,
   selection,
   uptime,
+  rowActions,
 }: {
   sites: Site[];
   // When provided, a leading checkbox column enables multi-select for the bulk
@@ -112,9 +113,12 @@ export function SitesTable({
   // Per-site current uptime status (keyed by site id). When provided, a live
   // up/down "Status" column is shown (M5 makes the health column meaningful).
   uptime?: Map<string, UptimeSummaryItem>;
+  // Optional per-row render slot for actions (e.g. one-click login button).
+  // When provided, a trailing "Actions" column is shown.
+  rowActions?: (site: Site) => ReactNode;
 }) {
   const columns = useMemo<ColumnDef<Site>[]>(() => {
-    const withUptime: ColumnDef<Site>[] = uptime
+    let cols: ColumnDef<Site>[] = uptime
       ? [
           ...baseColumns,
           {
@@ -131,7 +135,19 @@ export function SitesTable({
           },
         ]
       : baseColumns;
-    if (!selection) return withUptime;
+    if (rowActions) {
+      cols = [
+        ...cols,
+        {
+          id: "actions",
+          header: () => <span className="sr-only">Actions</span>,
+          cell: ({ row }) => (
+            <div className="flex justify-end">{rowActions(row.original)}</div>
+          ),
+        },
+      ];
+    }
+    if (!selection) return cols;
     const allIds = sites.map((s) => s.id);
     const allSelected =
       allIds.length > 0 && allIds.every((id) => selection.selected.has(id));
@@ -152,8 +168,8 @@ export function SitesTable({
         />
       ),
     };
-    return [selectColumn, ...withUptime];
-  }, [selection, sites, uptime]);
+    return [selectColumn, ...cols];
+  }, [selection, sites, uptime, rowActions]);
 
   const table = useReactTable({
     data: sites,

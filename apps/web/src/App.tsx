@@ -6,6 +6,7 @@ import { router } from "./router";
 import { queryClient } from "@/lib/query-client";
 import { configureApiClient } from "@/lib/api";
 import { applyTheme, useThemeStore } from "@/lib/theme-store";
+import { Toaster } from "@/lib/toast";
 
 // Configure the generated API client once at module load (baseUrl -> /api).
 configureApiClient();
@@ -21,6 +22,10 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
+      {/* Sonner toast host. `richColors` gives us themed success/error colors
+          without a custom Tailwind variant; `closeButton` keeps important
+          messages dismissable for keyboard users. */}
+      <Toaster richColors closeButton position="top-right" theme={theme} />
     </QueryClientProvider>
   );
 }

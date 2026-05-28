@@ -19,6 +19,12 @@ type Querier interface {
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
 	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (BackupSnapshot, error)
+	// Consume path (app.agent). Atomic single-shot UPDATE that wins exactly once
+	// across concurrent agent callbacks: the (consumed_at IS NULL) predicate makes
+	// the second consume a 0-row update; RETURNING tells the caller it lost. The
+	// site_id check binds the consume to the agent's verified identity (anti
+	// cross-tenant replay).
+	ConsumeAutologinToken(ctx context.Context, arg ConsumeAutologinTokenParams) (ConsumeAutologinTokenRow, error)
 	// Enroll path (app.enroll GUC): mark consumed only if still unconsumed.
 	ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, error)
 	// Best-effort per-tenant in-flight task count, used by the parallelism guard so
@@ -76,6 +82,12 @@ type Querier interface {
 	// M5 uptime alerting: per-tenant alert config + per-site alert state.
 	// Tenant-scoped read of the tenant's default alert channel.
 	GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (AlertConfig, error)
+	// Mint path (app.tenant_id). When no row exists the service auto-creates the
+	// default policy on first read (see UpsertAutologinPolicyDefault).
+	GetAutologinPolicy(ctx context.Context, arg GetAutologinPolicyParams) (AutologinPolicy, error)
+	// Consume path (app.agent). Cross-tenant SELECT-only read of the policy so the
+	// agent learns which WP roles it may log in as. NULL row -> defaults applied.
+	GetAutologinPolicyForAgent(ctx context.Context, siteID uuid.UUID) (AutologinPolicy, error)
 	// ---------------------------------------------------------------------------
 	// backup_chunks  (content-addressed dedup + refcount GC)
 	// ---------------------------------------------------------------------------
@@ -118,6 +130,18 @@ type Querier interface {
 	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.
 	InsertAgentNonce(ctx context.Context, arg InsertAgentNonceParams) (int64, error)
 	InsertAuditEntry(ctx context.Context, arg InsertAuditEntryParams) (AuditLog, error)
+	// ============================================================================
+	// autologin (Phase 5.5 — One-Click Login) sqlc queries.
+	//
+	// The MINT path runs tenant-scoped (app.tenant_id) so RLS isolates the
+	// INSERT. The CONSUME path runs cross-tenant under app.agent (the agent
+	// presents the verified site_id + nonce — no tenant context yet); the
+	// autologin_tokens_agent / autologin_tokens_agent_consume policies cover it.
+	// The same policy split applies to autologin_policies (tenant-scoped read/
+	// upsert + cross-tenant SELECT under app.agent for the agent's roles lookup).
+	// ============================================================================
+	// Mint path (app.tenant_id). The id is the JWT jti (base64url 32B random).
+	InsertAutologinToken(ctx context.Context, arg InsertAutologinTokenParams) (AutologinToken, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
 	// Cross-tenant enumeration for the evaluator (app.agent GUC). Only enabled
@@ -171,6 +195,10 @@ type Querier interface {
 	ListTenantsWithCompletedSnapshots(ctx context.Context) ([]uuid.UUID, error)
 	ListUpdateRuns(ctx context.Context, arg ListUpdateRunsParams) ([]UpdateRun, error)
 	ListUpdateTasksForRun(ctx context.Context, arg ListUpdateTasksForRunParams) ([]UpdateTask, error)
+	// Used on the Redis-hot-path success: Redis already produced the payload, but
+	// we still UPDATE the PG row so the audit/observability story is complete.
+	// Idempotent: returns 0 if another path already marked it (safe).
+	MarkAutologinTokenConsumed(ctx context.Context, arg MarkAutologinTokenConsumedParams) (int64, error)
 	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (BackupSnapshot, error)
 	// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
 	MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error)
@@ -197,6 +225,10 @@ type Querier interface {
 	UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadataParams) (Site, error)
 	// Tenant-scoped create-or-update of the tenant's default alert channel.
 	UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error)
+	// Mint path (app.tenant_id). Idempotent insert-or-return: the first call seeds
+	// the default policy (enabled, allowed=administrator, 2FA off, max age 30m);
+	// subsequent calls return the existing row unchanged.
+	UpsertAutologinPolicyDefault(ctx context.Context, arg UpsertAutologinPolicyDefaultParams) (AutologinPolicy, error)
 	// Records a chunk's storage location idempotently. On conflict (the chunk
 	// already exists) it leaves size/s3_key as-is (content-addressed: identical
 	// hash ⇒ identical bytes) and returns the existing row. refcount is managed

@@ -11,6 +11,8 @@ import {
   type SitesTableSelection,
 } from "@/features/sites/sites-table";
 import { AddSiteDialog } from "@/features/sites/add-site-dialog";
+import { AutoLoginButton } from "@/features/sites/auto-login-button";
+import { canAutoLogin } from "@/features/sites/use-autologin";
 import {
   UpdateWizard,
   type WizardTarget,
@@ -26,6 +28,7 @@ export const Route = createFileRoute("/_authed/sites/")({
 function SitesPage() {
   const { data: me } = useMe();
   const operate = canOperate(me);
+  const autoLogin = canAutoLogin(me);
 
   // Controlled input vs. the applied filter: we only refetch when the user
   // submits, so the list does not thrash on every keystroke.
@@ -197,7 +200,22 @@ function SitesPage() {
           )}
         </div>
       ) : (
-        <SitesTable sites={sites} selection={selection} uptime={uptime} />
+        <SitesTable
+          sites={sites}
+          selection={selection}
+          uptime={uptime}
+          rowActions={
+            autoLogin
+              ? (site) => (
+                  <AutoLoginButton
+                    siteId={site.id}
+                    siteName={site.name}
+                    size="sm"
+                  />
+                )
+              : undefined
+          }
+        />
       )}
 
       {operate ? (

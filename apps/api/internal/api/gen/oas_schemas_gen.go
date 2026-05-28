@@ -11,6 +11,22 @@ import (
 	"github.com/google/uuid"
 )
 
+type AgentAutologinConsumeForbidden Error
+
+func (*AgentAutologinConsumeForbidden) agentAutologinConsumeRes() {}
+
+type AgentAutologinConsumeGone Error
+
+func (*AgentAutologinConsumeGone) agentAutologinConsumeRes() {}
+
+type AgentAutologinConsumeUnauthorized Error
+
+func (*AgentAutologinConsumeUnauthorized) agentAutologinConsumeRes() {}
+
+type AgentAutologinConsumeUnprocessableEntity Error
+
+func (*AgentAutologinConsumeUnprocessableEntity) agentAutologinConsumeRes() {}
+
 // AgentHeartbeatNoContent is response for AgentHeartbeat operation.
 type AgentHeartbeatNoContent struct{}
 
@@ -576,6 +592,252 @@ func (s *AuditVerify) SetBrokenAt(val OptUUID) {
 }
 
 func (*AuditVerify) verifyAuditRes() {}
+
+// Ref: #/components/schemas/AutologinConsumeRequest
+type AutologinConsumeRequest struct {
+	// The base64url-no-pad nonce id from the JWT's `jti` claim. Single-use.
+	Nonce string `json:"nonce"`
+	// The agent's claimed site_id. MUST equal the site_id derived from
+	// the agent's verified Ed25519 identity, else the request is
+	// rejected (`site_mismatch`).
+	SiteID uuid.UUID `json:"site_id"`
+	// The IP that initiated the consume (typically the operator's
+	// browser as seen by the agent). Optional; the control plane falls
+	// back to the request peer IP when absent.
+	ConsumedFromIP OptString `json:"consumed_from_ip"`
+}
+
+// GetNonce returns the value of Nonce.
+func (s *AutologinConsumeRequest) GetNonce() string {
+	return s.Nonce
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AutologinConsumeRequest) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetConsumedFromIP returns the value of ConsumedFromIP.
+func (s *AutologinConsumeRequest) GetConsumedFromIP() OptString {
+	return s.ConsumedFromIP
+}
+
+// SetNonce sets the value of Nonce.
+func (s *AutologinConsumeRequest) SetNonce(val string) {
+	s.Nonce = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AutologinConsumeRequest) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetConsumedFromIP sets the value of ConsumedFromIP.
+func (s *AutologinConsumeRequest) SetConsumedFromIP(val OptString) {
+	s.ConsumedFromIP = val
+}
+
+// Ref: #/components/schemas/AutologinConsumeResponse
+type AutologinConsumeResponse struct {
+	Ok bool `json:"ok"`
+	// The WP login the agent should establish a session as. Empty means
+	// the agent should pick the first administrator (the policy still
+	// constrains which roles are admissible).
+	TargetWpUserLogin string `json:"target_wp_user_login"`
+	// The WP roles the agent is permitted to log the operator in as
+	// (from `autologin_policies.allowed_wp_roles`; defaults to
+	// ["administrator"] when no policy row exists).
+	AllowedWpRoles []string `json:"allowed_wp_roles"`
+	// The audit entry id recorded for the consume; the agent may surface
+	// it for correlation but it has no security significance.
+	AuditID uuid.UUID `json:"audit_id"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AutologinConsumeResponse) GetOk() bool {
+	return s.Ok
+}
+
+// GetTargetWpUserLogin returns the value of TargetWpUserLogin.
+func (s *AutologinConsumeResponse) GetTargetWpUserLogin() string {
+	return s.TargetWpUserLogin
+}
+
+// GetAllowedWpRoles returns the value of AllowedWpRoles.
+func (s *AutologinConsumeResponse) GetAllowedWpRoles() []string {
+	return s.AllowedWpRoles
+}
+
+// GetAuditID returns the value of AuditID.
+func (s *AutologinConsumeResponse) GetAuditID() uuid.UUID {
+	return s.AuditID
+}
+
+// SetOk sets the value of Ok.
+func (s *AutologinConsumeResponse) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetTargetWpUserLogin sets the value of TargetWpUserLogin.
+func (s *AutologinConsumeResponse) SetTargetWpUserLogin(val string) {
+	s.TargetWpUserLogin = val
+}
+
+// SetAllowedWpRoles sets the value of AllowedWpRoles.
+func (s *AutologinConsumeResponse) SetAllowedWpRoles(val []string) {
+	s.AllowedWpRoles = val
+}
+
+// SetAuditID sets the value of AuditID.
+func (s *AutologinConsumeResponse) SetAuditID(val uuid.UUID) {
+	s.AuditID = val
+}
+
+func (*AutologinConsumeResponse) agentAutologinConsumeRes() {}
+
+// Optional inputs for minting an autologin URL. Both fields default to
+// empty: an absent `target_wp_user_login` means "agent picks the first
+// administrator", and an absent `redirect_to` lands the operator on the
+// wp-admin home.
+// Ref: #/components/schemas/AutologinCreate
+type AutologinCreate struct {
+	// The WordPress username the agent should log the operator in as.
+	// Empty -> the agent picks the first administrator on the site.
+	TargetWpUserLogin OptString `json:"target_wp_user_login"`
+	// Optional URL the agent forwards the operator's browser to after
+	// establishing the wp-admin session. The agent may rewrite it to a
+	// same-origin URL.
+	RedirectTo OptString `json:"redirect_to"`
+}
+
+// GetTargetWpUserLogin returns the value of TargetWpUserLogin.
+func (s *AutologinCreate) GetTargetWpUserLogin() OptString {
+	return s.TargetWpUserLogin
+}
+
+// GetRedirectTo returns the value of RedirectTo.
+func (s *AutologinCreate) GetRedirectTo() OptString {
+	return s.RedirectTo
+}
+
+// SetTargetWpUserLogin sets the value of TargetWpUserLogin.
+func (s *AutologinCreate) SetTargetWpUserLogin(val OptString) {
+	s.TargetWpUserLogin = val
+}
+
+// SetRedirectTo sets the value of RedirectTo.
+func (s *AutologinCreate) SetRedirectTo(val OptString) {
+	s.RedirectTo = val
+}
+
+// Ref: #/components/schemas/AutologinRateLimited
+type AutologinRateLimited struct {
+	Code    AutologinRateLimitedCode `json:"code"`
+	Message string                   `json:"message"`
+	// Smallest seconds to wait before retrying.
+	RetryAfterSeconds int32 `json:"retry_after_seconds"`
+}
+
+// GetCode returns the value of Code.
+func (s *AutologinRateLimited) GetCode() AutologinRateLimitedCode {
+	return s.Code
+}
+
+// GetMessage returns the value of Message.
+func (s *AutologinRateLimited) GetMessage() string {
+	return s.Message
+}
+
+// GetRetryAfterSeconds returns the value of RetryAfterSeconds.
+func (s *AutologinRateLimited) GetRetryAfterSeconds() int32 {
+	return s.RetryAfterSeconds
+}
+
+// SetCode sets the value of Code.
+func (s *AutologinRateLimited) SetCode(val AutologinRateLimitedCode) {
+	s.Code = val
+}
+
+// SetMessage sets the value of Message.
+func (s *AutologinRateLimited) SetMessage(val string) {
+	s.Message = val
+}
+
+// SetRetryAfterSeconds sets the value of RetryAfterSeconds.
+func (s *AutologinRateLimited) SetRetryAfterSeconds(val int32) {
+	s.RetryAfterSeconds = val
+}
+
+func (*AutologinRateLimited) createAutologinRes() {}
+
+type AutologinRateLimitedCode string
+
+const (
+	AutologinRateLimitedCodeRateLimited AutologinRateLimitedCode = "rate_limited"
+)
+
+// AllValues returns all AutologinRateLimitedCode values.
+func (AutologinRateLimitedCode) AllValues() []AutologinRateLimitedCode {
+	return []AutologinRateLimitedCode{
+		AutologinRateLimitedCodeRateLimited,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AutologinRateLimitedCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AutologinRateLimitedCodeRateLimited:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AutologinRateLimitedCode) UnmarshalText(data []byte) error {
+	switch AutologinRateLimitedCode(data) {
+	case AutologinRateLimitedCodeRateLimited:
+		*s = AutologinRateLimitedCodeRateLimited
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AutologinResponse
+type AutologinResponse struct {
+	// The URL the operator's browser should follow. Shape:
+	// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`.
+	// The embedded `token` is a single-use Ed25519 JWT bound to the
+	// target site (`aud` = site UUID, `cmd` = "autologin") with a
+	// ~60-second TTL. NEVER log or persist this URL — the token is a
+	// credential.
+	RedirectURL string `json:"redirect_url"`
+	// When the JWT/nonce expires (~60s from mint).
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// GetRedirectURL returns the value of RedirectURL.
+func (s *AutologinResponse) GetRedirectURL() string {
+	return s.RedirectURL
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *AutologinResponse) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// SetRedirectURL sets the value of RedirectURL.
+func (s *AutologinResponse) SetRedirectURL(val string) {
+	s.RedirectURL = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *AutologinResponse) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+func (*AutologinResponse) createAutologinRes() {}
 
 // Request to start a backup of a site.
 // Ref: #/components/schemas/BackupCreate
@@ -1483,6 +1745,22 @@ type CreateApiKeyUnprocessableEntity Error
 
 func (*CreateApiKeyUnprocessableEntity) createApiKeyRes() {}
 
+type CreateAutologinConflict Error
+
+func (*CreateAutologinConflict) createAutologinRes() {}
+
+type CreateAutologinForbidden Error
+
+func (*CreateAutologinForbidden) createAutologinRes() {}
+
+type CreateAutologinNotFound Error
+
+func (*CreateAutologinNotFound) createAutologinRes() {}
+
+type CreateAutologinUnprocessableEntity Error
+
+func (*CreateAutologinUnprocessableEntity) createAutologinRes() {}
+
 type CreateSiteConflict Error
 
 func (*CreateSiteConflict) createSiteRes() {}
@@ -2102,6 +2380,52 @@ func (o OptAuditEntryMetadata) Get() (v AuditEntryMetadata, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuditEntryMetadata) Or(d AuditEntryMetadata) AuditEntryMetadata {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAutologinCreate returns new OptAutologinCreate with value set to v.
+func NewOptAutologinCreate(v AutologinCreate) OptAutologinCreate {
+	return OptAutologinCreate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAutologinCreate is optional AutologinCreate.
+type OptAutologinCreate struct {
+	Value AutologinCreate
+	Set   bool
+}
+
+// IsSet returns true if OptAutologinCreate was set.
+func (o OptAutologinCreate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAutologinCreate) Reset() {
+	var v AutologinCreate
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAutologinCreate) SetTo(v AutologinCreate) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAutologinCreate) Get() (v AutologinCreate, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAutologinCreate) Or(d AutologinCreate) AutologinCreate {
 	if v, ok := o.Get(); ok {
 		return v
 	}

@@ -42,8 +42,9 @@ func findAuthorization(h http.Header, prefix string) (string, bool) {
 
 // operationRolesAgentSignature is a private map storing roles per operation.
 var operationRolesAgentSignature = map[string][]string{
-	AgentHeartbeatOperation: []string{},
-	AgentMetadataOperation:  []string{},
+	AgentAutologinConsumeOperation: []string{},
+	AgentHeartbeatOperation:        []string{},
+	AgentMetadataOperation:         []string{},
 }
 
 // GetRolesForAgentSignature returns the required roles for the given operation.
