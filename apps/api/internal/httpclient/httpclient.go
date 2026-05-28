@@ -14,6 +14,7 @@
 package httpclient
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,11 @@ type Config struct {
 	// exists ONLY so integration tests can target a loopback fake-agent server;
 	// it MUST never be enabled in production. Defaults to false (guard on).
 	AllowPrivateNetworks bool
+	// InsecureSkipTLSVerify, when true, disables TLS certificate verification on
+	// the transport. It exists ONLY so tests can target an httptest TLS server
+	// with a self-signed certificate; it MUST never be enabled in production.
+	// Defaults to false (verification on).
+	InsecureSkipTLSVerify bool
 }
 
 // DefaultConfig is the production default: a 30s timeout, two retries with a
@@ -112,6 +118,10 @@ func New(cfg Config) *Client {
 		ExpectContinueTimeout: 1 * time.Second,
 		// A small response-header timeout bounds slowloris-style agent stalls.
 		ResponseHeaderTimeout: cfg.Timeout,
+	}
+	if cfg.InsecureSkipTLSVerify {
+		// Test-only: trust a self-signed httptest TLS server. Never set in prod.
+		base.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only escape hatch
 	}
 
 	return &Client{

@@ -36,6 +36,8 @@ import type {
   EnrollData,
   EnrollErrors,
   EnrollResponses,
+  GetAlertConfigData,
+  GetAlertConfigResponses,
   GetBackupData,
   GetBackupErrors,
   GetBackupResponses,
@@ -53,12 +55,17 @@ import type {
   GetSiteData,
   GetSiteErrors,
   GetSiteResponses,
+  GetSiteUptimeData,
+  GetSiteUptimeErrors,
+  GetSiteUptimeResponses,
   GetTenantData,
   GetTenantErrors,
   GetTenantResponses,
   GetUpdateRunData,
   GetUpdateRunErrors,
   GetUpdateRunResponses,
+  GetUptimeSummaryData,
+  GetUptimeSummaryResponses,
   InviteMemberData,
   InviteMemberErrors,
   InviteMemberResponses,
@@ -90,6 +97,9 @@ import type {
   OidcCallbackResponses,
   OidcLoginData,
   OidcLoginErrors,
+  PutAlertConfigData,
+  PutAlertConfigErrors,
+  PutAlertConfigResponses,
   PutBackupScheduleData,
   PutBackupScheduleErrors,
   PutBackupScheduleResponses,
@@ -721,6 +731,83 @@ export const putBackupSchedule = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/sites/{siteId}/backup-schedule",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Get a site's uptime status over a window
+ *
+ * Returns the uptime % and average latency for a site over the requested
+ * window (7d/30d/90d), the current up/down state, the last check time, the
+ * TLS certificate expiry, and a downsampled recent check series. Metrics
+ * come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+ * site's tenant ownership is verified in Postgres first (a foreign site is
+ * a 404). Requires viewer+.
+ *
+ */
+export const getSiteUptime = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteUptimeData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteUptimeResponses,
+    GetSiteUptimeErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/uptime", ...options });
+
+/**
+ * Current up/down status per site for the dashboard
+ *
+ * Returns the current up/down status and last check for every site in the
+ * tenant (from the latest recorded probe). Requires viewer+.
+ *
+ */
+export const getUptimeSummary = <ThrowOnError extends boolean = false>(
+  options?: Options<GetUptimeSummaryData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetUptimeSummaryResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/uptime/summary", ...options });
+
+/**
+ * Get the tenant's uptime alert configuration
+ *
+ * Returns the tenant's downtime/recovery alert channel: email recipients,
+ * whether a webhook is configured, and the enabled flag. The webhook secret
+ * is never returned. Requires admin+.
+ *
+ */
+export const getAlertConfig = <ThrowOnError extends boolean = false>(
+  options?: Options<GetAlertConfigData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetAlertConfigResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/alert-config", ...options });
+
+/**
+ * Create or update the tenant's uptime alert configuration
+ *
+ * Sets the email recipients, webhook URL + signing secret, and enabled flag
+ * for downtime/recovery alerts. The webhook secret is write-only. Requires
+ * admin+.
+ *
+ */
+export const putAlertConfig = <ThrowOnError extends boolean = false>(
+  options: Options<PutAlertConfigData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    PutAlertConfigResponses,
+    PutAlertConfigErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/alert-config",
     ...options,
     headers: {
       "Content-Type": "application/json",

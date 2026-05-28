@@ -1297,3 +1297,178 @@ export const BackupScheduleUpdateSchema = {
     },
   },
 } as const;
+
+export const UptimeStatusSchema = {
+  type: "object",
+  description:
+    "Windowed uptime status for a single site (from the metrics store).",
+  required: [
+    "site_id",
+    "window",
+    "uptime_pct",
+    "avg_latency_ms",
+    "checks",
+    "up",
+    "series",
+  ],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    window: {
+      type: "string",
+      enum: ["7d", "30d", "90d"],
+    },
+    uptime_pct: {
+      type: "number",
+      format: "double",
+      description: "Percentage of checks in the window that were up (0-100).",
+    },
+    avg_latency_ms: {
+      type: "number",
+      format: "double",
+      description: "Mean total request time over the window, in milliseconds.",
+    },
+    checks: {
+      type: "integer",
+      format: "int64",
+      description: "Number of probe checks recorded in the window.",
+    },
+    up: {
+      type: "boolean",
+      description: "Whether the most recent probe classified the site as up.",
+    },
+    last_check: {
+      type: "string",
+      format: "date-time",
+      description: "Time of the most recent probe (absent if never probed).",
+    },
+    tls_expiry: {
+      type: "string",
+      format: "date-time",
+      description:
+        "Leaf TLS certificate expiry from the latest probe (HTTPS only).",
+    },
+    series: {
+      type: "array",
+      description: "Downsampled per-bucket check series over the window.",
+      items: {
+        $ref: "#/components/schemas/UptimePoint",
+      },
+    },
+  },
+} as const;
+
+export const UptimePointSchema = {
+  type: "object",
+  required: ["bucket", "checks", "up_checks", "avg_latency_ms"],
+  properties: {
+    bucket: {
+      type: "string",
+      format: "date-time",
+      description: "Start of the time bucket.",
+    },
+    checks: {
+      type: "integer",
+      format: "int64",
+    },
+    up_checks: {
+      type: "integer",
+      format: "int64",
+    },
+    avg_latency_ms: {
+      type: "number",
+      format: "double",
+    },
+  },
+} as const;
+
+export const UptimeSummarySchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/UptimeSummaryItem",
+      },
+    },
+  },
+} as const;
+
+export const UptimeSummaryItemSchema = {
+  type: "object",
+  required: ["site_id", "up"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    up: {
+      type: "boolean",
+    },
+    http_status: {
+      type: "integer",
+      format: "int32",
+    },
+    last_check: {
+      type: "string",
+      format: "date-time",
+    },
+    tls_expiry: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AlertConfigSchema = {
+  type: "object",
+  description:
+    "A tenant's uptime alert channel. The webhook secret is write-only and is\nnever returned; webhook_configured indicates whether a webhook URL is set.\n",
+  required: ["email_recipients", "enabled", "webhook_configured"],
+  properties: {
+    email_recipients: {
+      type: "array",
+      items: {
+        type: "string",
+        format: "email",
+      },
+    },
+    webhook_url: {
+      type: "string",
+    },
+    webhook_configured: {
+      type: "boolean",
+    },
+    enabled: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const AlertConfigUpdateSchema = {
+  type: "object",
+  description: "Create or update the tenant's uptime alert channel.",
+  properties: {
+    email_recipients: {
+      type: "array",
+      items: {
+        type: "string",
+        format: "email",
+      },
+    },
+    webhook_url: {
+      type: "string",
+    },
+    webhook_secret: {
+      type: "string",
+      description: "Write-only HMAC signing secret for the webhook payload.",
+    },
+    enabled: {
+      type: "boolean",
+      default: true,
+    },
+  },
+} as const;

@@ -139,6 +139,17 @@ func (UnimplementedHandler) Enroll(ctx context.Context, req *EnrollRequest) (r E
 	return r, ht.ErrNotImplemented
 }
 
+// GetAlertConfig implements getAlertConfig operation.
+//
+// Returns the tenant's downtime/recovery alert channel: email recipients,
+// whether a webhook is configured, and the enabled flag. The webhook secret
+// is never returned. Requires admin+.
+//
+// GET /api/v1/alert-config
+func (UnimplementedHandler) GetAlertConfig(ctx context.Context) (r *AlertConfig, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetBackup implements getBackup operation.
 //
 // Get a backup snapshot with its manifest summary.
@@ -193,6 +204,20 @@ func (UnimplementedHandler) GetSite(ctx context.Context, params GetSiteParams) (
 	return r, ht.ErrNotImplemented
 }
 
+// GetSiteUptime implements getSiteUptime operation.
+//
+// Returns the uptime % and average latency for a site over the requested
+// window (7d/30d/90d), the current up/down state, the last check time, the
+// TLS certificate expiry, and a downsampled recent check series. Metrics
+// come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+// site's tenant ownership is verified in Postgres first (a foreign site is
+// a 404). Requires viewer+.
+//
+// GET /api/v1/sites/{siteId}/uptime
+func (UnimplementedHandler) GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (r GetSiteUptimeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetTenant implements getTenant operation.
 //
 // Get a tenant by ID.
@@ -208,6 +233,16 @@ func (UnimplementedHandler) GetTenant(ctx context.Context, params GetTenantParam
 //
 // GET /api/v1/updates/{runId}
 func (UnimplementedHandler) GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (r GetUpdateRunRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetUptimeSummary implements getUptimeSummary operation.
+//
+// Returns the current up/down status and last check for every site in the
+// tenant (from the latest recorded probe). Requires viewer+.
+//
+// GET /api/v1/uptime/summary
+func (UnimplementedHandler) GetUptimeSummary(ctx context.Context) (r *UptimeSummary, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -316,6 +351,17 @@ func (UnimplementedHandler) OidcCallback(ctx context.Context, params OidcCallbac
 //
 // GET /auth/oidc/login
 func (UnimplementedHandler) OidcLogin(ctx context.Context) (r OidcLoginRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// PutAlertConfig implements putAlertConfig operation.
+//
+// Sets the email recipients, webhook URL + signing secret, and enabled flag
+// for downtime/recovery alerts. The webhook secret is write-only. Requires
+// admin+.
+//
+// PUT /api/v1/alert-config
+func (UnimplementedHandler) PutAlertConfig(ctx context.Context, req *AlertConfigUpdate) (r PutAlertConfigRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

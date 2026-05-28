@@ -101,6 +101,14 @@ type Handler interface {
 	//
 	// POST /enroll
 	Enroll(ctx context.Context, req *EnrollRequest) (EnrollRes, error)
+	// GetAlertConfig implements getAlertConfig operation.
+	//
+	// Returns the tenant's downtime/recovery alert channel: email recipients,
+	// whether a webhook is configured, and the enabled flag. The webhook secret
+	// is never returned. Requires admin+.
+	//
+	// GET /api/v1/alert-config
+	GetAlertConfig(ctx context.Context) (*AlertConfig, error)
 	// GetBackup implements getBackup operation.
 	//
 	// Get a backup snapshot with its manifest summary.
@@ -137,6 +145,17 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteUptime implements getSiteUptime operation.
+	//
+	// Returns the uptime % and average latency for a site over the requested
+	// window (7d/30d/90d), the current up/down state, the last check time, the
+	// TLS certificate expiry, and a downsampled recent check series. Metrics
+	// come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+	// site's tenant ownership is verified in Postgres first (a foreign site is
+	// a 404). Requires viewer+.
+	//
+	// GET /api/v1/sites/{siteId}/uptime
+	GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (GetSiteUptimeRes, error)
 	// GetTenant implements getTenant operation.
 	//
 	// Get a tenant by ID.
@@ -149,6 +168,13 @@ type Handler interface {
 	//
 	// GET /api/v1/updates/{runId}
 	GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (GetUpdateRunRes, error)
+	// GetUptimeSummary implements getUptimeSummary operation.
+	//
+	// Returns the current up/down status and last check for every site in the
+	// tenant (from the latest recorded probe). Requires viewer+.
+	//
+	// GET /api/v1/uptime/summary
+	GetUptimeSummary(ctx context.Context) (*UptimeSummary, error)
 	// InviteMember implements inviteMember operation.
 	//
 	// Invite/create a member in the active tenant (admin+).
@@ -221,6 +247,14 @@ type Handler interface {
 	//
 	// GET /auth/oidc/login
 	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	// PutAlertConfig implements putAlertConfig operation.
+	//
+	// Sets the email recipients, webhook URL + signing secret, and enabled flag
+	// for downtime/recovery alerts. The webhook secret is write-only. Requires
+	// admin+.
+	//
+	// PUT /api/v1/alert-config
+	PutAlertConfig(ctx context.Context, req *AlertConfigUpdate) (PutAlertConfigRes, error)
 	// PutBackupSchedule implements putBackupSchedule operation.
 	//
 	// Create or update a site's backup schedule.

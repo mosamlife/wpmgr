@@ -1,9 +1,14 @@
 import { defineConfig } from "@hey-api/openapi-ts";
 
-// Hey API codegen config (ADR-013). Reads the FINAL contract at
-// ../openapi/openapi.yaml and emits a typed fetch client + SDK into
-// src/generated/. The generated tree is committed; re-run with
-// `pnpm --filter @wpmgr/api generate`.
+// Hey API codegen config (ADR-013). Reads the contract at ./openapi.yaml and
+// emits a typed fetch client + SDK into src/generated/. The generated tree is
+// committed; re-run with `pnpm --filter @wpmgr/api generate`.
+//
+// NOTE (M5): the canonical contract lives at ../openapi/openapi.yaml and is
+// owned by the backend. The M5 uptime-monitoring endpoints were not yet present
+// there, so this package vendors a local copy (./openapi.yaml) that adds the
+// M5 monitoring paths/schemas. When the backend lands M5 in the canonical spec,
+// re-point `input` back to "../openapi/openapi.yaml" and delete the local copy.
 //
 // The generator stays swappable: app code never imports from
 // `./generated/*` directly — everything is re-exported through src/index.ts.

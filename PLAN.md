@@ -111,7 +111,16 @@
   - [x] RLS on all backup tables; audit events
   - [ ] M4 security review
   - Also fixed (prod): single-origin API routing (enrollment 405 + dashboard 404); agent keystore portable master key + graceful activation
-- [ ] M5 — Uptime monitoring
+- [x] M5 — Uptime monitoring ✅ (live: real site probed up + TLS expiry; security review pending)
+  - [x] ADR-028 clickhouse-go v2 · ADR-029 wneessen/go-mail (SMTP)
+  - [x] ClickHouse metrics store (auto schema, MergeTree+TTL 90d, native batch insert)
+  - [x] HTTPS probe (httptrace timings: DNS/connect/TLS/TTFB; TLS expiry from peer cert) via SSRF-hardened client
+  - [x] River periodic probe every ~60s with concurrency cap; site health_status updated from results
+  - [x] Uptime API per-site (7d/30d/90d windows: uptime%, avg latency, series) + dashboard summary
+  - [x] Downtime alerts: email (go-mail SMTP) + signed webhook on transition >threshold consecutive downs (dedupe + recovery)
+  - [x] Alert config (email recipients + webhook URL), RLS-scoped; webhook secret write-only
+  - [x] Frontend: uptime section with window toggle + chart + TLS expiry warn; sites list status; alerts settings
+  - [ ] M5 security review
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports
 - [ ] M8 — Polish & launch (audit log, V0 release)

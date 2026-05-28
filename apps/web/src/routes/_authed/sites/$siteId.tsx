@@ -14,6 +14,7 @@ import { HealthBadge, EnrollmentBadge } from "@/features/sites/site-badges";
 import { SiteComponentsTable } from "@/features/sites/site-components-table";
 import { SiteTagsEditor } from "@/features/sites/site-tags-editor";
 import { BackupsSection } from "@/features/backups/backups-section";
+import { UptimeSection } from "@/features/monitoring/uptime-section";
 import { useMe, canOperate } from "@/features/auth/use-auth";
 import { relativeTime } from "@/lib/utils";
 import type { Site } from "@wpmgr/api";
@@ -170,6 +171,8 @@ function SiteDetail({
           />
         </CardContent>
       </Card>
+
+      <UptimeSection siteId={site.id} />
 
       <BackupsSection siteId={site.id} canOperate={canOperate} />
     </div>

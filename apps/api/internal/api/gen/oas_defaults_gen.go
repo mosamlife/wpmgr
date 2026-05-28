@@ -3,6 +3,14 @@
 package gen
 
 // setDefaults set default value of fields.
+func (s *AlertConfigUpdate) setDefaults() {
+	{
+		val := bool(true)
+		s.Enabled.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
 func (s *BackupCreate) setDefaults() {
 	{
 		val := BackupCreateKind("full")

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Search, X, RefreshCw } from "lucide-react";
 
@@ -16,7 +16,8 @@ import {
   type WizardTarget,
 } from "@/features/updates/update-wizard";
 import { useMe, canOperate } from "@/features/auth/use-auth";
-import type { Site } from "@wpmgr/api";
+import { useUptimeSummary } from "@/features/monitoring/use-uptime";
+import type { Site, UptimeSummaryItem } from "@wpmgr/api";
 
 export const Route = createFileRoute("/_authed/sites/")({
   component: SitesPage,
@@ -33,6 +34,15 @@ function SitesPage() {
 
   const { data: sites, isPending, isError, error, refetch } =
     useSites(appliedTag);
+
+  // Per-site current up/down status powers the live "Status" column. It is best
+  // effort: if the summary fails or is still loading, the column falls back to
+  // "Unknown" rather than blocking the list.
+  const { data: uptimeSummary } = useUptimeSummary();
+  const uptime = useMemo<Map<string, UptimeSummaryItem> | undefined>(() => {
+    if (!uptimeSummary) return undefined;
+    return new Map(uptimeSummary.items.map((item) => [item.site_id, item]));
+  }, [uptimeSummary]);
 
   // Multi-select state for the bulk update wizard (operator+ only).
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -187,7 +197,7 @@ function SitesPage() {
           )}
         </div>
       ) : (
-        <SitesTable sites={sites} selection={selection} />
+        <SitesTable sites={sites} selection={selection} uptime={uptime} />
       )}
 
       {operate ? (

@@ -18,6 +18,17 @@ type AgentNonce struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type AlertConfig struct {
+	ID              uuid.UUID `json:"id"`
+	TenantID        uuid.UUID `json:"tenant_id"`
+	EmailRecipients []string  `json:"email_recipients"`
+	WebhookUrl      string    `json:"webhook_url"`
+	WebhookSecret   string    `json:"webhook_secret"`
+	Enabled         bool      `json:"enabled"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 type ApiKey struct {
 	ID         uuid.UUID          `json:"id"`
 	TenantID   uuid.UUID          `json:"tenant_id"`
@@ -143,6 +154,16 @@ type Site struct {
 	AgeRecipient   string             `json:"age_recipient"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
+}
+
+type SiteAlertState struct {
+	SiteID          uuid.UUID          `json:"site_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	LastStatus      string             `json:"last_status"`
+	ConsecutiveDown int32              `json:"consecutive_down"`
+	InIncident      bool               `json:"in_incident"`
+	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
 }
 
 type Tenant struct {

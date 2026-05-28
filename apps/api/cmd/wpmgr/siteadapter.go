@@ -6,8 +6,62 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
+	"github.com/mosamlife/wpmgr/apps/api/internal/uptime"
+)
+
+// uptimeSiteAdapter adapts the site service to the uptime package's SiteVerifier
+// (tenant-ownership check + site enumeration for the summary) and SiteLookup
+// (site name for alert rendering). It keeps the uptime package free of a site
+// import.
+type uptimeSiteAdapter struct {
+	svc *site.Service
+}
+
+func newUptimeSiteAdapter(svc *site.Service) *uptimeSiteAdapter { return &uptimeSiteAdapter{svc: svc} }
+
+// VerifySite confirms the site belongs to tenantID (RLS-scoped Get). A
+// not-found (including a foreign-tenant site hidden by RLS) returns ok=false,
+// not an error, so the handler maps it to 404.
+func (a *uptimeSiteAdapter) VerifySite(ctx context.Context, tenantID, siteID uuid.UUID) (string, bool, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		if de, ok := domain.AsDomain(err); ok && de.Kind == domain.KindNotFound {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return s.Name, true, nil
+}
+
+// ListSiteIDs returns all site IDs in the tenant (for the uptime summary).
+func (a *uptimeSiteAdapter) ListSiteIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error) {
+	sites, err := a.svc.List(ctx, site.ListInput{TenantID: tenantID, Limit: 500, Offset: 0})
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(sites))
+	for _, s := range sites {
+		ids = append(ids, s.ID)
+	}
+	return ids, nil
+}
+
+// SiteName resolves a site's display name for alert rendering; an unresolvable
+// site degrades to an empty name (the worker falls back to the URL).
+func (a *uptimeSiteAdapter) SiteName(ctx context.Context, tenantID, siteID uuid.UUID) string {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return ""
+	}
+	return s.Name
+}
+
+var (
+	_ uptime.SiteVerifier = (*uptimeSiteAdapter)(nil)
+	_ uptime.SiteLookup   = (*uptimeSiteAdapter)(nil)
 )
 
 // siteLookup adapts the site service to the update package's SiteLookup

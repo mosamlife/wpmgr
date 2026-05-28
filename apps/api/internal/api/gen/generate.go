@@ -7,4 +7,4 @@
 // Regenerate with `go generate ./internal/api/gen` (see apps/api/README.md).
 package gen
 
-//go:generate go run github.com/ogen-go/ogen/cmd/ogen --config ../../../ogen.yaml --target . --clean ../../../../../packages/openapi/openapi.yaml
+//go:generate go run github.com/ogen-go/ogen/cmd/ogen --config ../../../ogen.yaml --target . --package gen --clean ../../../../../packages/openapi/openapi.yaml

@@ -533,3 +533,74 @@ CREATE POLICY backup_schedules_tenant_isolation ON backup_schedules
 CREATE POLICY backup_schedules_scheduler ON backup_schedules
     FOR SELECT
     USING (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- alert_configs  (M5 — uptime downtime/recovery alerting)
+-- ---------------------------------------------------------------------------
+-- A per-tenant default alert channel (V0): the email recipients and webhook URL
+-- a downtime/recovery alert is delivered to. webhook_secret signs the webhook
+-- payload (HMAC-SHA256); it is a credential — never log it or return it in API
+-- responses. One config row per tenant. Tenant-scoped + RLS.
+CREATE TABLE alert_configs (
+    id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    -- email_recipients is the set of addresses downtime/recovery emails go to.
+    email_recipients text[]    NOT NULL DEFAULT '{}',
+    -- webhook_url is the single endpoint a signed alert POST is delivered to
+    -- (empty disables the webhook). Reuses the SSRF-hardened client.
+    webhook_url      text      NOT NULL DEFAULT '',
+    -- webhook_secret keys the HMAC signature header on the webhook POST.
+    webhook_secret   text      NOT NULL DEFAULT '',
+    enabled          boolean   NOT NULL DEFAULT true,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX alert_configs_tenant_key ON alert_configs (tenant_id);
+
+ALTER TABLE alert_configs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alert_configs FORCE ROW LEVEL SECURITY;
+CREATE POLICY alert_configs_tenant_isolation ON alert_configs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The alert evaluator enumerates configs across ALL tenants (cross-tenant
+-- periodic job, like the health/scheduler jobs) under the app.agent GUC.
+CREATE POLICY alert_configs_evaluator ON alert_configs
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- site_alert_state  (M5 — incident transition tracking + alert de-dupe)
+-- ---------------------------------------------------------------------------
+-- Per-site uptime alert state machine. consecutive_down counts back-to-back DOWN
+-- probe results; in_incident is true once an incident has been alerted (so we
+-- de-dupe: alert ONLY on transition, not every interval). last_status records
+-- the last classified state ('up'|'down'|'unknown'). This is the durable
+-- transition memory the evaluator reads/writes. Tenant-scoped + RLS; the
+-- redundant tenant_id keeps the RLS policy + cross-tenant evaluator queries
+-- join-free.
+CREATE TABLE site_alert_state (
+    site_id          uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    last_status      text        NOT NULL DEFAULT 'unknown',
+    consecutive_down integer     NOT NULL DEFAULT 0,
+    in_incident      boolean     NOT NULL DEFAULT false,
+    last_alert_at    timestamptz,
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_alert_state_tenant_id_idx ON site_alert_state (tenant_id);
+
+ALTER TABLE site_alert_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_alert_state FORCE ROW LEVEL SECURITY;
+CREATE POLICY site_alert_state_tenant_isolation ON site_alert_state
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The probe worker updates this state cross-tenant (it iterates all enrolled
+-- sites under app.agent, like the health job). Permit the full upsert lifecycle
+-- when the app.agent GUC is 'on'.
+CREATE POLICY site_alert_state_agent ON site_alert_state
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');

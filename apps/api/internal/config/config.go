@@ -16,19 +16,71 @@ import (
 
 // Config is the fully-typed application configuration.
 type Config struct {
-	Env      string         `koanf:"env"`
-	HTTPAddr string         `koanf:"http_addr"`
-	LogLevel string         `koanf:"log_level"`
-	DB       DBConfig       `koanf:"db"`
-	Redis    RedisConfig    `koanf:"redis"`
-	Auth     AuthConfig     `koanf:"auth"`
-	OIDC     OIDCConfig     `koanf:"oidc"`
-	OTel     OTelConfig     `koanf:"otel"`
-	Shutdown ShutdownConfig `koanf:"shutdown"`
-	Agent    AgentConfig    `koanf:"agent"`
-	Update   UpdateConfig   `koanf:"update"`
-	S3       S3Config       `koanf:"s3"`
-	Backup   BackupConfig   `koanf:"backup"`
+	Env        string           `koanf:"env"`
+	HTTPAddr   string           `koanf:"http_addr"`
+	LogLevel   string           `koanf:"log_level"`
+	DB         DBConfig         `koanf:"db"`
+	Redis      RedisConfig      `koanf:"redis"`
+	Auth       AuthConfig       `koanf:"auth"`
+	OIDC       OIDCConfig       `koanf:"oidc"`
+	OTel       OTelConfig       `koanf:"otel"`
+	Shutdown   ShutdownConfig   `koanf:"shutdown"`
+	Agent      AgentConfig      `koanf:"agent"`
+	Update     UpdateConfig     `koanf:"update"`
+	S3         S3Config         `koanf:"s3"`
+	Backup     BackupConfig     `koanf:"backup"`
+	ClickHouse ClickHouseConfig `koanf:"clickhouse"`
+	SMTP       SMTPConfig       `koanf:"smtp"`
+	Uptime     UptimeConfig     `koanf:"uptime"`
+}
+
+// ClickHouseConfig holds the metrics-store connection (ADR-028). ClickHouse is
+// metrics-only (uptime check time-series); Postgres remains the system of
+// record. Addr is host:port (clickhouse native protocol). When Addr is empty
+// the metrics store is disabled cleanly: the probe worker no-ops its writes and
+// uptime queries return empty so the stack still runs without ClickHouse.
+type ClickHouseConfig struct {
+	Addr     string `koanf:"addr"`
+	Database string `koanf:"db"`
+	Username string `koanf:"username"`
+	Password string `koanf:"password"`
+}
+
+// Enabled reports whether the ClickHouse metrics store is configured.
+func (c ClickHouseConfig) Enabled() bool { return c.Addr != "" }
+
+// SMTPConfig holds the self-host SMTP relay used for downtime/recovery alert
+// emails (ADR-029, go-mail). When Host is empty, email alerts no-op (logged);
+// webhook alerts still fire. Password is a credential — never log it.
+type SMTPConfig struct {
+	Host     string `koanf:"host"`
+	Port     int    `koanf:"port"`
+	Username string `koanf:"username"`
+	Password string `koanf:"password"`
+	From     string `koanf:"from"`
+	// TLSMode selects the transport security: "starttls" (default), "tls"
+	// (implicit TLS / SMTPS), or "none" (plaintext; dev only).
+	TLSMode string `koanf:"tls_mode"`
+}
+
+// Enabled reports whether SMTP is configured for email alerts.
+func (s SMTPConfig) Enabled() bool { return s.Host != "" }
+
+// UptimeConfig tunes the M5 uptime monitoring: the probe cadence, the per-probe
+// HTTP timeout, the alert-evaluation cadence, and the consecutive-down threshold
+// that fires a downtime alert.
+type UptimeConfig struct {
+	// ProbeInterval is how often the periodic probe job runs (≈60s).
+	ProbeInterval time.Duration `koanf:"probe_interval"`
+	// ProbeTimeout bounds a single site probe.
+	ProbeTimeout time.Duration `koanf:"probe_timeout"`
+	// ProbeConcurrency caps how many sites are probed concurrently in one sweep.
+	ProbeConcurrency int `koanf:"probe_concurrency"`
+	// AlertInterval is how often the alert evaluator runs.
+	AlertInterval time.Duration `koanf:"alert_interval"`
+	// DownThreshold is the number of consecutive DOWN checks that fires a downtime
+	// alert (default 2 — "down > 2 consecutive checks" means the 3rd consecutive).
+	DownThreshold int `koanf:"down_threshold"`
 }
 
 // S3Config holds the S3-compatible object-storage configuration (ADR-010).
@@ -278,6 +330,21 @@ func defaults() map[string]any {
 		"backup.monthly_archive_keep":   12,
 		"backup.schedule_interval":      "5m",
 		"backup.gc_interval":            "1h",
+		"clickhouse.addr":               "",
+		"clickhouse.db":                 "wpmgr_metrics",
+		"clickhouse.username":           "default",
+		"clickhouse.password":           "",
+		"smtp.host":                     "",
+		"smtp.port":                     587,
+		"smtp.username":                 "",
+		"smtp.password":                 "",
+		"smtp.from":                     "",
+		"smtp.tls_mode":                 "starttls",
+		"uptime.probe_interval":         "60s",
+		"uptime.probe_timeout":          "15s",
+		"uptime.probe_concurrency":      10,
+		"uptime.alert_interval":         "60s",
+		"uptime.down_threshold":         2,
 	}
 }
 
@@ -350,6 +417,12 @@ func mapEnvKey(k string) string {
 		return "s3." + strings.TrimPrefix(k, "s3_")
 	case strings.HasPrefix(k, "backup_"):
 		return "backup." + strings.TrimPrefix(k, "backup_")
+	case strings.HasPrefix(k, "clickhouse_"):
+		return "clickhouse." + strings.TrimPrefix(k, "clickhouse_")
+	case strings.HasPrefix(k, "smtp_"):
+		return "smtp." + strings.TrimPrefix(k, "smtp_")
+	case strings.HasPrefix(k, "uptime_"):
+		return "uptime." + strings.TrimPrefix(k, "uptime_")
 	default:
 		return k
 	}

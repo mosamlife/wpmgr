@@ -950,6 +950,98 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/uptime:
+    get:
+      operationId: getSiteUptime
+      summary: Get a site's uptime status over a window
+      description: |
+        Returns the uptime % and average latency for a site over the requested
+        window (7d/30d/90d), the current up/down state, the last check time, the
+        TLS certificate expiry, and a downsampled recent check series. Metrics
+        come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+        site's tenant ownership is verified in Postgres first (a foreign site is
+        a 404). Requires viewer+.
+      tags: [uptime]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["7d", "30d", "90d"]
+            default: "7d"
+      responses:
+        "200":
+          description: The site's uptime status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UptimeStatus"
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/uptime/summary:
+    get:
+      operationId: getUptimeSummary
+      summary: Current up/down status per site for the dashboard
+      description: |
+        Returns the current up/down status and last check for every site in the
+        tenant (from the latest recorded probe). Requires viewer+.
+      tags: [uptime]
+      responses:
+        "200":
+          description: Per-site current uptime status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UptimeSummary"
+  /api/v1/alert-config:
+    get:
+      operationId: getAlertConfig
+      summary: Get the tenant's uptime alert configuration
+      description: |
+        Returns the tenant's downtime/recovery alert channel: email recipients,
+        whether a webhook is configured, and the enabled flag. The webhook secret
+        is never returned. Requires admin+.
+      tags: [uptime]
+      responses:
+        "200":
+          description: The tenant's alert configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertConfig"
+    put:
+      operationId: putAlertConfig
+      summary: Create or update the tenant's uptime alert configuration
+      description: |
+        Sets the email recipients, webhook URL + signing secret, and enabled flag
+        for downtime/recovery alerts. The webhook secret is write-only. Requires
+        admin+.
+      tags: [uptime]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertConfigUpdate"
+      responses:
+        "200":
+          description: The saved alert configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertConfig"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     Limit:
@@ -1865,3 +1957,120 @@ components:
           type: integer
           format: int32
           description: Number of monthly-archive snapshots to keep beyond the window.
+    UptimeStatus:
+      type: object
+      description: Windowed uptime status for a single site (from the metrics store).
+      required: [site_id, window, uptime_pct, avg_latency_ms, checks, up, series]
+      properties:
+        site_id:
+          type: string
+          format: uuid
+        window:
+          type: string
+          enum: ["7d", "30d", "90d"]
+        uptime_pct:
+          type: number
+          format: double
+          description: Percentage of checks in the window that were up (0-100).
+        avg_latency_ms:
+          type: number
+          format: double
+          description: Mean total request time over the window, in milliseconds.
+        checks:
+          type: integer
+          format: int64
+          description: Number of probe checks recorded in the window.
+        up:
+          type: boolean
+          description: Whether the most recent probe classified the site as up.
+        last_check:
+          type: string
+          format: date-time
+          description: Time of the most recent probe (absent if never probed).
+        tls_expiry:
+          type: string
+          format: date-time
+          description: Leaf TLS certificate expiry from the latest probe (HTTPS only).
+        series:
+          type: array
+          description: Downsampled per-bucket check series over the window.
+          items:
+            $ref: "#/components/schemas/UptimePoint"
+    UptimePoint:
+      type: object
+      required: [bucket, checks, up_checks, avg_latency_ms]
+      properties:
+        bucket:
+          type: string
+          format: date-time
+          description: Start of the time bucket.
+        checks:
+          type: integer
+          format: int64
+        up_checks:
+          type: integer
+          format: int64
+        avg_latency_ms:
+          type: number
+          format: double
+    UptimeSummary:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/UptimeSummaryItem"
+    UptimeSummaryItem:
+      type: object
+      required: [site_id, up]
+      properties:
+        site_id:
+          type: string
+          format: uuid
+        up:
+          type: boolean
+        http_status:
+          type: integer
+          format: int32
+        last_check:
+          type: string
+          format: date-time
+        tls_expiry:
+          type: string
+          format: date-time
+    AlertConfig:
+      type: object
+      description: |
+        A tenant's uptime alert channel. The webhook secret is write-only and is
+        never returned; webhook_configured indicates whether a webhook URL is set.
+      required: [email_recipients, enabled, webhook_configured]
+      properties:
+        email_recipients:
+          type: array
+          items:
+            type: string
+            format: email
+        webhook_url:
+          type: string
+        webhook_configured:
+          type: boolean
+        enabled:
+          type: boolean
+    AlertConfigUpdate:
+      type: object
+      description: Create or update the tenant's uptime alert channel.
+      properties:
+        email_recipients:
+          type: array
+          items:
+            type: string
+            format: email
+        webhook_url:
+          type: string
+        webhook_secret:
+          type: string
+          description: Write-only HMAC signing secret for the webhook payload.
+        enabled:
+          type: boolean
+          default: true

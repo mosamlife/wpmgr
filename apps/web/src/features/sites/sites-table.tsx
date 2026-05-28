@@ -20,6 +20,11 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { relativeTime } from "@/lib/utils";
 import { HealthBadge, EnrollmentBadge } from "@/features/sites/site-badges";
+import {
+  UptimeStatusBadge,
+  statusFromItem,
+} from "@/features/monitoring/uptime-badges";
+import type { UptimeSummaryItem } from "@wpmgr/api";
 
 const baseColumns: ColumnDef<Site>[] = [
   {
@@ -98,14 +103,35 @@ export interface SitesTableSelection {
 export function SitesTable({
   sites,
   selection,
+  uptime,
 }: {
   sites: Site[];
   // When provided, a leading checkbox column enables multi-select for the bulk
   // update wizard.
   selection?: SitesTableSelection;
+  // Per-site current uptime status (keyed by site id). When provided, a live
+  // up/down "Status" column is shown (M5 makes the health column meaningful).
+  uptime?: Map<string, UptimeSummaryItem>;
 }) {
   const columns = useMemo<ColumnDef<Site>[]>(() => {
-    if (!selection) return baseColumns;
+    const withUptime: ColumnDef<Site>[] = uptime
+      ? [
+          ...baseColumns,
+          {
+            id: "uptime",
+            header: "Status",
+            cell: ({ row }) => {
+              const item = uptime.get(row.original.id);
+              return item ? (
+                <UptimeStatusBadge status={statusFromItem(item)} />
+              ) : (
+                <UptimeStatusBadge status="unknown" />
+              );
+            },
+          },
+        ]
+      : baseColumns;
+    if (!selection) return withUptime;
     const allIds = sites.map((s) => s.id);
     const allSelected =
       allIds.length > 0 && allIds.every((id) => selection.selected.has(id));
@@ -126,8 +152,8 @@ export function SitesTable({
         />
       ),
     };
-    return [selectColumn, ...baseColumns];
-  }, [selection, sites]);
+    return [selectColumn, ...withUptime];
+  }, [selection, sites, uptime]);
 
   const table = useReactTable({
     data: sites,

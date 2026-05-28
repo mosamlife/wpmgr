@@ -1,6 +1,7 @@
-h1:HTxJXAPGtVRh8PL55Fuv3/KHqeoRAQzQ3gfI3aUltSE=
+h1:adxSq6kFoHbQyrhgsfWJZbDjtT6AZmQojVZ8DKDCXck=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
 20260527195407_m3_bulk_updates.sql h1:+5/UT+01JfmNGLPTJraf0FsPFY1bltRw/k+mE1QUkW4=
-20260528020000_m4_backups.sql h1:3IwNLnXXQ1L7RAvNx7JbTn4bw+Hn4qlBniSKBARPprs=
+20260528020000_m4_backups.sql h1:lDy4kflEUAhx/BdBVEOfQAL5F0HEYBkJibtZwAXPpy4=
+20260528060000_m5_uptime_alerts.sql h1:NEgwBG7n8pXuqbeAK+p4lybNLaQlXVQzHg8bZl8J9mA=

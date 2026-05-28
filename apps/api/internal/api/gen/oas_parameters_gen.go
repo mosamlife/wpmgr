@@ -405,6 +405,143 @@ func decodeGetSiteParams(args [1]string, argsEscaped bool, r *http.Request) (par
 	return params, nil
 }
 
+// GetSiteUptimeParams is parameters of getSiteUptime operation.
+type GetSiteUptimeParams struct {
+	SiteId uuid.UUID
+	Window OptGetSiteUptimeWindow `json:",omitempty,omitzero"`
+}
+
+func unpackGetSiteUptimeParams(packed middleware.Parameters) (params GetSiteUptimeParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "window",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Window = v.(OptGetSiteUptimeWindow)
+		}
+	}
+	return params
+}
+
+func decodeGetSiteUptimeParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteUptimeParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Set default value for query: window.
+	{
+		val := GetSiteUptimeWindow("7d")
+		params.Window.SetTo(val)
+	}
+	// Decode query: window.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "window",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotWindowVal GetSiteUptimeWindow
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotWindowVal = GetSiteUptimeWindow(c)
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Window.SetTo(paramsDotWindowVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Window.Get(); ok {
+					if err := func() error {
+						if err := value.Validate(); err != nil {
+							return err
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "window",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetTenantParams is parameters of getTenant operation.
 type GetTenantParams struct {
 	TenantId uuid.UUID

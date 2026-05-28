@@ -65,6 +65,10 @@ type GetSiteRes interface {
 	getSiteRes()
 }
 
+type GetSiteUptimeRes interface {
+	getSiteUptimeRes()
+}
+
 type GetTenantRes interface {
 	getTenantRes()
 }
@@ -103,6 +107,10 @@ type OidcCallbackRes interface {
 
 type OidcLoginRes interface {
 	oidcLoginRes()
+}
+
+type PutAlertConfigRes interface {
+	putAlertConfigRes()
 }
 
 type PutBackupScheduleRes interface {

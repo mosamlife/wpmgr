@@ -109,3 +109,17 @@ WHERE enrolled_at IS NOT NULL;
 UPDATE sites
 SET health_status = 'unreachable', updated_at = now()
 WHERE id = $1 AND health_status <> 'unreachable';
+
+-- name: ListEnrolledSitesForProbe :many
+-- Cross-tenant enumeration of enrolled sites WITH their URL for the M5 uptime
+-- probe job. Runs under the app.agent GUC (sites_agent policy) since it spans
+-- tenants. Only enrolled sites have an agent URL worth probing.
+SELECT id, tenant_id, url, health_status FROM sites
+WHERE enrolled_at IS NOT NULL;
+
+-- name: SetSiteHealthStatus :execrows
+-- Sets a site's health_status from an M5 probe result (cross-tenant probe job,
+-- app.agent GUC). Only writes when the value actually changes to avoid churn.
+UPDATE sites
+SET health_status = $2, updated_at = now()
+WHERE id = $1 AND health_status <> $2;

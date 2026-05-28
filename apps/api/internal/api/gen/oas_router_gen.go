@@ -17,13 +17,16 @@ var (
 	rn3AllowedHeaders = map[string]string{
 		"POST": "Content-Type,X-Wpmgr-Signature",
 	}
+	rn20AllowedHeaders = map[string]string{
+		"PUT": "Content-Type",
+	}
 	rn5AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn13AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn28AllowedHeaders = map[string]string{
+	rn34AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn14AllowedHeaders = map[string]string{
@@ -32,13 +35,13 @@ var (
 	rn10AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn20AllowedHeaders = map[string]string{
+	rn22AllowedHeaders = map[string]string{
 		"PUT": "Content-Type",
 	}
 	rn9AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn42AllowedHeaders = map[string]string{
+	rn46AllowedHeaders = map[string]string{
 		"PUT": "Content-Type",
 	}
 	rn15AllowedHeaders = map[string]string{
@@ -47,10 +50,10 @@ var (
 	rn16AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn32AllowedHeaders = map[string]string{
+	rn37AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn38AllowedHeaders = map[string]string{
+	rn43AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn18AllowedHeaders = map[string]string{
@@ -209,6 +212,33 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 						switch elem[0] {
+						case 'l': // Prefix: "lert-config"
+
+							if l := len("lert-config"); len(elem) >= l && elem[0:l] == "lert-config" {
+								elem = elem[l:]
+							} else {
+								break
+							}
+
+							if len(elem) == 0 {
+								// Leaf node.
+								switch r.Method {
+								case "GET":
+									s.handleGetAlertConfigRequest([0]string{}, elemIsEscaped, w, r)
+								case "PUT":
+									s.handlePutAlertConfigRequest([0]string{}, elemIsEscaped, w, r)
+								default:
+									s.notAllowed(w, r, notAllowedParams{
+										allowedMethods: "GET,PUT",
+										allowedHeaders: rn20AllowedHeaders,
+										acceptPost:     "",
+										acceptPatch:    "",
+									})
+								}
+
+								return
+							}
+
 						case 'p': // Prefix: "pi-keys"
 
 							if l := len("pi-keys"); len(elem) >= l && elem[0:l] == "pi-keys" {
@@ -408,7 +438,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn28AllowedHeaders,
+									allowedHeaders: rn34AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -559,7 +589,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 											default:
 												s.notAllowed(w, r, notAllowedParams{
 													allowedMethods: "GET,PUT",
-													allowedHeaders: rn20AllowedHeaders,
+													allowedHeaders: rn22AllowedHeaders,
 													acceptPost:     "",
 													acceptPatch:    "",
 												})
@@ -619,7 +649,34 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 										default:
 											s.notAllowed(w, r, notAllowedParams{
 												allowedMethods: "PUT",
-												allowedHeaders: rn42AllowedHeaders,
+												allowedHeaders: rn46AllowedHeaders,
+												acceptPost:     "",
+												acceptPatch:    "",
+											})
+										}
+
+										return
+									}
+
+								case 'u': // Prefix: "uptime"
+
+									if l := len("uptime"); len(elem) >= l && elem[0:l] == "uptime" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										// Leaf node.
+										switch r.Method {
+										case "GET":
+											s.handleGetSiteUptimeRequest([1]string{
+												args[0],
+											}, elemIsEscaped, w, r)
+										default:
+											s.notAllowed(w, r, notAllowedParams{
+												allowedMethods: "GET",
+												allowedHeaders: nil,
 												acceptPost:     "",
 												acceptPatch:    "",
 											})
@@ -698,56 +755,95 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 						}
 
-					case 'u': // Prefix: "updates"
+					case 'u': // Prefix: "up"
 
-						if l := len("updates"); len(elem) >= l && elem[0:l] == "updates" {
+						if l := len("up"); len(elem) >= l && elem[0:l] == "up" {
 							elem = elem[l:]
 						} else {
 							break
 						}
 
 						if len(elem) == 0 {
-							switch r.Method {
-							case "GET":
-								s.handleListUpdateRunsRequest([0]string{}, elemIsEscaped, w, r)
-							case "POST":
-								s.handleCreateUpdateRunRequest([0]string{}, elemIsEscaped, w, r)
-							default:
-								s.notAllowed(w, r, notAllowedParams{
-									allowedMethods: "GET,POST",
-									allowedHeaders: rn16AllowedHeaders,
-									acceptPost:     "application/json",
-									acceptPatch:    "",
-								})
-							}
-
-							return
+							break
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/"
+						case 'd': // Prefix: "dates"
 
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+							if l := len("dates"); len(elem) >= l && elem[0:l] == "dates" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
-							// Param: "runId"
-							// Leaf parameter, slashes are prohibited
-							idx := strings.IndexByte(elem, '/')
-							if idx >= 0 {
+							if len(elem) == 0 {
+								switch r.Method {
+								case "GET":
+									s.handleListUpdateRunsRequest([0]string{}, elemIsEscaped, w, r)
+								case "POST":
+									s.handleCreateUpdateRunRequest([0]string{}, elemIsEscaped, w, r)
+								default:
+									s.notAllowed(w, r, notAllowedParams{
+										allowedMethods: "GET,POST",
+										allowedHeaders: rn16AllowedHeaders,
+										acceptPost:     "application/json",
+										acceptPatch:    "",
+									})
+								}
+
+								return
+							}
+							switch elem[0] {
+							case '/': // Prefix: "/"
+
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								// Param: "runId"
+								// Leaf parameter, slashes are prohibited
+								idx := strings.IndexByte(elem, '/')
+								if idx >= 0 {
+									break
+								}
+								args[0] = elem
+								elem = ""
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch r.Method {
+									case "GET":
+										s.handleGetUpdateRunRequest([1]string{
+											args[0],
+										}, elemIsEscaped, w, r)
+									default:
+										s.notAllowed(w, r, notAllowedParams{
+											allowedMethods: "GET",
+											allowedHeaders: nil,
+											acceptPost:     "",
+											acceptPatch:    "",
+										})
+									}
+
+									return
+								}
+
+							}
+
+						case 't': // Prefix: "time/summary"
+
+							if l := len("time/summary"); len(elem) >= l && elem[0:l] == "time/summary" {
+								elem = elem[l:]
+							} else {
 								break
 							}
-							args[0] = elem
-							elem = ""
 
 							if len(elem) == 0 {
 								// Leaf node.
 								switch r.Method {
 								case "GET":
-									s.handleGetUpdateRunRequest([1]string{
-										args[0],
-									}, elemIsEscaped, w, r)
+									s.handleGetUptimeSummaryRequest([0]string{}, elemIsEscaped, w, r)
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "GET",
@@ -804,7 +900,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "POST",
-										allowedHeaders: rn32AllowedHeaders,
+										allowedHeaders: rn37AllowedHeaders,
 										acceptPost:     "application/json",
 										acceptPatch:    "",
 									})
@@ -945,7 +1041,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "POST",
-									allowedHeaders: rn38AllowedHeaders,
+									allowedHeaders: rn43AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -1233,6 +1329,40 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 							break
 						}
 						switch elem[0] {
+						case 'l': // Prefix: "lert-config"
+
+							if l := len("lert-config"); len(elem) >= l && elem[0:l] == "lert-config" {
+								elem = elem[l:]
+							} else {
+								break
+							}
+
+							if len(elem) == 0 {
+								// Leaf node.
+								switch method {
+								case "GET":
+									r.name = GetAlertConfigOperation
+									r.summary = "Get the tenant's uptime alert configuration"
+									r.operationID = "getAlertConfig"
+									r.operationGroup = ""
+									r.pathPattern = "/api/v1/alert-config"
+									r.args = args
+									r.count = 0
+									return r, true
+								case "PUT":
+									r.name = PutAlertConfigOperation
+									r.summary = "Create or update the tenant's uptime alert configuration"
+									r.operationID = "putAlertConfig"
+									r.operationGroup = ""
+									r.pathPattern = "/api/v1/alert-config"
+									r.args = args
+									r.count = 0
+									return r, true
+								default:
+									return
+								}
+							}
+
 						case 'p': // Prefix: "pi-keys"
 
 							if l := len("pi-keys"); len(elem) >= l && elem[0:l] == "pi-keys" {
@@ -1674,6 +1804,31 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 										}
 									}
 
+								case 'u': // Prefix: "uptime"
+
+									if l := len("uptime"); len(elem) >= l && elem[0:l] == "uptime" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										// Leaf node.
+										switch method {
+										case "GET":
+											r.name = GetSiteUptimeOperation
+											r.summary = "Get a site's uptime status over a window"
+											r.operationID = "getSiteUptime"
+											r.operationGroup = ""
+											r.pathPattern = "/api/v1/sites/{siteId}/uptime"
+											r.args = args
+											r.count = 1
+											return r, true
+										default:
+											return
+										}
+									}
+
 								}
 
 							}
@@ -1749,67 +1904,106 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 
 						}
 
-					case 'u': // Prefix: "updates"
+					case 'u': // Prefix: "up"
 
-						if l := len("updates"); len(elem) >= l && elem[0:l] == "updates" {
+						if l := len("up"); len(elem) >= l && elem[0:l] == "up" {
 							elem = elem[l:]
 						} else {
 							break
 						}
 
 						if len(elem) == 0 {
-							switch method {
-							case "GET":
-								r.name = ListUpdateRunsOperation
-								r.summary = "List update runs for the current tenant"
-								r.operationID = "listUpdateRuns"
-								r.operationGroup = ""
-								r.pathPattern = "/api/v1/updates"
-								r.args = args
-								r.count = 0
-								return r, true
-							case "POST":
-								r.name = CreateUpdateRunOperation
-								r.summary = "Start a bulk update run"
-								r.operationID = "createUpdateRun"
-								r.operationGroup = ""
-								r.pathPattern = "/api/v1/updates"
-								r.args = args
-								r.count = 0
-								return r, true
-							default:
-								return
-							}
+							break
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/"
+						case 'd': // Prefix: "dates"
 
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+							if l := len("dates"); len(elem) >= l && elem[0:l] == "dates" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
-							// Param: "runId"
-							// Leaf parameter, slashes are prohibited
-							idx := strings.IndexByte(elem, '/')
-							if idx >= 0 {
+							if len(elem) == 0 {
+								switch method {
+								case "GET":
+									r.name = ListUpdateRunsOperation
+									r.summary = "List update runs for the current tenant"
+									r.operationID = "listUpdateRuns"
+									r.operationGroup = ""
+									r.pathPattern = "/api/v1/updates"
+									r.args = args
+									r.count = 0
+									return r, true
+								case "POST":
+									r.name = CreateUpdateRunOperation
+									r.summary = "Start a bulk update run"
+									r.operationID = "createUpdateRun"
+									r.operationGroup = ""
+									r.pathPattern = "/api/v1/updates"
+									r.args = args
+									r.count = 0
+									return r, true
+								default:
+									return
+								}
+							}
+							switch elem[0] {
+							case '/': // Prefix: "/"
+
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								// Param: "runId"
+								// Leaf parameter, slashes are prohibited
+								idx := strings.IndexByte(elem, '/')
+								if idx >= 0 {
+									break
+								}
+								args[0] = elem
+								elem = ""
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch method {
+									case "GET":
+										r.name = GetUpdateRunOperation
+										r.summary = "Get an update run with its tasks"
+										r.operationID = "getUpdateRun"
+										r.operationGroup = ""
+										r.pathPattern = "/api/v1/updates/{runId}"
+										r.args = args
+										r.count = 1
+										return r, true
+									default:
+										return
+									}
+								}
+
+							}
+
+						case 't': // Prefix: "time/summary"
+
+							if l := len("time/summary"); len(elem) >= l && elem[0:l] == "time/summary" {
+								elem = elem[l:]
+							} else {
 								break
 							}
-							args[0] = elem
-							elem = ""
 
 							if len(elem) == 0 {
 								// Leaf node.
 								switch method {
 								case "GET":
-									r.name = GetUpdateRunOperation
-									r.summary = "Get an update run with its tasks"
-									r.operationID = "getUpdateRun"
+									r.name = GetUptimeSummaryOperation
+									r.summary = "Current up/down status per site for the dashboard"
+									r.operationID = "getUptimeSummary"
 									r.operationGroup = ""
-									r.pathPattern = "/api/v1/updates/{runId}"
+									r.pathPattern = "/api/v1/uptime/summary"
 									r.args = args
-									r.count = 1
+									r.count = 0
 									return r, true
 								default:
 									return

@@ -18,6 +18,7 @@ import { Route as AuthedSitesIndexRouteImport } from './routes/_authed/sites/ind
 import { Route as AuthedUpdatesRunIdRouteImport } from './routes/_authed/updates/$runId'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
 import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
+import { Route as AuthedSettingsAlertsRouteImport } from './routes/_authed/settings/alerts'
 import { Route as AuthedBackupsSnapshotIdRouteImport } from './routes/_authed/backups/$snapshotId'
 
 const RegisterRoute = RegisterRouteImport.update({
@@ -64,6 +65,11 @@ const AuthedSettingsApiKeysRoute = AuthedSettingsApiKeysRouteImport.update({
   path: '/settings/api-keys',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedSettingsAlertsRoute = AuthedSettingsAlertsRouteImport.update({
+  id: '/settings/alerts',
+  path: '/settings/alerts',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedBackupsSnapshotIdRoute = AuthedBackupsSnapshotIdRouteImport.update({
   id: '/backups/$snapshotId',
   path: '/backups/$snapshotId',
@@ -75,6 +81,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
+  '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRoute
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
@@ -86,6 +93,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
+  '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRoute
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
@@ -99,6 +107,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/_authed/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
+  '/_authed/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRoute
   '/_authed/updates/$runId': typeof AuthedUpdatesRunIdRoute
@@ -112,6 +121,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/register'
     | '/backups/$snapshotId'
+    | '/settings/alerts'
     | '/settings/api-keys'
     | '/sites/$siteId'
     | '/updates/$runId'
@@ -123,6 +133,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/register'
     | '/backups/$snapshotId'
+    | '/settings/alerts'
     | '/settings/api-keys'
     | '/sites/$siteId'
     | '/updates/$runId'
@@ -135,6 +146,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/register'
     | '/_authed/backups/$snapshotId'
+    | '/_authed/settings/alerts'
     | '/_authed/settings/api-keys'
     | '/_authed/sites/$siteId'
     | '/_authed/updates/$runId'
@@ -214,6 +226,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSettingsApiKeysRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/settings/alerts': {
+      id: '/_authed/settings/alerts'
+      path: '/settings/alerts'
+      fullPath: '/settings/alerts'
+      preLoaderRoute: typeof AuthedSettingsAlertsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/backups/$snapshotId': {
       id: '/_authed/backups/$snapshotId'
       path: '/backups/$snapshotId'
@@ -226,6 +245,7 @@ declare module '@tanstack/react-router' {
 
 interface AuthedRouteChildren {
   AuthedBackupsSnapshotIdRoute: typeof AuthedBackupsSnapshotIdRoute
+  AuthedSettingsAlertsRoute: typeof AuthedSettingsAlertsRoute
   AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
   AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRoute
   AuthedUpdatesRunIdRoute: typeof AuthedUpdatesRunIdRoute
@@ -235,6 +255,7 @@ interface AuthedRouteChildren {
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedBackupsSnapshotIdRoute: AuthedBackupsSnapshotIdRoute,
+  AuthedSettingsAlertsRoute: AuthedSettingsAlertsRoute,
   AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
   AuthedSitesSiteIdRoute: AuthedSitesSiteIdRoute,
   AuthedUpdatesRunIdRoute: AuthedUpdatesRunIdRoute,

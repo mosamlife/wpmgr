@@ -20,6 +20,13 @@ snapshot-detail route with a manifest summary, and a destructive **Restore**
 dialog (full / by-path / by-table). In-flight backups and restores are tracked
 by polling until they reach a terminal state.
 
+**M5** adds **uptime monitoring**: an Uptime section on the site detail page
+(current up/down status, uptime % and avg latency for a selectable 7d/30d/90d
+window, last-checked time, TLS expiry with a "renew soon" warning, and a
+latency/uptime chart), a live up/down **Status** column on the sites list, and a
+tenant **downtime alerts** settings page (`/settings/alerts`, operator+) for the
+email recipients + webhook URL.
+
 ## Stack
 
 | Concern        | Choice                                                              |
@@ -58,12 +65,16 @@ by polling until they reach a terminal state.
 - `/register` — first-run bootstrap form (`POST /auth/register`). Creates the
   first user + tenant + owner; returns 403 once any user exists.
 - `/settings/api-keys` — list/create/revoke tenant API keys (admin/owner only).
+- `/settings/alerts` — tenant **downtime alert** settings (operator+): email
+  recipients + optional webhook URL (M5). Non-operators see a permission notice.
 - `/sites` — sites list (TanStack Query + TanStack Table) with enrollment +
-  health badges, a relative "last seen", tag chips, a **tag filter** (`?tag=`),
-  and an **Add site** action (operator+). Empty state points to Add site.
+  health badges, a live up/down **Status** column (M5, from the uptime summary),
+  a relative "last seen", tag chips, a **tag filter** (`?tag=`), and an **Add
+  site** action (operator+). Empty state points to Add site.
 - `/sites/$siteId` — site detail: metadata (WP/PHP/server/multisite/active
   theme/enrolled/last-seen/health), an editable **tags** section (PUT tags,
-  optimistic), a table of installed plugins/themes, and a **Backups** section
+  optimistic), a table of installed plugins/themes, an **Uptime** section (M5:
+  status, uptime %, latency, TLS expiry, chart), and a **Backups** section
   (M4: snapshot list, "Back up now", schedule editor). Loading / error /
   not-found states throughout.
 - `/backups/$snapshotId` — snapshot detail: status/kind badges, a manifest
@@ -158,6 +169,38 @@ restore to completion.
 All backup actions are gated to operator/admin/owner via `canOperate()`; the
 backend enforces the role regardless. Viewers see the snapshot list only.
 
+### Uptime monitoring & alerts (M5)
+
+The data hooks live in `src/features/monitoring/use-uptime.ts` and wrap the
+generated `getSiteUptime` / `getUptimeSummary` / `getAlertConfig` /
+`putAlertConfig` operations.
+
+- **Uptime section** (`uptime-section.tsx`, on `/sites/$siteId`, viewer+) —
+  `useSiteUptime(siteId, window)` GETs `/api/v1/sites/{siteId}/uptime?window=`
+  and renders the current up/down badge, uptime % and avg latency for the
+  selected window, the last-checked relative time, and TLS certificate expiry
+  (highlighted in red with "renew soon" when under 14 days). A `7d / 30d / 90d`
+  toggle (an `aria-pressed` button group) switches the window, which re-keys the
+  query and refetches. The query also **refetches every 60s** to track the ~60s
+  probe cadence. Loading / error / not-found and an explicit "No checks yet"
+  empty state are handled.
+- **Chart** (`uptime-chart.tsx`) — a dependency-light **inline SVG** area
+  sparkline of per-bucket latency with red ticks marking downtime buckets.
+  ADR-018 picked Tremor/Recharts, but neither is installed; an inline SVG keeps
+  the M5 bundle small with no new deps. The `<svg>` carries a descriptive
+  `aria-label` and is paired with a visually-hidden data **table** as the
+  accessible text alternative.
+- **Sites-list Status column** — `useUptimeSummary()` GETs
+  `/api/v1/uptime/summary` once and exposes a `Map<siteId, status>`; the sites
+  table renders a live up/down badge per row (falling back to "Unknown" when the
+  summary is loading or absent), making the health column meaningful.
+- **Alert settings** (`alert-config-form.tsx`, `/settings/alerts`, operator+) —
+  `useAlertConfig()` GETs the tenant config (404 → empty defaults) and
+  `usePutAlertConfig()` PUTs changes via react-hook-form + Zod with an
+  **optimistic** cache update + rollback + invalidate. Recipients are entered as
+  a comma/newline-separated list (each validated as an email); the webhook URL is
+  optional. The page is gated by `canOperate()`; non-operators get a notice.
+
 ### Site enrollment (pairing codes)
 
 There is no manual "create site" form in the UI; sites are **enrolled** by the
@@ -228,6 +271,23 @@ The Backups hooks (`src/features/backups/use-backups.ts`) wrap the generated
 `useCreateRestore(snapshotId)` / `useBackupSchedule(siteId)` /
 `usePutBackupSchedule(siteId)`. The list and detail hooks use Query
 `refetchInterval` to poll while a backup/restore is in flight.
+
+The Monitoring hooks (`src/features/monitoring/use-uptime.ts`) wrap the M5
+`getSiteUptime` / `getUptimeSummary` / `getAlertConfig` / `putAlertConfig`
+operations as `useSiteUptime(siteId, window)` / `useUptimeSummary()` /
+`useAlertConfig()` / `usePutAlertConfig()` (optimistic).
+
+> **M5 contract note:** the M5 uptime/alert endpoints had not yet landed in the
+> canonical `packages/openapi/openapi.yaml` (owned by the backend), so
+> `packages/openapi-client` temporarily vendors a local copy at
+> `packages/openapi-client/openapi.yaml` (the canonical spec **plus** the M5
+> monitoring paths/schemas), and `openapi-ts.config.ts` reads from it. When the
+> backend adds M5 to the canonical spec, re-point `input` back to
+> `../openapi/openapi.yaml` and delete the local copy. The exact M5 field names
+> the UI relies on are defined there: `UptimeSummary`
+> (`uptime_pct`, `avg_latency_ms`, `current_status`, `last_checked_at`,
+> `tls_expiry`, `series: [{ ts, up, total_ms }]`), `UptimeStatusList`, and
+> `AlertConfig` (`email_recipients`, `webhook_url`).
 
 Regenerate the client after the contract changes:
 

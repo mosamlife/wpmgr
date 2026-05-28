@@ -1,10 +1,16 @@
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Globe, LogOut, KeyRound, RefreshCw } from "lucide-react";
+import { Globe, LogOut, KeyRound, RefreshCw, BellRing } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { useMe, useLogout, activeRole, canManage } from "@/features/auth/use-auth";
+import {
+  useMe,
+  useLogout,
+  activeRole,
+  canManage,
+  canOperate,
+} from "@/features/auth/use-auth";
 
 // Authenticated app shell: semantic landmarks (banner header, nav sidebar,
 // main). The header shows the logged-in user, their active tenant role, and a
@@ -17,6 +23,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const role = activeRole(me);
   const showKeys = canManage(me);
+  const showAlerts = canOperate(me);
 
   function handleLogout() {
     logout.mutate(undefined, {
@@ -83,6 +90,17 @@ export function AppShell({ children }: { children: ReactNode }) {
                 Updates
               </Link>
             </li>
+            {showAlerts ? (
+              <li>
+                <Link
+                  to="/settings/alerts"
+                  className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
+                >
+                  <BellRing aria-hidden="true" className="size-4" />
+                  Alerts
+                </Link>
+              </li>
+            ) : null}
             {showKeys ? (
               <li>
                 <Link

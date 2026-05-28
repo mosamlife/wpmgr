@@ -30,12 +30,14 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
+	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/telemetry"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
+	"github.com/mosamlife/wpmgr/apps/api/internal/uptime"
 )
 
 // version is overridden at build time via -ldflags.
@@ -237,11 +239,47 @@ func run() error {
 		logger.Warn("WPMGR_S3_BUCKET is empty: backup/restore endpoints are disabled")
 	}
 
+	// M5 uptime monitoring: the ClickHouse metrics store (ADR-028; disabled
+	// cleanly when WPMGR_CLICKHOUSE_ADDR is empty), the SSRF-hardened probe, the
+	// alert dispatcher (email via go-mail/ADR-029 + signed webhook over the SSRF
+	// client), and the tenant-scoped uptime repo/service/handler. The probe worker
+	// runs on a periodic River job; it writes time-series to ClickHouse, refreshes
+	// each site's Postgres health_status, and fires downtime/recovery alerts on
+	// transition (de-duped).
+	metricsStore, err := metrics.New(ctx, metrics.Config{
+		Addr:     cfg.ClickHouse.Addr,
+		Database: cfg.ClickHouse.Database,
+		Username: cfg.ClickHouse.Username,
+		Password: cfg.ClickHouse.Password,
+	}, logger)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = metricsStore.Close() }()
+
+	uptimeRepo := uptime.NewRepo(pool)
+	uptimeSiteAdapter := newUptimeSiteAdapter(siteSvc)
+	uptimeProber := uptime.NewProber(ssrfClient, cfg.Uptime.ProbeTimeout)
+	var mailer uptime.Mailer
+	if cfg.SMTP.Enabled() {
+		mailer = uptime.NewSMTPMailer(cfg.SMTP, logger)
+		logger.Info("uptime alert email enabled", slog.String("smtp_host", cfg.SMTP.Host))
+	} else {
+		mailer = uptime.NewNoopMailer(logger)
+		logger.Warn("WPMGR_SMTP_HOST is empty: uptime alert emails disabled (webhooks still fire)")
+	}
+	webhookPoster := uptime.NewSSRFWebhookPoster(ssrfClient)
+	uptimeDispatcher := uptime.NewDispatcher(mailer, webhookPoster, auditRec, logger)
+	uptimeWorker := uptime.NewProbeWorker(uptimeRepo, uptimeProber, metricsStore, uptimeDispatcher, uptimeSiteAdapter, logger, cfg.Uptime.ProbeConcurrency, cfg.Uptime.DownThreshold)
+	uptimeSvc := uptime.NewService(uptimeRepo, metricsStore, uptimeSiteAdapter)
+	uptimeH := uptime.NewHandler(uptimeSvc, auditRec)
+
 	// River: connection-health worker pool plus the M3 update-task workers and the
 	// M4 backup/restore/GC/scheduler workers. The health job marks a site
-	// unreachable when its agent heartbeat goes stale (freshness-based; active
-	// probing is M5). Update tasks run on per-tenant queue shards so one tenant
-	// cannot starve another. Started below, stopped on shutdown.
+	// unreachable when its agent heartbeat goes stale (freshness-based). The M5
+	// probe job actively probes every enrolled site (~60s). Update tasks run on
+	// per-tenant queue shards so one tenant cannot starve another. Started below,
+	// stopped on shutdown.
 	siteRepo := site.NewRepo(pool)
 	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
@@ -255,6 +293,8 @@ func run() error {
 		scheduleWorker:       scheduleWorker,
 		scheduleInterval:     cfg.Backup.ScheduleInterval,
 		gcInterval:           cfg.Backup.GCInterval,
+		uptimeWorker:         uptimeWorker,
+		probeInterval:        cfg.Uptime.ProbeInterval,
 	})
 	if err != nil {
 		return err
@@ -290,6 +330,7 @@ func run() error {
 		UpdateH:      updateH,
 		BackupH:      backupH,
 		BackupAgentH: backupAgentH,
+		UptimeH:      uptimeH,
 		AgentAuth:    agentAuthn,
 		AgentH:       agentH,
 		ServiceName:  cfg.OTel.ServiceName,
@@ -338,6 +379,8 @@ type riverDeps struct {
 	scheduleWorker       *backup.ScheduleWorker
 	scheduleInterval     time.Duration
 	gcInterval           time.Duration
+	uptimeWorker         *uptime.ProbeWorker
+	probeInterval        time.Duration
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -406,6 +449,24 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 				river.PeriodicInterval(gcInterval),
 				func() (river.JobArgs, *river.InsertOpts) { return backup.GCArgs{}, nil },
 				nil,
+			),
+		)
+	}
+
+	// M5 uptime probe: a periodic job (~60s) that probes every enrolled site,
+	// records the time-series, refreshes health_status, and evaluates alerts.
+	uptimeEnabled := d.uptimeWorker != nil
+	if uptimeEnabled {
+		river.AddWorker(workers, d.uptimeWorker)
+		probeInterval := d.probeInterval
+		if probeInterval <= 0 {
+			probeInterval = time.Minute
+		}
+		periodics = append(periodics,
+			river.NewPeriodicJob(
+				river.PeriodicInterval(probeInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return uptime.ProbeArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
 			),
 		)
 	}

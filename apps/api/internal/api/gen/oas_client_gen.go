@@ -121,6 +121,14 @@ type Invoker interface {
 	//
 	// POST /enroll
 	Enroll(ctx context.Context, request *EnrollRequest) (EnrollRes, error)
+	// GetAlertConfig invokes getAlertConfig operation.
+	//
+	// Returns the tenant's downtime/recovery alert channel: email recipients,
+	// whether a webhook is configured, and the enabled flag. The webhook secret
+	// is never returned. Requires admin+.
+	//
+	// GET /api/v1/alert-config
+	GetAlertConfig(ctx context.Context) (*AlertConfig, error)
 	// GetBackup invokes getBackup operation.
 	//
 	// Get a backup snapshot with its manifest summary.
@@ -157,6 +165,17 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteUptime invokes getSiteUptime operation.
+	//
+	// Returns the uptime % and average latency for a site over the requested
+	// window (7d/30d/90d), the current up/down state, the last check time, the
+	// TLS certificate expiry, and a downsampled recent check series. Metrics
+	// come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+	// site's tenant ownership is verified in Postgres first (a foreign site is
+	// a 404). Requires viewer+.
+	//
+	// GET /api/v1/sites/{siteId}/uptime
+	GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (GetSiteUptimeRes, error)
 	// GetTenant invokes getTenant operation.
 	//
 	// Get a tenant by ID.
@@ -169,6 +188,13 @@ type Invoker interface {
 	//
 	// GET /api/v1/updates/{runId}
 	GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (GetUpdateRunRes, error)
+	// GetUptimeSummary invokes getUptimeSummary operation.
+	//
+	// Returns the current up/down status and last check for every site in the
+	// tenant (from the latest recorded probe). Requires viewer+.
+	//
+	// GET /api/v1/uptime/summary
+	GetUptimeSummary(ctx context.Context) (*UptimeSummary, error)
 	// InviteMember invokes inviteMember operation.
 	//
 	// Invite/create a member in the active tenant (admin+).
@@ -241,6 +267,14 @@ type Invoker interface {
 	//
 	// GET /auth/oidc/login
 	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	// PutAlertConfig invokes putAlertConfig operation.
+	//
+	// Sets the email recipients, webhook URL + signing secret, and enabled flag
+	// for downtime/recovery alerts. The webhook secret is write-only. Requires
+	// admin+.
+	//
+	// PUT /api/v1/alert-config
+	PutAlertConfig(ctx context.Context, request *AlertConfigUpdate) (PutAlertConfigRes, error)
 	// PutBackupSchedule invokes putBackupSchedule operation.
 	//
 	// Create or update a site's backup schedule.
@@ -1306,6 +1340,82 @@ func (c *Client) sendEnroll(ctx context.Context, request *EnrollRequest) (res En
 	return result, nil
 }
 
+// GetAlertConfig invokes getAlertConfig operation.
+//
+// Returns the tenant's downtime/recovery alert channel: email recipients,
+// whether a webhook is configured, and the enabled flag. The webhook secret
+// is never returned. Requires admin+.
+//
+// GET /api/v1/alert-config
+func (c *Client) GetAlertConfig(ctx context.Context) (*AlertConfig, error) {
+	res, err := c.sendGetAlertConfig(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetAlertConfig(ctx context.Context) (res *AlertConfig, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAlertConfig"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/alert-config"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetAlertConfigOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/alert-config"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetAlertConfigResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetBackup invokes getBackup operation.
 //
 // Get a backup snapshot with its manifest summary.
@@ -1805,6 +1915,125 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 	return result, nil
 }
 
+// GetSiteUptime invokes getSiteUptime operation.
+//
+// Returns the uptime % and average latency for a site over the requested
+// window (7d/30d/90d), the current up/down state, the last check time, the
+// TLS certificate expiry, and a downsampled recent check series. Metrics
+// come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+// site's tenant ownership is verified in Postgres first (a foreign site is
+// a 404). Requires viewer+.
+//
+// GET /api/v1/sites/{siteId}/uptime
+func (c *Client) GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (GetSiteUptimeRes, error) {
+	res, err := c.sendGetSiteUptime(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (res GetSiteUptimeRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteUptime"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/uptime"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteUptimeOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/uptime"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "window" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "window",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Window.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteUptimeResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetTenant invokes getTenant operation.
 //
 // Get a tenant by ID.
@@ -1982,6 +2211,81 @@ func (c *Client) sendGetUpdateRun(ctx context.Context, params GetUpdateRunParams
 
 	stage = "DecodeResponse"
 	result, err := decodeGetUpdateRunResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetUptimeSummary invokes getUptimeSummary operation.
+//
+// Returns the current up/down status and last check for every site in the
+// tenant (from the latest recorded probe). Requires viewer+.
+//
+// GET /api/v1/uptime/summary
+func (c *Client) GetUptimeSummary(ctx context.Context) (*UptimeSummary, error) {
+	res, err := c.sendGetUptimeSummary(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetUptimeSummary(ctx context.Context) (res *UptimeSummary, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getUptimeSummary"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/uptime/summary"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetUptimeSummaryOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/uptime/summary"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetUptimeSummaryResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -3216,6 +3520,85 @@ func (c *Client) sendOidcLogin(ctx context.Context) (res OidcLoginRes, err error
 
 	stage = "DecodeResponse"
 	result, err := decodeOidcLoginResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PutAlertConfig invokes putAlertConfig operation.
+//
+// Sets the email recipients, webhook URL + signing secret, and enabled flag
+// for downtime/recovery alerts. The webhook secret is write-only. Requires
+// admin+.
+//
+// PUT /api/v1/alert-config
+func (c *Client) PutAlertConfig(ctx context.Context, request *AlertConfigUpdate) (PutAlertConfigRes, error) {
+	res, err := c.sendPutAlertConfig(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendPutAlertConfig(ctx context.Context, request *AlertConfigUpdate) (res PutAlertConfigRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("putAlertConfig"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/alert-config"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PutAlertConfigOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/alert-config"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePutAlertConfigRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodePutAlertConfigResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

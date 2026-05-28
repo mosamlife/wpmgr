@@ -477,6 +477,89 @@ export type BackupScheduleUpdate = {
   monthly_archive_keep?: number;
 };
 
+/**
+ * Windowed uptime status for a single site (from the metrics store).
+ */
+export type UptimeStatus = {
+  site_id: string;
+  window: "7d" | "30d" | "90d";
+  /**
+   * Percentage of checks in the window that were up (0-100).
+   */
+  uptime_pct: number;
+  /**
+   * Mean total request time over the window, in milliseconds.
+   */
+  avg_latency_ms: number;
+  /**
+   * Number of probe checks recorded in the window.
+   */
+  checks: number;
+  /**
+   * Whether the most recent probe classified the site as up.
+   */
+  up: boolean;
+  /**
+   * Time of the most recent probe (absent if never probed).
+   */
+  last_check?: string;
+  /**
+   * Leaf TLS certificate expiry from the latest probe (HTTPS only).
+   */
+  tls_expiry?: string;
+  /**
+   * Downsampled per-bucket check series over the window.
+   */
+  series: Array<UptimePoint>;
+};
+
+export type UptimePoint = {
+  /**
+   * Start of the time bucket.
+   */
+  bucket: string;
+  checks: number;
+  up_checks: number;
+  avg_latency_ms: number;
+};
+
+export type UptimeSummary = {
+  items: Array<UptimeSummaryItem>;
+};
+
+export type UptimeSummaryItem = {
+  site_id: string;
+  up: boolean;
+  http_status?: number;
+  last_check?: string;
+  tls_expiry?: string;
+};
+
+/**
+ * A tenant's uptime alert channel. The webhook secret is write-only and is
+ * never returned; webhook_configured indicates whether a webhook URL is set.
+ *
+ */
+export type AlertConfig = {
+  email_recipients: Array<string>;
+  webhook_url?: string;
+  webhook_configured: boolean;
+  enabled: boolean;
+};
+
+/**
+ * Create or update the tenant's uptime alert channel.
+ */
+export type AlertConfigUpdate = {
+  email_recipients?: Array<string>;
+  webhook_url?: string;
+  /**
+   * Write-only HMAC signing secret for the webhook payload.
+   */
+  webhook_secret?: string;
+  enabled?: boolean;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -1526,3 +1609,94 @@ export type PutBackupScheduleResponses = {
 
 export type PutBackupScheduleResponse =
   PutBackupScheduleResponses[keyof PutBackupScheduleResponses];
+
+export type GetSiteUptimeData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    window?: "7d" | "30d" | "90d";
+  };
+  url: "/api/v1/sites/{siteId}/uptime";
+};
+
+export type GetSiteUptimeErrors = {
+  /**
+   * Site not found
+   */
+  404: Error;
+};
+
+export type GetSiteUptimeError = GetSiteUptimeErrors[keyof GetSiteUptimeErrors];
+
+export type GetSiteUptimeResponses = {
+  /**
+   * The site's uptime status
+   */
+  200: UptimeStatus;
+};
+
+export type GetSiteUptimeResponse =
+  GetSiteUptimeResponses[keyof GetSiteUptimeResponses];
+
+export type GetUptimeSummaryData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/uptime/summary";
+};
+
+export type GetUptimeSummaryResponses = {
+  /**
+   * Per-site current uptime status
+   */
+  200: UptimeSummary;
+};
+
+export type GetUptimeSummaryResponse =
+  GetUptimeSummaryResponses[keyof GetUptimeSummaryResponses];
+
+export type GetAlertConfigData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/alert-config";
+};
+
+export type GetAlertConfigResponses = {
+  /**
+   * The tenant's alert configuration
+   */
+  200: AlertConfig;
+};
+
+export type GetAlertConfigResponse =
+  GetAlertConfigResponses[keyof GetAlertConfigResponses];
+
+export type PutAlertConfigData = {
+  body: AlertConfigUpdate;
+  path?: never;
+  query?: never;
+  url: "/api/v1/alert-config";
+};
+
+export type PutAlertConfigErrors = {
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type PutAlertConfigError =
+  PutAlertConfigErrors[keyof PutAlertConfigErrors];
+
+export type PutAlertConfigResponses = {
+  /**
+   * The saved alert configuration
+   */
+  200: AlertConfig;
+};
+
+export type PutAlertConfigResponse =
+  PutAlertConfigResponses[keyof PutAlertConfigResponses];

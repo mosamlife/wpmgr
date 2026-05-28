@@ -346,6 +346,46 @@ func (q *Queries) ListEnrolledSitesAllTenants(ctx context.Context) ([]ListEnroll
 	return items, nil
 }
 
+const listEnrolledSitesForProbe = `-- name: ListEnrolledSitesForProbe :many
+SELECT id, tenant_id, url, health_status FROM sites
+WHERE enrolled_at IS NOT NULL
+`
+
+type ListEnrolledSitesForProbeRow struct {
+	ID           uuid.UUID `json:"id"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+	Url          string    `json:"url"`
+	HealthStatus string    `json:"health_status"`
+}
+
+// Cross-tenant enumeration of enrolled sites WITH their URL for the M5 uptime
+// probe job. Runs under the app.agent GUC (sites_agent policy) since it spans
+// tenants. Only enrolled sites have an agent URL worth probing.
+func (q *Queries) ListEnrolledSitesForProbe(ctx context.Context) ([]ListEnrolledSitesForProbeRow, error) {
+	rows, err := q.db.Query(ctx, listEnrolledSitesForProbe)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEnrolledSitesForProbeRow
+	for rows.Next() {
+		var i ListEnrolledSitesForProbeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Url,
+			&i.HealthStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSites = `-- name: ListSites :many
 SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at FROM sites
 WHERE tenant_id = $1
@@ -461,6 +501,27 @@ func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipie
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const setSiteHealthStatus = `-- name: SetSiteHealthStatus :execrows
+UPDATE sites
+SET health_status = $2, updated_at = now()
+WHERE id = $1 AND health_status <> $2
+`
+
+type SetSiteHealthStatusParams struct {
+	ID           uuid.UUID `json:"id"`
+	HealthStatus string    `json:"health_status"`
+}
+
+// Sets a site's health_status from an M5 probe result (cross-tenant probe job,
+// app.agent GUC). Only writes when the value actually changes to avoid churn.
+func (q *Queries) SetSiteHealthStatus(ctx context.Context, arg SetSiteHealthStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSiteHealthStatus, arg.ID, arg.HealthStatus)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setSiteTags = `-- name: SetSiteTags :one

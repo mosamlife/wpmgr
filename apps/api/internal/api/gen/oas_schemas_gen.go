@@ -130,6 +130,108 @@ func (s *AgentSignature) SetRoles(val []string) {
 	s.Roles = val
 }
 
+// A tenant's uptime alert channel. The webhook secret is write-only and is
+// never returned; webhook_configured indicates whether a webhook URL is set.
+// Ref: #/components/schemas/AlertConfig
+type AlertConfig struct {
+	EmailRecipients   []string  `json:"email_recipients"`
+	WebhookURL        OptString `json:"webhook_url"`
+	WebhookConfigured bool      `json:"webhook_configured"`
+	Enabled           bool      `json:"enabled"`
+}
+
+// GetEmailRecipients returns the value of EmailRecipients.
+func (s *AlertConfig) GetEmailRecipients() []string {
+	return s.EmailRecipients
+}
+
+// GetWebhookURL returns the value of WebhookURL.
+func (s *AlertConfig) GetWebhookURL() OptString {
+	return s.WebhookURL
+}
+
+// GetWebhookConfigured returns the value of WebhookConfigured.
+func (s *AlertConfig) GetWebhookConfigured() bool {
+	return s.WebhookConfigured
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AlertConfig) GetEnabled() bool {
+	return s.Enabled
+}
+
+// SetEmailRecipients sets the value of EmailRecipients.
+func (s *AlertConfig) SetEmailRecipients(val []string) {
+	s.EmailRecipients = val
+}
+
+// SetWebhookURL sets the value of WebhookURL.
+func (s *AlertConfig) SetWebhookURL(val OptString) {
+	s.WebhookURL = val
+}
+
+// SetWebhookConfigured sets the value of WebhookConfigured.
+func (s *AlertConfig) SetWebhookConfigured(val bool) {
+	s.WebhookConfigured = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AlertConfig) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+func (*AlertConfig) putAlertConfigRes() {}
+
+// Create or update the tenant's uptime alert channel.
+// Ref: #/components/schemas/AlertConfigUpdate
+type AlertConfigUpdate struct {
+	EmailRecipients []string  `json:"email_recipients"`
+	WebhookURL      OptString `json:"webhook_url"`
+	// Write-only HMAC signing secret for the webhook payload.
+	WebhookSecret OptString `json:"webhook_secret"`
+	Enabled       OptBool   `json:"enabled"`
+}
+
+// GetEmailRecipients returns the value of EmailRecipients.
+func (s *AlertConfigUpdate) GetEmailRecipients() []string {
+	return s.EmailRecipients
+}
+
+// GetWebhookURL returns the value of WebhookURL.
+func (s *AlertConfigUpdate) GetWebhookURL() OptString {
+	return s.WebhookURL
+}
+
+// GetWebhookSecret returns the value of WebhookSecret.
+func (s *AlertConfigUpdate) GetWebhookSecret() OptString {
+	return s.WebhookSecret
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AlertConfigUpdate) GetEnabled() OptBool {
+	return s.Enabled
+}
+
+// SetEmailRecipients sets the value of EmailRecipients.
+func (s *AlertConfigUpdate) SetEmailRecipients(val []string) {
+	s.EmailRecipients = val
+}
+
+// SetWebhookURL sets the value of WebhookURL.
+func (s *AlertConfigUpdate) SetWebhookURL(val OptString) {
+	s.WebhookURL = val
+}
+
+// SetWebhookSecret sets the value of WebhookSecret.
+func (s *AlertConfigUpdate) SetWebhookSecret(val OptString) {
+	s.WebhookSecret = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AlertConfigUpdate) SetEnabled(val OptBool) {
+	s.Enabled = val
+}
+
 // Ref: #/components/schemas/ApiKey
 type ApiKey struct {
 	ID         uuid.UUID   `json:"id"`
@@ -1586,10 +1688,12 @@ func (*Error) getBackupRes()         {}
 func (*Error) getBackupScheduleRes() {}
 func (*Error) getMeRes()             {}
 func (*Error) getSiteRes()           {}
+func (*Error) getSiteUptimeRes()     {}
 func (*Error) getTenantRes()         {}
 func (*Error) getUpdateRunRes()      {}
 func (*Error) logoutRes()            {}
 func (*Error) oidcLoginRes()         {}
+func (*Error) putAlertConfigRes()    {}
 func (*Error) putBackupScheduleRes() {}
 func (*Error) setSiteTagsRes()       {}
 
@@ -1611,6 +1715,54 @@ func (*GetReadyzOK) getReadyzRes() {}
 type GetReadyzServiceUnavailable Readiness
 
 func (*GetReadyzServiceUnavailable) getReadyzRes() {}
+
+type GetSiteUptimeWindow string
+
+const (
+	GetSiteUptimeWindow7d  GetSiteUptimeWindow = "7d"
+	GetSiteUptimeWindow30d GetSiteUptimeWindow = "30d"
+	GetSiteUptimeWindow90d GetSiteUptimeWindow = "90d"
+)
+
+// AllValues returns all GetSiteUptimeWindow values.
+func (GetSiteUptimeWindow) AllValues() []GetSiteUptimeWindow {
+	return []GetSiteUptimeWindow{
+		GetSiteUptimeWindow7d,
+		GetSiteUptimeWindow30d,
+		GetSiteUptimeWindow90d,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GetSiteUptimeWindow) MarshalText() ([]byte, error) {
+	switch s {
+	case GetSiteUptimeWindow7d:
+		return []byte(s), nil
+	case GetSiteUptimeWindow30d:
+		return []byte(s), nil
+	case GetSiteUptimeWindow90d:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GetSiteUptimeWindow) UnmarshalText(data []byte) error {
+	switch GetSiteUptimeWindow(data) {
+	case GetSiteUptimeWindow7d:
+		*s = GetSiteUptimeWindow7d
+		return nil
+	case GetSiteUptimeWindow30d:
+		*s = GetSiteUptimeWindow30d
+		return nil
+	case GetSiteUptimeWindow90d:
+		*s = GetSiteUptimeWindow90d
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/Health
 type Health struct {
@@ -2226,6 +2378,52 @@ func (o OptErrorDetails) Get() (v ErrorDetails, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptErrorDetails) Or(d ErrorDetails) ErrorDetails {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptGetSiteUptimeWindow returns new OptGetSiteUptimeWindow with value set to v.
+func NewOptGetSiteUptimeWindow(v GetSiteUptimeWindow) OptGetSiteUptimeWindow {
+	return OptGetSiteUptimeWindow{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptGetSiteUptimeWindow is optional GetSiteUptimeWindow.
+type OptGetSiteUptimeWindow struct {
+	Value GetSiteUptimeWindow
+	Set   bool
+}
+
+// IsSet returns true if OptGetSiteUptimeWindow was set.
+func (o OptGetSiteUptimeWindow) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptGetSiteUptimeWindow) Reset() {
+	var v GetSiteUptimeWindow
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptGetSiteUptimeWindow) SetTo(v GetSiteUptimeWindow) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptGetSiteUptimeWindow) Get() (v GetSiteUptimeWindow, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptGetSiteUptimeWindow) Or(d GetSiteUptimeWindow) GetSiteUptimeWindow {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -4224,6 +4422,290 @@ func (s *UpdateTaskTargetType) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// Ref: #/components/schemas/UptimePoint
+type UptimePoint struct {
+	// Start of the time bucket.
+	Bucket       time.Time `json:"bucket"`
+	Checks       int64     `json:"checks"`
+	UpChecks     int64     `json:"up_checks"`
+	AvgLatencyMs float64   `json:"avg_latency_ms"`
+}
+
+// GetBucket returns the value of Bucket.
+func (s *UptimePoint) GetBucket() time.Time {
+	return s.Bucket
+}
+
+// GetChecks returns the value of Checks.
+func (s *UptimePoint) GetChecks() int64 {
+	return s.Checks
+}
+
+// GetUpChecks returns the value of UpChecks.
+func (s *UptimePoint) GetUpChecks() int64 {
+	return s.UpChecks
+}
+
+// GetAvgLatencyMs returns the value of AvgLatencyMs.
+func (s *UptimePoint) GetAvgLatencyMs() float64 {
+	return s.AvgLatencyMs
+}
+
+// SetBucket sets the value of Bucket.
+func (s *UptimePoint) SetBucket(val time.Time) {
+	s.Bucket = val
+}
+
+// SetChecks sets the value of Checks.
+func (s *UptimePoint) SetChecks(val int64) {
+	s.Checks = val
+}
+
+// SetUpChecks sets the value of UpChecks.
+func (s *UptimePoint) SetUpChecks(val int64) {
+	s.UpChecks = val
+}
+
+// SetAvgLatencyMs sets the value of AvgLatencyMs.
+func (s *UptimePoint) SetAvgLatencyMs(val float64) {
+	s.AvgLatencyMs = val
+}
+
+// Windowed uptime status for a single site (from the metrics store).
+// Ref: #/components/schemas/UptimeStatus
+type UptimeStatus struct {
+	SiteID uuid.UUID          `json:"site_id"`
+	Window UptimeStatusWindow `json:"window"`
+	// Percentage of checks in the window that were up (0-100).
+	UptimePct float64 `json:"uptime_pct"`
+	// Mean total request time over the window, in milliseconds.
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	// Number of probe checks recorded in the window.
+	Checks int64 `json:"checks"`
+	// Whether the most recent probe classified the site as up.
+	Up bool `json:"up"`
+	// Time of the most recent probe (absent if never probed).
+	LastCheck OptDateTime `json:"last_check"`
+	// Leaf TLS certificate expiry from the latest probe (HTTPS only).
+	TLSExpiry OptDateTime `json:"tls_expiry"`
+	// Downsampled per-bucket check series over the window.
+	Series []UptimePoint `json:"series"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *UptimeStatus) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetWindow returns the value of Window.
+func (s *UptimeStatus) GetWindow() UptimeStatusWindow {
+	return s.Window
+}
+
+// GetUptimePct returns the value of UptimePct.
+func (s *UptimeStatus) GetUptimePct() float64 {
+	return s.UptimePct
+}
+
+// GetAvgLatencyMs returns the value of AvgLatencyMs.
+func (s *UptimeStatus) GetAvgLatencyMs() float64 {
+	return s.AvgLatencyMs
+}
+
+// GetChecks returns the value of Checks.
+func (s *UptimeStatus) GetChecks() int64 {
+	return s.Checks
+}
+
+// GetUp returns the value of Up.
+func (s *UptimeStatus) GetUp() bool {
+	return s.Up
+}
+
+// GetLastCheck returns the value of LastCheck.
+func (s *UptimeStatus) GetLastCheck() OptDateTime {
+	return s.LastCheck
+}
+
+// GetTLSExpiry returns the value of TLSExpiry.
+func (s *UptimeStatus) GetTLSExpiry() OptDateTime {
+	return s.TLSExpiry
+}
+
+// GetSeries returns the value of Series.
+func (s *UptimeStatus) GetSeries() []UptimePoint {
+	return s.Series
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *UptimeStatus) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetWindow sets the value of Window.
+func (s *UptimeStatus) SetWindow(val UptimeStatusWindow) {
+	s.Window = val
+}
+
+// SetUptimePct sets the value of UptimePct.
+func (s *UptimeStatus) SetUptimePct(val float64) {
+	s.UptimePct = val
+}
+
+// SetAvgLatencyMs sets the value of AvgLatencyMs.
+func (s *UptimeStatus) SetAvgLatencyMs(val float64) {
+	s.AvgLatencyMs = val
+}
+
+// SetChecks sets the value of Checks.
+func (s *UptimeStatus) SetChecks(val int64) {
+	s.Checks = val
+}
+
+// SetUp sets the value of Up.
+func (s *UptimeStatus) SetUp(val bool) {
+	s.Up = val
+}
+
+// SetLastCheck sets the value of LastCheck.
+func (s *UptimeStatus) SetLastCheck(val OptDateTime) {
+	s.LastCheck = val
+}
+
+// SetTLSExpiry sets the value of TLSExpiry.
+func (s *UptimeStatus) SetTLSExpiry(val OptDateTime) {
+	s.TLSExpiry = val
+}
+
+// SetSeries sets the value of Series.
+func (s *UptimeStatus) SetSeries(val []UptimePoint) {
+	s.Series = val
+}
+
+func (*UptimeStatus) getSiteUptimeRes() {}
+
+type UptimeStatusWindow string
+
+const (
+	UptimeStatusWindow7d  UptimeStatusWindow = "7d"
+	UptimeStatusWindow30d UptimeStatusWindow = "30d"
+	UptimeStatusWindow90d UptimeStatusWindow = "90d"
+)
+
+// AllValues returns all UptimeStatusWindow values.
+func (UptimeStatusWindow) AllValues() []UptimeStatusWindow {
+	return []UptimeStatusWindow{
+		UptimeStatusWindow7d,
+		UptimeStatusWindow30d,
+		UptimeStatusWindow90d,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UptimeStatusWindow) MarshalText() ([]byte, error) {
+	switch s {
+	case UptimeStatusWindow7d:
+		return []byte(s), nil
+	case UptimeStatusWindow30d:
+		return []byte(s), nil
+	case UptimeStatusWindow90d:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UptimeStatusWindow) UnmarshalText(data []byte) error {
+	switch UptimeStatusWindow(data) {
+	case UptimeStatusWindow7d:
+		*s = UptimeStatusWindow7d
+		return nil
+	case UptimeStatusWindow30d:
+		*s = UptimeStatusWindow30d
+		return nil
+	case UptimeStatusWindow90d:
+		*s = UptimeStatusWindow90d
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/UptimeSummary
+type UptimeSummary struct {
+	Items []UptimeSummaryItem `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *UptimeSummary) GetItems() []UptimeSummaryItem {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *UptimeSummary) SetItems(val []UptimeSummaryItem) {
+	s.Items = val
+}
+
+// Ref: #/components/schemas/UptimeSummaryItem
+type UptimeSummaryItem struct {
+	SiteID     uuid.UUID   `json:"site_id"`
+	Up         bool        `json:"up"`
+	HTTPStatus OptInt32    `json:"http_status"`
+	LastCheck  OptDateTime `json:"last_check"`
+	TLSExpiry  OptDateTime `json:"tls_expiry"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *UptimeSummaryItem) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetUp returns the value of Up.
+func (s *UptimeSummaryItem) GetUp() bool {
+	return s.Up
+}
+
+// GetHTTPStatus returns the value of HTTPStatus.
+func (s *UptimeSummaryItem) GetHTTPStatus() OptInt32 {
+	return s.HTTPStatus
+}
+
+// GetLastCheck returns the value of LastCheck.
+func (s *UptimeSummaryItem) GetLastCheck() OptDateTime {
+	return s.LastCheck
+}
+
+// GetTLSExpiry returns the value of TLSExpiry.
+func (s *UptimeSummaryItem) GetTLSExpiry() OptDateTime {
+	return s.TLSExpiry
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *UptimeSummaryItem) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetUp sets the value of Up.
+func (s *UptimeSummaryItem) SetUp(val bool) {
+	s.Up = val
+}
+
+// SetHTTPStatus sets the value of HTTPStatus.
+func (s *UptimeSummaryItem) SetHTTPStatus(val OptInt32) {
+	s.HTTPStatus = val
+}
+
+// SetLastCheck sets the value of LastCheck.
+func (s *UptimeSummaryItem) SetLastCheck(val OptDateTime) {
+	s.LastCheck = val
+}
+
+// SetTLSExpiry sets the value of TLSExpiry.
+func (s *UptimeSummaryItem) SetTLSExpiry(val OptDateTime) {
+	s.TLSExpiry = val
 }
 
 // Ref: #/components/schemas/User

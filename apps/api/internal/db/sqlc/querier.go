@@ -73,6 +73,9 @@ type Querier interface {
 	// impossible chicken/egg — instead this query is run with RLS disabled scope by
 	// using the prefix-unique lookup helper that sets the GUC after. See repo.
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	// M5 uptime alerting: per-tenant alert config + per-site alert state.
+	// Tenant-scoped read of the tenant's default alert channel.
+	GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (AlertConfig, error)
 	// ---------------------------------------------------------------------------
 	// backup_chunks  (content-addressed dedup + refcount GC)
 	// ---------------------------------------------------------------------------
@@ -88,6 +91,8 @@ type Querier interface {
 	// tenant is known.
 	GetPairingCodeByHash(ctx context.Context, codeHash string) (PairingCode, error)
 	GetSite(ctx context.Context, arg GetSiteParams) (Site, error)
+	// Cross-tenant read of one site's alert state (app.agent GUC) for the probe job.
+	GetSiteAlertState(ctx context.Context, siteID uuid.UUID) (SiteAlertState, error)
 	// ---------------------------------------------------------------------------
 	// Agent-auth path (app.agent GUC). Resolve a site by its agent public key.
 	// ---------------------------------------------------------------------------
@@ -115,6 +120,9 @@ type Querier interface {
 	InsertAuditEntry(ctx context.Context, arg InsertAuditEntryParams) (AuditLog, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
+	// Cross-tenant enumeration for the evaluator (app.agent GUC). Only enabled
+	// configs are returned.
+	ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error)
 	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]AuditLog, error)
 	ListAuditEntriesForVerify(ctx context.Context, tenantID uuid.UUID) ([]AuditLog, error)
 	// Returns the tenant's already-stored chunks among the given hashes (dedup: the
@@ -136,6 +144,10 @@ type Querier interface {
 	// Cross-tenant enumeration for the periodic health job. Runs under the
 	// app.agent GUC (sites_agent policy) since it spans tenants.
 	ListEnrolledSitesAllTenants(ctx context.Context) ([]ListEnrolledSitesAllTenantsRow, error)
+	// Cross-tenant enumeration of enrolled sites WITH their URL for the M5 uptime
+	// probe job. Runs under the app.agent GUC (sites_agent policy) since it spans
+	// tenants. Only enrolled sites have an agent URL worth probing.
+	ListEnrolledSitesForProbe(ctx context.Context) ([]ListEnrolledSitesForProbeRow, error)
 	// Completed snapshots older than the cutoff that are NOT archive-retained, in a
 	// single tenant scope. The GC job decrements chunk refcounts for each then
 	// deletes the snapshot (manifest entries cascade).
@@ -170,6 +182,9 @@ type Querier interface {
 	// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
 	// never holds the matching identity (private key); it cannot decrypt backups.
 	SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipientParams) (Site, error)
+	// Sets a site's health_status from an M5 probe result (cross-tenant probe job,
+	// app.agent GUC). Only writes when the value actually changes to avoid churn.
+	SetSiteHealthStatus(ctx context.Context, arg SetSiteHealthStatusParams) (int64, error)
 	SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site, error)
 	SetUpdateRunStatus(ctx context.Context, arg SetUpdateRunStatusParams) (UpdateRun, error)
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
@@ -180,12 +195,17 @@ type Querier interface {
 	// Tenant-scoped metadata update (used by the agent path inside the resolved
 	// site's own tenant scope).
 	UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadataParams) (Site, error)
+	// Tenant-scoped create-or-update of the tenant's default alert channel.
+	UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error)
 	// Records a chunk's storage location idempotently. On conflict (the chunk
 	// already exists) it leaves size/s3_key as-is (content-addressed: identical
 	// hash ⇒ identical bytes) and returns the existing row. refcount is managed
 	// separately by IncrementChunkRefcount.
 	UpsertBackupChunk(ctx context.Context, arg UpsertBackupChunkParams) (BackupChunk, error)
 	UpsertBackupSchedule(ctx context.Context, arg UpsertBackupScheduleParams) (BackupSchedule, error)
+	// Cross-tenant upsert of a site's alert state (app.agent GUC). The probe worker
+	// writes the new transition memory after each probe.
+	UpsertSiteAlertState(ctx context.Context, arg UpsertSiteAlertStateParams) (SiteAlertState, error)
 }
 
 var _ Querier = (*Queries)(nil)

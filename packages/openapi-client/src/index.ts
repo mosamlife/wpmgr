@@ -55,6 +55,11 @@ export {
   createRestore,
   getBackupSchedule,
   putBackupSchedule,
+  // monitoring (M5)
+  getSiteUptime,
+  getUptimeSummary,
+  getAlertConfig,
+  putAlertConfig,
 } from "./generated/sdk.gen";
 
 // --- Domain + request/response types ----------------------------------------
@@ -146,4 +151,17 @@ export type {
   GetBackupScheduleResponse,
   PutBackupScheduleData,
   PutBackupScheduleResponse,
+  // monitoring (M5)
+  UptimeStatus,
+  UptimePoint,
+  UptimeSummary,
+  UptimeSummaryItem,
+  AlertConfig,
+  AlertConfigUpdate,
+  GetSiteUptimeData,
+  GetSiteUptimeResponse,
+  GetUptimeSummaryResponse,
+  GetAlertConfigResponse,
+  PutAlertConfigData,
+  PutAlertConfigResponse,
 } from "./generated/types.gen";
