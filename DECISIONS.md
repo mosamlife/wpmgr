@@ -48,6 +48,8 @@ stay in place with a `Superseded` status and a pointer to the replacement.
 | Sessions | alexedwards/scs (Redis store, pgx fallback) | ADR-024 |
 | Password hashing | alexedwards/argon2id (Argon2id, OWASP) | ADR-025 |
 | Self-host IdP | Dex | ADR-026 |
+| ClickHouse driver (metrics) | clickhouse-go v2 | ADR-028 |
+| Email/SMTP | wneessen/go-mail | ADR-029 |
 
 ## Phase 3 risk register
 
@@ -564,3 +566,46 @@ before/within Phase 4:
   Chunk ids are blake3 of the ciphertext, tenant-namespaced in S3 (`chunks/<tenant>/…`)
   for dedup + isolation. Operator-escrowed identity (CP-assisted decrypt with explicit
   consent) is deferred beyond V0.
+
+## ADR-028: ClickHouse Go driver (metrics) — ClickHouse/clickhouse-go v2
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** M5 (Uptime Monitoring) writes per-site probe results to ClickHouse (the
+  metrics store, separate from Postgres) at ~60s cadence and queries uptime % over
+  7/30/90-day windows. Need good batch-insert ergonomics + windowed-aggregation query
+  DX, active maintenance, AGPLv3-compatible license.
+- **Options considered:**
+
+| Driver | Maint | Perf | DX | Fit | License | Notes |
+|---|---|---|---|---|---|---|
+| **clickhouse-go v2** | 5 (v2.46, May 2026) | 4 | 5 | 5 | 5 Apache-2.0 | official; native batch + database/sql; built on ch-go |
+| ch-go | 5 | 5 | 2 | 3 | 5 | low-level, no pool/reconnect, not goroutine-safe — overkill |
+| uptrace/go-clickhouse | 1 (Feb 2023, stale) | 4 | 4 | 2 | 5 | DISQUALIFIED (>12mo stale) |
+
+  Sources: [clickhouse-go releases](https://github.com/ClickHouse/clickhouse-go/releases), [ch-go](https://github.com/ClickHouse/ch-go), [uptrace/go-clickhouse](https://github.com/uptrace/go-clickhouse).
+
+- **Decision:** **clickhouse-go v2** — official, active, Apache-2.0; native `PrepareBatch` for the probe write stream + `database/sql`-compatible queries for uptime aggregations. ch-go's raw perf isn't needed at 60s cadence (clickhouse-go already wraps ch-go for encoding).
+- **Consequences:** ClickHouse is metrics-only; Postgres remains system of record. A thin hand-written ClickHouse repo (no sqlc), tested against a ClickHouse container. Can drop to ch-go for the insert hot path later without protocol/license change.
+
+## ADR-029: Email/SMTP sending library — wneessen/go-mail
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** Self-hosters configure their own SMTP (host/port/user/pass, STARTTLS/implicit
+  TLS, from). M5 sends downtime alerts; M7 sends scheduled HTML/PDF reports — so HTML +
+  attachments + modern TLS/auth matter. Need an SMTP SENDING client (not a SaaS SDK),
+  AGPLv3-compatible.
+- **Options considered:**
+
+| Library | Maint | Perf | DX | Fit | License | Notes |
+|---|---|---|---|---|---|---|
+| **wneessen/go-mail** | 5 (v0.7.3, May 2026) | 4 | 5 | 5 | 5 MIT | HTML/templates, attachments (FS/io.Reader/embed), STARTTLS+TLS, PLAIN/LOGIN/CRAM-MD5/XOAUTH2/SCRAM |
+| xhit/go-simple-mail | 3 (Aug 2023) | 4 | 4 | 4 | 5 MIT | viable fallback; lags cadence, no XOAUTH2/SCRAM |
+| stdlib net/smtp | 2 (frozen) | 4 | 2 | 2 | 5 | no MIME/HTML helpers, STARTTLS bugs |
+| jordan-wright/email | 1 (2020, stale) | 4 | 3 | 2 | 5 | DISQUALIFIED (>12mo stale) |
+
+  Sources: [wneessen/go-mail](https://github.com/wneessen/go-mail), [net/smtp (frozen)](https://pkg.go.dev/net/smtp), [xhit/go-simple-mail](https://github.com/xhit/go-simple-mail).
+
+- **Decision:** **wneessen/go-mail** — only candidate both actively maintained and purpose-built: HTML/templates + attachments (for M7), explicit STARTTLS/implicit-TLS policy for self-hoster SMTP, broadest modern auth, MIT, near-stdlib footprint.
+- **Consequences:** Map self-host SMTP config onto a configured `*mail.Client`; `html/template` bodies for alerts now, same client + attachments for M7 reports. Test against a local SMTP sink (Mailpit). Single-maintainer risk mitigated by go-simple-mail as a drop-in fallback.
