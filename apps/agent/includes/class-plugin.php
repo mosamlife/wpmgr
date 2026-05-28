@@ -25,6 +25,12 @@ use WPMgr\Agent\Commands\UpdateCommand;
  */
 final class Plugin
 {
+    /**
+     * Option flag set when keystore initialization failed during activation,
+     * so admin pages can surface a fix-it notice and a lazy retry can run.
+     */
+    public const OPTION_KEYSTORE_ERROR = 'wpmgr_agent_keystore_error';
+
     private static ?Plugin $instance = null;
 
     private Keystore $keystore;
@@ -86,6 +92,10 @@ final class Plugin
 
         if (function_exists('is_admin') && is_admin()) {
             $this->admin->registerHooks();
+            // Lazily retry keystore setup and surface a fix-it notice if it
+            // could not be established during activation.
+            add_action('admin_init', [$this, 'ensureKeystoreReady']);
+            add_action('admin_notices', [$this, 'renderKeystoreNotice']);
         }
 
         if (defined('WPMGR_AGENT_FILE')) {
@@ -97,21 +107,93 @@ final class Plugin
     /**
      * Activation hook: create the jti table and generate the site keypair.
      *
+     * Keystore setup is best-effort and MUST NOT fatal the activation: a
+     * non-writable host or missing salts would otherwise white-screen the site.
+     * On failure we record a persistent flag, show an admin notice, and let the
+     * plugin activate so it can retry lazily on later admin loads.
+     *
      * @return void
      */
     public function activate(): void
     {
         $this->createJtiTable();
 
-        // Generate the site's own Ed25519 keypair on first activation only.
-        if ($this->keystore->getSiteKeypair() === null) {
-            $this->keystore->generateSiteKeypair();
-        }
+        $this->setupKeystore();
 
         // Record first-activation time and schedule reporting + safety events.
         $now = time();
         $this->settings->markActivated($now);
         $this->scheduler->scheduleEvents($now);
+    }
+
+    /**
+     * Best-effort keystore initialization: ensure the site keypair exists.
+     * Returns true on success. Never throws; on failure it persists an error
+     * flag so the admin can be notified and a retry can run later.
+     *
+     * @return bool Whether the keystore is ready.
+     */
+    private function setupKeystore(): bool
+    {
+        try {
+            // Generate the site's own Ed25519 keypair on first activation only.
+            // getSiteKeypair() also exercises master-key decryption, so a bad
+            // key source surfaces here rather than at request time.
+            if ($this->keystore->getSiteKeypair() === null) {
+                $this->keystore->generateSiteKeypair();
+            }
+
+            delete_option(self::OPTION_KEYSTORE_ERROR);
+
+            return true;
+        } catch (\Throwable $e) {
+            update_option(
+                self::OPTION_KEYSTORE_ERROR,
+                'WPMgr Agent could not establish its encryption key. Define WPMGR_AGENT_KEY_FILE '
+                . 'in wp-config.php pointing to a writable path, or ensure your wp-config.php '
+                . 'secret salts (AUTH_KEY, ...) are set. The plugin is active but inactive until '
+                . 'this is resolved.',
+                false
+            );
+
+            return false;
+        }
+    }
+
+    /**
+     * Lazily retry keystore setup on admin loads when a prior attempt failed.
+     * Bound to admin_init.
+     *
+     * @return void
+     */
+    public function ensureKeystoreReady(): void
+    {
+        if (get_option(self::OPTION_KEYSTORE_ERROR) === false) {
+            return;
+        }
+
+        $this->setupKeystore();
+    }
+
+    /**
+     * Render the persistent keystore-failure admin notice, if any.
+     * Bound to admin_notices.
+     *
+     * @return void
+     */
+    public function renderKeystoreNotice(): void
+    {
+        $message = get_option(self::OPTION_KEYSTORE_ERROR);
+        if (!is_string($message) || $message === '') {
+            return;
+        }
+        if (function_exists('current_user_can') && !current_user_can('manage_options')) {
+            return;
+        }
+
+        echo '<div class="notice notice-error"><p><strong>'
+            . esc_html('WPMgr Agent: setup incomplete.') . '</strong> '
+            . esc_html($message) . '</p></div>';
     }
 
     /**
