@@ -50,6 +50,8 @@ stay in place with a `Superseded` status and a pointer to the replacement.
 | Self-host IdP | Dex | ADR-026 |
 | ClickHouse driver (metrics) | clickhouse-go v2 | ADR-028 |
 | Email/SMTP | wneessen/go-mail | ADR-029 |
+| Auto-login nonce store | Postgres + Redis (redigo) | ADR-030 |
+| Auto-login token format | Ed25519 JWT (reuse agentcmd) | ADR-031 |
 
 ## Phase 3 risk register
 
@@ -609,3 +611,72 @@ before/within Phase 4:
 
 - **Decision:** **wneessen/go-mail** — only candidate both actively maintained and purpose-built: HTML/templates + attachments (for M7), explicit STARTTLS/implicit-TLS policy for self-hoster SMTP, broadest modern auth, MIT, near-stdlib footprint.
 - **Consequences:** Map self-host SMTP config onto a configured `*mail.Client`; `html/template` bodies for alerts now, same client + attachments for M7 reports. Test against a local SMTP sink (Mailpit). Single-maintainer risk mitigated by go-simple-mail as a drop-in fallback.
+
+## ADR-030: Auto-login nonce store — Postgres source of truth + Redis hot-path consume
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** Phase 5.5 mints single-use, 60-second auto-login tokens (per-site, per-
+  initiator) and consumes them atomically when the agent calls back. We need:
+  (1) durable storage with RLS for cross-tenant safety + audit-friendly history (the
+  audit log links to the token row), (2) sub-millisecond atomic consume so the
+  user's `/wp-admin/` redirect lands within ~1 RTT, (3) survival of API restarts and
+  Redis flushes, (4) NO new dependencies (already at +6 deps this phase).
+- **Options considered:**
+
+| Option | Durability | Atomic-consume perf | Audit linkage | Failure mode | New deps |
+|---|---|---|---|---|---|
+| Redis only (e.g. `GETDEL`) | ❌ (Redis flush = all tokens lost) | ✅ fastest | ⚠️ separate audit-only write | Redis down → feature down | none |
+| Postgres only (`SELECT … FOR UPDATE`) | ✅ | ⚠️ row-lock overhead at scale | ✅ FK-able | tx contention possible | none |
+| **Postgres source of truth + Redis hot-path** | ✅ | ✅ Redis `SET NX EX` + `GETDEL` on consume; PG row written on mint, marked consumed on success | ✅ FK-able | Redis down → fall back to PG `UPDATE … WHERE consumed_at IS NULL RETURNING …` (still atomic) | none |
+
+  Existing wiring: Redis is already in the stack via `gomodule/redigo` (M1 SCS sessions, ADR-024). Postgres + RLS already enforced on tenant-scoped tables.
+
+- **Decision:** **Both — Postgres source of truth + Redis hot-path consume cache.**
+  Mint writes the row to `autologin_tokens` (RLS, tenant-scoped, audit-FK-able) AND
+  sets `autologin:<jti>` in Redis with `EX 60`. Consume tries `GETDEL` on Redis
+  first (sub-ms); on Redis miss/error, falls back to a single atomic
+  `UPDATE autologin_tokens SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL RETURNING …`
+  (lock-free, single round-trip). The atomicity is enforced by Postgres
+  regardless of Redis availability; Redis is purely a latency win + replay shield.
+- **Consequences:** Two writes per mint (negligible at our scale); the two stores
+  can drift if Redis is wiped mid-window — that's fine because Postgres remains
+  authoritative and consume re-checks `consumed_at IS NULL`. A `consumed_at IS NULL`
+  partial index keeps the cleanup fast. Reuses `redigo` (no new deps).
+
+## ADR-031: Auto-login token format — Ed25519 JWT via existing agentcmd
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** The auto-login redirect carries a token in the URL that the WordPress
+  agent must verify before issuing a `wp_set_auth_cookie`. We need: cryptographic
+  authenticity (the agent must reject anything not signed by the control plane),
+  short expiry (≤60s), per-site/per-command binding (so a captured token can't be
+  replayed at another tenant's site, M3's HIGH-finding fix), and ideally ZERO new
+  dependencies (cookie issuance is the most sensitive surface we have).
+- **Options considered:**
+
+| Format | Crypto | Compactness | Agent verify cost | Library | Existing wiring |
+|---|---|---|---|---|---|
+| Paseto v4 | Ed25519 (PASERK) | similar | new PHP lib needed | paragonie/paseto | NONE |
+| Macaroons | HMAC + chained caveats | bigger | new lib both sides | libmacaroons | NONE |
+| **Ed25519 JWT via existing `agentcmd`** | Ed25519 over `header.payload` | ~250 bytes | already implemented + tested | reuses Go `crypto/ed25519` + `libsodium` agent-side | M3 — `aud`+`cmd`+`jti`+`exp`≤60s, agent `Connector::verifyCommand` enforces all of it |
+
+  The M3 agent-bound JWT exists EXACTLY for this threat shape (single global CP
+  signing key, cross-site replay defense). For auto-login it just needs `cmd="autologin"`.
+
+- **Decision:** **Reuse the existing M3 `internal/agentcmd` Ed25519 JWT** with
+  these claims for auto-login: `cmd="autologin"`, `aud=<target site UUID>`,
+  `jti=<32-byte CSPRNG nonce, base64url>`, `exp=now+60s`, plus a new claim
+  `tgt=<target WP user login>` (sub-claim is also acceptable; named `tgt` to avoid
+  collision with OIDC `sub`). The agent's `Connector::verifyCommand($token, "autologin")`
+  already validates signature → exp → jti-uniqueness-locally → aud (site_id match)
+  → cmd. The PHP autologin endpoint additionally calls the CP `consume` endpoint
+  for the cross-instance atomic single-use guarantee (Redis/PG, ADR-030).
+- **Consequences:** Zero new crypto/format dependencies. The autologin token is
+  structurally identical to update/rollback/backup command tokens — same verifier,
+  same anti-replay, same single-key rotation story. Adds one new `cmd` value
+  ("autologin") and one new claim (`tgt`). Defense-in-depth: the agent re-verifies
+  the cookie issue eligibility against its own policy (allowed roles) AFTER the
+  consume succeeds, so even a fully-valid token can't issue a cookie for a
+  disallowed role.

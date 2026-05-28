@@ -123,6 +123,19 @@
   - [x] M5 security review → PASS (no high/critical)
   - [x] Hardening applied: loud-log SSRF/TLS test escape hatches; enforce http(s) scheme on site URL + webhook URL
   - Deferred to later: encrypt alert_configs.webhook_secret at rest (CP-side AES-GCM with a master key); per-tenant probe fairness in the sweep (interleave or per-tenant cap)
+- [ ] **Phase 5.5 — One-Click Login (inserted before M6)** ⚠️ critical agency feature
+  - [x] ADR-030 nonce store (Postgres + Redis hot-path) · ADR-031 token format (reuse agentcmd Ed25519 JWT)
+  - [ ] User approval to proceed
+  - [ ] Backend (apps/api/internal/autologin): tokens + policies migration with RLS; mint + consume service; rate-limit (per initiator,site + per site); RBAC perm `site.autologin` added to authz matrix; reuse `agentcmd` to mint JWT with cmd="autologin", aud=site, jti=nonce, tgt=wp_user_login, exp≤60s
+  - [ ] Endpoints: POST /api/v1/sites/{id}/autologin (operator+, with `site.autologin` perm); agent-auth POST /agent/v1/autologin/consume (atomic single-use; Redis GETDEL → PG UPDATE … WHERE consumed_at IS NULL RETURNING fallback)
+  - [ ] Agent (apps/agent): `class-autologin-command.php` registering GET /wpmgr/v1/autologin — verifyCommand (signature + exp + jti + aud + cmd=autologin) → callback consume → role-allowed check → wp_clear_auth_cookie → wp_set_auth_cookie → wp_safe_redirect (open-redirect-safe sanitizer)
+  - [ ] Frontend: "Log in to site" dropdown button on site card + detail (default user / Plugins / Themes / other user); user-picker modal (from existing components.users sync); site Settings → Auto-login (enable, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes); error toasts mapped to API codes
+  - [ ] Audit events: autologin.requested / autologin.consumed / autologin.failed (with code: rbac_denied / policy_disabled / rate_limited / token_expired / consume_rejected)
+  - [ ] Hash-chained audit (M1 chain) entries for every initiate + every consume; IP + UA captured
+  - [ ] 2FA step-up: feature-FLAGGED off for V0 (WPMgr has no 2FA system yet — requires building a TOTP enroll/verify pass first; gated by `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP=false` default; spec'd in ADR + endpoint returns 409 with `code: "2fa_required"` when policy demands it and the user has no 2FA bound)
+  - [ ] Tests: unit (mint/consume/double-consume/expired/rate-limit/RBAC); integration testcontainers (concurrent consume — only one wins); PHP (bad sig/replay/redirect sanitizer/role check); Playwright E2E (mock the new tab; assert /wp-admin/-shaped path) — real-WP container E2E is a nice-to-have, defer if heavy
+  - [ ] Security review (security-reviewer agent) — MANDATORY before merge; the 16-item checklist from the spec must all pass
+  - [ ] Docs: docs/features/autologin.md (user how-to + troubleshooting); docs/agent.md (compatibility: Wordfence strict, iThemes Security strict; filters/actions); docs/security.md (threat model + mitigations)
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports
 - [ ] M8 — Polish & launch (audit log, V0 release)
