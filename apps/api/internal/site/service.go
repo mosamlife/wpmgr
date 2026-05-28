@@ -75,6 +75,16 @@ func (s *Service) SetTags(ctx context.Context, in SetTagsInput) (Site, error) {
 	return s.repo.SetTags(ctx, in)
 }
 
+// SetAgeRecipient stores the per-site age PUBLIC recipient that backups for the
+// site are encrypted to (client-side, on the agent). The control plane never
+// holds the matching identity, so it cannot decrypt backups.
+func (s *Service) SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error) {
+	if tenantID == uuid.Nil {
+		return Site{}, domain.Forbidden("tenant_required", "a tenant context is required")
+	}
+	return s.repo.SetAgeRecipient(ctx, tenantID, siteID, recipient)
+}
+
 // CreatePairingCode generates a one-time, short-TTL pairing code for the tenant
 // and returns the plaintext (shown once) plus the stored record.
 func (s *Service) CreatePairingCode(ctx context.Context, in CreatePairingCodeInput) (CreatedPairingCode, error) {

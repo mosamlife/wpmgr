@@ -12,8 +12,13 @@ import (
 )
 
 type Querier interface {
+	// Records that a scheduled backup was enqueued and advances next_run_at. The
+	// scheduler resolves the tenant from the due-row first, then advances within
+	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
+	AdvanceBackupScheduleRun(ctx context.Context, arg AdvanceBackupScheduleRunParams) (BackupSchedule, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (BackupSnapshot, error)
 	// Enroll path (app.enroll GUC): mark consumed only if still unconsumed.
 	ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, error)
 	// Best-effort per-tenant in-flight task count, used by the parallelism guard so
@@ -23,6 +28,16 @@ type Querier interface {
 	CountUnfinishedTasksForRun(ctx context.Context, arg CountUnfinishedTasksForRunParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
+	// M4 backup queries. Every statement is tenant-scoped both explicitly
+	// (tenant_id in the WHERE/VALUES) and by RLS (the app.tenant_id policy).
+	// ---------------------------------------------------------------------------
+	// backup_snapshots
+	// ---------------------------------------------------------------------------
+	CreateBackupSnapshot(ctx context.Context, arg CreateBackupSnapshotParams) (BackupSnapshot, error)
+	// ---------------------------------------------------------------------------
+	// backup_manifest_entries
+	// ---------------------------------------------------------------------------
+	CreateManifestEntry(ctx context.Context, arg CreateManifestEntryParams) (BackupManifestEntry, error)
 	CreateMembership(ctx context.Context, arg CreateMembershipParams) (Membership, error)
 	// Tenant-scoped (app.tenant_id) — operator generates a code for the tenant.
 	CreatePairingCode(ctx context.Context, arg CreatePairingCodeParams) (PairingCode, error)
@@ -38,8 +53,16 @@ type Querier interface {
 	CreateUpdateRun(ctx context.Context, arg CreateUpdateRunParams) (UpdateRun, error)
 	CreateUpdateTask(ctx context.Context, arg CreateUpdateTaskParams) (UpdateTask, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// Decrements but never below zero. Returns the new refcount + s3_key so the GC
+	// job can delete the object from storage when the count reaches zero.
+	DecrementChunkRefcount(ctx context.Context, arg DecrementChunkRefcountParams) (DecrementChunkRefcountRow, error)
+	DeleteBackupSnapshot(ctx context.Context, arg DeleteBackupSnapshotParams) (int64, error)
 	DeleteMembership(ctx context.Context, arg DeleteMembershipParams) (int64, error)
+	// Deletes a chunk row only if its refcount is zero (the object was already
+	// removed from storage by the GC job). Tenant-scoped.
+	DeleteOrphanChunk(ctx context.Context, arg DeleteOrphanChunkParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (BackupSnapshot, error)
 	// Records a terminal task state (succeeded|failed|rolled_back|skipped) with the
 	// resolved versions and any detail/error. Tenant-scoped by id+tenant_id.
 	FinishUpdateTask(ctx context.Context, arg FinishUpdateTaskParams) (UpdateTask, error)
@@ -50,6 +73,15 @@ type Querier interface {
 	// impossible chicken/egg — instead this query is run with RLS disabled scope by
 	// using the prefix-unique lookup helper that sets the GUC after. See repo.
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	// ---------------------------------------------------------------------------
+	// backup_chunks  (content-addressed dedup + refcount GC)
+	// ---------------------------------------------------------------------------
+	GetBackupChunk(ctx context.Context, arg GetBackupChunkParams) (BackupChunk, error)
+	// ---------------------------------------------------------------------------
+	// backup_schedules
+	// ---------------------------------------------------------------------------
+	GetBackupScheduleForSite(ctx context.Context, arg GetBackupScheduleForSiteParams) (BackupSchedule, error)
+	GetBackupSnapshot(ctx context.Context, arg GetBackupSnapshotParams) (BackupSnapshot, error)
 	GetLastAuditHash(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
@@ -74,6 +106,7 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
+	IncrementChunkRefcount(ctx context.Context, arg IncrementChunkRefcountParams) (BackupChunk, error)
 	// Enroll path (app.enroll GUC): record a failed validation attempt.
 	IncrementPairingCodeAttempts(ctx context.Context, id uuid.UUID) (int64, error)
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
@@ -84,12 +117,30 @@ type Querier interface {
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
 	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]AuditLog, error)
 	ListAuditEntriesForVerify(ctx context.Context, tenantID uuid.UUID) ([]AuditLog, error)
+	// Returns the tenant's already-stored chunks among the given hashes (dedup: the
+	// agent only uploads hashes NOT returned here).
+	ListBackupChunksByHashes(ctx context.Context, arg ListBackupChunksByHashesParams) ([]BackupChunk, error)
+	// Distinct site IDs that have at least one snapshot in this tenant (GC iterates
+	// per site to apply the per-site monthly-archive rule).
+	ListBackupSiteIDsForTenant(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
+	ListBackupSnapshotsForSite(ctx context.Context, arg ListBackupSnapshotsForSiteParams) ([]BackupSnapshot, error)
+	// Completed snapshots for a site, newest first, used to compute the retention
+	// archive set (newest per calendar month).
+	ListCompletedSnapshotsForSite(ctx context.Context, arg ListCompletedSnapshotsForSiteParams) ([]ListCompletedSnapshotsForSiteRow, error)
+	// Cross-tenant enumeration of enabled schedules whose next_run_at has passed,
+	// for the periodic scheduler. Runs under the app.agent GUC (scheduler policy).
+	ListDueBackupSchedules(ctx context.Context, arg ListDueBackupSchedulesParams) ([]BackupSchedule, error)
 	// ---------------------------------------------------------------------------
 	// Health-check job (runs in each enrolled site's tenant scope).
 	// ---------------------------------------------------------------------------
 	// Cross-tenant enumeration for the periodic health job. Runs under the
 	// app.agent GUC (sites_agent policy) since it spans tenants.
 	ListEnrolledSitesAllTenants(ctx context.Context) ([]ListEnrolledSitesAllTenantsRow, error)
+	// Completed snapshots older than the cutoff that are NOT archive-retained, in a
+	// single tenant scope. The GC job decrements chunk refcounts for each then
+	// deletes the snapshot (manifest entries cascade).
+	ListExpiredBackupSnapshots(ctx context.Context, arg ListExpiredBackupSnapshotsParams) ([]BackupSnapshot, error)
+	ListManifestEntries(ctx context.Context, arg ListManifestEntriesParams) ([]BackupManifestEntry, error)
 	ListMembershipsForTenant(ctx context.Context, arg ListMembershipsForTenantParams) ([]Membership, error)
 	// ListMembershipsForUser reads the caller's own memberships across all tenants.
 	// It relies on the memberships_self_read policy (app.user_id GUC), so it must be
@@ -102,14 +153,23 @@ type Querier interface {
 	// so it MUST be run via InUserTx; the join itself restricts the result to the
 	// caller's own memberships, preventing cross-tenant enumeration.
 	ListTenantsForUser(ctx context.Context, arg ListTenantsForUserParams) ([]Tenant, error)
+	// Distinct tenant IDs that have at least one completed snapshot, for the
+	// periodic retention GC. Runs cross-tenant under the app.agent GUC (the
+	// backup_snapshots_gc SELECT policy); the prune then runs per tenant.
+	ListTenantsWithCompletedSnapshots(ctx context.Context) ([]uuid.UUID, error)
 	ListUpdateRuns(ctx context.Context, arg ListUpdateRunsParams) ([]UpdateRun, error)
 	ListUpdateTasksForRun(ctx context.Context, arg ListUpdateTasksForRunParams) ([]UpdateTask, error)
+	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (BackupSnapshot, error)
 	// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
 	MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error)
 	MarkUpdateTaskRunning(ctx context.Context, arg MarkUpdateTaskRunningParams) (UpdateTask, error)
 	// Drops nonces older than the freshness window; called opportunistically.
 	PruneAgentNonces(ctx context.Context, createdAt time.Time) (int64, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
+	SetBackupSnapshotArchived(ctx context.Context, arg SetBackupSnapshotArchivedParams) error
+	// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
+	// never holds the matching identity (private key); it cannot decrypt backups.
+	SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipientParams) (Site, error)
 	SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site, error)
 	SetUpdateRunStatus(ctx context.Context, arg SetUpdateRunStatusParams) (UpdateRun, error)
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
@@ -120,6 +180,12 @@ type Querier interface {
 	// Tenant-scoped metadata update (used by the agent path inside the resolved
 	// site's own tenant scope).
 	UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadataParams) (Site, error)
+	// Records a chunk's storage location idempotently. On conflict (the chunk
+	// already exists) it leaves size/s3_key as-is (content-addressed: identical
+	// hash ⇒ identical bytes) and returns the existing row. refcount is managed
+	// separately by IncrementChunkRefcount.
+	UpsertBackupChunk(ctx context.Context, arg UpsertBackupChunkParams) (BackupChunk, error)
+	UpsertBackupSchedule(ctx context.Context, arg UpsertBackupScheduleParams) (BackupSchedule, error)
 }
 
 var _ Querier = (*Queries)(nil)

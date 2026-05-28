@@ -13,8 +13,16 @@ type CreateApiKeyRes interface {
 	createApiKeyRes()
 }
 
+type CreateBackupRes interface {
+	createBackupRes()
+}
+
 type CreatePairingCodeRes interface {
 	createPairingCodeRes()
+}
+
+type CreateRestoreRes interface {
+	createRestoreRes()
 }
 
 type CreateSiteRes interface {
@@ -35,6 +43,14 @@ type DeleteSiteRes interface {
 
 type EnrollRes interface {
 	enrollRes()
+}
+
+type GetBackupRes interface {
+	getBackupRes()
+}
+
+type GetBackupScheduleRes interface {
+	getBackupScheduleRes()
 }
 
 type GetMeRes interface {
@@ -87,6 +103,10 @@ type OidcCallbackRes interface {
 
 type OidcLoginRes interface {
 	oidcLoginRes()
+}
+
+type PutBackupScheduleRes interface {
+	putBackupScheduleRes()
 }
 
 type RegisterRes interface {

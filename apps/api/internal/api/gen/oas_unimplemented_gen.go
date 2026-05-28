@@ -44,6 +44,20 @@ func (UnimplementedHandler) CreateApiKey(ctx context.Context, req *ApiKeyCreate)
 	return r, ht.ErrNotImplemented
 }
 
+// CreateBackup implements createBackup operation.
+//
+// Records a pending backup snapshot for the site and enqueues a background
+// job that dispatches a signed `backup` command to the site's agent. The
+// agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
+// and uploads ciphertext directly to object storage via presigned URLs,
+// then submits the manifest. Incremental: a chunk whose content hash is
+// already stored is not re-uploaded. Requires operator+.
+//
+// POST /api/v1/sites/{siteId}/backups
+func (UnimplementedHandler) CreateBackup(ctx context.Context, req *BackupCreate, params CreateBackupParams) (r CreateBackupRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // CreatePairingCode implements createPairingCode operation.
 //
 // Generates a short-lived, single-use, high-entropy pairing code for the
@@ -53,6 +67,20 @@ func (UnimplementedHandler) CreateApiKey(ctx context.Context, req *ApiKeyCreate)
 //
 // POST /api/v1/sites/pairing-codes
 func (UnimplementedHandler) CreatePairingCode(ctx context.Context, req OptPairingCodeCreate) (r CreatePairingCodeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// CreateRestore implements createRestore operation.
+//
+// Enqueues a restore job. The control plane resolves the (possibly partial)
+// selection into ordered chunks, issues presigned GET URLs, and dispatches
+// a signed `restore` command. The agent downloads ciphertext, verifies the
+// BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+// reassembles. Supports full, by-path, and by-db-table partial restore.
+// Requires operator+.
+//
+// POST /api/v1/backups/{snapshotId}/restore
+func (UnimplementedHandler) CreateRestore(ctx context.Context, req *RestoreCreate, params CreateRestoreParams) (r CreateRestoreRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -108,6 +136,24 @@ func (UnimplementedHandler) DeleteSite(ctx context.Context, params DeleteSitePar
 //
 // POST /enroll
 func (UnimplementedHandler) Enroll(ctx context.Context, req *EnrollRequest) (r EnrollRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetBackup implements getBackup operation.
+//
+// Get a backup snapshot with its manifest summary.
+//
+// GET /api/v1/backups/{snapshotId}
+func (UnimplementedHandler) GetBackup(ctx context.Context, params GetBackupParams) (r GetBackupRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetBackupSchedule implements getBackupSchedule operation.
+//
+// Get a site's backup schedule.
+//
+// GET /api/v1/sites/{siteId}/backup-schedule
+func (UnimplementedHandler) GetBackupSchedule(ctx context.Context, params GetBackupScheduleParams) (r GetBackupScheduleRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -192,6 +238,15 @@ func (UnimplementedHandler) ListAudit(ctx context.Context, params ListAuditParam
 	return r, ht.ErrNotImplemented
 }
 
+// ListBackups implements listBackups operation.
+//
+// List a site's backup snapshots.
+//
+// GET /api/v1/sites/{siteId}/backups
+func (UnimplementedHandler) ListBackups(ctx context.Context, params ListBackupsParams) (r *BackupSnapshotList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListMembers implements listMembers operation.
 //
 // List members of the active tenant.
@@ -261,6 +316,15 @@ func (UnimplementedHandler) OidcCallback(ctx context.Context, params OidcCallbac
 //
 // GET /auth/oidc/login
 func (UnimplementedHandler) OidcLogin(ctx context.Context) (r OidcLoginRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// PutBackupSchedule implements putBackupSchedule operation.
+//
+// Create or update a site's backup schedule.
+//
+// PUT /api/v1/sites/{siteId}/backup-schedule
+func (UnimplementedHandler) PutBackupSchedule(ctx context.Context, req *BackupScheduleUpdate, params PutBackupScheduleParams) (r PutBackupScheduleRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

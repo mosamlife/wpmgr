@@ -34,8 +34,11 @@ type Site struct {
 	ActiveTheme string
 	Components  []byte // JSONB inventory of installed plugins/themes
 	Tags        []string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// AgeRecipient is the per-site age PUBLIC recipient backups are encrypted to
+	// (client-side, on the agent). The control plane never holds the identity.
+	AgeRecipient string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // CreateInput is the validated input for creating a site under a tenant.

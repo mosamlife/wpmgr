@@ -20,31 +20,40 @@ var (
 	rn5AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn22AllowedHeaders = map[string]string{
+	rn13AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn8AllowedHeaders = map[string]string{
+	rn28AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn7AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
-	}
-	rn35AllowedHeaders = map[string]string{
-		"PUT": "Content-Type",
-	}
-	rn9AllowedHeaders = map[string]string{
+	rn14AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn10AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn26AllowedHeaders = map[string]string{
+	rn20AllowedHeaders = map[string]string{
+		"PUT": "Content-Type",
+	}
+	rn9AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+	rn42AllowedHeaders = map[string]string{
+		"PUT": "Content-Type",
+	}
+	rn15AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+	rn16AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn32AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn14AllowedHeaders = map[string]string{
+	rn38AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+	rn18AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 )
@@ -317,6 +326,70 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 						}
 
+					case 'b': // Prefix: "backups/"
+
+						if l := len("backups/"); len(elem) >= l && elem[0:l] == "backups/" {
+							elem = elem[l:]
+						} else {
+							break
+						}
+
+						// Param: "snapshotId"
+						// Match until "/"
+						idx := strings.IndexByte(elem, '/')
+						if idx < 0 {
+							idx = len(elem)
+						}
+						args[0] = elem[:idx]
+						elem = elem[idx:]
+
+						if len(elem) == 0 {
+							switch r.Method {
+							case "GET":
+								s.handleGetBackupRequest([1]string{
+									args[0],
+								}, elemIsEscaped, w, r)
+							default:
+								s.notAllowed(w, r, notAllowedParams{
+									allowedMethods: "GET",
+									allowedHeaders: nil,
+									acceptPost:     "",
+									acceptPatch:    "",
+								})
+							}
+
+							return
+						}
+						switch elem[0] {
+						case '/': // Prefix: "/restore"
+
+							if l := len("/restore"); len(elem) >= l && elem[0:l] == "/restore" {
+								elem = elem[l:]
+							} else {
+								break
+							}
+
+							if len(elem) == 0 {
+								// Leaf node.
+								switch r.Method {
+								case "POST":
+									s.handleCreateRestoreRequest([1]string{
+										args[0],
+									}, elemIsEscaped, w, r)
+								default:
+									s.notAllowed(w, r, notAllowedParams{
+										allowedMethods: "POST",
+										allowedHeaders: rn13AllowedHeaders,
+										acceptPost:     "application/json",
+										acceptPatch:    "",
+									})
+								}
+
+								return
+							}
+
+						}
+
 					case 'm': // Prefix: "members"
 
 						if l := len("members"); len(elem) >= l && elem[0:l] == "members" {
@@ -335,7 +408,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn22AllowedHeaders,
+									allowedHeaders: rn28AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -361,7 +434,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn8AllowedHeaders,
+									allowedHeaders: rn14AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -398,7 +471,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 									default:
 										s.notAllowed(w, r, notAllowedParams{
 											allowedMethods: "POST",
-											allowedHeaders: rn7AllowedHeaders,
+											allowedHeaders: rn10AllowedHeaders,
 											acceptPost:     "application/json",
 											acceptPatch:    "",
 										})
@@ -440,31 +513,121 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								return
 							}
 							switch elem[0] {
-							case '/': // Prefix: "/tags"
+							case '/': // Prefix: "/"
 
-								if l := len("/tags"); len(elem) >= l && elem[0:l] == "/tags" {
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 									elem = elem[l:]
 								} else {
 									break
 								}
 
 								if len(elem) == 0 {
-									// Leaf node.
-									switch r.Method {
-									case "PUT":
-										s.handleSetSiteTagsRequest([1]string{
-											args[0],
-										}, elemIsEscaped, w, r)
-									default:
-										s.notAllowed(w, r, notAllowedParams{
-											allowedMethods: "PUT",
-											allowedHeaders: rn35AllowedHeaders,
-											acceptPost:     "",
-											acceptPatch:    "",
-										})
+									break
+								}
+								switch elem[0] {
+								case 'b': // Prefix: "backup"
+
+									if l := len("backup"); len(elem) >= l && elem[0:l] == "backup" {
+										elem = elem[l:]
+									} else {
+										break
 									}
 
-									return
+									if len(elem) == 0 {
+										break
+									}
+									switch elem[0] {
+									case '-': // Prefix: "-schedule"
+
+										if l := len("-schedule"); len(elem) >= l && elem[0:l] == "-schedule" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch r.Method {
+											case "GET":
+												s.handleGetBackupScheduleRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											case "PUT":
+												s.handlePutBackupScheduleRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											default:
+												s.notAllowed(w, r, notAllowedParams{
+													allowedMethods: "GET,PUT",
+													allowedHeaders: rn20AllowedHeaders,
+													acceptPost:     "",
+													acceptPatch:    "",
+												})
+											}
+
+											return
+										}
+
+									case 's': // Prefix: "s"
+
+										if l := len("s"); len(elem) >= l && elem[0:l] == "s" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch r.Method {
+											case "GET":
+												s.handleListBackupsRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											case "POST":
+												s.handleCreateBackupRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											default:
+												s.notAllowed(w, r, notAllowedParams{
+													allowedMethods: "GET,POST",
+													allowedHeaders: rn9AllowedHeaders,
+													acceptPost:     "application/json",
+													acceptPatch:    "",
+												})
+											}
+
+											return
+										}
+
+									}
+
+								case 't': // Prefix: "tags"
+
+									if l := len("tags"); len(elem) >= l && elem[0:l] == "tags" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										// Leaf node.
+										switch r.Method {
+										case "PUT":
+											s.handleSetSiteTagsRequest([1]string{
+												args[0],
+											}, elemIsEscaped, w, r)
+										default:
+											s.notAllowed(w, r, notAllowedParams{
+												allowedMethods: "PUT",
+												allowedHeaders: rn42AllowedHeaders,
+												acceptPost:     "",
+												acceptPatch:    "",
+											})
+										}
+
+										return
+									}
+
 								}
 
 							}
@@ -488,7 +651,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn9AllowedHeaders,
+									allowedHeaders: rn15AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -552,7 +715,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn10AllowedHeaders,
+									allowedHeaders: rn16AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -641,7 +804,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "POST",
-										allowedHeaders: rn26AllowedHeaders,
+										allowedHeaders: rn32AllowedHeaders,
 										acceptPost:     "application/json",
 										acceptPatch:    "",
 									})
@@ -782,7 +945,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "POST",
-									allowedHeaders: rn32AllowedHeaders,
+									allowedHeaders: rn38AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -811,7 +974,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					default:
 						s.notAllowed(w, r, notAllowedParams{
 							allowedMethods: "POST",
-							allowedHeaders: rn14AllowedHeaders,
+							allowedHeaders: rn18AllowedHeaders,
 							acceptPost:     "application/json",
 							acceptPatch:    "",
 						})
@@ -1192,6 +1355,66 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 
 						}
 
+					case 'b': // Prefix: "backups/"
+
+						if l := len("backups/"); len(elem) >= l && elem[0:l] == "backups/" {
+							elem = elem[l:]
+						} else {
+							break
+						}
+
+						// Param: "snapshotId"
+						// Match until "/"
+						idx := strings.IndexByte(elem, '/')
+						if idx < 0 {
+							idx = len(elem)
+						}
+						args[0] = elem[:idx]
+						elem = elem[idx:]
+
+						if len(elem) == 0 {
+							switch method {
+							case "GET":
+								r.name = GetBackupOperation
+								r.summary = "Get a backup snapshot with its manifest summary"
+								r.operationID = "getBackup"
+								r.operationGroup = ""
+								r.pathPattern = "/api/v1/backups/{snapshotId}"
+								r.args = args
+								r.count = 1
+								return r, true
+							default:
+								return
+							}
+						}
+						switch elem[0] {
+						case '/': // Prefix: "/restore"
+
+							if l := len("/restore"); len(elem) >= l && elem[0:l] == "/restore" {
+								elem = elem[l:]
+							} else {
+								break
+							}
+
+							if len(elem) == 0 {
+								// Leaf node.
+								switch method {
+								case "POST":
+									r.name = CreateRestoreOperation
+									r.summary = "Restore from a backup snapshot (full or partial)"
+									r.operationID = "createRestore"
+									r.operationGroup = ""
+									r.pathPattern = "/api/v1/backups/{snapshotId}/restore"
+									r.args = args
+									r.count = 1
+									return r, true
+								default:
+									return
+								}
+							}
+
+						}
+
 					case 'm': // Prefix: "members"
 
 						if l := len("members"); len(elem) >= l && elem[0:l] == "members" {
@@ -1332,29 +1555,125 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 								}
 							}
 							switch elem[0] {
-							case '/': // Prefix: "/tags"
+							case '/': // Prefix: "/"
 
-								if l := len("/tags"); len(elem) >= l && elem[0:l] == "/tags" {
+								if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 									elem = elem[l:]
 								} else {
 									break
 								}
 
 								if len(elem) == 0 {
-									// Leaf node.
-									switch method {
-									case "PUT":
-										r.name = SetSiteTagsOperation
-										r.summary = "Replace the tag set on a site"
-										r.operationID = "setSiteTags"
-										r.operationGroup = ""
-										r.pathPattern = "/api/v1/sites/{siteId}/tags"
-										r.args = args
-										r.count = 1
-										return r, true
-									default:
-										return
+									break
+								}
+								switch elem[0] {
+								case 'b': // Prefix: "backup"
+
+									if l := len("backup"); len(elem) >= l && elem[0:l] == "backup" {
+										elem = elem[l:]
+									} else {
+										break
 									}
+
+									if len(elem) == 0 {
+										break
+									}
+									switch elem[0] {
+									case '-': // Prefix: "-schedule"
+
+										if l := len("-schedule"); len(elem) >= l && elem[0:l] == "-schedule" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch method {
+											case "GET":
+												r.name = GetBackupScheduleOperation
+												r.summary = "Get a site's backup schedule"
+												r.operationID = "getBackupSchedule"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/backup-schedule"
+												r.args = args
+												r.count = 1
+												return r, true
+											case "PUT":
+												r.name = PutBackupScheduleOperation
+												r.summary = "Create or update a site's backup schedule"
+												r.operationID = "putBackupSchedule"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/backup-schedule"
+												r.args = args
+												r.count = 1
+												return r, true
+											default:
+												return
+											}
+										}
+
+									case 's': // Prefix: "s"
+
+										if l := len("s"); len(elem) >= l && elem[0:l] == "s" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch method {
+											case "GET":
+												r.name = ListBackupsOperation
+												r.summary = "List a site's backup snapshots"
+												r.operationID = "listBackups"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/backups"
+												r.args = args
+												r.count = 1
+												return r, true
+											case "POST":
+												r.name = CreateBackupOperation
+												r.summary = "Start a backup of a site"
+												r.operationID = "createBackup"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/backups"
+												r.args = args
+												r.count = 1
+												return r, true
+											default:
+												return
+											}
+										}
+
+									}
+
+								case 't': // Prefix: "tags"
+
+									if l := len("tags"); len(elem) >= l && elem[0:l] == "tags" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										// Leaf node.
+										switch method {
+										case "PUT":
+											r.name = SetSiteTagsOperation
+											r.summary = "Replace the tag set on a site"
+											r.operationID = "setSiteTags"
+											r.operationGroup = ""
+											r.pathPattern = "/api/v1/sites/{siteId}/tags"
+											r.args = args
+											r.count = 1
+											return r, true
+										default:
+											return
+										}
+									}
+
 								}
 
 							}

@@ -24,6 +24,8 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
+	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
+	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -182,14 +184,78 @@ func run() error {
 	sitesLookup := newSiteLookup(siteSvc)
 	updateWorker := update.NewWorker(updateRepo, sitesLookup, commander, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
 
-	// River: connection-health worker pool plus the M3 update-task workers. The
-	// health job marks a site unreachable when its agent heartbeat goes stale
-	// (freshness-based; active probing is M5). Update tasks run on per-tenant
-	// queue shards so one tenant cannot starve another. Started below, stopped on
-	// shutdown.
+	// M4 backups: an S3-compatible blobstore (ADR-010) for presigned chunk
+	// upload/download (only ciphertext is ever stored), the backup command client
+	// (mints signed `backup`/`restore` JWTs; reuses the SSRF client), and the
+	// tenant-scoped backup repo+service. When no bucket is configured the backup
+	// feature is disabled cleanly (the endpoints 501 and no workers/periodics
+	// run). The CP base URL is where the agent calls back for presign/manifest.
+	var backupSvc *backup.Service
+	var backupH *backup.Handler
+	var backupAgentH *backup.AgentHandler
+	var backupWorker *backup.BackupWorker
+	var restoreWorker *backup.RestoreWorker
+	var gcWorker *backup.GCWorker
+	var scheduleWorker *backup.ScheduleWorker
+	if cfg.S3.Enabled() {
+		store, serr := blobstore.New(blobstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			Region:         cfg.S3.Region,
+			Bucket:         cfg.S3.Bucket,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			ForcePathStyle: cfg.S3.ForcePathStyle,
+		})
+		if serr != nil {
+			return fmt.Errorf("blobstore init: %w", serr)
+		}
+		if berr := store.EnsureBucket(ctx); berr != nil {
+			return fmt.Errorf("blobstore ensure bucket: %w", berr)
+		}
+		var backupCmd backup.Commander
+		if cfg.Agent.SigningPrivateKey != "" {
+			signer, _ := agentcmd.NewSigner(cfg.Agent.SigningPrivateKey)
+			backupCmd = agentcmd.NewClient(ssrfClient, signer)
+		} else {
+			backupCmd = disabledBackupCommander{}
+		}
+		backupRepo := backup.NewRepo(pool)
+		backupSvc = backup.NewService(backupRepo, newBackupSiteLookup(siteSvc), nil, store, clock, backup.Config{
+			PresignTTL:         cfg.Backup.PresignTTL,
+			RetentionDays:      cfg.Backup.RetentionDays,
+			MonthlyArchiveKeep: cfg.Backup.MonthlyArchiveKeep,
+		})
+		cpBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+		backupWorker = backup.NewBackupWorker(backupSvc, backupCmd, auditRec, logger, cpBaseURL)
+		restoreWorker = backup.NewRestoreWorker(backupSvc, backupCmd, auditRec, logger)
+		gcWorker = backup.NewGCWorker(backupSvc, logger)
+		scheduleWorker = backup.NewScheduleWorker(backupSvc, logger)
+		backupH = backup.NewHandler(backupSvc, auditRec)
+		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
+		logger.Info("backups enabled", slog.String("s3_bucket", cfg.S3.Bucket))
+	} else {
+		logger.Warn("WPMGR_S3_BUCKET is empty: backup/restore endpoints are disabled")
+	}
+
+	// River: connection-health worker pool plus the M3 update-task workers and the
+	// M4 backup/restore/GC/scheduler workers. The health job marks a site
+	// unreachable when its agent heartbeat goes stale (freshness-based; active
+	// probing is M5). Update tasks run on per-tenant queue shards so one tenant
+	// cannot starve another. Started below, stopped on shutdown.
 	siteRepo := site.NewRepo(pool)
 	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
-	riverClient, err := startRiver(ctx, pool.Pool, logger, healthChecker, cfg.Agent.HealthInterval, updateWorker, cfg.Update.PerTenantParallelism)
+	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
+		healthChecker:        healthChecker,
+		healthInterval:       cfg.Agent.HealthInterval,
+		updateWorker:         updateWorker,
+		perTenantParallelism: cfg.Update.PerTenantParallelism,
+		backupWorker:         backupWorker,
+		restoreWorker:        restoreWorker,
+		gcWorker:             gcWorker,
+		scheduleWorker:       scheduleWorker,
+		scheduleInterval:     cfg.Backup.ScheduleInterval,
+		gcInterval:           cfg.Backup.GCInterval,
+	})
 	if err != nil {
 		return err
 	}
@@ -198,6 +264,9 @@ func run() error {
 	// enqueuer. Wire them after the client is up.
 	updateSvc := update.NewService(updateRepo, sitesLookup, update.NewRiverEnqueuer(riverClient), validator, clock)
 	updateH := update.NewHandler(updateSvc, updateHub, auditRec)
+	if backupSvc != nil {
+		backupSvc.SetEnqueuer(backup.NewRiverEnqueuer(riverClient))
+	}
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout)
 		defer cancel()
@@ -207,22 +276,24 @@ func run() error {
 	}()
 
 	srv := server.New(server.Deps{
-		Config:      cfg,
-		Logger:      logger,
-		Pool:        pool,
-		Sessions:    sessions,
-		Auth:        authn,
-		AuthH:       auth.NewHandler(authSvc, sessions, oidcProvider, newTenant),
-		MembersH:    auth.NewMembersHandler(authSvc),
-		APIKeyH:     apikey.NewHandler(apiKeySvc, auditRec),
-		AuditH:      audit.NewHandler(auditRec),
-		TenantH:     tenant.NewHandler(tenantSvc, auditRec),
-		SiteH:       site.NewHandler(siteSvc, auditRec, cpPublicKey),
-		UpdateH:     updateH,
-		AgentAuth:   agentAuthn,
-		AgentH:      agentH,
-		ServiceName: cfg.OTel.ServiceName,
-		Version:     version,
+		Config:       cfg,
+		Logger:       logger,
+		Pool:         pool,
+		Sessions:     sessions,
+		Auth:         authn,
+		AuthH:        auth.NewHandler(authSvc, sessions, oidcProvider, newTenant),
+		MembersH:     auth.NewMembersHandler(authSvc),
+		APIKeyH:      apikey.NewHandler(apiKeySvc, auditRec),
+		AuditH:       audit.NewHandler(auditRec),
+		TenantH:      tenant.NewHandler(tenantSvc, auditRec),
+		SiteH:        site.NewHandler(siteSvc, auditRec, cpPublicKey),
+		UpdateH:      updateH,
+		BackupH:      backupH,
+		BackupAgentH: backupAgentH,
+		AgentAuth:    agentAuthn,
+		AgentH:       agentH,
+		ServiceName:  cfg.OTel.ServiceName,
+		Version:      version,
 	})
 
 	return srv.Run(ctx)
@@ -253,20 +324,40 @@ func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// startRiver builds and starts the River client with the health-check worker, a
-// periodic health job, and the M3 update-task worker on per-tenant queue shards.
-// The client uses the application pool (RLS-bound); the health job's queries run
-// under the app.agent GUC, while update tasks run tenant-scoped (the worker sets
-// app.tenant_id per task via the repo). perTenantParallelism caps each tenant
-// shard's concurrent workers so one tenant cannot starve others.
-func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, checker *site.HealthChecker, interval time.Duration, updateWorker *update.Worker, perTenantParallelism int) (*river.Client[pgx.Tx], error) {
-	workers := river.NewWorkers()
-	river.AddWorker(workers, site.NewHealthCheckWorker(checker))
-	river.AddWorker(workers, updateWorker)
+// riverDeps bundles everything startRiver needs: the M2 health checker, the M3
+// update worker, and the M4 backup/restore/GC/scheduler workers (any of which
+// may be nil when the corresponding feature is disabled).
+type riverDeps struct {
+	healthChecker        *site.HealthChecker
+	healthInterval       time.Duration
+	updateWorker         *update.Worker
+	perTenantParallelism int
+	backupWorker         *backup.BackupWorker
+	restoreWorker        *backup.RestoreWorker
+	gcWorker             *backup.GCWorker
+	scheduleWorker       *backup.ScheduleWorker
+	scheduleInterval     time.Duration
+	gcInterval           time.Duration
+}
 
+// startRiver builds and starts the River client with the health-check worker, a
+// periodic health job, the M3 update-task worker on per-tenant queue shards, and
+// (when backups are enabled) the M4 backup/restore/GC/scheduler workers plus the
+// periodic scheduler and retention-GC jobs. The client uses the application pool
+// (RLS-bound); cross-tenant jobs (health/scheduler/GC enumeration) run under the
+// app.agent GUC, while backup/restore/update work runs tenant-scoped (the worker
+// sets app.tenant_id per job via the repo). perTenantParallelism caps each
+// update tenant shard's concurrent workers so one tenant cannot starve others.
+func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d riverDeps) (*river.Client[pgx.Tx], error) {
+	workers := river.NewWorkers()
+	river.AddWorker(workers, site.NewHealthCheckWorker(d.healthChecker))
+	river.AddWorker(workers, d.updateWorker)
+
+	interval := d.healthInterval
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
+	perTenantParallelism := d.perTenantParallelism
 	if perTenantParallelism <= 0 {
 		perTenantParallelism = 5
 	}
@@ -280,19 +371,50 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, ch
 		queues[q] = river.QueueConfig{MaxWorkers: perTenantParallelism}
 	}
 
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Logger:  logger,
-		Queues:  queues,
-		Workers: workers,
-		PeriodicJobs: []*river.PeriodicJob{
+	periodics := []*river.PeriodicJob{
+		river.NewPeriodicJob(
+			river.PeriodicInterval(interval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return site.HealthCheckArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+	}
+
+	backupsEnabled := d.backupWorker != nil
+	if backupsEnabled {
+		river.AddWorker(workers, d.backupWorker)
+		river.AddWorker(workers, d.restoreWorker)
+		river.AddWorker(workers, d.gcWorker)
+		river.AddWorker(workers, d.scheduleWorker)
+
+		schedInterval := d.scheduleInterval
+		if schedInterval <= 0 {
+			schedInterval = 5 * time.Minute
+		}
+		gcInterval := d.gcInterval
+		if gcInterval <= 0 {
+			gcInterval = time.Hour
+		}
+		periodics = append(periodics,
 			river.NewPeriodicJob(
-				river.PeriodicInterval(interval),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return site.HealthCheckArgs{}, nil
-				},
+				river.PeriodicInterval(schedInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return backup.ScheduleArgs{}, nil },
 				&river.PeriodicJobOpts{RunOnStart: true},
 			),
-		},
+			river.NewPeriodicJob(
+				river.PeriodicInterval(gcInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return backup.GCArgs{}, nil },
+				nil,
+			),
+		)
+	}
+
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Logger:       logger,
+		Queues:       queues,
+		Workers:      workers,
+		PeriodicJobs: periodics,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("river client: %w", err)
@@ -302,8 +424,21 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, ch
 	}
 	logger.Info("river worker pool started",
 		slog.Duration("health_interval", interval),
-		slog.Int("update_per_tenant_parallelism", perTenantParallelism))
+		slog.Int("update_per_tenant_parallelism", perTenantParallelism),
+		slog.Bool("backups_enabled", backupsEnabled))
 	return client, nil
+}
+
+// disabledBackupCommander refuses to send backup/restore commands when no CP
+// signing key is configured (rather than sending unsigned ones).
+type disabledBackupCommander struct{}
+
+func (disabledBackupCommander) Backup(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.BackupRequest) (agentcmd.BackupResponse, error) {
+	return agentcmd.BackupResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledBackupCommander) Restore(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.RestoreRequest) (agentcmd.RestoreResponse, error) {
+	return agentcmd.RestoreResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 
 // disabledCommander is the no-op Commander used when no CP signing key is

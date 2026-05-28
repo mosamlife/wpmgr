@@ -23,7 +23,7 @@ SET agent_public_key = $3,
     php_version = $5,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at
 `
 
 type AttachAgentToSiteParams struct {
@@ -61,6 +61,7 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -70,7 +71,7 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 const createSite = `-- name: CreateSite :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at
 `
 
 type CreateSiteParams struct {
@@ -111,6 +112,7 @@ func (q *Queries) CreateSite(ctx context.Context, arg CreateSiteParams) (Site, e
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -121,7 +123,7 @@ const createSiteForEnroll = `-- name: CreateSiteForEnroll :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
                    agent_public_key, enrolled_at, last_seen_at, health_status, tags)
 VALUES ($1, $2, $3, 'active', $4, $5, $6, now(), now(), 'healthy', $7)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at
 `
 
 type CreateSiteForEnrollParams struct {
@@ -162,6 +164,7 @@ func (q *Queries) CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnro
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -187,7 +190,7 @@ func (q *Queries) DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, 
 }
 
 const getSite = `-- name: GetSite :one
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at FROM sites
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -216,6 +219,7 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (Site, error) 
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -224,7 +228,7 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (Site, error) 
 
 const getSiteByAgentKey = `-- name: GetSiteByAgentKey :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at FROM sites
 WHERE agent_public_key = $1 AND agent_public_key <> ''
 `
 
@@ -251,6 +255,7 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -259,7 +264,7 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 
 const getSiteByURLForEnroll = `-- name: GetSiteByURLForEnroll :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at FROM sites
 WHERE tenant_id = $1 AND url = $2
 `
 
@@ -291,6 +296,7 @@ func (q *Queries) GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLFor
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -341,7 +347,7 @@ func (q *Queries) ListEnrolledSitesAllTenants(ctx context.Context) ([]ListEnroll
 }
 
 const listSites = `-- name: ListSites :many
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at FROM sites
 WHERE tenant_id = $1
   AND ($4::text IS NULL OR $4::text = ANY (tags))
 ORDER BY created_at DESC
@@ -386,6 +392,7 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, e
 			&i.ActiveTheme,
 			&i.Components,
 			&i.Tags,
+			&i.AgeRecipient,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -414,11 +421,53 @@ func (q *Queries) MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64,
 	return result.RowsAffected(), nil
 }
 
+const setSiteAgeRecipient = `-- name: SetSiteAgeRecipient :one
+UPDATE sites
+SET age_recipient = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at
+`
+
+type SetSiteAgeRecipientParams struct {
+	ID           uuid.UUID `json:"id"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+	AgeRecipient string    `json:"age_recipient"`
+}
+
+// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
+// never holds the matching identity (private key); it cannot decrypt backups.
+func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipientParams) (Site, error) {
+	row := q.db.QueryRow(ctx, setSiteAgeRecipient, arg.ID, arg.TenantID, arg.AgeRecipient)
+	var i Site
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Name,
+		&i.Status,
+		&i.WpVersion,
+		&i.PhpVersion,
+		&i.AgentPublicKey,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.HealthStatus,
+		&i.ServerInfo,
+		&i.Multisite,
+		&i.ActiveTheme,
+		&i.Components,
+		&i.Tags,
+		&i.AgeRecipient,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const setSiteTags = `-- name: SetSiteTags :one
 UPDATE sites
 SET tags = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at
 `
 
 type SetSiteTagsParams struct {
@@ -447,6 +496,7 @@ func (q *Queries) SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site,
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -459,7 +509,7 @@ SET last_seen_at = now(),
     health_status = 'healthy',
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at
 `
 
 type TouchSiteSeenParams struct {
@@ -487,6 +537,7 @@ func (q *Queries) TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (S
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -505,7 +556,7 @@ SET wp_version   = $3,
     health_status = 'healthy',
     updated_at   = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, created_at, updated_at
 `
 
 type UpdateSiteMetadataParams struct {
@@ -550,6 +601,7 @@ func (q *Queries) UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadata
 		&i.ActiveTheme,
 		&i.Components,
 		&i.Tags,
+		&i.AgeRecipient,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

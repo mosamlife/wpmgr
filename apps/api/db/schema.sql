@@ -57,6 +57,12 @@ CREATE TABLE sites (
     -- normalized child table can come later; JSONB is sufficient for M2.
     components  jsonb       NOT NULL DEFAULT '{}'::jsonb,
     tags        text[]      NOT NULL DEFAULT '{}',
+    -- M4 backups: the age PUBLIC recipient (X25519, "age1...") backups for this
+    -- site are encrypted to. Client-side encryption is on the AGENT; the control
+    -- plane stores ONLY this public recipient and never the matching identity
+    -- (private key). Empty until a recipient is set. The CP cannot decrypt
+    -- backups: it never holds the identity (ADR — trust model).
+    age_recipient text      NOT NULL DEFAULT '',
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
@@ -365,3 +371,165 @@ ALTER TABLE update_tasks FORCE ROW LEVEL SECURITY;
 CREATE POLICY update_tasks_tenant_isolation ON update_tasks
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- backup_chunks  (M4 — incremental, content-addressed dedup + GC)
+-- ---------------------------------------------------------------------------
+-- One row per UNIQUE (tenant, blake3) ciphertext chunk stored in object
+-- storage. Chunks are content-addressed by the BLAKE3 hash of their CIPHERTEXT
+-- (the agent encrypts client-side with age, then hashes; the CP and S3 only
+-- ever see ciphertext). refcount tracks how many manifest entries across all of
+-- the tenant's snapshots reference the chunk; GC deletes a chunk from S3 only
+-- when refcount reaches zero. Tenant-scoped + RLS: a tenant can never see or
+-- target another tenant's chunks, and the s3_key is namespaced by tenant so a
+-- presign for one tenant cannot address another's chunk prefix.
+CREATE TABLE backup_chunks (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    -- blake3 is the lowercase hex BLAKE3-256 digest of the chunk ciphertext.
+    blake3     text        NOT NULL,
+    -- s3_key is the object-storage key (always 'chunks/<tenant_id>/<blake3>').
+    s3_key     text        NOT NULL,
+    size       bigint      NOT NULL DEFAULT 0,
+    refcount   bigint      NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- A chunk is unique per (tenant, blake3): dedup is scoped to the tenant so no
+-- cross-tenant inference of stored content is possible.
+CREATE UNIQUE INDEX backup_chunks_tenant_blake3_key ON backup_chunks (tenant_id, blake3);
+CREATE INDEX backup_chunks_tenant_id_idx ON backup_chunks (tenant_id);
+
+ALTER TABLE backup_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_chunks FORCE ROW LEVEL SECURITY;
+CREATE POLICY backup_chunks_tenant_isolation ON backup_chunks
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- backup_snapshots  (M4)
+-- ---------------------------------------------------------------------------
+-- One backup of a site: files, db, or full. The manifest (ordered per-path
+-- chunk lists) lives in backup_manifest_entries. Status advances pending ->
+-- running -> completed | failed. age_recipient records the public recipient the
+-- agent encrypted to (provenance; the CP never holds the identity). Tenant-
+-- scoped + RLS.
+CREATE TABLE backup_snapshots (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    created_by    uuid        REFERENCES users (id) ON DELETE SET NULL,
+    -- kind: files | db | full.
+    kind          text        NOT NULL,
+    -- status: pending | running | completed | failed.
+    status        text        NOT NULL DEFAULT 'pending',
+    -- age_recipient is the public X25519 recipient the chunks were encrypted to
+    -- (echoed from the site at backup time for provenance/restore targeting).
+    age_recipient text        NOT NULL DEFAULT '',
+    total_size    bigint      NOT NULL DEFAULT 0,
+    chunk_count   bigint      NOT NULL DEFAULT 0,
+    error         text        NOT NULL DEFAULT '',
+    -- archived marks a snapshot kept by the monthly-archive retention rule so GC
+    -- spares it even once it falls outside the rolling window.
+    archived      boolean     NOT NULL DEFAULT false,
+    started_at    timestamptz,
+    finished_at   timestamptz,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX backup_snapshots_tenant_site_idx ON backup_snapshots (tenant_id, site_id, created_at DESC);
+CREATE INDEX backup_snapshots_tenant_created_idx ON backup_snapshots (tenant_id, created_at DESC);
+
+ALTER TABLE backup_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_snapshots FORCE ROW LEVEL SECURITY;
+CREATE POLICY backup_snapshots_tenant_isolation ON backup_snapshots
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The periodic retention GC enumerates which tenants have prunable snapshots
+-- across ALL tenants (no tenant scope yet), then runs the actual prune per
+-- tenant under the isolation policy. Permit that read-only enumeration when the
+-- app.agent GUC is 'on' (set by InAgentTx), mirroring the health/scheduler jobs.
+CREATE POLICY backup_snapshots_gc ON backup_snapshots
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- backup_manifest_entries  (M4)
+-- ---------------------------------------------------------------------------
+-- One row per file (or db dump) in a snapshot: the relative path, the ORDERED
+-- list of BLAKE3 chunk hashes that reassemble it (a text[] preserving order),
+-- the total size, the file mode, and an optional kind tag ('file' | 'db'). To
+-- restore a path the CP looks up each hash's s3_key in backup_chunks and issues
+-- a presigned GET; the agent downloads, decrypts (age), verifies BLAKE3, and
+-- concatenates in order. Tenant-scoped + RLS (redundant tenant_id avoids a join
+-- in the policy and worker queries).
+CREATE TABLE backup_manifest_entries (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    snapshot_id uuid        NOT NULL REFERENCES backup_snapshots (id) ON DELETE CASCADE,
+    tenant_id   uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    -- path is the site-relative file path; for a db dump it is the sentinel
+    -- 'database.sql'. table_name is set for db entries to support partial
+    -- restore-by-table (empty for file entries).
+    path        text        NOT NULL,
+    entry_kind  text        NOT NULL DEFAULT 'file',
+    table_name  text        NOT NULL DEFAULT '',
+    -- chunk_hashes is the ordered list of BLAKE3 hex digests reassembling path.
+    chunk_hashes text[]     NOT NULL DEFAULT '{}',
+    size        bigint      NOT NULL DEFAULT 0,
+    mode        integer     NOT NULL DEFAULT 0,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX backup_manifest_entries_snapshot_idx ON backup_manifest_entries (snapshot_id);
+CREATE INDEX backup_manifest_entries_tenant_id_idx ON backup_manifest_entries (tenant_id);
+
+ALTER TABLE backup_manifest_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_manifest_entries FORCE ROW LEVEL SECURITY;
+CREATE POLICY backup_manifest_entries_tenant_isolation ON backup_manifest_entries
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- backup_schedules  (M4)
+-- ---------------------------------------------------------------------------
+-- A per-site backup schedule: cadence (daily|weekly|monthly), the snapshot kind
+-- to take, retention overrides, an enabled flag, and next_run_at which the
+-- periodic scheduler advances after each enqueue. One schedule per site.
+-- Tenant-scoped + RLS.
+CREATE TABLE backup_schedules (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    -- cadence: daily | weekly | monthly.
+    cadence       text        NOT NULL DEFAULT 'daily',
+    -- kind: files | db | full (the snapshot kind each scheduled run takes).
+    kind          text        NOT NULL DEFAULT 'full',
+    enabled       boolean     NOT NULL DEFAULT true,
+    retention_days        integer NOT NULL DEFAULT 30,
+    monthly_archive_keep  integer NOT NULL DEFAULT 12,
+    next_run_at   timestamptz NOT NULL DEFAULT now(),
+    last_run_at   timestamptz,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX backup_schedules_site_key ON backup_schedules (site_id);
+CREATE INDEX backup_schedules_tenant_id_idx ON backup_schedules (tenant_id);
+CREATE INDEX backup_schedules_due_idx ON backup_schedules (next_run_at) WHERE enabled;
+
+ALTER TABLE backup_schedules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_schedules FORCE ROW LEVEL SECURITY;
+CREATE POLICY backup_schedules_tenant_isolation ON backup_schedules
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The periodic scheduler enumerates DUE schedules across ALL tenants (it has no
+-- tenant scope yet), mirroring the cross-tenant health job. Permit that read
+-- when the app.agent GUC is 'on' (set by InAgentTx). The per-site backup work
+-- it enqueues then runs tenant-scoped under the normal isolation policy.
+CREATE POLICY backup_schedules_scheduler ON backup_schedules
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');

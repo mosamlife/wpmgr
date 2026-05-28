@@ -804,6 +804,152 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/backups:
+    post:
+      operationId: createBackup
+      summary: Start a backup of a site
+      description: |
+        Records a pending backup snapshot for the site and enqueues a background
+        job that dispatches a signed `backup` command to the site's agent. The
+        agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
+        and uploads ciphertext directly to object storage via presigned URLs,
+        then submits the manifest. Incremental: a chunk whose content hash is
+        already stored is not re-uploaded. Requires operator+.
+      tags: [backups]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupCreate"
+      responses:
+        "201":
+          description: Backup snapshot created (job enqueued)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshot"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: listBackups
+      summary: List a site's backup snapshots
+      tags: [backups]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of backup snapshots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshotList"
+  /api/v1/backups/{snapshotId}:
+    get:
+      operationId: getBackup
+      summary: Get a backup snapshot with its manifest summary
+      tags: [backups]
+      parameters:
+        - $ref: "#/components/parameters/SnapshotId"
+      responses:
+        "200":
+          description: The backup snapshot and its manifest entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshotDetail"
+        "404":
+          description: Snapshot not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/backups/{snapshotId}/restore:
+    post:
+      operationId: createRestore
+      summary: Restore from a backup snapshot (full or partial)
+      description: |
+        Enqueues a restore job. The control plane resolves the (possibly partial)
+        selection into ordered chunks, issues presigned GET URLs, and dispatches
+        a signed `restore` command. The agent downloads ciphertext, verifies the
+        BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+        reassembles. Supports full, by-path, and by-db-table partial restore.
+        Requires operator+.
+      tags: [backups]
+      parameters:
+        - $ref: "#/components/parameters/SnapshotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestoreCreate"
+      responses:
+        "202":
+          description: Restore job enqueued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshot"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/backup-schedule:
+    get:
+      operationId: getBackupSchedule
+      summary: Get a site's backup schedule
+      tags: [backups]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: The site's backup schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSchedule"
+        "404":
+          description: No schedule configured for the site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      operationId: putBackupSchedule
+      summary: Create or update a site's backup schedule
+      tags: [backups]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupScheduleUpdate"
+      responses:
+        "200":
+          description: The saved backup schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSchedule"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     Limit:
@@ -848,6 +994,13 @@ components:
         format: uuid
     RunId:
       name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SnapshotId:
+      name: snapshotId
       in: path
       required: true
       schema:
@@ -1530,3 +1683,185 @@ components:
         run_status:
           type: string
           enum: [pending, running, completed]
+    BackupCreate:
+      type: object
+      description: Request to start a backup of a site.
+      properties:
+        kind:
+          type: string
+          enum: [files, db, full]
+          default: full
+          description: What to back up. Defaults to full (files + database).
+    BackupSnapshot:
+      type: object
+      required: [id, tenant_id, site_id, kind, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        created_by:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [files, db, full]
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        age_recipient:
+          type: string
+          description: |
+            The age PUBLIC recipient the chunks were encrypted to (provenance).
+            NEVER a private key; the control plane cannot decrypt backups.
+        total_size:
+          type: integer
+          format: int64
+        chunk_count:
+          type: integer
+          format: int64
+        archived:
+          type: boolean
+          description: Kept by the monthly-archive retention rule.
+        error:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BackupSnapshotList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupSnapshot"
+    BackupManifestEntry:
+      type: object
+      required: [path, entry_kind, size, chunk_count]
+      description: One file (or db dump) in a snapshot, summarized.
+      properties:
+        path:
+          type: string
+        entry_kind:
+          type: string
+          enum: [file, db]
+        table_name:
+          type: string
+          description: Set for db entries (partial restore-by-table).
+        size:
+          type: integer
+          format: int64
+        mode:
+          type: integer
+          format: int32
+        chunk_count:
+          type: integer
+          format: int32
+          description: Number of ordered ciphertext chunks reassembling the path.
+    BackupSnapshotDetail:
+      type: object
+      required: [snapshot, entries]
+      properties:
+        snapshot:
+          $ref: "#/components/schemas/BackupSnapshot"
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupManifestEntry"
+    RestoreCreate:
+      type: object
+      description: |
+        Restore selection. Omit both arrays (or set full=true) for a full
+        restore; provide paths for partial file restore, or db_tables for partial
+        db restore.
+      properties:
+        full:
+          type: boolean
+          default: false
+        paths:
+          type: array
+          items:
+            type: string
+          description: Site-relative file paths to restore.
+        db_tables:
+          type: array
+          items:
+            type: string
+          description: Database table names to restore.
+    BackupSchedule:
+      type: object
+      required: [id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, next_run_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        cadence:
+          type: string
+          enum: [daily, weekly, monthly]
+        kind:
+          type: string
+          enum: [files, db, full]
+        enabled:
+          type: boolean
+        retention_days:
+          type: integer
+          format: int32
+        monthly_archive_keep:
+          type: integer
+          format: int32
+        next_run_at:
+          type: string
+          format: date-time
+        last_run_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BackupScheduleUpdate:
+      type: object
+      description: Create or update a site's backup schedule (daily default).
+      properties:
+        cadence:
+          type: string
+          enum: [daily, weekly, monthly]
+          default: daily
+        kind:
+          type: string
+          enum: [files, db, full]
+          default: full
+        enabled:
+          type: boolean
+          default: true
+        retention_days:
+          type: integer
+          format: int32
+          description: Rolling-window retention in days. Defaults to the server policy.
+        monthly_archive_keep:
+          type: integer
+          format: int32
+          description: Number of monthly-archive snapshots to keep beyond the window.

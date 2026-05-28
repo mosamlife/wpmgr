@@ -66,6 +66,30 @@ func (c *Client) Rollback(ctx context.Context, siteID uuid.UUID, siteURL string,
 	return out, nil
 }
 
+// Backup sends the signed `backup` command to the site's agent. siteID is the
+// target site's stable enrollment UUID, bound into the JWT's aud claim. The
+// request carries the age PUBLIC recipient and CP callback endpoints — NEVER a
+// decryption key (see backup_contract.go, trust model).
+func (c *Client) Backup(ctx context.Context, siteID uuid.UUID, siteURL string, req BackupRequest) (BackupResponse, error) {
+	var out BackupResponse
+	if err := c.post(ctx, siteID, siteURL, "backup", req, &out); err != nil {
+		return BackupResponse{}, err
+	}
+	return out, nil
+}
+
+// Restore sends the signed `restore` command to the site's agent. siteID is the
+// target site's stable enrollment UUID, bound into the JWT's aud claim. The
+// request carries presigned GET URLs + the ordered manifest — NEVER a decryption
+// key; the agent decrypts with the age identity it alone holds.
+func (c *Client) Restore(ctx context.Context, siteID uuid.UUID, siteURL string, req RestoreRequest) (RestoreResponse, error) {
+	var out RestoreResponse
+	if err := c.post(ctx, siteID, siteURL, "restore", req, &out); err != nil {
+		return RestoreResponse{}, err
+	}
+	return out, nil
+}
+
 // post mints a fresh JWT bound to siteID (aud) and command (cmd), POSTs body to
 // the named command endpoint at siteURL, and decodes the JSON response into
 // out. A non-2xx response is an error.

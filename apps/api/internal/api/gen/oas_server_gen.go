@@ -30,6 +30,17 @@ type Handler interface {
 	//
 	// POST /api/v1/api-keys
 	CreateApiKey(ctx context.Context, req *ApiKeyCreate) (CreateApiKeyRes, error)
+	// CreateBackup implements createBackup operation.
+	//
+	// Records a pending backup snapshot for the site and enqueues a background
+	// job that dispatches a signed `backup` command to the site's agent. The
+	// agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
+	// and uploads ciphertext directly to object storage via presigned URLs,
+	// then submits the manifest. Incremental: a chunk whose content hash is
+	// already stored is not re-uploaded. Requires operator+.
+	//
+	// POST /api/v1/sites/{siteId}/backups
+	CreateBackup(ctx context.Context, req *BackupCreate, params CreateBackupParams) (CreateBackupRes, error)
 	// CreatePairingCode implements createPairingCode operation.
 	//
 	// Generates a short-lived, single-use, high-entropy pairing code for the
@@ -39,6 +50,17 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/pairing-codes
 	CreatePairingCode(ctx context.Context, req OptPairingCodeCreate) (CreatePairingCodeRes, error)
+	// CreateRestore implements createRestore operation.
+	//
+	// Enqueues a restore job. The control plane resolves the (possibly partial)
+	// selection into ordered chunks, issues presigned GET URLs, and dispatches
+	// a signed `restore` command. The agent downloads ciphertext, verifies the
+	// BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+	// reassembles. Supports full, by-path, and by-db-table partial restore.
+	// Requires operator+.
+	//
+	// POST /api/v1/backups/{snapshotId}/restore
+	CreateRestore(ctx context.Context, req *RestoreCreate, params CreateRestoreParams) (CreateRestoreRes, error)
 	// CreateSite implements createSite operation.
 	//
 	// Creates a site belonging to the tenant in the request context.
@@ -79,6 +101,18 @@ type Handler interface {
 	//
 	// POST /enroll
 	Enroll(ctx context.Context, req *EnrollRequest) (EnrollRes, error)
+	// GetBackup implements getBackup operation.
+	//
+	// Get a backup snapshot with its manifest summary.
+	//
+	// GET /api/v1/backups/{snapshotId}
+	GetBackup(ctx context.Context, params GetBackupParams) (GetBackupRes, error)
+	// GetBackupSchedule implements getBackupSchedule operation.
+	//
+	// Get a site's backup schedule.
+	//
+	// GET /api/v1/sites/{siteId}/backup-schedule
+	GetBackupSchedule(ctx context.Context, params GetBackupScheduleParams) (GetBackupScheduleRes, error)
 	// GetHealthz implements getHealthz operation.
 	//
 	// Liveness probe.
@@ -133,6 +167,12 @@ type Handler interface {
 	//
 	// GET /api/v1/audit
 	ListAudit(ctx context.Context, params ListAuditParams) (ListAuditRes, error)
+	// ListBackups implements listBackups operation.
+	//
+	// List a site's backup snapshots.
+	//
+	// GET /api/v1/sites/{siteId}/backups
+	ListBackups(ctx context.Context, params ListBackupsParams) (*BackupSnapshotList, error)
 	// ListMembers implements listMembers operation.
 	//
 	// List members of the active tenant.
@@ -181,6 +221,12 @@ type Handler interface {
 	//
 	// GET /auth/oidc/login
 	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	// PutBackupSchedule implements putBackupSchedule operation.
+	//
+	// Create or update a site's backup schedule.
+	//
+	// PUT /api/v1/sites/{siteId}/backup-schedule
+	PutBackupSchedule(ctx context.Context, req *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
 	// Register implements register operation.
 	//
 	// On first run (zero users) this creates the first user, a tenant, and an

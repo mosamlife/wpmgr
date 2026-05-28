@@ -23,6 +23,7 @@ type Repo interface {
 	List(ctx context.Context, in ListInput) ([]Site, error)
 	Delete(ctx context.Context, tenantID, id uuid.UUID) error
 	SetTags(ctx context.Context, in SetTagsInput) (Site, error)
+	SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error)
 
 	// Enrollment path (public /enroll; app.enroll GUC).
 	CreatePairingCode(ctx context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error)
@@ -176,6 +177,26 @@ func (r *pgRepo) SetTags(ctx context.Context, in SetTagsInput) (Site, error) {
 				return domain.NotFound("site_not_found", "site not found")
 			}
 			return domain.Internal("site_set_tags_failed", "failed to set site tags").WithCause(err)
+		}
+		out = toModel(row)
+		return nil
+	})
+	return out, err
+}
+
+func (r *pgRepo) SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error) {
+	var out Site
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).SetSiteAgeRecipient(ctx, sqlc.SetSiteAgeRecipientParams{
+			ID:           siteID,
+			TenantID:     tenantID,
+			AgeRecipient: recipient,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("site_not_found", "site not found")
+			}
+			return domain.Internal("site_set_recipient_failed", "failed to set site age recipient").WithCause(err)
 		}
 		out = toModel(row)
 		return nil
@@ -451,6 +472,7 @@ func toModel(s sqlc.Site) Site {
 		ActiveTheme:    s.ActiveTheme,
 		Components:     s.Components,
 		Tags:           s.Tags,
+		AgeRecipient:   s.AgeRecipient,
 		CreatedAt:      s.CreatedAt,
 		UpdatedAt:      s.UpdatedAt,
 	}

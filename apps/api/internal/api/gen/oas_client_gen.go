@@ -50,6 +50,17 @@ type Invoker interface {
 	//
 	// POST /api/v1/api-keys
 	CreateApiKey(ctx context.Context, request *ApiKeyCreate) (CreateApiKeyRes, error)
+	// CreateBackup invokes createBackup operation.
+	//
+	// Records a pending backup snapshot for the site and enqueues a background
+	// job that dispatches a signed `backup` command to the site's agent. The
+	// agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
+	// and uploads ciphertext directly to object storage via presigned URLs,
+	// then submits the manifest. Incremental: a chunk whose content hash is
+	// already stored is not re-uploaded. Requires operator+.
+	//
+	// POST /api/v1/sites/{siteId}/backups
+	CreateBackup(ctx context.Context, request *BackupCreate, params CreateBackupParams) (CreateBackupRes, error)
 	// CreatePairingCode invokes createPairingCode operation.
 	//
 	// Generates a short-lived, single-use, high-entropy pairing code for the
@@ -59,6 +70,17 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/pairing-codes
 	CreatePairingCode(ctx context.Context, request OptPairingCodeCreate) (CreatePairingCodeRes, error)
+	// CreateRestore invokes createRestore operation.
+	//
+	// Enqueues a restore job. The control plane resolves the (possibly partial)
+	// selection into ordered chunks, issues presigned GET URLs, and dispatches
+	// a signed `restore` command. The agent downloads ciphertext, verifies the
+	// BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+	// reassembles. Supports full, by-path, and by-db-table partial restore.
+	// Requires operator+.
+	//
+	// POST /api/v1/backups/{snapshotId}/restore
+	CreateRestore(ctx context.Context, request *RestoreCreate, params CreateRestoreParams) (CreateRestoreRes, error)
 	// CreateSite invokes createSite operation.
 	//
 	// Creates a site belonging to the tenant in the request context.
@@ -99,6 +121,18 @@ type Invoker interface {
 	//
 	// POST /enroll
 	Enroll(ctx context.Context, request *EnrollRequest) (EnrollRes, error)
+	// GetBackup invokes getBackup operation.
+	//
+	// Get a backup snapshot with its manifest summary.
+	//
+	// GET /api/v1/backups/{snapshotId}
+	GetBackup(ctx context.Context, params GetBackupParams) (GetBackupRes, error)
+	// GetBackupSchedule invokes getBackupSchedule operation.
+	//
+	// Get a site's backup schedule.
+	//
+	// GET /api/v1/sites/{siteId}/backup-schedule
+	GetBackupSchedule(ctx context.Context, params GetBackupScheduleParams) (GetBackupScheduleRes, error)
 	// GetHealthz invokes getHealthz operation.
 	//
 	// Liveness probe.
@@ -153,6 +187,12 @@ type Invoker interface {
 	//
 	// GET /api/v1/audit
 	ListAudit(ctx context.Context, params ListAuditParams) (ListAuditRes, error)
+	// ListBackups invokes listBackups operation.
+	//
+	// List a site's backup snapshots.
+	//
+	// GET /api/v1/sites/{siteId}/backups
+	ListBackups(ctx context.Context, params ListBackupsParams) (*BackupSnapshotList, error)
 	// ListMembers invokes listMembers operation.
 	//
 	// List members of the active tenant.
@@ -201,6 +241,12 @@ type Invoker interface {
 	//
 	// GET /auth/oidc/login
 	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	// PutBackupSchedule invokes putBackupSchedule operation.
+	//
+	// Create or update a site's backup schedule.
+	//
+	// PUT /api/v1/sites/{siteId}/backup-schedule
+	PutBackupSchedule(ctx context.Context, request *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
 	// Register invokes register operation.
 	//
 	// On first run (zero users) this creates the first user, a tenant, and an
@@ -568,6 +614,107 @@ func (c *Client) sendCreateApiKey(ctx context.Context, request *ApiKeyCreate) (r
 	return result, nil
 }
 
+// CreateBackup invokes createBackup operation.
+//
+// Records a pending backup snapshot for the site and enqueues a background
+// job that dispatches a signed `backup` command to the site's agent. The
+// agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
+// and uploads ciphertext directly to object storage via presigned URLs,
+// then submits the manifest. Incremental: a chunk whose content hash is
+// already stored is not re-uploaded. Requires operator+.
+//
+// POST /api/v1/sites/{siteId}/backups
+func (c *Client) CreateBackup(ctx context.Context, request *BackupCreate, params CreateBackupParams) (CreateBackupRes, error) {
+	res, err := c.sendCreateBackup(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendCreateBackup(ctx context.Context, request *BackupCreate, params CreateBackupParams) (res CreateBackupRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createBackup"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/backups"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateBackupOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/backups"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateBackupRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateBackupResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // CreatePairingCode invokes createPairingCode operation.
 //
 // Generates a short-lived, single-use, high-entropy pairing code for the
@@ -641,6 +788,107 @@ func (c *Client) sendCreatePairingCode(ctx context.Context, request OptPairingCo
 
 	stage = "DecodeResponse"
 	result, err := decodeCreatePairingCodeResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CreateRestore invokes createRestore operation.
+//
+// Enqueues a restore job. The control plane resolves the (possibly partial)
+// selection into ordered chunks, issues presigned GET URLs, and dispatches
+// a signed `restore` command. The agent downloads ciphertext, verifies the
+// BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+// reassembles. Supports full, by-path, and by-db-table partial restore.
+// Requires operator+.
+//
+// POST /api/v1/backups/{snapshotId}/restore
+func (c *Client) CreateRestore(ctx context.Context, request *RestoreCreate, params CreateRestoreParams) (CreateRestoreRes, error) {
+	res, err := c.sendCreateRestore(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendCreateRestore(ctx context.Context, request *RestoreCreate, params CreateRestoreParams) (res CreateRestoreRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createRestore"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/backups/{snapshotId}/restore"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateRestoreOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/backups/"
+	{
+		// Encode "snapshotId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "snapshotId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SnapshotId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/restore"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateRestoreRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateRestoreResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -1051,6 +1299,191 @@ func (c *Client) sendEnroll(ctx context.Context, request *EnrollRequest) (res En
 
 	stage = "DecodeResponse"
 	result, err := decodeEnrollResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetBackup invokes getBackup operation.
+//
+// Get a backup snapshot with its manifest summary.
+//
+// GET /api/v1/backups/{snapshotId}
+func (c *Client) GetBackup(ctx context.Context, params GetBackupParams) (GetBackupRes, error) {
+	res, err := c.sendGetBackup(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetBackup(ctx context.Context, params GetBackupParams) (res GetBackupRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getBackup"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/backups/{snapshotId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetBackupOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/api/v1/backups/"
+	{
+		// Encode "snapshotId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "snapshotId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SnapshotId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetBackupResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetBackupSchedule invokes getBackupSchedule operation.
+//
+// Get a site's backup schedule.
+//
+// GET /api/v1/sites/{siteId}/backup-schedule
+func (c *Client) GetBackupSchedule(ctx context.Context, params GetBackupScheduleParams) (GetBackupScheduleRes, error) {
+	res, err := c.sendGetBackupSchedule(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetBackupSchedule(ctx context.Context, params GetBackupScheduleParams) (res GetBackupScheduleRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getBackupSchedule"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/backup-schedule"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetBackupScheduleOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/backup-schedule"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetBackupScheduleResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -1857,6 +2290,137 @@ func (c *Client) sendListAudit(ctx context.Context, params ListAuditParams) (res
 	return result, nil
 }
 
+// ListBackups invokes listBackups operation.
+//
+// List a site's backup snapshots.
+//
+// GET /api/v1/sites/{siteId}/backups
+func (c *Client) ListBackups(ctx context.Context, params ListBackupsParams) (*BackupSnapshotList, error) {
+	res, err := c.sendListBackups(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListBackups(ctx context.Context, params ListBackupsParams) (res *BackupSnapshotList, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listBackups"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/backups"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListBackupsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/backups"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "offset" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Offset.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListBackupsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ListMembers invokes listMembers operation.
 //
 // List members of the active tenant.
@@ -2652,6 +3216,102 @@ func (c *Client) sendOidcLogin(ctx context.Context) (res OidcLoginRes, err error
 
 	stage = "DecodeResponse"
 	result, err := decodeOidcLoginResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PutBackupSchedule invokes putBackupSchedule operation.
+//
+// Create or update a site's backup schedule.
+//
+// PUT /api/v1/sites/{siteId}/backup-schedule
+func (c *Client) PutBackupSchedule(ctx context.Context, request *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error) {
+	res, err := c.sendPutBackupSchedule(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPutBackupSchedule(ctx context.Context, request *BackupScheduleUpdate, params PutBackupScheduleParams) (res PutBackupScheduleRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("putBackupSchedule"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/backup-schedule"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PutBackupScheduleOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/backup-schedule"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePutBackupScheduleRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodePutBackupScheduleResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

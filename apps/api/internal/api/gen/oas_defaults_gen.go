@@ -3,6 +3,38 @@
 package gen
 
 // setDefaults set default value of fields.
+func (s *BackupCreate) setDefaults() {
+	{
+		val := BackupCreateKind("full")
+		s.Kind.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
+func (s *BackupScheduleUpdate) setDefaults() {
+	{
+		val := BackupScheduleUpdateCadence("daily")
+		s.Cadence.SetTo(val)
+	}
+	{
+		val := BackupScheduleUpdateKind("full")
+		s.Kind.SetTo(val)
+	}
+	{
+		val := bool(true)
+		s.Enabled.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
+func (s *RestoreCreate) setDefaults() {
+	{
+		val := bool(false)
+		s.Full.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
 func (s *SiteCreate) setDefaults() {
 	{
 		val := SiteCreateStatus("pending")

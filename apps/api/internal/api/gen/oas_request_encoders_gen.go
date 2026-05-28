@@ -38,6 +38,20 @@ func encodeCreateApiKeyRequest(
 	return nil
 }
 
+func encodeCreateBackupRequest(
+	req *BackupCreate,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeCreatePairingCodeRequest(
 	req OptPairingCodeCreate,
 	r *http.Request,
@@ -52,6 +66,20 @@ func encodeCreatePairingCodeRequest(
 		if req.Set {
 			req.Encode(e)
 		}
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeCreateRestoreRequest(
+	req *RestoreCreate,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
 	}
 	encoded := e.Bytes()
 	ht.SetBody(r, bytes.NewReader(encoded), contentType)
@@ -130,6 +158,20 @@ func encodeInviteMemberRequest(
 
 func encodeLoginRequest(
 	req *LoginRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodePutBackupScheduleRequest(
+	req *BackupScheduleUpdate,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

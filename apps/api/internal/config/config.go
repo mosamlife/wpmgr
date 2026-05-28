@@ -27,6 +27,48 @@ type Config struct {
 	Shutdown ShutdownConfig `koanf:"shutdown"`
 	Agent    AgentConfig    `koanf:"agent"`
 	Update   UpdateConfig   `koanf:"update"`
+	S3       S3Config       `koanf:"s3"`
+	Backup   BackupConfig   `koanf:"backup"`
+}
+
+// S3Config holds the S3-compatible object-storage configuration (ADR-010).
+// WPMgr stores ONLY ciphertext chunks (client-side age-encrypted on the agent)
+// at content-addressed keys; the control plane issues presigned PUT/GET URLs so
+// the agent transfers bytes directly to/from storage. Endpoint + ForcePathStyle
+// support self-hosted SeaweedFS/MinIO as well as managed AWS S3. AccessKey and
+// SecretKey are static credentials; never log them.
+type S3Config struct {
+	Endpoint       string `koanf:"endpoint"`
+	Region         string `koanf:"region"`
+	Bucket         string `koanf:"bucket"`
+	AccessKey      string `koanf:"access_key"`
+	SecretKey      string `koanf:"secret_key"`
+	ForcePathStyle bool   `koanf:"force_path_style"`
+}
+
+// Enabled reports whether object storage is configured (a bucket is the minimum
+// requirement). When disabled, backup endpoints return 501.
+func (s S3Config) Enabled() bool { return s.Bucket != "" }
+
+// BackupConfig tunes the backup/restore feature: presigned URL TTLs, the
+// retention policy (a rolling daily window plus a monthly-archive keep count),
+// and the cadence of the scheduler/GC periodic jobs.
+type BackupConfig struct {
+	// PresignTTL bounds how long a presigned PUT/GET URL stays valid; it must be
+	// long enough for the agent to upload/download a chunk but short enough to
+	// limit exposure of a leaked URL.
+	PresignTTL time.Duration `koanf:"presign_ttl"`
+	// RetentionDays is the rolling window: snapshots older than this are pruned by
+	// the GC job (unless kept by the monthly-archive rule).
+	RetentionDays int `koanf:"retention_days"`
+	// MonthlyArchiveKeep is how many monthly-archive snapshots to keep beyond the
+	// rolling window (the newest snapshot in each of the last N calendar months).
+	MonthlyArchiveKeep int `koanf:"monthly_archive_keep"`
+	// ScheduleInterval is how often the scheduler periodic job runs to enqueue due
+	// backups from backup_schedules.
+	ScheduleInterval time.Duration `koanf:"schedule_interval"`
+	// GCInterval is how often the retention GC job runs.
+	GCInterval time.Duration `koanf:"gc_interval"`
 }
 
 // UpdateConfig holds the M3 bulk-update orchestration tuning.
@@ -225,6 +267,17 @@ func defaults() map[string]any {
 		"update.per_tenant_parallelism": 5,
 		"update.http_timeout":           "30s",
 		"update.http_retries":           2,
+		"s3.endpoint":                   "",
+		"s3.region":                     "us-east-1",
+		"s3.bucket":                     "",
+		"s3.access_key":                 "",
+		"s3.secret_key":                 "",
+		"s3.force_path_style":           true,
+		"backup.presign_ttl":            "1h",
+		"backup.retention_days":         30,
+		"backup.monthly_archive_keep":   12,
+		"backup.schedule_interval":      "5m",
+		"backup.gc_interval":            "1h",
 	}
 }
 
@@ -293,6 +346,10 @@ func mapEnvKey(k string) string {
 		return "agent." + strings.TrimPrefix(k, "agent_")
 	case strings.HasPrefix(k, "update_"):
 		return "update." + strings.TrimPrefix(k, "update_")
+	case strings.HasPrefix(k, "s3_"):
+		return "s3." + strings.TrimPrefix(k, "s3_")
+	case strings.HasPrefix(k, "backup_"):
+		return "backup." + strings.TrimPrefix(k, "backup_")
 	default:
 		return k
 	}

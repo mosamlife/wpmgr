@@ -26,6 +26,14 @@ SET tags = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
 RETURNING *;
 
+-- name: SetSiteAgeRecipient :one
+-- Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
+-- never holds the matching identity (private key); it cannot decrypt backups.
+UPDATE sites
+SET age_recipient = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING *;
+
 -- name: UpdateSiteMetadata :one
 -- Tenant-scoped metadata update (used by the agent path inside the resolved
 -- site's own tenant scope).

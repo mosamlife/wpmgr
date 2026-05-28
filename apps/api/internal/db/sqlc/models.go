@@ -44,6 +44,63 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type BackupChunk struct {
+	ID        uuid.UUID `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	Blake3    string    `json:"blake3"`
+	S3Key     string    `json:"s3_key"`
+	Size      int64     `json:"size"`
+	Refcount  int64     `json:"refcount"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type BackupManifestEntry struct {
+	ID          uuid.UUID `json:"id"`
+	SnapshotID  uuid.UUID `json:"snapshot_id"`
+	TenantID    uuid.UUID `json:"tenant_id"`
+	Path        string    `json:"path"`
+	EntryKind   string    `json:"entry_kind"`
+	TableName   string    `json:"table_name"`
+	ChunkHashes []string  `json:"chunk_hashes"`
+	Size        int64     `json:"size"`
+	Mode        int32     `json:"mode"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type BackupSchedule struct {
+	ID                 uuid.UUID          `json:"id"`
+	TenantID           uuid.UUID          `json:"tenant_id"`
+	SiteID             uuid.UUID          `json:"site_id"`
+	Cadence            string             `json:"cadence"`
+	Kind               string             `json:"kind"`
+	Enabled            bool               `json:"enabled"`
+	RetentionDays      int32              `json:"retention_days"`
+	MonthlyArchiveKeep int32              `json:"monthly_archive_keep"`
+	NextRunAt          time.Time          `json:"next_run_at"`
+	LastRunAt          pgtype.Timestamptz `json:"last_run_at"`
+	CreatedAt          time.Time          `json:"created_at"`
+	UpdatedAt          time.Time          `json:"updated_at"`
+}
+
+type BackupSnapshot struct {
+	ID           uuid.UUID          `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	SiteID       uuid.UUID          `json:"site_id"`
+	CreatedBy    pgtype.UUID        `json:"created_by"`
+	Kind         string             `json:"kind"`
+	Status       string             `json:"status"`
+	AgeRecipient string             `json:"age_recipient"`
+	TotalSize    int64              `json:"total_size"`
+	ChunkCount   int64              `json:"chunk_count"`
+	Error        string             `json:"error"`
+	Archived     bool               `json:"archived"`
+	StartedAt    pgtype.Timestamptz `json:"started_at"`
+	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
+	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+}
+
 type Membership struct {
 	ID        uuid.UUID `json:"id"`
 	UserID    uuid.UUID `json:"user_id"`
@@ -83,6 +140,7 @@ type Site struct {
 	ActiveTheme    string             `json:"active_theme"`
 	Components     []byte             `json:"components"`
 	Tags           []string           `json:"tags"`
+	AgeRecipient   string             `json:"age_recipient"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
 }

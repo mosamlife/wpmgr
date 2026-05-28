@@ -52,6 +52,10 @@ func (f *fakeRepo) SetTags(_ context.Context, in SetTagsInput) (Site, error) {
 	return Site{ID: in.SiteID, TenantID: in.TenantID, Tags: in.Tags}, nil
 }
 
+func (f *fakeRepo) SetAgeRecipient(_ context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error) {
+	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: recipient}, nil
+}
+
 func (f *fakeRepo) CreatePairingCode(_ context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error) {
 	return PairingCode{ID: uuid.New(), TenantID: in.TenantID, ExpiresAt: expiresAt}, nil
 }

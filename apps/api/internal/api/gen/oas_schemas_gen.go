@@ -475,6 +475,900 @@ func (s *AuditVerify) SetBrokenAt(val OptUUID) {
 
 func (*AuditVerify) verifyAuditRes() {}
 
+// Request to start a backup of a site.
+// Ref: #/components/schemas/BackupCreate
+type BackupCreate struct {
+	// What to back up. Defaults to full (files + database).
+	Kind OptBackupCreateKind `json:"kind"`
+}
+
+// GetKind returns the value of Kind.
+func (s *BackupCreate) GetKind() OptBackupCreateKind {
+	return s.Kind
+}
+
+// SetKind sets the value of Kind.
+func (s *BackupCreate) SetKind(val OptBackupCreateKind) {
+	s.Kind = val
+}
+
+// What to back up. Defaults to full (files + database).
+type BackupCreateKind string
+
+const (
+	BackupCreateKindFiles BackupCreateKind = "files"
+	BackupCreateKindDb    BackupCreateKind = "db"
+	BackupCreateKindFull  BackupCreateKind = "full"
+)
+
+// AllValues returns all BackupCreateKind values.
+func (BackupCreateKind) AllValues() []BackupCreateKind {
+	return []BackupCreateKind{
+		BackupCreateKindFiles,
+		BackupCreateKindDb,
+		BackupCreateKindFull,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupCreateKind) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupCreateKindFiles:
+		return []byte(s), nil
+	case BackupCreateKindDb:
+		return []byte(s), nil
+	case BackupCreateKindFull:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupCreateKind) UnmarshalText(data []byte) error {
+	switch BackupCreateKind(data) {
+	case BackupCreateKindFiles:
+		*s = BackupCreateKindFiles
+		return nil
+	case BackupCreateKindDb:
+		*s = BackupCreateKindDb
+		return nil
+	case BackupCreateKindFull:
+		*s = BackupCreateKindFull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One file (or db dump) in a snapshot, summarized.
+// Ref: #/components/schemas/BackupManifestEntry
+type BackupManifestEntry struct {
+	Path      string                       `json:"path"`
+	EntryKind BackupManifestEntryEntryKind `json:"entry_kind"`
+	// Set for db entries (partial restore-by-table).
+	TableName OptString `json:"table_name"`
+	Size      int64     `json:"size"`
+	Mode      OptInt32  `json:"mode"`
+	// Number of ordered ciphertext chunks reassembling the path.
+	ChunkCount int32 `json:"chunk_count"`
+}
+
+// GetPath returns the value of Path.
+func (s *BackupManifestEntry) GetPath() string {
+	return s.Path
+}
+
+// GetEntryKind returns the value of EntryKind.
+func (s *BackupManifestEntry) GetEntryKind() BackupManifestEntryEntryKind {
+	return s.EntryKind
+}
+
+// GetTableName returns the value of TableName.
+func (s *BackupManifestEntry) GetTableName() OptString {
+	return s.TableName
+}
+
+// GetSize returns the value of Size.
+func (s *BackupManifestEntry) GetSize() int64 {
+	return s.Size
+}
+
+// GetMode returns the value of Mode.
+func (s *BackupManifestEntry) GetMode() OptInt32 {
+	return s.Mode
+}
+
+// GetChunkCount returns the value of ChunkCount.
+func (s *BackupManifestEntry) GetChunkCount() int32 {
+	return s.ChunkCount
+}
+
+// SetPath sets the value of Path.
+func (s *BackupManifestEntry) SetPath(val string) {
+	s.Path = val
+}
+
+// SetEntryKind sets the value of EntryKind.
+func (s *BackupManifestEntry) SetEntryKind(val BackupManifestEntryEntryKind) {
+	s.EntryKind = val
+}
+
+// SetTableName sets the value of TableName.
+func (s *BackupManifestEntry) SetTableName(val OptString) {
+	s.TableName = val
+}
+
+// SetSize sets the value of Size.
+func (s *BackupManifestEntry) SetSize(val int64) {
+	s.Size = val
+}
+
+// SetMode sets the value of Mode.
+func (s *BackupManifestEntry) SetMode(val OptInt32) {
+	s.Mode = val
+}
+
+// SetChunkCount sets the value of ChunkCount.
+func (s *BackupManifestEntry) SetChunkCount(val int32) {
+	s.ChunkCount = val
+}
+
+type BackupManifestEntryEntryKind string
+
+const (
+	BackupManifestEntryEntryKindFile BackupManifestEntryEntryKind = "file"
+	BackupManifestEntryEntryKindDb   BackupManifestEntryEntryKind = "db"
+)
+
+// AllValues returns all BackupManifestEntryEntryKind values.
+func (BackupManifestEntryEntryKind) AllValues() []BackupManifestEntryEntryKind {
+	return []BackupManifestEntryEntryKind{
+		BackupManifestEntryEntryKindFile,
+		BackupManifestEntryEntryKindDb,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupManifestEntryEntryKind) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupManifestEntryEntryKindFile:
+		return []byte(s), nil
+	case BackupManifestEntryEntryKindDb:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupManifestEntryEntryKind) UnmarshalText(data []byte) error {
+	switch BackupManifestEntryEntryKind(data) {
+	case BackupManifestEntryEntryKindFile:
+		*s = BackupManifestEntryEntryKindFile
+		return nil
+	case BackupManifestEntryEntryKindDb:
+		*s = BackupManifestEntryEntryKindDb
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/BackupSchedule
+type BackupSchedule struct {
+	ID                 uuid.UUID             `json:"id"`
+	TenantID           uuid.UUID             `json:"tenant_id"`
+	SiteID             uuid.UUID             `json:"site_id"`
+	Cadence            BackupScheduleCadence `json:"cadence"`
+	Kind               BackupScheduleKind    `json:"kind"`
+	Enabled            bool                  `json:"enabled"`
+	RetentionDays      int32                 `json:"retention_days"`
+	MonthlyArchiveKeep int32                 `json:"monthly_archive_keep"`
+	NextRunAt          time.Time             `json:"next_run_at"`
+	LastRunAt          OptDateTime           `json:"last_run_at"`
+	CreatedAt          time.Time             `json:"created_at"`
+	UpdatedAt          time.Time             `json:"updated_at"`
+}
+
+// GetID returns the value of ID.
+func (s *BackupSchedule) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *BackupSchedule) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *BackupSchedule) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetCadence returns the value of Cadence.
+func (s *BackupSchedule) GetCadence() BackupScheduleCadence {
+	return s.Cadence
+}
+
+// GetKind returns the value of Kind.
+func (s *BackupSchedule) GetKind() BackupScheduleKind {
+	return s.Kind
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *BackupSchedule) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetRetentionDays returns the value of RetentionDays.
+func (s *BackupSchedule) GetRetentionDays() int32 {
+	return s.RetentionDays
+}
+
+// GetMonthlyArchiveKeep returns the value of MonthlyArchiveKeep.
+func (s *BackupSchedule) GetMonthlyArchiveKeep() int32 {
+	return s.MonthlyArchiveKeep
+}
+
+// GetNextRunAt returns the value of NextRunAt.
+func (s *BackupSchedule) GetNextRunAt() time.Time {
+	return s.NextRunAt
+}
+
+// GetLastRunAt returns the value of LastRunAt.
+func (s *BackupSchedule) GetLastRunAt() OptDateTime {
+	return s.LastRunAt
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *BackupSchedule) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *BackupSchedule) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetID sets the value of ID.
+func (s *BackupSchedule) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *BackupSchedule) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *BackupSchedule) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetCadence sets the value of Cadence.
+func (s *BackupSchedule) SetCadence(val BackupScheduleCadence) {
+	s.Cadence = val
+}
+
+// SetKind sets the value of Kind.
+func (s *BackupSchedule) SetKind(val BackupScheduleKind) {
+	s.Kind = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *BackupSchedule) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetRetentionDays sets the value of RetentionDays.
+func (s *BackupSchedule) SetRetentionDays(val int32) {
+	s.RetentionDays = val
+}
+
+// SetMonthlyArchiveKeep sets the value of MonthlyArchiveKeep.
+func (s *BackupSchedule) SetMonthlyArchiveKeep(val int32) {
+	s.MonthlyArchiveKeep = val
+}
+
+// SetNextRunAt sets the value of NextRunAt.
+func (s *BackupSchedule) SetNextRunAt(val time.Time) {
+	s.NextRunAt = val
+}
+
+// SetLastRunAt sets the value of LastRunAt.
+func (s *BackupSchedule) SetLastRunAt(val OptDateTime) {
+	s.LastRunAt = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *BackupSchedule) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *BackupSchedule) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*BackupSchedule) getBackupScheduleRes() {}
+func (*BackupSchedule) putBackupScheduleRes() {}
+
+type BackupScheduleCadence string
+
+const (
+	BackupScheduleCadenceDaily   BackupScheduleCadence = "daily"
+	BackupScheduleCadenceWeekly  BackupScheduleCadence = "weekly"
+	BackupScheduleCadenceMonthly BackupScheduleCadence = "monthly"
+)
+
+// AllValues returns all BackupScheduleCadence values.
+func (BackupScheduleCadence) AllValues() []BackupScheduleCadence {
+	return []BackupScheduleCadence{
+		BackupScheduleCadenceDaily,
+		BackupScheduleCadenceWeekly,
+		BackupScheduleCadenceMonthly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupScheduleCadence) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupScheduleCadenceDaily:
+		return []byte(s), nil
+	case BackupScheduleCadenceWeekly:
+		return []byte(s), nil
+	case BackupScheduleCadenceMonthly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupScheduleCadence) UnmarshalText(data []byte) error {
+	switch BackupScheduleCadence(data) {
+	case BackupScheduleCadenceDaily:
+		*s = BackupScheduleCadenceDaily
+		return nil
+	case BackupScheduleCadenceWeekly:
+		*s = BackupScheduleCadenceWeekly
+		return nil
+	case BackupScheduleCadenceMonthly:
+		*s = BackupScheduleCadenceMonthly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type BackupScheduleKind string
+
+const (
+	BackupScheduleKindFiles BackupScheduleKind = "files"
+	BackupScheduleKindDb    BackupScheduleKind = "db"
+	BackupScheduleKindFull  BackupScheduleKind = "full"
+)
+
+// AllValues returns all BackupScheduleKind values.
+func (BackupScheduleKind) AllValues() []BackupScheduleKind {
+	return []BackupScheduleKind{
+		BackupScheduleKindFiles,
+		BackupScheduleKindDb,
+		BackupScheduleKindFull,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupScheduleKind) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupScheduleKindFiles:
+		return []byte(s), nil
+	case BackupScheduleKindDb:
+		return []byte(s), nil
+	case BackupScheduleKindFull:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupScheduleKind) UnmarshalText(data []byte) error {
+	switch BackupScheduleKind(data) {
+	case BackupScheduleKindFiles:
+		*s = BackupScheduleKindFiles
+		return nil
+	case BackupScheduleKindDb:
+		*s = BackupScheduleKindDb
+		return nil
+	case BackupScheduleKindFull:
+		*s = BackupScheduleKindFull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Create or update a site's backup schedule (daily default).
+// Ref: #/components/schemas/BackupScheduleUpdate
+type BackupScheduleUpdate struct {
+	Cadence OptBackupScheduleUpdateCadence `json:"cadence"`
+	Kind    OptBackupScheduleUpdateKind    `json:"kind"`
+	Enabled OptBool                        `json:"enabled"`
+	// Rolling-window retention in days. Defaults to the server policy.
+	RetentionDays OptInt32 `json:"retention_days"`
+	// Number of monthly-archive snapshots to keep beyond the window.
+	MonthlyArchiveKeep OptInt32 `json:"monthly_archive_keep"`
+}
+
+// GetCadence returns the value of Cadence.
+func (s *BackupScheduleUpdate) GetCadence() OptBackupScheduleUpdateCadence {
+	return s.Cadence
+}
+
+// GetKind returns the value of Kind.
+func (s *BackupScheduleUpdate) GetKind() OptBackupScheduleUpdateKind {
+	return s.Kind
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *BackupScheduleUpdate) GetEnabled() OptBool {
+	return s.Enabled
+}
+
+// GetRetentionDays returns the value of RetentionDays.
+func (s *BackupScheduleUpdate) GetRetentionDays() OptInt32 {
+	return s.RetentionDays
+}
+
+// GetMonthlyArchiveKeep returns the value of MonthlyArchiveKeep.
+func (s *BackupScheduleUpdate) GetMonthlyArchiveKeep() OptInt32 {
+	return s.MonthlyArchiveKeep
+}
+
+// SetCadence sets the value of Cadence.
+func (s *BackupScheduleUpdate) SetCadence(val OptBackupScheduleUpdateCadence) {
+	s.Cadence = val
+}
+
+// SetKind sets the value of Kind.
+func (s *BackupScheduleUpdate) SetKind(val OptBackupScheduleUpdateKind) {
+	s.Kind = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *BackupScheduleUpdate) SetEnabled(val OptBool) {
+	s.Enabled = val
+}
+
+// SetRetentionDays sets the value of RetentionDays.
+func (s *BackupScheduleUpdate) SetRetentionDays(val OptInt32) {
+	s.RetentionDays = val
+}
+
+// SetMonthlyArchiveKeep sets the value of MonthlyArchiveKeep.
+func (s *BackupScheduleUpdate) SetMonthlyArchiveKeep(val OptInt32) {
+	s.MonthlyArchiveKeep = val
+}
+
+type BackupScheduleUpdateCadence string
+
+const (
+	BackupScheduleUpdateCadenceDaily   BackupScheduleUpdateCadence = "daily"
+	BackupScheduleUpdateCadenceWeekly  BackupScheduleUpdateCadence = "weekly"
+	BackupScheduleUpdateCadenceMonthly BackupScheduleUpdateCadence = "monthly"
+)
+
+// AllValues returns all BackupScheduleUpdateCadence values.
+func (BackupScheduleUpdateCadence) AllValues() []BackupScheduleUpdateCadence {
+	return []BackupScheduleUpdateCadence{
+		BackupScheduleUpdateCadenceDaily,
+		BackupScheduleUpdateCadenceWeekly,
+		BackupScheduleUpdateCadenceMonthly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupScheduleUpdateCadence) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupScheduleUpdateCadenceDaily:
+		return []byte(s), nil
+	case BackupScheduleUpdateCadenceWeekly:
+		return []byte(s), nil
+	case BackupScheduleUpdateCadenceMonthly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupScheduleUpdateCadence) UnmarshalText(data []byte) error {
+	switch BackupScheduleUpdateCadence(data) {
+	case BackupScheduleUpdateCadenceDaily:
+		*s = BackupScheduleUpdateCadenceDaily
+		return nil
+	case BackupScheduleUpdateCadenceWeekly:
+		*s = BackupScheduleUpdateCadenceWeekly
+		return nil
+	case BackupScheduleUpdateCadenceMonthly:
+		*s = BackupScheduleUpdateCadenceMonthly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type BackupScheduleUpdateKind string
+
+const (
+	BackupScheduleUpdateKindFiles BackupScheduleUpdateKind = "files"
+	BackupScheduleUpdateKindDb    BackupScheduleUpdateKind = "db"
+	BackupScheduleUpdateKindFull  BackupScheduleUpdateKind = "full"
+)
+
+// AllValues returns all BackupScheduleUpdateKind values.
+func (BackupScheduleUpdateKind) AllValues() []BackupScheduleUpdateKind {
+	return []BackupScheduleUpdateKind{
+		BackupScheduleUpdateKindFiles,
+		BackupScheduleUpdateKindDb,
+		BackupScheduleUpdateKindFull,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupScheduleUpdateKind) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupScheduleUpdateKindFiles:
+		return []byte(s), nil
+	case BackupScheduleUpdateKindDb:
+		return []byte(s), nil
+	case BackupScheduleUpdateKindFull:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupScheduleUpdateKind) UnmarshalText(data []byte) error {
+	switch BackupScheduleUpdateKind(data) {
+	case BackupScheduleUpdateKindFiles:
+		*s = BackupScheduleUpdateKindFiles
+		return nil
+	case BackupScheduleUpdateKindDb:
+		*s = BackupScheduleUpdateKindDb
+		return nil
+	case BackupScheduleUpdateKindFull:
+		*s = BackupScheduleUpdateKindFull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/BackupSnapshot
+type BackupSnapshot struct {
+	ID        uuid.UUID            `json:"id"`
+	TenantID  uuid.UUID            `json:"tenant_id"`
+	SiteID    uuid.UUID            `json:"site_id"`
+	CreatedBy OptUUID              `json:"created_by"`
+	Kind      BackupSnapshotKind   `json:"kind"`
+	Status    BackupSnapshotStatus `json:"status"`
+	// The age PUBLIC recipient the chunks were encrypted to (provenance).
+	// NEVER a private key; the control plane cannot decrypt backups.
+	AgeRecipient OptString `json:"age_recipient"`
+	TotalSize    OptInt64  `json:"total_size"`
+	ChunkCount   OptInt64  `json:"chunk_count"`
+	// Kept by the monthly-archive retention rule.
+	Archived   OptBool     `json:"archived"`
+	Error      OptString   `json:"error"`
+	StartedAt  OptDateTime `json:"started_at"`
+	FinishedAt OptDateTime `json:"finished_at"`
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
+}
+
+// GetID returns the value of ID.
+func (s *BackupSnapshot) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *BackupSnapshot) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *BackupSnapshot) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetCreatedBy returns the value of CreatedBy.
+func (s *BackupSnapshot) GetCreatedBy() OptUUID {
+	return s.CreatedBy
+}
+
+// GetKind returns the value of Kind.
+func (s *BackupSnapshot) GetKind() BackupSnapshotKind {
+	return s.Kind
+}
+
+// GetStatus returns the value of Status.
+func (s *BackupSnapshot) GetStatus() BackupSnapshotStatus {
+	return s.Status
+}
+
+// GetAgeRecipient returns the value of AgeRecipient.
+func (s *BackupSnapshot) GetAgeRecipient() OptString {
+	return s.AgeRecipient
+}
+
+// GetTotalSize returns the value of TotalSize.
+func (s *BackupSnapshot) GetTotalSize() OptInt64 {
+	return s.TotalSize
+}
+
+// GetChunkCount returns the value of ChunkCount.
+func (s *BackupSnapshot) GetChunkCount() OptInt64 {
+	return s.ChunkCount
+}
+
+// GetArchived returns the value of Archived.
+func (s *BackupSnapshot) GetArchived() OptBool {
+	return s.Archived
+}
+
+// GetError returns the value of Error.
+func (s *BackupSnapshot) GetError() OptString {
+	return s.Error
+}
+
+// GetStartedAt returns the value of StartedAt.
+func (s *BackupSnapshot) GetStartedAt() OptDateTime {
+	return s.StartedAt
+}
+
+// GetFinishedAt returns the value of FinishedAt.
+func (s *BackupSnapshot) GetFinishedAt() OptDateTime {
+	return s.FinishedAt
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *BackupSnapshot) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *BackupSnapshot) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetID sets the value of ID.
+func (s *BackupSnapshot) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *BackupSnapshot) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *BackupSnapshot) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetCreatedBy sets the value of CreatedBy.
+func (s *BackupSnapshot) SetCreatedBy(val OptUUID) {
+	s.CreatedBy = val
+}
+
+// SetKind sets the value of Kind.
+func (s *BackupSnapshot) SetKind(val BackupSnapshotKind) {
+	s.Kind = val
+}
+
+// SetStatus sets the value of Status.
+func (s *BackupSnapshot) SetStatus(val BackupSnapshotStatus) {
+	s.Status = val
+}
+
+// SetAgeRecipient sets the value of AgeRecipient.
+func (s *BackupSnapshot) SetAgeRecipient(val OptString) {
+	s.AgeRecipient = val
+}
+
+// SetTotalSize sets the value of TotalSize.
+func (s *BackupSnapshot) SetTotalSize(val OptInt64) {
+	s.TotalSize = val
+}
+
+// SetChunkCount sets the value of ChunkCount.
+func (s *BackupSnapshot) SetChunkCount(val OptInt64) {
+	s.ChunkCount = val
+}
+
+// SetArchived sets the value of Archived.
+func (s *BackupSnapshot) SetArchived(val OptBool) {
+	s.Archived = val
+}
+
+// SetError sets the value of Error.
+func (s *BackupSnapshot) SetError(val OptString) {
+	s.Error = val
+}
+
+// SetStartedAt sets the value of StartedAt.
+func (s *BackupSnapshot) SetStartedAt(val OptDateTime) {
+	s.StartedAt = val
+}
+
+// SetFinishedAt sets the value of FinishedAt.
+func (s *BackupSnapshot) SetFinishedAt(val OptDateTime) {
+	s.FinishedAt = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *BackupSnapshot) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *BackupSnapshot) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*BackupSnapshot) createBackupRes()  {}
+func (*BackupSnapshot) createRestoreRes() {}
+
+// Ref: #/components/schemas/BackupSnapshotDetail
+type BackupSnapshotDetail struct {
+	Snapshot BackupSnapshot        `json:"snapshot"`
+	Entries  []BackupManifestEntry `json:"entries"`
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *BackupSnapshotDetail) GetSnapshot() BackupSnapshot {
+	return s.Snapshot
+}
+
+// GetEntries returns the value of Entries.
+func (s *BackupSnapshotDetail) GetEntries() []BackupManifestEntry {
+	return s.Entries
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *BackupSnapshotDetail) SetSnapshot(val BackupSnapshot) {
+	s.Snapshot = val
+}
+
+// SetEntries sets the value of Entries.
+func (s *BackupSnapshotDetail) SetEntries(val []BackupManifestEntry) {
+	s.Entries = val
+}
+
+func (*BackupSnapshotDetail) getBackupRes() {}
+
+type BackupSnapshotKind string
+
+const (
+	BackupSnapshotKindFiles BackupSnapshotKind = "files"
+	BackupSnapshotKindDb    BackupSnapshotKind = "db"
+	BackupSnapshotKindFull  BackupSnapshotKind = "full"
+)
+
+// AllValues returns all BackupSnapshotKind values.
+func (BackupSnapshotKind) AllValues() []BackupSnapshotKind {
+	return []BackupSnapshotKind{
+		BackupSnapshotKindFiles,
+		BackupSnapshotKindDb,
+		BackupSnapshotKindFull,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupSnapshotKind) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupSnapshotKindFiles:
+		return []byte(s), nil
+	case BackupSnapshotKindDb:
+		return []byte(s), nil
+	case BackupSnapshotKindFull:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupSnapshotKind) UnmarshalText(data []byte) error {
+	switch BackupSnapshotKind(data) {
+	case BackupSnapshotKindFiles:
+		*s = BackupSnapshotKindFiles
+		return nil
+	case BackupSnapshotKindDb:
+		*s = BackupSnapshotKindDb
+		return nil
+	case BackupSnapshotKindFull:
+		*s = BackupSnapshotKindFull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/BackupSnapshotList
+type BackupSnapshotList struct {
+	Items []BackupSnapshot `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *BackupSnapshotList) GetItems() []BackupSnapshot {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *BackupSnapshotList) SetItems(val []BackupSnapshot) {
+	s.Items = val
+}
+
+type BackupSnapshotStatus string
+
+const (
+	BackupSnapshotStatusPending   BackupSnapshotStatus = "pending"
+	BackupSnapshotStatusRunning   BackupSnapshotStatus = "running"
+	BackupSnapshotStatusCompleted BackupSnapshotStatus = "completed"
+	BackupSnapshotStatusFailed    BackupSnapshotStatus = "failed"
+)
+
+// AllValues returns all BackupSnapshotStatus values.
+func (BackupSnapshotStatus) AllValues() []BackupSnapshotStatus {
+	return []BackupSnapshotStatus{
+		BackupSnapshotStatusPending,
+		BackupSnapshotStatusRunning,
+		BackupSnapshotStatusCompleted,
+		BackupSnapshotStatusFailed,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupSnapshotStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupSnapshotStatusPending:
+		return []byte(s), nil
+	case BackupSnapshotStatusRunning:
+		return []byte(s), nil
+	case BackupSnapshotStatusCompleted:
+		return []byte(s), nil
+	case BackupSnapshotStatusFailed:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupSnapshotStatus) UnmarshalText(data []byte) error {
+	switch BackupSnapshotStatus(data) {
+	case BackupSnapshotStatusPending:
+		*s = BackupSnapshotStatusPending
+		return nil
+	case BackupSnapshotStatusRunning:
+		*s = BackupSnapshotStatusRunning
+		return nil
+	case BackupSnapshotStatusCompleted:
+		*s = BackupSnapshotStatusCompleted
+		return nil
+	case BackupSnapshotStatusFailed:
+		*s = BackupSnapshotStatusFailed
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type CreateApiKeyForbidden Error
 
 func (*CreateApiKeyForbidden) createApiKeyRes() {}
@@ -683,15 +1577,20 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 }
 
 func (*Error) agentHeartbeatRes()    {}
+func (*Error) createBackupRes()      {}
 func (*Error) createPairingCodeRes() {}
+func (*Error) createRestoreRes()     {}
 func (*Error) createUpdateRunRes()   {}
 func (*Error) deleteSiteRes()        {}
+func (*Error) getBackupRes()         {}
+func (*Error) getBackupScheduleRes() {}
 func (*Error) getMeRes()             {}
 func (*Error) getSiteRes()           {}
 func (*Error) getTenantRes()         {}
 func (*Error) getUpdateRunRes()      {}
 func (*Error) logoutRes()            {}
 func (*Error) oidcLoginRes()         {}
+func (*Error) putBackupScheduleRes() {}
 func (*Error) setSiteTagsRes()       {}
 
 type ErrorDetails map[string]jx.Raw
@@ -1057,6 +1956,144 @@ func (o OptAuditEntryMetadata) Or(d AuditEntryMetadata) AuditEntryMetadata {
 	return d
 }
 
+// NewOptBackupCreateKind returns new OptBackupCreateKind with value set to v.
+func NewOptBackupCreateKind(v BackupCreateKind) OptBackupCreateKind {
+	return OptBackupCreateKind{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBackupCreateKind is optional BackupCreateKind.
+type OptBackupCreateKind struct {
+	Value BackupCreateKind
+	Set   bool
+}
+
+// IsSet returns true if OptBackupCreateKind was set.
+func (o OptBackupCreateKind) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBackupCreateKind) Reset() {
+	var v BackupCreateKind
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBackupCreateKind) SetTo(v BackupCreateKind) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBackupCreateKind) Get() (v BackupCreateKind, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBackupCreateKind) Or(d BackupCreateKind) BackupCreateKind {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptBackupScheduleUpdateCadence returns new OptBackupScheduleUpdateCadence with value set to v.
+func NewOptBackupScheduleUpdateCadence(v BackupScheduleUpdateCadence) OptBackupScheduleUpdateCadence {
+	return OptBackupScheduleUpdateCadence{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBackupScheduleUpdateCadence is optional BackupScheduleUpdateCadence.
+type OptBackupScheduleUpdateCadence struct {
+	Value BackupScheduleUpdateCadence
+	Set   bool
+}
+
+// IsSet returns true if OptBackupScheduleUpdateCadence was set.
+func (o OptBackupScheduleUpdateCadence) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBackupScheduleUpdateCadence) Reset() {
+	var v BackupScheduleUpdateCadence
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBackupScheduleUpdateCadence) SetTo(v BackupScheduleUpdateCadence) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBackupScheduleUpdateCadence) Get() (v BackupScheduleUpdateCadence, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBackupScheduleUpdateCadence) Or(d BackupScheduleUpdateCadence) BackupScheduleUpdateCadence {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptBackupScheduleUpdateKind returns new OptBackupScheduleUpdateKind with value set to v.
+func NewOptBackupScheduleUpdateKind(v BackupScheduleUpdateKind) OptBackupScheduleUpdateKind {
+	return OptBackupScheduleUpdateKind{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBackupScheduleUpdateKind is optional BackupScheduleUpdateKind.
+type OptBackupScheduleUpdateKind struct {
+	Value BackupScheduleUpdateKind
+	Set   bool
+}
+
+// IsSet returns true if OptBackupScheduleUpdateKind was set.
+func (o OptBackupScheduleUpdateKind) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBackupScheduleUpdateKind) Reset() {
+	var v BackupScheduleUpdateKind
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBackupScheduleUpdateKind) SetTo(v BackupScheduleUpdateKind) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBackupScheduleUpdateKind) Get() (v BackupScheduleUpdateKind, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBackupScheduleUpdateKind) Or(d BackupScheduleUpdateKind) BackupScheduleUpdateKind {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptBool returns new OptBool with value set to v.
 func NewOptBool(v bool) OptBool {
 	return OptBool{
@@ -1235,6 +2272,52 @@ func (o OptInt32) Get() (v int32, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptInt32) Or(d int32) int32 {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptInt64 returns new OptInt64 with value set to v.
+func NewOptInt64(v int64) OptInt64 {
+	return OptInt64{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptInt64 is optional int64.
+type OptInt64 struct {
+	Value int64
+	Set   bool
+}
+
+// IsSet returns true if OptInt64 was set.
+func (o OptInt64) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptInt64) Reset() {
+	var v int64
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptInt64) SetTo(v int64) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptInt64) Get() (v int64, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptInt64) Or(d int64) int64 {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -1775,6 +2858,48 @@ func (s *RegisterRequest) SetTenantSlug(val OptString) {
 type RegisterUnprocessableEntity Error
 
 func (*RegisterUnprocessableEntity) registerRes() {}
+
+// Restore selection. Omit both arrays (or set full=true) for a full
+// restore; provide paths for partial file restore, or db_tables for partial
+// db restore.
+// Ref: #/components/schemas/RestoreCreate
+type RestoreCreate struct {
+	Full OptBool `json:"full"`
+	// Site-relative file paths to restore.
+	Paths []string `json:"paths"`
+	// Database table names to restore.
+	DbTables []string `json:"db_tables"`
+}
+
+// GetFull returns the value of Full.
+func (s *RestoreCreate) GetFull() OptBool {
+	return s.Full
+}
+
+// GetPaths returns the value of Paths.
+func (s *RestoreCreate) GetPaths() []string {
+	return s.Paths
+}
+
+// GetDbTables returns the value of DbTables.
+func (s *RestoreCreate) GetDbTables() []string {
+	return s.DbTables
+}
+
+// SetFull sets the value of Full.
+func (s *RestoreCreate) SetFull(val OptBool) {
+	s.Full = val
+}
+
+// SetPaths sets the value of Paths.
+func (s *RestoreCreate) SetPaths(val []string) {
+	s.Paths = val
+}
+
+// SetDbTables sets the value of DbTables.
+func (s *RestoreCreate) SetDbTables(val []string) {
+	s.DbTables = val
+}
 
 type RevokeApiKeyForbidden Error
 

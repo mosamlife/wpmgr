@@ -18,6 +18,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
+	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
@@ -28,22 +29,24 @@ import (
 
 // Deps are the server's wired dependencies.
 type Deps struct {
-	Config      config.Config
-	Logger      *slog.Logger
-	Pool        *db.Pool
-	Sessions    *auth.SessionManager
-	Auth        *middleware.Authenticator
-	AuthH       *auth.Handler
-	MembersH    *auth.MembersHandler
-	APIKeyH     *apikey.Handler
-	AuditH      *audit.Handler
-	TenantH     *tenant.Handler
-	SiteH       *site.Handler
-	UpdateH     *update.Handler
-	AgentAuth   *agent.Authenticator
-	AgentH      *agent.Handler
-	ServiceName string
-	Version     string
+	Config       config.Config
+	Logger       *slog.Logger
+	Pool         *db.Pool
+	Sessions     *auth.SessionManager
+	Auth         *middleware.Authenticator
+	AuthH        *auth.Handler
+	MembersH     *auth.MembersHandler
+	APIKeyH      *apikey.Handler
+	AuditH       *audit.Handler
+	TenantH      *tenant.Handler
+	SiteH        *site.Handler
+	UpdateH      *update.Handler
+	BackupH      *backup.Handler
+	BackupAgentH *backup.AgentHandler
+	AgentAuth    *agent.Authenticator
+	AgentH       *agent.Handler
+	ServiceName  string
+	Version      string
 }
 
 // Server bundles the HTTP server and its dependencies.
@@ -94,6 +97,11 @@ func New(deps Deps) *Server {
 		agentGroup := engine.Group("/agent/v1")
 		agentGroup.Use(deps.AgentAuth.Authenticate())
 		deps.AgentH.Register(agentGroup)
+		// M4 backup callbacks (presigned-URL requests + manifest submission) live
+		// under the same agent-authenticated group.
+		if deps.BackupAgentH != nil {
+			deps.BackupAgentH.Register(agentGroup)
+		}
 	}
 
 	// Everything under /api/v1 requires an authenticated principal with an
@@ -107,6 +115,9 @@ func New(deps Deps) *Server {
 	deps.AuditH.Register(v1)
 	if deps.UpdateH != nil {
 		deps.UpdateH.Register(v1)
+	}
+	if deps.BackupH != nil {
+		deps.BackupH.Register(v1)
 	}
 
 	return s

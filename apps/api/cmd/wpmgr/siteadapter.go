@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 )
@@ -40,6 +41,28 @@ func (l *siteLookup) ListSiteInfoByTag(ctx context.Context, tenantID uuid.UUID, 
 		out = append(out, toSiteInfo(s))
 	}
 	return out, nil
+}
+
+// backupSiteLookup adapts the site service to the backup package's SiteLookup,
+// surfacing the agent URL, enrollment status, and the site's age PUBLIC
+// recipient (backups are encrypted to it client-side on the agent).
+type backupSiteLookup struct {
+	svc *site.Service
+}
+
+func newBackupSiteLookup(svc *site.Service) *backupSiteLookup { return &backupSiteLookup{svc: svc} }
+
+func (l *backupSiteLookup) GetBackupSiteInfo(ctx context.Context, tenantID, siteID uuid.UUID) (backup.SiteInfo, error) {
+	s, err := l.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return backup.SiteInfo{}, err
+	}
+	return backup.SiteInfo{
+		ID:           s.ID,
+		URL:          s.URL,
+		Enrolled:     s.EnrolledAt != nil,
+		AgeRecipient: s.AgeRecipient,
+	}, nil
 }
 
 func toSiteInfo(s site.Site) update.SiteInfo {
