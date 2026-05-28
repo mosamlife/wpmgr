@@ -9,7 +9,7 @@
 declare(strict_types=1);
 
 if (!defined('WPMGR_AGENT_VERSION')) {
-    define('WPMGR_AGENT_VERSION', '0.0.0');
+    define('WPMGR_AGENT_VERSION', '0.5.5-dev');
 }
 if (!defined('WPMGR_AGENT_FILE')) {
     define('WPMGR_AGENT_FILE', __FILE__);

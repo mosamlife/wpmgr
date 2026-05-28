@@ -46,6 +46,7 @@ namespace WPMgr\Agent\Commands;
 use WPMgr\Agent\Connector;
 use WPMgr\Agent\Enrollment;
 use WPMgr\Agent\ReplayCache;
+use WPMgr\Agent\Schema;
 use WPMgr\Agent\Settings;
 use WPMgr\Agent\Signer;
 
@@ -164,9 +165,26 @@ final class AutologinCommand implements CommandInterface
 
         // ---- Step 7: mark replay BEFORE cookie issue. ----
         if (!$this->replay->mark($jti, self::REPLAY_TTL)) {
-            // If we can't durably mark this jti, do NOT issue a cookie: a
-            // race-window with a parallel presentation would defeat single-use.
-            return $this->fail('replay_mark_failed', 500, $jti);
+            // Defensive self-heal: the M5.5 autologin replay table is created
+            // only by the schema migration runner, and an install where that
+            // table is missing (e.g. same-version re-upload that bypassed
+            // register_activation_hook AND a stale db-version option) will
+            // fail every mark() until the operator intervenes. Run the
+            // migration once and retry the insert exactly once before giving
+            // up — this turns a permanent 500 into a transient one and
+            // unblocks the user on the very next click.
+            Schema::ensureCurrent(true);
+            // PHPStan infers mark() is always false here from the outer guard,
+            // but mark() is impure (consults $wpdb/the live table) and the
+            // intervening Schema::ensureCurrent(true) may have CREATEd the
+            // missing table, flipping the second call's outcome.
+            // @phpstan-ignore-next-line booleanNot.alwaysTrue
+            if (!$this->replay->mark($jti, self::REPLAY_TTL)) {
+                // If we still can't durably mark this jti, do NOT issue a
+                // cookie: a race-window with a parallel presentation would
+                // defeat single-use.
+                return $this->fail('replay_mark_failed', 500, $jti);
+            }
         }
 
         // ---- Step 8: issue the WP auth cookie. ----

@@ -19,6 +19,7 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use WPMgr\Agent\Plugin;
+use WPMgr\Agent\Schema;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -103,5 +104,34 @@ final class PluginActivationTest extends TestCase
 
         // No site keypair should have been written (encrypt would have failed).
         $this->assertArrayNotHasKey('wpmgr_agent_site_keypair', $this->options);
+    }
+
+    public function test_activation_runs_schema_migrations_and_stamps_db_version(): void
+    {
+        // Provide a $wpdb double + a dbDelta() shim so Schema::ensureCurrent
+        // can complete and bump the schema-version option. Without these,
+        // Schema bails silently (correct production behavior outside WP).
+        $GLOBALS['wpdb'] = new class {
+            public string $prefix = 'wp_';
+            public function get_charset_collate(): string
+            {
+                return '';
+            }
+        };
+        if (!function_exists('dbDelta')) {
+            eval('function dbDelta(string $sql): array { return []; }');
+        }
+
+        $plugin = Plugin::boot();
+        $plugin->activate();
+
+        $this->assertArrayHasKey(
+            Schema::OPTION_DB_VERSION,
+            $this->options,
+            'Activation must invoke Schema::ensureCurrent (sets the db-version option).'
+        );
+        $this->assertSame(Schema::CURRENT_VERSION, $this->options[Schema::OPTION_DB_VERSION]);
+
+        unset($GLOBALS['wpdb']);
     }
 }

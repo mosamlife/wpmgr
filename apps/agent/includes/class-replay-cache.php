@@ -117,7 +117,47 @@ class ReplayCache
         // wpdb->insert returns int|false. A duplicate-key violation surfaces
         // as false (the PK uniqueness on jti_hash guarantees this), which we
         // map back to "could not mark" for the caller to treat as replay.
-        return is_int($result) && $result > 0;
+        if (is_int($result) && $result > 0) {
+            return true;
+        }
+
+        // Diagnostics: surface the actual driver error to debug.log so an
+        // operator tailing it can distinguish "table missing" (the M5.5
+        // re-upload bug) from a generic insert failure. The HTTP response
+        // remains the generic `wpmgr_replay_mark_failed` — no internal
+        // detail is leaked to the wire.
+        $this->logInsertFailure($wpdb, $table);
+
+        return false;
+    }
+
+    /**
+     * Emit a single diagnostic line to PHP's error log when an insert fails.
+     * Honors WP_DEBUG_LOG via the standard error_log() path.
+     *
+     * @param object $wpdb  WordPress DB handle (untyped: tests pass doubles).
+     * @param string $table Fully-qualified table name.
+     * @return void
+     */
+    private function logInsertFailure(object $wpdb, string $table): void
+    {
+        $lastError = '';
+        if (property_exists($wpdb, 'last_error')) {
+            $lastError = is_string($wpdb->last_error) ? $wpdb->last_error : '';
+        }
+
+        $missingTable = $lastError !== '' && stripos($lastError, "doesn't exist") !== false;
+
+        $message = sprintf(
+            'wpmgr-agent: autologin replay insert failed (table=%s)%s%s',
+            $table,
+            $lastError === '' ? '' : ' driver_error=' . $lastError,
+            $missingTable ? ' hint=run-Schema::ensureCurrent-to-recreate' : ''
+        );
+
+        // error_log() is the standard WP debug.log channel when WP_DEBUG_LOG
+        // is enabled; outside that it lands in the SAPI's error stream.
+        error_log($message);
     }
 
     /**

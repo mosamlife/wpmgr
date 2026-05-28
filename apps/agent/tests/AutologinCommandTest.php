@@ -459,7 +459,29 @@ final class AutologinCommandTest extends TestCase
         $this->assertInstanceOf(\WP_Error::class, $res);
         $this->assertSame('wpmgr_replay_mark_failed', $res->get_error_code());
         $this->assertSame([], $this->authCookieCalls);
-        $this->assertSame(1, $spy->markCalls);
+        // The handler retries mark() once after Schema::ensureCurrent() self-heal;
+        // both attempts return false here, so the spy sees exactly 2 calls.
+        $this->assertSame(2, $spy->markCalls);
+    }
+
+    public function test_mark_failure_then_success_after_self_heal_issues_cookie(): void
+    {
+        // Scenario: first mark() returns false (table missing on a re-upload
+        // install). The handler runs Schema::ensureCurrent() and retries; the
+        // second mark() succeeds and the autologin completes with a cookie.
+        $this->setConsumeOk('alice', ['administrator']);
+        $this->stubUserByLogin('alice', ['administrator']);
+
+        $spy = new ReplayCacheSpy();
+        $spy->markSequence = [false, true];
+
+        $token = $this->jwt($this->uniqueJti('mark-retry'), time(), ['tgt' => 'alice']);
+        $res = $this->command($spy)->handle(new \WP_REST_Request(['token' => $token]));
+
+        $this->assertInstanceOf(\WP_REST_Response::class, $res);
+        $this->assertSame(302, $res->get_status());
+        $this->assertSame(2, $spy->markCalls, 'mark() must have been retried exactly once.');
+        $this->assertCount(1, $this->authCookieCalls, 'Cookie must be issued after the successful retry.');
     }
 
     public function test_mark_runs_before_cookie_in_happy_path(): void
@@ -606,6 +628,15 @@ final class ReplayCacheSpy extends ReplayCache
 
     public int $markCalls = 0;
 
+    /**
+     * Per-call return sequence for mark(); when set it overrides $markReturns
+     * and yields one bool per call (consumed in order). Used to model the
+     * fail-then-succeed retry path the autologin handler exercises.
+     *
+     * @var array<int,bool>
+     */
+    public array $markSequence = [];
+
     public function seen(string $jti, ?int $now = null): bool
     {
         return $this->forceSeen;
@@ -613,7 +644,13 @@ final class ReplayCacheSpy extends ReplayCache
 
     public function mark(string $jti, int $ttlSeconds, ?int $now = null): bool
     {
+        $idx = $this->markCalls;
         $this->markCalls++;
+
+        if ($this->markSequence !== [] && array_key_exists($idx, $this->markSequence)) {
+            return $this->markSequence[$idx];
+        }
+
         return $this->markReturns;
     }
 

@@ -226,7 +226,7 @@ final class Connector
             $wpdb->query($pruneSql);
         }
 
-        $wpdb->insert(
+        $result = $wpdb->insert(
             $table,
             [
                 'jti_hash'   => $this->hashJti($jti),
@@ -235,6 +235,22 @@ final class Connector
             ],
             ['%s', '%d', '%d']
         );
+
+        if ($result === false) {
+            // Mirror ReplayCache: surface the driver error to debug.log so a
+            // missing-table case (e.g. broken install) is visible to ops
+            // without leaking detail to the HTTP response.
+            $lastError = property_exists($wpdb, 'last_error') && is_string($wpdb->last_error)
+                ? $wpdb->last_error
+                : '';
+            $missingTable = $lastError !== '' && stripos($lastError, "doesn't exist") !== false;
+            error_log(sprintf(
+                'wpmgr-agent: connector jti insert failed (table=%s)%s%s',
+                $table,
+                $lastError === '' ? '' : ' driver_error=' . $lastError,
+                $missingTable ? ' hint=run-Schema::ensureCurrent-to-recreate' : ''
+            ));
+        }
     }
 
     /**

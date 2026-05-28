@@ -97,6 +97,15 @@ final class Plugin
      */
     private function registerHooks(): void
     {
+        // Schema migration runner: WP does NOT run register_activation_hook on
+        // a same-version re-upload, which previously left the M5.5 autologin
+        // replay table missing on existing installs that re-uploaded the new
+        // plugin zip. Wire Schema::ensureCurrent() to plugins_loaded so any
+        // boot path (activation, re-upload, manual file replacement) heals
+        // missing tables. The helper itself short-circuits with a single
+        // get_option() lookup when the schema is already current.
+        add_action('plugins_loaded', [$this, 'maybeRunSchemaMigrations']);
+
         add_action('rest_api_init', [$this->router, 'registerRoutes']);
         add_action('rest_api_init', [$this, 'registerAutologinRoute']);
 
@@ -136,8 +145,9 @@ final class Plugin
      */
     public function activate(): void
     {
-        $this->createJtiTable();
-        $this->createAutologinReplayTable();
+        // Force schema sync on activation so a fresh install always lands
+        // current, even if the migration-version option is somehow stale.
+        Schema::ensureCurrent(true);
 
         $this->setupKeystore();
 
@@ -283,68 +293,17 @@ final class Plugin
     }
 
     /**
-     * Create the autologin single-use replay table via dbDelta.
+     * Run pending schema migrations on plugins_loaded. The helper itself
+     * short-circuits with a single get_option() when the schema is already
+     * current, so binding it to plugins_loaded is effectively zero-cost on
+     * the hot path. The whole point is to catch re-uploads / same-version
+     * installs where register_activation_hook does NOT fire.
      *
      * @return void
      */
-    private function createAutologinReplayTable(): void
+    public function maybeRunSchemaMigrations(): void
     {
-        global $wpdb;
-        if (!is_object($wpdb)) {
-            return;
-        }
-
-        $table   = (isset($wpdb->prefix) ? (string) $wpdb->prefix : 'wp_') . ReplayCache::TABLE;
-        $charset = method_exists($wpdb, 'get_charset_collate') ? $wpdb->get_charset_collate() : '';
-
-        $sql = "CREATE TABLE {$table} (
-            jti_hash CHAR(64) NOT NULL,
-            expires_at BIGINT UNSIGNED NOT NULL,
-            PRIMARY KEY  (jti_hash),
-            KEY expires_at (expires_at)
-        ) {$charset};";
-
-        if (defined('ABSPATH') && file_exists(ABSPATH . 'wp-admin/includes/upgrade.php')) {
-            require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-        }
-
-        if (function_exists('dbDelta')) {
-            dbDelta($sql);
-        }
-    }
-
-    /**
-     * Create the anti-replay jti table via dbDelta.
-     *
-     * @return void
-     */
-    private function createJtiTable(): void
-    {
-        global $wpdb;
-        if (!is_object($wpdb)) {
-            return;
-        }
-
-        $table   = (isset($wpdb->prefix) ? (string) $wpdb->prefix : 'wp_') . Connector::JTI_TABLE;
-        $charset = method_exists($wpdb, 'get_charset_collate') ? $wpdb->get_charset_collate() : '';
-
-        $sql = "CREATE TABLE {$table} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            jti_hash CHAR(64) NOT NULL,
-            expires_at BIGINT UNSIGNED NOT NULL,
-            created_at BIGINT UNSIGNED NOT NULL,
-            PRIMARY KEY  (id),
-            UNIQUE KEY jti_hash (jti_hash),
-            KEY expires_at (expires_at)
-        ) {$charset};";
-
-        if (defined('ABSPATH') && file_exists(ABSPATH . 'wp-admin/includes/upgrade.php')) {
-            require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-        }
-
-        if (function_exists('dbDelta')) {
-            dbDelta($sql);
-        }
+        Schema::ensureCurrent();
     }
 
     /**
