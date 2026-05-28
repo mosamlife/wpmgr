@@ -130,7 +130,16 @@ func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command st
 		return fmt.Errorf("read %s response: %w", command, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s command rejected by agent: status %d", command, resp.StatusCode)
+		// Include a CLAMPED snippet of the agent's response body in the error so
+		// operators can see the WP_Error code (e.g. wpmgr_aud_mismatch). The
+		// agent never includes the bearer/JWT in its responses, so this is safe
+		// to surface — it's the only way to tell "why" a 403/4xx happened
+		// without round-tripping into the site's debug.log.
+		snippet := string(data)
+		if len(snippet) > 512 {
+			snippet = snippet[:512] + "…(truncated)"
+		}
+		return fmt.Errorf("%s command rejected by agent: status %d body=%s", command, resp.StatusCode, snippet)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("decode %s response: %w", command, err)

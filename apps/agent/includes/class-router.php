@@ -109,8 +109,16 @@ final class Router
                 $claims = $this->connector->verify($token);
             }
         } catch (\Throwable $e) {
-            // Never leak the specific failure reason to the caller.
-            return $this->forbidden('invalid_token');
+            // Log the EXACT reason to debug.log (admin-visible, not secret-bearing —
+            // verifyCommand exceptions only contain category messages like "aud
+            // mismatch", "signature verification failed", "exp expired", etc.) and
+            // surface a non-secret CATEGORY in the response so the control plane
+            // (and the human reading logs) can tell aud_mismatch from sig_failed
+            // without giving an attacker any cryptographic oracle beyond what they
+            // already get from the 403 itself.
+            $category = $this->classifyTokenError($e->getMessage());
+            error_log('WPMgr Agent: command authorize failed: command=' . $command . ' category=' . $category . ' reason=' . $e->getMessage());
+            return $this->forbidden($category);
         }
 
         // Defense-in-depth: where a WP user context applies, require manage_options.
@@ -225,5 +233,44 @@ final class Router
     private function forbidden(string $code): \WP_Error
     {
         return new \WP_Error('wpmgr_' . $code, 'Forbidden.', ['status' => 403]);
+    }
+
+    /**
+     * Map a Connector::verifyCommand RuntimeException message to a non-secret
+     * public category. Exception messages are operator-facing category strings
+     * ("aud mismatch", "signature verification failed", etc.) — exposing them as
+     * codes gives no cryptographic oracle beyond what the 403 status itself
+     * already gives, but it makes "agent rejected the command" diagnosable in
+     * one shot from CP/agent logs.
+     *
+     * @param string $msg The RuntimeException message text.
+     * @return string Short snake_case code (prefixed with `wpmgr_` by forbidden()).
+     */
+    private function classifyTokenError(string $msg): string
+    {
+        $needles = [
+            'signature verification failed' => 'sig_failed',
+            'invalid signature length'      => 'sig_failed',
+            'invalid public key length'     => 'sig_failed',
+            'malformed jwt'                 => 'malformed_jwt',
+            'invalid alg'                   => 'malformed_jwt',
+            'missing exp'                   => 'missing_exp',
+            'expired'                       => 'token_expired',
+            'too far in future'             => 'token_skew',
+            'replay'                        => 'token_replay',
+            'missing jti'                   => 'missing_jti',
+            'site not enrolled'             => 'site_not_enrolled',
+            'missing aud'                   => 'missing_aud',
+            'aud mismatch'                  => 'aud_mismatch',
+            'missing cmd'                   => 'missing_cmd',
+            'cmd mismatch'                  => 'cmd_mismatch',
+        ];
+        $lower = strtolower($msg);
+        foreach ($needles as $needle => $code) {
+            if (strpos($lower, $needle) !== false) {
+                return $code;
+            }
+        }
+        return 'invalid_token';
     }
 }
