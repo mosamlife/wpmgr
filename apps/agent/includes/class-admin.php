@@ -235,8 +235,13 @@ final class Admin
         if ($beat['ok'] && $meta['ok']) {
             $this->notice('success', 'Sync complete.');
         } else {
-            $msg = !$beat['ok'] ? $beat['message'] : $meta['message'];
-            $this->notice('error', 'Sync failed: ' . $msg);
+            $failed = !$beat['ok'] ? $beat : $meta;
+            $msg    = 'Sync failed';
+            if ($failed['status'] > 0) {
+                $msg .= ' (HTTP ' . $failed['status'] . ')';
+            }
+            $msg .= ': ' . $failed['message'];
+            $this->notice('error', $msg);
         }
 
         $this->redirectBack();

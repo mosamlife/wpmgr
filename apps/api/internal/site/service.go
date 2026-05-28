@@ -182,12 +182,77 @@ func fromAgentComponents(cs []agentpkg.Component) []Component {
 	return out
 }
 
-// ApplyMetadata validates and stores agent-pushed metadata for a site, updating
-// liveness + health. Runs in the resolved site's tenant scope.
-func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m Metadata) (Site, error) {
-	if err := s.validator.Struct(m); err != nil {
-		return Site{}, err
+// Metadata sanitization bounds. Metadata is best-effort telemetry from
+// arbitrary real-world sites, so we never reject a sync over field lengths —
+// we truncate (on rune boundaries) and cap slice sizes instead.
+const (
+	maxWPVersion    = 32
+	maxPHPVersion   = 32
+	maxServerInfo   = 512
+	maxActiveTheme  = 200
+	maxComponentLen = 200 // slug + name
+	maxVersionLen   = 64
+	maxPlugins      = 5000
+	maxThemes       = 1000
+)
+
+// truncateRunes returns s truncated to at most n runes, never splitting a
+// multi-byte UTF-8 sequence.
+func truncateRunes(s string, n int) string {
+	if n < 0 {
+		n = 0
 	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// sanitizeComponents truncates each component's fields, drops components whose
+// slug is empty after trimming, and caps the slice length.
+func sanitizeComponents(cs []Component, maxLen int) []Component {
+	out := make([]Component, 0, len(cs))
+	for _, c := range cs {
+		slug := strings.TrimSpace(c.Slug)
+		if slug == "" {
+			continue
+		}
+		out = append(out, Component{
+			Slug:    truncateRunes(slug, maxComponentLen),
+			Name:    truncateRunes(c.Name, maxComponentLen),
+			Version: truncateRunes(c.Version, maxVersionLen),
+			Active:  c.Active,
+		})
+		if len(out) >= maxLen {
+			break
+		}
+	}
+	return out
+}
+
+// sanitizeMetadata coerces arbitrary agent-reported metadata into the stored
+// bounds without ever erroring: scalar fields are truncated on rune
+// boundaries, components with empty slugs are dropped, and the plugin/theme
+// slices are capped. This is the single source of truth for metadata bounds.
+func sanitizeMetadata(m Metadata) Metadata {
+	return Metadata{
+		WPVersion:   truncateRunes(m.WPVersion, maxWPVersion),
+		PHPVersion:  truncateRunes(m.PHPVersion, maxPHPVersion),
+		ServerInfo:  truncateRunes(m.ServerInfo, maxServerInfo),
+		Multisite:   m.Multisite,
+		ActiveTheme: truncateRunes(m.ActiveTheme, maxActiveTheme),
+		Plugins:     sanitizeComponents(m.Plugins, maxPlugins),
+		Themes:      sanitizeComponents(m.Themes, maxThemes),
+	}
+}
+
+// ApplyMetadata sanitizes and stores agent-pushed metadata for a site, updating
+// liveness + health. Runs in the resolved site's tenant scope. Metadata is
+// best-effort telemetry: it is sanitized (truncated/capped), never rejected, so
+// a sync always succeeds for any real-world plugin/theme set.
+func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m Metadata) (Site, error) {
+	m = sanitizeMetadata(m)
 	components, err := json.Marshal(map[string]any{
 		"plugins": orEmptyComponents(m.Plugins),
 		"themes":  orEmptyComponents(m.Themes),

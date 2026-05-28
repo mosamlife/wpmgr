@@ -44,8 +44,8 @@ final class MetadataCommand implements CommandInterface
      * @return array{
      *     wp_version:string,
      *     php_version:string,
-     *     server_software:string,
-     *     is_multisite:bool,
+     *     server_info:string,
+     *     multisite:bool,
      *     active_theme:array{name:string,version:string,template:string,stylesheet:string},
      *     plugins:array<int,array{slug:string,name:string,version:string,active:bool}>,
      *     themes:array<int,array{slug:string,name:string,version:string,active:bool}>
@@ -54,13 +54,13 @@ final class MetadataCommand implements CommandInterface
     public function collect(): array
     {
         return [
-            'wp_version'      => $this->wpVersion(),
-            'php_version'     => PHP_VERSION,
-            'server_software' => $this->serverSoftware(),
-            'is_multisite'    => function_exists('is_multisite') ? is_multisite() : false,
-            'active_theme'    => $this->activeTheme(),
-            'plugins'         => $this->plugins(),
-            'themes'          => $this->themes(),
+            'wp_version'   => $this->wpVersion(),
+            'php_version'  => PHP_VERSION,
+            'server_info'  => $this->serverSoftware(),
+            'multisite'    => function_exists('is_multisite') ? is_multisite() : false,
+            'active_theme' => $this->activeTheme(),
+            'plugins'      => $this->plugins(),
+            'themes'       => $this->themes(),
         ];
     }
 

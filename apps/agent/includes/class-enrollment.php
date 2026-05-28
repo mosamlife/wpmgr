@@ -276,7 +276,64 @@ final class Enrollment
             return $this->result(true, $status, 'ok', 'OK.');
         }
 
-        return $this->result(false, $status, 'http_' . $status, 'Request failed (HTTP ' . $status . ').');
+        $rawBody = (string) wp_remote_retrieve_body($response);
+        $message = 'Request failed (HTTP ' . $status . ').';
+        $detail  = $this->summarizeBody($rawBody);
+        if ($detail !== '') {
+            $message .= ' ' . $detail;
+        }
+
+        return $this->result(false, $status, 'http_' . $status, $message);
+    }
+
+    /**
+     * Build a short, safe, single-line summary of a control-plane error
+     * response body for surfacing in an admin notice. Prefers the CP's JSON
+     * {code,message} shape, falls back to the raw body. Always truncated and
+     * collapsed to a single line; the caller still escapes for output.
+     *
+     * @param string $rawBody Raw HTTP response body.
+     * @return string
+     */
+    private function summarizeBody(string $rawBody): string
+    {
+        $rawBody = trim($rawBody);
+        if ($rawBody === '') {
+            return '';
+        }
+
+        $decoded = json_decode($rawBody, true);
+        if (is_array($decoded)) {
+            $code    = isset($decoded['code']) && is_scalar($decoded['code']) ? (string) $decoded['code'] : '';
+            $message = isset($decoded['message']) && is_scalar($decoded['message']) ? (string) $decoded['message'] : '';
+            if ($message !== '') {
+                $summary = $code !== '' ? $code . ': ' . $message : $message;
+                return $this->clampLine($summary, 300);
+            }
+        }
+
+        return $this->clampLine($rawBody, 300);
+    }
+
+    /**
+     * Collapse whitespace to single spaces and truncate to at most $max
+     * characters (multibyte-safe), appending an ellipsis when clipped.
+     *
+     * @param string $text Input text.
+     * @param int    $max  Maximum length in characters.
+     * @return string
+     */
+    private function clampLine(string $text, int $max): string
+    {
+        $text = (string) preg_replace('/\s+/u', ' ', trim($text));
+        if (function_exists('mb_strlen') && mb_strlen($text) > $max) {
+            return rtrim(mb_substr($text, 0, $max)) . '…';
+        }
+        if (strlen($text) > $max) {
+            return rtrim(substr($text, 0, $max)) . '…';
+        }
+
+        return $text;
     }
 
     /**

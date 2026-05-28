@@ -87,8 +87,8 @@ final class MetadataCommandTest extends TestCase
 
         $this->assertSame('6.5.2', $data['wp_version']);
         $this->assertSame(PHP_VERSION, $data['php_version']);
-        $this->assertSame('nginx/1.25.3', $data['server_software']);
-        $this->assertTrue($data['is_multisite']);
+        $this->assertSame('nginx/1.25.3', $data['server_info']);
+        $this->assertTrue($data['multisite']);
 
         $this->assertSame('Twenty Twenty-Four', $data['active_theme']['name']);
         $this->assertSame('twentytwentyfour', $data['active_theme']['template']);

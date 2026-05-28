@@ -68,7 +68,7 @@ func (h *Handler) metadata(c *gin.Context) {
 	}
 	var req gen.AgentMetadata
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		httpx.Error(c, domain.Validation("invalid_body", "request body did not match the metadata schema: "+err.Error()))
 		return
 	}
 	m := Metadata{
