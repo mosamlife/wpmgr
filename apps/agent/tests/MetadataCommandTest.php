@@ -90,9 +90,8 @@ final class MetadataCommandTest extends TestCase
         $this->assertSame('nginx/1.25.3', $data['server_info']);
         $this->assertTrue($data['multisite']);
 
-        $this->assertSame('Twenty Twenty-Four', $data['active_theme']['name']);
-        $this->assertSame('twentytwentyfour', $data['active_theme']['template']);
-        $this->assertSame('twentytwentyfour', $data['active_theme']['stylesheet']);
+        // active_theme is a STRING (stylesheet slug) per the contract.
+        $this->assertSame('twentytwentyfour', $data['active_theme']);
 
         // Plugins: both installed, with the active flag set correctly.
         // Each plugin object must use the contract shape {slug,name,version,active}.

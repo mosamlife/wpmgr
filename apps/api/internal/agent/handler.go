@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -18,43 +21,92 @@ import (
 // maxMetadataBytes bounds the agent metadata body (untrusted input).
 const maxMetadataBytes = 16 << 20 // 16 MiB
 
+// flexString decodes a JSON string, OR an object (best-effort: stylesheet→slug→
+// name→title), OR a number/bool (stringified), OR null → "". Real agents have
+// sent e.g. active_theme as an OBJECT, which a plain string field would 422 on.
+// We never error: telemetry must not fail a sync over a field's shape.
+type flexString string
+
+func (s *flexString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*s = ""
+		return nil
+	}
+	switch b[0] {
+	case '"':
+		var str string
+		_ = json.Unmarshal(b, &str)
+		*s = flexString(str)
+	case '{':
+		var m map[string]any
+		if json.Unmarshal(b, &m) == nil {
+			for _, k := range []string{"stylesheet", "slug", "name", "title"} {
+				if v, ok := m[k].(string); ok && v != "" {
+					*s = flexString(v)
+					return nil
+				}
+			}
+		}
+	default: // number / bool / array → stringify scalars, else empty
+		*s = flexString(strings.Trim(string(b), `"`))
+	}
+	return nil
+}
+
+// flexBool decodes bool, "true"/"1"/"yes"/"on" strings, or non-zero numbers.
+type flexBool bool
+
+func (x *flexBool) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(strings.ToLower(strings.TrimSpace(string(b))), `"`)
+	switch s {
+	case "true", "1", "yes", "on":
+		*x = true
+	case "", "null", "false", "0", "no", "off":
+		*x = false
+	default:
+		n, err := strconv.ParseFloat(s, 64)
+		*x = flexBool(err == nil && n != 0)
+	}
+	return nil
+}
+
 // metadataDTO is a TOLERANT decode target for agent metadata. Agent telemetry
 // comes from arbitrary real WordPress sites, so we deliberately do NOT use the
 // strict OpenAPI-generated decoder (which requires SiteComponent.slug and is
-// type-strict) — a single quirky plugin/theme must not 422 the whole sync. All
-// fields are optional; unknown fields are ignored; the service layer sanitizes
-// (truncates/drops) before persisting.
+// type-strict). All fields optional and shape-tolerant; unknown fields ignored;
+// the service layer sanitizes (truncates/drops) before persisting.
 type metadataDTO struct {
-	WPVersion   string         `json:"wp_version"`
-	PHPVersion  string         `json:"php_version"`
-	ServerInfo  string         `json:"server_info"`
-	Multisite   bool           `json:"multisite"`
-	ActiveTheme string         `json:"active_theme"`
+	WPVersion   flexString     `json:"wp_version"`
+	PHPVersion  flexString     `json:"php_version"`
+	ServerInfo  flexString     `json:"server_info"`
+	Multisite   flexBool       `json:"multisite"`
+	ActiveTheme flexString     `json:"active_theme"`
 	Plugins     []componentDTO `json:"plugins"`
 	Themes      []componentDTO `json:"themes"`
 }
 
 type componentDTO struct {
-	Slug    string `json:"slug"`
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Active  bool   `json:"active"`
+	Slug    flexString `json:"slug"`
+	Name    flexString `json:"name"`
+	Version flexString `json:"version"`
+	Active  flexBool   `json:"active"`
 }
 
 func (d metadataDTO) toMetadata() Metadata {
 	conv := func(cs []componentDTO) []Component {
 		out := make([]Component, 0, len(cs))
 		for _, c := range cs {
-			out = append(out, Component{Slug: c.Slug, Name: c.Name, Version: c.Version, Active: c.Active})
+			out = append(out, Component{Slug: string(c.Slug), Name: string(c.Name), Version: string(c.Version), Active: bool(c.Active)})
 		}
 		return out
 	}
 	return Metadata{
-		WPVersion:   d.WPVersion,
-		PHPVersion:  d.PHPVersion,
-		ServerInfo:  d.ServerInfo,
-		Multisite:   d.Multisite,
-		ActiveTheme: d.ActiveTheme,
+		WPVersion:   string(d.WPVersion),
+		PHPVersion:  string(d.PHPVersion),
+		ServerInfo:  string(d.ServerInfo),
+		Multisite:   bool(d.Multisite),
+		ActiveTheme: string(d.ActiveTheme),
 		Plugins:     conv(d.Plugins),
 		Themes:      conv(d.Themes),
 	}

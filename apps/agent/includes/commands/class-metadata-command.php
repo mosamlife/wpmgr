@@ -46,7 +46,7 @@ final class MetadataCommand implements CommandInterface
      *     php_version:string,
      *     server_info:string,
      *     multisite:bool,
-     *     active_theme:array{name:string,version:string,template:string,stylesheet:string},
+     *     active_theme:string,
      *     plugins:array<int,array{slug:string,name:string,version:string,active:bool}>,
      *     themes:array<int,array{slug:string,name:string,version:string,active:bool}>
      * }
@@ -186,28 +186,26 @@ final class MetadataCommand implements CommandInterface
     }
 
     /**
-     * Describe the active theme.
-     *
-     * @return array{name:string,version:string,template:string,stylesheet:string}
+     * The active theme as a STRING (its stylesheet slug). The contract's
+     * active_theme field is a string; previously this returned an array, which
+     * serialized as a JSON object and was rejected by the control plane (422).
      */
-    private function activeTheme(): array
+    private function activeTheme(): string
     {
-        $unknown = ['name' => 'unknown', 'version' => 'unknown', 'template' => 'unknown', 'stylesheet' => 'unknown'];
-
-        if (!function_exists('wp_get_theme')) {
-            return $unknown;
+        if (function_exists('get_stylesheet')) {
+            $slug = (string) get_stylesheet();
+            if ($slug !== '') {
+                return $slug;
+            }
         }
 
-        $theme = wp_get_theme();
-        if (!is_object($theme) || !method_exists($theme, 'get')) {
-            return $unknown;
+        if (function_exists('wp_get_theme')) {
+            $theme = wp_get_theme();
+            if (is_object($theme) && method_exists($theme, 'get_stylesheet')) {
+                return (string) $theme->get_stylesheet();
+            }
         }
 
-        return [
-            'name'       => (string) $theme->get('Name'),
-            'version'    => (string) $theme->get('Version'),
-            'template'   => (string) $theme->get_template(),
-            'stylesheet' => (string) $theme->get_stylesheet(),
-        ];
+        return 'unknown';
     }
 }
