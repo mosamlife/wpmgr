@@ -120,7 +120,9 @@
   - [x] Downtime alerts: email (go-mail SMTP) + signed webhook on transition >threshold consecutive downs (dedupe + recovery)
   - [x] Alert config (email recipients + webhook URL), RLS-scoped; webhook secret write-only
   - [x] Frontend: uptime section with window toggle + chart + TLS expiry warn; sites list status; alerts settings
-  - [ ] M5 security review
+  - [x] M5 security review → PASS (no high/critical)
+  - [x] Hardening applied: loud-log SSRF/TLS test escape hatches; enforce http(s) scheme on site URL + webhook URL
+  - Deferred to later: encrypt alert_configs.webhook_secret at rest (CP-side AES-GCM with a master key); per-tenant probe fairness in the sweep (interleave or per-tenant cap)
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports
 - [ ] M8 — Polish & launch (audit log, V0 release)

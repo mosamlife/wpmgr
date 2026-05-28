@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -75,6 +76,17 @@ func New(cfg Config) *Client {
 	}
 	if cfg.BackoffBase <= 0 {
 		cfg.BackoffBase = 200 * time.Millisecond
+	}
+
+	// Loud-log the test-only escape hatches at startup so a misconfigured prod
+	// deployment can't silently lose SSRF/TLS protection. Neither flag is bound
+	// to any config key, so this can only fire when test code constructs a
+	// Client with them explicitly set.
+	if cfg.AllowPrivateNetworks {
+		slog.Warn("httpclient SSRF guard DISABLED — AllowPrivateNetworks=true (test-only escape hatch; never use in production)")
+	}
+	if cfg.InsecureSkipTLSVerify {
+		slog.Warn("httpclient TLS verification DISABLED — InsecureSkipTLSVerify=true (test-only escape hatch; never use in production)")
 	}
 
 	var opts []ssrf.Option

@@ -2,6 +2,7 @@ package uptime
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
@@ -147,6 +148,15 @@ func (s *Service) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (Alert
 func (s *Service) SaveAlertConfig(ctx context.Context, cfg AlertConfig) (AlertConfig, error) {
 	if len(cfg.EmailRecipients) > 50 {
 		return AlertConfig{}, domain.Validation("too_many_recipients", "at most 50 email recipients are allowed")
+	}
+	if cfg.WebhookURL != "" {
+		// Reject non-http(s) schemes (file://, gopher://, etc.). The SSRF client
+		// also blocks them at dial, but rejecting at write-time keeps the registry
+		// clean and gives the operator a clear error.
+		u, err := url.Parse(cfg.WebhookURL)
+		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return AlertConfig{}, domain.Validation("webhook_url_scheme", "webhook_url must be an http or https URL")
+		}
 	}
 	return s.repo.UpsertAlertConfig(ctx, cfg)
 }

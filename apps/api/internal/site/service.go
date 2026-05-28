@@ -3,6 +3,7 @@ package site
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -125,6 +126,12 @@ type EnrollRequest struct {
 func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (Site, error) {
 	if err := s.validator.Struct(req); err != nil {
 		return Site{}, err
+	}
+	// Reject site URLs whose scheme isn't http/https (the SSRF transport blocks
+	// non-http(s) at dial anyway, but rejecting at enrollment avoids storing
+	// file:// / gopher:// / javascript: garbage in the registry).
+	if u, err := url.Parse(req.SiteURL); err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return Site{}, domain.Validation("site_url_scheme", "site_url must be an http or https URL")
 	}
 	// Reject a syntactically valid base64 that is not a 32-byte Ed25519 key.
 	if _, err := agentpkg.DecodePublicKey(req.AgentPublicKey); err != nil {
