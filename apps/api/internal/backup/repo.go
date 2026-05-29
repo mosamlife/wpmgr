@@ -26,6 +26,17 @@ type Repo interface {
 	MarkSnapshotRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error)
 	CompleteSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (Snapshot, error)
 	FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (Snapshot, error)
+	// UpdateSnapshotProgress replaces the JSONB progress payload with the given
+	// raw bytes (caller-validated JSON) and bumps progress_updated_at to now.
+	// Tenant-scoped — the caller passes the tenant from the verified agent
+	// identity, never from the request body.
+	UpdateSnapshotProgress(ctx context.Context, tenantID, snapshotID uuid.UUID, progress []byte) (Snapshot, error)
+	// ListStalledRunningSnapshots enumerates `status='running'` snapshots whose
+	// last progress update (or start time, if no progress was ever posted) is
+	// older than `threshold`. Cross-tenant — runs under `app.agent='on'` for the
+	// watchdog periodic. The caller marks each stalled snapshot failed via
+	// FailSnapshot (which IS tenant-scoped).
+	ListStalledRunningSnapshots(ctx context.Context, threshold time.Duration) ([]StalledSnapshot, error)
 
 	// Manifest.
 	ListManifest(ctx context.Context, tenantID, snapshotID uuid.UUID) ([]ManifestEntry, error)
@@ -84,6 +95,16 @@ type UpsertScheduleInput struct {
 	RetentionDays      int32
 	MonthlyArchiveKeep int32
 	NextRunAt          time.Time
+}
+
+// StalledSnapshot is the cross-tenant projection used by the M5.6 progress
+// watchdog: enough to mark the snapshot failed in its own tenant scope.
+type StalledSnapshot struct {
+	ID                uuid.UUID
+	TenantID          uuid.UUID
+	SiteID            uuid.UUID
+	StartedAt         *time.Time
+	ProgressUpdatedAt *time.Time
 }
 
 // SnapshotMeta is the slim projection used by the retention archive computation.
@@ -209,6 +230,46 @@ func (r *pgRepo) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUI
 	return r.mutateSnapshot(ctx, tenantID, func(q *sqlc.Queries) (sqlc.BackupSnapshot, error) {
 		return q.FailBackupSnapshot(ctx, sqlc.FailBackupSnapshotParams{ID: snapshotID, TenantID: tenantID, Error: errMsg})
 	}, "backup_snapshot_fail_failed")
+}
+
+// UpdateSnapshotProgress is tenant-scoped (RLS enforces it); the agent handler
+// passes the tenant from the verified Ed25519 identity.
+func (r *pgRepo) UpdateSnapshotProgress(ctx context.Context, tenantID, snapshotID uuid.UUID, progress []byte) (Snapshot, error) {
+	return r.mutateSnapshot(ctx, tenantID, func(q *sqlc.Queries) (sqlc.BackupSnapshot, error) {
+		return q.UpdateBackupSnapshotProgress(ctx, sqlc.UpdateBackupSnapshotProgressParams{
+			ID: snapshotID, TenantID: tenantID, Progress: progress,
+		})
+	}, "backup_snapshot_progress_failed")
+}
+
+// ListStalledRunningSnapshots runs cross-tenant under app.agent='on' (same
+// pattern as ListDueSchedules / ListTenantsForGC). The watchdog then transitions
+// each row to failed via FailSnapshot (tenant-scoped).
+func (r *pgRepo) ListStalledRunningSnapshots(ctx context.Context, threshold time.Duration) ([]StalledSnapshot, error) {
+	var out []StalledSnapshot
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		// pgtype.Interval round-trips as microseconds — convert duration to µs.
+		ival := pgtype.Interval{Microseconds: threshold.Microseconds(), Valid: true}
+		rows, err := sqlc.New(tx).ListStalledRunningSnapshots(ctx, ival)
+		if err != nil {
+			return domain.Internal("backup_snapshot_stalled_list_failed", "failed to list stalled snapshots").WithCause(err)
+		}
+		out = make([]StalledSnapshot, 0, len(rows))
+		for _, row := range rows {
+			s := StalledSnapshot{ID: row.ID, TenantID: row.TenantID, SiteID: row.SiteID}
+			if row.StartedAt.Valid {
+				t := row.StartedAt.Time
+				s.StartedAt = &t
+			}
+			if row.ProgressUpdatedAt.Valid {
+				t := row.ProgressUpdatedAt.Time
+				s.ProgressUpdatedAt = &t
+			}
+			out = append(out, s)
+		}
+		return nil
+	})
+	return out, err
 }
 
 func (r *pgRepo) mutateSnapshot(ctx context.Context, tenantID uuid.UUID, fn func(*sqlc.Queries) (sqlc.BackupSnapshot, error), code string) (Snapshot, error) {
@@ -530,6 +591,11 @@ func toSnapshot(s sqlc.BackupSnapshot) Snapshot {
 	if s.FinishedAt.Valid {
 		t := s.FinishedAt.Time
 		out.FinishedAt = &t
+	}
+	out.Progress = s.Progress
+	if s.ProgressUpdatedAt.Valid {
+		t := s.ProgressUpdatedAt.Time
+		out.ProgressUpdatedAt = &t
 	}
 	return out
 }

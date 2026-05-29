@@ -206,48 +206,59 @@ func TestRestorePlanAssembly(t *testing.T) {
 	}
 	submitManifest(t, svc, tenant, snap.ID, entries)
 
+	const restoreID = "11111111-1111-1111-1111-111111111111"
+	const progressEndpoint = "https://cp.example.com/agent/v1/backups/x/progress"
+
 	// Full restore → 3 entries, 5 chunks.
-	full, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{Full: true})
+	full, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{Full: true}, restoreID, progressEndpoint)
 	if err != nil {
 		t.Fatalf("plan full: %v", err)
 	}
-	if len(full.Entries) != 3 || countChunks(full) != 5 {
-		t.Fatalf("full restore entries=%d chunks=%d, want 3/5", len(full.Entries), countChunks(full))
+	if len(full.Manifest.Entries) != 3 || countChunks(full) != 5 {
+		t.Fatalf("full restore entries=%d chunks=%d, want 3/5", len(full.Manifest.Entries), countChunks(full))
+	}
+	if full.RestoreID != restoreID {
+		t.Fatalf("restore_id not echoed: got %q want %q", full.RestoreID, restoreID)
+	}
+	if full.ProgressEndpoint != progressEndpoint {
+		t.Fatalf("progress endpoint not echoed: got %q want %q", full.ProgressEndpoint, progressEndpoint)
 	}
 
 	// Partial-by-path: only wp-config.php → 1 entry, 2 chunks.
-	byPath, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{Paths: []string{"wp-config.php"}})
+	byPath, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{Paths: []string{"wp-config.php"}}, restoreID, progressEndpoint)
 	if err != nil {
 		t.Fatalf("plan by path: %v", err)
 	}
-	if len(byPath.Entries) != 1 || byPath.Entries[0].Path != "wp-config.php" || countChunks(byPath) != 2 {
-		t.Fatalf("by-path restore entries=%d chunks=%d, want 1/2", len(byPath.Entries), countChunks(byPath))
+	if len(byPath.Manifest.Entries) != 1 || byPath.Manifest.Entries[0].LogicalPath != "wp-config.php" || countChunks(byPath) != 2 {
+		t.Fatalf("by-path restore entries=%d chunks=%d, want 1/2", len(byPath.Manifest.Entries), countChunks(byPath))
 	}
 
-	// Partial-by-table: only wp_posts → 1 db entry, 2 chunks.
-	byTable, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{DBTables: []string{"wp_posts"}})
+	// Partial-by-table: only wp_posts → 1 db entry, 2 chunks. The CP still uses
+	// entry_kind+table_name to route the selection internally, but the wire only
+	// carries the entry's logical_path (here: "database.sql").
+	byTable, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{DBTables: []string{"wp_posts"}}, restoreID, progressEndpoint)
 	if err != nil {
 		t.Fatalf("plan by table: %v", err)
 	}
-	if len(byTable.Entries) != 1 || byTable.Entries[0].TableName != "wp_posts" || countChunks(byTable) != 2 {
-		t.Fatalf("by-table restore entries=%d chunks=%d, want 1/2", len(byTable.Entries), countChunks(byTable))
+	if len(byTable.Manifest.Entries) != 1 || byTable.Manifest.Entries[0].LogicalPath != "database.sql" || countChunks(byTable) != 2 {
+		t.Fatalf("by-table restore entries=%d chunks=%d logical_path=%q, want 1/2/database.sql", len(byTable.Manifest.Entries), countChunks(byTable), byTable.Manifest.Entries[0].LogicalPath)
 	}
 
 	// Every presigned GET URL must target this tenant's chunk prefix.
 	prefix := "chunks/" + tenant.String() + "/"
-	for _, e := range full.Entries {
+	for _, e := range full.Manifest.Entries {
 		for _, c := range e.Chunks {
-			if c.GetURL == "" {
+			if c.URL == "" {
 				t.Fatal("restore chunk missing presigned GET URL")
 			}
-			if !strings.Contains(c.GetURL, prefix) {
-				t.Fatalf("presigned GET URL %q is not namespaced to tenant prefix %q", c.GetURL, prefix)
+			if !strings.Contains(c.URL, prefix) {
+				t.Fatalf("presigned GET URL %q is not namespaced to tenant prefix %q", c.URL, prefix)
 			}
 		}
 	}
 
 	// A selection that matches nothing is a 422.
-	if _, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{Paths: []string{"nope.php"}}); err == nil {
+	if _, _, _, err := svc.PlanRestore(context.Background(), tenant, snap.ID, backup.RestoreSelection{Paths: []string{"nope.php"}}, restoreID, progressEndpoint); err == nil {
 		t.Fatal("expected error for empty restore selection")
 	}
 }
@@ -490,7 +501,7 @@ func TestBackupCommandHasNoDecryptionKey(t *testing.T) {
 		t.Fatalf("create backup: %v", err)
 	}
 	commander := newTestBackupCommander(t)
-	worker := backup.NewBackupWorker(svc, commander, nil, nil, "https://cp.example.com")
+	worker := backup.NewBackupWorker(svc, commander, nil, nil, "https://cp.example.com", 30*time.Second)
 	if err := worker.Work(context.Background(), backupJob(snap.ID, tenant)); err != nil {
 		t.Fatalf("backup worker: %v", err)
 	}
@@ -540,7 +551,7 @@ func backupJob(snapshotID, tenant uuid.UUID) *river.Job[backup.BackupArgs] {
 
 func countChunks(r agentcmd.RestoreRequest) int {
 	n := 0
-	for _, e := range r.Entries {
+	for _, e := range r.Manifest.Entries {
 		n += len(e.Chunks)
 	}
 	return n

@@ -92,6 +92,11 @@ type Worker struct {
 	// belt-and-suspenders guard alongside the per-tenant queue sharding. When the
 	// limit is reached the job snoozes and retries shortly.
 	perTenantLimit int
+	// refresher enqueues a CP->agent inventory-refresh job after each task
+	// reaches a terminal state (debounced per site). Optional: a nil refresher
+	// keeps the legacy behaviour (no post-update refresh).
+	refresher   RefreshEnqueuer
+	refreshSkip *RefreshDebouncer
 }
 
 // NewWorker builds the update task worker.
@@ -103,6 +108,14 @@ func NewWorker(repo Repo, sites SiteLookup, cmd Commander, prober HealthProber, 
 		logger = slog.Default()
 	}
 	return &Worker{repo: repo, sites: sites, cmd: cmd, prober: prober, hub: hub, audit: rec, logger: logger, perTenantLimit: perTenantLimit}
+}
+
+// SetRefreshEnqueuer wires the post-update inventory-refresh enqueuer + its
+// per-site debouncer. Call once at boot after the River client is up. A nil
+// refresher disables the post-update refresh entirely.
+func (w *Worker) SetRefreshEnqueuer(r RefreshEnqueuer, d *RefreshDebouncer) {
+	w.refresher = r
+	w.refreshSkip = d
 }
 
 // Work runs one update task. It is idempotent-ish: a task already in a terminal
@@ -237,7 +250,51 @@ func (w *Worker) finish(ctx context.Context, task Task, status, fromVersion, toV
 	}
 	w.publish(finished, runStatus)
 	w.recordAudit(ctx, finished)
+
+	// Post-update inventory refresh: ask the agent to re-read its plugin/theme
+	// inventory and update transients now that the site state has changed. Only
+	// fires for state-changing terminals (succeeded/rolled_back); skipped/failed
+	// would not have moved the site forward. Debounced per-site (30s window) so
+	// a bulk run does not enqueue N refresh jobs back-to-back.
+	w.maybeEnqueueRefresh(ctx, finished)
 	return nil
+}
+
+// maybeEnqueueRefresh enqueues a refresh-inventory job for the task's site, if
+// the refresher is wired and the per-site debouncer allows it. Best-effort: an
+// enqueue failure is logged but never bubbled out of Work (the task already
+// reached a terminal state).
+func (w *Worker) maybeEnqueueRefresh(ctx context.Context, task Task) {
+	if w.refresher == nil {
+		return
+	}
+	// Only state-changing outcomes warrant a fresh inventory pull.
+	switch task.Status {
+	case TaskSucceeded, TaskRolledBack:
+	default:
+		return
+	}
+	if w.refreshSkip != nil && !w.refreshSkip.Allow(task.SiteID) {
+		return
+	}
+	site, err := w.sites.GetSiteInfo(ctx, task.TenantID, task.SiteID)
+	if err != nil {
+		w.logger.Debug("post-update refresh: site lookup failed; skipping",
+			slog.String("site_id", task.SiteID.String()), slog.Any("error", err))
+		return
+	}
+	if !site.Enrolled || site.URL == "" {
+		return
+	}
+	if err := w.refresher.EnqueueRefresh(ctx, RefreshInventoryArgs{
+		TenantID: task.TenantID,
+		SiteID:   task.SiteID,
+		SiteURL:  site.URL,
+		Source:   "post_update",
+	}); err != nil {
+		w.logger.Warn("post-update refresh: enqueue failed",
+			slog.String("site_id", task.SiteID.String()), slog.Any("error", err))
+	}
 }
 
 // maybeCompleteRun marks the run completed when no tasks remain unfinished.

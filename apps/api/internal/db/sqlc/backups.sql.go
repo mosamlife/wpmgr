@@ -57,7 +57,7 @@ SET status = 'completed',
     finished_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, started_at, finished_at, created_at, updated_at
+RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at
 `
 
 type CompleteBackupSnapshotParams struct {
@@ -87,6 +87,8 @@ func (q *Queries) CompleteBackupSnapshot(ctx context.Context, arg CompleteBackup
 		&i.ChunkCount,
 		&i.Error,
 		&i.Archived,
+		&i.Progress,
+		&i.ProgressUpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.CreatedAt,
@@ -100,7 +102,7 @@ const createBackupSnapshot = `-- name: CreateBackupSnapshot :one
 
 INSERT INTO backup_snapshots (tenant_id, site_id, created_by, kind, status, age_recipient)
 VALUES ($1, $2, $3, $4, 'pending', $5)
-RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, started_at, finished_at, created_at, updated_at
+RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at
 `
 
 type CreateBackupSnapshotParams struct {
@@ -137,6 +139,8 @@ func (q *Queries) CreateBackupSnapshot(ctx context.Context, arg CreateBackupSnap
 		&i.ChunkCount,
 		&i.Error,
 		&i.Archived,
+		&i.Progress,
+		&i.ProgressUpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.CreatedAt,
@@ -267,7 +271,7 @@ SET status = 'failed',
     finished_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, started_at, finished_at, created_at, updated_at
+RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at
 `
 
 type FailBackupSnapshotParams struct {
@@ -291,6 +295,8 @@ func (q *Queries) FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshot
 		&i.ChunkCount,
 		&i.Error,
 		&i.Archived,
+		&i.Progress,
+		&i.ProgressUpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.CreatedAt,
@@ -364,7 +370,7 @@ func (q *Queries) GetBackupScheduleForSite(ctx context.Context, arg GetBackupSch
 }
 
 const getBackupSnapshot = `-- name: GetBackupSnapshot :one
-SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, started_at, finished_at, created_at, updated_at FROM backup_snapshots
+SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at FROM backup_snapshots
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -388,6 +394,8 @@ func (q *Queries) GetBackupSnapshot(ctx context.Context, arg GetBackupSnapshotPa
 		&i.ChunkCount,
 		&i.Error,
 		&i.Archived,
+		&i.Progress,
+		&i.ProgressUpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.CreatedAt,
@@ -493,7 +501,7 @@ func (q *Queries) ListBackupSiteIDsForTenant(ctx context.Context, tenantID uuid.
 }
 
 const listBackupSnapshotsForSite = `-- name: ListBackupSnapshotsForSite :many
-SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, started_at, finished_at, created_at, updated_at FROM backup_snapshots
+SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at FROM backup_snapshots
 WHERE tenant_id = $1 AND site_id = $2
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4
@@ -532,6 +540,8 @@ func (q *Queries) ListBackupSnapshotsForSite(ctx context.Context, arg ListBackup
 			&i.ChunkCount,
 			&i.Error,
 			&i.Archived,
+			&i.Progress,
+			&i.ProgressUpdatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.CreatedAt,
@@ -634,7 +644,7 @@ func (q *Queries) ListDueBackupSchedules(ctx context.Context, arg ListDueBackupS
 }
 
 const listExpiredBackupSnapshots = `-- name: ListExpiredBackupSnapshots :many
-SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, started_at, finished_at, created_at, updated_at FROM backup_snapshots
+SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at FROM backup_snapshots
 WHERE tenant_id = $1
   AND status = 'completed'
   AND archived = false
@@ -671,6 +681,8 @@ func (q *Queries) ListExpiredBackupSnapshots(ctx context.Context, arg ListExpire
 			&i.ChunkCount,
 			&i.Error,
 			&i.Archived,
+			&i.Progress,
+			&i.ProgressUpdatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.CreatedAt,
@@ -728,6 +740,57 @@ func (q *Queries) ListManifestEntries(ctx context.Context, arg ListManifestEntri
 	return items, nil
 }
 
+const listStalledRunningSnapshots = `-- name: ListStalledRunningSnapshots :many
+SELECT id, tenant_id, site_id, created_at, started_at, progress_updated_at
+FROM backup_snapshots
+WHERE status = 'running'
+  AND (
+    (progress_updated_at IS NOT NULL AND progress_updated_at < now() - ($1::interval))
+    OR (progress_updated_at IS NULL AND started_at IS NOT NULL AND started_at < now() - ($1::interval))
+  )
+`
+
+type ListStalledRunningSnapshotsRow struct {
+	ID                uuid.UUID          `json:"id"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	SiteID            uuid.UUID          `json:"site_id"`
+	CreatedAt         time.Time          `json:"created_at"`
+	StartedAt         pgtype.Timestamptz `json:"started_at"`
+	ProgressUpdatedAt pgtype.Timestamptz `json:"progress_updated_at"`
+}
+
+// Watchdog feeder: a running snapshot whose latest progress is older than the
+// stall threshold (or whose runner never reported any progress despite being
+// running for longer than the threshold). The new index
+// backup_snapshots_running_progress_idx makes the predicate selective.
+// Cross-tenant select via the GC RLS policy (app.agent='on').
+func (q *Queries) ListStalledRunningSnapshots(ctx context.Context, dollar_1 pgtype.Interval) ([]ListStalledRunningSnapshotsRow, error) {
+	rows, err := q.db.Query(ctx, listStalledRunningSnapshots, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStalledRunningSnapshotsRow
+	for rows.Next() {
+		var i ListStalledRunningSnapshotsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.SiteID,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.ProgressUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTenantsWithCompletedSnapshots = `-- name: ListTenantsWithCompletedSnapshots :many
 SELECT DISTINCT tenant_id FROM backup_snapshots
 WHERE status = 'completed'
@@ -760,7 +823,7 @@ const markBackupSnapshotRunning = `-- name: MarkBackupSnapshotRunning :one
 UPDATE backup_snapshots
 SET status = 'running', started_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, started_at, finished_at, created_at, updated_at
+RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at
 `
 
 type MarkBackupSnapshotRunningParams struct {
@@ -783,6 +846,8 @@ func (q *Queries) MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupS
 		&i.ChunkCount,
 		&i.Error,
 		&i.Archived,
+		&i.Progress,
+		&i.ProgressUpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.CreatedAt,
@@ -806,6 +871,52 @@ type SetBackupSnapshotArchivedParams struct {
 func (q *Queries) SetBackupSnapshotArchived(ctx context.Context, arg SetBackupSnapshotArchivedParams) error {
 	_, err := q.db.Exec(ctx, setBackupSnapshotArchived, arg.ID, arg.TenantID, arg.Archived)
 	return err
+}
+
+const updateBackupSnapshotProgress = `-- name: UpdateBackupSnapshotProgress :one
+UPDATE backup_snapshots
+SET progress = $3,
+    progress_updated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, progress, progress_updated_at, started_at, finished_at, created_at, updated_at
+`
+
+type UpdateBackupSnapshotProgressParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	Progress []byte    `json:"progress"`
+}
+
+// M5.6 / ADR-032: agent runner posts a JSONB progress payload at every phpbu
+// stage transition + per-chunk during the custom PresignedS3 Sync. We always
+// replace (no append/history) — the latest phase is what the UI renders, and
+// the watchdog scans by progress_updated_at. Tenant-scoped via RLS; the agent
+// handler injects the tenant from the verified Ed25519 identity, never from
+// the body.
+func (q *Queries) UpdateBackupSnapshotProgress(ctx context.Context, arg UpdateBackupSnapshotProgressParams) (BackupSnapshot, error) {
+	row := q.db.QueryRow(ctx, updateBackupSnapshotProgress, arg.ID, arg.TenantID, arg.Progress)
+	var i BackupSnapshot
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.SiteID,
+		&i.CreatedBy,
+		&i.Kind,
+		&i.Status,
+		&i.AgeRecipient,
+		&i.TotalSize,
+		&i.ChunkCount,
+		&i.Error,
+		&i.Archived,
+		&i.Progress,
+		&i.ProgressUpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const upsertBackupChunk = `-- name: UpsertBackupChunk :one

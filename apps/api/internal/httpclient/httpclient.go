@@ -201,6 +201,19 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return nil, lastErr
 }
 
+// DoOnce sends the request EXACTLY ONCE — no automatic retries on network
+// errors or 5xx. Use this for non-idempotent calls whose payload is single-use
+// (e.g. CP→agent signed commands, where the JWT's jti is consumed on the
+// agent's first receive; an auto-retry of the same JWT would be a legitimate
+// cross-request replay from the agent's POV and reject with 403). The SSRF
+// dialer + bounded timeout + otelhttp still apply.
+//
+// Callers that want retries should do it at the right semantic layer (e.g.
+// mint a fresh JWT in the next River job attempt).
+func (c *Client) DoOnce(req *http.Request) (*http.Response, error) {
+	return c.http.Do(req)
+}
+
 // IsSSRFBlocked reports whether err is (or wraps) an SSRF prohibition: a
 // destination IP, port, or network the guardian refused to dial. Callers and
 // tests use this to assert that an attacker-influenced URL was blocked.

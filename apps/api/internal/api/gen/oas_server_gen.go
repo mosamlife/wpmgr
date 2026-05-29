@@ -186,6 +186,15 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteAvailableUpdates implements getSiteAvailableUpdates operation.
+	//
+	// Returns the cached list of plugins/themes (and core) that have an update
+	// available, derived from the agent's last metadata sync. Items are sorted
+	// core -> plugins -> themes, with active before inactive. `as_of` is the
+	// site's last update timestamp. Requires viewer+.
+	//
+	// GET /api/v1/sites/{siteId}/updates/available
+	GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error)
 	// GetSiteUptime implements getSiteUptime operation.
 	//
 	// Returns the uptime % and average latency for a site over the requested
@@ -302,6 +311,16 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/backup-schedule
 	PutBackupSchedule(ctx context.Context, req *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
+	// RefreshSiteUpdates implements refreshSiteUpdates operation.
+	//
+	// Enqueues a CP->agent refresh-inventory command for the site. The agent
+	// re-reads its plugin/theme inventory and `update_*` transients and pushes
+	// them back over /agent/v1/metadata. Returns 202 immediately. Requires
+	// viewer+. Returns 409 when the site is offline or unreachable, or 404 if
+	// the site is not enrolled in this tenant.
+	//
+	// POST /api/v1/sites/{siteId}/updates/refresh
+	RefreshSiteUpdates(ctx context.Context, params RefreshSiteUpdatesParams) (RefreshSiteUpdatesRes, error)
 	// Register implements register operation.
 	//
 	// On first run (zero users) this creates the first user, a tenant, and an

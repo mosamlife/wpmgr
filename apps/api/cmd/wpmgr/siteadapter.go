@@ -98,6 +98,28 @@ func (l *siteLookup) ListSiteInfoByTag(ctx context.Context, tenantID uuid.UUID, 
 	return out, nil
 }
 
+// siteRefreshAdapter adapts update.RiverEnqueuer to site.RefreshEnqueuer (the
+// site handler's interface). It keeps the site package free of an update
+// import. The Source value is forwarded into the River args for audit.
+type siteRefreshAdapter struct {
+	enq *update.RiverEnqueuer
+}
+
+func newSiteRefreshAdapter(enq *update.RiverEnqueuer) *siteRefreshAdapter {
+	return &siteRefreshAdapter{enq: enq}
+}
+
+func (a *siteRefreshAdapter) EnqueueRefresh(ctx context.Context, tenantID, siteID uuid.UUID, siteURL, source string) error {
+	return a.enq.EnqueueRefresh(ctx, update.RefreshInventoryArgs{
+		TenantID: tenantID,
+		SiteID:   siteID,
+		SiteURL:  siteURL,
+		Source:   source,
+	})
+}
+
+var _ site.RefreshEnqueuer = (*siteRefreshAdapter)(nil)
+
 // backupSiteLookup adapts the site service to the backup package's SiteLookup,
 // surfacing the agent URL, enrollment status, and the site's age PUBLIC
 // recipient (backups are encrypted to it client-side on the agent).

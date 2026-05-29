@@ -470,6 +470,71 @@ func decodeGetSiteParams(args [1]string, argsEscaped bool, r *http.Request) (par
 	return params, nil
 }
 
+// GetSiteAvailableUpdatesParams is parameters of getSiteAvailableUpdates operation.
+type GetSiteAvailableUpdatesParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetSiteAvailableUpdatesParams(packed middleware.Parameters) (params GetSiteAvailableUpdatesParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetSiteAvailableUpdatesParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteAvailableUpdatesParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetSiteUptimeParams is parameters of getSiteUptime operation.
 type GetSiteUptimeParams struct {
 	SiteId uuid.UUID
@@ -2226,6 +2291,71 @@ func unpackPutBackupScheduleParams(packed middleware.Parameters) (params PutBack
 }
 
 func decodePutBackupScheduleParams(args [1]string, argsEscaped bool, r *http.Request) (params PutBackupScheduleParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// RefreshSiteUpdatesParams is parameters of refreshSiteUpdates operation.
+type RefreshSiteUpdatesParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackRefreshSiteUpdatesParams(packed middleware.Parameters) (params RefreshSiteUpdatesParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRefreshSiteUpdatesParams(args [1]string, argsEscaped bool, r *http.Request) (params RefreshSiteUpdatesParams, _ error) {
 	// Decode path: siteId.
 	if err := func() error {
 		param := args[0]

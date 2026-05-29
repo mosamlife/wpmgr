@@ -46,6 +46,16 @@ const (
 	ActionPairingCodeCreated = "pairing_code.created"
 	ActionSiteTagsSet        = "site.tags.set"
 
+	// Updates feature: an operator requested an immediate inventory refresh, or
+	// the post-update worker autonomously enqueued one for a site. Metadata
+	// fields: site_id, source ("api"|"post_update"|"unknown").
+	ActionUpdateRefreshRequested = "update.refresh.requested"
+	// Updates feature: an old-agent fallback — the agent has no refresh-inventory
+	// route (the Track A endpoint isn't deployed on this site yet). Recorded as a
+	// warning rather than a job failure so the operator sees it once per site
+	// without spamming. Metadata fields: site_id, site_url, status_code.
+	ActionUpdateRefreshUnsupported = "update.refresh.unsupported"
+
 	// Phase 5.5 One-Click Login (ADR-031). The nonce id (NOT the JWT) is the
 	// stable correlator across the three events.
 	//

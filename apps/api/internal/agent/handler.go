@@ -89,24 +89,59 @@ type metadataDTO struct {
 	AgeRecipient flexString     `json:"age_recipient"`
 	Plugins      []componentDTO `json:"plugins"`
 	Themes       []componentDTO `json:"themes"`
+	// CoreUpdate is set when WordPress core has an update available. New in the
+	// Updates feature: OLD agents send no `core_update` and this stays nil — the
+	// metadata sync still succeeds end-to-end.
+	CoreUpdate *coreUpdateDTO `json:"core_update,omitempty"`
 }
 
+// componentDTO is the per-plugin/theme tolerant decode target. AvailableUpdate
+// is new in the Updates feature and is optional/nullable: OLD agents send no
+// `available_update` and the metadata sync still succeeds.
 type componentDTO struct {
-	Slug    flexString `json:"slug"`
-	Name    flexString `json:"name"`
-	Version flexString `json:"version"`
-	Active  flexBool   `json:"active"`
+	Slug            flexString          `json:"slug"`
+	Name            flexString          `json:"name"`
+	Version         flexString          `json:"version"`
+	Active          flexBool            `json:"active"`
+	AvailableUpdate *availableUpdateDTO `json:"available_update,omitempty"`
+}
+
+// availableUpdateDTO is the per-item update advisory the agent reports. Only
+// new_version is required by the contract; the other fields are best-effort
+// surface from update_plugins/update_themes transients.
+type availableUpdateDTO struct {
+	NewVersion  flexString  `json:"new_version"`
+	Package     *flexString `json:"package,omitempty"`
+	Tested      *flexString `json:"tested,omitempty"`
+	RequiresPHP *flexString `json:"requires_php,omitempty"`
+}
+
+// coreUpdateDTO is the WordPress core update advisory. Both versions are
+// reported as strings; flex decoding tolerates the agent reporting them as
+// numbers.
+type coreUpdateDTO struct {
+	NewVersion     flexString `json:"new_version"`
+	CurrentVersion flexString `json:"current_version"`
 }
 
 func (d metadataDTO) toMetadata() Metadata {
 	conv := func(cs []componentDTO) []Component {
 		out := make([]Component, 0, len(cs))
 		for _, c := range cs {
-			out = append(out, Component{Slug: string(c.Slug), Name: string(c.Name), Version: string(c.Version), Active: bool(c.Active)})
+			comp := Component{Slug: string(c.Slug), Name: string(c.Name), Version: string(c.Version), Active: bool(c.Active)}
+			if c.AvailableUpdate != nil && string(c.AvailableUpdate.NewVersion) != "" {
+				comp.AvailableUpdate = &AvailableUpdate{
+					NewVersion:  string(c.AvailableUpdate.NewVersion),
+					Package:     flexStringPtr(c.AvailableUpdate.Package),
+					Tested:      flexStringPtr(c.AvailableUpdate.Tested),
+					RequiresPHP: flexStringPtr(c.AvailableUpdate.RequiresPHP),
+				}
+			}
+			out = append(out, comp)
 		}
 		return out
 	}
-	return Metadata{
+	m := Metadata{
 		WPVersion:    string(d.WPVersion),
 		PHPVersion:   string(d.PHPVersion),
 		ServerInfo:   string(d.ServerInfo),
@@ -116,6 +151,21 @@ func (d metadataDTO) toMetadata() Metadata {
 		Plugins:      conv(d.Plugins),
 		Themes:       conv(d.Themes),
 	}
+	if d.CoreUpdate != nil && string(d.CoreUpdate.NewVersion) != "" {
+		m.CoreUpdate = &CoreUpdate{
+			NewVersion:     string(d.CoreUpdate.NewVersion),
+			CurrentVersion: string(d.CoreUpdate.CurrentVersion),
+		}
+	}
+	return m
+}
+
+// flexStringPtr nil-safely converts a *flexString to a plain string ("" when nil).
+func flexStringPtr(p *flexString) string {
+	if p == nil {
+		return ""
+	}
+	return string(*p)
 }
 
 // Metadata mirrors the site domain's metadata input without importing it (the
@@ -130,14 +180,35 @@ type Metadata struct {
 	AgeRecipient string // optional; agent's per-site age PUBLIC recipient ("age1…")
 	Plugins      []Component
 	Themes       []Component
+	// CoreUpdate is the optional WordPress core update advisory. nil when there
+	// is no core update OR when the agent is old enough that it does not send
+	// the field at all.
+	CoreUpdate *CoreUpdate
 }
 
-// Component is one installed plugin/theme.
+// Component is one installed plugin/theme. AvailableUpdate is set when the
+// agent reports an update is available for this item.
 type Component struct {
-	Slug    string
-	Name    string
-	Version string
-	Active  bool
+	Slug            string
+	Name            string
+	Version         string
+	Active          bool
+	AvailableUpdate *AvailableUpdate
+}
+
+// AvailableUpdate is the per-item update advisory. Only NewVersion is required;
+// the other fields are best-effort surface from the WP update transients.
+type AvailableUpdate struct {
+	NewVersion  string
+	Package     string
+	Tested      string
+	RequiresPHP string
+}
+
+// CoreUpdate is the WordPress core update advisory.
+type CoreUpdate struct {
+	NewVersion     string
+	CurrentVersion string
 }
 
 // MetadataSink applies agent-pushed metadata and heartbeats. Implemented by the

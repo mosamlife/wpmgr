@@ -33,6 +33,9 @@ func NewAgentHandler(svc *Service, rec *audit.Recorder) *AgentHandler {
 func (h *AgentHandler) Register(r *gin.RouterGroup) {
 	r.POST("/backups/:snapshotId/presign", h.presign)
 	r.POST("/backups/:snapshotId/manifest", h.manifest)
+	// M5.6 / ADR-032: the phpbu agent runner POSTs phase progress here on every
+	// stage transition + per-chunk during the custom PresignedS3 Sync.
+	r.POST("/backups/:snapshotId/progress", h.progress)
 }
 
 // presign returns presigned PUT URLs for the candidate ciphertext chunk hashes
@@ -102,6 +105,50 @@ func (h *AgentHandler) manifest(c *gin.Context) {
 		ChunkCount:  chunkRefs,
 		StoredCount: stored,
 	})
+}
+
+// progressDTO is the agent's progress POST shape. snapshot_id comes from the
+// URL path, NEVER from the body — a compromised agent must not be able to
+// target another snapshot by spoofing it in the JSON body.
+type progressDTO struct {
+	Phase       string         `json:"phase"`
+	PhaseDetail map[string]any `json:"phase_detail"`
+}
+
+// progress records the agent runner's latest phase. The Ed25519 identity on the
+// context proves the request comes from the snapshot's own site (re-asserted
+// below via assertSnapshotSite). Failures to record progress MUST be visible
+// to the agent (the runner uses the response status to decide whether to retry),
+// but a 4xx for an unknown phase or oversized body is terminal — the runner
+// drops the event and moves on rather than spinning.
+func (h *AgentHandler) progress(c *gin.Context) {
+	id, ok := agent.IdentityFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("agent_unauthenticated", "agent identity required"))
+		return
+	}
+	snapshotID, ok := uuidParam(c, "snapshotId", "invalid_snapshot_id")
+	if !ok {
+		return
+	}
+	// Read the body with a hard cap BEFORE JSON decoding. ShouldBindJSON would
+	// happily allocate however much memory the agent sends; the size cap belongs
+	// at the transport boundary.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxProgressPayloadBytes+1024)
+	var dto progressDTO
+	if err := c.ShouldBindJSON(&dto); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON or exceeds size cap"))
+		return
+	}
+	if err := h.assertSnapshotSite(c, id.TenantID, snapshotID, id.SiteID); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	if _, err := h.svc.RecordProgress(c.Request.Context(), id.TenantID, snapshotID, dto.Phase, dto.PhaseDetail); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // assertSnapshotSite verifies the snapshot exists in the agent's tenant AND

@@ -186,6 +186,17 @@ func run() error {
 	updateRepo := update.NewRepo(pool)
 	sitesLookup := newSiteLookup(siteSvc)
 	updateWorker := update.NewWorker(updateRepo, sitesLookup, commander, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
+	// Updates feature (Track B): the refresh-inventory worker dispatches signed
+	// CP->agent commands to re-pull a site's inventory. It satisfies River's
+	// JobArgs interface so the per-tenant queue shard bounds its concurrency
+	// alongside the update tasks. A nil commander cleanly cancels the job (no
+	// unsigned commands ever sent).
+	var refreshCmd update.RefreshCommander
+	if rc, ok := commander.(update.RefreshCommander); ok {
+		refreshCmd = rc
+	}
+	refreshWorker := update.NewRefreshInventoryWorker(refreshCmd, auditRec, logger)
+	refreshDebouncer := update.NewRefreshDebouncer(30 * time.Second)
 
 	// M4 backups: an S3-compatible blobstore (ADR-010) for presigned chunk
 	// upload/download (only ciphertext is ever stored), the backup command client
@@ -200,6 +211,10 @@ func run() error {
 	var restoreWorker *backup.RestoreWorker
 	var gcWorker *backup.GCWorker
 	var scheduleWorker *backup.ScheduleWorker
+	var progressWatchdog *backup.ProgressWatchdogWorker
+	// M5.6 backup-progress SSE hub: in-process pub/sub keyed by snapshot ID.
+	// Service.Publish fans transitions out; Handler.events subscribes per stream.
+	backupHub := backup.NewHub()
 	if cfg.S3.Enabled() {
 		store, serr := blobstore.New(blobstore.Config{
 			Endpoint:       cfg.S3.Endpoint,
@@ -218,7 +233,19 @@ func run() error {
 		var backupCmd backup.Commander
 		if cfg.Agent.SigningPrivateKey != "" {
 			signer, _ := agentcmd.NewSigner(cfg.Agent.SigningPrivateKey)
-			backupCmd = agentcmd.NewClient(ssrfClient, signer)
+			// Backup/restore commands run synchronously on the agent today (the
+			// PHP backup walks the site, chunk-encrypts, and PUTs to S3 inline
+			// before responding). On real sites that easily exceeds the snappy
+			// 30s update timeout — so we build a SEPARATE SSRF-hardened client
+			// with a much longer per-attempt cap just for the backup commander.
+			// MaxRetries is 0: the agent's JWT jti is single-use (DoOnce already
+			// enforces no auto-retry), and the River job mints a fresh JWT on
+			// the next attempt.
+			backupSSRFClient := httpclient.New(httpclient.Config{
+				Timeout:    cfg.Backup.HTTPTimeout,
+				MaxRetries: 0,
+			})
+			backupCmd = agentcmd.NewClient(backupSSRFClient, signer)
 		} else {
 			backupCmd = disabledBackupCommander{}
 		}
@@ -228,12 +255,22 @@ func run() error {
 			RetentionDays:      cfg.Backup.RetentionDays,
 			MonthlyArchiveKeep: cfg.Backup.MonthlyArchiveKeep,
 		})
+		backupSvc.SetHub(backupHub)
 		cpBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
-		backupWorker = backup.NewBackupWorker(backupSvc, backupCmd, auditRec, logger, cpBaseURL)
-		restoreWorker = backup.NewRestoreWorker(backupSvc, backupCmd, auditRec, logger)
+		// River's default per-job context deadline is 60s — far too short for a
+		// real-site backup. Override with the configured backup HTTPTimeout plus
+		// a 2-minute buffer so the http.Client's per-attempt timeout (which has
+		// a clearer "awaiting headers" diagnostic) fires first when the agent
+		// genuinely stalls.
+		backupJobTimeout := cfg.Backup.HTTPTimeout + 2*time.Minute
+		backupWorker = backup.NewBackupWorker(backupSvc, backupCmd, auditRec, logger, cpBaseURL, backupJobTimeout)
+		restoreWorker = backup.NewRestoreWorker(backupSvc, backupCmd, auditRec, logger, cpBaseURL, backupJobTimeout)
 		gcWorker = backup.NewGCWorker(backupSvc, logger)
 		scheduleWorker = backup.NewScheduleWorker(backupSvc, logger)
-		backupH = backup.NewHandler(backupSvc, auditRec)
+		// M5.6 progress watchdog: 120s stall threshold (longest natural silent
+		// gap in the phpbu pipeline is age-encrypt for a multi-GB site).
+		progressWatchdog = backup.NewProgressWatchdogWorker(backupSvc, 120*time.Second, logger)
+		backupH = backup.NewHandler(backupSvc, backupHub, auditRec)
 		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
 		logger.Info("backups enabled", slog.String("s3_bucket", cfg.S3.Bucket))
 	} else {
@@ -287,11 +324,13 @@ func run() error {
 		healthChecker:        healthChecker,
 		healthInterval:       cfg.Agent.HealthInterval,
 		updateWorker:         updateWorker,
+		refreshWorker:        refreshWorker,
 		perTenantParallelism: cfg.Update.PerTenantParallelism,
 		backupWorker:         backupWorker,
 		restoreWorker:        restoreWorker,
 		gcWorker:             gcWorker,
 		scheduleWorker:       scheduleWorker,
+		progressWatchdog:     progressWatchdog,
 		scheduleInterval:     cfg.Backup.ScheduleInterval,
 		gcInterval:           cfg.Backup.GCInterval,
 		uptimeWorker:         uptimeWorker,
@@ -302,9 +341,15 @@ func run() error {
 	}
 
 	// The enqueuer needs the started River client; the update service needs the
-	// enqueuer. Wire them after the client is up.
-	updateSvc := update.NewService(updateRepo, sitesLookup, update.NewRiverEnqueuer(riverClient), validator, clock)
+	// enqueuer. Wire them after the client is up. The same enqueuer also serves
+	// the post-update inventory-refresh path (via the update Worker) and the
+	// operator-facing refresh route on the site handler (via siteRefreshAdapter).
+	updateEnqueuer := update.NewRiverEnqueuer(riverClient)
+	updateSvc := update.NewService(updateRepo, sitesLookup, updateEnqueuer, validator, clock)
 	updateH := update.NewHandler(updateSvc, updateHub, auditRec)
+	updateWorker.SetRefreshEnqueuer(updateEnqueuer, refreshDebouncer)
+	siteH := site.NewHandler(siteSvc, auditRec, cpPublicKey)
+	siteH.SetRefreshEnqueuer(newSiteRefreshAdapter(updateEnqueuer), cfg.Agent.StaleAfter)
 	if backupSvc != nil {
 		backupSvc.SetEnqueuer(backup.NewRiverEnqueuer(riverClient))
 	}
@@ -370,7 +415,7 @@ func run() error {
 		APIKeyH:         apikey.NewHandler(apiKeySvc, auditRec),
 		AuditH:          audit.NewHandler(auditRec),
 		TenantH:         tenant.NewHandler(tenantSvc, auditRec),
-		SiteH:           site.NewHandler(siteSvc, auditRec, cpPublicKey),
+		SiteH:           siteH,
 		UpdateH:         updateH,
 		BackupH:         backupH,
 		BackupAgentH:    backupAgentH,
@@ -426,11 +471,13 @@ type riverDeps struct {
 	healthChecker        *site.HealthChecker
 	healthInterval       time.Duration
 	updateWorker         *update.Worker
+	refreshWorker        *update.RefreshInventoryWorker
 	perTenantParallelism int
 	backupWorker         *backup.BackupWorker
 	restoreWorker        *backup.RestoreWorker
 	gcWorker             *backup.GCWorker
 	scheduleWorker       *backup.ScheduleWorker
+	progressWatchdog     *backup.ProgressWatchdogWorker
 	scheduleInterval     time.Duration
 	gcInterval           time.Duration
 	uptimeWorker         *uptime.ProbeWorker
@@ -449,6 +496,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, site.NewHealthCheckWorker(d.healthChecker))
 	river.AddWorker(workers, d.updateWorker)
+	if d.refreshWorker != nil {
+		river.AddWorker(workers, d.refreshWorker)
+	}
 
 	interval := d.healthInterval
 	if interval <= 0 {
@@ -505,6 +555,16 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 				nil,
 			),
 		)
+		if d.progressWatchdog != nil {
+			river.AddWorker(workers, d.progressWatchdog)
+			// 30s tick is half the stall threshold — guarantees we detect a stall
+			// within at most threshold+30s. Cheap (a single indexed SELECT).
+			periodics = append(periodics, river.NewPeriodicJob(
+				river.PeriodicInterval(30*time.Second),
+				func() (river.JobArgs, *river.InsertOpts) { return backup.ProgressWatchdogArgs{}, nil },
+				nil,
+			))
+		}
 	}
 
 	// M5 uptime probe: a periodic job (~60s) that probes every enrolled site,

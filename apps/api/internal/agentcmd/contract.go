@@ -132,3 +132,20 @@ type RollbackResponse struct {
 	RestoredVersion string `json:"restored_version"`
 	Log             string `json:"log,omitempty"`
 }
+
+// RefreshInventoryRequest is the POST body for the `refresh_inventory` command.
+// The Updates feature has no per-call parameters: the agent re-reads its plugin/
+// theme inventory and the WP update_* transients, then pushes the result back
+// over /agent/v1/metadata. The struct is reserved for future flags.
+type RefreshInventoryRequest struct{}
+
+// RefreshInventoryResponse is the agent's response to the `refresh_inventory`
+// command.
+//
+//	ok      whether the agent accepted the refresh (it sends metadata asynchronously
+//	        via /agent/v1/metadata; this is just the command ack).
+//	detail  short human-readable detail (e.g. "queued", "applied").
+type RefreshInventoryResponse struct {
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}

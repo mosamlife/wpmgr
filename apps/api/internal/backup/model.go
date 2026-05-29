@@ -68,6 +68,12 @@ type Snapshot struct {
 	FinishedAt   *time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// Progress is the M5.6 phpbu runner's latest phase payload (raw JSONB).
+	// Shape: {"phase": "...", "phase_detail": {...}}. Empty {} until the first
+	// runner POST lands. The UI renders this; the watchdog scans
+	// ProgressUpdatedAt to detect stalled runs.
+	Progress            []byte
+	ProgressUpdatedAt   *time.Time
 }
 
 // ManifestEntry is one file/db entry of a snapshot: an ordered list of

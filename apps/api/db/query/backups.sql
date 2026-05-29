@@ -45,6 +45,34 @@ SET status = 'failed',
 WHERE id = $1 AND tenant_id = $2
 RETURNING *;
 
+-- name: UpdateBackupSnapshotProgress :one
+-- M5.6 / ADR-032: agent runner posts a JSONB progress payload at every phpbu
+-- stage transition + per-chunk during the custom PresignedS3 Sync. We always
+-- replace (no append/history) — the latest phase is what the UI renders, and
+-- the watchdog scans by progress_updated_at. Tenant-scoped via RLS; the agent
+-- handler injects the tenant from the verified Ed25519 identity, never from
+-- the body.
+UPDATE backup_snapshots
+SET progress = $3,
+    progress_updated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+RETURNING *;
+
+-- name: ListStalledRunningSnapshots :many
+-- Watchdog feeder: a running snapshot whose latest progress is older than the
+-- stall threshold (or whose runner never reported any progress despite being
+-- running for longer than the threshold). The new index
+-- backup_snapshots_running_progress_idx makes the predicate selective.
+-- Cross-tenant select via the GC RLS policy (app.agent='on').
+SELECT id, tenant_id, site_id, created_at, started_at, progress_updated_at
+FROM backup_snapshots
+WHERE status = 'running'
+  AND (
+    (progress_updated_at IS NOT NULL AND progress_updated_at < now() - ($1::interval))
+    OR (progress_updated_at IS NULL AND started_at IS NOT NULL AND started_at < now() - ($1::interval))
+  );
+
 -- name: DeleteBackupSnapshot :execrows
 DELETE FROM backup_snapshots
 WHERE id = $1 AND tenant_id = $2;

@@ -26,6 +26,12 @@ const maxRespBody = 4 << 20 // 4 MiB
 // satisfies it; tests can substitute a fake.
 type Doer interface {
 	Do(req *http.Request) (*http.Response, error)
+	// DoOnce sends the request EXACTLY ONCE — no automatic retries. Required
+	// for signed-command POSTs: the JWT's jti is single-use on the agent, so
+	// a network-level retry of the SAME JWT would (correctly) be rejected as
+	// token_replay. *httpclient.Client implements both Do (retrying) and
+	// DoOnce; test doubles can route both to the same single-attempt call.
+	DoOnce(req *http.Request) (*http.Response, error)
 }
 
 // Client POSTs signed CP->agent commands over the SSRF-hardened transport.
@@ -90,6 +96,21 @@ func (c *Client) Restore(ctx context.Context, siteID uuid.UUID, siteURL string, 
 	return out, nil
 }
 
+// RefreshInventory sends the signed `refresh_inventory` command to the site's
+// agent. siteID is the target site's stable enrollment UUID, bound into the
+// JWT's aud claim. The agent re-reads its plugin/theme inventory + update
+// transients and pushes the result back over /agent/v1/metadata; this call
+// only acks the command. Old agents that don't implement the route will return
+// a 404 from the REST API — callers (the refresh worker) should treat that as
+// an old-agent fallback and not a retryable error.
+func (c *Client) RefreshInventory(ctx context.Context, siteID uuid.UUID, siteURL string, req RefreshInventoryRequest) (RefreshInventoryResponse, error) {
+	var out RefreshInventoryResponse
+	if err := c.post(ctx, siteID, siteURL, "refresh_inventory", req, &out); err != nil {
+		return RefreshInventoryResponse{}, err
+	}
+	return out, nil
+}
+
 // post mints a fresh JWT bound to siteID (aud) and command (cmd), POSTs body to
 // the named command endpoint at siteURL, and decodes the JSON response into
 // out. A non-2xx response is an error.
@@ -119,7 +140,12 @@ func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command st
 	// bearerToken()). NEVER log this header value (it is a credential).
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := c.http.Do(httpReq)
+	// DoOnce (no auto-retry): the JWT's jti is single-use on the agent — if the
+	// first attempt's response is lost, an httpclient-level retry of the SAME
+	// request would re-present the same JWT and the agent would (correctly) 403
+	// with token_replay. Retries belong at the River job layer, which mints a
+	// FRESH jti on the next attempt.
+	resp, err := c.http.DoOnce(httpReq)
 	if err != nil {
 		return fmt.Errorf("%s command transport: %w", command, err)
 	}

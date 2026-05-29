@@ -29,3 +29,12 @@ func (e *RiverEnqueuer) EnqueueTask(ctx context.Context, tenantID, runID, taskID
 	}
 	return nil
 }
+
+// EnqueueRefresh inserts one refresh-inventory job. The job's InsertOpts pin it
+// to the tenant's queue shard. Satisfies RefreshEnqueuer.
+func (e *RiverEnqueuer) EnqueueRefresh(ctx context.Context, args RefreshInventoryArgs) error {
+	if _, err := e.client.Insert(ctx, args, nil); err != nil {
+		return fmt.Errorf("enqueue refresh inventory: %w", err)
+	}
+	return nil
+}

@@ -1426,12 +1426,21 @@ type BackupSnapshot struct {
 	TotalSize    OptInt64  `json:"total_size"`
 	ChunkCount   OptInt64  `json:"chunk_count"`
 	// Kept by the monthly-archive retention rule.
-	Archived   OptBool     `json:"archived"`
-	Error      OptString   `json:"error"`
-	StartedAt  OptDateTime `json:"started_at"`
-	FinishedAt OptDateTime `json:"finished_at"`
-	CreatedAt  time.Time   `json:"created_at"`
-	UpdatedAt  time.Time   `json:"updated_at"`
+	Archived OptBool   `json:"archived"`
+	Error    OptString `json:"error"`
+	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
+	// its first phase. Shape:
+	// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
+	// Phases form a closed set (see backup.allowedProgressPhases on the CP).
+	Progress OptBackupSnapshotProgress `json:"progress"`
+	// Server timestamp of the last progress POST from the runner. Used by the
+	// CP watchdog (>120s without an update on a running snapshot → marked
+	// failed/stalled) and by the frontend to detect a silent runner.
+	ProgressUpdatedAt OptDateTime `json:"progress_updated_at"`
+	StartedAt         OptDateTime `json:"started_at"`
+	FinishedAt        OptDateTime `json:"finished_at"`
+	CreatedAt         time.Time   `json:"created_at"`
+	UpdatedAt         time.Time   `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -1487,6 +1496,16 @@ func (s *BackupSnapshot) GetArchived() OptBool {
 // GetError returns the value of Error.
 func (s *BackupSnapshot) GetError() OptString {
 	return s.Error
+}
+
+// GetProgress returns the value of Progress.
+func (s *BackupSnapshot) GetProgress() OptBackupSnapshotProgress {
+	return s.Progress
+}
+
+// GetProgressUpdatedAt returns the value of ProgressUpdatedAt.
+func (s *BackupSnapshot) GetProgressUpdatedAt() OptDateTime {
+	return s.ProgressUpdatedAt
 }
 
 // GetStartedAt returns the value of StartedAt.
@@ -1562,6 +1581,16 @@ func (s *BackupSnapshot) SetArchived(val OptBool) {
 // SetError sets the value of Error.
 func (s *BackupSnapshot) SetError(val OptString) {
 	s.Error = val
+}
+
+// SetProgress sets the value of Progress.
+func (s *BackupSnapshot) SetProgress(val OptBackupSnapshotProgress) {
+	s.Progress = val
+}
+
+// SetProgressUpdatedAt sets the value of ProgressUpdatedAt.
+func (s *BackupSnapshot) SetProgressUpdatedAt(val OptDateTime) {
+	s.ProgressUpdatedAt = val
 }
 
 // SetStartedAt sets the value of StartedAt.
@@ -1676,6 +1705,21 @@ func (s *BackupSnapshotList) GetItems() []BackupSnapshot {
 // SetItems sets the value of Items.
 func (s *BackupSnapshotList) SetItems(val []BackupSnapshot) {
 	s.Items = val
+}
+
+// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
+// its first phase. Shape:
+// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
+// Phases form a closed set (see backup.allowedProgressPhases on the CP).
+type BackupSnapshotProgress map[string]jx.Raw
+
+func (s *BackupSnapshotProgress) init() BackupSnapshotProgress {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
 }
 
 type BackupSnapshotStatus string
@@ -1956,24 +2000,25 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 	s.Details = val
 }
 
-func (*Error) agentHeartbeatRes()    {}
-func (*Error) createBackupRes()      {}
-func (*Error) createPairingCodeRes() {}
-func (*Error) createRestoreRes()     {}
-func (*Error) createUpdateRunRes()   {}
-func (*Error) deleteSiteRes()        {}
-func (*Error) getBackupRes()         {}
-func (*Error) getBackupScheduleRes() {}
-func (*Error) getMeRes()             {}
-func (*Error) getSiteRes()           {}
-func (*Error) getSiteUptimeRes()     {}
-func (*Error) getTenantRes()         {}
-func (*Error) getUpdateRunRes()      {}
-func (*Error) logoutRes()            {}
-func (*Error) oidcLoginRes()         {}
-func (*Error) putAlertConfigRes()    {}
-func (*Error) putBackupScheduleRes() {}
-func (*Error) setSiteTagsRes()       {}
+func (*Error) agentHeartbeatRes()          {}
+func (*Error) createBackupRes()            {}
+func (*Error) createPairingCodeRes()       {}
+func (*Error) createRestoreRes()           {}
+func (*Error) createUpdateRunRes()         {}
+func (*Error) deleteSiteRes()              {}
+func (*Error) getBackupRes()               {}
+func (*Error) getBackupScheduleRes()       {}
+func (*Error) getMeRes()                   {}
+func (*Error) getSiteAvailableUpdatesRes() {}
+func (*Error) getSiteRes()                 {}
+func (*Error) getSiteUptimeRes()           {}
+func (*Error) getTenantRes()               {}
+func (*Error) getUpdateRunRes()            {}
+func (*Error) logoutRes()                  {}
+func (*Error) oidcLoginRes()               {}
+func (*Error) putAlertConfigRes()          {}
+func (*Error) putBackupScheduleRes()       {}
+func (*Error) setSiteTagsRes()             {}
 
 type ErrorDetails map[string]jx.Raw
 
@@ -2570,6 +2615,52 @@ func (o OptBackupScheduleUpdateKind) Or(d BackupScheduleUpdateKind) BackupSchedu
 	return d
 }
 
+// NewOptBackupSnapshotProgress returns new OptBackupSnapshotProgress with value set to v.
+func NewOptBackupSnapshotProgress(v BackupSnapshotProgress) OptBackupSnapshotProgress {
+	return OptBackupSnapshotProgress{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBackupSnapshotProgress is optional BackupSnapshotProgress.
+type OptBackupSnapshotProgress struct {
+	Value BackupSnapshotProgress
+	Set   bool
+}
+
+// IsSet returns true if OptBackupSnapshotProgress was set.
+func (o OptBackupSnapshotProgress) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBackupSnapshotProgress) Reset() {
+	var v BackupSnapshotProgress
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBackupSnapshotProgress) SetTo(v BackupSnapshotProgress) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBackupSnapshotProgress) Get() (v BackupSnapshotProgress, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBackupSnapshotProgress) Or(d BackupSnapshotProgress) BackupSnapshotProgress {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptBool returns new OptBool with value set to v.
 func NewOptBool(v bool) OptBool {
 	return OptBool{
@@ -2840,6 +2931,321 @@ func (o OptInt64) Get() (v int64, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptInt64) Or(d int64) int64 {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilDateTime returns new OptNilDateTime with value set to v.
+func NewOptNilDateTime(v time.Time) OptNilDateTime {
+	return OptNilDateTime{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilDateTime is optional nullable time.Time.
+type OptNilDateTime struct {
+	Value time.Time
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilDateTime was set.
+func (o OptNilDateTime) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilDateTime) Reset() {
+	var v time.Time
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilDateTime) SetTo(v time.Time) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilDateTime) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilDateTime) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v time.Time
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilDateTime) Get() (v time.Time, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilDateTime) Or(d time.Time) time.Time {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilSiteAvailableUpdatesCoreUpdate returns new OptNilSiteAvailableUpdatesCoreUpdate with value set to v.
+func NewOptNilSiteAvailableUpdatesCoreUpdate(v SiteAvailableUpdatesCoreUpdate) OptNilSiteAvailableUpdatesCoreUpdate {
+	return OptNilSiteAvailableUpdatesCoreUpdate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilSiteAvailableUpdatesCoreUpdate is optional nullable SiteAvailableUpdatesCoreUpdate.
+type OptNilSiteAvailableUpdatesCoreUpdate struct {
+	Value SiteAvailableUpdatesCoreUpdate
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilSiteAvailableUpdatesCoreUpdate was set.
+func (o OptNilSiteAvailableUpdatesCoreUpdate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilSiteAvailableUpdatesCoreUpdate) Reset() {
+	var v SiteAvailableUpdatesCoreUpdate
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilSiteAvailableUpdatesCoreUpdate) SetTo(v SiteAvailableUpdatesCoreUpdate) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilSiteAvailableUpdatesCoreUpdate) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilSiteAvailableUpdatesCoreUpdate) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v SiteAvailableUpdatesCoreUpdate
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilSiteAvailableUpdatesCoreUpdate) Get() (v SiteAvailableUpdatesCoreUpdate, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilSiteAvailableUpdatesCoreUpdate) Or(d SiteAvailableUpdatesCoreUpdate) SiteAvailableUpdatesCoreUpdate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilSiteComponentAvailableUpdate returns new OptNilSiteComponentAvailableUpdate with value set to v.
+func NewOptNilSiteComponentAvailableUpdate(v SiteComponentAvailableUpdate) OptNilSiteComponentAvailableUpdate {
+	return OptNilSiteComponentAvailableUpdate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilSiteComponentAvailableUpdate is optional nullable SiteComponentAvailableUpdate.
+type OptNilSiteComponentAvailableUpdate struct {
+	Value SiteComponentAvailableUpdate
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilSiteComponentAvailableUpdate was set.
+func (o OptNilSiteComponentAvailableUpdate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilSiteComponentAvailableUpdate) Reset() {
+	var v SiteComponentAvailableUpdate
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilSiteComponentAvailableUpdate) SetTo(v SiteComponentAvailableUpdate) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilSiteComponentAvailableUpdate) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilSiteComponentAvailableUpdate) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v SiteComponentAvailableUpdate
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilSiteComponentAvailableUpdate) Get() (v SiteComponentAvailableUpdate, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilSiteComponentAvailableUpdate) Or(d SiteComponentAvailableUpdate) SiteComponentAvailableUpdate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilSiteComponentsCoreUpdate returns new OptNilSiteComponentsCoreUpdate with value set to v.
+func NewOptNilSiteComponentsCoreUpdate(v SiteComponentsCoreUpdate) OptNilSiteComponentsCoreUpdate {
+	return OptNilSiteComponentsCoreUpdate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilSiteComponentsCoreUpdate is optional nullable SiteComponentsCoreUpdate.
+type OptNilSiteComponentsCoreUpdate struct {
+	Value SiteComponentsCoreUpdate
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilSiteComponentsCoreUpdate was set.
+func (o OptNilSiteComponentsCoreUpdate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilSiteComponentsCoreUpdate) Reset() {
+	var v SiteComponentsCoreUpdate
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilSiteComponentsCoreUpdate) SetTo(v SiteComponentsCoreUpdate) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilSiteComponentsCoreUpdate) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilSiteComponentsCoreUpdate) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v SiteComponentsCoreUpdate
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilSiteComponentsCoreUpdate) Get() (v SiteComponentsCoreUpdate, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilSiteComponentsCoreUpdate) Or(d SiteComponentsCoreUpdate) SiteComponentsCoreUpdate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilString returns new OptNilString with value set to v.
+func NewOptNilString(v string) OptNilString {
+	return OptNilString{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilString is optional nullable string.
+type OptNilString struct {
+	Value string
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilString was set.
+func (o OptNilString) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilString) Reset() {
+	var v string
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilString) SetTo(v string) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilString) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilString) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v string
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilString) Get() (v string, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilString) Or(d string) string {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -3310,6 +3716,19 @@ func (s *ReadinessStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+// RefreshSiteUpdatesAccepted is response for RefreshSiteUpdates operation.
+type RefreshSiteUpdatesAccepted struct{}
+
+func (*RefreshSiteUpdatesAccepted) refreshSiteUpdatesRes() {}
+
+type RefreshSiteUpdatesConflict Error
+
+func (*RefreshSiteUpdatesConflict) refreshSiteUpdatesRes() {}
+
+type RefreshSiteUpdatesNotFound Error
+
+func (*RefreshSiteUpdatesNotFound) refreshSiteUpdatesRes() {}
+
 type RegisterConflict Error
 
 func (*RegisterConflict) registerRes() {}
@@ -3704,12 +4123,233 @@ func (*Site) createSiteRes()    {}
 func (*Site) getSiteRes()       {}
 func (*Site) setSiteTagsRes()   {}
 
+// Per-site cached list of items with updates available.
+// Ref: #/components/schemas/SiteAvailableUpdates
+type SiteAvailableUpdates struct {
+	SiteID     uuid.UUID                            `json:"site_id"`
+	CoreUpdate OptNilSiteAvailableUpdatesCoreUpdate `json:"core_update"`
+	Items      []SiteAvailableUpdatesItemsItem      `json:"items"`
+	AsOf       OptNilDateTime                       `json:"as_of"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteAvailableUpdates) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetCoreUpdate returns the value of CoreUpdate.
+func (s *SiteAvailableUpdates) GetCoreUpdate() OptNilSiteAvailableUpdatesCoreUpdate {
+	return s.CoreUpdate
+}
+
+// GetItems returns the value of Items.
+func (s *SiteAvailableUpdates) GetItems() []SiteAvailableUpdatesItemsItem {
+	return s.Items
+}
+
+// GetAsOf returns the value of AsOf.
+func (s *SiteAvailableUpdates) GetAsOf() OptNilDateTime {
+	return s.AsOf
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteAvailableUpdates) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetCoreUpdate sets the value of CoreUpdate.
+func (s *SiteAvailableUpdates) SetCoreUpdate(val OptNilSiteAvailableUpdatesCoreUpdate) {
+	s.CoreUpdate = val
+}
+
+// SetItems sets the value of Items.
+func (s *SiteAvailableUpdates) SetItems(val []SiteAvailableUpdatesItemsItem) {
+	s.Items = val
+}
+
+// SetAsOf sets the value of AsOf.
+func (s *SiteAvailableUpdates) SetAsOf(val OptNilDateTime) {
+	s.AsOf = val
+}
+
+func (*SiteAvailableUpdates) getSiteAvailableUpdatesRes() {}
+
+type SiteAvailableUpdatesCoreUpdate struct {
+	NewVersion     string `json:"new_version"`
+	CurrentVersion string `json:"current_version"`
+}
+
+// GetNewVersion returns the value of NewVersion.
+func (s *SiteAvailableUpdatesCoreUpdate) GetNewVersion() string {
+	return s.NewVersion
+}
+
+// GetCurrentVersion returns the value of CurrentVersion.
+func (s *SiteAvailableUpdatesCoreUpdate) GetCurrentVersion() string {
+	return s.CurrentVersion
+}
+
+// SetNewVersion sets the value of NewVersion.
+func (s *SiteAvailableUpdatesCoreUpdate) SetNewVersion(val string) {
+	s.NewVersion = val
+}
+
+// SetCurrentVersion sets the value of CurrentVersion.
+func (s *SiteAvailableUpdatesCoreUpdate) SetCurrentVersion(val string) {
+	s.CurrentVersion = val
+}
+
+type SiteAvailableUpdatesItemsItem struct {
+	Type        SiteAvailableUpdatesItemsItemType `json:"type"`
+	Slug        string                            `json:"slug"`
+	Name        string                            `json:"name"`
+	Version     string                            `json:"version"`
+	NewVersion  string                            `json:"new_version"`
+	Active      bool                              `json:"active"`
+	Package     OptNilString                      `json:"package"`
+	Tested      OptNilString                      `json:"tested"`
+	RequiresPhp OptNilString                      `json:"requires_php"`
+}
+
+// GetType returns the value of Type.
+func (s *SiteAvailableUpdatesItemsItem) GetType() SiteAvailableUpdatesItemsItemType {
+	return s.Type
+}
+
+// GetSlug returns the value of Slug.
+func (s *SiteAvailableUpdatesItemsItem) GetSlug() string {
+	return s.Slug
+}
+
+// GetName returns the value of Name.
+func (s *SiteAvailableUpdatesItemsItem) GetName() string {
+	return s.Name
+}
+
+// GetVersion returns the value of Version.
+func (s *SiteAvailableUpdatesItemsItem) GetVersion() string {
+	return s.Version
+}
+
+// GetNewVersion returns the value of NewVersion.
+func (s *SiteAvailableUpdatesItemsItem) GetNewVersion() string {
+	return s.NewVersion
+}
+
+// GetActive returns the value of Active.
+func (s *SiteAvailableUpdatesItemsItem) GetActive() bool {
+	return s.Active
+}
+
+// GetPackage returns the value of Package.
+func (s *SiteAvailableUpdatesItemsItem) GetPackage() OptNilString {
+	return s.Package
+}
+
+// GetTested returns the value of Tested.
+func (s *SiteAvailableUpdatesItemsItem) GetTested() OptNilString {
+	return s.Tested
+}
+
+// GetRequiresPhp returns the value of RequiresPhp.
+func (s *SiteAvailableUpdatesItemsItem) GetRequiresPhp() OptNilString {
+	return s.RequiresPhp
+}
+
+// SetType sets the value of Type.
+func (s *SiteAvailableUpdatesItemsItem) SetType(val SiteAvailableUpdatesItemsItemType) {
+	s.Type = val
+}
+
+// SetSlug sets the value of Slug.
+func (s *SiteAvailableUpdatesItemsItem) SetSlug(val string) {
+	s.Slug = val
+}
+
+// SetName sets the value of Name.
+func (s *SiteAvailableUpdatesItemsItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetVersion sets the value of Version.
+func (s *SiteAvailableUpdatesItemsItem) SetVersion(val string) {
+	s.Version = val
+}
+
+// SetNewVersion sets the value of NewVersion.
+func (s *SiteAvailableUpdatesItemsItem) SetNewVersion(val string) {
+	s.NewVersion = val
+}
+
+// SetActive sets the value of Active.
+func (s *SiteAvailableUpdatesItemsItem) SetActive(val bool) {
+	s.Active = val
+}
+
+// SetPackage sets the value of Package.
+func (s *SiteAvailableUpdatesItemsItem) SetPackage(val OptNilString) {
+	s.Package = val
+}
+
+// SetTested sets the value of Tested.
+func (s *SiteAvailableUpdatesItemsItem) SetTested(val OptNilString) {
+	s.Tested = val
+}
+
+// SetRequiresPhp sets the value of RequiresPhp.
+func (s *SiteAvailableUpdatesItemsItem) SetRequiresPhp(val OptNilString) {
+	s.RequiresPhp = val
+}
+
+type SiteAvailableUpdatesItemsItemType string
+
+const (
+	SiteAvailableUpdatesItemsItemTypePlugin SiteAvailableUpdatesItemsItemType = "plugin"
+	SiteAvailableUpdatesItemsItemTypeTheme  SiteAvailableUpdatesItemsItemType = "theme"
+)
+
+// AllValues returns all SiteAvailableUpdatesItemsItemType values.
+func (SiteAvailableUpdatesItemsItemType) AllValues() []SiteAvailableUpdatesItemsItemType {
+	return []SiteAvailableUpdatesItemsItemType{
+		SiteAvailableUpdatesItemsItemTypePlugin,
+		SiteAvailableUpdatesItemsItemTypeTheme,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteAvailableUpdatesItemsItemType) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteAvailableUpdatesItemsItemTypePlugin:
+		return []byte(s), nil
+	case SiteAvailableUpdatesItemsItemTypeTheme:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteAvailableUpdatesItemsItemType) UnmarshalText(data []byte) error {
+	switch SiteAvailableUpdatesItemsItemType(data) {
+	case SiteAvailableUpdatesItemsItemTypePlugin:
+		*s = SiteAvailableUpdatesItemsItemTypePlugin
+		return nil
+	case SiteAvailableUpdatesItemsItemTypeTheme:
+		*s = SiteAvailableUpdatesItemsItemTypeTheme
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Ref: #/components/schemas/SiteComponent
 type SiteComponent struct {
 	Slug    string    `json:"slug"`
 	Name    OptString `json:"name"`
 	Version OptString `json:"version"`
 	Active  OptBool   `json:"active"`
+	// When set, an update is available for this plugin/theme.
+	AvailableUpdate OptNilSiteComponentAvailableUpdate `json:"available_update"`
 }
 
 // GetSlug returns the value of Slug.
@@ -3732,6 +4372,11 @@ func (s *SiteComponent) GetActive() OptBool {
 	return s.Active
 }
 
+// GetAvailableUpdate returns the value of AvailableUpdate.
+func (s *SiteComponent) GetAvailableUpdate() OptNilSiteComponentAvailableUpdate {
+	return s.AvailableUpdate
+}
+
 // SetSlug sets the value of Slug.
 func (s *SiteComponent) SetSlug(val string) {
 	s.Slug = val
@@ -3752,11 +4397,66 @@ func (s *SiteComponent) SetActive(val OptBool) {
 	s.Active = val
 }
 
+// SetAvailableUpdate sets the value of AvailableUpdate.
+func (s *SiteComponent) SetAvailableUpdate(val OptNilSiteComponentAvailableUpdate) {
+	s.AvailableUpdate = val
+}
+
+// When set, an update is available for this plugin/theme.
+type SiteComponentAvailableUpdate struct {
+	NewVersion  string       `json:"new_version"`
+	Package     OptNilString `json:"package"`
+	Tested      OptNilString `json:"tested"`
+	RequiresPhp OptNilString `json:"requires_php"`
+}
+
+// GetNewVersion returns the value of NewVersion.
+func (s *SiteComponentAvailableUpdate) GetNewVersion() string {
+	return s.NewVersion
+}
+
+// GetPackage returns the value of Package.
+func (s *SiteComponentAvailableUpdate) GetPackage() OptNilString {
+	return s.Package
+}
+
+// GetTested returns the value of Tested.
+func (s *SiteComponentAvailableUpdate) GetTested() OptNilString {
+	return s.Tested
+}
+
+// GetRequiresPhp returns the value of RequiresPhp.
+func (s *SiteComponentAvailableUpdate) GetRequiresPhp() OptNilString {
+	return s.RequiresPhp
+}
+
+// SetNewVersion sets the value of NewVersion.
+func (s *SiteComponentAvailableUpdate) SetNewVersion(val string) {
+	s.NewVersion = val
+}
+
+// SetPackage sets the value of Package.
+func (s *SiteComponentAvailableUpdate) SetPackage(val OptNilString) {
+	s.Package = val
+}
+
+// SetTested sets the value of Tested.
+func (s *SiteComponentAvailableUpdate) SetTested(val OptNilString) {
+	s.Tested = val
+}
+
+// SetRequiresPhp sets the value of RequiresPhp.
+func (s *SiteComponentAvailableUpdate) SetRequiresPhp(val OptNilString) {
+	s.RequiresPhp = val
+}
+
 // Installed plugin/theme inventory pushed by the agent.
 // Ref: #/components/schemas/SiteComponents
 type SiteComponents struct {
 	Plugins []SiteComponent `json:"plugins"`
 	Themes  []SiteComponent `json:"themes"`
+	// When set, WordPress core has an update available.
+	CoreUpdate OptNilSiteComponentsCoreUpdate `json:"core_update"`
 }
 
 // GetPlugins returns the value of Plugins.
@@ -3769,6 +4469,11 @@ func (s *SiteComponents) GetThemes() []SiteComponent {
 	return s.Themes
 }
 
+// GetCoreUpdate returns the value of CoreUpdate.
+func (s *SiteComponents) GetCoreUpdate() OptNilSiteComponentsCoreUpdate {
+	return s.CoreUpdate
+}
+
 // SetPlugins sets the value of Plugins.
 func (s *SiteComponents) SetPlugins(val []SiteComponent) {
 	s.Plugins = val
@@ -3777,6 +4482,37 @@ func (s *SiteComponents) SetPlugins(val []SiteComponent) {
 // SetThemes sets the value of Themes.
 func (s *SiteComponents) SetThemes(val []SiteComponent) {
 	s.Themes = val
+}
+
+// SetCoreUpdate sets the value of CoreUpdate.
+func (s *SiteComponents) SetCoreUpdate(val OptNilSiteComponentsCoreUpdate) {
+	s.CoreUpdate = val
+}
+
+// When set, WordPress core has an update available.
+type SiteComponentsCoreUpdate struct {
+	NewVersion     string `json:"new_version"`
+	CurrentVersion string `json:"current_version"`
+}
+
+// GetNewVersion returns the value of NewVersion.
+func (s *SiteComponentsCoreUpdate) GetNewVersion() string {
+	return s.NewVersion
+}
+
+// GetCurrentVersion returns the value of CurrentVersion.
+func (s *SiteComponentsCoreUpdate) GetCurrentVersion() string {
+	return s.CurrentVersion
+}
+
+// SetNewVersion sets the value of NewVersion.
+func (s *SiteComponentsCoreUpdate) SetNewVersion(val string) {
+	s.NewVersion = val
+}
+
+// SetCurrentVersion sets the value of CurrentVersion.
+func (s *SiteComponentsCoreUpdate) SetCurrentVersion(val string) {
+	s.CurrentVersion = val
 }
 
 // Ref: #/components/schemas/SiteCreate

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -183,6 +184,12 @@ type Querier interface {
 	// run via InUserTx, not InTenantTx.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
+	// Watchdog feeder: a running snapshot whose latest progress is older than the
+	// stall threshold (or whose runner never reported any progress despite being
+	// running for longer than the threshold). The new index
+	// backup_snapshots_running_progress_idx makes the predicate selective.
+	// Cross-tenant select via the GC RLS policy (app.agent='on').
+	ListStalledRunningSnapshots(ctx context.Context, dollar_1 pgtype.Interval) ([]ListStalledRunningSnapshotsRow, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
 	// ListTenantsForUser returns only the tenants the given user is a member of.
 	// It joins memberships under the memberships_self_read policy (app.user_id GUC),
@@ -219,6 +226,13 @@ type Querier interface {
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
 	TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (Site, error)
 	TouchUserLogin(ctx context.Context, id uuid.UUID) error
+	// M5.6 / ADR-032: agent runner posts a JSONB progress payload at every phpbu
+	// stage transition + per-chunk during the custom PresignedS3 Sync. We always
+	// replace (no append/history) — the latest phase is what the UI renders, and
+	// the watchdog scans by progress_updated_at. Tenant-scoped via RLS; the agent
+	// handler injects the tenant from the verified Ed25519 identity, never from
+	// the body.
+	UpdateBackupSnapshotProgress(ctx context.Context, arg UpdateBackupSnapshotProgressParams) (BackupSnapshot, error)
 	UpdateMembershipRole(ctx context.Context, arg UpdateMembershipRoleParams) (Membership, error)
 	// Tenant-scoped metadata update (used by the agent path inside the resolved
 	// site's own tenant scope).

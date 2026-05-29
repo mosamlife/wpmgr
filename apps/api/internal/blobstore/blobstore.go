@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -77,17 +78,39 @@ func New(cfg Config) (*Store, error) {
 // Bucket returns the configured bucket name.
 func (s *Store) Bucket() string { return s.bucket }
 
-// EnsureBucket creates the configured bucket if it does not already exist. Safe
-// to call repeatedly (idempotent): an already-owned bucket is not an error.
+// EnsureBucket attempts to create the configured bucket if it doesn't exist.
+// Best-effort + non-fatal: an error here does NOT abort startup. The bucket
+// existence is an operator concern, and a startup-time check is fragile across
+// the many S3-compatible backends and proxies we may run behind:
+//
+//   - SeaweedFS behind a Cloudflare tunnel rewrites/buffers in a way that
+//     breaks SigV4 for the CreateBucket payload (real-world failure mode
+//     observed during ADR-033 live QA).
+//   - Some hosted S3 providers (DO Spaces, Backblaze B2) only let bucket
+//     creation happen via a separate API endpoint, not the data plane.
+//   - IAM-restricted credentials may have only object-level perms, no
+//     bucket-create grant; the bucket exists, the call fails 403.
+//
+// If the bucket genuinely doesn't exist, downstream operations (PutObject for
+// CP writes, presigned PUTs from the agent) will fail loudly with NoSuchBucket
+// — those failures are far more visible than a silent startup abort.
 func (s *Store) EnsureBucket(ctx context.Context) error {
 	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)})
 	if err == nil {
 		return nil
 	}
+	// HeadBucket failed — could be 404 (genuinely missing), 403 (no perms but
+	// bucket exists), or a tunnel-induced SignatureDoesNotMatch. Try Create
+	// anyway, but treat any failure as a warning, not fatal.
 	_, cerr := s.client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(s.bucket)})
-	if cerr != nil && !isAlreadyOwned(cerr) {
-		return fmt.Errorf("blobstore: create bucket %q: %w", s.bucket, cerr)
+	if cerr == nil || isAlreadyOwned(cerr) {
+		return nil
 	}
+	slog.Warn("blobstore: EnsureBucket failed — assuming bucket exists and continuing",
+		slog.String("bucket", s.bucket),
+		slog.String("head_err", err.Error()),
+		slog.String("create_err", cerr.Error()),
+	)
 	return nil
 }
 

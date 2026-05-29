@@ -134,6 +134,14 @@ type BackupConfig struct {
 	ScheduleInterval time.Duration `koanf:"schedule_interval"`
 	// GCInterval is how often the retention GC job runs.
 	GCInterval time.Duration `koanf:"gc_interval"`
+	// HTTPTimeout bounds a single CP->agent backup/restore command request. It
+	// MUST be longer than the agent takes to walk the site, dump the DB, chunk +
+	// encrypt, and PUT to S3 — for real sites that easily exceeds the default
+	// update HTTPTimeout (30s). Defaults to 10m. The SSRF dialer + per-attempt
+	// safety bounds still apply; this only relaxes the wait-for-headers/body cap
+	// for the long-running command channel (a separate httpclient.Client is built
+	// for backup/restore so the snappy update path is unaffected).
+	HTTPTimeout time.Duration `koanf:"http_timeout"`
 }
 
 // UpdateConfig holds the M3 bulk-update orchestration tuning.
@@ -343,6 +351,7 @@ func defaults() map[string]any {
 		"backup.monthly_archive_keep":   12,
 		"backup.schedule_interval":      "5m",
 		"backup.gc_interval":            "1h",
+		"backup.http_timeout":           "10m",
 		"clickhouse.addr":               "",
 		"clickhouse.db":                 "wpmgr_metrics",
 		"clickhouse.username":           "default",

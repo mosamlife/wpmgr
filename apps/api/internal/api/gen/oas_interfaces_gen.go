@@ -69,6 +69,10 @@ type GetReadyzRes interface {
 	getReadyzRes()
 }
 
+type GetSiteAvailableUpdatesRes interface {
+	getSiteAvailableUpdatesRes()
+}
+
 type GetSiteRes interface {
 	getSiteRes()
 }
@@ -123,6 +127,10 @@ type PutAlertConfigRes interface {
 
 type PutBackupScheduleRes interface {
 	putBackupScheduleRes()
+}
+
+type RefreshSiteUpdatesRes interface {
+	refreshSiteUpdatesRes()
 }
 
 type RegisterRes interface {

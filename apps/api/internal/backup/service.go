@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -50,6 +51,7 @@ type Service struct {
 	enqueuer   Enqueuer
 	store      Presigner
 	clock      domain.Clock
+	hub        *Hub
 	presignTTL time.Duration
 	// retention defaults (overridable per schedule).
 	retentionDays      int
@@ -67,6 +69,22 @@ type Config struct {
 // (resolving the client<-enqueuer<-service<-worker construction cycle, mirroring
 // the update package). MUST be called before any backup/restore is created.
 func (s *Service) SetEnqueuer(e Enqueuer) { s.enqueuer = e }
+
+// SetHub wires the in-process SSE pub/sub hub. Optional: when nil, all Publish
+// calls are no-ops (so unit/integration tests need not construct one). Mirrors
+// the M3 update hub wiring; see internal/backup/hub.go.
+func (s *Service) SetHub(h *Hub) { s.hub = h }
+
+// publish is a nil-safe helper around hub.Publish.
+func (s *Service) publish(ev BackupEvent) {
+	if s.hub == nil {
+		return
+	}
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = s.clock.Now().UTC()
+	}
+	s.hub.Publish(ev)
+}
 
 // NewService builds a backup Service.
 func NewService(repo Repo, sites SiteLookup, enqueuer Enqueuer, store Presigner, clock domain.Clock, cfg Config) *Service {
@@ -195,10 +213,21 @@ func (s *Service) CreateRestore(ctx context.Context, tenantID, snapshotID uuid.U
 	return snap, nil
 }
 
-// PlanRestore assembles the presigned-GET restore plan for a (possibly partial)
-// selection. Used by the restore worker. It resolves each selected entry's
-// ordered chunk hashes to their s3 keys and mints a presigned GET per chunk.
-func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection) (agentcmd.RestoreRequest, Snapshot, SiteInfo, error) {
+// PlanRestore assembles the ADR-034 v0.8.1 restore plan for a (possibly partial)
+// selection. Used by the restore worker. It resolves each selected manifest
+// entry's ordered chunk hashes to their object-store keys and mints a presigned
+// GET per chunk.
+//
+// Wire shape: per-artifact-part `logical_path` (taken from the manifest entry's
+// stored Path) with an ordered list of presigned chunks. The other M4 per-entry
+// fields (entry_kind / table_name / mode / size) are intentionally NOT on the
+// wire — the agent's restore engine drives reassembly off the logical_path
+// filename and chunk count, not off CP-side typing. CP still uses those fields
+// internally (selection routing, DB validation) but they stay off the wire.
+//
+// `restoreID` is the CP-generated dedup key the worker minted for this attempt;
+// it is echoed back in every agent /progress POST so the SSE event carries it.
+func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection, restoreID, progressEndpoint string) (agentcmd.RestoreRequest, Snapshot, SiteInfo, error) {
 	snap, err := s.repo.GetSnapshot(ctx, tenantID, snapshotID)
 	if err != nil {
 		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, err
@@ -236,8 +265,8 @@ func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUI
 	getURLs := make(map[string]agentcmd.RestoreChunk, len(chunks))
 	for h, c := range chunks {
 		// Defense-in-depth: the s3 key MUST be namespaced to this tenant. The
-		// content-addressed key the repo stored is chunks/<tenant>/<blake3>; never
-		// presign a key outside this tenant's prefix.
+		// content-addressed key the repo stored is chunks/<tenant>/<blake3>;
+		// never presign a key outside this tenant's prefix.
 		expected := chunkS3Key(tenantID, h)
 		if c.S3Key != expected {
 			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_chunk_key_mismatch", "stored chunk key is outside the tenant prefix")
@@ -246,18 +275,18 @@ func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUI
 		if perr != nil {
 			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_presign_get_failed", "failed to presign chunk").WithCause(perr)
 		}
-		getURLs[h] = agentcmd.RestoreChunk{Blake3: h, GetURL: url, Size: c.Size}
+		getURLs[h] = agentcmd.RestoreChunk{Hash: h, URL: url, Size: c.Size}
 	}
 
-	out := agentcmd.RestoreRequest{SnapshotID: snapshotID.String(), Kind: snap.Kind}
+	out := agentcmd.RestoreRequest{
+		SnapshotID:       snapshotID.String(),
+		RestoreID:        restoreID,
+		Kind:             snap.Kind,
+		ProgressEndpoint: progressEndpoint,
+		ChunkBytes:       agentcmd.ChunkBytes,
+	}
 	for _, e := range selected {
-		re := agentcmd.RestoreEntry{
-			Path:      e.Path,
-			EntryKind: e.EntryKind,
-			TableName: e.TableName,
-			Mode:      uint32(e.Mode),
-			Size:      e.Size,
-		}
+		re := agentcmd.RestoreEntry{LogicalPath: e.Path}
 		for _, h := range e.ChunkHashes {
 			rc, ok := getURLs[h]
 			if !ok {
@@ -265,7 +294,7 @@ func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUI
 			}
 			re.Chunks = append(re.Chunks, rc)
 		}
-		out.Entries = append(out.Entries, re)
+		out.Manifest.Entries = append(out.Manifest.Entries, re)
 	}
 	return out, snap, si, nil
 }
@@ -344,17 +373,147 @@ func (s *Service) SubmitManifest(ctx context.Context, tenantID, snapshotID uuid.
 			Mode:        int32(e.Mode),
 		})
 	}
-	return s.repo.RecordManifest(ctx, in)
+	chunkRefs, stored, err := s.repo.RecordManifest(ctx, in)
+	if err != nil {
+		return chunkRefs, stored, err
+	}
+	// Publish a terminal completed event so live SSE subscribers see the
+	// final state without waiting for a poll. Best-effort: a fetch error
+	// here only loses live smoothness (the handler re-reads from DB).
+	if completed, gerr := s.repo.GetSnapshot(ctx, tenantID, snapshotID); gerr == nil {
+		s.publish(BackupEvent{
+			SnapshotID:  snapshotID,
+			Phase:       "completed",
+			PhaseDetail: map[string]any{"chunk_refs": chunkRefs, "stored": stored},
+			Status:      completed.Status,
+		})
+	}
+	return chunkRefs, stored, nil
 }
 
 // MarkRunning transitions a snapshot to running (called by the backup worker).
 func (s *Service) MarkRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
-	return s.repo.MarkSnapshotRunning(ctx, tenantID, snapshotID)
+	snap, err := s.repo.MarkSnapshotRunning(ctx, tenantID, snapshotID)
+	if err != nil {
+		return snap, err
+	}
+	s.publish(BackupEvent{
+		SnapshotID:  snapshotID,
+		Phase:       "started",
+		PhaseDetail: map[string]any{},
+		Status:      snap.Status,
+	})
+	return snap, nil
 }
 
 // FailSnapshot marks a snapshot failed (called by the backup worker on error).
 func (s *Service) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (Snapshot, error) {
-	return s.repo.FailSnapshot(ctx, tenantID, snapshotID, msg)
+	snap, err := s.repo.FailSnapshot(ctx, tenantID, snapshotID, msg)
+	if err != nil {
+		return snap, err
+	}
+	s.publish(BackupEvent{
+		SnapshotID:  snapshotID,
+		Phase:       "failed",
+		PhaseDetail: map[string]any{"error": msg},
+		Status:      snap.Status,
+	})
+	return snap, nil
+}
+
+// MaxProgressPayloadBytes bounds the size of a single agent progress POST. The
+// shape is `{phase: "...", phase_detail: {...}}` — phase is one of a fixed set
+// of short strings; phase_detail is the per-chunk telemetry. 4 KiB is generous
+// (e.g. 100 chunks-of progress fits comfortably) without giving a compromised
+// agent a path to bloat backup_snapshots.progress rows.
+const MaxProgressPayloadBytes = 4 * 1024
+
+// allowedProgressPhases is the closed set of phase values the runner may post.
+// Keeping it closed defends against typos in the runner (which would silently
+// render an unknown phase in the UI) and against a compromised agent posting
+// arbitrary phase strings to mask its activity.
+// Two phase vocabularies are accepted: the original ADR-032 phpbu phases
+// (compressing_files / encrypting / uploading) and the ADR-033 WPvivid-pattern
+// runner phases (archiving_files / encrypting_uploading). The set is the union
+// of both — keeping the older names accepted lets older agents (if any survive
+// a partial rollout) still post without 422s.
+var allowedProgressPhases = map[string]struct{}{
+	// Common to both engines.
+	"started":             {},
+	"dumping_db":          {},
+	"submitting_manifest": {},
+	"completed":           {},
+	"failed":              {},
+	// ADR-032 phpbu-pipeline phases (kept for backward compat).
+	"compressing_files": {},
+	"encrypting":        {},
+	"uploading":         {},
+	// ADR-033 WPvivid-pattern TaskRunner phases (backup side).
+	"queued":               {},
+	"archiving_files":      {},
+	"encrypting_uploading": {},
+	// ADR-033 / ADR-034 RESTORE phases (closed set; match the agent's exact
+	// strings). `completed` and `failed` are reused as the terminal phases for
+	// both backup AND restore.
+	"preflight":          {},
+	"download_artifacts": {},
+	"verify_artifacts":   {},
+	"maintenance_on":     {},
+	"stage_files":        {},
+	"swap_files":         {},
+	"restore_db":         {},
+	"migrate_db":         {}, // V0 skipped but allow the value
+	"swap_db":            {},
+	"post_hooks":         {},
+	"maintenance_off":    {},
+	"cleanup":            {},
+	"rolled_back":        {},
+}
+
+// RecordProgress validates and persists a single agent progress POST. Returns
+// the bytes that were stored (canonical JSON) for logging/debugging — NEVER
+// log the raw agent input verbatim, only the validated shape.
+func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.UUID, phase string, phaseDetail map[string]any) ([]byte, error) {
+	if tenantID == uuid.Nil {
+		return nil, domain.Forbidden("tenant_required", "a tenant context is required")
+	}
+	if _, ok := allowedProgressPhases[phase]; !ok {
+		return nil, domain.Validation("invalid_phase", "unknown progress phase")
+	}
+	// Re-marshal to canonicalize the payload (drops unknown top-level keys, caps
+	// nesting via the bounded size below).
+	payload := map[string]any{"phase": phase}
+	if phaseDetail != nil {
+		payload["phase_detail"] = phaseDetail
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, domain.Validation("invalid_phase_detail", "phase_detail is not JSON-serializable")
+	}
+	if len(raw) > MaxProgressPayloadBytes {
+		return nil, domain.Validation("progress_too_large", "progress payload exceeds size cap")
+	}
+	snap, err := s.repo.UpdateSnapshotProgress(ctx, tenantID, snapshotID, raw)
+	if err != nil {
+		return nil, err
+	}
+	// Fan out the validated progress to live SSE subscribers. The Status mirrors
+	// the snapshot's current status (the runner's "completed"/"failed" phase is
+	// only authoritative once the manifest is submitted / the worker marks it).
+	s.publish(BackupEvent{
+		SnapshotID:  snapshotID,
+		Phase:       phase,
+		PhaseDetail: phaseDetail,
+		Status:      snap.Status,
+	})
+	return raw, nil
+}
+
+// ListStalledRunningSnapshots is the watchdog feeder: cross-tenant enumeration
+// of running snapshots whose runner has gone quiet for longer than `threshold`.
+// The caller (ProgressWatchdogWorker) marks each failed.
+func (s *Service) ListStalledRunningSnapshots(ctx context.Context, threshold time.Duration) ([]StalledSnapshot, error) {
+	return s.repo.ListStalledRunningSnapshots(ctx, threshold)
 }
 
 // SiteForSnapshot returns the snapshot's site info (used by the backup worker to

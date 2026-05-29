@@ -433,6 +433,15 @@ CREATE TABLE backup_snapshots (
     -- archived marks a snapshot kept by the monthly-archive retention rule so GC
     -- spares it even once it falls outside the rolling window.
     archived      boolean     NOT NULL DEFAULT false,
+    -- progress: phpbu-engine real-time progress (M5.6 / ADR-032). Latest phase
+    -- payload posted by the agent runner. Shape:
+    --   {"phase": "uploading", "phase_detail": {"chunks_done": 17, ...}}
+    -- The watchdog (backup_progress_watchdog River periodic) scans for stalled
+    -- runs via progress_updated_at; >120s without an update on a status='running'
+    -- snapshot marks it failed with error='stalled'. JSONB so we can evolve the
+    -- payload shape without migrations.
+    progress             jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    progress_updated_at  timestamptz,
     started_at    timestamptz,
     finished_at   timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now(),
@@ -441,6 +450,10 @@ CREATE TABLE backup_snapshots (
 
 CREATE INDEX backup_snapshots_tenant_site_idx ON backup_snapshots (tenant_id, site_id, created_at DESC);
 CREATE INDEX backup_snapshots_tenant_created_idx ON backup_snapshots (tenant_id, created_at DESC);
+-- Watchdog scan: pick running snapshots whose latest progress is older than the
+-- stall threshold. Filtered btree on status keeps the predicate selective.
+CREATE INDEX backup_snapshots_running_progress_idx ON backup_snapshots (progress_updated_at)
+    WHERE status = 'running';
 
 ALTER TABLE backup_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_snapshots FORCE ROW LEVEL SECURITY;

@@ -87,6 +87,12 @@ type BackupRequest struct {
 	ChunkBytes       int    `json:"chunk_bytes"`
 	PresignEndpoint  string `json:"presign_endpoint"`
 	ManifestEndpoint string `json:"manifest_endpoint"`
+	// ProgressEndpoint is M5.6 / ADR-032: the URL the agent's detached phpbu
+	// runner POSTs phase progress to. The runner signs each POST with the same
+	// Ed25519 scheme used by presign/manifest, so the CP authenticates it the
+	// same way. Older agents (< 0.6.0) ignore the field harmlessly — they ship
+	// no runner — so it is non-breaking to include unconditionally.
+	ProgressEndpoint string `json:"progress_endpoint"`
 }
 
 // BackupResponse is the agent's immediate ack of the `backup` command. The
@@ -167,41 +173,64 @@ type SubmitManifestResponse struct {
 	StoredCount int64 `json:"stored_count"`
 }
 
-// RestoreChunk is one presigned-GET-able ciphertext chunk in a restore plan.
+// RestoreChunk is one presigned-GET-able PLAIN chunk of an artifact-part.
 //
-//	blake3   ciphertext hash the agent re-verifies after download.
-//	get_url  presigned GET URL (bearer credential; never logged).
-//	size     ciphertext byte length.
+// ADR-033/ADR-034 v0.8.1 wire shape: chunks are PLAIN (no age envelope). The
+// agent reassembles by concatenating chunks in order, then decrypts/extracts
+// the resulting artifact-part with its own engine (the age identity is held by
+// the operator/agent — not the CP).
+//
+//	hash   lowercase hex blake2b of the PLAIN chunk; optional verification.
+//	url    presigned GET URL on the object store (bearer credential; never logged).
+//	size   expected chunk byte length.
 type RestoreChunk struct {
-	Blake3 string `json:"blake3"`
-	GetURL string `json:"get_url"`
-	Size   int64  `json:"size"`
+	Hash string `json:"hash"`
+	URL  string `json:"url"`
+	Size int64  `json:"size"`
 }
 
-// RestoreEntry is one file/db entry to restore: its path/mode plus the ORDERED
-// presigned ciphertext chunks. The agent downloads each, verifies blake3,
-// decrypts with its age identity, and reassembles in order.
-type RestoreEntry struct {
-	Path      string         `json:"path"`
-	EntryKind string         `json:"entry_kind"`
-	TableName string         `json:"table_name,omitempty"`
-	Mode      uint32         `json:"mode"`
-	Size      int64          `json:"size"`
-	Chunks    []RestoreChunk `json:"chunks"`
-}
-
-// RestoreRequest is the POST body for the `restore` command. The CP has already
-// resolved the (possibly partial) selection into the concrete ordered entries +
-// presigned GET URLs; the agent just executes them. NO decryption key is present
-// — the agent decrypts with the age identity it alone holds.
+// RestoreEntry is one artifact-part to restore: a logical filename plus the
+// ORDERED presigned PLAIN chunks. The agent downloads each, optionally verifies
+// the hash, reassembles by concatenation, and hands the result to its restore
+// engine.
 //
-//	snapshot_id  the snapshot being restored from.
-//	kind         the snapshot kind (informational).
-//	entries      the resolved entries with presigned ciphertext chunks.
+//	logical_path  artifact-part filename, e.g. "database.sql.gz" or
+//	              "wp-content.part001.zip". The agent's restore engine maps
+//	              this to its own on-disk layout.
+//	chunks        ordered plain chunks reassembling the artifact-part.
+type RestoreEntry struct {
+	LogicalPath string         `json:"logical_path"`
+	Chunks      []RestoreChunk `json:"chunks"`
+}
+
+// RestoreManifest wraps the ordered list of artifact-part entries the agent
+// must reassemble. It is its own type so the wire JSON nests cleanly under
+// `manifest.entries` (matching ADR-033 §4).
+type RestoreManifest struct {
+	Entries []RestoreEntry `json:"entries"`
+}
+
+// RestoreRequest is the v0.8.1 (ADR-034) restore wire contract: per-artifact
+// manifest entries with presigned GET URLs for each chunk. Chunks are PLAIN
+// (no age envelope) — the agent reassembles by concatenating in order.
+//
+//	snapshot_id        the snapshot being restored from.
+//	restore_id         CP-generated UUID, unique per restore attempt; the
+//	                   de-dup key the agent uses to ignore duplicate dispatches.
+//	kind               "files" | "db" | "full".
+//	progress_endpoint  REUSED — the agent POSTs restore phase events to the
+//	                   same /agent/v1/backups/{snapshot}/progress endpoint as
+//	                   backups.
+//	manifest           ordered artifact-part entries with presigned chunks.
+//	chunk_bytes        target chunk size hint (the agent reads chunks one at
+//	                   a time; this is advisory only).
 type RestoreRequest struct {
-	SnapshotID string         `json:"snapshot_id"`
-	Kind       string         `json:"kind"`
-	Entries    []RestoreEntry `json:"entries"`
+	SnapshotID       string          `json:"snapshot_id"`
+	RestoreID        string          `json:"restore_id"`
+	Kind             string          `json:"kind"`
+	ProgressEndpoint string          `json:"progress_endpoint"`
+	Manifest         RestoreManifest `json:"manifest"`
+	ChunkBytes       int             `json:"chunk_bytes,omitempty"`
 }
 
 // RestoreResponse is the agent's response to the `restore` command.

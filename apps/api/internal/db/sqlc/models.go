@@ -120,21 +120,23 @@ type BackupSchedule struct {
 }
 
 type BackupSnapshot struct {
-	ID           uuid.UUID          `json:"id"`
-	TenantID     uuid.UUID          `json:"tenant_id"`
-	SiteID       uuid.UUID          `json:"site_id"`
-	CreatedBy    pgtype.UUID        `json:"created_by"`
-	Kind         string             `json:"kind"`
-	Status       string             `json:"status"`
-	AgeRecipient string             `json:"age_recipient"`
-	TotalSize    int64              `json:"total_size"`
-	ChunkCount   int64              `json:"chunk_count"`
-	Error        string             `json:"error"`
-	Archived     bool               `json:"archived"`
-	StartedAt    pgtype.Timestamptz `json:"started_at"`
-	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
-	CreatedAt    time.Time          `json:"created_at"`
-	UpdatedAt    time.Time          `json:"updated_at"`
+	ID                uuid.UUID          `json:"id"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	SiteID            uuid.UUID          `json:"site_id"`
+	CreatedBy         pgtype.UUID        `json:"created_by"`
+	Kind              string             `json:"kind"`
+	Status            string             `json:"status"`
+	AgeRecipient      string             `json:"age_recipient"`
+	TotalSize         int64              `json:"total_size"`
+	ChunkCount        int64              `json:"chunk_count"`
+	Error             string             `json:"error"`
+	Archived          bool               `json:"archived"`
+	Progress          []byte             `json:"progress"`
+	ProgressUpdatedAt pgtype.Timestamptz `json:"progress_updated_at"`
+	StartedAt         pgtype.Timestamptz `json:"started_at"`
+	FinishedAt        pgtype.Timestamptz `json:"finished_at"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 type Membership struct {

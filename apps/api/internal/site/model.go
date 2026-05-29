@@ -67,11 +67,32 @@ type SetTagsInput struct {
 }
 
 // Component is one installed plugin or theme reported by the agent.
+// AvailableUpdate (when set) carries the per-item update advisory. The JSONB
+// inventory column stores Component as-is, so the optional advisory is
+// persisted/round-tripped without a schema migration.
 type Component struct {
-	Slug    string `json:"slug" validate:"required,max=200"`
-	Name    string `json:"name" validate:"max=200"`
-	Version string `json:"version" validate:"max=64"`
-	Active  bool   `json:"active"`
+	Slug            string           `json:"slug" validate:"required,max=200"`
+	Name            string           `json:"name" validate:"max=200"`
+	Version         string           `json:"version" validate:"max=64"`
+	Active          bool             `json:"active"`
+	AvailableUpdate *AvailableUpdate `json:"available_update,omitempty"`
+}
+
+// AvailableUpdate is the optional per-item available-update advisory recorded
+// alongside each Component in the JSONB inventory. omitempty everywhere keeps
+// the encoded shape minimal when the field is unset.
+type AvailableUpdate struct {
+	NewVersion  string `json:"new_version" validate:"max=64"`
+	Package     string `json:"package,omitempty" validate:"max=2048"`
+	Tested      string `json:"tested,omitempty" validate:"max=32"`
+	RequiresPHP string `json:"requires_php,omitempty" validate:"max=32"`
+}
+
+// CoreUpdate is the optional WordPress core update advisory recorded on the
+// site inventory document.
+type CoreUpdate struct {
+	NewVersion     string `json:"new_version" validate:"max=32"`
+	CurrentVersion string `json:"current_version" validate:"max=32"`
 }
 
 // ParsedComponents decodes the site's JSONB component inventory into plugins
@@ -91,6 +112,22 @@ func (s Site) ParsedComponents() (plugins, themes []Component) {
 	return comp.Plugins, comp.Themes
 }
 
+// ParsedCoreUpdate decodes the site's JSONB inventory and returns the optional
+// core update advisory (nil when there is none, or the inventory is
+// empty/malformed).
+func (s Site) ParsedCoreUpdate() *CoreUpdate {
+	if len(s.Components) == 0 {
+		return nil
+	}
+	var comp struct {
+		CoreUpdate *CoreUpdate `json:"core_update,omitempty"`
+	}
+	if json.Unmarshal(s.Components, &comp) != nil {
+		return nil
+	}
+	return comp.CoreUpdate
+}
+
 // Metadata is the site inventory an authenticated agent pushes.
 type Metadata struct {
 	WPVersion   string      `json:"wp_version" validate:"max=32"`
@@ -100,4 +137,8 @@ type Metadata struct {
 	ActiveTheme string      `json:"active_theme" validate:"max=200"`
 	Plugins     []Component `json:"plugins" validate:"max=2000,dive"`
 	Themes      []Component `json:"themes" validate:"max=500,dive"`
+	// CoreUpdate (when set) carries the WordPress core update advisory. nil
+	// when there is no core update, or when the agent is old enough that it
+	// does not report the field at all.
+	CoreUpdate *CoreUpdate `json:"core_update,omitempty"`
 }

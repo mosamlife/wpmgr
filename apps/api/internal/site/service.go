@@ -174,6 +174,7 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 		ActiveTheme: m.ActiveTheme,
 		Plugins:     fromAgentComponents(m.Plugins),
 		Themes:      fromAgentComponents(m.Themes),
+		CoreUpdate:  fromAgentCoreUpdate(m.CoreUpdate),
 	})
 	if err != nil {
 		return gen.Site{}, err
@@ -193,9 +194,25 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 func fromAgentComponents(cs []agentpkg.Component) []Component {
 	out := make([]Component, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, Component{Slug: c.Slug, Name: c.Name, Version: c.Version, Active: c.Active})
+		comp := Component{Slug: c.Slug, Name: c.Name, Version: c.Version, Active: c.Active}
+		if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" {
+			comp.AvailableUpdate = &AvailableUpdate{
+				NewVersion:  c.AvailableUpdate.NewVersion,
+				Package:     c.AvailableUpdate.Package,
+				Tested:      c.AvailableUpdate.Tested,
+				RequiresPHP: c.AvailableUpdate.RequiresPHP,
+			}
+		}
+		out = append(out, comp)
 	}
 	return out
+}
+
+func fromAgentCoreUpdate(cu *agentpkg.CoreUpdate) *CoreUpdate {
+	if cu == nil || cu.NewVersion == "" {
+		return nil
+	}
+	return &CoreUpdate{NewVersion: cu.NewVersion, CurrentVersion: cu.CurrentVersion}
 }
 
 // Metadata sanitization bounds. Metadata is best-effort telemetry from
@@ -210,6 +227,11 @@ const (
 	maxVersionLen   = 64
 	maxPlugins      = 5000
 	maxThemes       = 1000
+	// AvailableUpdate field bounds. package_url can be reasonably long, so we
+	// allow more headroom; tested/requires_php are short version strings.
+	maxPackageURL  = 2048
+	maxTestedLen   = 32
+	maxRequiresPHP = 32
 )
 
 // truncateRunes returns s truncated to at most n runes, never splitting a
@@ -234,17 +256,45 @@ func sanitizeComponents(cs []Component, maxLen int) []Component {
 		if slug == "" {
 			continue
 		}
-		out = append(out, Component{
+		comp := Component{
 			Slug:    truncateRunes(slug, maxComponentLen),
 			Name:    truncateRunes(c.Name, maxComponentLen),
 			Version: truncateRunes(c.Version, maxVersionLen),
 			Active:  c.Active,
-		})
+		}
+		if c.AvailableUpdate != nil {
+			nv := strings.TrimSpace(c.AvailableUpdate.NewVersion)
+			if nv != "" {
+				comp.AvailableUpdate = &AvailableUpdate{
+					NewVersion:  truncateRunes(nv, maxVersionLen),
+					Package:     truncateRunes(c.AvailableUpdate.Package, maxPackageURL),
+					Tested:      truncateRunes(c.AvailableUpdate.Tested, maxTestedLen),
+					RequiresPHP: truncateRunes(c.AvailableUpdate.RequiresPHP, maxRequiresPHP),
+				}
+			}
+		}
+		out = append(out, comp)
 		if len(out) >= maxLen {
 			break
 		}
 	}
 	return out
+}
+
+// sanitizeCoreUpdate truncates the core-update advisory fields and drops the
+// whole advisory when new_version is empty (the contract requires it).
+func sanitizeCoreUpdate(cu *CoreUpdate) *CoreUpdate {
+	if cu == nil {
+		return nil
+	}
+	nv := truncateRunes(strings.TrimSpace(cu.NewVersion), maxWPVersion)
+	if nv == "" {
+		return nil
+	}
+	return &CoreUpdate{
+		NewVersion:     nv,
+		CurrentVersion: truncateRunes(cu.CurrentVersion, maxWPVersion),
+	}
 }
 
 // sanitizeMetadata coerces arbitrary agent-reported metadata into the stored
@@ -260,6 +310,7 @@ func sanitizeMetadata(m Metadata) Metadata {
 		ActiveTheme: truncateRunes(m.ActiveTheme, maxActiveTheme),
 		Plugins:     sanitizeComponents(m.Plugins, maxPlugins),
 		Themes:      sanitizeComponents(m.Themes, maxThemes),
+		CoreUpdate:  sanitizeCoreUpdate(m.CoreUpdate),
 	}
 }
 
@@ -267,12 +318,21 @@ func sanitizeMetadata(m Metadata) Metadata {
 // liveness + health. Runs in the resolved site's tenant scope. Metadata is
 // best-effort telemetry: it is sanitized (truncated/capped), never rejected, so
 // a sync always succeeds for any real-world plugin/theme set.
+//
+// The persisted JSONB shape carries `plugins`, `themes`, and (when set) the
+// optional `core_update` advisory. Each Component's `available_update` is
+// round-tripped via json struct tags — no migration is needed for the new
+// fields (the column is JSONB).
 func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m Metadata) (Site, error) {
 	m = sanitizeMetadata(m)
-	components, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"plugins": orEmptyComponents(m.Plugins),
 		"themes":  orEmptyComponents(m.Themes),
-	})
+	}
+	if m.CoreUpdate != nil {
+		payload["core_update"] = m.CoreUpdate
+	}
+	components, err := json.Marshal(payload)
 	if err != nil {
 		return Site{}, domain.Internal("components_marshal_failed", "failed to encode site components").WithCause(err)
 	}
