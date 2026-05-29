@@ -10,18 +10,26 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DefinitionList, KvRow } from "@/components/shared/definition-list";
 import { relativeTime } from "@/lib/utils";
 import type { PhpError } from "@wpmgr/api";
 
-// Detail "drawer" for one fingerprint. The UI primitive library does not yet
-// ship a Drawer/Sheet — we render the existing Dialog wider so the file path
-// + message + request_path don't have to wrap aggressively. The spec
-// references a drawer but the visual goal is just "modal containing the
-// detail body"; substituting Dialog keeps Sprint 2 self-contained.
+import { PHPSeverityChip } from "./php-severity-chip";
+
+// Detail drawer for one PHP error fingerprint (ADR-037 Batch 4, Impeccable
+// Restyle). The UI library ships no Sheet primitive yet, so we render the
+// shared Dialog widened to max-w-[720px].
 //
-// Actions: silence, copy fingerprint. Backtrace surface is reserved for when
-// the agent ships compressed backtraces (BLOB column is in place; ErrorMonitor
-// currently writes NULL until a backtrace-capture sprint lands).
+// Changes from Sprint 2:
+//   • PHPSeverityChip in the title (chip with dot+label, never bare mono text).
+//   • DefinitionList/KvRow replaces the hand-rolled Field grid — handles mono,
+//     copyable, and absent values consistently with the rest of the app.
+//   • Fingerprint rendered via KvRow copyable= (CopyableMono with copy button).
+//   • All actions are verb-first ("Copy fingerprint", "Silence", "Unsilence", "Close").
+//   • Message full-text remains in a scrollable <pre> for stack context readability.
+//
+// Backtrace surface reserved: ErrorMonitor writes NULL until the backtrace-
+// capture sprint lands; the pre block is kept so the column is always present.
 
 export interface ErrorDetailDrawerProps {
   error: PhpError | null;
@@ -44,6 +52,10 @@ export function ErrorDetailDrawer({
     });
   };
 
+  const lineValue = error.line > 0 ? String(error.line) : undefined;
+  const firstSeen = relativeTime(error.first_seen_at) ?? "recently";
+  const lastSeen = relativeTime(error.last_seen_at) ?? "recently";
+
   return (
     <Dialog open={true} onClose={onClose}>
       <DialogContent
@@ -52,12 +64,23 @@ export function ErrorDetailDrawer({
       >
         <DialogHeader>
           <DialogTitle id="error-detail-title">
-            <span className="font-mono text-sm">{error.severity}</span>{" "}
-            <span className="text-base">{shortMessage(error.message)}</span>
+            <span className="flex flex-wrap items-center gap-2">
+              <PHPSeverityChip severity={error.severity} />
+              <span className="text-sm text-foreground">
+                {shortMessage(error.message)}
+              </span>
+            </span>
           </DialogTitle>
           <DialogDescription>
-            First seen {relativeTime(error.first_seen_at) ?? "recently"}, last
-            seen {relativeTime(error.last_seen_at) ?? "recently"}, occurred{" "}
+            First seen{" "}
+            <time dateTime={error.first_seen_at} title={error.first_seen_at}>
+              {firstSeen}
+            </time>
+            , last seen{" "}
+            <time dateTime={error.last_seen_at} title={error.last_seen_at}>
+              {lastSeen}
+            </time>
+            , occurred{" "}
             <span className="font-medium tabular-nums">
               {error.occurrence_count}
             </span>{" "}
@@ -65,20 +88,60 @@ export function ErrorDetailDrawer({
           </DialogDescription>
         </DialogHeader>
 
-        <DialogBody>
-          <Field label="Fingerprint" value={error.md5} mono />
-          <Field label="File" value={error.file || "—"} mono />
-          <Field
-            label="Line"
-            value={error.line > 0 ? String(error.line) : "—"}
-            mono
-          />
-          <Field label="Code" value={String(error.code)} mono />
-          <Field label="Request path" value={error.request_path || "—"} mono />
-          <Field
-            label="Message"
-            value={<pre className="whitespace-pre-wrap break-words font-mono text-xs">{error.message}</pre>}
-          />
+        <DialogBody className="space-y-5">
+          {/* Core metadata — DefinitionList with KvRow for consistent grid */}
+          <DefinitionList>
+            <KvRow
+              label="Fingerprint"
+              copyable={error.md5}
+            />
+            <KvRow
+              label="File"
+              value={error.file || undefined}
+              mono
+            />
+            <KvRow
+              label="Line"
+              value={lineValue}
+              mono
+              tabular
+            />
+            <KvRow
+              label="Code"
+              value={String(error.code)}
+              mono
+            />
+            <KvRow
+              label="Request path"
+              value={error.request_path || undefined}
+              mono
+            />
+            <KvRow
+              label="First seen"
+              value={error.first_seen_at}
+              mono
+            />
+            <KvRow
+              label="Last seen"
+              value={error.last_seen_at}
+              mono
+            />
+            <KvRow
+              label="Occurrences"
+              value={String(error.occurrence_count)}
+              tabular
+            />
+          </DefinitionList>
+
+          {/* Full message — monospaced block for stack context readability */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Message
+            </h3>
+            <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted/50 p-3 font-mono text-xs text-foreground whitespace-pre-wrap break-words">
+              {error.message}
+            </pre>
+          </div>
         </DialogBody>
 
         <DialogFooter>
@@ -103,25 +166,6 @@ export function ErrorDetailDrawer({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Field({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: React.ReactNode;
-  mono?: boolean;
-}) {
-  return (
-    <div className="grid grid-cols-[120px_1fr] gap-2 text-sm">
-      <div className="text-muted-foreground">{label}</div>
-      <div className={mono ? "font-mono break-all" : "break-words"}>
-        {value}
-      </div>
-    </div>
   );
 }
 

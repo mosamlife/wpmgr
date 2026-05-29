@@ -1,14 +1,26 @@
+import { Check, Copy, EyeOff, Eye } from "lucide-react";
 import { useState } from "react";
-import { Copy, EyeOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { relativeTime } from "@/lib/utils";
 import type { PhpError } from "@wpmgr/api";
 
-// One row of the error table. The whole row is keyboard-clickable so the
-// detail dialog opens on Enter/Space; the action buttons stop propagation so
-// silence + copy do not also open the dialog.
+import { PHPSeverityChip } from "./php-severity-chip";
+
+// One row of the PHP error table (ADR-037 Batch 4, Impeccable Restyle).
+//
+// Layout mirrors the Activity feed density: the error message leads as the
+// primary sentence; file:line and count are always surfaced on the same row
+// as structured metadata. The whole row is keyboard-clickable to open the
+// detail dialog; action buttons stop propagation so silence + copy do not
+// also open the dialog.
+//
+// Typography rules:
+//   • font-mono on file path, line number, and the message head (stack context).
+//   • tabular-nums on occurrence count and relative time columns.
+//   • relativeTime in a <time> element for accessibility.
+//   • PHPSeverityChip replaces the off-token local SeverityBadge.
 
 export interface ErrorRowProps {
   error: PhpError;
@@ -48,21 +60,44 @@ export function ErrorRow({ error, onOpen, onSilence }: ErrorRowProps) {
       className="cursor-pointer"
       data-silenced={error.silenced || undefined}
     >
+      {/* 1. Severity — chip with dot+label, token colors only */}
       <TableCell>
-        <SeverityBadge severity={error.severity} />
+        <PHPSeverityChip severity={error.severity} />
       </TableCell>
-      <TableCell className="max-w-[280px] truncate font-mono text-xs">
+
+      {/* 2. File:line — font-mono, truncate long paths */}
+      <TableCell
+        className="max-w-[280px] truncate font-mono text-xs"
+        title={fileLine}
+      >
         {fileLine}
       </TableCell>
-      <TableCell className="max-w-[420px] truncate text-sm">
+
+      {/* 3. Message excerpt — font-mono so stack context reads in the right register */}
+      <TableCell
+        className="max-w-[420px] truncate font-mono text-xs text-foreground"
+        title={error.message}
+      >
         {error.message}
       </TableCell>
-      <TableCell className="text-right tabular-nums">
+
+      {/* 4. Occurrence count — tabular-nums, right-aligned */}
+      <TableCell className="text-right tabular-nums text-sm">
         {error.occurrence_count}
       </TableCell>
-      <TableCell className="text-right text-xs text-muted-foreground tabular-nums">
-        {relativeTime(error.last_seen_at) ?? "—"}
+
+      {/* 5. Last seen — relative time in <time>, tabular-nums */}
+      <TableCell className="text-right">
+        <time
+          dateTime={error.last_seen_at}
+          title={error.last_seen_at}
+          className="text-xs tabular-nums text-muted-foreground"
+        >
+          {relativeTime(error.last_seen_at) ?? "just now"}
+        </time>
       </TableCell>
+
+      {/* 6. Actions — silence/unsilence + copy fingerprint */}
       <TableCell className="text-right">
         <div className="inline-flex gap-1">
           <Button
@@ -70,10 +105,14 @@ export function ErrorRow({ error, onOpen, onSilence }: ErrorRowProps) {
             variant="ghost"
             type="button"
             onClick={toggleSilence}
-            aria-label={error.silenced ? "Unsilence" : "Silence"}
+            aria-label={error.silenced ? "Unsilence error" : "Silence error"}
             title={error.silenced ? "Unsilence" : "Silence"}
           >
-            <EyeOff aria-hidden="true" className="size-4" />
+            {error.silenced ? (
+              <Eye aria-hidden="true" className="size-4" />
+            ) : (
+              <EyeOff aria-hidden="true" className="size-4" />
+            )}
           </Button>
           <Button
             size="sm"
@@ -83,33 +122,14 @@ export function ErrorRow({ error, onOpen, onSilence }: ErrorRowProps) {
             aria-label="Copy fingerprint"
             title={copied ? "Copied" : "Copy fingerprint"}
           >
-            <Copy aria-hidden="true" className="size-4" />
+            {copied ? (
+              <Check aria-hidden="true" className="size-4" />
+            ) : (
+              <Copy aria-hidden="true" className="size-4" />
+            )}
           </Button>
         </div>
       </TableCell>
     </TableRow>
-  );
-}
-
-function SeverityBadge({ severity }: { severity: string }) {
-  const tone =
-    severity === "fatal"
-      ? "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300"
-      : severity === "warning"
-        ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-        : severity === "notice"
-          ? "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300"
-          : severity === "deprecated"
-            ? "border-purple-500/40 bg-purple-500/10 text-purple-700 dark:text-purple-300"
-            : "border-border bg-muted text-muted-foreground";
-  return (
-    <span
-      className={
-        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium " +
-        tone
-      }
-    >
-      {severity}
-    </span>
   );
 }
