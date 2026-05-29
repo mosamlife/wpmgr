@@ -15,7 +15,7 @@ import (
 
 // startClickHouse spins up an ephemeral ClickHouse and returns a metrics.Store
 // connected to it (schema auto-created). Skips when Docker is unavailable.
-func startClickHouse(t *testing.T) *metrics.Store {
+func startClickHouse(t *testing.T) metrics.Store {
 	t.Helper()
 	ctx := context.Background()
 
@@ -43,7 +43,7 @@ func startClickHouse(t *testing.T) *metrics.Store {
 
 	// The entrypoint restarts the server after first-run init; poll until the
 	// driver succeeds (port-listening fires before the restart completes).
-	var store *metrics.Store
+	var store metrics.Store
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		store, err = metrics.New(ctx, metrics.Config{

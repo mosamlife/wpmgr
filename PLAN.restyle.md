@@ -77,20 +77,24 @@ read DESIGN.md+PRODUCT.md → static survey → implement against tokens → `pn
 - **Existing `AutoLoginButton` (dropdown shape) replaced by inline `Zap` icon + three-dot menu** per spec; `AutoLoginButton` preserved (still used by SiteDetail in Sprint 3 scope)
 
 ### Sprint 3 — Sites complements + Overlays (5 parallel subagents)  [STOP]
-- [ ] **toolbar-architect**: 4.6 Filters/Toolbar (`features/sites/SitesToolbar.tsx`) — toolbar→action-bar transform (`layout`, 240ms outQuart)
-- [ ] **site-detail-architect**: 4.7 Site detail page (`features/sites/SiteDetail.tsx`) — anchored sub-nav, NO nested cards, 4-tile health grid
-- [ ] **command-palette-architect**: 4.4 Command palette (`features/command/CommandPalette.tsx`) — cmdk, 4 sections (Navigate/Run-on-selected/Run-on-all/Settings), verb items
-- [ ] **bulk-drawer-architect**: 4.10 Bulk action drawer (`features/sites/BulkActionDrawer.tsx`) — bottom slide-up, per-row spinner→check/cross, SSE-driven
-- [ ] **modals-architect**: 4.11 Modals/dialogs (`components/dialogs/*`) — destructive requires typing hostname, never Yes/No/OK
-- [ ] STOP
+- [x] **toolbar-architect**: `sites-toolbar.tsx` new 560 lines; FLIP transform via `motion@^12.40.0` `<motion.div layout>` 240ms outQuart; verb-first action labels; `useSitesSelection`+`useSitesDensity` lifted to route
+- [x] **site-detail-architect**: `routes/_authed/sites/$siteId.tsx` rewrote 211→675 lines; 4-tile health grid in ONE card; anchored sub-nav with IntersectionObserver; reuses AvailableUpdatesCard, BackupsSection, SiteTagsEditor, SiteComponentsTable, AutoLoginButton
+- [x] **command-palette-architect**: `features/command/*` 4 new files; `cmdk@^1.1.1`; global ⌘K/Ctrl-K; 4 verb-first groups; recent-sites localStorage; `useSitesSelection` migrated to `useSyncExternalStore` singleton (palette+table share state); 4 cmdk keyframes in globals.css
+- [x] **bulk-drawer-architect**: `bulk-action-drawer.tsx` + `use-bulk-action.ts` new; bottom slide-up 300ms outQuart; 5 states (idle/running/some-failed/all-done/dismissed-mid-run); `BulkActionProvider` wraps AppShell in `_authed.tsx`; TopBar Bell shows red dot with in-flight count
+- [x] **modals-architect**: shared `components/ui/dialog.tsx` (250) + `destructive-confirm.tsx` (157); Restore is now 2-step (scope picker → hostname-typing confirm); all 5 modals (`restore-dialog`, `add-site-dialog`, `user-picker-modal`, `update-wizard`, `api-keys`) restyled; E2E specs synced
+- [x] Vite build: ✓ 2.04s; CSS bundle 40.37 → ~41 kB; main bundle within reason
+- [x] impeccable detect across all 5 subagents' scopes: 0 findings
+- [x] Pushed to `origin/main` (commit `ea75f15`)
+- [ ] User approval ← GATE
 
 ### Sprint 4 — Forms + Feedback (5 parallel subagents)  [STOP]
-- [ ] **forms-architect**: 4.14 Forms (`features/settings/*`) — sticky save bar, blur validation, what/why/how errors
-- [ ] **toasts-architect**: 4.15 Toasts (`components/toast/*`) — sonner, bottom-right, verb action links, 5/8/never auto-dismiss
-- [ ] **empty-states-architect**: 4.12 Empty states + onboarding (`components/empty/*`) — 3 specific empty states + 3-step inline wizard
-- [ ] **skeleton-architect**: 4.13 Skeleton loaders (`components/skeleton/*`) — match row template per density
-- [ ] **charts-architect**: 4.9 Charts (`components/charts/*`) — Recharts, CSS vars direct, custom tooltip
-- [ ] STOP — full Phase 4 user approval
+- [x] **forms-architect**: `components/forms/*` (208 lines) + 3 form refactors (backup-schedule-editor, alert-config-form, site-tags-editor); StickySaveBar + FieldError + FormSection; per-section save buttons removed
+- [x] **toasts-architect**: `components/toast/*` (243 lines) + 13 call-site migrations; sonner@^2.0.7 already installed; `toast.destructive` REQUIRES action at TS level; lib/toast.ts shim deleted
+- [x] **empty-states-architect**: `components/empty/*` (680 lines); NoSitesEmpty / FilterEmpty / NoBackupsEmpty / OnboardingWizard (3-step inline, NOT modal); SitesPageEmpty adapter via useOnboardingState (cross-tab safe)
+- [x] **skeleton-architect**: `components/skeleton/*` (451 lines) + globals.css keyframe; SitesTableSkeleton column widths match 1:1; useCrossfade hook with double-RAF mount + 500ms ease-out-expo; row heights track density
+- [x] **charts-architect**: `components/charts/*` (423 lines); recharts@^3.8.1; Sparkline + UptimeChart + ChartTooltip + ChartEmpty; CSS vars direct on stroke/fill; SLA reference line; renders NOTHING when <2 points
+- [x] Pushed to `origin/main` (commit `32573a3`)
+- [ ] User approval ← GATE — full Phase 4 complete
 
 ## Phase 5 — Motion pass
 - [ ] `pnpm add motion`

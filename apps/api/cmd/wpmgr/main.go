@@ -277,21 +277,34 @@ func run() error {
 		logger.Warn("WPMGR_S3_BUCKET is empty: backup/restore endpoints are disabled")
 	}
 
-	// M5 uptime monitoring: the ClickHouse metrics store (ADR-028; disabled
-	// cleanly when WPMGR_CLICKHOUSE_ADDR is empty), the SSRF-hardened probe, the
-	// alert dispatcher (email via go-mail/ADR-029 + signed webhook over the SSRF
-	// client), and the tenant-scoped uptime repo/service/handler. The probe worker
-	// runs on a periodic River job; it writes time-series to ClickHouse, refreshes
-	// each site's Postgres health_status, and fires downtime/recovery alerts on
-	// transition (de-duped).
-	metricsStore, err := metrics.New(ctx, metrics.Config{
-		Addr:     cfg.ClickHouse.Addr,
-		Database: cfg.ClickHouse.Database,
-		Username: cfg.ClickHouse.Username,
-		Password: cfg.ClickHouse.Password,
-	}, logger)
-	if err != nil {
-		return err
+	// M5/M6 uptime monitoring: the uptime metrics store, the SSRF-hardened
+	// probe, the alert dispatcher (email via go-mail/ADR-029 + signed webhook
+	// over the SSRF client), and the tenant-scoped uptime repo/service/handler.
+	// The probe worker runs on a periodic River job; it writes time-series to
+	// the metrics store, refreshes each site's Postgres health_status, and
+	// fires downtime/recovery alerts on transition (de-duped).
+	//
+	// Backend selection (M6, GCP cutover): when WPMGR_CLICKHOUSE_ADDR is set we
+	// use the original ClickHouse store (ADR-028). When it is empty we fall
+	// back to the Postgres-backed store added in the M6 migration. Postgres is
+	// the M6 default because the GCP managed deployment does not run a
+	// ClickHouse cluster — before this fix the empty addr produced a disabled
+	// store whose writes/queries no-op'd, so the dashboard had no status, no
+	// graph, and no cert data.
+	var metricsStore metrics.Store
+	if cfg.ClickHouse.Enabled() {
+		s, err := metrics.New(ctx, metrics.Config{
+			Addr:     cfg.ClickHouse.Addr,
+			Database: cfg.ClickHouse.Database,
+			Username: cfg.ClickHouse.Username,
+			Password: cfg.ClickHouse.Password,
+		}, logger)
+		if err != nil {
+			return err
+		}
+		metricsStore = s
+	} else {
+		metricsStore = metrics.NewPostgres(pool, logger)
 	}
 	defer func() { _ = metricsStore.Close() }()
 

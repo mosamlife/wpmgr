@@ -35,7 +35,7 @@ type ProbeWorker struct {
 	river.WorkerDefaults[ProbeArgs]
 	repo        Repo
 	prober      *Prober
-	store       *metrics.Store
+	store       metrics.Store
 	dispatcher  *Dispatcher
 	sites       SiteLookup
 	logger      *slog.Logger
@@ -45,7 +45,7 @@ type ProbeWorker struct {
 
 // NewProbeWorker builds the probe worker. concurrency caps simultaneous probes;
 // threshold is the consecutive-down count that fires a downtime alert.
-func NewProbeWorker(repo Repo, prober *Prober, store *metrics.Store, dispatcher *Dispatcher, sites SiteLookup, logger *slog.Logger, concurrency, threshold int) *ProbeWorker {
+func NewProbeWorker(repo Repo, prober *Prober, store metrics.Store, dispatcher *Dispatcher, sites SiteLookup, logger *slog.Logger, concurrency, threshold int) *ProbeWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -108,6 +108,8 @@ func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
 				TTFBMs:     res.TTFBMs,
 				TotalMs:    res.TotalMs,
 				TLSExpiry:  res.TLSExpiry,
+				TLSIssuer:  res.TLSIssuer,
+				TLSSubject: res.TLSSubject,
 				Error:      res.Error,
 			})
 			mu.Unlock()

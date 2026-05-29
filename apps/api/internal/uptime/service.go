@@ -42,21 +42,24 @@ type UptimeReport struct {
 	Up           bool
 	LastCheck    *time.Time
 	TLSExpiry    *time.Time
+	TLSIssuer    string
+	TLSSubject   string
 	Series       []metrics.Point
 }
 
 // Service serves the tenant-scoped uptime reads and the alert-config CRUD. It
-// composes the Postgres repo (tenant verification + config) and the ClickHouse
-// metrics store (time-series), always verifying tenant ownership in Postgres
-// before querying ClickHouse.
+// composes the Postgres repo (tenant verification + config) and the metrics
+// store (time-series — backed by ClickHouse or Postgres depending on
+// deployment), always verifying tenant ownership in Postgres before querying
+// the metrics backend.
 type Service struct {
 	repo     Repo
-	store    *metrics.Store
+	store    metrics.Store
 	verifier SiteVerifier
 }
 
 // NewService builds the uptime Service.
-func NewService(repo Repo, store *metrics.Store, verifier SiteVerifier) *Service {
+func NewService(repo Repo, store metrics.Store, verifier SiteVerifier) *Service {
 	return &Service{repo: repo, store: store, verifier: verifier}
 }
 
@@ -91,6 +94,8 @@ func (s *Service) Uptime(ctx context.Context, tenantID, siteID uuid.UUID, window
 			te := latest.TLSExpiry
 			rep.TLSExpiry = &te
 		}
+		rep.TLSIssuer = latest.TLSIssuer
+		rep.TLSSubject = latest.TLSSubject
 	}
 
 	series, err := s.store.QuerySeries(ctx, tenantID, siteID, window, seriesBuckets)

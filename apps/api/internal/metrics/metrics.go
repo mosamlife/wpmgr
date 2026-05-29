@@ -1,12 +1,18 @@
-// Package metrics is the WPMgr metrics store: a thin client over the locked
-// ClickHouse driver (github.com/ClickHouse/clickhouse-go/v2, ADR-028) used ONLY
-// for uptime check time-series. Postgres remains the system of record (with
-// RLS); ClickHouse is metrics-only. Every query is scoped by tenant_id (and
-// usually site_id) — the caller verifies tenant ownership in Postgres first.
+// Package metrics is the WPMgr uptime metrics store: a thin abstraction over
+// the time-series backend used for uptime check results. Two backends are
+// supported:
 //
-// The store is OPTIONAL: when WPMGR_CLICKHOUSE_ADDR is empty the constructor
-// returns a disabled Store whose write/query methods no-op (and log once at
-// startup) so the whole stack still runs without ClickHouse configured.
+//   - ClickHouse (the original M5 design — ADR-028) for high-volume deployments
+//     that already run a ClickHouse cluster. Constructed via metrics.New().
+//   - Postgres (the M6 GCP-cutover default) which writes one row per probe into
+//     the site_uptime_probes table. Constructed via metrics.NewPostgres().
+//     Postgres is the system of record at WPMgr's scale and avoids requiring a
+//     second datastore in the deployment.
+//
+// The choice is made at boot in main.go: when WPMGR_CLICKHOUSE_ADDR is set we
+// connect to ClickHouse; otherwise we fall back to Postgres so the dashboard
+// always has data. Every query is scoped by tenant_id (and usually site_id) —
+// the caller verifies tenant ownership in Postgres first.
 package metrics
 
 import (
@@ -43,7 +49,11 @@ type Check struct {
 	// TLSExpiry is the leaf certificate's NotAfter. Zero when the probe was not
 	// HTTPS or the cert could not be read.
 	TLSExpiry time.Time
-	Error     string
+	// TLSIssuer is the leaf certificate issuer CommonName. Empty when not HTTPS.
+	TLSIssuer string
+	// TLSSubject is the leaf certificate subject CommonName. Empty when not HTTPS.
+	TLSSubject string
+	Error      string
 }
 
 // Aggregate is the windowed uptime summary for a single site.
@@ -73,12 +83,27 @@ type Latest struct {
 	HTTPStatus uint16
 	TotalMs    float64
 	TLSExpiry  time.Time
+	TLSIssuer  string
+	TLSSubject string
 	Error      string
 	Found      bool
 }
 
-// Store is the metrics store. A nil/disabled Store no-ops every operation.
-type Store struct {
+// Store is the uptime metrics store contract. Backends implement it for
+// ClickHouse and Postgres. A disabled backend no-ops every operation and
+// reports Enabled()==false.
+type Store interface {
+	Enabled() bool
+	Close() error
+	InsertChecks(ctx context.Context, checks []Check) error
+	QueryAggregate(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration) (Aggregate, error)
+	QueryLatest(ctx context.Context, tenantID, siteID uuid.UUID) (Latest, error)
+	QuerySeries(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration, buckets int) ([]Point, error)
+}
+
+// chStore is the ClickHouse-backed metrics store (ADR-028). The original M5
+// implementation.
+type chStore struct {
 	conn    driver.Conn
 	db      string
 	enabled bool
@@ -89,16 +114,20 @@ type Store struct {
 const retentionDays = 90
 
 // New connects to ClickHouse and ensures the schema exists. When cfg.Addr is
-// empty it returns a disabled Store (enabled=false) that no-ops, so the stack
-// runs without ClickHouse. A configured-but-unreachable ClickHouse is a hard
-// error (misconfiguration should fail fast).
-func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Store, error) {
+// empty it returns a disabled Store (Enabled()==false) that no-ops, so the
+// stack runs without ClickHouse. A configured-but-unreachable ClickHouse is a
+// hard error (misconfiguration should fail fast).
+//
+// In M6 the boot path prefers metrics.NewPostgres when WPMGR_CLICKHOUSE_ADDR is
+// empty, so the disabled-Store branch here is now only used in tests; it is
+// preserved for backwards compatibility with the integration tests.
+func New(ctx context.Context, cfg Config, logger *slog.Logger) (Store, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if cfg.Addr == "" {
-		logger.Warn("WPMGR_CLICKHOUSE_ADDR is empty: uptime metrics store disabled (probes will not be recorded and uptime queries return empty)")
-		return &Store{enabled: false, logger: logger}, nil
+		logger.Warn("WPMGR_CLICKHOUSE_ADDR is empty: ClickHouse metrics store disabled")
+		return &chStore{enabled: false, logger: logger}, nil
 	}
 	db := cfg.Database
 	if db == "" {
@@ -126,20 +155,20 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Store, error) {
 		return nil, fmt.Errorf("clickhouse ping: %w", err)
 	}
 
-	s := &Store{conn: conn, db: db, enabled: true, logger: logger}
+	s := &chStore{conn: conn, db: db, enabled: true, logger: logger}
 	if err := s.ensureSchema(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	logger.Info("uptime metrics store ready", slog.String("clickhouse_db", db))
+	logger.Info("uptime metrics store ready (clickhouse)", slog.String("clickhouse_db", db))
 	return s, nil
 }
 
 // Enabled reports whether the store is backed by a live ClickHouse connection.
-func (s *Store) Enabled() bool { return s != nil && s.enabled }
+func (s *chStore) Enabled() bool { return s != nil && s.enabled }
 
 // Close releases the ClickHouse connection (no-op when disabled).
-func (s *Store) Close() error {
+func (s *chStore) Close() error {
 	if !s.Enabled() {
 		return nil
 	}
@@ -150,7 +179,7 @@ func (s *Store) Close() error {
 // table is a MergeTree ordered by (tenant_id, site_id, checked_at) — the exact
 // prefix every tenant-scoped per-site query filters on — with a 90-day TTL on
 // checked_at so old rows are reclaimed automatically.
-func (s *Store) ensureSchema(ctx context.Context) error {
+func (s *chStore) ensureSchema(ctx context.Context) error {
 	if err := s.conn.Exec(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", s.db)); err != nil {
 		return fmt.Errorf("clickhouse create database: %w", err)
 	}
@@ -187,7 +216,7 @@ func chTime(t time.Time) time.Time {
 
 // InsertChecks batch-inserts probe results via PrepareBatch. No-ops (returns
 // nil) when the store is disabled or the batch is empty.
-func (s *Store) InsertChecks(ctx context.Context, checks []Check) error {
+func (s *chStore) InsertChecks(ctx context.Context, checks []Check) error {
 	if !s.Enabled() || len(checks) == 0 {
 		return nil
 	}
@@ -227,7 +256,7 @@ func (s *Store) InsertChecks(ctx context.Context, checks []Check) error {
 // QueryAggregate returns the windowed uptime % and average latency for one site,
 // always filtered by tenant_id + site_id. Returns a zero Aggregate (no error)
 // when the store is disabled.
-func (s *Store) QueryAggregate(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration) (Aggregate, error) {
+func (s *chStore) QueryAggregate(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration) (Aggregate, error) {
 	var agg Aggregate
 	if !s.Enabled() {
 		return agg, nil
@@ -258,7 +287,7 @@ WHERE tenant_id = ? AND site_id = ? AND checked_at >= ?`, s.db),
 }
 
 // QueryLatest returns the most recent probe result for one site (tenant-scoped).
-func (s *Store) QueryLatest(ctx context.Context, tenantID, siteID uuid.UUID) (Latest, error) {
+func (s *chStore) QueryLatest(ctx context.Context, tenantID, siteID uuid.UUID) (Latest, error) {
 	var l Latest
 	if !s.Enabled() {
 		return l, nil
@@ -296,7 +325,7 @@ LIMIT 1`, s.db), tenantID, siteID)
 // QuerySeries returns a downsampled per-bucket series for one site over a window
 // (tenant-scoped). buckets controls the target resolution; the bucket width is
 // window/buckets rounded to whole seconds (min 1 minute).
-func (s *Store) QuerySeries(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration, buckets int) ([]Point, error) {
+func (s *chStore) QuerySeries(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration, buckets int) ([]Point, error) {
 	if !s.Enabled() {
 		return nil, nil
 	}

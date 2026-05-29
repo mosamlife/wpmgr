@@ -37,6 +37,12 @@ type ProbeResult struct {
 	TTFBMs     float64
 	TotalMs    float64
 	TLSExpiry  time.Time
+	// TLSIssuer is the leaf certificate's Issuer.CommonName ("Let's Encrypt
+	// Authority X3", "Google Trust Services LLC", etc.). Empty when the probe
+	// was not HTTPS or the cert could not be read.
+	TLSIssuer string
+	// TLSSubject is the leaf certificate's Subject.CommonName (usually the host).
+	TLSSubject string
 	Error      string
 }
 
@@ -75,6 +81,8 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 		tlsDone          time.Time
 		firstByte        time.Time
 		tlsExpiry        time.Time
+		tlsIssuer        string
+		tlsSubject       string
 		gotConnReusedTLS bool
 	)
 
@@ -92,8 +100,12 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 			tlsDone = time.Now()
 			if err == nil && len(cs.PeerCertificates) > 0 {
 				// The leaf certificate is first; its NotAfter is the expiry the
-				// dashboard surfaces.
-				tlsExpiry = cs.PeerCertificates[0].NotAfter
+				// dashboard surfaces, and the Issuer/Subject CommonName is what
+				// the operator sees as "Let's Encrypt", "Cloudflare", etc.
+				leaf := cs.PeerCertificates[0]
+				tlsExpiry = leaf.NotAfter
+				tlsIssuer = leaf.Issuer.CommonName
+				tlsSubject = leaf.Subject.CommonName
 			}
 		},
 		GotFirstResponseByte: func() { firstByte = time.Now() },
@@ -127,6 +139,8 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 	res := ProbeResult{
 		HTTPStatus: resp.StatusCode,
 		TLSExpiry:  tlsExpiry,
+		TLSIssuer:  tlsIssuer,
+		TLSSubject: tlsSubject,
 		// 2xx/3xx = up; 4xx is "reachable but not OK" — for uptime we treat <500
 		// as up (the site responded), 5xx as down. This matches the brief
 		// (2xx/3xx up; 5xx/timeout/conn-error down) while not flapping on a 404.

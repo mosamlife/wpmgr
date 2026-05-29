@@ -619,6 +619,53 @@ CREATE POLICY site_alert_state_agent ON site_alert_state
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
+-- site_uptime_probes  (M6 — Postgres-backed uptime time-series)
+-- ---------------------------------------------------------------------------
+-- One row per uptime probe. Replaces the M5 ClickHouse store as the DEFAULT
+-- backend (ClickHouse remains available when WPMGR_CLICKHOUSE_ADDR is set).
+-- Postgres comfortably handles the write rate at WPMgr's expected scale
+-- (≤100 sites × ~1 probe/60s → ≤5M rows/year). The cert columns make a
+-- separate cert-collection table unnecessary; the dashboard reads
+-- issuer/subject/not_after from the latest probe row for the site.
+CREATE TABLE site_uptime_probes (
+    id           uuid             NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id    uuid             NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id      uuid             NOT NULL REFERENCES sites   (id) ON DELETE CASCADE,
+    probed_at    timestamptz      NOT NULL DEFAULT now(),
+    up           boolean          NOT NULL,
+    http_status  integer          NOT NULL DEFAULT 0,
+    dns_ms       double precision NOT NULL DEFAULT 0,
+    connect_ms   double precision NOT NULL DEFAULT 0,
+    tls_ms       double precision NOT NULL DEFAULT 0,
+    ttfb_ms      double precision NOT NULL DEFAULT 0,
+    total_ms     double precision NOT NULL DEFAULT 0,
+    tls_expiry   timestamptz,
+    tls_issuer   text             NOT NULL DEFAULT '',
+    tls_subject  text             NOT NULL DEFAULT '',
+    error_text   text             NOT NULL DEFAULT '',
+    PRIMARY KEY (id)
+);
+
+-- Latest-probe (per site) is a single index seek.
+CREATE INDEX site_uptime_probes_site_time_idx
+    ON site_uptime_probes (site_id, probed_at DESC);
+
+-- Tenant-wide recent scans (summary endpoints).
+CREATE INDEX site_uptime_probes_tenant_time_idx
+    ON site_uptime_probes (tenant_id, probed_at DESC);
+
+ALTER TABLE site_uptime_probes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_uptime_probes FORCE ROW LEVEL SECURITY;
+CREATE POLICY site_uptime_probes_tenant_isolation ON site_uptime_probes
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- Probe worker writes cross-tenant under app.agent and the metrics-read path
+-- also runs under app.agent (filtered by explicit tenant_id at SQL level).
+CREATE POLICY site_uptime_probes_agent ON site_uptime_probes
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
 -- autologin_tokens  (Phase 5.5 — One-Click Login)
 -- ---------------------------------------------------------------------------
 -- An operator-minted, single-use, short-TTL nonce that materializes as an
