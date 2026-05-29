@@ -49,3 +49,10 @@ Thumbs.db
 
 # stray compiled binary (build to bin/ instead)
 /apps/api/wpmgr
+
+# ---- Skills (installed via npx skills add; lockfile is tracked separately) ----
+.agents/
+.claude/skills/
+
+# ---- pnpm content-addressed store (local cache; not source) ----
+.pnpm-store/
