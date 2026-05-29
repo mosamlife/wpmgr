@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
+import { dur, ease } from "@/lib/motion-presets";
+
 // Surface 4.13 — Crossfade helper.
 //
 // Manages the 500ms crossfade from skeleton to real content. The caller
@@ -41,8 +43,12 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 //     </div>
 //   );
 
-export const CROSSFADE_DURATION_MS = 500;
-const CROSSFADE_EASING = "cubic-bezier(0.16, 1, 0.3, 1)"; // --ease-out-expo
+// Phase 5: the crossfade values come from @/lib/motion-presets so the timing
+// matches the `skeletonToContent` transition every other surface imports. The
+// CSS transition string is computed from the same numbers — one source of
+// truth, no drift between JS and CSS layers.
+export const CROSSFADE_DURATION_MS = dur.slower * 1000;
+const CROSSFADE_EASING = `cubic-bezier(${ease.outExpo.join(", ")})`;
 
 type CrossfadePhase = "loading" | "entering" | "fading" | "loaded";
 

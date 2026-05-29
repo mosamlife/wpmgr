@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type HTMLAttributes,
@@ -27,10 +28,12 @@ import {
   MoreHorizontal,
   Zap,
 } from "lucide-react";
+import { motion } from "motion/react";
 import type { Site } from "@wpmgr/api";
 
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { fadeUp } from "@/lib/motion-presets";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -73,7 +76,21 @@ import {
 //   • Density is lifted into a hook (use-sites-density) and persisted to
 //     localStorage["wpmgr.sites.density"].
 //
-// Animation deliberately deferred to Phase 5; rows render flat for now.
+// Animation: Phase 5.
+//
+// We deliberately do NOT stagger individual rows. TableVirtuoso recycles row
+// DOM nodes as the viewport scrolls (that's the whole point of
+// virtualization), so any per-row enter animation would re-fire every time a
+// row scrolls in from offscreen — a perpetual choreography that's actively
+// hostile to an operator scanning a list. Instead, the entire table
+// container gets a single, gentle `fadeUp` on its first mount per dataset
+// identity. Re-fetches (same `sites` array reference shape but new contents)
+// are tracked via a ref guard and explicitly do NOT re-trigger the
+// animation — that would feel like flicker, not feedback.
+//
+// The "skeleton → real table" crossfade still happens at the surrounding
+// useCrossfade layer (500ms opacity); the fadeUp here is what makes the
+// rows feel like they "settled in" after the skeleton dissolves.
 
 export interface SitesTableProps {
   sites: Site[];
@@ -573,8 +590,25 @@ export function SitesTable({
   // internally, no surface currently changes it (the toolbar is the surface).
   void setDensity;
 
+  // First-mount guard for the container fadeUp. `initial` only equals the
+  // preset's "initial" state on the very first render — every subsequent
+  // re-render (re-fetch, sort change, selection change) passes `false`,
+  // which tells motion to skip the enter animation. This is the contract
+  // that keeps the fadeUp from re-firing when react-query refreshes the
+  // sites array under us.
+  const hasMounted = useRef<boolean>(false);
+  const firstMount = !hasMounted.current;
+  hasMounted.current = true;
+
   return (
-    <div className="flex w-full flex-col bg-background">
+    <motion.div
+      className="flex w-full flex-col bg-background"
+      // Only the very first render gets the enter. After that, `initial=false`
+      // means motion just renders at the "animate" target without easing.
+      variants={fadeUp}
+      initial={firstMount ? "initial" : false}
+      animate="animate"
+    >
       <div
         role="region"
         aria-label="Sites table"
@@ -594,7 +628,7 @@ export function SitesTable({
           itemContent={(_, row) => <TableBodyCells row={row} />}
         />
       </div>
-    </div>
+    </motion.div>
   );
 }
 

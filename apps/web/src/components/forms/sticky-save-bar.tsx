@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { useShellState } from "@/components/layout/app-shell";
 import { cn } from "@/lib/utils";
+import { dur, ease } from "@/lib/motion-presets";
 
 // Phase 4 / Sprint 4 surface 4.14 - Forms.
 //
@@ -74,10 +75,15 @@ export function StickySaveBar({
         <motion.div
           role="region"
           aria-label="Unsaved changes"
+          // Phase 5: same shape as the `drawerUp` preset but expressed in
+          // pixels (the bar is already pinned to the bottom edge so the
+          // translation is the bar's own 64px height, not 100% of viewport).
+          // dur.base + ease.out lock it to the same tier as the toolbar and
+          // dialog so unrelated surfaces don't race each other on screen.
           initial={{ y: 100 }}
           animate={{ y: 0 }}
           exit={{ y: 100 }}
-          transition={{ duration: 0.24, ease: [0.25, 1, 0.5, 1] }}
+          transition={{ duration: dur.base, ease: ease.out }}
           className={cn(
             "fixed bottom-0 left-0 right-0 z-30 flex h-16 items-center justify-between gap-4 border-t border-border bg-card px-6 shadow-md",
             "motion-reduce:transition-opacity motion-reduce:duration-150",

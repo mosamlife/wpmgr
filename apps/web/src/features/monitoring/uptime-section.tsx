@@ -112,22 +112,45 @@ function UptimeBody({ status }: { status: UptimeStatus }) {
         </Stat>
       </dl>
 
-      <div className="text-sm">
-        <span className="text-[var(--color-muted-foreground)]">
-          TLS certificate:{" "}
-        </span>
-        {tls ? (
-          <span
-            className={
-              tls.warn ? "font-medium text-[var(--color-destructive)]" : "font-medium"
-            }
-          >
-            Expires {tls.relative}
-            {tls.warn ? " — renew soon" : ""}
-          </span>
-        ) : (
-          <span className="text-[var(--color-muted-foreground)]">Unknown</span>
-        )}
+      <div className="space-y-1 text-sm">
+        <div className="text-[var(--color-muted-foreground)]">
+          TLS certificate
+        </div>
+        <dl className="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-1">
+          <dt className="text-[var(--color-muted-foreground)]">Issued by</dt>
+          <dd className="font-mono">
+            {status.tls_issuer ? (
+              status.tls_issuer
+            ) : (
+              <span className="text-[var(--color-muted-foreground)]">Unknown</span>
+            )}
+          </dd>
+          <dt className="text-[var(--color-muted-foreground)]">Subject</dt>
+          <dd className="font-mono">
+            {status.tls_subject ? (
+              status.tls_subject
+            ) : (
+              <span className="text-[var(--color-muted-foreground)]">Unknown</span>
+            )}
+          </dd>
+          <dt className="text-[var(--color-muted-foreground)]">Expires</dt>
+          <dd>
+            {tls ? (
+              <span
+                className={
+                  tls.warn
+                    ? "font-mono font-medium text-[var(--color-destructive)]"
+                    : "font-mono font-medium"
+                }
+              >
+                {tls.relative}
+                {tls.warn ? " — renew soon" : ""}
+              </span>
+            ) : (
+              <span className="text-[var(--color-muted-foreground)]">Unknown</span>
+            )}
+          </dd>
+        </dl>
       </div>
 
       <UptimeChart series={status.series} />

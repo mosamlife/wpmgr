@@ -31,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { dur, ease } from "@/lib/motion-presets";
 import type { SitesDensity } from "@/features/sites/use-sites-density";
 import type { SitesSelection } from "@/features/sites/use-sites-selection";
 
@@ -54,8 +55,13 @@ import type { SitesSelection } from "@/features/sites/use-sites-selection";
 // Reduced motion is honoured globally via <MotionConfig reducedMotion="user">
 // which disables the layout transform but keeps the cross-fade.
 
+// Phase 5: timing tokens imported from @/lib/motion-presets so the toolbar
+// rides the same easing/duration tiers as the rest of the app (dialog, drawer,
+// save bar). The cross-fade between idle/action modes stays short (80ms,
+// linear) — it intentionally undercuts the layout transform so the bounds
+// re-flow reads as the primary motion and the swap reads as instant.
 const TOOLBAR_MOTION = {
-  layout: { duration: 0.24, ease: [0.25, 1, 0.5, 1] as const },
+  layout: { duration: dur.base, ease: ease.out },
   fade: { duration: 0.08, ease: "linear" as const },
 };
 

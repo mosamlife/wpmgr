@@ -3,14 +3,19 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "@/lib/utils";
+import { dur, ease, fade, scaleIn } from "@/lib/motion-presets";
 
 // Sprint 3 dialog primitive. Implements the DESIGN.md modal spec:
 //   - Centered panel, 12px radius, shadow-lg, popover bg
 //   - 480px max width (Modal section: "max 480px")
 //   - --scrim token backdrop (Sprint 1)
-//   - Enter: 180ms fade + scale 0.96 -> 1 (no width/height animation)
-//   - Exit:  135ms fade + scale 1 -> 0.98
+//   - Enter: scaleIn preset (180ms fade + scale 0.96 -> 1, no width/height)
+//   - Exit:  135ms fade + slight scale (derived from scaleIn exit)
 //   - reduced-motion: animations zeroed via global CSS rule in globals.css
+//
+// Phase 5: imports `scaleIn` + `fade` from @/lib/motion-presets so the dialog
+// stays locked to the shared duration/easing tiers. The previous inline
+// config matched the preset exactly; this is a mechanical refactor.
 //
 // We intentionally avoid pulling in @radix-ui/react-dialog or
 // tailwindcss-animate (neither installed) and instead lean on `motion/react`
@@ -91,10 +96,10 @@ export function Dialog({ open, onClose, children }: DialogProps) {
           <motion.div
             key="dialog-root"
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.135, ease: [0.25, 1, 0.5, 1] }}
+            variants={fade}
+            initial="initial"
+            animate="animate"
+            exit="exit"
           >
             <DialogOverlay />
             {children}
@@ -161,15 +166,18 @@ export function DialogContent({
       aria-modal="true"
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
-      // Enter: 180ms scale 0.96 -> 1 + fade. Exit: 135ms fade + slight scale.
+      // Enter/exit shape comes from the shared `scaleIn` preset:
+      //   • enter — 180ms fade + scale 0.96 → 1 on ease.out
+      //   • exit  — 135ms fade + scale 1 → 0.98 on ease.in
       // No width/height animation per DESIGN.md ("Don't animate width, height").
-      initial={{ opacity: 0, scale: 0.96 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.98 }}
-      transition={{
-        duration: 0.18,
-        ease: [0.16, 1, 0.3, 1],
-      }}
+      variants={scaleIn}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      // Override the preset's `ease.out` with `ease.outExpo` here only — the
+      // dialog is the most prominent floating surface in the app and the
+      // sharper deceleration helps it read as "placed", not "drifted in".
+      transition={{ duration: dur.fast, ease: ease.outExpo }}
       className={cn(
         "relative z-10 w-full max-w-[480px] rounded-xl border border-[var(--color-border)]",
         "bg-[var(--color-popover)] text-[var(--color-popover-foreground)] shadow-lg",

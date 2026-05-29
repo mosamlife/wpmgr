@@ -7,10 +7,12 @@ import {
   type ReactNode,
 } from "react";
 import { X, RotateCw } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 
 import { StatusDot, type StatusTone } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { drawerUp, fade } from "@/lib/motion-presets";
 import { useSites } from "@/features/sites/use-sites";
 import { useUpdateRun, useRunEventStream } from "@/features/updates/use-updates";
 import type { UpdateTask } from "@wpmgr/api";
@@ -31,11 +33,16 @@ import {
 // one on click.
 //
 // Animation rules (DESIGN.md "Motion" / Phase-4 Sprint-3 brief):
-//   - Slide-up: translateY(100%) → translateY(0), 300ms ease-out-quart.
-//   - Slide-down: 250ms ease-out-quart on close.
+//   - Slide-up: translateY(100%) → translateY(0).
+//   - Slide-down: faster exit (~75% of enter).
 //   - ONLY transform + opacity animate. No width/height/top/left/padding/
 //     margin transitions.
-//   - prefers-reduced-motion collapses the slide to an opacity fade.
+//   - prefers-reduced-motion collapses the slide via the global CSS rule.
+//
+// Phase 5: the panel + scrim are driven by the shared `drawerUp` and `fade`
+// presets via motion/react so timing matches the dialog/save-bar/toolbar.
+// We keep AnimatePresence around so exit transforms run before unmount —
+// the previous hand-rolled "mounted" state machine is no longer needed.
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -189,27 +196,6 @@ export function BulkActionDrawer({
   onSettled,
   onRetry,
 }: BulkActionDrawerProps) {
-  // Mount/unmount the drawer DOM in step with `visible`, but keep it
-  // mounted for the duration of the slide-down so the closing transform
-  // is observable. `mounted` flips to false 250ms after `visible` goes
-  // false; `panelState` drives the actual transform.
-  const [mounted, setMounted] = useState<boolean>(visible);
-  const [panelState, setPanelState] = useState<"closed" | "open">(
-    visible ? "open" : "closed",
-  );
-  useEffect(() => {
-    if (visible) {
-      setMounted(true);
-      // Defer the open transition by one frame so the browser commits
-      // `translateY(100%)` first and the next frame animates to 0.
-      const id = requestAnimationFrame(() => setPanelState("open"));
-      return () => cancelAnimationFrame(id);
-    }
-    setPanelState("closed");
-    const timeout = window.setTimeout(() => setMounted(false), 250);
-    return () => window.clearTimeout(timeout);
-  }, [visible]);
-
   // Esc closes the drawer (dismiss mid-run). Only attach the listener
   // while we're visible so we don't intercept Esc on routes that have
   // their own keyboard contracts.
@@ -266,117 +252,117 @@ export function BulkActionDrawer({
     onSettled?.(runId);
   }, [run, runId, onSettled]);
 
-  if (!runId || !mounted) return null;
+  if (!runId) return null;
 
   return (
-    <div
-      aria-hidden={!visible}
-      // The drawer host: a fixed full-viewport overlay so the scrim covers
-      // everything below it. Clicking the scrim slides the panel down.
-      className="fixed inset-0 z-50 pointer-events-none"
-    >
-      {/* Scrim. Pointer events on (so click-to-close works) only while
-          visible. Fade via opacity, never width/height. */}
-      <button
-        type="button"
-        aria-label="Close drawer"
-        tabIndex={-1}
-        onClick={onClose}
-        className={cn(
-          "absolute inset-0 bg-[var(--scrim)]",
-          "transition-opacity duration-300 ease-[var(--ease-out-quart,cubic-bezier(0.25,1,0.5,1))]",
-          "motion-reduce:transition-none",
-          visible ? "opacity-100 pointer-events-auto" : "opacity-0",
-        )}
-      />
-
-      {/* Panel. Fixed to the bottom of the viewport; the only animated
-          properties are transform + opacity. max-h-[70vh] caps the panel
-          height; overflow-y-auto handles long site lists. */}
-      <section
-        role="dialog"
-        aria-modal="false"
-        aria-labelledby="bulk-drawer-title"
-        className={cn(
-          "pointer-events-auto",
-          "absolute bottom-0 left-0 right-0",
-          "max-h-[70vh] overflow-hidden",
-          "rounded-t-xl border-t border-border bg-card text-card-foreground shadow-lg",
-          "transition-transform duration-300 ease-[var(--ease-out-quart,cubic-bezier(0.25,1,0.5,1))]",
-          "motion-reduce:transition-opacity motion-reduce:duration-150",
-          panelState === "open"
-            ? "translate-y-0 motion-reduce:opacity-100"
-            : "translate-y-full motion-reduce:opacity-0",
-        )}
-      >
-        {/* Drag-handle visual. Purely cosmetic — no drag behavior. */}
-        <div className="mx-auto mt-2 h-1.5 w-12 rounded-full bg-muted" aria-hidden="true" />
-
-        <header className="flex items-start justify-between gap-4 px-6 pt-3 pb-2">
-          <div className="min-w-0">
-            <h2
-              id="bulk-drawer-title"
-              className="text-base font-semibold text-foreground truncate"
-            >
-              {title}
-            </h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {totals.done} / {totals.total} done
-              {totals.failed > 0 ? (
-                <>
-                  {" · "}
-                  <span className="text-destructive">
-                    {totals.failed} failed
-                  </span>
-                </>
-              ) : null}
-              {totals.inFlight > 0 ? (
-                <>
-                  {" · "}
-                  {totals.inFlight} in progress
-                </>
-              ) : null}
-            </p>
-          </div>
-          <Button
+    <AnimatePresence>
+      {visible ? (
+        <div
+          aria-hidden={!visible}
+          // The drawer host: a fixed full-viewport overlay so the scrim covers
+          // everything below it. Clicking the scrim slides the panel down.
+          className="fixed inset-0 z-50"
+        >
+          {/* Scrim. Fade via opacity, never width/height. */}
+          <motion.button
             type="button"
-            variant="ghost"
-            size="icon"
             aria-label="Close drawer"
+            tabIndex={-1}
             onClick={onClose}
+            variants={fade}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="absolute inset-0 bg-[var(--scrim)]"
+          />
+
+          {/* Panel. Fixed to the bottom of the viewport; the only animated
+              properties are transform + opacity. max-h-[70vh] caps the panel
+              height; overflow-y-auto handles long site lists. */}
+          <motion.section
+            role="dialog"
+            aria-modal="false"
+            aria-labelledby="bulk-drawer-title"
+            variants={drawerUp}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className={cn(
+              "absolute bottom-0 left-0 right-0",
+              "max-h-[70vh] overflow-hidden",
+              "rounded-t-xl border-t border-border bg-card text-card-foreground shadow-lg",
+            )}
           >
-            <X aria-hidden="true" />
-          </Button>
-        </header>
+            {/* Drag-handle visual. Purely cosmetic — no drag behavior. */}
+            <div className="mx-auto mt-2 h-1.5 w-12 rounded-full bg-muted" aria-hidden="true" />
 
-        <div className="max-h-[calc(70vh-9rem)] overflow-y-auto px-6 pb-2">
-          {grouped.length === 0 ? (
-            <p className="py-6 text-sm text-muted-foreground">
-              Scheduling tasks. Progress will appear as the agents pick up
-              work.
-            </p>
-          ) : (
-            <ul className="divide-y divide-border">
-              {grouped.map((row) => (
-                <BulkSiteRow
-                  key={row.siteId}
-                  row={row}
-                  hostname={siteNameMap.get(row.siteId) ?? shortId(row.siteId)}
-                  onRetry={onRetry}
-                />
-              ))}
-            </ul>
-          )}
+            <header className="flex items-start justify-between gap-4 px-6 pt-3 pb-2">
+              <div className="min-w-0">
+                <h2
+                  id="bulk-drawer-title"
+                  className="text-base font-semibold text-foreground truncate"
+                >
+                  {title}
+                </h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {totals.done} / {totals.total} done
+                  {totals.failed > 0 ? (
+                    <>
+                      {" · "}
+                      <span className="text-destructive">
+                        {totals.failed} failed
+                      </span>
+                    </>
+                  ) : null}
+                  {totals.inFlight > 0 ? (
+                    <>
+                      {" · "}
+                      {totals.inFlight} in progress
+                    </>
+                  ) : null}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Close drawer"
+                onClick={onClose}
+              >
+                <X aria-hidden="true" />
+              </Button>
+            </header>
+
+            <div className="max-h-[calc(70vh-9rem)] overflow-y-auto px-6 pb-2">
+              {grouped.length === 0 ? (
+                <p className="py-6 text-sm text-muted-foreground">
+                  Scheduling tasks. Progress will appear as the agents pick up
+                  work.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {grouped.map((row) => (
+                    <BulkSiteRow
+                      key={row.siteId}
+                      row={row}
+                      hostname={siteNameMap.get(row.siteId) ?? shortId(row.siteId)}
+                      onRetry={onRetry}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <footer className="border-t border-border bg-muted/40 px-6 py-3">
+              <p className="text-xs text-muted-foreground">
+                You can close this drawer; we will keep updating and ping you
+                when done.
+              </p>
+            </footer>
+          </motion.section>
         </div>
-
-        <footer className="border-t border-border bg-muted/40 px-6 py-3">
-          <p className="text-xs text-muted-foreground">
-            You can close this drawer; we will keep updating and ping you
-            when done.
-          </p>
-        </footer>
-      </section>
-    </div>
+      ) : null}
+    </AnimatePresence>
   );
 }
 
