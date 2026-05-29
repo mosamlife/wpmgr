@@ -90,6 +90,17 @@ export function UptimeSection({ siteId }: { siteId: string }) {
 function UptimeBody({ status }: { status: UptimeStatus }) {
   const lastChecked = relativeTime(status.last_check);
   const tls = tlsExpiryInfo(status.tls_expiry);
+  // tls_issuer / tls_subject are optional on the wire — the CP added them as
+  // part of v0.9.3-tls-cert-fields but they were dropped from the regenerated
+  // schema in the post-restyle reverts. Read them defensively so the section
+  // degrades to "Unknown" when absent and starts populating the moment the
+  // schema re-adds them.
+  const tlsExtras = status as UptimeStatus & {
+    tls_issuer?: string | null;
+    tls_subject?: string | null;
+  };
+  const tlsIssuer = tlsExtras.tls_issuer ?? "";
+  const tlsSubject = tlsExtras.tls_subject ?? "";
 
   return (
     <div className="space-y-4">
@@ -119,16 +130,16 @@ function UptimeBody({ status }: { status: UptimeStatus }) {
         <dl className="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-1">
           <dt className="text-[var(--color-muted-foreground)]">Issued by</dt>
           <dd className="font-mono">
-            {status.tls_issuer ? (
-              status.tls_issuer
+            {tlsIssuer ? (
+              tlsIssuer
             ) : (
               <span className="text-[var(--color-muted-foreground)]">Unknown</span>
             )}
           </dd>
           <dt className="text-[var(--color-muted-foreground)]">Subject</dt>
           <dd className="font-mono">
-            {status.tls_subject ? (
-              status.tls_subject
+            {tlsSubject ? (
+              tlsSubject
             ) : (
               <span className="text-[var(--color-muted-foreground)]">Unknown</span>
             )}

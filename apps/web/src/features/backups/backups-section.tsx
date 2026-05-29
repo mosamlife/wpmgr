@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Label } from "@/components/ui/label";
+import { PageError } from "@/components/feedback";
 import { useBackups, useCreateBackup } from "@/features/backups/use-backups";
 import { StatusBadge, KindBadge } from "@/features/backups/backup-badges";
 import { InlineSnapshotProgress } from "@/features/backups/inline-snapshot-progress";
@@ -25,9 +26,10 @@ import { BackupScheduleEditor } from "@/features/backups/backup-schedule-editor"
 import { formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupCreate } from "@wpmgr/api";
 
-// The "Backups" section rendered on the site detail page. It shows the
-// snapshot list, a "Back up now" control (operator+), and the schedule editor
-// (operator+). Viewers see the list only.
+// The "Backups" section rendered on the site detail page. One card holds the
+// snapshot list; "Back up now" lives as a header control (not an inset
+// bordered box) so the surface is flat (ADR-037 Batch 2 — never card-in-card).
+// Viewers see the list only; the schedule editor (operator+) is its own card.
 
 const KINDS: { value: NonNullable<BackupCreate["kind"]>; label: string }[] = [
   { value: "full", label: "Full (files + database)" },
@@ -45,15 +47,17 @@ export function BackupsSection({
   return (
     <div className="space-y-6">
       <Card>
-        <CardHeader>
-          <CardTitle>Backups</CardTitle>
-          <CardDescription>
-            Encrypted snapshots of this site. Chunks are encrypted on the agent;
-            the control plane cannot read your data.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <CardTitle>Backups</CardTitle>
+            <CardDescription>
+              Encrypted snapshots of this site. Chunks are encrypted on the
+              agent; the control plane cannot read your data.
+            </CardDescription>
+          </div>
           {canOperate ? <BackupNowControl siteId={siteId} /> : null}
+        </CardHeader>
+        <CardContent>
           <SnapshotList siteId={siteId} />
         </CardContent>
       </Card>
@@ -72,17 +76,19 @@ function BackupNowControl({ siteId }: { siteId: string }) {
   }
 
   return (
-    <div className="space-y-2 rounded-md border border-[var(--color-border)] p-3">
-      <div className="flex flex-wrap items-end gap-3">
+    <div className="flex shrink-0 flex-col items-end gap-1.5">
+      <div className="flex items-end gap-2">
         <div className="space-y-1">
-          <Label htmlFor="backup-kind">What to back up</Label>
+          <Label htmlFor="backup-kind" className="sr-only">
+            What to back up
+          </Label>
           <select
             id="backup-kind"
             value={kind}
             onChange={(e) =>
               setKind(e.target.value as NonNullable<BackupCreate["kind"]>)
             }
-            className="h-9 rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] focus-visible:outline-none"
+            className="h-8 rounded-md border border-[var(--color-input)] bg-transparent px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
           >
             {KINDS.map((k) => (
               <option key={k.value} value={k.value}>
@@ -91,18 +97,18 @@ function BackupNowControl({ siteId }: { siteId: string }) {
             ))}
           </select>
         </div>
-        <Button onClick={onBackup} disabled={create.isPending}>
-          {create.isPending ? "Starting…" : "Back up now"}
+        <Button size="sm" onClick={onBackup} disabled={create.isPending}>
+          {create.isPending ? "Starting…" : "Run backup"}
         </Button>
       </div>
       {create.isError ? (
-        <p role="alert" className="text-sm text-[var(--color-destructive)]">
+        <p role="alert" className="text-xs text-destructive-subtle-fg">
           {create.error.message}
         </p>
       ) : null}
       {create.isSuccess ? (
-        <p role="status" className="text-sm text-[var(--color-muted-foreground)]">
-          Backup started — it appears below as it progresses.
+        <p role="status" className="text-xs text-muted-foreground">
+          Backup started. It appears below as it progresses.
         </p>
       ) : null}
     </div>
@@ -114,7 +120,7 @@ function SnapshotList({ siteId }: { siteId: string }) {
 
   if (isPending) {
     return (
-      <p role="status" className="text-sm text-[var(--color-muted-foreground)]">
+      <p role="status" className="text-sm text-muted-foreground">
         Loading backups…
       </p>
     );
@@ -122,21 +128,18 @@ function SnapshotList({ siteId }: { siteId: string }) {
 
   if (isError) {
     return (
-      <div role="alert" className="space-y-2">
-        <p className="text-sm text-[var(--color-destructive)]">
-          {error.message}
-        </p>
-        <Button variant="outline" size="sm" onClick={() => void refetch()}>
-          Retry
-        </Button>
-      </div>
+      <PageError
+        what="Could not load backups."
+        why={error.message}
+        onRetry={() => void refetch()}
+      />
     );
   }
 
   if (data.length === 0) {
     return (
-      <p className="text-sm text-[var(--color-muted-foreground)]">
-        No backups yet.
+      <p className="text-sm text-muted-foreground">
+        No backups yet. Run one to capture this site.
       </p>
     );
   }
@@ -168,22 +171,34 @@ function SnapshotList({ siteId }: { siteId: string }) {
                 {snap.status === "running" || snap.status === "pending" ? (
                   <InlineSnapshotProgress snapshot={snap} />
                 ) : null}
+                {snap.status === "failed" && snap.error ? (
+                  <span
+                    role="alert"
+                    className="text-xs text-destructive-subtle-fg"
+                  >
+                    {snap.error}
+                  </span>
+                ) : null}
               </div>
             </TableCell>
-            <TableCell>{formatBytes(snap.total_size)}</TableCell>
-            <TableCell>{snap.chunk_count ?? "—"}</TableCell>
-            <TableCell title={snap.created_at}>
-              {relativeTime(snap.created_at) ?? "—"}
+            <TableCell className="tabular-nums">
+              {formatBytes(snap.total_size)}
             </TableCell>
-            <TableCell title={snap.finished_at ?? undefined}>
-              {relativeTime(snap.finished_at) ?? "—"}
+            <TableCell className="tabular-nums">
+              {snap.chunk_count ?? "–"}
+            </TableCell>
+            <TableCell className="tabular-nums" title={snap.created_at}>
+              {relativeTime(snap.created_at) ?? "–"}
+            </TableCell>
+            <TableCell
+              className="tabular-nums"
+              title={snap.finished_at ?? undefined}
+            >
+              {relativeTime(snap.finished_at) ?? "–"}
             </TableCell>
             <TableCell className="text-right">
               <Button asChild variant="outline" size="sm">
-                <Link
-                  to="/backups/$snapshotId"
-                  params={{ snapshotId: snap.id }}
-                >
+                <Link to="/backups/$snapshotId" params={{ snapshotId: snap.id }}>
                   View
                 </Link>
               </Button>

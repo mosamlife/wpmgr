@@ -47,8 +47,14 @@ Thumbs.db
 *.zip
 !apps/agent/**/*.zip
 
-# stray compiled binary (build to bin/ instead)
+# stray compiled binaries (build to bin/ instead)
 /apps/api/wpmgr
+/wpmgr
+/cmd
+
+# ---- Third-party plugin sources (vendored for gap analysis only; not ours) ----
+/wpremote/
+/wpvivid-backuprestore/
 
 # ---- Skills (installed via npx skills add; lockfile is tracked separately) ----
 .agents/

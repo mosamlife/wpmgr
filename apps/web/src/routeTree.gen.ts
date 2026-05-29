@@ -17,9 +17,18 @@ import { Route as AuthedUpdatesIndexRouteImport } from './routes/_authed/updates
 import { Route as AuthedSitesIndexRouteImport } from './routes/_authed/sites/index'
 import { Route as AuthedUpdatesRunIdRouteImport } from './routes/_authed/updates/$runId'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
+import { Route as AuthedSettingsDestinationsRouteImport } from './routes/_authed/settings/destinations'
 import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
 import { Route as AuthedSettingsAlertsRouteImport } from './routes/_authed/settings/alerts'
 import { Route as AuthedBackupsSnapshotIdRouteImport } from './routes/_authed/backups/$snapshotId'
+import { Route as AuthedSitesSiteIdIndexRouteImport } from './routes/_authed/sites/$siteId.index'
+import { Route as AuthedSitesSiteIdUpdatesRouteImport } from './routes/_authed/sites/$siteId.updates'
+import { Route as AuthedSitesSiteIdSettingsRouteImport } from './routes/_authed/sites/$siteId.settings'
+import { Route as AuthedSitesSiteIdSecurityRouteImport } from './routes/_authed/sites/$siteId.security'
+import { Route as AuthedSitesSiteIdHealthRouteImport } from './routes/_authed/sites/$siteId.health'
+import { Route as AuthedSitesSiteIdErrorsRouteImport } from './routes/_authed/sites/$siteId.errors'
+import { Route as AuthedSitesSiteIdBackupsRouteImport } from './routes/_authed/sites/$siteId.backups'
+import { Route as AuthedSitesSiteIdActivityRouteImport } from './routes/_authed/sites/$siteId.activity'
 
 const RegisterRoute = RegisterRouteImport.update({
   id: '/register',
@@ -60,6 +69,12 @@ const AuthedSitesSiteIdRoute = AuthedSitesSiteIdRouteImport.update({
   path: '/sites/$siteId',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedSettingsDestinationsRoute =
+  AuthedSettingsDestinationsRouteImport.update({
+    id: '/settings/destinations',
+    path: '/settings/destinations',
+    getParentRoute: () => AuthedRoute,
+  } as any)
 const AuthedSettingsApiKeysRoute = AuthedSettingsApiKeysRouteImport.update({
   id: '/settings/api-keys',
   path: '/settings/api-keys',
@@ -75,6 +90,51 @@ const AuthedBackupsSnapshotIdRoute = AuthedBackupsSnapshotIdRouteImport.update({
   path: '/backups/$snapshotId',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedSitesSiteIdIndexRoute = AuthedSitesSiteIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AuthedSitesSiteIdRoute,
+} as any)
+const AuthedSitesSiteIdUpdatesRoute =
+  AuthedSitesSiteIdUpdatesRouteImport.update({
+    id: '/updates',
+    path: '/updates',
+    getParentRoute: () => AuthedSitesSiteIdRoute,
+  } as any)
+const AuthedSitesSiteIdSettingsRoute =
+  AuthedSitesSiteIdSettingsRouteImport.update({
+    id: '/settings',
+    path: '/settings',
+    getParentRoute: () => AuthedSitesSiteIdRoute,
+  } as any)
+const AuthedSitesSiteIdSecurityRoute =
+  AuthedSitesSiteIdSecurityRouteImport.update({
+    id: '/security',
+    path: '/security',
+    getParentRoute: () => AuthedSitesSiteIdRoute,
+  } as any)
+const AuthedSitesSiteIdHealthRoute = AuthedSitesSiteIdHealthRouteImport.update({
+  id: '/health',
+  path: '/health',
+  getParentRoute: () => AuthedSitesSiteIdRoute,
+} as any)
+const AuthedSitesSiteIdErrorsRoute = AuthedSitesSiteIdErrorsRouteImport.update({
+  id: '/errors',
+  path: '/errors',
+  getParentRoute: () => AuthedSitesSiteIdRoute,
+} as any)
+const AuthedSitesSiteIdBackupsRoute =
+  AuthedSitesSiteIdBackupsRouteImport.update({
+    id: '/backups',
+    path: '/backups',
+    getParentRoute: () => AuthedSitesSiteIdRoute,
+  } as any)
+const AuthedSitesSiteIdActivityRoute =
+  AuthedSitesSiteIdActivityRouteImport.update({
+    id: '/activity',
+    path: '/activity',
+    getParentRoute: () => AuthedSitesSiteIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -83,10 +143,19 @@ export interface FileRoutesByFullPath {
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
   '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
-  '/sites/$siteId': typeof AuthedSitesSiteIdRoute
+  '/settings/destinations': typeof AuthedSettingsDestinationsRoute
+  '/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/sites/': typeof AuthedSitesIndexRoute
   '/updates/': typeof AuthedUpdatesIndexRoute
+  '/sites/$siteId/activity': typeof AuthedSitesSiteIdActivityRoute
+  '/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRoute
+  '/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
+  '/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
+  '/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
+  '/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
+  '/sites/$siteId/updates': typeof AuthedSitesSiteIdUpdatesRoute
+  '/sites/$siteId/': typeof AuthedSitesSiteIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -95,10 +164,18 @@ export interface FileRoutesByTo {
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
   '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
-  '/sites/$siteId': typeof AuthedSitesSiteIdRoute
+  '/settings/destinations': typeof AuthedSettingsDestinationsRoute
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/sites': typeof AuthedSitesIndexRoute
   '/updates': typeof AuthedUpdatesIndexRoute
+  '/sites/$siteId/activity': typeof AuthedSitesSiteIdActivityRoute
+  '/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRoute
+  '/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
+  '/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
+  '/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
+  '/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
+  '/sites/$siteId/updates': typeof AuthedSitesSiteIdUpdatesRoute
+  '/sites/$siteId': typeof AuthedSitesSiteIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -109,10 +186,19 @@ export interface FileRoutesById {
   '/_authed/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
   '/_authed/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
-  '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRoute
+  '/_authed/settings/destinations': typeof AuthedSettingsDestinationsRoute
+  '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/_authed/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/_authed/sites/': typeof AuthedSitesIndexRoute
   '/_authed/updates/': typeof AuthedUpdatesIndexRoute
+  '/_authed/sites/$siteId/activity': typeof AuthedSitesSiteIdActivityRoute
+  '/_authed/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRoute
+  '/_authed/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
+  '/_authed/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
+  '/_authed/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
+  '/_authed/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
+  '/_authed/sites/$siteId/updates': typeof AuthedSitesSiteIdUpdatesRoute
+  '/_authed/sites/$siteId/': typeof AuthedSitesSiteIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -123,10 +209,19 @@ export interface FileRouteTypes {
     | '/backups/$snapshotId'
     | '/settings/alerts'
     | '/settings/api-keys'
+    | '/settings/destinations'
     | '/sites/$siteId'
     | '/updates/$runId'
     | '/sites/'
     | '/updates/'
+    | '/sites/$siteId/activity'
+    | '/sites/$siteId/backups'
+    | '/sites/$siteId/errors'
+    | '/sites/$siteId/health'
+    | '/sites/$siteId/security'
+    | '/sites/$siteId/settings'
+    | '/sites/$siteId/updates'
+    | '/sites/$siteId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -135,10 +230,18 @@ export interface FileRouteTypes {
     | '/backups/$snapshotId'
     | '/settings/alerts'
     | '/settings/api-keys'
-    | '/sites/$siteId'
+    | '/settings/destinations'
     | '/updates/$runId'
     | '/sites'
     | '/updates'
+    | '/sites/$siteId/activity'
+    | '/sites/$siteId/backups'
+    | '/sites/$siteId/errors'
+    | '/sites/$siteId/health'
+    | '/sites/$siteId/security'
+    | '/sites/$siteId/settings'
+    | '/sites/$siteId/updates'
+    | '/sites/$siteId'
   id:
     | '__root__'
     | '/'
@@ -148,10 +251,19 @@ export interface FileRouteTypes {
     | '/_authed/backups/$snapshotId'
     | '/_authed/settings/alerts'
     | '/_authed/settings/api-keys'
+    | '/_authed/settings/destinations'
     | '/_authed/sites/$siteId'
     | '/_authed/updates/$runId'
     | '/_authed/sites/'
     | '/_authed/updates/'
+    | '/_authed/sites/$siteId/activity'
+    | '/_authed/sites/$siteId/backups'
+    | '/_authed/sites/$siteId/errors'
+    | '/_authed/sites/$siteId/health'
+    | '/_authed/sites/$siteId/security'
+    | '/_authed/sites/$siteId/settings'
+    | '/_authed/sites/$siteId/updates'
+    | '/_authed/sites/$siteId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -219,6 +331,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSitesSiteIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/settings/destinations': {
+      id: '/_authed/settings/destinations'
+      path: '/settings/destinations'
+      fullPath: '/settings/destinations'
+      preLoaderRoute: typeof AuthedSettingsDestinationsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/settings/api-keys': {
       id: '/_authed/settings/api-keys'
       path: '/settings/api-keys'
@@ -240,14 +359,96 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedBackupsSnapshotIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/sites/$siteId/': {
+      id: '/_authed/sites/$siteId/'
+      path: '/'
+      fullPath: '/sites/$siteId/'
+      preLoaderRoute: typeof AuthedSitesSiteIdIndexRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
+    '/_authed/sites/$siteId/updates': {
+      id: '/_authed/sites/$siteId/updates'
+      path: '/updates'
+      fullPath: '/sites/$siteId/updates'
+      preLoaderRoute: typeof AuthedSitesSiteIdUpdatesRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
+    '/_authed/sites/$siteId/settings': {
+      id: '/_authed/sites/$siteId/settings'
+      path: '/settings'
+      fullPath: '/sites/$siteId/settings'
+      preLoaderRoute: typeof AuthedSitesSiteIdSettingsRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
+    '/_authed/sites/$siteId/security': {
+      id: '/_authed/sites/$siteId/security'
+      path: '/security'
+      fullPath: '/sites/$siteId/security'
+      preLoaderRoute: typeof AuthedSitesSiteIdSecurityRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
+    '/_authed/sites/$siteId/health': {
+      id: '/_authed/sites/$siteId/health'
+      path: '/health'
+      fullPath: '/sites/$siteId/health'
+      preLoaderRoute: typeof AuthedSitesSiteIdHealthRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
+    '/_authed/sites/$siteId/errors': {
+      id: '/_authed/sites/$siteId/errors'
+      path: '/errors'
+      fullPath: '/sites/$siteId/errors'
+      preLoaderRoute: typeof AuthedSitesSiteIdErrorsRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
+    '/_authed/sites/$siteId/backups': {
+      id: '/_authed/sites/$siteId/backups'
+      path: '/backups'
+      fullPath: '/sites/$siteId/backups'
+      preLoaderRoute: typeof AuthedSitesSiteIdBackupsRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
+    '/_authed/sites/$siteId/activity': {
+      id: '/_authed/sites/$siteId/activity'
+      path: '/activity'
+      fullPath: '/sites/$siteId/activity'
+      preLoaderRoute: typeof AuthedSitesSiteIdActivityRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
   }
 }
+
+interface AuthedSitesSiteIdRouteChildren {
+  AuthedSitesSiteIdActivityRoute: typeof AuthedSitesSiteIdActivityRoute
+  AuthedSitesSiteIdBackupsRoute: typeof AuthedSitesSiteIdBackupsRoute
+  AuthedSitesSiteIdErrorsRoute: typeof AuthedSitesSiteIdErrorsRoute
+  AuthedSitesSiteIdHealthRoute: typeof AuthedSitesSiteIdHealthRoute
+  AuthedSitesSiteIdSecurityRoute: typeof AuthedSitesSiteIdSecurityRoute
+  AuthedSitesSiteIdSettingsRoute: typeof AuthedSitesSiteIdSettingsRoute
+  AuthedSitesSiteIdUpdatesRoute: typeof AuthedSitesSiteIdUpdatesRoute
+  AuthedSitesSiteIdIndexRoute: typeof AuthedSitesSiteIdIndexRoute
+}
+
+const AuthedSitesSiteIdRouteChildren: AuthedSitesSiteIdRouteChildren = {
+  AuthedSitesSiteIdActivityRoute: AuthedSitesSiteIdActivityRoute,
+  AuthedSitesSiteIdBackupsRoute: AuthedSitesSiteIdBackupsRoute,
+  AuthedSitesSiteIdErrorsRoute: AuthedSitesSiteIdErrorsRoute,
+  AuthedSitesSiteIdHealthRoute: AuthedSitesSiteIdHealthRoute,
+  AuthedSitesSiteIdSecurityRoute: AuthedSitesSiteIdSecurityRoute,
+  AuthedSitesSiteIdSettingsRoute: AuthedSitesSiteIdSettingsRoute,
+  AuthedSitesSiteIdUpdatesRoute: AuthedSitesSiteIdUpdatesRoute,
+  AuthedSitesSiteIdIndexRoute: AuthedSitesSiteIdIndexRoute,
+}
+
+const AuthedSitesSiteIdRouteWithChildren =
+  AuthedSitesSiteIdRoute._addFileChildren(AuthedSitesSiteIdRouteChildren)
 
 interface AuthedRouteChildren {
   AuthedBackupsSnapshotIdRoute: typeof AuthedBackupsSnapshotIdRoute
   AuthedSettingsAlertsRoute: typeof AuthedSettingsAlertsRoute
   AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
-  AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRoute
+  AuthedSettingsDestinationsRoute: typeof AuthedSettingsDestinationsRoute
+  AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRouteWithChildren
   AuthedUpdatesRunIdRoute: typeof AuthedUpdatesRunIdRoute
   AuthedSitesIndexRoute: typeof AuthedSitesIndexRoute
   AuthedUpdatesIndexRoute: typeof AuthedUpdatesIndexRoute
@@ -257,7 +458,8 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedBackupsSnapshotIdRoute: AuthedBackupsSnapshotIdRoute,
   AuthedSettingsAlertsRoute: AuthedSettingsAlertsRoute,
   AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
-  AuthedSitesSiteIdRoute: AuthedSitesSiteIdRoute,
+  AuthedSettingsDestinationsRoute: AuthedSettingsDestinationsRoute,
+  AuthedSitesSiteIdRoute: AuthedSitesSiteIdRouteWithChildren,
   AuthedUpdatesRunIdRoute: AuthedUpdatesRunIdRoute,
   AuthedSitesIndexRoute: AuthedSitesIndexRoute,
   AuthedUpdatesIndexRoute: AuthedUpdatesIndexRoute,

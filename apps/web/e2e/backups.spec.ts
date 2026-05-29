@@ -186,6 +186,45 @@ async function mockApi(page: Page) {
     },
   );
 
+  // SQL inspection report — now first-class page content (ADR-037 Batch 2),
+  // not just inside the restore modal. Registered before the bare snapshot
+  // route so its more-specific path wins precedence.
+  await page.route(
+    `**/api/v1/backups/${SNAPSHOT_ID}/sql-inspection`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: 1,
+          source: "agent",
+          is_wordpress: true,
+          charset: "utf8mb4",
+          collation: "utf8mb4_unicode_ci",
+          table_prefix: "wp_",
+          siteurl: "https://example.com",
+          home: "https://example.com",
+          generated_at: "2026-05-27T12:05:00Z",
+          tables: [
+            { name: "wp_posts", rows_estimate: 128, bytes_estimate: 1_048_576, charset: "utf8mb4" },
+            { name: "wp_options", rows_estimate: 340, bytes_estimate: 262_144, charset: "utf8mb4" },
+          ],
+        }),
+      }),
+  );
+
+  // Environment fingerprint — older snapshots return 404 (not recorded); we
+  // mock that calm path so the provenance card renders its muted note.
+  await page.route(
+    `**/api/v1/backups/${SNAPSHOT_ID}/environment`,
+    (route) =>
+      route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "not recorded" }),
+      }),
+  );
+
   await page.route(`**/api/v1/backups/${SNAPSHOT_ID}`, (route) =>
     route.fulfill({
       status: 200,
@@ -207,10 +246,11 @@ test("trigger a backup on a site and see the snapshot appear with a status", asy
 
   // Backups section + empty state.
   await expect(page.getByText("Backups", { exact: true })).toBeVisible();
-  await expect(page.getByText("No backups yet.")).toBeVisible();
+  await expect(page.getByText(/No backups yet/)).toBeVisible();
 
-  // Trigger a backup (kind defaults to full).
-  await page.getByRole("button", { name: "Back up now" }).click();
+  // Trigger a backup (kind defaults to full). The control now lives in the
+  // card header as a "Run backup" verb-first action (ADR-037 Batch 2 flatten).
+  await page.getByRole("button", { name: "Run backup" }).click();
 
   // The new snapshot row appears with a status badge (list polling advances it).
   const row = page.getByTestId("backup-row");
@@ -224,36 +264,46 @@ test("open a snapshot and run a full restore", async ({ page }) => {
 
   await page.goto(`/backups/${SNAPSHOT_ID}`);
   await expect(
-    page.getByRole("heading", { name: /^Snapshot/ }),
+    page.getByRole("heading", { name: /^Snapshot/, level: 1 }),
   ).toBeVisible();
 
-  // Manifest summary + entries.
-  await expect(page.getByText("Manifest summary")).toBeVisible();
+  // Contents card (SQL inspection + grouped manifest). The manifest groups are
+  // collapsed by default; expand "Files" to reveal individual entries.
+  await expect(page.getByText("Contents", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: /^Files/ })
+    .first()
+    .click();
   await expect(page.getByTestId("manifest-entry-row").first()).toBeVisible();
 
-  // Open the restore dialog.
-  await page.getByRole("button", { name: "Restore…" }).click();
+  // The primary "Restore site" CTA in the page header opens the restore dialog.
+  await page
+    .getByRole("button", { name: "Restore site", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Restore from snapshot" }),
   ).toBeVisible();
   await expect(page.getByText(/destructive/i)).toBeVisible();
 
-  // Full restore is selected by default. Clicking "Restore site" opens the
-  // destructive-confirm modal where the operator types the snapshot id prefix
-  // (fallback when no host is available) to enable the destructive button.
-  await page.getByRole("button", { name: "Restore site", exact: true }).click();
+  // Full restore is selected by default. Clicking "Apply restore" opens the
+  // destructive-confirm modal where the operator types the host (or snapshot
+  // id prefix fallback) to enable the destructive button.
+  await page
+    .getByRole("button", { name: "Apply restore", exact: true })
+    .click();
   await expect(
-    page.getByRole("heading", { name: /^Restore .* from backup/ }),
+    page.getByRole("heading", { name: /Apply restore for .* from backup/ }),
   ).toBeVisible();
 
   const confirmBtn = page
-    .getByRole("button", { name: "Restore site", exact: true })
+    .getByRole("button", { name: "Apply restore", exact: true })
     .last();
   await expect(confirmBtn).toBeDisabled();
 
-  // Type the snapshot id prefix (the fallback resourceName).
-  const prefix = SNAPSHOT_ID.slice(0, 8);
-  await page.getByLabel(/Type .* to confirm/).fill(prefix);
+  // Type the site host (resolved from the snapshot's site_id) to confirm. The
+  // page now passes the real host instead of the snapshot id fallback.
+  const host = new URL(SITE.url).host;
+  await page.getByLabel(/Type .* to confirm/).fill(host);
   await expect(confirmBtn).toBeEnabled();
 
   await confirmBtn.click();

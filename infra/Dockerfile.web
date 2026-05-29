@@ -20,7 +20,12 @@ COPY packages ./packages
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --filter @wpmgr/web...
 
-# Copy the web app source and build.
+# Copy the web app source and build. BUILD_VERSION is injected by vite at
+# build time via __BUILD_VERSION__ define (see apps/web/vite.config.ts).
+# The deploy pipeline passes the release tag via --build-arg BUILD_VERSION=...
+# so the dashboard's footer + SSE handshake report the actual shipped version.
+ARG BUILD_VERSION=local
+ENV BUILD_VERSION=${BUILD_VERSION}
 COPY apps/web ./apps/web
 RUN pnpm --filter @wpmgr/web build
 

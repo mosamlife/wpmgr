@@ -92,10 +92,15 @@ const TOP_GROUPS: ReadonlyArray<NavGroup> = [
 const SETTINGS_GROUP: NavGroup = {
   label: "Settings",
   icon: Settings,
-  // No /settings index route exists yet; clicking Settings lands the operator
-  // on the most-used child page (api-keys) until Sprint 4 builds a real hub.
-  // /settings/alerts is reachable from there via in-page nav.
-  to: "/settings/api-keys",
+  // Settings is now a grouped section so the destinations sub-item (ADR-036 P1
+  // storage adapter) has a stable home. The group highlights and the API keys
+  // page is still the "first" target — Sprint 4 may add a real /settings index
+  // page later, at which point the `to` here can flip to that.
+  items: [
+    { label: "API keys", to: "/settings/api-keys" },
+    { label: "Destinations", to: "/settings/destinations" },
+    { label: "Alerts", to: "/settings/alerts" },
+  ],
 };
 
 export function Sidebar() {

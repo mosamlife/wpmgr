@@ -1,0 +1,28 @@
+name: design-lint
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  design-lint:
+    name: Impeccable design lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Impeccable design lint
+        working-directory: apps/web
+        run: pnpm lint:design > impeccable-report.json
+        # exit code 0 = clean, non-zero = anti-patterns found -> fails build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: impeccable-report
+          path: apps/web/impeccable-report.json

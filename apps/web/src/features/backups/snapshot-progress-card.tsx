@@ -29,6 +29,8 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { formatBytes, relativeTime } from "@/lib/utils";
 
+import { LiveIndicator } from "@/components/shared/live-indicator";
+
 import { buildStepperPhases, formatProgress, isRestorePhase } from "./format-progress";
 import { PhaseStepper } from "./phase-stepper";
 import { formatElapsed, useEta, useEtaSamples } from "./use-eta";
@@ -71,7 +73,6 @@ export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot })
 
   const stepperPhases = buildStepperPhases(fp.phase, snapshot.status);
 
-  const indicatorClass = stream.isLive ? "bg-green-500" : "bg-amber-500";
   const indicatorLabel = stream.isLive
     ? "Live (SSE)"
     : stream.failureCount > 0
@@ -95,17 +96,11 @@ export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot })
               {fp.artifact ? ` — ${fp.artifact}` : ""}
             </CardDescription>
           </div>
-          <span
-            role="status"
-            aria-label={indicatorLabel}
-            title={indicatorLabel}
-            className="inline-flex items-center gap-1.5 text-xs text-[var(--color-muted-foreground)]"
-          >
-            <span
-              aria-hidden
-              className={`size-2 rounded-full ${indicatorClass}${stream.isLive ? "" : " motion-safe:animate-pulse"}`}
+          <span role="status" aria-label={indicatorLabel} title={indicatorLabel}>
+            <LiveIndicator
+              state={stream.isLive ? "live" : "connecting"}
+              label={stream.isLive ? "Live" : "Polling"}
             />
-            {stream.isLive ? "Live" : "Polling"}
           </span>
         </div>
       </CardHeader>
