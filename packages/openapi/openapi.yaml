@@ -1013,6 +1013,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/backups/{snapshotId}/events:
+    get:
+      operationId: streamBackupSnapshotEvents
+      summary: Stream live backup snapshot progress (SSE)
+      description: |
+        Server-Sent Events stream (text/event-stream) of progress transitions for
+        a backup snapshot, for live UI updates. Each `data:` line is a JSON
+        BackupEvent. The stream emits periodic heartbeat comment lines (":\n")
+        and ends when the snapshot reaches a terminal state (completed/failed)
+        or the client disconnects. Requires viewer+.
+      tags: [backups]
+      parameters:
+        - $ref: "#/components/parameters/SnapshotId"
+      responses:
+        "200":
+          description: |
+            An event stream. Media type text/event-stream; each event payload is
+            a BackupEvent JSON object. Documented here as the BackupEvent schema
+            for clients/codegen even though the transport is SSE, not JSON.
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/BackupEvent"
+        "404":
+          description: Backup snapshot not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/backups/{snapshotId}/restore:
     post:
       operationId: createRestore
@@ -1087,6 +1116,59 @@ paths:
                 $ref: "#/components/schemas/BackupSchedule"
         "422":
           description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/updates/refresh:
+    post:
+      operationId: refreshSiteUpdates
+      summary: Trigger an immediate inventory + available-updates refresh
+      description: |
+        Enqueues a CP->agent refresh-inventory command for the site. The agent
+        re-reads its plugin/theme inventory and `update_*` transients and pushes
+        them back over /agent/v1/metadata. Returns 202 immediately. Requires
+        viewer+. Returns 409 when the site is offline or unreachable, or 404 if
+        the site is not enrolled in this tenant.
+      tags: [updates]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "202":
+          description: Refresh queued
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Site offline or refresh already in flight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/updates/available:
+    get:
+      operationId: getSiteAvailableUpdates
+      summary: Get the cached per-item available-updates list for a site
+      description: |
+        Returns the cached list of plugins/themes (and core) that have an update
+        available, derived from the agent's last metadata sync. Items are sorted
+        core -> plugins -> themes, with active before inactive. `as_of` is the
+        site's last update timestamp. Requires viewer+.
+      tags: [updates]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Available updates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteAvailableUpdates"
+        "404":
+          description: Site not found
           content:
             application/json:
               schema:
@@ -1390,6 +1472,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SiteComponent"
+        core_update:
+          type: object
+          nullable: true
+          description: When set, WordPress core has an update available.
+          required: [new_version, current_version]
+          properties:
+            new_version:
+              type: string
+            current_version:
+              type: string
     SiteComponent:
       type: object
       required: [slug]
@@ -1402,6 +1494,72 @@ components:
           type: string
         active:
           type: boolean
+        available_update:
+          type: object
+          nullable: true
+          description: When set, an update is available for this plugin/theme.
+          required: [new_version]
+          properties:
+            new_version:
+              type: string
+            package:
+              type: string
+              nullable: true
+            tested:
+              type: string
+              nullable: true
+            requires_php:
+              type: string
+              nullable: true
+    SiteAvailableUpdates:
+      type: object
+      description: Per-site cached list of items with updates available.
+      required: [site_id, items]
+      properties:
+        site_id:
+          type: string
+          format: uuid
+        core_update:
+          type: object
+          nullable: true
+          required: [new_version, current_version]
+          properties:
+            new_version:
+              type: string
+            current_version:
+              type: string
+        items:
+          type: array
+          items:
+            type: object
+            required: [type, slug, name, version, new_version, active]
+            properties:
+              type:
+                type: string
+                enum: [plugin, theme]
+              slug:
+                type: string
+              name:
+                type: string
+              version:
+                type: string
+              new_version:
+                type: string
+              active:
+                type: boolean
+              package:
+                type: string
+                nullable: true
+              tested:
+                type: string
+                nullable: true
+              requires_php:
+                type: string
+                nullable: true
+        as_of:
+          type: string
+          format: date-time
+          nullable: true
     SiteTags:
       type: object
       required: [tags]
@@ -1916,6 +2074,42 @@ components:
         run_status:
           type: string
           enum: [pending, running, completed]
+    BackupEvent:
+      type: object
+      description: |
+        One snapshot-progress transition streamed over SSE. Status mirrors the
+        parent snapshot's status at publish time so a subscriber can detect a
+        terminal state (completed/failed) and close the EventSource. Phase
+        values come from the closed `allowedProgressPhases` set on the CP.
+      required: [snapshot_id, phase, status, ts]
+      properties:
+        snapshot_id:
+          type: string
+          format: uuid
+        phase:
+          type: string
+          enum:
+            - queued
+            - started
+            - dumping_db
+            - archiving_files
+            - encrypting_uploading
+            - compressing_files
+            - encrypting
+            - uploading
+            - submitting_manifest
+            - completed
+            - failed
+        phase_detail:
+          type: object
+          additionalProperties: true
+          description: Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        ts:
+          type: string
+          format: date-time
     BackupCreate:
       type: object
       description: Request to start a backup of a site.
@@ -1963,6 +2157,21 @@ components:
           description: Kept by the monthly-archive retention rule.
         error:
           type: string
+        progress:
+          type: object
+          additionalProperties: true
+          description: |
+            M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
+            its first phase. Shape:
+              { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
+            Phases form a closed set (see backup.allowedProgressPhases on the CP).
+        progress_updated_at:
+          type: string
+          format: date-time
+          description: |
+            Server timestamp of the last progress POST from the runner. Used by the
+            CP watchdog (>120s without an update on a running snapshot → marked
+            failed/stalled) and by the frontend to detect a silent runner.
         started_at:
           type: string
           format: date-time

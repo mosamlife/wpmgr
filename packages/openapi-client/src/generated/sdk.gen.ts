@@ -118,6 +118,10 @@ import type {
   SetSiteTagsData,
   SetSiteTagsErrors,
   SetSiteTagsResponses,
+  StreamBackupSnapshotEventsData,
+  StreamBackupSnapshotEventsErrors,
+  StreamBackupSnapshotEventsResponse,
+  StreamBackupSnapshotEventsResponses,
   StreamUpdateRunEventsData,
   StreamUpdateRunEventsErrors,
   StreamUpdateRunEventsResponse,
@@ -764,6 +768,31 @@ export const getBackup = <ThrowOnError extends boolean = false>(
     GetBackupErrors,
     ThrowOnError
   >({ url: "/api/v1/backups/{snapshotId}", ...options });
+
+/**
+ * Stream live backup snapshot progress (SSE)
+ *
+ * Server-Sent Events stream (text/event-stream) of progress transitions for
+ * a backup snapshot, for live UI updates. Each `data:` line is a JSON
+ * BackupEvent. The stream emits periodic heartbeat comment lines (":\n")
+ * and ends when the snapshot reaches a terminal state (completed/failed)
+ * or the client disconnects. Requires viewer+.
+ *
+ */
+export const streamBackupSnapshotEvents = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    StreamBackupSnapshotEventsData,
+    ThrowOnError,
+    StreamBackupSnapshotEventsResponse
+  >,
+) =>
+  (options.client ?? client).sse.get<
+    StreamBackupSnapshotEventsResponses,
+    StreamBackupSnapshotEventsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/backups/{snapshotId}/events", ...options });
 
 /**
  * Restore from a backup snapshot (full or partial)

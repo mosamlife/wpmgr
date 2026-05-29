@@ -4,3 +4,8 @@ packages:
   - "packages/*"
 allowBuilds:
   esbuild: true
+  # Puppeteer's postinstall downloads ~100 MB of Chromium. Disabled because
+  # nothing in our pipeline launches a headless browser; impeccable's critique
+  # uses static analysis, not screenshots. Flip to `true` if a future phase
+  # needs a real browser (live preview iteration, visual diffs, etc.).
+  puppeteer: false

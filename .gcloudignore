@@ -1,0 +1,34 @@
+.git
+.github
+.idea
+.vscode
+.DS_Store
+
+# Node
+node_modules
+**/node_modules
+**/.next
+**/dist
+**/build
+**/coverage
+
+# Go
+**/bin
+**/vendor
+**/*.out
+**/.cache
+
+# PHP
+apps/agent/vendor
+release
+
+# Misc
+infra/grafana/data
+infra/prometheus/data
+infra/postgres/data
+**/__pycache__
+**/.pytest_cache
+
+# IDE / tooling
+**/*.log
+**/.DS_Store

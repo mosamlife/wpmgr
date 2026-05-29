@@ -1024,6 +1024,49 @@ export const UpdateEventSchema = {
   },
 } as const;
 
+export const BackupEventSchema = {
+  type: "object",
+  description:
+    "One snapshot-progress transition streamed over SSE. Status mirrors the\nparent snapshot's status at publish time so a subscriber can detect a\nterminal state (completed/failed) and close the EventSource. Phase\nvalues come from the closed `allowedProgressPhases` set on the CP.\n",
+  required: ["snapshot_id", "phase", "status", "ts"],
+  properties: {
+    snapshot_id: {
+      type: "string",
+      format: "uuid",
+    },
+    phase: {
+      type: "string",
+      enum: [
+        "queued",
+        "started",
+        "dumping_db",
+        "archiving_files",
+        "encrypting_uploading",
+        "compressing_files",
+        "encrypting",
+        "uploading",
+        "submitting_manifest",
+        "completed",
+        "failed",
+      ],
+    },
+    phase_detail: {
+      type: "object",
+      additionalProperties: true,
+      description:
+        "Pass-through of the agent's POST /progress payload (e.g. chunk counters).",
+    },
+    status: {
+      type: "string",
+      enum: ["pending", "running", "completed", "failed"],
+    },
+    ts: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
 export const BackupCreateSchema = {
   type: "object",
   description: "Request to start a backup of a site.",
@@ -1092,6 +1135,18 @@ export const BackupSnapshotSchema = {
     },
     error: {
       type: "string",
+    },
+    progress: {
+      type: "object",
+      additionalProperties: true,
+      description:
+        'M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts\nits first phase. Shape:\n  { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }\nPhases form a closed set (see backup.allowedProgressPhases on the CP).\n',
+    },
+    progress_updated_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "Server timestamp of the last progress POST from the runner. Used by the\nCP watchdog (>120s without an update on a running snapshot → marked\nfailed/stalled) and by the frontend to detect a silent runner.\n",
     },
     started_at: {
       type: "string",

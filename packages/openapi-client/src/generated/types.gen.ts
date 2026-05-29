@@ -365,6 +365,37 @@ export type UpdateEvent = {
 };
 
 /**
+ * One snapshot-progress transition streamed over SSE. Status mirrors the
+ * parent snapshot's status at publish time so a subscriber can detect a
+ * terminal state (completed/failed) and close the EventSource. Phase
+ * values come from the closed `allowedProgressPhases` set on the CP.
+ *
+ */
+export type BackupEvent = {
+  snapshot_id: string;
+  phase:
+    | "queued"
+    | "started"
+    | "dumping_db"
+    | "archiving_files"
+    | "encrypting_uploading"
+    | "compressing_files"
+    | "encrypting"
+    | "uploading"
+    | "submitting_manifest"
+    | "completed"
+    | "failed";
+  /**
+   * Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+   */
+  phase_detail?: {
+    [key: string]: unknown;
+  };
+  status: "pending" | "running" | "completed" | "failed";
+  ts: string;
+};
+
+/**
  * Request to start a backup of a site.
  */
 export type BackupCreate = {
@@ -394,6 +425,23 @@ export type BackupSnapshot = {
    */
   archived?: boolean;
   error?: string;
+  /**
+   * M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
+   * its first phase. Shape:
+   * { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
+   * Phases form a closed set (see backup.allowedProgressPhases on the CP).
+   *
+   */
+  progress?: {
+    [key: string]: unknown;
+  };
+  /**
+   * Server timestamp of the last progress POST from the runner. Used by the
+   * CP watchdog (>120s without an update on a running snapshot → marked
+   * failed/stalled) and by the frontend to detect a silent runner.
+   *
+   */
+  progress_updated_at?: string;
   started_at?: string;
   finished_at?: string;
   created_at: string;
@@ -1711,6 +1759,38 @@ export type GetBackupResponses = {
 };
 
 export type GetBackupResponse = GetBackupResponses[keyof GetBackupResponses];
+
+export type StreamBackupSnapshotEventsData = {
+  body?: never;
+  path: {
+    snapshotId: string;
+  };
+  query?: never;
+  url: "/api/v1/backups/{snapshotId}/events";
+};
+
+export type StreamBackupSnapshotEventsErrors = {
+  /**
+   * Backup snapshot not found
+   */
+  404: Error;
+};
+
+export type StreamBackupSnapshotEventsError =
+  StreamBackupSnapshotEventsErrors[keyof StreamBackupSnapshotEventsErrors];
+
+export type StreamBackupSnapshotEventsResponses = {
+  /**
+   * An event stream. Media type text/event-stream; each event payload is
+   * a BackupEvent JSON object. Documented here as the BackupEvent schema
+   * for clients/codegen even though the transport is SSE, not JSON.
+   *
+   */
+  200: BackupEvent;
+};
+
+export type StreamBackupSnapshotEventsResponse =
+  StreamBackupSnapshotEventsResponses[keyof StreamBackupSnapshotEventsResponses];
 
 export type CreateRestoreData = {
   body: RestoreCreate;
