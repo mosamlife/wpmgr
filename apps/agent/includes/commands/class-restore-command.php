@@ -118,6 +118,20 @@ final class RestoreCommand implements CommandInterface
             return $this->refuse('no chunk_downloads / manifest entries supplied');
         }
 
+        // --- 1.5. Restore-readiness preflight (ADR-037 Sprint 1, 1B) ------
+        //
+        // Mirror of BackupCommand's preflight. Restore also needs disk for the
+        // staging tree, a writable scratch base, ZipArchive for the per-
+        // component extract, and a healthy DB connection for the SQL restore
+        // phase. Defense-in-depth: if any of these fail later, the operator
+        // gets a long delay before the failure surfaces; preflight closes
+        // that perception gap.
+        $preflight = $this->preflightChecks();
+        if (!$preflight['ok']) {
+            $this->writePreflightFailure($snapshotId, $restoreId, $preflight['failures']);
+            return $this->refuse('preflight_failed: ' . implode(', ', $preflight['failures']));
+        }
+
         // --- 2. Dedup claim ------------------------------------------------
         Schema::ensureCurrent();
         if (!$this->tryClaimDedup($snapshotId, $restoreId)) {
@@ -132,6 +146,21 @@ final class RestoreCommand implements CommandInterface
             return $this->refuse('scratch dir creation failed');
         }
 
+        // P0 URL rewriter: extract target_* URLs from the RestoreRequest so
+        // the URL_REWRITE phase can rewrite siteurl/home/content/upload
+        // references in the tmp tables before swap. When the CP doesn't pass
+        // them (older CP, or a same-environment restore) we fall back to the
+        // live site's values inside RestoreRunner::runUrlRewrite — same-env
+        // restore then short-circuits to a no-op.
+        $targetSiteUrl    = $this->str($params, 'target_site_url');
+        $targetHomeUrl    = $this->str($params, 'target_home_url');
+        $targetContentUrl = $this->str($params, 'target_content_url');
+        $targetUploadUrl  = $this->str($params, 'target_upload_url');
+        $sourceSiteUrl    = $this->str($params, 'source_site_url');
+        $sourceHomeUrl    = $this->str($params, 'source_home_url');
+        $sourceContentUrl = $this->str($params, 'source_content_url');
+        $sourceUploadUrl  = $this->str($params, 'source_upload_url');
+
         $runnerParams = [
             'snapshot_id'       => $snapshotId,
             'restore_id'        => $restoreId,
@@ -143,6 +172,18 @@ final class RestoreCommand implements CommandInterface
             'wp_content_path'   => defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '',
             'wp_root'           => defined('ABSPATH') ? ABSPATH : '',
             'db'                => $this->dbCreds(),
+            // P0 URL rewriter: target/source URLs for cross-env restore.
+            'target_site_url'    => $targetSiteUrl,
+            'target_home_url'    => $targetHomeUrl,
+            'target_content_url' => $targetContentUrl,
+            'target_upload_url'  => $targetUploadUrl,
+            'source_site_url'    => $sourceSiteUrl,
+            'source_home_url'    => $sourceHomeUrl,
+            'source_content_url' => $sourceContentUrl,
+            'source_upload_url'  => $sourceUploadUrl,
+            // ADR-037 Sprint 1, 1B: preflight warnings ride along with the
+            // first progress event (same surface as BackupCommand).
+            'preflight_warnings' => $preflight['warnings'],
         ];
 
         // --- 4. Seed the task row ------------------------------------------
@@ -280,23 +321,38 @@ final class RestoreCommand implements CommandInterface
     }
 
     /**
-     * Create wp-content/wpmgr-agent/restores/{snapshot_id}-{restore_id}/.
-     * Idempotent — watchdog resume returns the same dir.
+     * Create the per-restore scratch directory inside wp-content.
+     *
+     * Path: `wp-content/wpmgr-agent/restores/<snapshot_id>-<short_restore_id>/`.
+     *
+     * Why inside wp-content (vs ABSPATH or its parent):
+     *   `wp-content/` is the ONLY directory PHP-FPM is guaranteed to be writable
+     *   on every WordPress host (because uploads land there). Parent-of-wp-content
+     *   (ABSPATH) is read-only at runtime on WP Engine, Pantheon, WP VIP, and
+     *   often Kinsta. v0.9.8 briefly relocated scratch to dirname(WP_CONTENT_DIR)
+     *   to dodge the swap_files bug but that traded one failure mode for another.
+     *
+     * Why the swap_files phase doesn't destroy it (v0.9.9+):
+     *   FilesRestorer::PRESERVE_FROM_LIVE now includes 'wpmgr-agent' alongside
+     *   'plugins/wpmgr-agent'. The whole-wp-content swap copies the live
+     *   wpmgr-agent dir (scratch + keystore + restores subdir) into staging
+     *   before the rename, so the post-swap wp-content carries everything
+     *   forward and PHASE_RESTORE_DB finds <scratch>/database.sql.gz exactly
+     *   where it left it. This mirrors WPvivid's whitelist pattern.
+     *
+     * Idempotent — a watchdog resume returns the same dir.
      */
     private function prepareScratchDir(string $snapshotId, string $restoreId): string
     {
-        if (!defined('WP_CONTENT_DIR')) {
-            throw new \RuntimeException('WP_CONTENT_DIR is not defined');
-        }
         $base = WP_CONTENT_DIR . '/wpmgr-agent/restores';
-        if (!is_dir($base) && !mkdir($base, 0700, true) && !is_dir($base)) {
-            throw new \RuntimeException('cannot create restore scratch base');
+        if (!is_dir($base) && !wp_mkdir_p($base) && !is_dir($base)) {
+            throw new \RuntimeException('cannot create restore scratch base: ' . $base);
         }
         // Short-id to keep the dir name reasonable.
         $clean = preg_replace('/[^a-f0-9]/i', '', $restoreId) ?? '';
         $short = substr($clean, 0, 12);
-        $dir   = $base . '/' . $snapshotId . '-' . $short;
-        if (!is_dir($dir) && !mkdir($dir, 0700) && !is_dir($dir)) {
+        $dir   = $base . DIRECTORY_SEPARATOR . $snapshotId . '-' . $short;
+        if (!is_dir($dir) && !@mkdir($dir, 0700) && !is_dir($dir)) {
             throw new \RuntimeException('cannot create restore scratch dir');
         }
         @chmod($dir, 0700);
@@ -367,5 +423,152 @@ final class RestoreCommand implements CommandInterface
     private function str(array $params, string $key): string
     {
         return isset($params[$key]) && is_string($params[$key]) ? $params[$key] : '';
+    }
+
+    /**
+     * ADR-037 Sprint 1, 1B — Restore-readiness preflight.
+     *
+     * Symmetric with BackupCommand::preflightChecks. Restore needs the same
+     * environment guarantees as backup: disk for the staging tree, a writable
+     * scratch base, ZipArchive for the per-component extracts, a healthy DB
+     * for the SQL restore phase, and a sane MySQL max_allowed_packet for the
+     * largest row in the dump.
+     *
+     * The headroom estimate differs slightly: at restore time we don't have a
+     * cheap "expected payload" signal (the manifest's total_size is on the
+     * CP, not threaded through to the agent's command params), so the disk
+     * check uses a fixed 1 GiB floor — small enough that managed-host scratch
+     * almost always has it, large enough to catch "0 bytes free" / "200 MB
+     * left" failure modes before scratch creation.
+     *
+     * @return array{ok:bool,failures:list<string>,warnings:list<string>}
+     */
+    private function preflightChecks(): array
+    {
+        $failures = [];
+        $warnings = [];
+
+        // --- ZipArchive (HARD fail) ---
+        if (!class_exists('ZipArchive') || !method_exists('ZipArchive', 'addFile')) {
+            $failures[] = 'ZipArchive class or addFile method missing (rebuild PHP with ext-zip)';
+        }
+
+        // --- DB ping (HARD fail) ---
+        global $wpdb;
+        if (is_object($wpdb)) {
+            try {
+                // @phpstan-ignore-next-line — runtime wpdb seam.
+                $probe = $wpdb->get_var('SELECT 1');
+                if ((string) $probe !== '1') {
+                    $failures[] = 'DB ping (SELECT 1) returned unexpected: ' . substr((string) $probe, 0, 80);
+                }
+            } catch (\Throwable $e) {
+                $failures[] = 'DB ping threw: ' . substr($e->getMessage(), 0, 200);
+            }
+        }
+
+        // --- max_allowed_packet (HARD fail < 1 MiB, WARN < 16 MiB) ---
+        $maxPacket = $this->readMaxAllowedPacket();
+        if ($maxPacket !== null) {
+            if ($maxPacket < (1 << 20)) {
+                $failures[] = 'max_allowed_packet is ' . $maxPacket . ' bytes; need at least 1 MiB';
+            } elseif ($maxPacket < (16 << 20)) {
+                $warnings[] = 'max_allowed_packet is ' . round($maxPacket / (1 << 20), 1) . ' MiB; 16+ MiB recommended for wide rows';
+            }
+        }
+
+        // --- Scratch base writable + disk headroom (HARD fail) ---
+        $scratchBase = (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '') . '/wpmgr-agent/restores';
+        if ($scratchBase === '/wpmgr-agent/restores') {
+            $failures[] = 'WP_CONTENT_DIR is undefined; cannot resolve scratch base';
+        } else {
+            $parent = dirname($scratchBase);
+            if (!is_dir($scratchBase) && is_dir($parent) && !is_writable($parent)) {
+                $failures[] = 'scratch base parent not writable: ' . $parent;
+            } elseif (is_dir($scratchBase) && !is_writable($scratchBase)) {
+                $failures[] = 'scratch base not writable: ' . $scratchBase;
+            }
+
+            $probeDir = is_dir($scratchBase) ? $scratchBase : (is_dir($parent) ? $parent : '');
+            if ($probeDir !== '' && function_exists('disk_free_space')) {
+                $free = @disk_free_space($probeDir);
+                if ($free === false) {
+                    $warnings[] = 'disk_free_space() returned false; cannot probe headroom';
+                } else {
+                    // 1 GiB floor — restore staging + DB scratch on a typical
+                    // WP site fits inside this with comfortable margin; below
+                    // it the swap_files phase is going to fail anyway.
+                    $needed = 1 << 30;
+                    if ((int) $free < $needed) {
+                        $failures[] = 'insufficient disk: free=' . (int) $free . ' bytes, need at least 1 GiB';
+                    }
+                }
+            }
+        }
+
+        return [
+            'ok'       => $failures === [],
+            'failures' => $failures,
+            'warnings' => $warnings,
+        ];
+    }
+
+    /**
+     * Read MySQL @@max_allowed_packet (bytes). Returns null on read failure.
+     */
+    private function readMaxAllowedPacket(): ?int
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return null;
+        }
+        try {
+            // @phpstan-ignore-next-line
+            $value = $wpdb->get_var('SELECT @@max_allowed_packet');
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if ($value === null || !is_numeric($value)) {
+            return null;
+        }
+        return (int) $value;
+    }
+
+    /**
+     * Record preflight_failed onto the restore task row.
+     *
+     * @param list<string> $failures
+     */
+    private function writePreflightFailure(string $snapshotId, string $restoreId, array $failures): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+        $table = $wpdb->prefix . Schema::BACKUP_RESTORE_TASKS_TABLE;
+        $now   = time();
+        $subState = (string) wp_json_encode([
+            'reason_code'  => 'preflight_failed',
+            'phase_detail' => ['failures' => $failures],
+        ]);
+        try {
+            // @phpstan-ignore-next-line
+            $wpdb->query($wpdb->prepare(
+                "INSERT IGNORE INTO {$table}
+                 (snapshot_id, restore_id, kind, phase, sub_state, started_at, last_progress_at, resume_count, max_resumes)
+                 VALUES (%s, %s, %s, %s, %s, %d, %d, %d, %d)",
+                $snapshotId,
+                $restoreId,
+                'full',
+                'failed',
+                $subState,
+                $now,
+                $now,
+                0,
+                0
+            ));
+        } catch (\Throwable $e) {
+            // best-effort.
+        }
     }
 }

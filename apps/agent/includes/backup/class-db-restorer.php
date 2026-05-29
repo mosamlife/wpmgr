@@ -308,6 +308,451 @@ final class DbRestorer
     }
 
     /**
+     * P0 URL rewriter: drive the URL rewrite across every tmp table.
+     *
+     * Wrapper around `rewriteTable()` that opens its own mysqli, lists tmp
+     * tables under `$tmpPrefix`, applies the table-level skip denylist
+     * (`UrlRewriter::should_skip_table`), and drives the per-table rewriter
+     * paginated. Persists `$subState['url_rewrite']` checkpoints via the
+     * supplied callback so a watchdog re-entry resumes mid-table.
+     *
+     * @param string                                  $tmpPrefix    The tmp prefix the restore is using.
+     * @param string                                  $sourcePrefix The bare prefix the dump was made with.
+     * @param array{0:list<string>,1:list<string>}    $replacements From `UrlRewriter::build_replacements`.
+     * @param array<string,mixed>                     $resume       Sub-state from a prior call.
+     * @param callable                                $checkpoint   function(array $newSubState): void
+     *                                                              Called after every page so the runner can
+     *                                                              persist `next_offset` between pages.
+     * @param callable                                $progress     function(string $phase, array $detail): void
+     * @return array<string,mixed> Final sub-state (`finished` => true).
+     */
+    public function rewriteAllTables(string $tmpPrefix, string $sourcePrefix, array $replacements, array $resume, callable $checkpoint, callable $progress): array
+    {
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+
+        $mysqli = $this->connect();
+        try {
+            $allTables   = $this->listTablesWithPrefix($mysqli, $tmpPrefix);
+            if ($allTables === []) {
+                return ['finished' => true, 'tables_done' => [], 'total_updates' => 0];
+            }
+            $tablesDone   = isset($resume['tables_done']) && is_array($resume['tables_done']) ? $resume['tables_done'] : [];
+            $tableOffsets = isset($resume['table_offset']) && is_array($resume['table_offset']) ? $resume['table_offset'] : [];
+            $totalUpdates = isset($resume['total_updates']) ? (int) $resume['total_updates'] : 0;
+            $tablesDoneSet = array_flip($tablesDone);
+
+            $rowsPerCall  = 5000; // mirrors WPvivid `replace_rows_pre_request`.
+
+            foreach ($allTables as $tmpTable) {
+                if (isset($tablesDoneSet[$tmpTable])) {
+                    continue;
+                }
+                // Strip the tmp prefix to get the source-bare name. The
+                // denylist test compares against bare names.
+                $bare = (strpos($tmpTable, $tmpPrefix) === 0)
+                    ? substr($tmpTable, strlen($tmpPrefix))
+                    : $tmpTable;
+                if (UrlRewriter::should_skip_table($bare, '')) {
+                    $tablesDone[] = $tmpTable;
+                    $tablesDoneSet[$tmpTable] = true;
+                    self::safeProgress($progress, 'url_rewrite', [
+                        'table'       => $tmpTable,
+                        'skipped'     => 'denylist',
+                        'tables_done' => count($tablesDone),
+                    ]);
+                    continue;
+                }
+
+                $offset = isset($tableOffsets[$tmpTable]) ? (int) $tableOffsets[$tmpTable] : 0;
+                while (true) {
+                    $page = $this->rewriteTable($mysqli, $tmpTable, $bare, $replacements, $rowsPerCall, $offset);
+                    $offset = (int) $page['next_offset'];
+                    $totalUpdates += (int) $page['updates'];
+                    $tableOffsets[$tmpTable] = $offset;
+                    $checkpoint([
+                        'table_offset'  => $tableOffsets,
+                        'tables_done'   => $tablesDone,
+                        'current_table' => $tmpTable,
+                        'current_offset' => $offset,
+                        'total_updates' => $totalUpdates,
+                    ]);
+                    self::safeProgress($progress, 'url_rewrite', [
+                        'table'         => $tmpTable,
+                        'rows_processed' => (int) $page['processed'],
+                        'rows_updated'  => (int) $page['updates'],
+                        'offset'        => $offset,
+                        'tables_done'   => count($tablesDone),
+                        'tables_total'  => count($allTables),
+                        'total_updates' => $totalUpdates,
+                    ]);
+                    if (!empty($page['finished'])) {
+                        break;
+                    }
+                }
+                $tablesDone[] = $tmpTable;
+                $tablesDoneSet[$tmpTable] = true;
+                unset($tableOffsets[$tmpTable]);
+            }
+
+            $out = [
+                'finished'      => true,
+                'tables_done'   => $tablesDone,
+                'tables_total'  => count($allTables),
+                'total_updates' => $totalUpdates,
+            ];
+            $checkpoint($out);
+            return $out;
+        } finally {
+            @$mysqli->close();
+        }
+    }
+
+    /**
+     * P0 URL rewriter: list every table whose name begins with the supplied
+     * prefix. Used to enumerate tmp tables for the URL rewrite phase.
+     *
+     * @return list<string>
+     */
+    private function listTablesWithPrefix(\mysqli $mysqli, string $prefix): array
+    {
+        $like = $mysqli->real_escape_string($prefix . '%');
+        $res  = @$mysqli->query("SHOW TABLES LIKE '" . $like . "'");
+        if ($res === false) {
+            return [];
+        }
+        $out = [];
+        while ($row = $res->fetch_row()) {
+            if (is_array($row) && isset($row[0]) && is_string($row[0])) {
+                $out[] = $row[0];
+            }
+        }
+        $res->free();
+        return $out;
+    }
+
+    /**
+     * P0 URL rewriter: extract the source-URL banner comments from a dump.
+     *
+     * The dumper writes a 6-line banner immediately after the file header so
+     * the restorer can recover the source URLs even when the CP-supplied
+     * `target_*` URLs are absent (a restore initiated against an older agent
+     * snapshot pre-ADR-036, or a manifest that never landed source URLs in
+     * `backup_snapshots`). Format mirrors WPvivid's banner shape so a dump
+     * produced by an older WPvivid pipeline is ALSO parseable here.
+     *
+     * Reads up to 50 lines from the start of the file. If the file is gzipped
+     * (`.sql.gz`) it's transparently decompressed via `gzopen` — the same
+     * call works for plain `.sql` too because gzip detects a non-gzip stream
+     * and falls through to raw read.
+     *
+     * @param string $sqlFilePath Absolute path to the dump (`.sql` or `.sql.gz`).
+     * @return array{old_site_url:string,old_home_url:string,old_content_url:string,old_upload_url:string,old_table_prefix:string}
+     *              All five fields present (empty string when not found).
+     */
+    public static function extractDumpUrls(string $sqlFilePath): array
+    {
+        $out = [
+            'old_site_url'     => '',
+            'old_home_url'     => '',
+            'old_content_url'  => '',
+            'old_upload_url'   => '',
+            'old_table_prefix' => '',
+        ];
+        if (!is_file($sqlFilePath)) {
+            return $out;
+        }
+        $handle = @gzopen($sqlFilePath, 'rb');
+        if ($handle === false) {
+            return $out;
+        }
+        try {
+            $lineNum = 0;
+            while (!gzeof($handle) && $lineNum < 50) {
+                $line = gzgets($handle);
+                if ($line === false) {
+                    break;
+                }
+                $lineNum++;
+                $line = rtrim($line);
+                if ($line === '') {
+                    continue;
+                }
+                // Only inspect comment lines — the banner is wholly inside
+                // SQL comments so the dump remains a valid SQL stream.
+                $head = substr(ltrim($line), 0, 2);
+                if ($head !== '--' && $head !== '/*' && $head !== '//') {
+                    continue;
+                }
+                // Each banner entry ends with " #" (anchored by WPvivid's
+                // own regex shape so we stay compatible with their dumps).
+                $matchers = [
+                    'old_site_url'     => '/# site_url: (.*?) #/',
+                    'old_home_url'     => '/# home_url: (.*?) #/',
+                    'old_content_url' => '/# content_url: (.*?) #/',
+                    'old_upload_url'   => '/# upload_url: (.*?) #/',
+                    'old_table_prefix' => '/# table_prefix: (.*?) #/',
+                ];
+                foreach ($matchers as $key => $pattern) {
+                    if ($out[$key] === '' && preg_match($pattern, $line, $m)) {
+                        $out[$key] = trim($m[1]);
+                    }
+                }
+            }
+        } finally {
+            @gzclose($handle);
+        }
+        return $out;
+    }
+
+    /**
+     * P0 URL rewriter: paginated UPDATE loop for one tmp table.
+     *
+     * Walks `$maxRowsPerCall` rows starting at `$resumeOffset`, applies
+     * `UrlRewriter::rewrite_row_data` to each cell whose column is NOT in the
+     * skip list, and issues batched UPDATE statements (concatenated until the
+     * SQL grows past ~1 MiB, then flushed). This shape — pagination +
+     * batching — is what lets us run cross-environment rewrites against a
+     * 500MB serialized-options table without hitting `max_allowed_packet`
+     * (single huge UPDATE) or PHP's `max_execution_time` (single huge SELECT
+     * with no chunking).
+     *
+     * Returns the cursor state so the RestoreRunner can checkpoint per chunk
+     * and resume on watchdog re-entry.
+     *
+     * @param \mysqli              $mysqli         An already-connected mysqli handle
+     *                                              (the caller owns it; we don't open
+     *                                              our own here because the runner
+     *                                              walks many tables in a row and we
+     *                                              want to amortise the connect).
+     * @param string               $tmpTable       Full tmp-prefixed table name.
+     * @param string               $oldName        Bare source table name (e.g. "options"),
+     *                                              used to gate per-table column skips
+     *                                              (posts.guid).
+     * @param array{0:list<string>,1:list<string>} $replacements Built by `UrlRewriter::build_replacements`.
+     * @param int                  $maxRowsPerCall Pagination budget (5000 mirrors
+     *                                              WPvivid's `replace_rows_pre_request`).
+     * @param int                  $resumeOffset   Where to start in the table.
+     * @return array{processed:int, finished:bool, next_offset:int, updates:int}
+     *              `processed`: rows considered; `updates`: rows actually changed;
+     *              `finished`: true when this call drained the table.
+     */
+    public function rewriteTable(\mysqli $mysqli, string $tmpTable, string $oldName, array $replacements, int $maxRowsPerCall, int $resumeOffset): array
+    {
+        if ($maxRowsPerCall <= 0) {
+            $maxRowsPerCall = 5000;
+        }
+        if ($resumeOffset < 0) {
+            $resumeOffset = 0;
+        }
+        $result = [
+            'processed'   => 0,
+            'finished'    => true,
+            'next_offset' => $resumeOffset,
+            'updates'     => 0,
+        ];
+
+        // Cap the per-flush batch at 1 MiB so we stay well under MySQL's
+        // default `max_allowed_packet` (4 MiB on modern installs, but as low
+        // as 1 MiB on shared hosts). The same shape DbDumper uses for its
+        // multi-row INSERTs.
+        $maxPacketBytes = 1_000_000;
+
+        $columns      = $this->describeColumnsForRewrite($mysqli, $tmpTable);
+        if ($columns === []) {
+            return $result;
+        }
+        $primaryKey   = $this->detectPrimaryKey($mysqli, $tmpTable);
+        if ($primaryKey === '') {
+            // No primary key — can't rewrite safely (we'd risk updating the
+            // wrong row). Skip; RestoreRunner logs and continues.
+            error_log('WPMgr UrlRewriter: skipping table without PK: ' . $tmpTable);
+            return $result;
+        }
+
+        $offset = $resumeOffset;
+        $rowsThisCall = 0;
+
+        // SELECT one page, walk rows, build per-row UPDATE statements,
+        // batch-flush. We re-SELECT for each page so a chunk that's already
+        // been rewritten is read with the new values on resume.
+        $sql = sprintf(
+            'SELECT * FROM `%s` LIMIT %d OFFSET %d',
+            $this->escIdent($tmpTable),
+            $maxRowsPerCall,
+            $offset
+        );
+        $rows = @$mysqli->query($sql);
+        if ($rows === false) {
+            // Surface — runner will catch and translate to a failed phase.
+            throw new \RuntimeException('UrlRewriter: SELECT failed for ' . $tmpTable . ': ' . $mysqli->error);
+        }
+
+        $batch       = '';
+        $batchBytes  = 0;
+        $updateCount = 0;
+
+        while ($row = $rows->fetch_assoc()) {
+            $rowsThisCall++;
+            $sets = [];
+            foreach ($row as $colName => $value) {
+                if (!isset($columns[$colName])) {
+                    continue;
+                }
+                if ($value === null) {
+                    continue;
+                }
+                $colType = $columns[$colName];
+                if (UrlRewriter::should_skip_column($tmpTable, $colName, '', $colType)) {
+                    // Compare against the tmp table name AND also the source
+                    // bare name — posts.guid lives at tmpXXX_posts.guid after
+                    // the prefix swap, and the rule is "skip if bare =
+                    // posts". We approximate by also testing the explicit
+                    // oldName.
+                    continue;
+                }
+                if ($oldName === 'posts' && $colName === 'guid') {
+                    continue;
+                }
+                $rewritten = UrlRewriter::rewrite_row_data((string) $value, $replacements);
+                if ($rewritten === (string) $value) {
+                    continue;
+                }
+                $sets[$colName] = $rewritten;
+            }
+            if ($sets === []) {
+                continue;
+            }
+            $pkValue = $row[$primaryKey] ?? null;
+            if ($pkValue === null) {
+                continue;
+            }
+
+            // Build "UPDATE `t` SET c='v',c2='v' WHERE pk='id'" — one
+            // statement per row. Mysqli's `real_escape_string` is the
+            // canonical defense for arbitrary bytes inside a SQL literal.
+            $setSql = [];
+            foreach ($sets as $col => $val) {
+                $setSql[] = '`' . $this->escIdent($col) . "`='" . $mysqli->real_escape_string($val) . "'";
+            }
+            $stmt = sprintf(
+                "UPDATE `%s` SET %s WHERE `%s`='%s';",
+                $this->escIdent($tmpTable),
+                implode(',', $setSql),
+                $this->escIdent($primaryKey),
+                $mysqli->real_escape_string((string) $pkValue)
+            );
+            $stmtLen = strlen($stmt);
+
+            if ($batchBytes > 0 && ($batchBytes + $stmtLen) > $maxPacketBytes) {
+                // Flush before adding this statement.
+                @$mysqli->multi_query($batch);
+                $this->drainMultiResults($mysqli);
+                $batch       = '';
+                $batchBytes  = 0;
+            }
+            $batch .= $stmt . "\n";
+            $batchBytes += $stmtLen + 1;
+            $updateCount++;
+        }
+        $rows->free();
+
+        if ($batch !== '') {
+            @$mysqli->multi_query($batch);
+            $this->drainMultiResults($mysqli);
+        }
+
+        $result['processed']   = $rowsThisCall;
+        $result['updates']     = $updateCount;
+        $result['next_offset'] = $offset + $rowsThisCall;
+        // Finished when the page returned fewer rows than the budget — there's
+        // no Nth+1 page to fetch on the next call.
+        $result['finished']    = $rowsThisCall < $maxRowsPerCall;
+        return $result;
+    }
+
+    /**
+     * Helper for `rewriteTable`. Returns column-name => column-type-slug for
+     * every column of the table. Type slug is lowercased and matches what
+     * `UrlRewriter::should_skip_column` expects.
+     *
+     * @return array<string,string>
+     */
+    private function describeColumnsForRewrite(\mysqli $mysqli, string $table): array
+    {
+        $res = $mysqli->query('SHOW COLUMNS FROM `' . $this->escIdent($table) . '`');
+        if ($res === false) {
+            return [];
+        }
+        $out = [];
+        while ($row = $res->fetch_assoc()) {
+            $field = isset($row['Field']) ? (string) $row['Field'] : '';
+            $type  = isset($row['Type'])  ? strtolower((string) $row['Type']) : '';
+            if ($field !== '') {
+                $out[$field] = $type;
+            }
+        }
+        $res->free();
+        return $out;
+    }
+
+    /**
+     * Helper for `rewriteTable`. Returns the primary-key column name (or '').
+     * Prefers the explicit PRIMARY KEY index; falls back to any single UNIQUE
+     * key. Returning '' tells the caller to skip the table — without a stable
+     * row identifier the per-row UPDATE WHERE clause isn't safe.
+     */
+    private function detectPrimaryKey(\mysqli $mysqli, string $table): string
+    {
+        $res = $mysqli->query('SHOW KEYS FROM `' . $this->escIdent($table) . "` WHERE Key_name = 'PRIMARY'");
+        if ($res === false) {
+            return '';
+        }
+        $pk = '';
+        while ($row = $res->fetch_assoc()) {
+            // Compound PK: take the first column. Rewrites are still safe
+            // because we WHERE on every column — but P0 simplifies to the
+            // first column. Most WP tables (options, postmeta, posts) have
+            // single-column PKs; compound is rare in standard WP schema.
+            if ($pk === '' && isset($row['Column_name'])) {
+                $pk = (string) $row['Column_name'];
+            }
+        }
+        $res->free();
+        if ($pk !== '') {
+            return $pk;
+        }
+        // Fallback: any UNIQUE key. wp_options.option_name is the canonical
+        // case — it lacks a PRIMARY on some older WP installs.
+        $res = $mysqli->query('SHOW KEYS FROM `' . $this->escIdent($table) . "` WHERE Non_unique = 0");
+        if ($res === false) {
+            return '';
+        }
+        while ($row = $res->fetch_assoc()) {
+            if ($pk === '' && isset($row['Column_name'])) {
+                $pk = (string) $row['Column_name'];
+            }
+        }
+        $res->free();
+        return $pk;
+    }
+
+    /**
+     * Helper for `rewriteTable`. `multi_query` leaves any subsequent result
+     * sets attached to the connection; if we don't drain them the next query
+     * raises "Commands out of sync". We don't care about the contents (UPDATEs
+     * don't return rows).
+     */
+    private function drainMultiResults(\mysqli $mysqli): void
+    {
+        do {
+            if ($r = @$mysqli->store_result()) {
+                $r->free();
+            }
+        } while (@$mysqli->more_results() && @$mysqli->next_result());
+    }
+
+    /**
      * Drop any stray tmp tables left over from a failed restore. Used by
      * RestoreRunner during cleanup on a failed run.
      *

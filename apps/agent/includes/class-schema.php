@@ -42,7 +42,7 @@ class Schema
      * (add a column, add an index, etc). The migration runner reads the
      * stored option and compares it to this value; mismatch => run dbDelta.
      */
-    public const CURRENT_VERSION = '5';
+    public const CURRENT_VERSION = '7';
 
     /** Name of the M5.6 phpbu-runner dedup table (unprefixed). */
     public const BACKUP_RUNS_TABLE = 'wpmgr_backup_runs';
@@ -55,6 +55,15 @@ class Schema
 
     /** Name of the M5.6/ADR-034 restore task-state table (unprefixed). */
     public const BACKUP_RESTORE_TASKS_TABLE = 'wpmgr_restore_tasks';
+
+    /** ADR-037 Sprint 2 — PHP-error capture table (unprefixed). */
+    public const PHP_ERRORS_TABLE = 'wpmgr_php_errors';
+
+    /** ADR-037 Sprint 2 — diagnostics-run history table (unprefixed). */
+    public const DIAGNOSTICS_RUNS_TABLE = 'wpmgr_diagnostics_runs';
+
+    /** ADR-037 Sprint 3 — hash-chained WP activity log table (unprefixed). */
+    public const ACTIVITY_LOG_TABLE = 'wpmgr_activity_log';
 
     /** Option key storing the last-installed schema version. */
     public const OPTION_DB_VERSION = 'wpmgr_agent_db_version';
@@ -130,6 +139,9 @@ class Schema
         $backupTasksTable  = $prefix . self::BACKUP_TASKS_TABLE;
         $restoreRunsTable  = $prefix . self::BACKUP_RESTORE_RUNS_TABLE;
         $restoreTasksTable = $prefix . self::BACKUP_RESTORE_TASKS_TABLE;
+        $phpErrorsTable    = $prefix . self::PHP_ERRORS_TABLE;
+        $diagnosticsRunsTable = $prefix . self::DIAGNOSTICS_RUNS_TABLE;
+        $activityLogTable  = $prefix . self::ACTIVITY_LOG_TABLE;
 
         return [
             // M2: Connector anti-replay table (short window, per-token jti).
@@ -222,6 +234,80 @@ class Schema
                 PRIMARY KEY  (snapshot_id, restore_id),
                 KEY phase (phase),
                 KEY last_progress_at (last_progress_at)
+            ) {$charset};",
+
+            // ADR-037 Sprint 2 — PHP error capture. `md5` is the dedup key
+            // (md5(code:file:line:message)) and carries a UNIQUE index so the
+            // ErrorMonitor's UPDATE-then-INSERT fast path can run as a single
+            // index seek. Row cap (10k) is enforced application-side by
+            // ErrorMonitor::enforceRowCap (eviction by last_seen ASC).
+            // `backtrace_compressed` is intentionally a BLOB so a stacktrace
+            // can be gzipped before storage; null when we don't capture one.
+            self::PHP_ERRORS_TABLE => "CREATE TABLE {$phpErrorsTable} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                md5 CHAR(32) NOT NULL,
+                code INT NOT NULL,
+                message TEXT NOT NULL,
+                file TEXT NOT NULL,
+                line INT NOT NULL DEFAULT 0,
+                request_path TEXT NOT NULL,
+                request_id VARCHAR(64) NOT NULL DEFAULT '',
+                backtrace_compressed LONGBLOB NULL,
+                first_seen BIGINT UNSIGNED NOT NULL,
+                last_seen BIGINT UNSIGNED NOT NULL,
+                occurrence_count INT UNSIGNED NOT NULL DEFAULT 1,
+                severity VARCHAR(16) NOT NULL DEFAULT 'warning',
+                silenced TINYINT(1) NOT NULL DEFAULT 0,
+                PRIMARY KEY  (id),
+                UNIQUE KEY md5 (md5),
+                KEY last_seen (last_seen),
+                KEY silenced (silenced)
+            ) {$charset};",
+
+            // ADR-037 Sprint 2 — diagnostics-run history. The CP polls the
+            // latest row per (site, category) for its Health-tab cards;
+            // older rows are pruned by the agent once a per-category cap
+            // (default 24 rows ~= ~24 days at one push/day) is exceeded.
+            // For V1 we just keep INSERTs without pruning — daily cadence
+            // for ~1 yr is ~365 rows, well below any concerning footprint.
+            self::DIAGNOSTICS_RUNS_TABLE => "CREATE TABLE {$diagnosticsRunsTable} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                category VARCHAR(32) NOT NULL,
+                payload LONGTEXT NOT NULL,
+                collected_at BIGINT UNSIGNED NOT NULL,
+                PRIMARY KEY  (id),
+                KEY category_collected (category, collected_at)
+            ) {$charset};",
+
+            // ADR-037 Sprint 3 — hash-chained WP activity log. `seq` is a
+            // per-site monotonic counter (option wpmgr_agent_activity_seq) with
+            // a UNIQUE index — it orders the SHA-256 hash chain independently of
+            // the AUTO_INCREMENT id. Each row's `this_hash` folds in the prior
+            // row's `this_hash` (genesis = 64 zeros), so editing or deleting any
+            // historical row breaks every subsequent hash — the CP verifies the
+            // chain on ingest. `shipped_idx (shipped, id)` backs the batch
+            // shipper (unshipped rows, seq ASC) and the oldest-shipped-first
+            // eviction once the 10k row cap is exceeded (ActivityLog::enforceRowCap).
+            // `meta` is the canonical compact JSON that was hashed.
+            self::ACTIVITY_LOG_TABLE => "CREATE TABLE {$activityLogTable} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                seq BIGINT UNSIGNED NOT NULL,
+                event_type VARCHAR(64) NOT NULL,
+                object_type VARCHAR(32) NOT NULL,
+                object_id VARCHAR(255) NOT NULL DEFAULT '',
+                object_label VARCHAR(255) NOT NULL DEFAULT '',
+                actor_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                actor_login VARCHAR(191) NOT NULL DEFAULT '',
+                actor_ip VARCHAR(64) NOT NULL DEFAULT '',
+                summary VARCHAR(255) NOT NULL DEFAULT '',
+                meta LONGTEXT NULL,
+                prev_hash CHAR(64) NOT NULL,
+                this_hash CHAR(64) NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                shipped TINYINT(1) NOT NULL DEFAULT 0,
+                PRIMARY KEY  (id),
+                UNIQUE KEY seq (seq),
+                KEY shipped_idx (shipped, id)
             ) {$charset};",
         ];
     }

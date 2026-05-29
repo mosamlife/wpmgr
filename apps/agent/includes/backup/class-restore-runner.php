@@ -67,6 +67,10 @@ final class RestoreRunner
     public const PHASE_STAGE_FILES         = 'stage_files';
     public const PHASE_SWAP_FILES          = 'swap_files';
     public const PHASE_RESTORE_DB          = 'restore_db';
+    // P0 URL rewriter: ADR-036 phase. Slots between RESTORE_DB and SWAP_DB so
+    // the tmp tables exist (we have something to rewrite) but the live tables
+    // haven't been swapped yet (rewriting the live site would be a footgun).
+    public const PHASE_URL_REWRITE         = 'url_rewrite';
     public const PHASE_SWAP_DB             = 'swap_db';
     public const PHASE_POST_HOOKS          = 'post_hooks';
     public const PHASE_MAINTENANCE_OFF     = 'maintenance_off';
@@ -101,8 +105,34 @@ final class RestoreRunner
      * Required free disk: artifact total bytes × this multiplier. WPvivid
      * recommends 2× in the dossier (§7.2 fix #2); we adopt 2.5× as a safety
      * margin (1× for downloads, 1× for staged extract, 0.5× for tmp tables).
+     *
+     * @deprecated Replaced by the two-leg precheck below (artifact leg vs.
+     *             staging leg, take the max). Kept for one release so an
+     *             out-of-tree call site doesn't break on upgrade.
      */
     private const PREFLIGHT_DISK_MULTIPLIER = 2.5;
+
+    /**
+     * Two-leg disk-free precheck multipliers.
+     *
+     * Leg 1 (artifact): the downloaded artifacts (.zip parts + .sql.gz) sit
+     * in scratch while the restore runs. 1.5× covers the raw bytes plus a
+     * margin for tmp tables created during the DB replay phase.
+     *
+     * Leg 2 (staging): the staged wp-content tree is the same on-disk size
+     * as live wp-content (we extract every file twice — once into staging,
+     * once into the post-swap target). 1.0× is the floor.
+     *
+     * Required = max(legArtifact, legStaging), NOT the sum: by the time
+     * staging is full we've already freed the artifact bytes (well, not
+     * really — cleanup runs after swap — but the two legs overlap on disk
+     * for only a short window mid-extract, and on a host that has enough
+     * for the LARGER leg the smaller leg fits in the headroom). Using max()
+     * over sum() trades a little safety for not nagging operators of small
+     * VPSes who actually do have room to restore.
+     */
+    private const PREFLIGHT_ARTIFACT_MULTIPLIER = 1.5;
+    private const PREFLIGHT_STAGING_MULTIPLIER  = 1.0;
 
     /** @var array<string,mixed> Runner params (see class docblock). */
     private array $params;
@@ -238,6 +268,21 @@ final class RestoreRunner
 
                     case self::PHASE_RESTORE_DB:
                         $subState = $this->runRestoreDb($subState);
+                        // P0 URL rewriter: route through URL_REWRITE so a
+                        // cross-environment restore rewrites siteurl/home/
+                        // content/upload references in the tmp tables BEFORE
+                        // the atomic swap. The phase itself short-circuits
+                        // when source and target URLs match (the common
+                        // same-environment case), so this is zero-cost for
+                        // non-migrating restores.
+                        $next     = self::PHASE_URL_REWRITE;
+                        $this->saveTaskState($next, $subState);
+                        $currentPhase = $next;
+                        break;
+
+                    case self::PHASE_URL_REWRITE:
+                        // P0 URL rewriter: ADR-036.
+                        $subState = $this->runUrlRewrite($subState);
                         $next     = self::PHASE_SWAP_DB;
                         $this->saveTaskState($next, $subState);
                         $currentPhase = $next;
@@ -328,18 +373,30 @@ final class RestoreRunner
         $this->ensureScratchDir();
 
         $artifactsTotal = $this->totalArtifactBytes();
-        $required       = (int) ($artifactsTotal * self::PREFLIGHT_DISK_MULTIPLIER);
+        $wpContent      = $this->wpContentPath();
+
+        // Two-leg disk-free precheck — see PREFLIGHT_*_MULTIPLIER constants.
+        // Leg 1: enough room for the downloaded artifacts + tmp tables.
+        // Leg 2: enough room for the staging tree (same size as live
+        // wp-content). We require max(leg1, leg2), not sum, because the legs
+        // overlap in time — when staging is being filled, the artifacts on
+        // disk are smaller than the bytes already extracted out of them.
+        $legArtifact = (int) ($artifactsTotal * self::PREFLIGHT_ARTIFACT_MULTIPLIER);
+        $legStaging  = (int) (FilesRestorer::estimateWpContentBytes($wpContent) * self::PREFLIGHT_STAGING_MULTIPLIER);
+        $required    = max($legArtifact, $legStaging);
 
         // Disk free on wp-content's volume. disk_free_space returns the
         // bytes free for the filesystem the path lives on.
-        $wpContent = $this->wpContentPath();
-        $free      = $wpContent !== '' && is_dir($wpContent) ? (int) @disk_free_space($wpContent) : 0;
+        $free = $wpContent !== '' && is_dir($wpContent) ? (int) @disk_free_space($wpContent) : 0;
 
         if ($required > 0 && $free > 0 && $free < $required) {
+            // Operator-facing message — surfaces in the SSE phase_detail and
+            // the WP error_log. GB units (not bytes) because that's the unit
+            // operators reason about when looking at `df -h`.
             throw new \RuntimeException(sprintf(
-                'preflight: insufficient disk space: have %d bytes, need ~%d',
-                $free,
-                $required
+                'Not enough free disk. Need ~%s GB, have %s GB. Free up space and retry, or restore to a different mount.',
+                self::formatGb($required),
+                self::formatGb($free)
             ));
         }
 
@@ -650,19 +707,44 @@ final class RestoreRunner
 
     /**
      * stage_files: extract every part zip into the staging dir.
+     *
+     * Track 5 — the staging tree mirrors live wp-content's shape (zip entry
+     * names are wp-content-relative, e.g. `plugins/foo/foo.php`), so a
+     * snapshot containing only `plugins.partNNN.zip` parts populates
+     * `<stagingDir>/plugins/...` and leaves the staging tree's `themes/`,
+     * `uploads/`, etc. EMPTY. This is the per-component split's contract:
+     * whatever the manifest carries is what staging gets.
+     *
+     * We also classify the parts (by filename prefix) and record the set of
+     * component kinds present in this snapshot. The swap_files phase reads
+     * this set to decide between the legacy whole-swap path (entry_kind=
+     * 'file' OR all 4 components present) and the per-component swap path.
      */
     private function runStageFiles(array $subState): array
     {
         $download = isset($subState['download']) && is_array($subState['download']) ? $subState['download'] : [];
         $paths    = isset($download['artifact_paths']) && is_array($download['artifact_paths']) ? $download['artifact_paths'] : [];
         $zips     = [];
+        $componentsPresent = [];
+        $hasLegacyFileEntry = false;
         foreach ($paths as $logical => $abs) {
             if (!is_string($logical) || !is_string($abs)) {
                 continue;
             }
             // Anything that ends with .zip is a files-part artifact.
-            if (substr(strtolower($logical), -4) === '.zip') {
-                $zips[] = $abs;
+            if (substr(strtolower($logical), -4) !== '.zip') {
+                continue;
+            }
+            $zips[] = $abs;
+            $kind   = $this->classifyArtifactKind($logical);
+            if ($kind === 'file') {
+                // Pre-Track-5 snapshot: a single `wp-content.partNNN.zip`
+                // sequence whose manifest entry_kind is 'file'. The swap path
+                // for this case is the whole-wp-content swap (preserves the
+                // legacy contract).
+                $hasLegacyFileEntry = true;
+            } elseif ($kind === 'plugin' || $kind === 'theme' || $kind === 'upload' || $kind === 'wp-content') {
+                $componentsPresent[$kind] = true;
             }
         }
         if ($zips === []) {
@@ -680,12 +762,35 @@ final class RestoreRunner
             $this->onPhaseProgress($phase, $detail);
         });
 
-        $subState['stage'] = ['done' => true, 'staging_dir' => $stagingDir];
+        $subState['stage'] = [
+            'done'                 => true,
+            'staging_dir'          => $stagingDir,
+            'components_present'   => array_keys($componentsPresent),
+            'has_legacy_file_kind' => $hasLegacyFileEntry,
+        ];
         return $subState;
     }
 
     /**
      * swap_files: atomically move staging into place + old aside.
+     *
+     * Track 5 — chooses one of two paths based on the manifest:
+     *   1. Legacy / "Everything" — whole-wp-content swap. Used when:
+     *        a. The snapshot has any 'file' entry_kind (pre-Track-5), OR
+     *        b. The selection covers all 4 file components and no per-
+     *           component subset is needed.
+     *      Faster, single atomic rename, single rollback dir.
+     *
+     *   2. Per-component — call swapComponents() with the actual components
+     *      present in the snapshot. Used when only a subset of file
+     *      components is being restored (e.g. CP selected `plugin` only;
+     *      only `plugins.partNNN.zip` parts came down).
+     *
+     * The CP's selectEntries upstream filters the manifest to ONLY the
+     * components the operator asked for, so by the time we're here the set
+     * of components actually downloaded == the components to swap. We do not
+     * need a separate "which components were selected" param — the staging
+     * tree carries that information.
      */
     private function runSwapFiles(array $subState): array
     {
@@ -694,19 +799,134 @@ final class RestoreRunner
         if ($stagingDir === '') {
             throw new \RuntimeException('swap_files: staging_dir missing from sub_state');
         }
+        $componentsPresent  = isset($stage['components_present']) && is_array($stage['components_present'])
+            ? array_values(array_filter($stage['components_present'], 'is_string'))
+            : [];
+        $hasLegacyFileKind = !empty($stage['has_legacy_file_kind']);
+
+        // Reconcile components_present (recorded by runStageFiles from artifact
+        // filename prefixes) against on-disk staging. A part archive whose
+        // contents were entirely DEFAULT_EXCLUDES still gets emitted as a zip,
+        // so the component appears in components_present even though FilesRestorer
+        // extracted nothing into the corresponding staging subdir. Without this
+        // reconciliation, swapComponents() throws
+        // "staging missing component subdir: …/plugins" mid-restore (the
+        // 2026-05-29 v0.9.6 SSE failure).
+        $stagingSubdirs = [
+            'plugin' => 'plugins',
+            'theme'  => 'themes',
+            'upload' => 'uploads',
+        ];
+        $componentsPresent = array_values(array_filter(
+            $componentsPresent,
+            static function (string $c) use ($stagingDir, $stagingSubdirs): bool {
+                // The catch-all "wp-content" component is handled by
+                // swapComponents itself by iterating the staging root for
+                // non-managed top-level items; it does not require a
+                // staging subdir of its own, so always keep it.
+                if ($c === 'wp-content') {
+                    return true;
+                }
+                $sub = $stagingSubdirs[$c] ?? '';
+                if ($sub === '') {
+                    return false;
+                }
+                $path = $stagingDir . DIRECTORY_SEPARATOR . $sub;
+                return is_dir($path);
+            }
+        ));
 
         $restorer = new FilesRestorer();
-        $oldDir   = $restorer->swap(
+
+        // Path 1: legacy snapshot (entry_kind='file') OR all 4 components
+        // present (the "Everything" case). Whole-wp-content swap.
+        $allFour      = ['plugin', 'theme', 'upload', 'wp-content'];
+        $presentSet   = array_flip($componentsPresent);
+        $hasAllFour   = !array_diff($allFour, $componentsPresent);
+        if ($hasLegacyFileKind || $hasAllFour) {
+            $oldDir = $restorer->swap(
+                $stagingDir,
+                $this->wpContentPath(),
+                $this->restoreId(),
+                function (string $phase, array $detail): void {
+                    $this->onPhaseProgress($phase, $detail);
+                }
+            );
+            $subState['swap_files'] = [
+                'done'          => true,
+                'old_files_dir' => $oldDir,
+                'mode'          => $hasLegacyFileKind ? 'legacy_whole' : 'whole_all_components',
+            ];
+            return $subState;
+        }
+
+        // Path 2: per-component swap. componentsPresent is the subset the CP
+        // filtered down for us.
+        if ($componentsPresent === []) {
+            throw new \RuntimeException('swap_files: no components present to swap and no legacy entry detected');
+        }
+        $result = $restorer->swapComponents(
             $stagingDir,
             $this->wpContentPath(),
+            $componentsPresent,
             $this->restoreId(),
             function (string $phase, array $detail): void {
                 $this->onPhaseProgress($phase, $detail);
             }
         );
 
-        $subState['swap_files'] = ['done' => true, 'old_files_dir' => $oldDir];
+        // Best-effort cleanup of any leftover staging payload that wasn't
+        // promoted (e.g. unused subdirs for components NOT selected).
+        $leftoverStaging = (string) ($result['staging_dir'] ?? '');
+        if ($leftoverStaging !== '' && is_dir($leftoverStaging)) {
+            $this->rrmdir($leftoverStaging);
+        }
+
+        $subState['swap_files'] = [
+            'done'        => true,
+            'mode'        => 'per_component',
+            'components'  => $componentsPresent,
+            'old_dirs'    => isset($result['old_dirs']) && is_array($result['old_dirs']) ? $result['old_dirs'] : [],
+        ];
         return $subState;
+    }
+
+    /**
+     * Classify a downloaded artifact filename into the Track-5 component
+     * kind. Mirror of EncryptAndUpload::entryKind for the inverse direction:
+     * given a logical path on the wire, return its component bucket.
+     *
+     * @param string $logical Logical artifact path from the CP plan.
+     * @return string 'plugin' | 'theme' | 'upload' | 'wp-content' | 'file' |
+     *                'db' | 'inspection' | ''
+     */
+    private function classifyArtifactKind(string $logical): string
+    {
+        $lower = strtolower($logical);
+        if ($lower === 'sql-inspection.json') {
+            return 'inspection';
+        }
+        if (str_ends_with($lower, '.sql') || str_ends_with($lower, '.sql.gz') || str_contains($lower, 'database.sql')) {
+            return 'db';
+        }
+        if (str_starts_with($lower, 'plugins.part') && str_ends_with($lower, '.zip')) {
+            return 'plugin';
+        }
+        if (str_starts_with($lower, 'themes.part') && str_ends_with($lower, '.zip')) {
+            return 'theme';
+        }
+        if (str_starts_with($lower, 'uploads.part') && str_ends_with($lower, '.zip')) {
+            return 'upload';
+        }
+        if (str_starts_with($lower, 'wp-content.part') && str_ends_with($lower, '.zip')) {
+            return 'wp-content';
+        }
+        // Anything else (legacy or unrecognized) — treat as the legacy 'file'
+        // entry_kind so the whole-wp-content swap path covers it.
+        if (str_ends_with($lower, '.zip')) {
+            return 'file';
+        }
+        return '';
     }
 
     /**
@@ -749,6 +969,242 @@ final class RestoreRunner
 
         $subState['restore_db'] = ['done' => true, 'tmp_tables' => $tmpTables];
         return $subState;
+    }
+
+    /**
+     * P0 URL rewriter (ADR-036): rewrite siteurl/home/content/upload URL
+     * references in the tmp tables before the atomic swap.
+     *
+     * Short-circuits to a no-op when the source URLs (read from the dump
+     * banner and/or the CP-supplied `source_*` params) all equal the target
+     * URLs. This is the common self-hosted same-environment restore — no
+     * URLs changed, no rewrite needed, zero rows touched.
+     *
+     * Cross-environment restore: builds the WPvivid-pattern replacement set
+     * and walks every tmp table paginated (5000 rows/page). Sub-state is
+     * persisted per page so a watchdog re-entry resumes at the last
+     * checkpointed offset rather than restarting the table.
+     */
+    private function runUrlRewrite(array $subState): array
+    {
+        $tmpPrefix    = (string) ($subState['tmp_prefix'] ?? '');
+        $sourcePrefix = $this->sourcePrefix();
+        if ($tmpPrefix === '' || $sourcePrefix === '') {
+            // No tmp prefix means restore_db didn't actually create tmp
+            // tables (e.g. a kind=files restore). Skip cleanly.
+            $subState['url_rewrite'] = ['done' => true, 'skipped' => 'no_tmp_prefix'];
+            return $subState;
+        }
+
+        // Resolve source URLs. Precedence:
+        //   1. CP-supplied `source_*` params (manifest-recorded, authoritative
+        //      when the snapshot has them).
+        //   2. Banner comments in the actual dump file (defense — survives a
+        //      missing/stale manifest).
+        $sourceFromParams = [
+            'site'    => (string) ($this->params['source_site_url']    ?? ''),
+            'home'    => (string) ($this->params['source_home_url']    ?? ''),
+            'content' => (string) ($this->params['source_content_url'] ?? ''),
+            'upload'  => (string) ($this->params['source_upload_url']  ?? ''),
+        ];
+        $sourceFromDump = $this->extractDumpUrlsFromSubState($subState);
+
+        $oldSite   = $sourceFromParams['site']    !== '' ? $sourceFromParams['site']    : $sourceFromDump['old_site_url'];
+        $oldHome   = $sourceFromParams['home']    !== '' ? $sourceFromParams['home']    : $sourceFromDump['old_home_url'];
+        $oldContent = $sourceFromParams['content'] !== '' ? $sourceFromParams['content'] : $sourceFromDump['old_content_url'];
+        $oldUpload = $sourceFromParams['upload']  !== '' ? $sourceFromParams['upload']  : $sourceFromDump['old_upload_url'];
+
+        // Resolve target URLs. Same precedence — CP params first, then the
+        // live site values as fallback (so a same-environment restore lands
+        // a no-op).
+        $newSite   = (string) ($this->params['target_site_url']    ?? '');
+        $newHome   = (string) ($this->params['target_home_url']    ?? '');
+        $newContent = (string) ($this->params['target_content_url'] ?? '');
+        $newUpload = (string) ($this->params['target_upload_url']  ?? '');
+        if ($newSite === '' && function_exists('site_url')) {
+            $newSite = rtrim((string) site_url(), '/');
+        }
+        if ($newHome === '' && function_exists('home_url')) {
+            $newHome = rtrim((string) home_url(), '/');
+        }
+        if ($newContent === '' && defined('WP_CONTENT_URL')) {
+            $newContent = rtrim((string) WP_CONTENT_URL, '/');
+        }
+        if ($newContent === '' && $newSite !== '') {
+            // V1 simplification: derive from new site URL if not supplied.
+            $newContent = $newSite . '/wp-content';
+        }
+        if ($newUpload === '' && function_exists('wp_upload_dir')) {
+            $upload = wp_upload_dir();
+            if (is_array($upload) && isset($upload['baseurl']) && is_string($upload['baseurl'])) {
+                $newUpload = rtrim($upload['baseurl'], '/');
+            }
+        }
+        if ($newUpload === '' && $newContent !== '') {
+            $newUpload = $newContent . '/uploads';
+        }
+
+        // Fast-exit: if nothing changed, skip the whole phase.
+        $sameUrls =
+            ($oldSite === '' || $oldSite === $newSite) &&
+            ($oldHome === '' || $oldHome === $newHome) &&
+            ($oldContent === '' || $oldContent === $newContent) &&
+            ($oldUpload === '' || $oldUpload === $newUpload);
+        if ($sameUrls) {
+            $this->postProgress(self::PHASE_URL_REWRITE, [
+                'skipped'    => 'same_urls',
+                'source_site' => $oldSite,
+                'target_site' => $newSite,
+            ]);
+            $subState['url_rewrite'] = ['done' => true, 'skipped' => 'same_urls'];
+            return $subState;
+        }
+
+        $replacements = \WPMgr\Agent\Backup\UrlRewriter::build_replacements(
+            $oldSite,
+            $newSite,
+            $oldHome,
+            $newHome,
+            $oldContent,
+            $newContent,
+            $oldUpload,
+            $newUpload
+        );
+        $fromCount = is_array($replacements[0] ?? null) ? count($replacements[0]) : 0;
+
+        $this->postProgress(self::PHASE_URL_REWRITE, [
+            'started'           => true,
+            'source_site'       => $oldSite,
+            'target_site'       => $newSite,
+            'replacements_count' => $fromCount,
+        ]);
+
+        $resume = isset($subState['url_rewrite']) && is_array($subState['url_rewrite']) ? $subState['url_rewrite'] : [];
+
+        $restorer = new DbRestorer($this->dbCreds());
+        // The checkpoint callback persists the running url_rewrite progress
+        // straight to the task row so a watchdog re-entry resumes at the
+        // last seen offset (not the table head). We re-read the existing
+        // sub-state inside the closure so the checkpoint payload is merged
+        // atomically rather than clobbering other phases' state.
+        $self = $this;
+        $tmpPrefixCap = $tmpPrefix;
+        $fromCountCap = $fromCount;
+        $oldSiteCap   = $oldSite;
+        $newSiteCap   = $newSite;
+        $result = $restorer->rewriteAllTables(
+            $tmpPrefix,
+            $sourcePrefix,
+            $replacements,
+            $resume,
+            function (array $pageState) use ($self, $tmpPrefixCap, $fromCountCap, $oldSiteCap, $newSiteCap): void {
+                // Merge the per-page cursor into a snapshot of the runner's
+                // current sub-state and persist. We don't update $subState
+                // by reference here because PHP closures can't capture the
+                // outer sub-state by reference across multiple invocations
+                // safely — instead we re-save the row each page so a watchdog
+                // re-entry reads the latest cursor.
+                $self->checkpointUrlRewrite($tmpPrefixCap, $pageState, $fromCountCap, $oldSiteCap, $newSiteCap);
+            },
+            function (string $phase, array $detail): void {
+                $this->onPhaseProgress($phase, $detail);
+            }
+        );
+
+        $subState['url_rewrite'] = [
+            'done'                => true,
+            'replacements_count'  => $fromCount,
+            'total_updates'       => (int) ($result['total_updates'] ?? 0),
+            'tables_done'         => (int) (is_array($result['tables_done'] ?? null) ? count($result['tables_done']) : 0),
+            'tables_total'        => (int) ($result['tables_total'] ?? 0),
+            'source_site_url'     => $oldSite,
+            'target_site_url'     => $newSite,
+        ];
+        return $subState;
+    }
+
+    /**
+     * P0 URL rewriter: persist a per-page checkpoint while the URL rewrite
+     * phase is in flight. The callback closure in `runUrlRewrite()` invokes
+     * this for each table page so the running cursor (table_offset map +
+     * tables_done list + cumulative update count) is written through to
+     * `wpmgr_restore_tasks.sub_state` immediately. A watchdog re-entry then
+     * reads the latest cursor and resumes mid-table.
+     *
+     * Public so the closure can call it; not part of the runner's external
+     * contract.
+     *
+     * @param array<string,mixed> $pageState From DbRestorer::rewriteAllTables's checkpoint callback.
+     */
+    public function checkpointUrlRewrite(string $tmpPrefix, array $pageState, int $replacementsCount, string $sourceSite, string $targetSite): void
+    {
+        // Re-load current sub_state from the DB so we merge instead of clobber.
+        $task = $this->loadTask();
+        if ($task === null) {
+            return;
+        }
+        $subState = (array) ($task['sub_state'] ?? []);
+        $url      = isset($subState['url_rewrite']) && is_array($subState['url_rewrite']) ? $subState['url_rewrite'] : [];
+        $url = array_merge($url, $pageState, [
+            'replacements_count' => $replacementsCount,
+            'source_site_url'    => $sourceSite,
+            'target_site_url'    => $targetSite,
+        ]);
+        // Don't accidentally flip 'done' true on a mid-table checkpoint:
+        // rewriteAllTables only sets finished=true on its terminal call,
+        // which is also when the runner exits the closure loop.
+        $subState['url_rewrite']  = $url;
+        $subState['tmp_prefix']   = $tmpPrefix; // ensure preserved
+        $this->saveTaskState(self::PHASE_URL_REWRITE, $subState);
+    }
+
+    /**
+     * P0 URL rewriter: lazily extract source URLs from the dump file. Result
+     * is memoised in sub-state so repeated runUrlRewrite() invocations on
+     * watchdog resume don't re-parse the dump head.
+     *
+     * @return array{old_site_url:string,old_home_url:string,old_content_url:string,old_upload_url:string,old_table_prefix:string}
+     */
+    private function extractDumpUrlsFromSubState(array &$subState): array
+    {
+        if (isset($subState['url_rewrite']['dump_urls']) && is_array($subState['url_rewrite']['dump_urls'])) {
+            $cached = $subState['url_rewrite']['dump_urls'];
+            return [
+                'old_site_url'     => (string) ($cached['old_site_url']     ?? ''),
+                'old_home_url'     => (string) ($cached['old_home_url']     ?? ''),
+                'old_content_url' => (string) ($cached['old_content_url'] ?? ''),
+                'old_upload_url'   => (string) ($cached['old_upload_url']   ?? ''),
+                'old_table_prefix' => (string) ($cached['old_table_prefix'] ?? ''),
+            ];
+        }
+        $download = isset($subState['download']) && is_array($subState['download']) ? $subState['download'] : [];
+        $paths    = isset($download['artifact_paths']) && is_array($download['artifact_paths']) ? $download['artifact_paths'] : [];
+        $sqlPath  = '';
+        foreach ($paths as $logical => $abs) {
+            if (!is_string($logical) || !is_string($abs)) {
+                continue;
+            }
+            $lower = strtolower($logical);
+            if (substr($lower, -7) === '.sql.gz' || substr($lower, -4) === '.sql') {
+                $sqlPath = $abs;
+                break;
+            }
+        }
+        if ($sqlPath === '') {
+            return [
+                'old_site_url'     => '',
+                'old_home_url'     => '',
+                'old_content_url' => '',
+                'old_upload_url'   => '',
+                'old_table_prefix' => '',
+            ];
+        }
+        $extracted = DbRestorer::extractDumpUrls($sqlPath);
+        if (!isset($subState['url_rewrite']) || !is_array($subState['url_rewrite'])) {
+            $subState['url_rewrite'] = [];
+        }
+        $subState['url_rewrite']['dump_urls'] = $extracted;
+        return $extracted;
     }
 
     /**
@@ -821,7 +1277,20 @@ final class RestoreRunner
     }
 
     /**
-     * cleanup: drop downloaded artifacts and schedule the old-files GC.
+     * cleanup: drop downloaded artifacts, then deal with the per-run
+     * `.wpmgr-old-files-<id>/` rollback tree.
+     *
+     * The rollback tree is the live wp-content that swap_files moved aside.
+     * Pre-0.9.5 we kept it for 24h on every restore, which routinely tipped
+     * small-VPS hosts into disk-red. 0.9.5 flips the default:
+     *
+     *   - `keep_old_files !== true` (DEFAULT): synchronously rrmdir the
+     *     exact dir recorded in sub_state during swap_files. No glob — two
+     *     concurrent restores on the same host would otherwise clobber each
+     *     other's rollback trees.
+     *   - `keep_old_files === true`: schedule the 24h GC the way pre-0.9.5
+     *     did, for operators who explicitly want a long manual-rollback
+     *     window.
      */
     private function runCleanup(array $subState): array
     {
@@ -845,18 +1314,65 @@ final class RestoreRunner
             @rmdir($scratch);
         }
 
-        // 2. Schedule the 24 h GC of the .wpmgr-old-files-<id>/ dir.
-        if (function_exists('wp_next_scheduled') && function_exists('wp_schedule_single_event')) {
-            if (!wp_next_scheduled('wpmgr_restore_oldfiles_gc')) {
-                wp_schedule_single_event(
-                    time() + FilesRestorer::OLDFILES_GC_AGE_SECONDS + 60,
-                    'wpmgr_restore_oldfiles_gc'
-                );
+        // 2. Old-files disposition. Track 5 — two shapes:
+        //    Legacy / whole-swap: single `old_files_dir`.
+        //    Per-component swap : map `old_dirs[component => abs_dir]`, plus
+        //                         a glob of `.wpmgr-old-wpcontent-<short>-*`
+        //                         siblings for the catch-all component.
+        $keepOld     = !empty($this->params['keep_old_files']) && $this->params['keep_old_files'] === true;
+        $swap        = isset($subState['swap_files']) && is_array($subState['swap_files']) ? $subState['swap_files'] : [];
+        $oldFilesDir = (string) ($swap['old_files_dir'] ?? '');
+        $oldDirs     = isset($swap['old_dirs']) && is_array($swap['old_dirs']) ? $swap['old_dirs'] : [];
+
+        if ($keepOld) {
+            // Operator opted into the long-window manual-rollback path.
+            // Schedule a 24h GC + 60s grace to sweep the exact dir later.
+            if (function_exists('wp_next_scheduled') && function_exists('wp_schedule_single_event')) {
+                if (!wp_next_scheduled('wpmgr_restore_oldfiles_gc')) {
+                    wp_schedule_single_event(
+                        time() + FilesRestorer::OLDFILES_GC_AGE_SECONDS_LONG + 60,
+                        'wpmgr_restore_oldfiles_gc'
+                    );
+                }
+            }
+        } else {
+            // Default path: synchronous rrmdir of the EXACT dirs recorded in
+            // sub_state. Not a glob — two concurrent restores on the same
+            // host would lose each other's rollback trees on a glob sweep.
+            if ($oldFilesDir !== '' && is_dir($oldFilesDir)) {
+                $this->rrmdir($oldFilesDir);
+            }
+            foreach ($oldDirs as $comp => $abs) {
+                if (!is_string($abs) || $abs === '') {
+                    continue;
+                }
+                if ($comp === 'wp-content') {
+                    // The catch-all component's rollback is a glob of
+                    // `.wpmgr-old-wpcontent-<short>-*` siblings — the marker
+                    // path recorded in sub_state is the common prefix; expand
+                    // it. This is the ONE place we use a glob, and it's
+                    // bounded to a per-restore prefix, so concurrent restores
+                    // don't clobber each other.
+                    $hits = @glob($abs . '-*');
+                    if (is_array($hits)) {
+                        foreach ($hits as $h) {
+                            if (is_dir($h)) {
+                                $this->rrmdir($h);
+                            } elseif (is_file($h) || is_link($h)) {
+                                @unlink($h);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if (is_dir($abs)) {
+                    $this->rrmdir($abs);
+                }
             }
         }
 
         $this->postProgress(self::PHASE_CLEANUP, []);
-        $subState['cleanup'] = ['done' => true];
+        $subState['cleanup'] = ['done' => true, 'kept_old_files' => $keepOld];
         return $subState;
     }
 
@@ -1340,6 +1856,23 @@ final class RestoreRunner
             $short = substr(bin2hex(random_bytes(4)), 0, 8);
         }
         return 'tmp' . $short . '_';
+    }
+
+    /**
+     * Format a byte count as a 1-decimal GB string for the operator-facing
+     * preflight error message. Always rounds up to at least 0.1 GB so a
+     * sub-100MB value doesn't render as "0.0 GB" (which reads as a bug).
+     */
+    private static function formatGb(int $bytes): string
+    {
+        if ($bytes <= 0) {
+            return '0.0';
+        }
+        $gb = $bytes / (1024 * 1024 * 1024);
+        if ($gb < 0.1) {
+            $gb = 0.1;
+        }
+        return number_format($gb, 1);
     }
 
     /**

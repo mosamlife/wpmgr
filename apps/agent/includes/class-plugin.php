@@ -18,6 +18,7 @@ use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Commands\AutologinCommand;
 use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
+use WPMgr\Agent\Commands\DiagnosticsCommand;
 use WPMgr\Agent\Commands\InfoCommand;
 use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Commands\RefreshInventoryCommand;
@@ -25,7 +26,10 @@ use WPMgr\Agent\Commands\RestoreCommand;
 use WPMgr\Agent\Commands\RollbackCommand;
 use WPMgr\Agent\Commands\ScanCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
+use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\ErrorMonitor;
+use WPMgr\Agent\Support\MuPluginInstaller;
 
 /**
  * Top-level plugin orchestrator.
@@ -37,6 +41,18 @@ final class Plugin
      * so admin pages can surface a fix-it notice and a lazy retry can run.
      */
     public const OPTION_KEYSTORE_ERROR = 'wpmgr_agent_keystore_error';
+
+    /**
+     * v0.9.13 — Unix timestamp of the most recent SUCCESSFUL diagnostics push
+     * to the CP via /agent/v1/diagnostics. Updated at the end of
+     * Plugin::runDiagnostics() after a 2xx response from shipPayload. Read by
+     * the heartbeat backstop (Scheduler::runHeartbeat) which schedules a
+     * one-shot diagnostics push when more than 6h have elapsed since the last
+     * known push, so a fresh install does not have to wait out the jittered
+     * daily cron's 0-4h offset before the operator sees any data in the
+     * Health tab.
+     */
+    public const OPTION_LAST_DIAGNOSTICS_AT = 'wpmgr_agent_last_diagnostics_at';
 
     private static ?Plugin $instance = null;
 
@@ -61,6 +77,28 @@ final class Plugin
     private AutologinCommand $autologin;
 
     /**
+     * ADR-037 Sprint 2 — error monitor. Installed during boot so the agent
+     * captures PHP errors that fire during plugins_loaded and later. Errors
+     * captured BEFORE the agent boots are queued by the mu-plugin loader and
+     * drained by the monitor's install() call.
+     */
+    private ErrorMonitor $errorMonitor;
+
+    /**
+     * ADR-037 Sprint 2 — mu-plugin installer. Copies the error-trap loader
+     * into wp-content/mu-plugins/ on activation + on plugins_loaded (idempotent).
+     */
+    private MuPluginInstaller $muInstaller;
+
+    /**
+     * ADR-037 Sprint 3 — hash-chained WP activity recorder. Binds ~30 WP hooks
+     * (posts/comments/users/auth/plugins/themes/core/terms/allowlisted options
+     * + WooCommerce when present), appends rows to wpmgr_activity_log, and ships
+     * batches to /agent/v1/activity on the 5-min cron + heartbeat backstop.
+     */
+    private ActivityLog $activityLog;
+
+    /**
      * Private constructor wires the object graph.
      */
     private function __construct()
@@ -80,6 +118,19 @@ final class Plugin
         $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore);
         $this->autologinReplay  = new ReplayCache();
         $this->autologin        = new AutologinCommand($this->connector, $this->autologinReplay, $this->signer, $this->settings);
+
+        // ADR-037 Sprint 2 — error monitor + mu-plugin installer. Constructed
+        // here so they are reachable from registerHooks() and the activate()
+        // path; install() is called below in maybeRunSchemaMigrations after
+        // the schema is verified.
+        $this->errorMonitor = new ErrorMonitor();
+        $pluginDir = defined('WPMGR_AGENT_DIR') ? (string) constant('WPMGR_AGENT_DIR') : '';
+        $this->muInstaller = new MuPluginInstaller($pluginDir);
+
+        // ADR-037 Sprint 3 — activity recorder. Hooks are bound in
+        // registerHooks(); the 5-min ship cron + heartbeat backstop drain
+        // batches to the CP.
+        $this->activityLog = new ActivityLog();
     }
 
     /**
@@ -165,6 +216,36 @@ final class Plugin
 
         $this->scheduler->registerHooks();
 
+        // ADR-037 Sprint 2 — diagnostics cron handler. Scheduler::scheduleEvents
+        // sets up the cron event; the handler runs the on-demand DiagnosticsCommand
+        // and pushes its result to the CP at /agent/v1/diagnostics. Kept here
+        // rather than inside Scheduler so Sprint 1's lock on class-scheduler.php
+        // (append-only) is respected.
+        add_action(Scheduler::HOOK_DIAGNOSTICS, [$this, 'runDiagnostics']);
+
+        // ADR-037 Sprint 3 — bind the ~30 activity-capture WP hooks. The
+        // recorder writes to wpmgr_activity_log locally; it does NOT ship
+        // inline (too chatty). Shipping is batched via the dedicated 5-min
+        // cron (HOOK_ACTIVITY_SHIP) + the heartbeat backstop below.
+        $this->activityLog->registerHooks();
+
+        // ADR-037 Sprint 3 — dedicated activity-ship cron handler. Scheduler
+        // owns the 5-min schedule; this binds the callback (Plugin owns
+        // ActivityLog + shipPayload, so the binding lives here to keep the
+        // Scheduler edit additive, mirroring HOOK_DIAGNOSTICS).
+        add_action(Scheduler::HOOK_ACTIVITY_SHIP, [$this, 'shipActivity']);
+
+        // ADR-037 Sprint 3 — heartbeat backstop: also drain a batch right
+        // after a successful heartbeat (mirrors the diagnostics/error backstop)
+        // so activity reaches the CP even if the dedicated cron event was lost.
+        add_action(Scheduler::HOOK_HEARTBEAT, [$this, 'shipActivity'], 20);
+
+        // ADR-037 Sprint 2 — install the error monitor + heal the mu-plugin
+        // copy on every boot. install() is idempotent; the mu-installer
+        // short-circuits via a sha1_file content match.
+        $this->errorMonitor->install();
+        $this->muInstaller->install();
+
         if (function_exists('is_admin') && is_admin()) {
             $this->admin->registerHooks();
             // Lazily retry keystore setup and surface a fix-it notice if it
@@ -197,6 +278,12 @@ final class Plugin
 
         $this->setupKeystore();
 
+        // ADR-037 Sprint 2 — install the error-trap mu-plugin loader. Best-
+        // effort: a host where wp-content/mu-plugins/ is not writable will
+        // surface this through the diagnostics endpoint rather than fatal
+        // the activation.
+        $this->muInstaller->install();
+
         // Record first-activation time and schedule reporting + safety events.
         $now = time();
         $this->settings->markActivated($now);
@@ -207,6 +294,21 @@ final class Plugin
             && wp_next_scheduled(ReplayCache::HOOK_PRUNE) === false
         ) {
             wp_schedule_event($now + 60, 'hourly', ReplayCache::HOOK_PRUNE);
+        }
+
+        // v0.9.13 — push diagnostics within ~30s of activation rather than
+        // waiting out the jittered daily cron's 0..4h first-fire offset
+        // (Scheduler::diagnosticsJitter). The single-event below fires the
+        // SAME HOOK_DIAGNOSTICS hook ONCE, sooner, on top of the recurring
+        // schedule that Scheduler::scheduleEvents installed above.
+        // runDiagnostics is a no-op pre-enrollment (it checks
+        // $settings->isEnrolled()), so arming this before pairing is safe; the
+        // FIRST wp-cron tick after pairing will then push real data.
+        // wp_schedule_single_event itself dedupes any duplicate hook+args
+        // within a 10-minute window, so calling it unconditionally on every
+        // activation is safe across re-uploads.
+        if (function_exists('wp_schedule_single_event')) {
+            wp_schedule_single_event($now + 30, Scheduler::HOOK_DIAGNOSTICS);
         }
     }
 
@@ -395,7 +497,147 @@ final class Plugin
                 },
                 fn (): array => $this->enrollment->pushMetadata(),
             ),
+            // ADR-037 Sprint 2 — on-demand 14-category site-health collector.
+            // Single REST verb: POST /wp-json/wpmgr/v1/command/diagnostics
+            // returns the full payload synchronously. The CP also pulls a
+            // daily push via the wpmgr_agent_diagnostics_daily cron event,
+            // routed through runDiagnostics() below.
+            new DiagnosticsCommand(),
         ];
+    }
+
+    /**
+     * Cron handler for the daily diagnostics push. Builds the 14-category
+     * blob via DiagnosticsCommand and forwards it to the CP through the
+     * existing Enrollment client (which signs the request with the site's
+     * Ed25519 key).
+     *
+     * Wired in registerHooks() to Scheduler::HOOK_DIAGNOSTICS. The Scheduler
+     * computes the per-site jitter at schedule time; here we just execute.
+     *
+     * @return void
+     */
+    public function runDiagnostics(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        $payload = (new DiagnosticsCommand())->execute([], []);
+        $result  = $this->shipPayload('/agent/v1/diagnostics', $payload);
+        // v0.9.13 — only record the timestamp on a 2xx so the heartbeat
+        // backstop (Scheduler::runHeartbeat) re-arms a one-shot push if the
+        // CP was unreachable on this tick. Storing on ALL ship attempts would
+        // mask a 5xx run and delay recovery by up to 6 hours.
+        if (is_array($result) && ($result['ok'] ?? false)) {
+            update_option(self::OPTION_LAST_DIAGNOSTICS_AT, time(), false);
+        }
+
+        // Also ship any pending PHP-error batch on this same cron tick.
+        // ErrorMonitor::shipBatch returns up to 50 newest unsilenced rows
+        // above the stored cursor; the CP advances the cursor in its
+        // response. We POST the batch and advance our local cursor to the
+        // highest id we sent on a 2xx.
+        $errors = $this->errorMonitor->shipBatch();
+        if ($errors !== []) {
+            $highest = 0;
+            foreach ($errors as $row) {
+                $id = (int) ($row['id'] ?? 0);
+                if ($id > $highest) {
+                    $highest = $id;
+                }
+            }
+            $result = $this->shipPayload('/agent/v1/errors', ['errors' => $errors]);
+            if (is_array($result) && ($result['ok'] ?? false)) {
+                $this->errorMonitor->advanceCursor($highest);
+            }
+        }
+    }
+
+    /**
+     * ADR-037 Sprint 3 — ship a batch of unshipped activity rows to the CP at
+     * /agent/v1/activity. No-op until enrolled. Bound to both the dedicated
+     * 5-min HOOK_ACTIVITY_SHIP cron and (priority 20) the heartbeat as a
+     * backstop. ActivityLog::ship builds the batch, hands the signed POST to
+     * shipPayload, and marks rows shipped on a 2xx (so a 5xx leaves them
+     * pending for the next tick).
+     *
+     * @return void
+     */
+    public function shipActivity(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        $version = defined('WPMGR_AGENT_VERSION') ? (string) constant('WPMGR_AGENT_VERSION') : '';
+        $this->activityLog->ship(
+            fn (string $path, array $payload): array => $this->shipPayload($path, $payload),
+            $version
+        );
+    }
+
+    /**
+     * Expose the ActivityLog (e.g. for tooling or tests).
+     *
+     * @return ActivityLog
+     */
+    public function activityLog(): ActivityLog
+    {
+        return $this->activityLog;
+    }
+
+    /**
+     * Sign-and-POST a JSON payload to the control plane. Local replacement
+     * for Enrollment::signedPost so Sprint 2 does not need to touch
+     * class-enrollment.php (Sprint 1 has parallel work there).
+     *
+     * @param string $path Request path (e.g. /agent/v1/diagnostics).
+     * @param array<string,mixed> $payload Payload to JSON-encode and sign.
+     * @return array{ok:bool,status:int}
+     */
+    private function shipPayload(string $path, array $payload): array
+    {
+        if (!function_exists('wp_json_encode') || !function_exists('wp_remote_post')) {
+            return ['ok' => false, 'status' => 0];
+        }
+        $base = $this->settings->controlPlaneUrl();
+        if ($base === '') {
+            return ['ok' => false, 'status' => 0];
+        }
+        $body = (string) wp_json_encode($payload);
+        try {
+            $headers = $this->signer->signHeaders('POST', $path, $body);
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'status' => 0];
+        }
+        $response = wp_remote_post(
+            $base . $path,
+            [
+                'timeout' => 10,
+                'headers' => array_merge(
+                    ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
+                    $headers
+                ),
+                'body'    => $body,
+            ]
+        );
+        if (function_exists('is_wp_error') && is_wp_error($response)) {
+            return ['ok' => false, 'status' => 0];
+        }
+        $status = function_exists('wp_remote_retrieve_response_code')
+            ? (int) wp_remote_retrieve_response_code($response)
+            : 0;
+        return ['ok' => $status >= 200 && $status < 300, 'status' => $status];
+    }
+
+    /**
+     * Expose the ErrorMonitor so the Scheduler's heartbeat can drain its
+     * ship-batch into the next /agent/v1/errors call.
+     *
+     * @return ErrorMonitor
+     */
+    public function errorMonitor(): ErrorMonitor
+    {
+        return $this->errorMonitor;
     }
 
     /**

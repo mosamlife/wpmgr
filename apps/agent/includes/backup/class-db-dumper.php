@@ -276,15 +276,50 @@ final class DbDumper
     private function writeHeader($gz): void
     {
         gzwrite($gz, sprintf(
-            "-- WPMgr Agent database backup\n-- Generated %s UTC\n-- DB: %s\n\n",
+            "-- WPMgr Agent database backup\n-- Generated %s UTC\n-- DB: %s\n",
             gmdate('Y-m-d H:i:s'),
             // DB name is non-secret (the customer can see it themselves);
             // included for support-side debugging.
             $this->db['name']
         ));
+
+        // P0 URL rewriter: emit the source-URL banner. The restore-side
+        // rewriter (DbRestorer::extractDumpUrls) reads these lines defensively
+        // when the CP-supplied source URLs are missing or stale (manifest
+        // submission predates ADR-036). Format mirrors WPvivid's banner
+        // (class-wpvivid-restore-db-2.php:1133-1199): each line is a SQL
+        // comment ending in ` #` so the parser anchor is stable. Wrapped in
+        // function_exists guards so the dumper can still run in test contexts
+        // that haven't booted WordPress.
+        $siteUrl   = function_exists('site_url')    ? self::untrailingslashit((string) site_url())    : '';
+        $homeUrl   = function_exists('home_url')    ? self::untrailingslashit((string) home_url())    : '';
+        $contentUrl = defined('WP_CONTENT_URL')      ? self::untrailingslashit((string) WP_CONTENT_URL) : '';
+        $uploadUrl = '';
+        if (function_exists('wp_upload_dir')) {
+            $upload = wp_upload_dir();
+            if (is_array($upload) && isset($upload['baseurl']) && is_string($upload['baseurl'])) {
+                $uploadUrl = self::untrailingslashit($upload['baseurl']);
+            }
+        }
+        gzwrite($gz, "-- # site_url: "    . $siteUrl    . " #\n");
+        gzwrite($gz, "-- # home_url: "    . $homeUrl    . " #\n");
+        gzwrite($gz, "-- # content_url: " . $contentUrl . " #\n");
+        gzwrite($gz, "-- # upload_url: "  . $uploadUrl  . " #\n");
+        gzwrite($gz, "-- # table_prefix: " . $this->db['prefix'] . " #\n");
+        gzwrite($gz, "-- # generated_at: " . gmdate('Y-m-d\TH:i:s\Z') . " #\n\n");
+
         gzwrite($gz, "SET NAMES utf8mb4;\n");
         gzwrite($gz, "SET FOREIGN_KEY_CHECKS=0;\n");
         gzwrite($gz, "SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n\n");
+    }
+
+    /**
+     * P0 URL rewriter: local untrailingslashit helper so the dumper doesn't
+     * require WP to be booted. Strips ONE trailing slash, idempotent.
+     */
+    private static function untrailingslashit(string $url): string
+    {
+        return rtrim($url, '/');
     }
 
     /** @param resource $gz */

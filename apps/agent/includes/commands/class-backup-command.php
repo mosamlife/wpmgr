@@ -114,6 +114,21 @@ final class BackupCommand implements CommandInterface
             return $this->refuse('age recipient mismatch');
         }
 
+        // --- 1.5. Backup-readiness preflight (ADR-037 Sprint 1, 1B) -------
+        //
+        // Cheap defense-in-depth gate ahead of scratch creation + dedup claim.
+        // Catches the "your disk is full" / "max_allowed_packet too small" /
+        // "ZipArchive missing" / "DB unreachable" / "scratch base not writable"
+        // failure modes BEFORE we burn a snapshot slot. Failures fail-fast
+        // with reason_code=preflight_failed; warnings ride along with the
+        // first progress event so the operator sees them in the UI without
+        // blocking the run.
+        $preflight = $this->preflightChecks();
+        if (!$preflight['ok']) {
+            $this->writePreflightFailure($snapshotId, $preflight['failures']);
+            return $this->refuse('preflight_failed: ' . implode(', ', $preflight['failures']));
+        }
+
         // --- 2. Dedup claim -----------------------------------------------
         // Belt-and-suspenders: ensure the schema is current (cheap when up to
         // date) before touching the dedup table; same pattern the autologin
@@ -131,17 +146,36 @@ final class BackupCommand implements CommandInterface
             return $this->refuse('scratch dir creation failed');
         }
 
+        // ADR-036 P1 storage adapter: the CP threads `destination_kind` (one of
+        // 'cp' | 'local' | 's3_compat') and an optional `destination_config`
+        // through the BackupRequest so the runner can route chunks to the
+        // right backend. When absent, the resolver defaults to 'cp' — the
+        // existing 0.9.6 control-plane bucket path, bit-for-bit unchanged.
+        $destinationKind   = isset($params['destination_kind']) && is_string($params['destination_kind'])
+            ? $params['destination_kind']
+            : 'cp';
+        $destinationConfig = isset($params['destination_config']) && is_array($params['destination_config'])
+            ? $params['destination_config']
+            : [];
+
         $runnerParams = [
-            'snapshot_id'       => $snapshotId,
-            'kind'              => $kind,
-            'age_recipient'     => $recipient,
-            'presign_endpoint'  => $presign,
-            'manifest_endpoint' => $manifestEp,
-            'progress_endpoint' => $progressEp,
-            'chunk_bytes'       => $chunkBytes,
-            'scratch_dir'       => $scratchDir,
-            'wp_content_path'   => defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '',
-            'db'                => $this->dbCreds(),
+            'snapshot_id'        => $snapshotId,
+            'kind'               => $kind,
+            'age_recipient'      => $recipient,
+            'presign_endpoint'   => $presign,
+            'manifest_endpoint'  => $manifestEp,
+            'progress_endpoint'  => $progressEp,
+            'chunk_bytes'        => $chunkBytes,
+            'scratch_dir'        => $scratchDir,
+            'wp_content_path'    => defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '',
+            'db'                 => $this->dbCreds(),
+            'destination_kind'   => $destinationKind,
+            'destination_config' => $destinationConfig,
+            // ADR-037 Sprint 1, 1B: preflight warnings — soft signals (e.g.
+            // max_allowed_packet < 16 MiB) that don't block the run but should
+            // be surfaced to the operator. TaskRunner attaches these to the
+            // first progress event as `preflight_warnings`.
+            'preflight_warnings' => $preflight['warnings'],
         ];
 
         // --- 4. Seed the task row (with params nested in sub_state) -------
@@ -269,21 +303,27 @@ final class BackupCommand implements CommandInterface
     }
 
     /**
-     * Create wp-content/wpmgr-agent/runs/{snapshot_id}/ with restrictive
-     * permissions. Returns absolute path. Idempotent — if the dir already
-     * exists (a watchdog resume), returns it.
+     * Create the per-snapshot scratch directory inside wp-content.
+     *
+     * Path: `wp-content/wpmgr-agent/runs/<snapshot_id>/`.
+     *
+     * Same rationale as RestoreCommand::prepareScratchDir — wp-content is the
+     * only directory guaranteed writable on every WordPress host (uploads land
+     * there). The whole-wp-content swap during a concurrent restore would
+     * normally destroy this dir, but FilesRestorer::PRESERVE_FROM_LIVE includes
+     * 'wpmgr-agent' so the scratch survives the swap. The backup pipeline's
+     * task runner cleans this dir up on completion via cleanupOnCompleted.
+     *
+     * Idempotent — a watchdog resume returns the same dir.
      */
     private function prepareScratchDir(string $snapshotId): string
     {
-        if (!defined('WP_CONTENT_DIR')) {
-            throw new \RuntimeException('WP_CONTENT_DIR is not defined');
-        }
         $base = WP_CONTENT_DIR . '/wpmgr-agent/runs';
-        if (!is_dir($base) && !mkdir($base, 0700, true) && !is_dir($base)) {
-            throw new \RuntimeException('cannot create scratch base');
+        if (!is_dir($base) && !wp_mkdir_p($base) && !is_dir($base)) {
+            throw new \RuntimeException('cannot create backup scratch base: ' . $base);
         }
-        $dir = $base . '/' . $snapshotId;
-        if (!is_dir($dir) && !mkdir($dir, 0700) && !is_dir($dir)) {
+        $dir = $base . DIRECTORY_SEPARATOR . $snapshotId;
+        if (!is_dir($dir) && !@mkdir($dir, 0700) && !is_dir($dir)) {
             throw new \RuntimeException('cannot create scratch dir');
         }
         @chmod($dir, 0700);
@@ -347,5 +387,251 @@ final class BackupCommand implements CommandInterface
     private function str(array $params, string $key): string
     {
         return isset($params[$key]) && is_string($params[$key]) ? $params[$key] : '';
+    }
+
+    /**
+     * ADR-037 Sprint 1, 1B — Backup-readiness preflight.
+     *
+     * Cheap, fail-fast environment probes run BEFORE we burn a scratch dir or
+     * a dedup slot. Catches the most common "snapshot starts then 5 minutes
+     * later fails on something we could've checked in 50 ms" failure modes
+     * WPvivid + WPRemote operators see in the wild:
+     *
+     *   - Disk full at scratch base (need ~2x estimated backup size headroom)
+     *   - MySQL max_allowed_packet too small for SQL dump rows
+     *   - ZipArchive class/method missing (some PHP builds strip ext-zip)
+     *   - DB unreachable (creds wrong, server down)
+     *   - Scratch base not writable
+     *
+     * The contract:
+     *   - 'failures' (non-empty) → set ok=false → caller refuses the run and
+     *     records reason_code=preflight_failed on the snapshot row.
+     *   - 'warnings' (non-empty, ok=true) → ride along with the first progress
+     *     event as preflight_warnings — visible to the operator but not
+     *     blocking.
+     *
+     * @return array{ok:bool,failures:list<string>,warnings:list<string>}
+     */
+    private function preflightChecks(): array
+    {
+        $failures = [];
+        $warnings = [];
+
+        // --- ZipArchive (HARD fail) ---
+        // Required by FilesArchiver for the per-component part zips. Missing
+        // on minimal PHP builds (no `--with-zip` at configure time).
+        if (!class_exists('ZipArchive') || !method_exists('ZipArchive', 'addFile')) {
+            $failures[] = 'ZipArchive class or addFile method missing (rebuild PHP with ext-zip)';
+        }
+
+        // --- DB ping (HARD fail) ---
+        // Cheap SELECT 1 confirms wpdb's persistent connection actually works.
+        // A DB outage now would surface 5+ minutes later inside the dump phase.
+        global $wpdb;
+        if (is_object($wpdb)) {
+            try {
+                // @phpstan-ignore-next-line — runtime wpdb seam.
+                $probe = $wpdb->get_var('SELECT 1');
+                if ((string) $probe !== '1') {
+                    $failures[] = 'DB ping (SELECT 1) returned unexpected: ' . substr((string) $probe, 0, 80);
+                }
+            } catch (\Throwable $e) {
+                $failures[] = 'DB ping threw: ' . substr($e->getMessage(), 0, 200);
+            }
+        }
+
+        // --- max_allowed_packet (HARD fail < 1 MiB, WARN < 16 MiB) ---
+        // Bound rows (e.g. base64-encoded uploads in postmeta, serialized
+        // session data in transients) blow up the dump if the server's
+        // packet limit is tight. WPvivid's documented floor for managed-host
+        // safety is 16 MiB; below 1 MiB the dump fails for basically every
+        // real WP site.
+        $maxPacket = $this->readMaxAllowedPacket();
+        if ($maxPacket !== null) {
+            if ($maxPacket < (1 << 20)) {
+                $failures[] = 'max_allowed_packet is ' . $maxPacket . ' bytes; need at least 1 MiB';
+            } elseif ($maxPacket < (16 << 20)) {
+                $warnings[] = 'max_allowed_packet is ' . round($maxPacket / (1 << 20), 1) . ' MiB; 16+ MiB recommended for fat row dumps';
+            }
+        }
+
+        // --- Scratch base writable (HARD fail) ---
+        // prepareScratchDir runs immediately after preflight; if the base dir
+        // can't be created or isn't writable we want to surface that with
+        // operator-readable context instead of a generic "scratch dir creation
+        // failed" further down.
+        $scratchBase = (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '') . '/wpmgr-agent/runs';
+        if ($scratchBase === '/wpmgr-agent/runs') {
+            $failures[] = 'WP_CONTENT_DIR is undefined; cannot resolve scratch base';
+        } else {
+            $parent = dirname($scratchBase);
+            if (!is_dir($scratchBase) && is_dir($parent) && !is_writable($parent)) {
+                $failures[] = 'scratch base parent not writable: ' . $parent;
+            } elseif (is_dir($scratchBase) && !is_writable($scratchBase)) {
+                $failures[] = 'scratch base not writable: ' . $scratchBase;
+            }
+        }
+
+        // --- Disk headroom (HARD fail) ---
+        // disk_free_space(scratchBase) >= 2x estimateBackupSize() — gives
+        // enough room for the dump AND a generation of ciphertext chunks
+        // before the upload pass starts unlinking finished files. Skipped
+        // (with a soft warn) if disk_free_space() is disabled on this host.
+        if ($scratchBase !== '/wpmgr-agent/runs') {
+            $probeDir = is_dir($scratchBase) ? $scratchBase : (is_dir(dirname($scratchBase)) ? dirname($scratchBase) : '');
+            if ($probeDir !== '' && function_exists('disk_free_space')) {
+                $free = @disk_free_space($probeDir);
+                if ($free === false) {
+                    $warnings[] = 'disk_free_space() returned false; cannot probe headroom';
+                } else {
+                    $needed = 2 * $this->estimateBackupSize();
+                    if ((int) $free < $needed) {
+                        $failures[] = 'insufficient disk: free=' . (int) $free . ' bytes, need 2x estimated backup (' . $needed . ')';
+                    }
+                }
+            }
+        }
+
+        return [
+            'ok'       => $failures === [],
+            'failures' => $failures,
+            'warnings' => $warnings,
+        ];
+    }
+
+    /**
+     * Read MySQL @@max_allowed_packet (bytes). Returns null when the variable
+     * cannot be read (cheap wpdb fail — we don't want preflight to false-fail
+     * a backup because of a permissions quirk).
+     */
+    private function readMaxAllowedPacket(): ?int
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return null;
+        }
+        try {
+            // @phpstan-ignore-next-line
+            $value = $wpdb->get_var('SELECT @@max_allowed_packet');
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if ($value === null) {
+            return null;
+        }
+        if (!is_numeric($value)) {
+            return null;
+        }
+        return (int) $value;
+    }
+
+    /**
+     * Estimate the total backup payload in bytes for headroom checks. Sum of:
+     *   - DB plaintext bytes from `SHOW TABLE STATUS` (Data_length + Index_length)
+     *   - wp-content disk usage, capped to a 5s wall-clock walk so a giant
+     *     uploads/ tree doesn't make preflight slow.
+     *
+     * Approximate by design — the disk-headroom check multiplies by 2x so a
+     * 30-50% under-estimate from the 5s walk cap still keeps us safe.
+     */
+    private function estimateBackupSize(): int
+    {
+        $bytes = 0;
+
+        global $wpdb;
+        if (is_object($wpdb)) {
+            try {
+                // @phpstan-ignore-next-line — runtime wpdb seam.
+                $rows = $wpdb->get_results('SHOW TABLE STATUS', ARRAY_A);
+                if (is_array($rows)) {
+                    foreach ($rows as $row) {
+                        if (!is_array($row)) {
+                            continue;
+                        }
+                        $bytes += isset($row['Data_length']) ? (int) $row['Data_length'] : 0;
+                        $bytes += isset($row['Index_length']) ? (int) $row['Index_length'] : 0;
+                    }
+                }
+            } catch (\Throwable $e) {
+                // best-effort estimate; ignore failures.
+            }
+        }
+
+        if (defined('WP_CONTENT_DIR') && is_dir(WP_CONTENT_DIR)) {
+            $bytes += $this->duCapped(WP_CONTENT_DIR, 5);
+        }
+
+        return $bytes;
+    }
+
+    /**
+     * Capped recursive disk-usage walk. Returns the sum of file sizes under
+     * $path or 0 on error. Bails as soon as $maxSeconds elapses — useful for
+     * preflight where we want a representative sample, not an exhaustive scan.
+     */
+    private function duCapped(string $path, int $maxSeconds): int
+    {
+        $bytes = 0;
+        $deadline = microtime(true) + $maxSeconds;
+
+        try {
+            $it = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::FOLLOW_SYMLINKS),
+                \RecursiveIteratorIterator::LEAVES_ONLY,
+                \RecursiveIteratorIterator::CATCH_GET_CHILD
+            );
+            foreach ($it as $file) {
+                if (microtime(true) > $deadline) {
+                    break;
+                }
+                if ($file instanceof \SplFileInfo && $file->isFile()) {
+                    $bytes += (int) $file->getSize();
+                }
+            }
+        } catch (\Throwable $e) {
+            // Silently swallow — preflight headroom is an estimate, not a contract.
+        }
+
+        return $bytes;
+    }
+
+    /**
+     * Record preflight_failed onto the snapshot's task row so the watchdog
+     * (and the CP via the progress callback on the next attempt) can read
+     * the failure reason. Best-effort write — a missing schema/table doesn't
+     * block the refusal.
+     *
+     * @param list<string> $failures
+     */
+    private function writePreflightFailure(string $snapshotId, array $failures): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+        $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+        $now   = time();
+        $subState = (string) wp_json_encode([
+            'reason_code'    => 'preflight_failed',
+            'phase_detail'   => ['failures' => $failures],
+        ]);
+        try {
+            // @phpstan-ignore-next-line
+            $wpdb->query($wpdb->prepare(
+                "INSERT IGNORE INTO {$table}
+                 (snapshot_id, kind, phase, sub_state, started_at, last_progress_at, resume_count, max_resumes)
+                 VALUES (%s, %s, %s, %s, %d, %d, %d, %d)",
+                $snapshotId,
+                'full',
+                'failed',
+                $subState,
+                $now,
+                $now,
+                0,
+                0
+            ));
+        } catch (\Throwable $e) {
+            // best-effort — refusal path proceeds either way.
+        }
     }
 }

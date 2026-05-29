@@ -85,6 +85,15 @@ final class MetadataCommand implements CommandInterface
             'plugins'      => $this->plugins(),
             'themes'       => $this->themes(),
             'core_update'  => $this->coreUpdate(),
+            // ADR-037 Sprint 1, 1C — sparse-metadata expansion. All fields
+            // below are OPTIONAL on the wire: CP tolerantly decodes (additive,
+            // backward-compatible). Adds hosting-platform fingerprint,
+            // user-count signals, and a sampled disk-usage snapshot so the CP
+            // can render a Health card without a separate diagnostics call.
+            'host_flags'   => $this->hostFlags(),
+            'disk'         => $this->diskUsage(),
+            'user_count'   => $this->userCount(),
+            'admin_count'  => $this->adminCount(),
         ];
         // Surface the agent's age PUBLIC recipient so the CP can register it on
         // sites.age_recipient (M4 backups refuse otherwise). Best-effort: a
@@ -100,6 +109,127 @@ final class MetadataCommand implements CommandInterface
             }
         }
         return $payload;
+    }
+
+    /**
+     * ADR-037 Sprint 1, 1C — hosting-platform auto-detect.
+     *
+     * Best-effort defined()-based probes for the eight major managed-WP
+     * platforms. None of these constants are documented public API — they're
+     * "fingerprint" defines hosts ship in the mu-plugin layer or wp-config
+     * for their own internal use. Probing them in this order is the same
+     * pattern WPRemote uses (E2 report) and is robust against private
+     * variants of the same constant name.
+     *
+     * @return array<string,bool>
+     */
+    private function hostFlags(): array
+    {
+        return [
+            'is_pressable' => defined('IS_PRESSABLE') || defined('PRESSABLE_SITE'),
+            'is_gridpane'  => defined('GRIDPANE') || defined('GRIDPANE_VERSION'),
+            'is_wpengine'  => defined('WPE_APIKEY') || defined('WPE_PLUGIN_BASE') || function_exists('is_wpe'),
+            'is_atomic'    => defined('IS_ATOMIC') || defined('ATOMIC_SITE_ID'),
+            'is_kinsta'    => defined('KINSTAMU_VERSION') || defined('KINSTA_CACHE_ZONE'),
+            'is_flywheel'  => defined('FLYWHEEL_CONFIG_DIR') || defined('FLYWHEEL_PLUGIN_DIR'),
+            'is_runcloud'  => defined('RUNCLOUD') || is_dir('/var/lib/runcloud'),
+            'is_cloudways' => defined('CLOUDWAYS') || isset($_SERVER['CW_HOSTNAME']),
+        ];
+    }
+
+    /**
+     * Sampled disk-usage snapshot. Walks wp-content and uploads with a 2-second
+     * wall-clock cap each — representative for the Health card, not exhaustive.
+     *
+     * @return array{wp_content_bytes:int,uploads_bytes:int,free_bytes:int}
+     */
+    private function diskUsage(): array
+    {
+        $wpContent = defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '';
+        $uploadsDir = '';
+        if (function_exists('wp_upload_dir')) {
+            $upl = wp_upload_dir();
+            if (is_array($upl) && isset($upl['basedir']) && is_string($upl['basedir'])) {
+                $uploadsDir = $upl['basedir'];
+            }
+        }
+        $freeBytes = 0;
+        if ($wpContent !== '' && function_exists('disk_free_space')) {
+            $free = @disk_free_space($wpContent);
+            if ($free !== false) {
+                $freeBytes = (int) $free;
+            }
+        }
+        return [
+            'wp_content_bytes' => $wpContent !== '' ? $this->duCapped($wpContent, 2) : 0,
+            'uploads_bytes'    => $uploadsDir !== '' ? $this->duCapped($uploadsDir, 2) : 0,
+            'free_bytes'       => $freeBytes,
+        ];
+    }
+
+    /**
+     * Capped recursive disk-usage walk. Bails at $maxSeconds; returns 0 on
+     * iterator failure. Identical pattern to BackupCommand::duCapped.
+     */
+    private function duCapped(string $path, int $maxSeconds): int
+    {
+        if (!is_dir($path)) {
+            return 0;
+        }
+        $bytes = 0;
+        $deadline = microtime(true) + $maxSeconds;
+        try {
+            $it = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::FOLLOW_SYMLINKS),
+                \RecursiveIteratorIterator::LEAVES_ONLY,
+                \RecursiveIteratorIterator::CATCH_GET_CHILD
+            );
+            foreach ($it as $file) {
+                if (microtime(true) > $deadline) {
+                    break;
+                }
+                if ($file instanceof \SplFileInfo && $file->isFile()) {
+                    $bytes += (int) $file->getSize();
+                }
+            }
+        } catch (\Throwable $e) {
+            // Swallow.
+        }
+        return $bytes;
+    }
+
+    /**
+     * Total user count (every role). Returns 0 on a non-WP runtime.
+     */
+    private function userCount(): int
+    {
+        if (!function_exists('get_users')) {
+            return 0;
+        }
+        try {
+            $users = get_users(['fields' => 'ID', 'number' => -1]);
+            return is_array($users) ? count($users) : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Administrator-role user count. Surfaced separately from `user_count`
+     * so the CP can render an at-risk indicator (e.g. "12 administrators" is
+     * an audit signal of a sprawling site).
+     */
+    private function adminCount(): int
+    {
+        if (!function_exists('get_users')) {
+            return 0;
+        }
+        try {
+            $admins = get_users(['role' => 'administrator', 'fields' => 'ID', 'number' => -1]);
+            return is_array($admins) ? count($admins) : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
     }
 
     /**
@@ -192,6 +322,13 @@ final class MetadataCommand implements CommandInterface
                 'version'          => isset($meta['Version']) ? (string) $meta['Version'] : 'unknown',
                 'active'           => isset($activeSet[$file]),
                 'available_update' => $this->normalizeAvailableUpdate($update),
+                // ADR-037 Sprint 1, 1C — sparse-metadata expansion. Optional
+                // fields surfaced from get_plugins(); empty string when the
+                // plugin header omits them. CP tolerantly decodes.
+                'plugin_uri'       => isset($meta['PluginURI']) ? (string) $meta['PluginURI'] : '',
+                'update_uri'       => isset($meta['UpdateURI']) ? (string) $meta['UpdateURI'] : '',
+                'author_uri'       => isset($meta['AuthorURI']) ? (string) $meta['AuthorURI'] : '',
+                'network'          => isset($meta['Network']) ? (bool) $meta['Network'] : false,
             ];
         }
 

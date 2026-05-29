@@ -44,6 +44,29 @@ final class Admin
      */
     public const ACTION_DISCONNECT = 'wpmgr_agent_disconnect';
 
+    /**
+     * ADR-037 Sprint 1, 1E — connection-key pairing UX.
+     *
+     * admin-post action: mint a single-use, 15-minute connection key. Used by
+     * operators on firewalled / private-network sites where the CP cannot
+     * reach the agent for a normal pairing handshake. The key encodes the
+     * site URL and current agent version so the CP can verify both at accept
+     * time.
+     */
+    public const ACTION_MINT_CONNECTION_KEY = 'wpmgr_agent_mint_connection_key';
+
+    /**
+     * admin-post action: revoke an existing un-used connection key. Lets the
+     * operator clear a leaked key without waiting for the 15-minute TTL.
+     */
+    public const ACTION_REVOKE_CONNECTION_KEY = 'wpmgr_agent_revoke_connection_key';
+
+    /** Option key for the minted connection-key record. */
+    public const OPTION_CONNECTION_KEY = 'wpmgr_agent_connection_key';
+
+    /** Connection-key TTL in seconds. */
+    private const CONNECTION_KEY_TTL = 15 * 60;
+
     /** Transient key for one-shot admin notices. */
     private const NOTICE_TRANSIENT = 'wpmgr_agent_notice';
 
@@ -77,6 +100,8 @@ final class Admin
         add_action('admin_post_' . self::ACTION_ENROLL, [$this, 'handleEnroll']);
         add_action('admin_post_' . self::ACTION_SYNC, [$this, 'handleSync']);
         add_action('admin_post_' . self::ACTION_DISCONNECT, [$this, 'handleDisconnect']);
+        add_action('admin_post_' . self::ACTION_MINT_CONNECTION_KEY, [$this, 'handleMintConnectionKey']);
+        add_action('admin_post_' . self::ACTION_REVOKE_CONNECTION_KEY, [$this, 'handleRevokeConnectionKey']);
         add_action('admin_notices', [$this, 'renderNotice']);
     }
 
@@ -189,7 +214,130 @@ final class Admin
             echo '</form>';
         }
 
+        // --- Connection key (ADR-037 Sprint 1, 1E) -----------------------
+        // Always available, even before enrollment — operators on firewalled
+        // hosts often need to mint the key before they've finished setting
+        // up the CP-side site.
+        $this->renderConnectionKeySection($actionUrl);
+
         echo '</div>';
+    }
+
+    /**
+     * ADR-037 Sprint 1, 1E — connection-key pairing section.
+     *
+     * Renders one of three states:
+     *   - No key minted: shows the "Mint key" button.
+     *   - Key minted, still valid: shows the key (in a copy-able code block)
+     *     plus a countdown-style "expires in N minutes" line and a "Revoke" form.
+     *   - Key expired or used: cleared by the next read; renders the empty state.
+     *
+     * The key shape is `wpmgr:v1:<32-byte-base64url-token>:<base64-site_url>:<agent_version>`.
+     * The CP accepts this blob in the "Add site from connection key" flow
+     * (out of scope for this sprint — CP-side acceptance lands later).
+     *
+     * @param string $actionUrl The admin-post URL for form submissions.
+     * @return void
+     */
+    private function renderConnectionKeySection(string $actionUrl): void
+    {
+        echo '<h2>' . esc_html('Connection key') . '</h2>';
+        echo '<p class="description">'
+            . esc_html('For control planes that cannot reach this site directly (firewalled hosts, private networks). '
+                     . 'Click "Mint key" to generate a one-time pairing code valid for 15 minutes. '
+                     . 'Paste it into the CP\'s "Add site from connection key" flow.')
+            . '</p>';
+
+        $record = $this->readConnectionKey();
+        $now    = time();
+
+        if ($record !== null && (int) ($record['expires_at'] ?? 0) > $now && empty($record['used_at'])) {
+            // Active, unexpired, unused key — show it.
+            $blob    = $this->formatConnectionKeyBlob((string) $record['token']);
+            $expires = (int) $record['expires_at'];
+            $remaining = max(0, $expires - $now);
+            $mm = (int) floor($remaining / 60);
+            $ss = $remaining % 60;
+
+            echo '<div class="notice notice-warning inline" style="padding:12px;margin:10px 0;">';
+            echo '<p style="margin:0 0 8px;"><strong>'
+                . esc_html('Anyone with this key can re-pair your site to a different control plane. Treat it like a password.')
+                . '</strong></p>';
+            echo '<p style="margin:0 0 8px;">'
+                . esc_html(sprintf('Key expires in %d:%02d.', $mm, $ss))
+                . '</p>';
+            echo '<textarea readonly rows="3" cols="80" '
+                . 'style="font-family:monospace;font-size:12px;width:100%;max-width:720px;" '
+                . 'onclick="this.select();" data-testid="wpmgr-connection-key">'
+                . esc_textarea($blob)
+                . '</textarea>';
+            echo '</div>';
+
+            // Revoke form — clears the key immediately.
+            echo '<form method="post" action="' . $actionUrl . '" style="display:inline-block;">';
+            wp_nonce_field(self::ACTION_REVOKE_CONNECTION_KEY);
+            echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_REVOKE_CONNECTION_KEY) . '" />';
+            submit_button('Revoke', 'delete', 'submit', false);
+            echo '</form>';
+        } else {
+            // No active key. If the existing record is expired/used, advise.
+            if ($record !== null && !empty($record['used_at'])) {
+                echo '<p>' . esc_html('Previous key was accepted by the control plane.') . '</p>';
+            } elseif ($record !== null) {
+                echo '<p>' . esc_html('Previous key has expired.') . '</p>';
+            }
+
+            echo '<form method="post" action="' . $actionUrl . '">';
+            wp_nonce_field(self::ACTION_MINT_CONNECTION_KEY);
+            echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_MINT_CONNECTION_KEY) . '" />';
+            submit_button('Mint key', 'secondary');
+            echo '</form>';
+        }
+    }
+
+    /**
+     * Read the stored connection-key record from wp_options. Returns null when
+     * none has been minted yet. Shape:
+     *   { token: <hex>, created_at: <unix>, expires_at: <unix>, used_at: <unix|null> }
+     *
+     * @return array<string,mixed>|null
+     */
+    private function readConnectionKey(): ?array
+    {
+        if (!function_exists('get_option')) {
+            return null;
+        }
+        $raw = get_option(self::OPTION_CONNECTION_KEY, null);
+        if (!is_array($raw)) {
+            return null;
+        }
+        if (!isset($raw['token']) || !is_string($raw['token'])) {
+            return null;
+        }
+        return $raw;
+    }
+
+    /**
+     * Format the public connection-key blob from a stored token.
+     *
+     * Shape: `wpmgr:v1:<32-byte-base64url-token>:<base64(site_url)>:<agent_version>`
+     */
+    private function formatConnectionKeyBlob(string $token): string
+    {
+        $siteUrl    = function_exists('get_site_url') ? (string) get_site_url() : '';
+        $urlEncoded = $this->base64UrlEncode($siteUrl);
+        $version    = defined('WPMGR_AGENT_VERSION') ? (string) WPMGR_AGENT_VERSION : '0.0.0';
+        return 'wpmgr:v1:' . $token . ':' . $urlEncoded . ':' . $version;
+    }
+
+    /**
+     * URL-safe base64 encode without padding. Used for the token + site_url
+     * components of the connection-key blob so the result is safe to ship in
+     * URLs, headers, and paste-into-form inputs without further escaping.
+     */
+    private function base64UrlEncode(string $bytes): string
+    {
+        return rtrim(strtr(base64_encode($bytes), '+/', '-_'), '=');
     }
 
     /**
@@ -309,6 +457,69 @@ final class Admin
         $this->settings->clearLastSyncTimestamps();
 
         $this->notice('success', 'Disconnected from the control plane. Paste a fresh pairing code to re-enroll.');
+        $this->redirectBack();
+    }
+
+    /**
+     * Handle the "Mint key" post.
+     *
+     * Refuses to mint if an existing unexpired+unused key is on file (operator
+     * must wait for it to expire, or explicit Revoke). Generates 32 bytes via
+     * random_bytes() and URL-safe base64-encodes them. Stores the record under
+     * OPTION_CONNECTION_KEY with created_at, expires_at, used_at=null.
+     *
+     * @return void
+     */
+    public function handleMintConnectionKey(): void
+    {
+        $this->guard(self::ACTION_MINT_CONNECTION_KEY);
+
+        $existing = $this->readConnectionKey();
+        $now      = time();
+        if ($existing !== null
+            && (int) ($existing['expires_at'] ?? 0) > $now
+            && empty($existing['used_at'])
+        ) {
+            $this->notice(
+                'error',
+                'A connection key is already active. Revoke it or wait for it to expire before minting another.'
+            );
+            $this->redirectBack();
+            return;
+        }
+
+        try {
+            $rawBytes = random_bytes(32);
+        } catch (\Throwable $e) {
+            $this->notice('error', 'Could not generate a secure random token: ' . $e->getMessage());
+            $this->redirectBack();
+            return;
+        }
+        $token = $this->base64UrlEncode($rawBytes);
+
+        $record = [
+            'token'      => $token,
+            'created_at' => $now,
+            'expires_at' => $now + self::CONNECTION_KEY_TTL,
+            'used_at'    => null,
+        ];
+        update_option(self::OPTION_CONNECTION_KEY, $record, false);
+
+        $this->notice('success', 'Connection key minted. Valid for 15 minutes.');
+        $this->redirectBack();
+    }
+
+    /**
+     * Handle the "Revoke" post — clears any minted connection key.
+     *
+     * @return void
+     */
+    public function handleRevokeConnectionKey(): void
+    {
+        $this->guard(self::ACTION_REVOKE_CONNECTION_KEY);
+
+        delete_option(self::OPTION_CONNECTION_KEY);
+        $this->notice('success', 'Connection key revoked.');
         $this->redirectBack();
     }
 

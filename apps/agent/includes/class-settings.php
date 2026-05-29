@@ -9,6 +9,14 @@
  *
  * Secrets (keys) never live here; they stay in the encrypted Keystore.
  *
+ * Sprint 1 (ADR-037) — multisite two-tier resolution. WPRemote's wp_settings.php
+ * pattern: every read tries `get_site_option` (network-scoped) first and falls
+ * back to `get_option` (single-site). Writes/deletes branch on `is_multisite()`
+ * — on multisite networks we PERSIST to the network store so a per-site
+ * `get_option` from any blog in the network resolves correctly. Pre-sprint
+ * builds used plain `get_option`/`update_option` and were effectively broken on
+ * multisite (enrolled state would not be visible from non-primary blogs).
+ *
  * @package WPMgr\Agent
  */
 
@@ -40,13 +48,89 @@ final class Settings
     public const OPTION_LAST_METADATA = 'wpmgr_agent_last_metadata';
 
     /**
+     * Sentinel used by {@see get()} to distinguish a missing network-scoped
+     * option from one whose stored value is literally null/false/''. The
+     * default argument to get_site_option is returned verbatim when the option
+     * is absent, so we use a value no caller would ever store.
+     */
+    private const MISSING_SENTINEL = '__wpmgr_settings_missing__';
+
+    /**
+     * Two-tier option read. Tries the network-scoped store first
+     * (`get_site_option`) on multisite, falls back to the per-blog store
+     * (`get_option`). Matches WPRemote's wp_settings.php pattern.
+     *
+     * Single-site installs return the get_site_option value too (it transparently
+     * proxies to get_option there), so the codepath is uniform.
+     *
+     * @param string $key     Option key.
+     * @param mixed  $default Value to return when neither store has the key.
+     * @return mixed
+     */
+    private function get(string $key, $default = null)
+    {
+        if (function_exists('get_site_option')) {
+            $value = get_site_option($key, self::MISSING_SENTINEL);
+            if ($value !== self::MISSING_SENTINEL) {
+                return $value;
+            }
+        }
+        if (function_exists('get_option')) {
+            return get_option($key, $default);
+        }
+        return $default;
+    }
+
+    /**
+     * Two-tier option write. Persists to the network-scoped store on
+     * multisite (`update_site_option`) and to the per-blog store on
+     * single-site (`update_option`). This ensures a subsequent `get_option`
+     * from a secondary blog in the network resolves through the
+     * get_site_option fallback in {@see get()}.
+     *
+     * @param string $key   Option key.
+     * @param mixed  $value Value to persist.
+     * @return bool True on success.
+     */
+    private function update(string $key, $value): bool
+    {
+        if (function_exists('is_multisite') && is_multisite() && function_exists('update_site_option')) {
+            return (bool) update_site_option($key, $value);
+        }
+        if (function_exists('update_option')) {
+            // The third arg ($autoload=false) only exists for update_option,
+            // not update_site_option; keep it on the single-site branch where
+            // it matters for the wp_options autoload set.
+            return (bool) update_option($key, $value, false);
+        }
+        return false;
+    }
+
+    /**
+     * Two-tier option delete. Same branch logic as {@see update()}.
+     *
+     * @param string $key Option key.
+     * @return bool True on success.
+     */
+    private function delete(string $key): bool
+    {
+        if (function_exists('is_multisite') && is_multisite() && function_exists('delete_site_option')) {
+            return (bool) delete_site_option($key);
+        }
+        if (function_exists('delete_option')) {
+            return (bool) delete_option($key);
+        }
+        return false;
+    }
+
+    /**
      * Get the configured control-plane base URL, or empty string if unset.
      *
      * @return string
      */
     public function controlPlaneUrl(): string
     {
-        $value = get_option(self::OPTION_CP_URL, '');
+        $value = $this->get(self::OPTION_CP_URL, '');
 
         return is_string($value) ? $value : '';
     }
@@ -60,7 +144,7 @@ final class Settings
     public function setControlPlaneUrl(string $url): string
     {
         $normalized = self::normalizeUrl($url);
-        update_option(self::OPTION_CP_URL, $normalized, false);
+        $this->update(self::OPTION_CP_URL, $normalized);
 
         return $normalized;
     }
@@ -100,7 +184,7 @@ final class Settings
      */
     public function siteId(): string
     {
-        $value = get_option(self::OPTION_SITE_ID, '');
+        $value = $this->get(self::OPTION_SITE_ID, '');
 
         return is_string($value) ? $value : '';
     }
@@ -110,7 +194,7 @@ final class Settings
      */
     public function tenantId(): string
     {
-        $value = get_option(self::OPTION_TENANT_ID, '');
+        $value = $this->get(self::OPTION_TENANT_ID, '');
 
         return is_string($value) ? $value : '';
     }
@@ -134,8 +218,8 @@ final class Settings
      */
     public function setEnrollment(string $siteId, string $tenantId): void
     {
-        update_option(self::OPTION_SITE_ID, $siteId, false);
-        update_option(self::OPTION_TENANT_ID, $tenantId, false);
+        $this->update(self::OPTION_SITE_ID, $siteId);
+        $this->update(self::OPTION_TENANT_ID, $tenantId);
     }
 
     /**
@@ -145,8 +229,8 @@ final class Settings
      */
     public function clearEnrollment(): void
     {
-        delete_option(self::OPTION_SITE_ID);
-        delete_option(self::OPTION_TENANT_ID);
+        $this->delete(self::OPTION_SITE_ID);
+        $this->delete(self::OPTION_TENANT_ID);
     }
 
     /**
@@ -154,7 +238,7 @@ final class Settings
      */
     public function activatedAt(): int
     {
-        $value = get_option(self::OPTION_ACTIVATED_AT, 0);
+        $value = $this->get(self::OPTION_ACTIVATED_AT, 0);
 
         return is_numeric($value) ? (int) $value : 0;
     }
@@ -168,7 +252,7 @@ final class Settings
     public function markActivated(int $now): void
     {
         if ($this->activatedAt() === 0) {
-            update_option(self::OPTION_ACTIVATED_AT, $now, false);
+            $this->update(self::OPTION_ACTIVATED_AT, $now);
         }
     }
 
@@ -177,7 +261,7 @@ final class Settings
      */
     public function lastHeartbeat(): int
     {
-        $value = get_option(self::OPTION_LAST_HEARTBEAT, 0);
+        $value = $this->get(self::OPTION_LAST_HEARTBEAT, 0);
 
         return is_numeric($value) ? (int) $value : 0;
     }
@@ -188,7 +272,7 @@ final class Settings
      */
     public function setLastHeartbeat(int $now): void
     {
-        update_option(self::OPTION_LAST_HEARTBEAT, $now, false);
+        $this->update(self::OPTION_LAST_HEARTBEAT, $now);
     }
 
     /**
@@ -196,7 +280,7 @@ final class Settings
      */
     public function lastMetadata(): int
     {
-        $value = get_option(self::OPTION_LAST_METADATA, 0);
+        $value = $this->get(self::OPTION_LAST_METADATA, 0);
 
         return is_numeric($value) ? (int) $value : 0;
     }
@@ -207,7 +291,7 @@ final class Settings
      */
     public function setLastMetadata(int $now): void
     {
-        update_option(self::OPTION_LAST_METADATA, $now, false);
+        $this->update(self::OPTION_LAST_METADATA, $now);
     }
 
     /**
@@ -219,7 +303,7 @@ final class Settings
      */
     public function clearLastSyncTimestamps(): void
     {
-        delete_option(self::OPTION_LAST_HEARTBEAT);
-        delete_option(self::OPTION_LAST_METADATA);
+        $this->delete(self::OPTION_LAST_HEARTBEAT);
+        $this->delete(self::OPTION_LAST_METADATA);
     }
 }

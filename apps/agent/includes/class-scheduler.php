@@ -34,6 +34,24 @@ final class Scheduler
     /** Auto-deactivate safety cron hook name. */
     public const HOOK_SAFETY = 'wpmgr_agent_safety';
 
+    /**
+     * ADR-037 Sprint 2 — daily site-diagnostics cron hook. The hook callback
+     * is bound by Plugin::registerHooks (Plugin owns DiagnosticsCommand + the
+     * Enrollment push); Scheduler only owns the SCHEDULE (jittered 24h). Kept
+     * additive so Sprint 1's parallel edits to this file don't collide.
+     */
+    public const HOOK_DIAGNOSTICS = 'wpmgr_agent_diagnostics_daily';
+
+    /**
+     * ADR-037 Sprint 3 — dedicated activity-log ship cron hook (every 5 min).
+     * The callback is bound by Plugin::registerHooks (Plugin owns ActivityLog +
+     * the signed-POST helper); Scheduler only owns the SCHEDULE so Sprint 1's
+     * parallel edits to this file stay additive. The heartbeat (runHeartbeat)
+     * is the backstop; this dedicated event guarantees batches drain even on a
+     * site whose only cron traffic is wp-cron page hits.
+     */
+    public const HOOK_ACTIVITY_SHIP = 'wpmgr_agent_activity_ship';
+
     /** Custom cron schedule key for the 5-minute interval. */
     public const SCHEDULE_5MIN = 'wpmgr_agent_5min';
 
@@ -147,6 +165,22 @@ final class Scheduler
             if (wp_next_scheduled(self::HOOK_METADATA) === false) {
                 wp_schedule_event($now + 120, self::SCHEDULE_30MIN, self::HOOK_METADATA);
             }
+
+            // ADR-037 Sprint 2 — daily diagnostics push. Jittered up to 4h so
+            // a fleet of sites doesn't all hit the CP at the same wall-clock
+            // minute. Per-site jitter is computed from the site URL so the
+            // offset is stable across activations (the operator doesn't see
+            // the diagnostics cadence drift on every plugin reload).
+            if (wp_next_scheduled(self::HOOK_DIAGNOSTICS) === false) {
+                $jitter = $this->diagnosticsJitter();
+                wp_schedule_event($now + 600 + $jitter, 'daily', self::HOOK_DIAGNOSTICS);
+            }
+
+            // ADR-037 Sprint 3 — activity-log shipper, every 5 min (piggybacks
+            // the heartbeat cadence). The handler is bound in Plugin.
+            if (wp_next_scheduled(self::HOOK_ACTIVITY_SHIP) === false) {
+                wp_schedule_event($now + 90, self::SCHEDULE_5MIN, self::HOOK_ACTIVITY_SHIP);
+            }
         }
 
         // One-shot safety check ~30 minutes out, unless disabled by constant.
@@ -173,10 +207,40 @@ final class Scheduler
         wp_clear_scheduled_hook(self::HOOK_HEARTBEAT);
         wp_clear_scheduled_hook(self::HOOK_METADATA);
         wp_clear_scheduled_hook(self::HOOK_SAFETY);
+        // ADR-037 Sprint 2 — also clear the diagnostics cron on deactivation.
+        wp_clear_scheduled_hook(self::HOOK_DIAGNOSTICS);
+        // ADR-037 Sprint 3 — clear the activity-ship cron on deactivation.
+        wp_clear_scheduled_hook(self::HOOK_ACTIVITY_SHIP);
+    }
+
+    /**
+     * Compute a per-site jitter (seconds, 0..14400 inclusive) for the daily
+     * diagnostics push so a fleet of sites does not all dial the CP at the
+     * same wall-clock minute. Deterministic per site URL so the offset is
+     * stable across plugin reloads.
+     *
+     * @return int Jitter seconds.
+     */
+    private function diagnosticsJitter(): int
+    {
+        $url = function_exists('get_site_url') ? (string) get_site_url() : (string) (microtime(true) * 1000);
+        $h = crc32($url);
+        // 14400 = 4h; even spread within a 24h window.
+        return (int) ($h % 14400);
     }
 
     /**
      * Heartbeat job: no-op until enrolled.
+     *
+     * v0.9.13 backstop: after a successful heartbeat, peek at the last
+     * recorded diagnostics-push timestamp (wpmgr_agent_last_diagnostics_at,
+     * written by Plugin::runDiagnostics on 2xx). If it has never run, or it
+     * was more than 6 hours ago, schedule a one-shot HOOK_DIAGNOSTICS event
+     * 10 seconds out. This guarantees the operator sees data in the Health
+     * tab within at most one heartbeat cycle (5 min) of pairing even if the
+     * activation-time priming single-event was lost (e.g. wp-cron not run
+     * yet, or the activation fired pre-enrollment so runDiagnostics no-op'd).
+     * Cap is 6h rather than 24h so the system self-heals fast on day-of-install.
      *
      * @return void
      */
@@ -187,6 +251,18 @@ final class Scheduler
         }
 
         $this->enrollment->sendHeartbeat();
+
+        // v0.9.13 diagnostics backstop. Cheap (one get_option + one
+        // function_exists). wp_schedule_single_event self-dedupes any
+        // duplicate hook+args within 10 minutes, so back-to-back heartbeats
+        // do not double-schedule.
+        if (function_exists('get_option') && function_exists('wp_schedule_single_event')) {
+            $last = (int) get_option(Plugin::OPTION_LAST_DIAGNOSTICS_AT, 0);
+            $sixHours = defined('HOUR_IN_SECONDS') ? 6 * HOUR_IN_SECONDS : 6 * 3600;
+            if ($last === 0 || (time() - $last) > $sixHours) {
+                wp_schedule_single_event(time() + 10, self::HOOK_DIAGNOSTICS);
+            }
+        }
     }
 
     /**
