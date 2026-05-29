@@ -1,4 +1,4 @@
-import type { Site, UpdateTask } from "@wpmgr/api";
+import type { UpdateTask } from "@wpmgr/api";
 
 import {
   Table,
@@ -8,7 +8,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { VersionArrow } from "@/components/shared/version-arrow";
 import { TaskStatusBadge } from "@/features/updates/update-status";
+
+// Re-export siteNameMap so existing callers (e.g. $runId.tsx) don't need an
+// import path change. Surface C agents may update their imports to ./summarize.
+// eslint-disable-next-line react-refresh/only-export-components -- intentional re-export bridge; callers that own this import will move to ./summarize in Surface C
+export { siteNameMap } from "./summarize";
 
 // Live table of per-(site, target) update tasks. Rows reflect whatever is in
 // the run-detail query cache, which the SSE stream patches in place.
@@ -22,14 +28,14 @@ export function UpdateTasksTable({
 }) {
   if (tasks.length === 0) {
     return (
-      <p className="text-sm text-[var(--color-muted-foreground)]">
+      <p className="text-sm text-muted-foreground">
         No tasks yet. They appear as the run is scheduled.
       </p>
     );
   }
 
   return (
-    <div className="rounded-xl border border-[var(--color-border)]">
+    <div className="rounded-xl border border-border">
       <Table>
         <caption className="sr-only">Update tasks</caption>
         <TableHeader>
@@ -48,21 +54,35 @@ export function UpdateTasksTable({
                 {siteNames?.get(task.site_id) ?? short(task.site_id)}
               </TableCell>
               <TableCell>
-                <span className="capitalize text-[var(--color-muted-foreground)]">
+                <span className="font-mono text-xs text-muted-foreground capitalize">
                   {task.target_type}
-                </span>{" "}
-                {task.target_type !== "core" ? (
-                  <span className="font-medium">{task.target_slug}</span>
+                </span>
+                {task.target_type !== "core" && task.target_slug ? (
+                  <>
+                    {" "}
+                    <span className="font-mono text-xs font-medium">
+                      {task.target_slug}
+                    </span>
+                  </>
                 ) : null}
               </TableCell>
               <TableCell>
-                <VersionDiff from={task.from_version} to={task.to_version} />
+                {task.from_version && task.to_version ? (
+                  <VersionArrow
+                    from={task.from_version}
+                    to={task.to_version}
+                  />
+                ) : (
+                  <span className="text-muted-foreground text-xs">{"–"}</span>
+                )}
               </TableCell>
               <TableCell>
                 <TaskStatusBadge status={task.status} />
               </TableCell>
-              <TableCell className="text-[var(--color-muted-foreground)]">
-                {task.error ?? task.detail ?? "—"}
+              <TableCell className="font-mono text-xs text-muted-foreground">
+                {task.error ?? task.detail ?? (
+                  <span aria-hidden="true">{"–"}</span>
+                )}
               </TableCell>
             </TableRow>
           ))}
@@ -72,28 +92,6 @@ export function UpdateTasksTable({
   );
 }
 
-function VersionDiff({ from, to }: { from?: string; to?: string }) {
-  if (!from && !to) {
-    return <span className="text-[var(--color-muted-foreground)]">—</span>;
-  }
-  return (
-    <span className="font-mono text-xs">
-      <span className="text-[var(--color-muted-foreground)]">
-        {from ?? "?"}
-      </span>
-      <span aria-hidden="true"> → </span>
-      <span className="font-medium">{to ?? "latest"}</span>
-    </span>
-  );
-}
-
 function short(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
-}
-
-/** Build a site id -> name lookup from the sites list cache. */
-export function siteNameMap(sites: Site[] | undefined): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const site of sites ?? []) map.set(site.id, site.name);
-  return map;
 }

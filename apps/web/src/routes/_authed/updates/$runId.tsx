@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -11,20 +10,20 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { PageError } from "@/components/feedback/page-error";
+import { PageHeader } from "@/components/shared/page-header";
+import { LiveIndicator, type LiveState } from "@/components/shared/live-indicator";
+import { DefinitionList } from "@/components/shared/definition-list";
+import { StatusChip } from "@/components/status/status-chip";
+import type { StatusTone } from "@/components/status/status-dot";
 import {
   useUpdateRun,
   useRunEventStream,
   NotFoundError,
   type RunStreamState,
 } from "@/features/updates/use-updates";
-import {
-  RunStatusBadge,
-  summarizeTasks,
-} from "@/features/updates/update-status";
-import {
-  UpdateTasksTable,
-  siteNameMap,
-} from "@/features/updates/update-tasks-table";
+import { UpdateTasksTable } from "@/features/updates/update-tasks-table";
+import { summarizeTasks, siteNameMap } from "@/features/updates/summarize";
 import { useSites } from "@/features/sites/use-sites";
 import { relativeTime } from "@/lib/utils";
 import type { UpdateRun } from "@wpmgr/api";
@@ -32,6 +31,14 @@ import type { UpdateRun } from "@wpmgr/api";
 export const Route = createFileRoute("/_authed/updates/$runId")({
   component: RunDetailPage,
 });
+
+/** Map SSE transport state to the shared LiveIndicator's LiveState. */
+function toLiveState(s: RunStreamState): LiveState {
+  if (s === "live") return "live";
+  if (s === "connecting") return "connecting";
+  if (s === "polling") return "connecting";
+  return "idle";
+}
 
 function RunDetailPage() {
   const { runId } = Route.useParams();
@@ -53,45 +60,61 @@ function RunDetailPage() {
     onState: setStreamState,
   });
 
-  return (
-    <section aria-labelledby="run-heading" className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Button asChild variant="outline" size="sm">
-          <Link to="/updates">Back to updates</Link>
-        </Button>
-      </div>
+  if (isPending) {
+    return (
+      <p role="status" className="text-[var(--color-muted-foreground)]">
+        Loading update run…
+      </p>
+    );
+  }
 
-      {isPending ? (
-        <p role="status" className="text-[var(--color-muted-foreground)]">
-          Loading update run…
-        </p>
-      ) : isError ? (
-        error instanceof NotFoundError ? (
-          <div role="alert" className="space-y-2">
-            <h1 id="run-heading" className="text-2xl font-semibold">
-              Update run not found
-            </h1>
-            <p className="text-[var(--color-muted-foreground)]">
-              No run exists with id <code>{runId}</code>.
-            </p>
-          </div>
-        ) : (
-          <div role="alert" className="space-y-3">
-            <h1 id="run-heading" className="text-2xl font-semibold">
-              Could not load update run
-            </h1>
-            <p className="text-[var(--color-destructive)]">{error.message}</p>
-            <Button variant="outline" size="sm" onClick={() => void refetch()}>
-              Retry
-            </Button>
-          </div>
-        )
-      ) : (
-        <RunDetail run={run} streamState={streamState} />
-      )}
-    </section>
-  );
+  if (isError) {
+    if (error instanceof NotFoundError) {
+      return (
+        <section className="space-y-4">
+          <PageHeader
+            title={`Run ${runId.slice(0, 8)}…`}
+            mono
+            backTo={{ to: "/updates", label: "Update runs" }}
+          />
+          <PageError
+            what="Update run not found"
+            why={`No run exists with id ${runId}.`}
+          />
+        </section>
+      );
+    }
+    return (
+      <section className="space-y-4">
+        <PageHeader
+          title="Update run"
+          backTo={{ to: "/updates", label: "Update runs" }}
+        />
+        <PageError
+          what="Could not load update run"
+          why={error.message}
+          onRetry={() => void refetch()}
+        />
+      </section>
+    );
+  }
+
+  return <RunDetail run={run} streamState={streamState} />;
 }
+
+type RunStatus = UpdateRun["status"];
+
+const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
+  pending: "muted",
+  running: "info",
+  completed: "success",
+};
+
+const RUN_STATUS_LABEL: Record<RunStatus, string> = {
+  pending: "Pending",
+  running: "Running",
+  completed: "Completed",
+};
 
 function RunDetail({
   run,
@@ -106,28 +129,42 @@ function RunDetail({
   const created = relativeTime(run.created_at);
   const live = run.status !== "completed";
 
+  const liveState = toLiveState(streamState);
+  const liveLabel = streamState === "polling" ? "Polling" : undefined;
+
   return (
-    <div className="space-y-6">
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 id="run-heading" className="font-mono text-2xl font-semibold">
-            Run {run.id.slice(0, 8)}…
-          </h1>
-          <RunStatusBadge status={run.status} />
-          {run.dry_run ? (
-            <Badge variant="outline">Dry run</Badge>
-          ) : (
-            <Badge variant="secondary">Live</Badge>
-          )}
-          {live ? <LiveIndicator state={streamState} /> : null}
-        </div>
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          Created {created ?? run.created_at}
-          {run.scheduled_at
-            ? ` · Scheduled for ${run.scheduled_at}`
-            : ""}
-        </p>
-      </div>
+    <section className="space-y-6">
+      <PageHeader
+        title={`Run ${run.id.slice(0, 8)}…`}
+        mono
+        copyable={run.id}
+        backTo={{ to: "/updates", label: "Update runs" }}
+        badges={
+          <>
+            <StatusChip
+              tone={RUN_STATUS_TONE[run.status]}
+              label={RUN_STATUS_LABEL[run.status]}
+              pulse={run.status === "running"}
+            />
+            {run.dry_run ? (
+              <Badge variant="outline">Dry run</Badge>
+            ) : (
+              <Badge variant="secondary">Live</Badge>
+            )}
+            {live ? (
+              <LiveIndicator state={liveState} label={liveLabel} />
+            ) : null}
+          </>
+        }
+        subline={
+          <>
+            Created {created ?? run.created_at}
+            {run.scheduled_at
+              ? ` · Scheduled for ${run.scheduled_at}`
+              : ""}
+          </>
+        }
+      />
 
       <Card>
         <CardHeader>
@@ -137,20 +174,22 @@ function RunDetail({
             {summary.total === 1 ? "" : "s"} settled.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4">
           <Progress
             value={summary.done}
             max={summary.total}
             label="Update progress"
           />
-          <dl className="flex flex-wrap gap-4 text-sm">
-            <Stat label="Succeeded" value={summary.counts.succeeded} />
-            <Stat label="Failed" value={summary.counts.failed} />
-            <Stat label="Rolled back" value={summary.counts.rolled_back} />
-            <Stat label="Running" value={summary.counts.running} />
-            <Stat label="Pending" value={summary.counts.pending} />
-            <Stat label="Skipped" value={summary.counts.skipped} />
-          </dl>
+          <DefinitionList
+            rows={[
+              { label: "Succeeded", value: summary.counts.succeeded, tabular: true },
+              { label: "Failed", value: summary.counts.failed, tabular: true },
+              { label: "Rolled back", value: summary.counts.rolled_back, tabular: true },
+              { label: "Running", value: summary.counts.running, tabular: true },
+              { label: "Pending", value: summary.counts.pending, tabular: true },
+              { label: "Skipped", value: summary.counts.skipped, tabular: true },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -158,60 +197,7 @@ function RunDetail({
         <h2 className="text-lg font-semibold">Tasks</h2>
         <UpdateTasksTable tasks={tasks} siteNames={siteNameMap(sites)} />
       </div>
-    </div>
+    </section>
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div>
-      <dt className="text-[var(--color-muted-foreground)]">{label}</dt>
-      <dd className="font-medium">{value}</dd>
-    </div>
-  );
-}
-
-// Small live-status pill. "live" = SSE connected; "polling" = SSE failed and we
-// fell back to query refetch; otherwise connecting.
-function LiveIndicator({ state }: { state: RunStreamState }) {
-  if (state === "polling") {
-    return (
-      <span
-        className="inline-flex items-center gap-1 text-xs text-[var(--color-muted-foreground)]"
-        role="status"
-      >
-        <span
-          aria-hidden="true"
-          className="size-1.5 animate-pulse rounded-full bg-amber-500"
-        />
-        Polling for updates
-      </span>
-    );
-  }
-  if (state === "live") {
-    return (
-      <span
-        className="inline-flex items-center gap-1 text-xs text-[var(--color-muted-foreground)]"
-        role="status"
-      >
-        <span
-          aria-hidden="true"
-          className="size-1.5 animate-pulse rounded-full bg-green-500"
-        />
-        Live
-      </span>
-    );
-  }
-  return (
-    <span
-      className="inline-flex items-center gap-1 text-xs text-[var(--color-muted-foreground)]"
-      role="status"
-    >
-      <span
-        aria-hidden="true"
-        className="size-1.5 rounded-full bg-[var(--color-muted-foreground)]"
-      />
-      Connecting…
-    </span>
-  );
-}

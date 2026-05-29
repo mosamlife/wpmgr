@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { Check, CheckCircle2, ExternalLink, RotateCcw, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FreshnessBadge } from "@/components/shared/freshness-badge";
+import { LiveIndicator } from "@/components/shared/live-indicator";
+import { VersionArrow } from "@/components/shared/version-arrow";
+import { PageError } from "@/components/feedback/page-error";
+import { UpdateChip } from "@/components/status/update-chip";
 import { useCreateUpdateRun } from "@/features/updates/use-updates";
 import {
   useAvailableUpdates,
@@ -30,7 +29,6 @@ import {
   type CoreUpdate,
   type SiteAvailableUpdates,
 } from "@/features/updates/types";
-import { relativeTime } from "@/lib/utils";
 import { toast } from "@/components/toast";
 
 // AvailableUpdatesCard — the per-site "what needs updating" panel mounted on
@@ -85,7 +83,6 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
     } catch (err) {
       if (err instanceof RefreshConflictError) {
         // Not actually an error path — the agent is already doing the thing.
-        // info() reads as "status update, no action needed".
         toast.info("A refresh is already in progress for this site");
         return;
       }
@@ -100,17 +97,37 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
     }
   }
 
+  // Determine header badge
+  const total = data ? (data.core_update ? 1 : 0) + data.items.length : 0;
+  const hasCoreUpdate = Boolean(data?.core_update);
+  const severity: "minor" | "major" = hasCoreUpdate ? "major" : "minor";
+
   return (
-    <Card>
-      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+    <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-card-foreground)]">
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
         <div className="space-y-1">
-          <CardTitle className="flex items-center gap-2">
-            <span>Updates available</span>
-            {data ? <CountBadge data={data} /> : null}
-          </CardTitle>
-          <CardDescription>
-            <AsOf data={data} />
-          </CardDescription>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-[var(--color-foreground)]">
+              Available updates
+            </h3>
+            {data && total > 0 ? (
+              <UpdateChip
+                count={total}
+                severity={severity}
+                description={
+                  hasCoreUpdate ? "Major: WordPress core update included" : undefined
+                }
+              />
+            ) : data && total === 0 ? (
+              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium text-[var(--color-muted-foreground)] bg-[var(--color-muted)]">
+                Up to date
+              </span>
+            ) : null}
+          </div>
+          <div className="text-xs">
+            <FreshnessBadge collectedAt={data?.as_of ?? null} />
+          </div>
         </div>
         <Button
           variant="outline"
@@ -124,19 +141,19 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
         >
           {refresh.isPending ? "Refreshing…" : "Refresh"}
         </Button>
-      </CardHeader>
-      <CardContent>
+      </div>
+
+      {/* Body */}
+      <div className="px-5 py-4">
         {isPending ? (
           <SkeletonRows />
         ) : isError ? (
-          <div role="alert" className="space-y-2">
-            <p className="text-sm text-[var(--color-destructive)]">
-              Could not load available updates: {error.message}
-            </p>
-            <Button variant="outline" size="sm" onClick={() => void refetch()}>
-              Retry
-            </Button>
-          </div>
+          <PageError
+            what="Could not load available updates"
+            why={error instanceof Error ? error.message : undefined}
+            onRetry={() => void refetch()}
+            isRetrying={isFetching}
+          />
         ) : (
           <UpdatesBody
             siteId={siteId}
@@ -146,23 +163,9 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
             onClearSelection={clearSelection}
           />
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
-}
-
-function CountBadge({ data }: { data: SiteAvailableUpdates }) {
-  const total = (data.core_update ? 1 : 0) + data.items.length;
-  if (total === 0) return <Badge variant="muted">Up to date</Badge>;
-  return <Badge variant="default">{total}</Badge>;
-}
-
-function AsOf({ data }: { data: SiteAvailableUpdates | undefined }) {
-  if (!data?.as_of) {
-    return <span>Waiting for the first agent report.</span>;
-  }
-  const rel = relativeTime(data.as_of);
-  return <span>As of {rel ?? data.as_of}</span>;
 }
 
 function SkeletonRows() {
@@ -195,13 +198,19 @@ function UpdatesBody({
 
   if (total === 0) {
     return (
-      <p role="status" className="text-sm text-[var(--color-muted-foreground)]">
-        All up to date{" "}
-        <span aria-hidden="true" className="text-green-600">
-          ✓
-        </span>
-        {data.as_of ? ` — last checked ${relativeTime(data.as_of)}` : ""}
-      </p>
+      <div
+        role="status"
+        className="flex flex-col items-center gap-2 py-6 text-center"
+      >
+        <CheckCircle2
+          aria-hidden="true"
+          className="size-8 text-[var(--color-success)]"
+        />
+        <p className="text-sm font-medium text-[var(--color-foreground)]">
+          All up to date
+        </p>
+        <FreshnessBadge collectedAt={data.as_of ?? null} />
+      </div>
     );
   }
 
@@ -331,7 +340,8 @@ function CoreRow({
               rel="noopener noreferrer"
               aria-label="WordPress release notes (opens in new tab)"
             >
-              Notes ↗
+              <ExternalLink aria-hidden="true" className="size-3.5" />
+              Notes
             </a>
           </Button>
           {row.runId ? <ViewLogsLink runId={row.runId} /> : null}
@@ -394,7 +404,8 @@ function ComponentRow({
               rel="noopener noreferrer"
               aria-label={`${item.name} changelog (opens in new tab)`}
             >
-              Changelog ↗
+              <ExternalLink aria-hidden="true" className="size-3.5" />
+              Changelog
             </a>
           </Button>
           {row.runId ? <ViewLogsLink runId={row.runId} /> : null}
@@ -409,19 +420,9 @@ function ViewLogsLink({ runId }: { runId: string }) {
   return (
     <Button asChild variant="ghost" size="sm">
       <Link to="/updates/$runId" params={{ runId }} aria-label="View update logs">
-        Logs
+        View logs
       </Link>
     </Button>
-  );
-}
-
-function VersionArrow({ from, to }: { from: string; to: string }) {
-  return (
-    <span className="font-mono text-xs">
-      <span className="text-[var(--color-muted-foreground)]">{from}</span>
-      <span aria-hidden="true"> → </span>
-      <span className="font-medium">{to}</span>
-    </span>
   );
 }
 
@@ -439,32 +440,20 @@ function RowStateLine({
       return null;
     case "starting":
       return (
-        <span
-          role="status"
-          aria-live="polite"
-          className="inline-flex items-center gap-1"
-        >
-          <Spinner /> Starting…
+        <span role="status" aria-live="polite" className="inline-flex items-center gap-1.5">
+          <LiveIndicator state="connecting" label="Starting" />
         </span>
       );
     case "pending":
       return (
-        <span
-          role="status"
-          aria-live="polite"
-          className="inline-flex items-center gap-1"
-        >
-          <Spinner /> Queued
+        <span role="status" aria-live="polite" className="inline-flex items-center gap-1.5">
+          <LiveIndicator state="connecting" label="Queued" />
         </span>
       );
     case "running":
       return (
-        <span
-          role="status"
-          aria-live="polite"
-          className="inline-flex items-center gap-1"
-        >
-          <Spinner /> {progress ?? "Updating…"}
+        <span role="status" aria-live="polite" className="inline-flex items-center gap-1.5">
+          <LiveIndicator state="live" label={progress ?? "Updating"} />
         </span>
       );
     case "succeeded":
@@ -472,21 +461,30 @@ function RowStateLine({
         <span
           role="status"
           aria-live="polite"
-          className="text-green-700 dark:text-green-400"
+          className="inline-flex items-center gap-1 text-[var(--color-success)]"
         >
-          ✓ Updated
+          <Check aria-hidden="true" className="size-3.5" />
+          Updated
         </span>
       );
     case "failed":
       return (
-        <span role="alert" className="text-[var(--color-destructive)]">
-          ✗ {error ?? "Update failed"}
+        <span
+          role="alert"
+          className="inline-flex items-center gap-1 text-[var(--color-destructive)]"
+        >
+          <X aria-hidden="true" className="size-3.5" />
+          {error ?? "Update failed"}
         </span>
       );
     case "rolled_back":
       return (
-        <span role="alert" className="text-amber-700 dark:text-amber-400">
-          ↺ Rolled back{error ? ` — ${error}` : ""}
+        <span
+          role="alert"
+          className="inline-flex items-center gap-1 text-warning-subtle-fg"
+        >
+          <RotateCcw aria-hidden="true" className="size-3.5" />
+          Rolled back{error ? `: ${error}` : ""}
         </span>
       );
     case "skipped":
@@ -496,15 +494,6 @@ function RowStateLine({
         </span>
       );
   }
-}
-
-function Spinner() {
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent"
-    />
-  );
 }
 
 function RowActionButton({ row, label }: { row: RowUpdate; label: string }) {

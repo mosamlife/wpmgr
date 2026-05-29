@@ -1,7 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -10,42 +9,54 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { PageError } from "@/components/feedback/page-error";
+import { PageHeader } from "@/components/shared/page-header";
+import { StatusChip } from "@/components/status/status-chip";
+import type { StatusTone } from "@/components/status/status-dot";
 import { useUpdateRuns } from "@/features/updates/use-updates";
-import { RunStatusBadge } from "@/features/updates/update-status";
 import { relativeTime } from "@/lib/utils";
+import type { UpdateRun } from "@wpmgr/api";
 
 export const Route = createFileRoute("/_authed/updates/")({
   component: UpdatesPage,
 });
 
+type RunStatus = UpdateRun["status"];
+
+const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
+  pending: "muted",
+  running: "info",
+  completed: "success",
+};
+
+const RUN_STATUS_LABEL: Record<RunStatus, string> = {
+  pending: "Pending",
+  running: "Running",
+  completed: "Completed",
+};
+
 function UpdatesPage() {
   const { data: runs, isPending, isError, error, refetch } = useUpdateRuns();
 
   return (
-    <section aria-labelledby="updates-heading" className="space-y-4">
-      <h1 id="updates-heading" className="text-2xl font-semibold">
-        Update runs
-      </h1>
-      <p className="text-sm text-[var(--color-muted-foreground)]">
-        Bulk update runs across your sites. Start one from the Sites page by
-        selecting sites or filtering by tag.
-      </p>
+    <section className="space-y-6">
+      <PageHeader
+        title="Update runs"
+        subline="Start a run from the Sites page by selecting sites or filtering by tag."
+      />
 
       {isPending ? (
         <p role="status" className="text-[var(--color-muted-foreground)]">
           Loading update runs…
         </p>
       ) : isError ? (
-        <div role="alert" className="space-y-3">
-          <p className="text-[var(--color-destructive)]">
-            Failed to load update runs: {error.message}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
-          </Button>
-        </div>
+        <PageError
+          what="Could not load update runs"
+          why={error.message}
+          onRetry={() => void refetch()}
+        />
       ) : runs.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-[var(--color-border)] p-8 text-center">
+        <div className="rounded-xl border border-[var(--color-border)] p-8 text-center">
           <p className="text-[var(--color-muted-foreground)]">
             No update runs yet.
           </p>
@@ -76,7 +87,11 @@ function UpdatesPage() {
                     </Link>
                   </TableCell>
                   <TableCell>
-                    <RunStatusBadge status={run.status} />
+                    <StatusChip
+                      tone={RUN_STATUS_TONE[run.status]}
+                      label={RUN_STATUS_LABEL[run.status]}
+                      pulse={run.status === "running"}
+                    />
                   </TableCell>
                   <TableCell>
                     {run.dry_run ? (
@@ -85,7 +100,7 @@ function UpdatesPage() {
                       <Badge variant="secondary">Live</Badge>
                     )}
                   </TableCell>
-                  <TableCell className="text-[var(--color-muted-foreground)]">
+                  <TableCell className="tabular-nums text-[var(--color-muted-foreground)]">
                     {run.tasks?.length ?? 0}
                   </TableCell>
                   <TableCell className="text-[var(--color-muted-foreground)]">
