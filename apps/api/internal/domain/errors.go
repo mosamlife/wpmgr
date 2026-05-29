@@ -26,8 +26,13 @@ const (
 	KindForbidden
 	// KindUnauthorized indicates the caller is not authenticated (HTTP 401).
 	KindUnauthorized
-	// KindUnavailable indicates a dependency/feature is disabled (HTTP 501/503).
+	// KindUnavailable indicates a dependency/feature is disabled (HTTP 501).
 	KindUnavailable
+	// KindServiceUnavailable indicates a transient inability to serve a request
+	// (HTTP 503). Use when optional plumbing isn't wired or a dep is mid-restart,
+	// so the caller can retry later. Distinct from KindUnavailable (501 = feature
+	// permanently disabled in this build).
+	KindServiceUnavailable
 	// KindGone indicates a resource was once present but is no longer available
 	// (HTTP 410). Used by single-shot consume paths (e.g. autologin nonces) so
 	// the caller can distinguish "never existed" from "already used / expired".
@@ -92,6 +97,14 @@ func Unavailable(code, msg string) *Error {
 	return &Error{Kind: KindUnavailable, Code: code, Message: msg}
 }
 
+// ServiceUnavailable builds a KindServiceUnavailable error (HTTP 503). Use for
+// transient-or-optional plumbing gaps (e.g. an inspection tier wasn't wired in
+// this CP build) where the operator should treat the result as "try again
+// later or accept the degraded experience", not as a server bug.
+func ServiceUnavailable(code, msg string) *Error {
+	return &Error{Kind: KindServiceUnavailable, Code: code, Message: msg}
+}
+
 // Internal builds a KindInternal error.
 func Internal(code, msg string) *Error {
 	return &Error{Kind: KindInternal, Code: code, Message: msg}
@@ -127,6 +140,8 @@ func HTTPStatus(err error) int {
 			return http.StatusUnauthorized
 		case KindUnavailable:
 			return http.StatusNotImplemented
+		case KindServiceUnavailable:
+			return http.StatusServiceUnavailable
 		case KindGone:
 			return http.StatusGone
 		case KindRateLimited:

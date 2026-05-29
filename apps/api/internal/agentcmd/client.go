@@ -111,28 +111,59 @@ func (c *Client) RefreshInventory(ctx context.Context, siteID uuid.UUID, siteURL
 	return out, nil
 }
 
+// Diagnostics sends the signed `diagnostics` command to the site's agent and
+// returns the RAW 14-category JSON body. siteID is bound into the JWT's aud
+// claim. Unlike the typed commands above, the response is NOT decoded into a
+// struct here — the diagnostics blob is consumed directly by
+// diagnostics.Service.IngestDiagnostics, which walks the top-level keys and
+// upserts one row per category. Returning the raw bytes keeps the CP free of
+// the agent's 14-category schema (it can evolve without a contract change on
+// the CP). An old agent without the `diagnostics` route surfaces here as the
+// canonical "rejected by agent: status 404 …" error from c.post; the caller
+// (diagnostics.RefreshEnqueuerImpl) maps that to its own audit signal.
+func (c *Client) Diagnostics(ctx context.Context, siteID uuid.UUID, siteURL string, _ DiagnosticsRequest) ([]byte, error) {
+	return c.postRaw(ctx, siteID, siteURL, "diagnostics", struct{}{})
+}
+
 // post mints a fresh JWT bound to siteID (aud) and command (cmd), POSTs body to
 // the named command endpoint at siteURL, and decodes the JSON response into
 // out. A non-2xx response is an error.
 func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command string, body, out any) error {
-	endpoint, err := joinCommandURL(siteURL, command)
+	data, err := c.postRaw(ctx, siteID, siteURL, command, body)
 	if err != nil {
 		return err
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("decode %s response: %w", command, err)
+	}
+	return nil
+}
+
+// postRaw mints a fresh JWT bound to siteID (aud) and command (cmd), POSTs
+// body to the named command endpoint at siteURL, and returns the raw 2xx
+// response body. Callers needing typed decoding go through post(); callers
+// that want to pass the body straight to a downstream ingester (diagnostics)
+// use postRaw directly. A non-2xx response is wrapped in the canonical
+// "rejected by agent: status NNN body=…" error format.
+func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command string, body any) ([]byte, error) {
+	endpoint, err := joinCommandURL(siteURL, command)
+	if err != nil {
+		return nil, err
 	}
 
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("marshal %s command: %w", command, err)
+		return nil, fmt.Errorf("marshal %s command: %w", command, err)
 	}
 
 	token, _, err := c.signer.Mint(c.clock(), siteID.String(), command)
 	if err != nil {
-		return fmt.Errorf("mint command jwt: %w", err)
+		return nil, fmt.Errorf("mint command jwt: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("build %s request: %w", command, err)
+		return nil, fmt.Errorf("build %s request: %w", command, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
@@ -147,13 +178,13 @@ func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command st
 	// FRESH jti on the next attempt.
 	resp, err := c.http.DoOnce(httpReq)
 	if err != nil {
-		return fmt.Errorf("%s command transport: %w", command, err)
+		return nil, fmt.Errorf("%s command transport: %w", command, err)
 	}
 	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRespBody)); _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRespBody))
 	if err != nil {
-		return fmt.Errorf("read %s response: %w", command, err)
+		return nil, fmt.Errorf("read %s response: %w", command, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Include a CLAMPED snippet of the agent's response body in the error so
@@ -165,12 +196,9 @@ func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command st
 		if len(snippet) > 512 {
 			snippet = snippet[:512] + "…(truncated)"
 		}
-		return fmt.Errorf("%s command rejected by agent: status %d body=%s", command, resp.StatusCode, snippet)
+		return nil, fmt.Errorf("%s command rejected by agent: status %d body=%s", command, resp.StatusCode, snippet)
 	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("decode %s response: %w", command, err)
-	}
-	return nil
+	return data, nil
 }
 
 // joinCommandURL builds {siteURL}/wp-json/wpmgr/v1/command/{command}, tolerating

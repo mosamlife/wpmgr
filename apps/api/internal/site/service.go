@@ -175,6 +175,13 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 		Plugins:     fromAgentComponents(m.Plugins),
 		Themes:      fromAgentComponents(m.Themes),
 		CoreUpdate:  fromAgentCoreUpdate(m.CoreUpdate),
+		// ADR-037 Sprint 1, 1C — sparse-metadata expansion. The new fields are
+		// stored inside the existing JSONB `components` column (no migration);
+		// the strict ogen Site type round-trips them as raw JSON inside the
+		// components blob. UI reads via the components.host_flags /
+		// components.disk / components.user_count / components.admin_count
+		// path. Old agents send none of these and the fields stay absent.
+		Extras: fromAgentMetadataExtras(m),
 	})
 	if err != nil {
 		return gen.Site{}, err
@@ -194,7 +201,16 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 func fromAgentComponents(cs []agentpkg.Component) []Component {
 	out := make([]Component, 0, len(cs))
 	for _, c := range cs {
-		comp := Component{Slug: c.Slug, Name: c.Name, Version: c.Version, Active: c.Active}
+		comp := Component{
+			Slug:      c.Slug,
+			Name:      c.Name,
+			Version:   c.Version,
+			Active:    c.Active,
+			PluginURI: c.PluginURI,
+			UpdateURI: c.UpdateURI,
+			AuthorURI: c.AuthorURI,
+			Network:   c.Network,
+		}
 		if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" {
 			comp.AvailableUpdate = &AvailableUpdate{
 				NewVersion:  c.AvailableUpdate.NewVersion,
@@ -206,6 +222,41 @@ func fromAgentComponents(cs []agentpkg.Component) []Component {
 		out = append(out, comp)
 	}
 	return out
+}
+
+// fromAgentMetadataExtras lifts the optional sparse-metadata expansion fields
+// (host_flags / disk / user_count / admin_count) from the agent.Metadata DTO
+// onto the site domain's MetadataExtras struct. Returns nil when the agent
+// sent nothing (old agent; the sink does not overwrite previously-stored
+// values in that case — see ApplyMetadata).
+func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
+	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 {
+		return nil
+	}
+	x := &MetadataExtras{
+		UserCount:  m.UserCount,
+		AdminCount: m.AdminCount,
+	}
+	if m.HostFlags != nil {
+		x.HostFlags = &HostFlags{
+			IsPressable: m.HostFlags.IsPressable,
+			IsGridpane:  m.HostFlags.IsGridpane,
+			IsWPEngine:  m.HostFlags.IsWPEngine,
+			IsAtomic:    m.HostFlags.IsAtomic,
+			IsKinsta:    m.HostFlags.IsKinsta,
+			IsFlywheel:  m.HostFlags.IsFlywheel,
+			IsRunCloud:  m.HostFlags.IsRunCloud,
+			IsCloudways: m.HostFlags.IsCloudways,
+		}
+	}
+	if m.Disk != nil {
+		x.Disk = &Disk{
+			WPContentBytes: m.Disk.WPContentBytes,
+			UploadsBytes:   m.Disk.UploadsBytes,
+			FreeBytes:      m.Disk.FreeBytes,
+		}
+	}
+	return x
 }
 
 func fromAgentCoreUpdate(cu *agentpkg.CoreUpdate) *CoreUpdate {
@@ -311,6 +362,10 @@ func sanitizeMetadata(m Metadata) Metadata {
 		Plugins:     sanitizeComponents(m.Plugins, maxPlugins),
 		Themes:      sanitizeComponents(m.Themes, maxThemes),
 		CoreUpdate:  sanitizeCoreUpdate(m.CoreUpdate),
+		// ADR-037 Sprint 1, 1C — Extras pass through unchanged. The agent
+		// already bounds disk-usage walks to 2s; user/admin counts are tiny
+		// non-negative ints; host_flags is a fixed boolean enum.
+		Extras: m.Extras,
 	}
 }
 
@@ -331,6 +386,23 @@ func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID,
 	}
 	if m.CoreUpdate != nil {
 		payload["core_update"] = m.CoreUpdate
+	}
+	// ADR-037 Sprint 1, 1C — splat the sparse-metadata expansion into the
+	// JSONB inventory as sibling keys to plugins/themes. The UI reads via the
+	// site detail's components blob (Site.Components is the raw JSONB).
+	if m.Extras != nil {
+		if m.Extras.HostFlags != nil {
+			payload["host_flags"] = m.Extras.HostFlags
+		}
+		if m.Extras.Disk != nil {
+			payload["disk"] = m.Extras.Disk
+		}
+		if m.Extras.UserCount > 0 {
+			payload["user_count"] = m.Extras.UserCount
+		}
+		if m.Extras.AdminCount > 0 {
+			payload["admin_count"] = m.Extras.AdminCount
+		}
 	}
 	components, err := json.Marshal(payload)
 	if err != nil {

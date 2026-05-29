@@ -224,6 +224,11 @@ type RestoreManifest struct {
 //	manifest           ordered artifact-part entries with presigned chunks.
 //	chunk_bytes        target chunk size hint (the agent reads chunks one at
 //	                   a time; this is advisory only).
+//	keep_old_files     M6 / Track 2: when true the agent keeps the pre-restore
+//	                   wp-content tree at .wpmgr-old-files-<id>/ for 24 hours
+//	                   as a manual rollback affordance. Older agents (< M6)
+//	                   ignore the field harmlessly — false by default preserves
+//	                   the pre-existing immediate-cleanup semantics.
 type RestoreRequest struct {
 	SnapshotID       string          `json:"snapshot_id"`
 	RestoreID        string          `json:"restore_id"`
@@ -231,6 +236,31 @@ type RestoreRequest struct {
 	ProgressEndpoint string          `json:"progress_endpoint"`
 	Manifest         RestoreManifest `json:"manifest"`
 	ChunkBytes       int             `json:"chunk_bytes,omitempty"`
+	KeepOldFiles     bool            `json:"keep_old_files,omitempty"`
+
+	// P0 URL rewriter (ADR-036): target_* URLs tell the agent's URL_REWRITE
+	// phase what to rewrite siteurl / home / content / upload references to.
+	// When unset the agent falls back to the live site's URL — so a same-
+	// environment restore short-circuits the rewrite to a no-op. Required
+	// for cross-environment restores (dev->prod, staging->prod, agency
+	// handoffs). V1 simplification: when target_content_url / _upload_url
+	// are empty the agent derives them from target_site_url
+	// (`<site>/wp-content` and `<site>/wp-content/uploads` respectively).
+	TargetSiteURL    string `json:"target_site_url,omitempty"`
+	TargetHomeURL    string `json:"target_home_url,omitempty"`
+	TargetContentURL string `json:"target_content_url,omitempty"`
+	TargetUploadURL  string `json:"target_upload_url,omitempty"`
+
+	// source_* URLs are the URLs the snapshot was taken under. Recorded at
+	// backup time on backup_snapshots (P0 migration: m7_url_rewriter).
+	// Used by the agent's URL_REWRITE phase as the FROM side of the rewrite
+	// pairs. When omitted the agent extracts them from the dump's banner
+	// comments — defense against a manifest that predates the source-URL
+	// capture.
+	SourceSiteURL    string `json:"source_site_url,omitempty"`
+	SourceHomeURL    string `json:"source_home_url,omitempty"`
+	SourceContentURL string `json:"source_content_url,omitempty"`
+	SourceUploadURL  string `json:"source_upload_url,omitempty"`
 }
 
 // RestoreResponse is the agent's response to the `restore` command.

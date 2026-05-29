@@ -19,6 +19,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
@@ -29,12 +30,14 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
+	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
 	"github.com/mosamlife/wpmgr/apps/api/internal/telemetry"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
@@ -212,6 +215,19 @@ func run() error {
 	var gcWorker *backup.GCWorker
 	var scheduleWorker *backup.ScheduleWorker
 	var progressWatchdog *backup.ProgressWatchdogWorker
+	// M6 / Track 4: SQL inspection legacy worker. V1 has no plaintext source
+	// or CP-side cache writer wired yet (the agent ships its own inspection
+	// artifact in the manifest; the CP-legacy parser is a future fallback for
+	// snapshots that pre-date that). The worker is still added to the River
+	// pool + queue so any spurious enqueue surfaces a clear River failure
+	// metric ("plaintext source or cache unwired") rather than a stuck job.
+	var sqlInspectLegacyWorker *backup.SqlInspectLegacyWorker
+	// M6 / Track 4: inspection-handler deps, populated below alongside the
+	// backup feature gate. The handler.RegisterInspection mount in server.go
+	// uses these to fetch agent-supplied sql-inspection artifacts from the
+	// chunk store on demand. PlaintextSource + CacheWriter (the legacy-parser
+	// tier) stay nil in V1 — those wires light up in a future track.
+	var inspectionDeps backup.InspectionDeps
 	// M5.6 backup-progress SSE hub: in-process pub/sub keyed by snapshot ID.
 	// Service.Publish fans transitions out; Handler.events subscribes per stream.
 	backupHub := backup.NewHub()
@@ -272,9 +288,68 @@ func run() error {
 		progressWatchdog = backup.NewProgressWatchdogWorker(backupSvc, 120*time.Second, logger)
 		backupH = backup.NewHandler(backupSvc, backupHub, auditRec)
 		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
+		// M6 / Track 4: agent-supplied inspection artifact fetcher. Streams the
+		// ordered chunks of the manifest's `sql-inspection.json` entry from the
+		// blobstore and validates the result is JSON. V0 agents ship the report
+		// as plaintext chunks (ENCRYPT_CHUNKS=false), so no age decryption is
+		// performed here. Cache + Enqueuer stay nil in V1 — legacy snapshots
+		// (no inspection entry) return 503 `inspection_unwired` until the
+		// CP-side cache backend and the SqlInspectLegacy plaintext source land.
+		manifestInspectionFetcher := backup.NewManifestInspectionFetcher(store, backupRepo)
+		inspectionDeps = backup.InspectionDeps{
+			ManifestFetch: manifestInspectionFetcher,
+			Logger:        logger,
+		}
+		// ADR-037 Sprint 1, 1D — environment fingerprint. Reuses the SQL-
+		// inspection fetcher adapter (it's artifact-agnostic — concatenates
+		// chunk ciphertext and probes JSON) for the agent-shipped
+		// environment.json manifest entry.
+		backupH.SetEnvironmentFetcher(manifestInspectionFetcher)
+		// M6 / Track 4: SQL inspection legacy parser worker. V1 wires nil for
+		// both InspectionPlaintextSource (no agent-side decrypted-dump endpoint
+		// yet) and InspectionCacheWriter (no CP-side cache backend yet). The
+		// worker.Work method short-circuits with a stable error in that case so
+		// any enqueue surfaces a clear River failure metric rather than silently
+		// looping. The handler's GET path remains operational: snapshots whose
+		// manifest carries an agent-supplied inspection artifact resolve via
+		// the ManifestInspectionFetcher path; legacy snapshots return 503
+		// "inspection_unwired" until the source/cache deps are filled in.
+		sqlInspectLegacyWorker = backup.NewSqlInspectLegacyWorker(nil, nil, logger)
 		logger.Info("backups enabled", slog.String("s3_bucket", cfg.S3.Bucket))
 	} else {
 		logger.Warn("WPMGR_S3_BUCKET is empty: backup/restore endpoints are disabled")
+	}
+
+	// ADR-036 P1: per-site destination service + presign registry. Always wired
+	// even when backups are disabled so the destinations CRUD is reachable for
+	// configuration ahead of enabling backups. The registry is bound to the
+	// backup service via SetRegistry below.
+	siteDestRepo := sitedestination.NewRepo(pool)
+	siteDestAgeID, err := sitedestination.NewAgeIdentity(os.Getenv("WPMGR_SITE_DEST_AGE_SECRET"))
+	if err != nil {
+		return fmt.Errorf("site destination age identity: %w", err)
+	}
+	siteDestSvc := sitedestination.NewService(siteDestRepo, siteDestAgeID, logger)
+	siteDestH := sitedestination.NewHandler(siteDestSvc, auditRec)
+	if backupSvc != nil {
+		registry := blobstore.NewRegistry(nil, siteDestSvc) // defaultStore wired below
+		// Bind the legacy CP-global store as the registry's default. Built
+		// fresh from cfg.S3 because the original `store` variable is only in
+		// scope inside the `if cfg.S3.Enabled()` block above. When backups
+		// are enabled, S3 IS configured, so this rebuild always succeeds.
+		defStore, derr := blobstore.New(blobstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			Region:         cfg.S3.Region,
+			Bucket:         cfg.S3.Bucket,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			ForcePathStyle: cfg.S3.ForcePathStyle,
+		})
+		if derr != nil {
+			return fmt.Errorf("registry default store: %w", derr)
+		}
+		registry = blobstore.NewRegistry(defStore, siteDestSvc)
+		backupSvc.SetRegistry(&registryAdapter{r: registry})
 	}
 
 	// M5/M6 uptime monitoring: the uptime metrics store, the SSRF-hardened
@@ -334,20 +409,21 @@ func run() error {
 	siteRepo := site.NewRepo(pool)
 	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
-		healthChecker:        healthChecker,
-		healthInterval:       cfg.Agent.HealthInterval,
-		updateWorker:         updateWorker,
-		refreshWorker:        refreshWorker,
-		perTenantParallelism: cfg.Update.PerTenantParallelism,
-		backupWorker:         backupWorker,
-		restoreWorker:        restoreWorker,
-		gcWorker:             gcWorker,
-		scheduleWorker:       scheduleWorker,
-		progressWatchdog:     progressWatchdog,
-		scheduleInterval:     cfg.Backup.ScheduleInterval,
-		gcInterval:           cfg.Backup.GCInterval,
-		uptimeWorker:         uptimeWorker,
-		probeInterval:        cfg.Uptime.ProbeInterval,
+		healthChecker:          healthChecker,
+		healthInterval:         cfg.Agent.HealthInterval,
+		updateWorker:           updateWorker,
+		refreshWorker:          refreshWorker,
+		perTenantParallelism:   cfg.Update.PerTenantParallelism,
+		backupWorker:           backupWorker,
+		restoreWorker:          restoreWorker,
+		gcWorker:               gcWorker,
+		scheduleWorker:         scheduleWorker,
+		progressWatchdog:       progressWatchdog,
+		sqlInspectLegacyWorker: sqlInspectLegacyWorker,
+		scheduleInterval:       cfg.Backup.ScheduleInterval,
+		gcInterval:             cfg.Backup.GCInterval,
+		uptimeWorker:           uptimeWorker,
+		probeInterval:          cfg.Uptime.ProbeInterval,
 	})
 	if err != nil {
 		return err
@@ -417,6 +493,49 @@ func run() error {
 		autologinAgentH = autologin.NewAgentHandler(autologinSvc)
 	}
 
+	// ADR-037 Sprint 2 — diagnostics + php-error monitor wiring. The service
+	// is always built (the operator GET endpoints work as soon as the agent
+	// ships its first payload).
+	//
+	// v0.9.13 (CP-side fix B): wire the on-demand RefreshEnqueuer when the
+	// commander supports the `diagnostics` agentcmd verb (every real-mode
+	// build does; the disabledCommander does NOT, in which case /refresh
+	// keeps returning the legacy 503 unwired sentinel). The enqueuer issues
+	// one signed POST to the agent's /wp-json/wpmgr/v1/command/diagnostics
+	// route, reads the agent's synchronous 14-category response body, and
+	// feeds it into the same IngestDiagnostics splitter the daily cron-push
+	// path uses — so the operator's "Re-run check" click renders fresh data
+	// on the next GET /diagnostics.
+	diagnosticsRepo := diagnostics.NewRepo(pool)
+	diagnosticsSvc := diagnostics.NewService(diagnosticsRepo)
+	diagnosticsH := diagnostics.NewHandler(diagnosticsSvc, auditRec)
+	diagnosticsAgentH := agent.NewDiagnosticsHandler(diagnosticsSvc)
+	errorsAgentH := agent.NewErrorsHandler(diagnosticsSvc)
+	if diagCmd, ok := commander.(diagnostics.AgentDiagnosticsClient); ok {
+		diagEnq := diagnostics.NewRefreshEnqueuer(
+			diagCmd,
+			newDiagnosticsSiteAdapter(siteSvc),
+			diagnosticsSvc,
+		)
+		if diagEnq != nil {
+			diagnosticsSvc.SetRefreshEnqueuer(diagEnq)
+			logger.Info("diagnostics refresh enqueuer wired")
+		}
+	} else {
+		logger.Warn("diagnostics refresh enqueuer not wired: CP->agent commander unavailable (signing key empty?)")
+	}
+
+	// ADR-037 Sprint 3 — WordPress activity log. The CP re-verifies the agent's
+	// hash chain at ingest (tamper-evidence) and routes high-severity events into
+	// the EXISTING uptime alert Dispatcher (no parallel notification system). The
+	// security alerter loads the tenant's AlertConfig and gates on its
+	// notify_security flag before dispatching email + webhook.
+	activityRepo := activity.NewRepo(pool)
+	activitySecAlerter := newActivitySecurityAlerter(uptimeRepo, uptimeDispatcher, clock, logger)
+	activitySvc := activity.NewService(activityRepo, activitySecAlerter, newActivitySiteAdapter(siteSvc))
+	activityH := activity.NewHandler(activitySvc)
+	activityAgentH := agent.NewActivityHandler(activitySvc)
+
 	srv := server.New(server.Deps{
 		Config:          cfg,
 		Logger:          logger,
@@ -432,16 +551,48 @@ func run() error {
 		UpdateH:         updateH,
 		BackupH:         backupH,
 		BackupAgentH:    backupAgentH,
+		InspectionDeps:  inspectionDeps,
 		UptimeH:         uptimeH,
 		AutologinH:      autologinH,
 		AutologinAgentH: autologinAgentH,
 		AgentAuth:       agentAuthn,
 		AgentH:          agentH,
+		SiteDestH:       siteDestH,
+		// ADR-037 Sprint 2 wiring.
+		DiagnosticsH:      diagnosticsH,
+		DiagnosticsAgentH: diagnosticsAgentH,
+		ErrorsAgentH:      errorsAgentH,
+		// ADR-037 Sprint 3 wiring — activity log + agent ingest.
+		ActivityH:      activityH,
+		ActivityAgentH: activityAgentH,
 		ServiceName:     cfg.OTel.ServiceName,
 		Version:         version,
 	})
 
 	return srv.Run(ctx)
+}
+
+// registryAdapter bridges the blobstore.Registry (which knows about Stores in
+// blobstore terms) into the backup.PresignerForSnapshot interface (which works
+// in backup terms, so the backup package needs no import cycle on blobstore).
+// ADR-036 P1 storage adapter routing.
+type registryAdapter struct {
+	r *blobstore.Registry
+}
+
+func (a *registryAdapter) PresignerForSnapshot(ctx context.Context, snap backup.Snapshot) (backup.Presigner, error) {
+	store, err := a.r.StoreForSnapshot(ctx, blobstore.SnapshotLike{
+		TenantID:      snap.TenantID,
+		SiteID:        snap.SiteID,
+		DestinationID: snap.DestinationID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if store == nil {
+		return nil, nil
+	}
+	return store, nil
 }
 
 // disabledAutologinSigner refuses to mint when no CP signing key is
@@ -481,20 +632,21 @@ func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
 // update worker, and the M4 backup/restore/GC/scheduler workers (any of which
 // may be nil when the corresponding feature is disabled).
 type riverDeps struct {
-	healthChecker        *site.HealthChecker
-	healthInterval       time.Duration
-	updateWorker         *update.Worker
-	refreshWorker        *update.RefreshInventoryWorker
-	perTenantParallelism int
-	backupWorker         *backup.BackupWorker
-	restoreWorker        *backup.RestoreWorker
-	gcWorker             *backup.GCWorker
-	scheduleWorker       *backup.ScheduleWorker
-	progressWatchdog     *backup.ProgressWatchdogWorker
-	scheduleInterval     time.Duration
-	gcInterval           time.Duration
-	uptimeWorker         *uptime.ProbeWorker
-	probeInterval        time.Duration
+	healthChecker          *site.HealthChecker
+	healthInterval         time.Duration
+	updateWorker           *update.Worker
+	refreshWorker          *update.RefreshInventoryWorker
+	perTenantParallelism   int
+	backupWorker           *backup.BackupWorker
+	restoreWorker          *backup.RestoreWorker
+	gcWorker               *backup.GCWorker
+	scheduleWorker         *backup.ScheduleWorker
+	progressWatchdog       *backup.ProgressWatchdogWorker
+	sqlInspectLegacyWorker *backup.SqlInspectLegacyWorker
+	scheduleInterval       time.Duration
+	gcInterval             time.Duration
+	uptimeWorker           *uptime.ProbeWorker
+	probeInterval          time.Duration
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -547,6 +699,15 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		river.AddWorker(workers, d.restoreWorker)
 		river.AddWorker(workers, d.gcWorker)
 		river.AddWorker(workers, d.scheduleWorker)
+		// M6 / Track 4: SQL inspection legacy parser. Pinned to its own queue
+		// (sql_inspect_legacy) with MaxWorkers=1 per CP instance — a streaming
+		// SQL parse is CPU-heavy and the operator-poll cadence is generous, so
+		// queue depth >1 doesn't help any one user and would risk OOM on a
+		// multi-GB dump if two ran in parallel.
+		if d.sqlInspectLegacyWorker != nil {
+			river.AddWorker(workers, d.sqlInspectLegacyWorker)
+			queues[backup.SqlInspectLegacyQueue] = river.QueueConfig{MaxWorkers: 1}
+		}
 
 		schedInterval := d.scheduleInterval
 		if schedInterval <= 0 {

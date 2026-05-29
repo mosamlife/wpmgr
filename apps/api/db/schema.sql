@@ -565,6 +565,10 @@ CREATE TABLE alert_configs (
     -- webhook_secret keys the HMAC signature header on the webhook POST.
     webhook_secret   text      NOT NULL DEFAULT '',
     enabled          boolean   NOT NULL DEFAULT true,
+    -- notify_security routes high-severity ADR-037 activity-log events into the
+    -- SAME alert channel (email + webhook) as downtime/recovery. Default off so
+    -- existing tenants do not start receiving security alerts unexpectedly.
+    notify_security  boolean   NOT NULL DEFAULT false,
     created_at       timestamptz NOT NULL DEFAULT now(),
     updated_at       timestamptz NOT NULL DEFAULT now()
 );

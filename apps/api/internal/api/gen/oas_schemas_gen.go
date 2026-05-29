@@ -2008,6 +2008,7 @@ func (*Error) createUpdateRunRes()         {}
 func (*Error) deleteSiteRes()              {}
 func (*Error) getBackupRes()               {}
 func (*Error) getBackupScheduleRes()       {}
+func (*Error) getBackupSqlInspectionRes()  {}
 func (*Error) getMeRes()                   {}
 func (*Error) getSiteAvailableUpdatesRes() {}
 func (*Error) getSiteRes()                 {}
@@ -2030,6 +2031,23 @@ func (s *ErrorDetails) init() ErrorDetails {
 	}
 	return m
 }
+
+// GetBackupSqlInspectionAccepted is response for GetBackupSqlInspection operation.
+type GetBackupSqlInspectionAccepted struct {
+	Location OptString
+}
+
+// GetLocation returns the value of Location.
+func (s *GetBackupSqlInspectionAccepted) GetLocation() OptString {
+	return s.Location
+}
+
+// SetLocation sets the value of Location.
+func (s *GetBackupSqlInspectionAccepted) SetLocation(val OptString) {
+	s.Location = val
+}
+
+func (*GetBackupSqlInspectionAccepted) getBackupSqlInspectionRes() {}
 
 type GetReadyzOK Readiness
 
@@ -3000,6 +3018,69 @@ func (o OptNilDateTime) Or(d time.Time) time.Time {
 	return d
 }
 
+// NewOptNilInt64 returns new OptNilInt64 with value set to v.
+func NewOptNilInt64(v int64) OptNilInt64 {
+	return OptNilInt64{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilInt64 is optional nullable int64.
+type OptNilInt64 struct {
+	Value int64
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilInt64 was set.
+func (o OptNilInt64) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilInt64) Reset() {
+	var v int64
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilInt64) SetTo(v int64) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilInt64) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilInt64) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v int64
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilInt64) Get() (v int64, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilInt64) Or(d int64) int64 {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilSiteAvailableUpdatesCoreUpdate returns new OptNilSiteAvailableUpdatesCoreUpdate with value set to v.
 func NewOptNilSiteAvailableUpdatesCoreUpdate(v SiteAvailableUpdatesCoreUpdate) OptNilSiteAvailableUpdatesCoreUpdate {
 	return OptNilSiteAvailableUpdatesCoreUpdate{
@@ -3246,6 +3327,69 @@ func (o OptNilString) Get() (v string, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilString) Or(d string) string {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilURI returns new OptNilURI with value set to v.
+func NewOptNilURI(v url.URL) OptNilURI {
+	return OptNilURI{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilURI is optional nullable url.URL.
+type OptNilURI struct {
+	Value url.URL
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilURI was set.
+func (o OptNilURI) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilURI) Reset() {
+	var v url.URL
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilURI) SetTo(v url.URL) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilURI) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilURI) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v url.URL
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilURI) Get() (v url.URL, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilURI) Or(d url.URL) url.URL {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -3802,7 +3946,8 @@ func (*RegisterUnprocessableEntity) registerRes() {}
 
 // Restore selection. Omit both arrays (or set full=true) for a full
 // restore; provide paths for partial file restore, or db_tables for partial
-// db restore.
+// db restore. `components` further restricts the operation to specific
+// backup components ("files" and/or "db"); see field doc below.
 // Ref: #/components/schemas/RestoreCreate
 type RestoreCreate struct {
 	Full OptBool `json:"full"`
@@ -3810,6 +3955,32 @@ type RestoreCreate struct {
 	Paths []string `json:"paths"`
 	// Database table names to restore.
 	DbTables []string `json:"db_tables"`
+	// Which backup components to restore. When omitted, restores all components in the snapshot. Valid
+	// values:
+	// - "files"      — broad-strokes alias for ALL file components
+	// (plugin + theme + upload + wp-content). Use
+	// this for "restore everything except the DB".
+	// - "db"         — the database dump.
+	// - "plugin"     — wp-content/plugins/* only (Track 5).
+	// - "theme"      — wp-content/themes/* only (Track 5).
+	// - "upload"     — wp-content/uploads/* only (Track 5).
+	// - "wp-content" — everything ELSE under wp-content (mu-plugins,
+	// languages, drop-ins, custom dirs — NOT
+	// plugins/themes/uploads) (Track 5).
+	// Examples — to restore only the database, pass ["db"]. To restore only files, pass ["files"]. To
+	// restore both, pass ["files","db"] or omit. To restore only plugins, pass ["plugin"]. To restore
+	// plugins + uploads, pass ["plugin","upload"].
+	Components []RestoreCreateComponentsItem `json:"components"`
+	// When true, the agent keeps the pre-restore wp-content tree at .wpmgr-old-files-<id>/ for 24 hours
+	// as a manual rollback affordance. When false (default), the agent cleans it up immediately after a
+	// successful restore.
+	KeepOldFiles OptBool `json:"keep_old_files"`
+	// When set, the agent will rewrite `siteurl` and `home` references from the snapshot's source URLs
+	// to this target. When unset, the agent uses the current site's URL (no-op when restoring to the
+	// same environment). Required for cross-environment restores (dev->prod, staging->prod). The control
+	// plane derives this from the destination Site.URL when the restore is dispatched, so callers
+	// typically don't need to set it.
+	TargetSiteURL OptNilURI `json:"target_site_url"`
 }
 
 // GetFull returns the value of Full.
@@ -3827,6 +3998,21 @@ func (s *RestoreCreate) GetDbTables() []string {
 	return s.DbTables
 }
 
+// GetComponents returns the value of Components.
+func (s *RestoreCreate) GetComponents() []RestoreCreateComponentsItem {
+	return s.Components
+}
+
+// GetKeepOldFiles returns the value of KeepOldFiles.
+func (s *RestoreCreate) GetKeepOldFiles() OptBool {
+	return s.KeepOldFiles
+}
+
+// GetTargetSiteURL returns the value of TargetSiteURL.
+func (s *RestoreCreate) GetTargetSiteURL() OptNilURI {
+	return s.TargetSiteURL
+}
+
 // SetFull sets the value of Full.
 func (s *RestoreCreate) SetFull(val OptBool) {
 	s.Full = val
@@ -3840,6 +4026,90 @@ func (s *RestoreCreate) SetPaths(val []string) {
 // SetDbTables sets the value of DbTables.
 func (s *RestoreCreate) SetDbTables(val []string) {
 	s.DbTables = val
+}
+
+// SetComponents sets the value of Components.
+func (s *RestoreCreate) SetComponents(val []RestoreCreateComponentsItem) {
+	s.Components = val
+}
+
+// SetKeepOldFiles sets the value of KeepOldFiles.
+func (s *RestoreCreate) SetKeepOldFiles(val OptBool) {
+	s.KeepOldFiles = val
+}
+
+// SetTargetSiteURL sets the value of TargetSiteURL.
+func (s *RestoreCreate) SetTargetSiteURL(val OptNilURI) {
+	s.TargetSiteURL = val
+}
+
+type RestoreCreateComponentsItem string
+
+const (
+	RestoreCreateComponentsItemFiles     RestoreCreateComponentsItem = "files"
+	RestoreCreateComponentsItemDb        RestoreCreateComponentsItem = "db"
+	RestoreCreateComponentsItemPlugin    RestoreCreateComponentsItem = "plugin"
+	RestoreCreateComponentsItemTheme     RestoreCreateComponentsItem = "theme"
+	RestoreCreateComponentsItemUpload    RestoreCreateComponentsItem = "upload"
+	RestoreCreateComponentsItemWpContent RestoreCreateComponentsItem = "wp-content"
+)
+
+// AllValues returns all RestoreCreateComponentsItem values.
+func (RestoreCreateComponentsItem) AllValues() []RestoreCreateComponentsItem {
+	return []RestoreCreateComponentsItem{
+		RestoreCreateComponentsItemFiles,
+		RestoreCreateComponentsItemDb,
+		RestoreCreateComponentsItemPlugin,
+		RestoreCreateComponentsItemTheme,
+		RestoreCreateComponentsItemUpload,
+		RestoreCreateComponentsItemWpContent,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestoreCreateComponentsItem) MarshalText() ([]byte, error) {
+	switch s {
+	case RestoreCreateComponentsItemFiles:
+		return []byte(s), nil
+	case RestoreCreateComponentsItemDb:
+		return []byte(s), nil
+	case RestoreCreateComponentsItemPlugin:
+		return []byte(s), nil
+	case RestoreCreateComponentsItemTheme:
+		return []byte(s), nil
+	case RestoreCreateComponentsItemUpload:
+		return []byte(s), nil
+	case RestoreCreateComponentsItemWpContent:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestoreCreateComponentsItem) UnmarshalText(data []byte) error {
+	switch RestoreCreateComponentsItem(data) {
+	case RestoreCreateComponentsItemFiles:
+		*s = RestoreCreateComponentsItemFiles
+		return nil
+	case RestoreCreateComponentsItemDb:
+		*s = RestoreCreateComponentsItemDb
+		return nil
+	case RestoreCreateComponentsItemPlugin:
+		*s = RestoreCreateComponentsItemPlugin
+		return nil
+	case RestoreCreateComponentsItemTheme:
+		*s = RestoreCreateComponentsItemTheme
+		return nil
+	case RestoreCreateComponentsItemUpload:
+		*s = RestoreCreateComponentsItemUpload
+		return nil
+	case RestoreCreateComponentsItemWpContent:
+		*s = RestoreCreateComponentsItemWpContent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 type RevokeApiKeyForbidden Error
@@ -4760,6 +5030,301 @@ func (s *SiteTags) GetTags() []string {
 // SetTags sets the value of Tags.
 func (s *SiteTags) SetTags(val []string) {
 	s.Tags = val
+}
+
+// Structured projection of a backup snapshot's SQL dump. Produced either
+// by the agent at backup time (preferred; "source": "agent") or by the
+// control plane's legacy streaming parser (fallback; "source":
+// "cp-legacy"). `truncated: true` indicates the parser hit its CPU/time
+// budget; tables/totals may be incomplete.
+// Ref: #/components/schemas/SqlInspection
+type SqlInspection struct {
+	// Report wire-shape version; bump when the JSON shape changes.
+	SchemaVersion int `json:"schema_version"`
+	// Total plaintext bytes scanned from the dump.
+	DumpBytes OptInt64 `json:"dump_bytes"`
+	// Connection-level charset from SET NAMES (e.g. utf8mb4).
+	Charset OptString `json:"charset"`
+	// Default collation declared in CREATE TABLE trailers, if any.
+	Collation OptString `json:"collation"`
+	// Most common table-name prefix (chars up to the first underscore);
+	// empty when no consistent prefix could be determined.
+	TablePrefix OptString `json:"table_prefix"`
+	// WordPress db_version from wp_options, when detectable.
+	WpVersion OptNilString `json:"wp_version"`
+	// WordPress siteurl from wp_options, when detectable.
+	Siteurl OptNilString `json:"siteurl"`
+	// WordPress home from wp_options, when detectable.
+	Home OptNilString `json:"home"`
+	// True when a {prefix}options table is present in the dump.
+	IsWordpress bool `json:"is_wordpress"`
+	// True when the parser hit its budget before finishing.
+	Truncated OptBool `json:"truncated"`
+	// "agent" — the JSON was produced by the agent at backup time and
+	// stored as a snapshot artifact. "cp-legacy" — the CP streamed the
+	// dump artifact through its own parser as a fallback.
+	Source SqlInspectionSource `json:"source"`
+	// Non-fatal scanner warnings (oversized rows, regex anomalies).
+	ParserWarnings []string `json:"parser_warnings"`
+	// Per-table inventory; row/byte estimates are best-effort.
+	Tables []SqlInspectionTablesItem `json:"tables"`
+	// When the report was assembled (agent or CP wall clock).
+	GeneratedAt time.Time `json:"generated_at"`
+}
+
+// GetSchemaVersion returns the value of SchemaVersion.
+func (s *SqlInspection) GetSchemaVersion() int {
+	return s.SchemaVersion
+}
+
+// GetDumpBytes returns the value of DumpBytes.
+func (s *SqlInspection) GetDumpBytes() OptInt64 {
+	return s.DumpBytes
+}
+
+// GetCharset returns the value of Charset.
+func (s *SqlInspection) GetCharset() OptString {
+	return s.Charset
+}
+
+// GetCollation returns the value of Collation.
+func (s *SqlInspection) GetCollation() OptString {
+	return s.Collation
+}
+
+// GetTablePrefix returns the value of TablePrefix.
+func (s *SqlInspection) GetTablePrefix() OptString {
+	return s.TablePrefix
+}
+
+// GetWpVersion returns the value of WpVersion.
+func (s *SqlInspection) GetWpVersion() OptNilString {
+	return s.WpVersion
+}
+
+// GetSiteurl returns the value of Siteurl.
+func (s *SqlInspection) GetSiteurl() OptNilString {
+	return s.Siteurl
+}
+
+// GetHome returns the value of Home.
+func (s *SqlInspection) GetHome() OptNilString {
+	return s.Home
+}
+
+// GetIsWordpress returns the value of IsWordpress.
+func (s *SqlInspection) GetIsWordpress() bool {
+	return s.IsWordpress
+}
+
+// GetTruncated returns the value of Truncated.
+func (s *SqlInspection) GetTruncated() OptBool {
+	return s.Truncated
+}
+
+// GetSource returns the value of Source.
+func (s *SqlInspection) GetSource() SqlInspectionSource {
+	return s.Source
+}
+
+// GetParserWarnings returns the value of ParserWarnings.
+func (s *SqlInspection) GetParserWarnings() []string {
+	return s.ParserWarnings
+}
+
+// GetTables returns the value of Tables.
+func (s *SqlInspection) GetTables() []SqlInspectionTablesItem {
+	return s.Tables
+}
+
+// GetGeneratedAt returns the value of GeneratedAt.
+func (s *SqlInspection) GetGeneratedAt() time.Time {
+	return s.GeneratedAt
+}
+
+// SetSchemaVersion sets the value of SchemaVersion.
+func (s *SqlInspection) SetSchemaVersion(val int) {
+	s.SchemaVersion = val
+}
+
+// SetDumpBytes sets the value of DumpBytes.
+func (s *SqlInspection) SetDumpBytes(val OptInt64) {
+	s.DumpBytes = val
+}
+
+// SetCharset sets the value of Charset.
+func (s *SqlInspection) SetCharset(val OptString) {
+	s.Charset = val
+}
+
+// SetCollation sets the value of Collation.
+func (s *SqlInspection) SetCollation(val OptString) {
+	s.Collation = val
+}
+
+// SetTablePrefix sets the value of TablePrefix.
+func (s *SqlInspection) SetTablePrefix(val OptString) {
+	s.TablePrefix = val
+}
+
+// SetWpVersion sets the value of WpVersion.
+func (s *SqlInspection) SetWpVersion(val OptNilString) {
+	s.WpVersion = val
+}
+
+// SetSiteurl sets the value of Siteurl.
+func (s *SqlInspection) SetSiteurl(val OptNilString) {
+	s.Siteurl = val
+}
+
+// SetHome sets the value of Home.
+func (s *SqlInspection) SetHome(val OptNilString) {
+	s.Home = val
+}
+
+// SetIsWordpress sets the value of IsWordpress.
+func (s *SqlInspection) SetIsWordpress(val bool) {
+	s.IsWordpress = val
+}
+
+// SetTruncated sets the value of Truncated.
+func (s *SqlInspection) SetTruncated(val OptBool) {
+	s.Truncated = val
+}
+
+// SetSource sets the value of Source.
+func (s *SqlInspection) SetSource(val SqlInspectionSource) {
+	s.Source = val
+}
+
+// SetParserWarnings sets the value of ParserWarnings.
+func (s *SqlInspection) SetParserWarnings(val []string) {
+	s.ParserWarnings = val
+}
+
+// SetTables sets the value of Tables.
+func (s *SqlInspection) SetTables(val []SqlInspectionTablesItem) {
+	s.Tables = val
+}
+
+// SetGeneratedAt sets the value of GeneratedAt.
+func (s *SqlInspection) SetGeneratedAt(val time.Time) {
+	s.GeneratedAt = val
+}
+
+func (*SqlInspection) getBackupSqlInspectionRes() {}
+
+// "agent" — the JSON was produced by the agent at backup time and
+// stored as a snapshot artifact. "cp-legacy" — the CP streamed the
+// dump artifact through its own parser as a fallback.
+type SqlInspectionSource string
+
+const (
+	SqlInspectionSourceAgent    SqlInspectionSource = "agent"
+	SqlInspectionSourceCpLegacy SqlInspectionSource = "cp-legacy"
+)
+
+// AllValues returns all SqlInspectionSource values.
+func (SqlInspectionSource) AllValues() []SqlInspectionSource {
+	return []SqlInspectionSource{
+		SqlInspectionSourceAgent,
+		SqlInspectionSourceCpLegacy,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SqlInspectionSource) MarshalText() ([]byte, error) {
+	switch s {
+	case SqlInspectionSourceAgent:
+		return []byte(s), nil
+	case SqlInspectionSourceCpLegacy:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SqlInspectionSource) UnmarshalText(data []byte) error {
+	switch SqlInspectionSource(data) {
+	case SqlInspectionSourceAgent:
+		*s = SqlInspectionSourceAgent
+		return nil
+	case SqlInspectionSourceCpLegacy:
+		*s = SqlInspectionSourceCpLegacy
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type SqlInspectionTablesItem struct {
+	Name          string      `json:"name"`
+	RowsEstimate  int64       `json:"rows_estimate"`
+	BytesEstimate OptInt64    `json:"bytes_estimate"`
+	AutoIncrement OptNilInt64 `json:"auto_increment"`
+	Charset       OptString   `json:"charset"`
+	HasFk         OptBool     `json:"has_fk"`
+}
+
+// GetName returns the value of Name.
+func (s *SqlInspectionTablesItem) GetName() string {
+	return s.Name
+}
+
+// GetRowsEstimate returns the value of RowsEstimate.
+func (s *SqlInspectionTablesItem) GetRowsEstimate() int64 {
+	return s.RowsEstimate
+}
+
+// GetBytesEstimate returns the value of BytesEstimate.
+func (s *SqlInspectionTablesItem) GetBytesEstimate() OptInt64 {
+	return s.BytesEstimate
+}
+
+// GetAutoIncrement returns the value of AutoIncrement.
+func (s *SqlInspectionTablesItem) GetAutoIncrement() OptNilInt64 {
+	return s.AutoIncrement
+}
+
+// GetCharset returns the value of Charset.
+func (s *SqlInspectionTablesItem) GetCharset() OptString {
+	return s.Charset
+}
+
+// GetHasFk returns the value of HasFk.
+func (s *SqlInspectionTablesItem) GetHasFk() OptBool {
+	return s.HasFk
+}
+
+// SetName sets the value of Name.
+func (s *SqlInspectionTablesItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetRowsEstimate sets the value of RowsEstimate.
+func (s *SqlInspectionTablesItem) SetRowsEstimate(val int64) {
+	s.RowsEstimate = val
+}
+
+// SetBytesEstimate sets the value of BytesEstimate.
+func (s *SqlInspectionTablesItem) SetBytesEstimate(val OptInt64) {
+	s.BytesEstimate = val
+}
+
+// SetAutoIncrement sets the value of AutoIncrement.
+func (s *SqlInspectionTablesItem) SetAutoIncrement(val OptNilInt64) {
+	s.AutoIncrement = val
+}
+
+// SetCharset sets the value of Charset.
+func (s *SqlInspectionTablesItem) SetCharset(val OptString) {
+	s.Charset = val
+}
+
+// SetHasFk sets the value of HasFk.
+func (s *SqlInspectionTablesItem) SetHasFk(val OptBool) {
+	s.HasFk = val
 }
 
 // Ref: #/components/schemas/Tenant

@@ -77,6 +77,13 @@ export type Site = {
 export type SiteComponents = {
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;
+  /**
+   * When set, WordPress core has an update available.
+   */
+  core_update?: {
+    new_version: string;
+    current_version: string;
+  };
 };
 
 export type SiteComponent = {
@@ -84,6 +91,38 @@ export type SiteComponent = {
   name?: string;
   version?: string;
   active?: boolean;
+  /**
+   * When set, an update is available for this plugin/theme.
+   */
+  available_update?: {
+    new_version: string;
+    package?: string;
+    tested?: string;
+    requires_php?: string;
+  };
+};
+
+/**
+ * Per-site cached list of items with updates available.
+ */
+export type SiteAvailableUpdates = {
+  site_id: string;
+  core_update?: {
+    new_version: string;
+    current_version: string;
+  };
+  items: Array<{
+    type: "plugin" | "theme";
+    slug: string;
+    name: string;
+    version: string;
+    new_version: string;
+    active: boolean;
+    package?: string;
+    tested?: string;
+    requires_php?: string;
+  }>;
+  as_of?: string;
 };
 
 export type SiteTags = {
@@ -234,6 +273,105 @@ export type ApiKeyCreated = {
    * The full API key, shown only once at creation.
    */
   token: string;
+};
+
+/**
+ * ADR-036 P1 destination backend type. `cp` is the WPMgr-managed bucket,
+ * `local` writes to wp-content/wpmgr-backups on the agent host, and
+ * `s3_compat` targets a customer-owned S3-compatible bucket.
+ *
+ */
+export const SiteDestinationKind = {
+  CP: "cp",
+  LOCAL: "local",
+  S3_COMPAT: "s3_compat",
+} as const;
+
+/**
+ * ADR-036 P1 destination backend type. `cp` is the WPMgr-managed bucket,
+ * `local` writes to wp-content/wpmgr-backups on the agent host, and
+ * `s3_compat` targets a customer-owned S3-compatible bucket.
+ *
+ */
+export type SiteDestinationKind =
+  (typeof SiteDestinationKind)[keyof typeof SiteDestinationKind];
+
+export type SiteDestination = {
+  id: string;
+  tenant_id: string;
+  site_id: string;
+  kind: SiteDestinationKind;
+  label: string;
+  endpoint: string;
+  region: string;
+  bucket: string;
+  path_prefix: string;
+  access_key_id: string;
+  /**
+   * True iff a secret key is stored. The encrypted bytes never cross
+   * the wire; the UI uses this to render a "Re-enter to save changes"
+   * hint on the secret_key field.
+   *
+   */
+  has_secret: boolean;
+  force_path_style: boolean;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SiteDestinationList = {
+  items: Array<SiteDestination>;
+};
+
+export type SiteDestinationCreate = {
+  kind: SiteDestinationKind;
+  label: string;
+  endpoint?: string;
+  region?: string;
+  bucket?: string;
+  path_prefix?: string;
+  access_key_id?: string;
+  /**
+   * PLAINTEXT secret. The CP age-encrypts it at rest before persisting;
+   * it is NEVER stored in clear nor read back over the API.
+   *
+   */
+  secret_key?: string;
+  force_path_style?: boolean;
+  is_default?: boolean;
+};
+
+export type SiteDestinationUpdate = {
+  label?: string;
+  endpoint?: string;
+  region?: string;
+  bucket?: string;
+  path_prefix?: string;
+  access_key_id?: string;
+  /**
+   * Omit to keep the existing secret; non-empty replaces it.
+   *
+   */
+  secret_key?: string;
+  force_path_style?: boolean;
+  is_default?: boolean;
+};
+
+export type SiteDestinationTest = {
+  kind: SiteDestinationKind;
+  endpoint?: string;
+  region?: string;
+  bucket?: string;
+  path_prefix?: string;
+  access_key_id?: string;
+  secret_key?: string;
+  force_path_style?: boolean;
+};
+
+export type SiteDestinationTestResult = {
+  ok: boolean;
+  message: string;
 };
 
 export type AuditEntry = {
@@ -478,7 +616,8 @@ export type BackupSnapshotDetail = {
 /**
  * Restore selection. Omit both arrays (or set full=true) for a full
  * restore; provide paths for partial file restore, or db_tables for partial
- * db restore.
+ * db restore. `components` further restricts the operation to specific
+ * backup components ("files" and/or "db"); see field doc below.
  *
  */
 export type RestoreCreate = {
@@ -491,6 +630,115 @@ export type RestoreCreate = {
    * Database table names to restore.
    */
   db_tables?: Array<string>;
+  /**
+   * Which backup components to restore. When omitted, restores all components in the snapshot. Valid values:
+   *
+   * - "files"      — broad-strokes alias for ALL file components
+   * (plugin + theme + upload + wp-content). Use
+   * this for "restore everything except the DB".
+   * - "db"         — the database dump.
+   * - "plugin"     — wp-content/plugins* only (Track 5).
+   * - "theme"      — wp-content/themes* only (Track 5).
+   * - "upload"     — wp-content/uploads* only (Track 5).
+   * - "wp-content" — everything ELSE under wp-content (mu-plugins,
+   * languages, drop-ins, custom dirs — NOT
+   * plugins/themes/uploads) (Track 5).
+   *
+   * Examples — to restore only the database, pass ["db"]. To restore only files, pass ["files"]. To restore both, pass ["files","db"] or omit. To restore only plugins, pass ["plugin"]. To restore plugins + uploads, pass ["plugin","upload"].
+   *
+   */
+  components?: Array<
+    "files" | "db" | "plugin" | "theme" | "upload" | "wp-content"
+  >;
+  /**
+   * When true, the agent keeps the pre-restore wp-content tree at .wpmgr-old-files-<id>/ for 24 hours as a manual rollback affordance. When false (default), the agent cleans it up immediately after a successful restore.
+   *
+   */
+  keep_old_files?: boolean;
+  /**
+   * When set, the agent will rewrite `siteurl` and `home` references from the snapshot's source URLs to this target. When unset, the agent uses the current site's URL (no-op when restoring to the same environment). Required for cross-environment restores (dev->prod, staging->prod). The control plane derives this from the destination Site.URL when the restore is dispatched, so callers typically don't need to set it.
+   *
+   */
+  target_site_url?: string;
+};
+
+/**
+ * Structured projection of a backup snapshot's SQL dump. Produced either
+ * by the agent at backup time (preferred; "source": "agent") or by the
+ * control plane's legacy streaming parser (fallback; "source":
+ * "cp-legacy"). `truncated: true` indicates the parser hit its CPU/time
+ * budget; tables/totals may be incomplete.
+ *
+ */
+export type SqlInspection = {
+  /**
+   * Report wire-shape version; bump when the JSON shape changes.
+   */
+  schema_version: number;
+  /**
+   * Total plaintext bytes scanned from the dump.
+   */
+  dump_bytes?: number;
+  /**
+   * Connection-level charset from SET NAMES (e.g. utf8mb4).
+   */
+  charset?: string;
+  /**
+   * Default collation declared in CREATE TABLE trailers, if any.
+   */
+  collation?: string;
+  /**
+   * Most common table-name prefix (chars up to the first underscore);
+   * empty when no consistent prefix could be determined.
+   *
+   */
+  table_prefix?: string;
+  /**
+   * WordPress db_version from wp_options, when detectable.
+   */
+  wp_version?: string;
+  /**
+   * WordPress siteurl from wp_options, when detectable.
+   */
+  siteurl?: string;
+  /**
+   * WordPress home from wp_options, when detectable.
+   */
+  home?: string;
+  /**
+   * True when a {prefix}options table is present in the dump.
+   */
+  is_wordpress: boolean;
+  /**
+   * True when the parser hit its budget before finishing.
+   */
+  truncated?: boolean;
+  /**
+   * "agent" — the JSON was produced by the agent at backup time and
+   * stored as a snapshot artifact. "cp-legacy" — the CP streamed the
+   * dump artifact through its own parser as a fallback.
+   *
+   */
+  source: "agent" | "cp-legacy";
+  /**
+   * Non-fatal scanner warnings (oversized rows, regex anomalies).
+   */
+  parser_warnings?: Array<string>;
+  /**
+   * Per-table inventory; row/byte estimates are best-effort.
+   */
+  tables: Array<{
+    name: string;
+    rows_estimate: number;
+    bytes_estimate?: number;
+    auto_increment?: number;
+    charset?: string;
+    has_fk?: boolean;
+  }>;
+  /**
+   * When the report was assembled (agent or CP wall clock).
+   */
+  generated_at: string;
 };
 
 export type BackupSchedule = {
@@ -703,6 +951,156 @@ export type AutologinConsumeResponse = {
   audit_id: string;
 };
 
+export type SiteDiagnosticsCard = {
+  /**
+   * One of: identity, php, mysql, filesystem, http, cron, themes,
+   * plugins, users, security, https, mail, performance, hosting,
+   * wp_native. The first 14 are the WPMgr-extra leapfrog collector
+   * (the 9-card legacy grid + the ribbon-summary entries); the 15th
+   * `wp_native` carries the verbatim WP_Debug_Data::debug_data()
+   * dump (full Site Health > Info parity) and is rendered as four
+   * additional cards: Directory Sizes, Media Handling, Filesystem
+   * Permissions, WordPress Constants.
+   *
+   */
+  category: string;
+  /**
+   * The raw JSON sub-blob the agent shipped for this category, or
+   * null when the agent has never shipped a payload for it yet.
+   * Shape is category-specific and deliberately tolerant — the UI
+   * parses it lazily so the agent can evolve the shape without a
+   * wire schema change.
+   *
+   */
+  payload: unknown;
+  /**
+   * Agent-side collection timestamp (UTC).
+   */
+  collected_at?: string;
+  /**
+   * CP-side ingestion timestamp (UTC).
+   */
+  received_at?: string;
+  /**
+   * True when the agent's `collected_at` is within the freshness
+   * tolerance (24h + 2h slack). Card UIs render a stale warning
+   * badge when false.
+   *
+   */
+  fresh: boolean;
+};
+
+export type SiteDiagnosticsList = {
+  items: Array<SiteDiagnosticsCard>;
+};
+
+export type PhpError = {
+  /**
+   * The CP-side row UUID (stringified).
+   */
+  id: string;
+  /**
+   * The agent-side dedup fingerprint (md5(code:file:line:message)).
+   */
+  md5: string;
+  /**
+   * PHP error code (E_* constant value).
+   */
+  code: number;
+  /**
+   * One of fatal, warning, notice, deprecated, bootstrap, unknown.
+   */
+  severity: string;
+  message: string;
+  file: string;
+  line: number;
+  request_path: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  occurrence_count: number;
+  silenced: boolean;
+};
+
+export type PhpErrorList = {
+  items: Array<PhpError>;
+};
+
+export type PhpErrorSilence = {
+  /**
+   * Whether to silence (default true).
+   */
+  silenced?: boolean;
+};
+
+export type SiteActivityEvent = {
+  /**
+   * The CP-side row id (stringified BIGSERIAL).
+   */
+  id: string;
+  /**
+   * Agent-assigned monotonic sequence within the chain.
+   */
+  seq: number;
+  event_type: string;
+  object_type: string;
+  object_id: string;
+  object_label: string;
+  /**
+   * WP user id of the actor; 0 for system events.
+   */
+  actor_user_id: number;
+  /**
+   * WP login of the actor; empty for system events.
+   */
+  actor_login: string;
+  actor_ip: string;
+  summary: string;
+  /**
+   * Agent-supplied event metadata (severity lives here).
+   */
+  meta: {
+    [key: string]: unknown;
+  };
+  severity: "high" | "medium" | "low";
+  /**
+   * The prior link's hash (64 zero chars at genesis).
+   */
+  prev_hash: string;
+  /**
+   * sha256 over the canonical event preimage.
+   */
+  this_hash: string;
+  /**
+   * Server-verified at ingest. False marks a tampered/broken link: the
+   * CP-recomputed hash did not match the shipped this_hash, or the
+   * shipped prev_hash did not match the prior stored row.
+   *
+   */
+  chain_valid: boolean;
+  occurred_at: string;
+  received_at: string;
+};
+
+export type SiteActivityList = {
+  items: Array<SiteActivityEvent>;
+};
+
+export type ActivityVerifyResult = {
+  /**
+   * True when the entire chain re-verifies intact.
+   */
+  valid: boolean;
+  /**
+   * The seq of the first broken link, or null when the chain is intact.
+   *
+   */
+  break_at_seq?: number;
+  /**
+   * Total number of events folded during verification.
+   */
+  total: number;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -716,6 +1114,8 @@ export type ApiKeyId = string;
 export type RunId = string;
 
 export type SnapshotId = string;
+
+export type DestinationId = string;
 
 export type GetHealthzData = {
   body?: never;
@@ -1092,6 +1492,211 @@ export type RevokeApiKeyResponses = {
 
 export type RevokeApiKeyResponse =
   RevokeApiKeyResponses[keyof RevokeApiKeyResponses];
+
+export type ListSiteDestinationsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/destinations";
+};
+
+export type ListSiteDestinationsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListSiteDestinationsError =
+  ListSiteDestinationsErrors[keyof ListSiteDestinationsErrors];
+
+export type ListSiteDestinationsResponses = {
+  /**
+   * A list of destinations.
+   */
+  200: SiteDestinationList;
+};
+
+export type ListSiteDestinationsResponse =
+  ListSiteDestinationsResponses[keyof ListSiteDestinationsResponses];
+
+export type CreateSiteDestinationData = {
+  body: SiteDestinationCreate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/destinations";
+};
+
+export type CreateSiteDestinationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateSiteDestinationError =
+  CreateSiteDestinationErrors[keyof CreateSiteDestinationErrors];
+
+export type CreateSiteDestinationResponses = {
+  /**
+   * Destination created.
+   */
+  201: SiteDestination;
+};
+
+export type CreateSiteDestinationResponse =
+  CreateSiteDestinationResponses[keyof CreateSiteDestinationResponses];
+
+export type TestSiteDestinationData = {
+  body: SiteDestinationTest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/destinations/test";
+};
+
+export type TestSiteDestinationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type TestSiteDestinationError =
+  TestSiteDestinationErrors[keyof TestSiteDestinationErrors];
+
+export type TestSiteDestinationResponses = {
+  /**
+   * Test result.
+   */
+  200: SiteDestinationTestResult;
+};
+
+export type TestSiteDestinationResponse =
+  TestSiteDestinationResponses[keyof TestSiteDestinationResponses];
+
+export type DeleteSiteDestinationData = {
+  body?: never;
+  path: {
+    siteId: string;
+    destinationId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/destinations/{destinationId}";
+};
+
+export type DeleteSiteDestinationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Destination not found
+   */
+  404: Error;
+};
+
+export type DeleteSiteDestinationError =
+  DeleteSiteDestinationErrors[keyof DeleteSiteDestinationErrors];
+
+export type DeleteSiteDestinationResponses = {
+  /**
+   * Destination deleted.
+   */
+  204: void;
+};
+
+export type DeleteSiteDestinationResponse =
+  DeleteSiteDestinationResponses[keyof DeleteSiteDestinationResponses];
+
+export type GetSiteDestinationData = {
+  body?: never;
+  path: {
+    siteId: string;
+    destinationId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/destinations/{destinationId}";
+};
+
+export type GetSiteDestinationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Destination not found
+   */
+  404: Error;
+};
+
+export type GetSiteDestinationError =
+  GetSiteDestinationErrors[keyof GetSiteDestinationErrors];
+
+export type GetSiteDestinationResponses = {
+  /**
+   * The destination.
+   */
+  200: SiteDestination;
+};
+
+export type GetSiteDestinationResponse =
+  GetSiteDestinationResponses[keyof GetSiteDestinationResponses];
+
+export type UpdateSiteDestinationData = {
+  body: SiteDestinationUpdate;
+  path: {
+    siteId: string;
+    destinationId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/destinations/{destinationId}";
+};
+
+export type UpdateSiteDestinationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Destination not found
+   */
+  404: Error;
+};
+
+export type UpdateSiteDestinationError =
+  UpdateSiteDestinationErrors[keyof UpdateSiteDestinationErrors];
+
+export type UpdateSiteDestinationResponses = {
+  /**
+   * The updated destination.
+   */
+  200: SiteDestination;
+};
+
+export type UpdateSiteDestinationResponse =
+  UpdateSiteDestinationResponses[keyof UpdateSiteDestinationResponses];
 
 export type ListAuditData = {
   body?: never;
@@ -1792,6 +2397,42 @@ export type StreamBackupSnapshotEventsResponses = {
 export type StreamBackupSnapshotEventsResponse =
   StreamBackupSnapshotEventsResponses[keyof StreamBackupSnapshotEventsResponses];
 
+export type GetBackupSqlInspectionData = {
+  body?: never;
+  path: {
+    snapshotId: string;
+  };
+  query?: never;
+  url: "/api/v1/backups/{snapshotId}/sql-inspection";
+};
+
+export type GetBackupSqlInspectionErrors = {
+  /**
+   * Snapshot not found, or has no DB artifact to inspect
+   */
+  404: Error;
+};
+
+export type GetBackupSqlInspectionError =
+  GetBackupSqlInspectionErrors[keyof GetBackupSqlInspectionErrors];
+
+export type GetBackupSqlInspectionResponses = {
+  /**
+   * The parsed SQL inspection report
+   */
+  200: SqlInspection;
+  /**
+   * The legacy inspection job has been enqueued; the client should poll
+   * the same URL until the report is ready. The Location header echoes
+   * the polling URL for clients that follow it transparently.
+   *
+   */
+  202: unknown;
+};
+
+export type GetBackupSqlInspectionResponse =
+  GetBackupSqlInspectionResponses[keyof GetBackupSqlInspectionResponses];
+
 export type CreateRestoreData = {
   body: RestoreCreate;
   path: {
@@ -1877,6 +2518,65 @@ export type PutBackupScheduleResponses = {
 
 export type PutBackupScheduleResponse =
   PutBackupScheduleResponses[keyof PutBackupScheduleResponses];
+
+export type RefreshSiteUpdatesData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/updates/refresh";
+};
+
+export type RefreshSiteUpdatesErrors = {
+  /**
+   * Site not found
+   */
+  404: Error;
+  /**
+   * Site offline or refresh already in flight
+   */
+  409: Error;
+};
+
+export type RefreshSiteUpdatesError =
+  RefreshSiteUpdatesErrors[keyof RefreshSiteUpdatesErrors];
+
+export type RefreshSiteUpdatesResponses = {
+  /**
+   * Refresh queued
+   */
+  202: unknown;
+};
+
+export type GetSiteAvailableUpdatesData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/updates/available";
+};
+
+export type GetSiteAvailableUpdatesErrors = {
+  /**
+   * Site not found
+   */
+  404: Error;
+};
+
+export type GetSiteAvailableUpdatesError =
+  GetSiteAvailableUpdatesErrors[keyof GetSiteAvailableUpdatesErrors];
+
+export type GetSiteAvailableUpdatesResponses = {
+  /**
+   * Available updates
+   */
+  200: SiteAvailableUpdates;
+};
+
+export type GetSiteAvailableUpdatesResponse =
+  GetSiteAvailableUpdatesResponses[keyof GetSiteAvailableUpdatesResponses];
 
 export type GetSiteUptimeData = {
   body?: never;
@@ -1968,3 +2668,185 @@ export type PutAlertConfigResponses = {
 
 export type PutAlertConfigResponse =
   PutAlertConfigResponses[keyof PutAlertConfigResponses];
+
+export type GetSiteDiagnosticsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/diagnostics";
+};
+
+export type GetSiteDiagnosticsErrors = {
+  /**
+   * Site not found
+   */
+  404: Error;
+};
+
+export type GetSiteDiagnosticsError =
+  GetSiteDiagnosticsErrors[keyof GetSiteDiagnosticsErrors];
+
+export type GetSiteDiagnosticsResponses = {
+  /**
+   * Site diagnostics
+   */
+  200: SiteDiagnosticsList;
+};
+
+export type GetSiteDiagnosticsResponse =
+  GetSiteDiagnosticsResponses[keyof GetSiteDiagnosticsResponses];
+
+export type RefreshSiteDiagnosticsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/diagnostics/refresh";
+};
+
+export type RefreshSiteDiagnosticsErrors = {
+  /**
+   * Refresh is not yet wired
+   */
+  503: Error;
+};
+
+export type RefreshSiteDiagnosticsError =
+  RefreshSiteDiagnosticsErrors[keyof RefreshSiteDiagnosticsErrors];
+
+export type RefreshSiteDiagnosticsResponses = {
+  /**
+   * Refresh enqueued
+   */
+  202: unknown;
+};
+
+export type ListSitePhpErrorsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    /**
+     * Only rows whose last_seen_at is after this timestamp.
+     */
+    since?: string;
+    /**
+     * Filter by silenced state. Omit for both.
+     */
+    silenced?: "true" | "false";
+    limit?: number;
+  };
+  url: "/api/v1/sites/{siteId}/errors";
+};
+
+export type ListSitePhpErrorsResponses = {
+  /**
+   * PHP error list
+   */
+  200: PhpErrorList;
+};
+
+export type ListSitePhpErrorsResponse =
+  ListSitePhpErrorsResponses[keyof ListSitePhpErrorsResponses];
+
+export type SilenceSitePhpErrorData = {
+  body?: PhpErrorSilence;
+  path: {
+    siteId: string;
+    /**
+     * The md5 fingerprint.
+     */
+    md5: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/errors/{md5}/silence";
+};
+
+export type SilenceSitePhpErrorErrors = {
+  /**
+   * Error not found
+   */
+  404: Error;
+};
+
+export type SilenceSitePhpErrorError =
+  SilenceSitePhpErrorErrors[keyof SilenceSitePhpErrorErrors];
+
+export type SilenceSitePhpErrorResponses = {
+  /**
+   * Silence flag updated
+   */
+  204: void;
+};
+
+export type SilenceSitePhpErrorResponse =
+  SilenceSitePhpErrorResponses[keyof SilenceSitePhpErrorResponses];
+
+export type ListSiteActivityData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    /**
+     * Exact-match filter on the event type.
+     */
+    event_type?: string;
+    /**
+     * Exact-match filter on the object type.
+     */
+    object_type?: string;
+    /**
+     * Exact-match filter on the actor login.
+     */
+    actor_login?: string;
+    /**
+     * Filter by severity.
+     */
+    severity?: "high" | "medium" | "low";
+    /**
+     * Only events whose occurred_at is at/after this timestamp.
+     */
+    since?: string;
+    /**
+     * Only events whose occurred_at is at/before this timestamp.
+     */
+    until?: string;
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/sites/{siteId}/activity";
+};
+
+export type ListSiteActivityResponses = {
+  /**
+   * Activity event list
+   */
+  200: SiteActivityList;
+};
+
+export type ListSiteActivityResponse =
+  ListSiteActivityResponses[keyof ListSiteActivityResponses];
+
+export type VerifySiteActivityData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/activity/verify";
+};
+
+export type VerifySiteActivityResponses = {
+  /**
+   * Chain verification result
+   */
+  200: ActivityVerifyResult;
+};
+
+export type VerifySiteActivityResponse =
+  VerifySiteActivityResponses[keyof VerifySiteActivityResponses];

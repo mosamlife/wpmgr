@@ -22,6 +22,7 @@ const (
 	GetAlertConfigOperation          OperationName = "GetAlertConfig"
 	GetBackupOperation               OperationName = "GetBackup"
 	GetBackupScheduleOperation       OperationName = "GetBackupSchedule"
+	GetBackupSqlInspectionOperation  OperationName = "GetBackupSqlInspection"
 	GetHealthzOperation              OperationName = "GetHealthz"
 	GetMeOperation                   OperationName = "GetMe"
 	GetReadyzOperation               OperationName = "GetReadyz"

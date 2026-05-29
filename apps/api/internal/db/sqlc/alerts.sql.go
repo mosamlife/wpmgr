@@ -14,7 +14,7 @@ import (
 
 const getAlertConfig = `-- name: GetAlertConfig :one
 
-SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, created_at, updated_at FROM alert_configs
+SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, created_at, updated_at FROM alert_configs
 WHERE tenant_id = $1
 `
 
@@ -30,6 +30,7 @@ func (q *Queries) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (Alert
 		&i.WebhookUrl,
 		&i.WebhookSecret,
 		&i.Enabled,
+		&i.NotifySecurity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -58,7 +59,7 @@ func (q *Queries) GetSiteAlertState(ctx context.Context, siteID uuid.UUID) (Site
 }
 
 const listAlertConfigsAllTenants = `-- name: ListAlertConfigsAllTenants :many
-SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, created_at, updated_at FROM alert_configs
+SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, created_at, updated_at FROM alert_configs
 WHERE enabled = true
 `
 
@@ -80,6 +81,7 @@ func (q *Queries) ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig
 			&i.WebhookUrl,
 			&i.WebhookSecret,
 			&i.Enabled,
+			&i.NotifySecurity,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -94,15 +96,16 @@ func (q *Queries) ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig
 }
 
 const upsertAlertConfig = `-- name: UpsertAlertConfig :one
-INSERT INTO alert_configs (tenant_id, email_recipients, webhook_url, webhook_secret, enabled)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO alert_configs (tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (tenant_id) DO UPDATE
 SET email_recipients = EXCLUDED.email_recipients,
     webhook_url       = EXCLUDED.webhook_url,
     webhook_secret    = EXCLUDED.webhook_secret,
     enabled           = EXCLUDED.enabled,
+    notify_security   = EXCLUDED.notify_security,
     updated_at        = now()
-RETURNING id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, created_at, updated_at
+RETURNING id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, created_at, updated_at
 `
 
 type UpsertAlertConfigParams struct {
@@ -111,6 +114,7 @@ type UpsertAlertConfigParams struct {
 	WebhookUrl      string    `json:"webhook_url"`
 	WebhookSecret   string    `json:"webhook_secret"`
 	Enabled         bool      `json:"enabled"`
+	NotifySecurity  bool      `json:"notify_security"`
 }
 
 // Tenant-scoped create-or-update of the tenant's default alert channel.
@@ -121,6 +125,7 @@ func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigPa
 		arg.WebhookUrl,
 		arg.WebhookSecret,
 		arg.Enabled,
+		arg.NotifySecurity,
 	)
 	var i AlertConfig
 	err := row.Scan(
@@ -130,6 +135,7 @@ func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigPa
 		&i.WebhookUrl,
 		&i.WebhookSecret,
 		&i.Enabled,
+		&i.NotifySecurity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

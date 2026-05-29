@@ -215,6 +215,26 @@ func (UnimplementedHandler) GetBackupSchedule(ctx context.Context, params GetBac
 	return r, ht.ErrNotImplemented
 }
 
+// GetBackupSqlInspection implements getBackupSqlInspection operation.
+//
+// Returns a structured report on the SQL dump artifact of a backup
+// snapshot: table inventory, row/byte estimates, charset, table prefix,
+// and (when the dump looks like a WordPress install) the canonical
+// siteurl/home/db_version probed from wp_options. Resolution order:
+// 1. If the snapshot manifest carries an agent-generated inspection
+// artifact, that JSON is returned (source="agent"). This is the cheap,
+// always-correct path because the agent has the SQL plaintext locally.
+// 2. Otherwise the control plane streams the dump artifact, parses it
+// with the legacy scanner, and caches the result for subsequent calls
+// (source="cp-legacy"). The first request returns 202 Accepted while
+// the inspection job runs; the client polls until it gets 200.
+// Requires viewer+.
+//
+// GET /api/v1/backups/{snapshotId}/sql-inspection
+func (UnimplementedHandler) GetBackupSqlInspection(ctx context.Context, params GetBackupSqlInspectionParams) (r GetBackupSqlInspectionRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetHealthz implements getHealthz operation.
 //
 // Liveness probe.

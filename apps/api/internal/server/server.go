@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
@@ -22,8 +23,10 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
+	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 	"github.com/mosamlife/wpmgr/apps/api/internal/uptime"
@@ -45,11 +48,36 @@ type Deps struct {
 	UpdateH         *update.Handler
 	BackupH         *backup.Handler
 	BackupAgentH    *backup.AgentHandler
+	// InspectionDeps wires the optional collaborators for the M6 SQL inspection
+	// endpoint (manifest fetcher / CP-side legacy cache / River enqueuer). Any
+	// field may be nil — the handler degrades to a 503 pointing at the missing
+	// tier, so a partial rollout is observable rather than a 404 mystery.
+	InspectionDeps  backup.InspectionDeps
 	UptimeH         *uptime.Handler
 	AutologinH      *autologin.MintHandler
 	AutologinAgentH *autologin.AgentHandler
 	AgentAuth       *agent.Authenticator
 	AgentH          *agent.Handler
+	// SiteDestH serves the ADR-036 P1 per-site destinations CRUD under
+	// /api/v1/sites/{siteId}/destinations.
+	SiteDestH       *sitedestination.Handler
+	// ADR-037 Sprint 2 — diagnostics + php-error monitor.
+	// DiagnosticsH serves the operator-facing GETs + silence/refresh under
+	// /api/v1/sites/{siteId}/(diagnostics|errors).
+	DiagnosticsH    *diagnostics.Handler
+	// DiagnosticsAgentH ingests the agent's daily 14-category push at
+	// POST /agent/v1/diagnostics.
+	DiagnosticsAgentH *agent.DiagnosticsHandler
+	// ErrorsAgentH ingests the heartbeat-driven php-error batches at
+	// POST /agent/v1/errors.
+	ErrorsAgentH    *agent.ErrorsHandler
+	// ADR-037 Sprint 3 — WordPress activity log.
+	// ActivityH serves the operator-facing list + chain-verify under
+	// /api/v1/sites/{siteId}/activity[/verify].
+	ActivityH *activity.Handler
+	// ActivityAgentH ingests the agent's hash-chained activity batch at
+	// POST /agent/v1/activity.
+	ActivityAgentH *agent.ActivityHandler
 	ServiceName     string
 	Version         string
 }
@@ -110,6 +138,21 @@ func New(deps Deps) *Server {
 		if deps.AutologinAgentH != nil {
 			deps.AutologinAgentH.Register(agentGroup)
 		}
+		// ADR-037 Sprint 2 — agent ingestion routes for diagnostics + errors.
+		// Authenticated via the same Ed25519 signed-request middleware as the
+		// metadata/heartbeat routes; the site + tenant are resolved from the
+		// verified identity.
+		if deps.DiagnosticsAgentH != nil {
+			deps.DiagnosticsAgentH.Register(agentGroup)
+		}
+		if deps.ErrorsAgentH != nil {
+			deps.ErrorsAgentH.Register(agentGroup)
+		}
+		// ADR-037 Sprint 3 — agent ingestion route for the hash-chained
+		// WordPress activity log. Same Ed25519 signed-request auth as above.
+		if deps.ActivityAgentH != nil {
+			deps.ActivityAgentH.Register(agentGroup)
+		}
 	}
 
 	// Everything under /api/v1 requires an authenticated principal with an
@@ -121,17 +164,33 @@ func New(deps Deps) *Server {
 	deps.MembersH.Register(v1)
 	deps.APIKeyH.Register(v1)
 	deps.AuditH.Register(v1)
+	if deps.SiteDestH != nil {
+		// ADR-036 P1 storage adapter: per-site destination management.
+		deps.SiteDestH.Register(v1)
+	}
 	if deps.UpdateH != nil {
 		deps.UpdateH.Register(v1)
 	}
 	if deps.BackupH != nil {
 		deps.BackupH.Register(v1)
+		// M6 / Track 4: mount the sql-inspection route. Split from Register so
+		// callers without the optional inspection deps (manifest fetcher / cache
+		// / River enqueuer) can mount the rest of the backup API without it.
+		deps.BackupH.RegisterInspection(v1, deps.InspectionDeps)
 	}
 	if deps.UptimeH != nil {
 		deps.UptimeH.Register(v1)
 	}
 	if deps.AutologinH != nil {
 		deps.AutologinH.Register(v1)
+	}
+	// ADR-037 Sprint 2 — operator-facing site Health + Errors routes.
+	if deps.DiagnosticsH != nil {
+		deps.DiagnosticsH.Register(v1)
+	}
+	// ADR-037 Sprint 3 — operator-facing activity log + chain verify.
+	if deps.ActivityH != nil {
+		deps.ActivityH.Register(v1)
 	}
 
 	return s

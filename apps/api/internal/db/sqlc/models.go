@@ -26,6 +26,7 @@ type AlertConfig struct {
 	WebhookUrl      string    `json:"webhook_url"`
 	WebhookSecret   string    `json:"webhook_secret"`
 	Enabled         bool      `json:"enabled"`
+	NotifySecurity  bool      `json:"notify_security"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }

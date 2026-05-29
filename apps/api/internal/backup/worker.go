@@ -2,7 +2,9 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/restore/sqlinspect"
 )
 
 // Audit action names for the backup/restore lifecycle.
@@ -194,12 +197,19 @@ func (w *BackupWorker) recordAudit(ctx context.Context, snap Snapshot, action st
 // ----------------------------------------------------------------------------
 
 // RestoreArgs is the River job payload for one restore.
+//
+// Components and KeepOldFiles are M6 / Track 2 additions: Components scopes the
+// restore to a subset of the snapshot's content kinds ("files" and/or "db");
+// KeepOldFiles is forwarded to the agent so it can decide whether to preserve
+// the pre-restore wp-content tree as a manual rollback affordance.
 type RestoreArgs struct {
-	TenantID   uuid.UUID `json:"tenant_id"`
-	SnapshotID uuid.UUID `json:"snapshot_id"`
-	Full       bool      `json:"full"`
-	Paths      []string  `json:"paths,omitempty"`
-	DBTables   []string  `json:"db_tables,omitempty"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+	SnapshotID   uuid.UUID `json:"snapshot_id"`
+	Full         bool      `json:"full"`
+	Paths        []string  `json:"paths,omitempty"`
+	DBTables     []string  `json:"db_tables,omitempty"`
+	Components   []string  `json:"components,omitempty"`
+	KeepOldFiles bool      `json:"keep_old_files,omitempty"`
 }
 
 // Kind implements river.JobArgs.
@@ -268,7 +278,13 @@ func (w *RestoreWorker) Timeout(*river.Job[RestoreArgs]) time.Duration { return 
 // refusals are recorded as terminal and return nil.
 func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) error {
 	a := job.Args
-	sel := RestoreSelection{Full: a.Full, Paths: a.Paths, DBTables: a.DBTables}
+	sel := RestoreSelection{
+		Full:         a.Full,
+		Paths:        a.Paths,
+		DBTables:     a.DBTables,
+		Components:   a.Components,
+		KeepOldFiles: a.KeepOldFiles,
+	}
 
 	// CP-generated dedup key. Recorded in audit and surfaced to the UI via the
 	// preflight progress event's phase_detail.restore_id.
@@ -523,5 +539,165 @@ func (w *ScheduleWorker) Work(ctx context.Context, _ *river.Job[ScheduleArgs]) e
 				slog.Any("reason", eerr))
 		}
 	}
+	return nil
+}
+
+// ----------------------------------------------------------------------------
+// SQL inspection legacy job (M6 / Track 4)
+// ----------------------------------------------------------------------------
+
+// SqlInspectLegacyQueue is the dedicated River queue for SQL inspection jobs.
+// Sized at MaxWorkers=1 per CP instance: a streaming SQL parse is CPU-heavy
+// and the operator-poll cadence is generous — a queue depth >1 doesn't help
+// any single user but does risk OOM on a multi-GB dump if two ran at once.
+const SqlInspectLegacyQueue = "sql_inspect_legacy"
+
+// SqlInspectLegacyTimeout caps the wall-clock budget for a single legacy
+// inspection. On a multi-GB dump (the worst case we've measured) the streaming
+// parser finishes in ~90 s on commodity hardware; 5 minutes is generous
+// headroom. On timeout the worker writes a partial Report with Truncated=true
+// so the UI surfaces "best effort" rather than a permanent failure.
+const SqlInspectLegacyTimeout = 5 * time.Minute
+
+// SqlInspectLegacyArgs is the River job payload for one legacy SQL
+// inspection pass. Tenant + snapshot identify the artifact; the worker
+// re-reads authoritative state from the DB so a stale enqueue can't escalate.
+type SqlInspectLegacyArgs struct {
+	TenantID   uuid.UUID `json:"tenant_id"`
+	SnapshotID uuid.UUID `json:"snapshot_id"`
+}
+
+// Kind implements river.JobArgs.
+func (SqlInspectLegacyArgs) Kind() string { return "sql_inspect_legacy" }
+
+// InspectionPlaintextSource fetches the plaintext DB dump bytes for a
+// snapshot, streamed for memory safety. The CP cannot decrypt age-encrypted
+// chunks on its own — the agent holds the only identity. V0 implementations
+// MAY return an "unsupported" error which the worker handles gracefully by
+// caching a truncated Report explaining the situation.
+//
+// Wired in main once an agent-side decrypted-dump endpoint exists; until then
+// the worker writes the sentinel report and the operator UI surfaces it as
+// "agent inspection unavailable — upgrade the agent to inspect this snapshot."
+type InspectionPlaintextSource interface {
+	OpenDumpStream(ctx context.Context, tenantID, snapshotID uuid.UUID) (io.ReadCloser, error)
+}
+
+// InspectionCacheWriter persists a legacy-parser Report so subsequent GETs
+// hit the cache rather than re-running the parser. Mirrors InspectionCache
+// (read-side) used by the handler — kept as separate interfaces so test
+// fakes can wire one without the other.
+type InspectionCacheWriter interface {
+	Put(ctx context.Context, tenantID, snapshotID uuid.UUID, payload []byte) error
+}
+
+// SqlInspectLegacyWorker streams the DB artifact from a snapshot's plaintext
+// source through internal/restore/sqlinspect and writes the resulting Report
+// to the CP cache. The job is idempotent — re-running it overwrites the same
+// cache key with a fresh Report.
+type SqlInspectLegacyWorker struct {
+	river.WorkerDefaults[SqlInspectLegacyArgs]
+	src    InspectionPlaintextSource
+	cache  InspectionCacheWriter
+	logger *slog.Logger
+}
+
+// NewSqlInspectLegacyWorker builds the legacy-inspection worker. Either of
+// src/cache may be nil in environments that have not finished plumbing the
+// feature — the Work method returns a stable error in that case so River
+// surfaces the misconfiguration via its job-failure metrics.
+func NewSqlInspectLegacyWorker(src InspectionPlaintextSource, cache InspectionCacheWriter, logger *slog.Logger) *SqlInspectLegacyWorker {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &SqlInspectLegacyWorker{src: src, cache: cache, logger: logger}
+}
+
+// Timeout overrides River's default per-job context deadline. See
+// SqlInspectLegacyTimeout for the rationale.
+func (w *SqlInspectLegacyWorker) Timeout(*river.Job[SqlInspectLegacyArgs]) time.Duration {
+	return SqlInspectLegacyTimeout
+}
+
+// Work runs one legacy SQL inspection pass:
+//
+//   1. Open the plaintext dump stream.
+//   2. Pipe it through sqlinspect.Inspect with the job's context.
+//   3. On ctx.DeadlineExceeded (the SqlInspectLegacyTimeout), keep whatever
+//      partial report Inspect produced and mark it Truncated=true.
+//   4. Marshal the report and write it to the cache.
+//
+// The job ALWAYS writes a cache entry (even on partial failure) so the
+// operator gets a deterministic answer rather than an infinite-202 polling
+// loop. Plumbing failures (no src/cache wired) bypass the cache write so the
+// operator sees a real River failure metric.
+func (w *SqlInspectLegacyWorker) Work(ctx context.Context, job *river.Job[SqlInspectLegacyArgs]) error {
+	a := job.Args
+	if w.src == nil || w.cache == nil {
+		return fmt.Errorf("sql_inspect_legacy: plaintext source or cache unwired")
+	}
+	stream, err := w.src.OpenDumpStream(ctx, a.TenantID, a.SnapshotID)
+	if err != nil {
+		// The plaintext source is unavailable (e.g. agent inspection not yet
+		// shipped, snapshot pre-dates plaintext capture). Persist a sentinel
+		// report so the operator UI stops polling.
+		return w.writeSentinel(ctx, a, "plaintext_unavailable", err)
+	}
+	defer stream.Close()
+
+	report, ierr := sqlinspect.Inspect(ctx, stream)
+	if report == nil {
+		report = &sqlinspect.Report{SchemaVersion: sqlinspect.ReportSchemaVersion, GeneratedAt: time.Now().UTC()}
+	}
+	report.Source = sqlinspect.SourceCPLegacy
+	if ierr != nil {
+		// ctx.DeadlineExceeded → truncated=true and keep whatever we parsed.
+		// Other errors are warning-level and surfaced via Warnings.
+		if ctx.Err() != nil {
+			report.Truncated = true
+			report.Warnings = append(report.Warnings, "parser hit the wall-clock budget; results are partial")
+		} else {
+			report.Warnings = append(report.Warnings, "parser error: "+ierr.Error())
+		}
+	}
+	payload, merr := json.Marshal(report)
+	if merr != nil {
+		return fmt.Errorf("sql_inspect_legacy: marshal report: %w", merr)
+	}
+	if cerr := w.cache.Put(ctx, a.TenantID, a.SnapshotID, payload); cerr != nil {
+		return fmt.Errorf("sql_inspect_legacy: write cache: %w", cerr)
+	}
+	w.logger.Info("sql inspection cache populated",
+		slog.String("snapshot_id", a.SnapshotID.String()),
+		slog.String("tenant_id", a.TenantID.String()),
+		slog.Int("tables", len(report.Tables)),
+		slog.Bool("truncated", report.Truncated))
+	return nil
+}
+
+// writeSentinel persists a minimal Report explaining why the legacy parser
+// could not produce a real one. The UI renders this report normally; the
+// operator sees Warnings explaining what to do (upgrade agent, etc.).
+func (w *SqlInspectLegacyWorker) writeSentinel(ctx context.Context, a SqlInspectLegacyArgs, reason string, cause error) error {
+	report := &sqlinspect.Report{
+		SchemaVersion: sqlinspect.ReportSchemaVersion,
+		Source:        sqlinspect.SourceCPLegacy,
+		Truncated:     true,
+		GeneratedAt:   time.Now().UTC(),
+		Warnings: []string{
+			"legacy inspection " + reason + ": " + cause.Error(),
+		},
+	}
+	payload, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("sql_inspect_legacy: marshal sentinel: %w", err)
+	}
+	if cerr := w.cache.Put(ctx, a.TenantID, a.SnapshotID, payload); cerr != nil {
+		return fmt.Errorf("sql_inspect_legacy: write sentinel cache: %w", cerr)
+	}
+	w.logger.Warn("sql inspection sentinel cached",
+		slog.String("snapshot_id", a.SnapshotID.String()),
+		slog.String("reason", reason),
+		slog.Any("error", cause))
 	return nil
 }

@@ -61,6 +61,10 @@ type GetBackupScheduleRes interface {
 	getBackupScheduleRes()
 }
 
+type GetBackupSqlInspectionRes interface {
+	getBackupSqlInspectionRes()
+}
+
 type GetMeRes interface {
 	getMeRes()
 }

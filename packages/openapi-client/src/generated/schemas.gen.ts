@@ -209,6 +209,20 @@ export const SiteComponentsSchema = {
         $ref: "#/components/schemas/SiteComponent",
       },
     },
+    core_update: {
+      type: "object",
+      nullable: true,
+      description: "When set, WordPress core has an update available.",
+      required: ["new_version", "current_version"],
+      properties: {
+        new_version: {
+          type: "string",
+        },
+        current_version: {
+          type: "string",
+        },
+      },
+    },
   },
 } as const;
 
@@ -227,6 +241,99 @@ export const SiteComponentSchema = {
     },
     active: {
       type: "boolean",
+    },
+    available_update: {
+      type: "object",
+      nullable: true,
+      description: "When set, an update is available for this plugin/theme.",
+      required: ["new_version"],
+      properties: {
+        new_version: {
+          type: "string",
+        },
+        package: {
+          type: "string",
+          nullable: true,
+        },
+        tested: {
+          type: "string",
+          nullable: true,
+        },
+        requires_php: {
+          type: "string",
+          nullable: true,
+        },
+      },
+    },
+  },
+} as const;
+
+export const SiteAvailableUpdatesSchema = {
+  type: "object",
+  description: "Per-site cached list of items with updates available.",
+  required: ["site_id", "items"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    core_update: {
+      type: "object",
+      nullable: true,
+      required: ["new_version", "current_version"],
+      properties: {
+        new_version: {
+          type: "string",
+        },
+        current_version: {
+          type: "string",
+        },
+      },
+    },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["type", "slug", "name", "version", "new_version", "active"],
+        properties: {
+          type: {
+            type: "string",
+            enum: ["plugin", "theme"],
+          },
+          slug: {
+            type: "string",
+          },
+          name: {
+            type: "string",
+          },
+          version: {
+            type: "string",
+          },
+          new_version: {
+            type: "string",
+          },
+          active: {
+            type: "boolean",
+          },
+          package: {
+            type: "string",
+            nullable: true,
+          },
+          tested: {
+            type: "string",
+            nullable: true,
+          },
+          requires_php: {
+            type: "string",
+            nullable: true,
+          },
+        },
+      },
+    },
+    as_of: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
     },
   },
 } as const;
@@ -669,6 +776,220 @@ export const ApiKeyCreatedSchema = {
     token: {
       type: "string",
       description: "The full API key, shown only once at creation.",
+    },
+  },
+} as const;
+
+export const SiteDestinationKindSchema = {
+  type: "string",
+  enum: ["cp", "local", "s3_compat"],
+  description:
+    "ADR-036 P1 destination backend type. `cp` is the WPMgr-managed bucket,\n`local` writes to wp-content/wpmgr-backups on the agent host, and\n`s3_compat` targets a customer-owned S3-compatible bucket.\n",
+} as const;
+
+export const SiteDestinationSchema = {
+  type: "object",
+  required: [
+    "id",
+    "tenant_id",
+    "site_id",
+    "kind",
+    "label",
+    "endpoint",
+    "region",
+    "bucket",
+    "path_prefix",
+    "access_key_id",
+    "has_secret",
+    "force_path_style",
+    "is_default",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    kind: {
+      $ref: "#/components/schemas/SiteDestinationKind",
+    },
+    label: {
+      type: "string",
+    },
+    endpoint: {
+      type: "string",
+    },
+    region: {
+      type: "string",
+    },
+    bucket: {
+      type: "string",
+    },
+    path_prefix: {
+      type: "string",
+    },
+    access_key_id: {
+      type: "string",
+    },
+    has_secret: {
+      type: "boolean",
+      description:
+        'True iff a secret key is stored. The encrypted bytes never cross\nthe wire; the UI uses this to render a "Re-enter to save changes"\nhint on the secret_key field.\n',
+    },
+    force_path_style: {
+      type: "boolean",
+    },
+    is_default: {
+      type: "boolean",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteDestinationListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteDestination",
+      },
+    },
+  },
+} as const;
+
+export const SiteDestinationCreateSchema = {
+  type: "object",
+  required: ["kind", "label"],
+  properties: {
+    kind: {
+      $ref: "#/components/schemas/SiteDestinationKind",
+    },
+    label: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+    },
+    endpoint: {
+      type: "string",
+    },
+    region: {
+      type: "string",
+    },
+    bucket: {
+      type: "string",
+    },
+    path_prefix: {
+      type: "string",
+    },
+    access_key_id: {
+      type: "string",
+    },
+    secret_key: {
+      type: "string",
+      description:
+        "PLAINTEXT secret. The CP age-encrypts it at rest before persisting;\nit is NEVER stored in clear nor read back over the API.\n",
+    },
+    force_path_style: {
+      type: "boolean",
+    },
+    is_default: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const SiteDestinationUpdateSchema = {
+  type: "object",
+  properties: {
+    label: {
+      type: "string",
+    },
+    endpoint: {
+      type: "string",
+    },
+    region: {
+      type: "string",
+    },
+    bucket: {
+      type: "string",
+    },
+    path_prefix: {
+      type: "string",
+    },
+    access_key_id: {
+      type: "string",
+    },
+    secret_key: {
+      type: "string",
+      description: "Omit to keep the existing secret; non-empty replaces it.\n",
+    },
+    force_path_style: {
+      type: "boolean",
+    },
+    is_default: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const SiteDestinationTestSchema = {
+  type: "object",
+  required: ["kind"],
+  properties: {
+    kind: {
+      $ref: "#/components/schemas/SiteDestinationKind",
+    },
+    endpoint: {
+      type: "string",
+    },
+    region: {
+      type: "string",
+    },
+    bucket: {
+      type: "string",
+    },
+    path_prefix: {
+      type: "string",
+    },
+    access_key_id: {
+      type: "string",
+    },
+    secret_key: {
+      type: "string",
+    },
+    force_path_style: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const SiteDestinationTestResultSchema = {
+  type: "object",
+  required: ["ok", "message"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    message: {
+      type: "string",
     },
   },
 } as const;
@@ -1231,7 +1552,7 @@ export const BackupSnapshotDetailSchema = {
 export const RestoreCreateSchema = {
   type: "object",
   description:
-    "Restore selection. Omit both arrays (or set full=true) for a full\nrestore; provide paths for partial file restore, or db_tables for partial\ndb restore.\n",
+    'Restore selection. Omit both arrays (or set full=true) for a full\nrestore; provide paths for partial file restore, or db_tables for partial\ndb restore. `components` further restricts the operation to specific\nbackup components ("files" and/or "db"); see field doc below.\n',
   properties: {
     full: {
       type: "boolean",
@@ -1250,6 +1571,142 @@ export const RestoreCreateSchema = {
         type: "string",
       },
       description: "Database table names to restore.",
+    },
+    components: {
+      type: "array",
+      description:
+        'Which backup components to restore. When omitted, restores all components in the snapshot. Valid values:\n\n  - "files"      — broad-strokes alias for ALL file components\n                   (plugin + theme + upload + wp-content). Use\n                   this for "restore everything except the DB".\n  - "db"         — the database dump.\n  - "plugin"     — wp-content/plugins/* only (Track 5).\n  - "theme"      — wp-content/themes/* only (Track 5).\n  - "upload"     — wp-content/uploads/* only (Track 5).\n  - "wp-content" — everything ELSE under wp-content (mu-plugins,\n                   languages, drop-ins, custom dirs — NOT\n                   plugins/themes/uploads) (Track 5).\n\nExamples — to restore only the database, pass ["db"]. To restore only files, pass ["files"]. To restore both, pass ["files","db"] or omit. To restore only plugins, pass ["plugin"]. To restore plugins + uploads, pass ["plugin","upload"].\n',
+      items: {
+        type: "string",
+        enum: ["files", "db", "plugin", "theme", "upload", "wp-content"],
+      },
+      uniqueItems: true,
+    },
+    keep_old_files: {
+      type: "boolean",
+      description:
+        "When true, the agent keeps the pre-restore wp-content tree at .wpmgr-old-files-<id>/ for 24 hours as a manual rollback affordance. When false (default), the agent cleans it up immediately after a successful restore.\n",
+      default: false,
+    },
+    target_site_url: {
+      type: "string",
+      format: "uri",
+      nullable: true,
+      description:
+        "When set, the agent will rewrite `siteurl` and `home` references from the snapshot's source URLs to this target. When unset, the agent uses the current site's URL (no-op when restoring to the same environment). Required for cross-environment restores (dev->prod, staging->prod). The control plane derives this from the destination Site.URL when the restore is dispatched, so callers typically don't need to set it.\n",
+    },
+  },
+} as const;
+
+export const SqlInspectionSchema = {
+  type: "object",
+  description:
+    'Structured projection of a backup snapshot\'s SQL dump. Produced either\nby the agent at backup time (preferred; "source": "agent") or by the\ncontrol plane\'s legacy streaming parser (fallback; "source":\n"cp-legacy"). `truncated: true` indicates the parser hit its CPU/time\nbudget; tables/totals may be incomplete.\n',
+  required: [
+    "schema_version",
+    "source",
+    "is_wordpress",
+    "tables",
+    "generated_at",
+  ],
+  properties: {
+    schema_version: {
+      type: "integer",
+      description:
+        "Report wire-shape version; bump when the JSON shape changes.",
+    },
+    dump_bytes: {
+      type: "integer",
+      format: "int64",
+      description: "Total plaintext bytes scanned from the dump.",
+    },
+    charset: {
+      type: "string",
+      description: "Connection-level charset from SET NAMES (e.g. utf8mb4).",
+    },
+    collation: {
+      type: "string",
+      description:
+        "Default collation declared in CREATE TABLE trailers, if any.",
+    },
+    table_prefix: {
+      type: "string",
+      description:
+        "Most common table-name prefix (chars up to the first underscore);\nempty when no consistent prefix could be determined.\n",
+    },
+    wp_version: {
+      type: "string",
+      nullable: true,
+      description: "WordPress db_version from wp_options, when detectable.",
+    },
+    siteurl: {
+      type: "string",
+      nullable: true,
+      description: "WordPress siteurl from wp_options, when detectable.",
+    },
+    home: {
+      type: "string",
+      nullable: true,
+      description: "WordPress home from wp_options, when detectable.",
+    },
+    is_wordpress: {
+      type: "boolean",
+      description: "True when a {prefix}options table is present in the dump.",
+    },
+    truncated: {
+      type: "boolean",
+      description: "True when the parser hit its budget before finishing.",
+    },
+    source: {
+      type: "string",
+      enum: ["agent", "cp-legacy"],
+      description:
+        '"agent" — the JSON was produced by the agent at backup time and\nstored as a snapshot artifact. "cp-legacy" — the CP streamed the\ndump artifact through its own parser as a fallback.\n',
+    },
+    parser_warnings: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description:
+        "Non-fatal scanner warnings (oversized rows, regex anomalies).",
+    },
+    tables: {
+      type: "array",
+      description: "Per-table inventory; row/byte estimates are best-effort.",
+      items: {
+        type: "object",
+        required: ["name", "rows_estimate"],
+        properties: {
+          name: {
+            type: "string",
+          },
+          rows_estimate: {
+            type: "integer",
+            format: "int64",
+          },
+          bytes_estimate: {
+            type: "integer",
+            format: "int64",
+          },
+          auto_increment: {
+            type: "integer",
+            format: "int64",
+            nullable: true,
+          },
+          charset: {
+            type: "string",
+          },
+          has_fk: {
+            type: "boolean",
+          },
+        },
+      },
+    },
+    generated_at: {
+      type: "string",
+      format: "date-time",
+      description: "When the report was assembled (agent or CP wall clock).",
     },
   },
 } as const;
@@ -1634,6 +2091,265 @@ export const AutologinConsumeResponseSchema = {
       format: "uuid",
       description:
         "The audit entry id recorded for the consume; the agent may surface\nit for correlation but it has no security significance.\n",
+    },
+  },
+} as const;
+
+export const SiteDiagnosticsCardSchema = {
+  type: "object",
+  required: ["category", "payload", "fresh"],
+  properties: {
+    category: {
+      type: "string",
+      description:
+        "One of: identity, php, mysql, filesystem, http, cron, themes,\nplugins, users, security, https, mail, performance, hosting,\nwp_native. The first 14 are the WPMgr-extra leapfrog collector\n(the 9-card legacy grid + the ribbon-summary entries); the 15th\n`wp_native` carries the verbatim WP_Debug_Data::debug_data()\ndump (full Site Health > Info parity) and is rendered as four\nadditional cards: Directory Sizes, Media Handling, Filesystem\nPermissions, WordPress Constants.\n",
+    },
+    payload: {
+      description:
+        "The raw JSON sub-blob the agent shipped for this category, or\nnull when the agent has never shipped a payload for it yet.\nShape is category-specific and deliberately tolerant — the UI\nparses it lazily so the agent can evolve the shape without a\nwire schema change.\n",
+    },
+    collected_at: {
+      type: "string",
+      format: "date-time",
+      description: "Agent-side collection timestamp (UTC).",
+    },
+    received_at: {
+      type: "string",
+      format: "date-time",
+      description: "CP-side ingestion timestamp (UTC).",
+    },
+    fresh: {
+      type: "boolean",
+      description:
+        "True when the agent's `collected_at` is within the freshness\ntolerance (24h + 2h slack). Card UIs render a stale warning\nbadge when false.\n",
+    },
+  },
+} as const;
+
+export const SiteDiagnosticsListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteDiagnosticsCard",
+      },
+    },
+  },
+} as const;
+
+export const PHPErrorSchema = {
+  type: "object",
+  required: [
+    "id",
+    "md5",
+    "code",
+    "severity",
+    "message",
+    "file",
+    "line",
+    "request_path",
+    "first_seen_at",
+    "last_seen_at",
+    "occurrence_count",
+    "silenced",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      description: "The CP-side row UUID (stringified).",
+    },
+    md5: {
+      type: "string",
+      description:
+        "The agent-side dedup fingerprint (md5(code:file:line:message)).",
+    },
+    code: {
+      type: "integer",
+      description: "PHP error code (E_* constant value).",
+    },
+    severity: {
+      type: "string",
+      description:
+        "One of fatal, warning, notice, deprecated, bootstrap, unknown.",
+    },
+    message: {
+      type: "string",
+    },
+    file: {
+      type: "string",
+    },
+    line: {
+      type: "integer",
+    },
+    request_path: {
+      type: "string",
+    },
+    first_seen_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_seen_at: {
+      type: "string",
+      format: "date-time",
+    },
+    occurrence_count: {
+      type: "integer",
+      format: "int64",
+    },
+    silenced: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const PHPErrorListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/PHPError",
+      },
+    },
+  },
+} as const;
+
+export const PHPErrorSilenceSchema = {
+  type: "object",
+  properties: {
+    silenced: {
+      type: "boolean",
+      default: true,
+      description: "Whether to silence (default true).",
+    },
+  },
+} as const;
+
+export const SiteActivityEventSchema = {
+  type: "object",
+  required: [
+    "id",
+    "seq",
+    "event_type",
+    "object_type",
+    "object_id",
+    "object_label",
+    "actor_user_id",
+    "actor_login",
+    "actor_ip",
+    "summary",
+    "meta",
+    "severity",
+    "prev_hash",
+    "this_hash",
+    "chain_valid",
+    "occurred_at",
+    "received_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      description: "The CP-side row id (stringified BIGSERIAL).",
+    },
+    seq: {
+      type: "integer",
+      format: "int64",
+      description: "Agent-assigned monotonic sequence within the chain.",
+    },
+    event_type: {
+      type: "string",
+    },
+    object_type: {
+      type: "string",
+    },
+    object_id: {
+      type: "string",
+    },
+    object_label: {
+      type: "string",
+    },
+    actor_user_id: {
+      type: "integer",
+      format: "int64",
+      description: "WP user id of the actor; 0 for system events.",
+    },
+    actor_login: {
+      type: "string",
+      description: "WP login of the actor; empty for system events.",
+    },
+    actor_ip: {
+      type: "string",
+    },
+    summary: {
+      type: "string",
+    },
+    meta: {
+      type: "object",
+      additionalProperties: true,
+      description: "Agent-supplied event metadata (severity lives here).",
+    },
+    severity: {
+      type: "string",
+      enum: ["high", "medium", "low"],
+    },
+    prev_hash: {
+      type: "string",
+      description: "The prior link's hash (64 zero chars at genesis).",
+    },
+    this_hash: {
+      type: "string",
+      description: "sha256 over the canonical event preimage.",
+    },
+    chain_valid: {
+      type: "boolean",
+      description:
+        "Server-verified at ingest. False marks a tampered/broken link: the\nCP-recomputed hash did not match the shipped this_hash, or the\nshipped prev_hash did not match the prior stored row.\n",
+    },
+    occurred_at: {
+      type: "string",
+      format: "date-time",
+    },
+    received_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteActivityListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteActivityEvent",
+      },
+    },
+  },
+} as const;
+
+export const ActivityVerifyResultSchema = {
+  type: "object",
+  required: ["valid", "total"],
+  properties: {
+    valid: {
+      type: "boolean",
+      description: "True when the entire chain re-verifies intact.",
+    },
+    break_at_seq: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+      description:
+        "The seq of the first broken link, or null when the chain is intact.\n",
+    },
+    total: {
+      type: "integer",
+      description: "Total number of events folded during verification.",
     },
   },
 } as const;

@@ -44,19 +44,39 @@ type Presigner interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// PresignerForSnapshot is the ADR-036 P1 storage adapter routing interface:
+// given a snapshot it returns the Presigner that should service its
+// chunk-upload/download for the snapshot's destination. The blobstore.Registry
+// in main implements this; the legacy `s.store` field is kept as the fallback
+// when no Registry is wired (dev / tests).
+type PresignerForSnapshot interface {
+	PresignerForSnapshot(ctx context.Context, snap Snapshot) (Presigner, error)
+}
+
 // Service holds the backup orchestration logic.
 type Service struct {
 	repo       Repo
 	sites      SiteLookup
 	enqueuer   Enqueuer
 	store      Presigner
-	clock      domain.Clock
-	hub        *Hub
-	presignTTL time.Duration
+	// registry is the optional ADR-036 P1 router: when non-nil, presignPut
+	// consults it to find the right Presigner for the snapshot's destination.
+	// Falls back to `store` (the CP-global Store) when nil OR when the
+	// registry returns the same default Store anyway.
+	registry           PresignerForSnapshot
+	clock              domain.Clock
+	hub                *Hub
+	presignTTL         time.Duration
 	// retention defaults (overridable per schedule).
 	retentionDays      int
 	monthlyArchiveKeep int
 }
+
+// SetRegistry wires the ADR-036 P1 storage-adapter router. Calling this AFTER
+// NewService routes every subsequent presign through the registry; callers
+// that haven't migrated keep the legacy single-store path. Safe to call once
+// at startup before serving traffic.
+func (s *Service) SetRegistry(r PresignerForSnapshot) { s.registry = r }
 
 // Config tunes the service.
 type Config struct {
@@ -177,11 +197,24 @@ func (s *Service) ListSnapshots(ctx context.Context, tenantID, siteID uuid.UUID,
 }
 
 // RestoreSelection is the (possibly partial) restore request: full, by path, or
-// by db table. Exactly one mode is used; full when both lists are empty.
+// by db table, plus the M6 component switch and the keep-old-files toggle.
+//
+// Components scopes the restore to a subset of the snapshot's content kinds —
+// either {"files"}, {"db"}, or both. Empty means "all components", which is the
+// historical default and identical to a snapshot-kind-driven full restore. The
+// component switch is composable with Paths/DBTables: ["files"] + Paths=[...]
+// restores only the listed files; ["db"] + DBTables=[...] restores only the
+// listed tables.
+//
+// KeepOldFiles is a UI-driven safety affordance plumbed through to the agent so
+// the agent can decide whether to preserve the pre-restore wp-content tree as a
+// rollback fallback. The CP does not act on this flag itself.
 type RestoreSelection struct {
-	Full     bool
-	Paths    []string
-	DBTables []string
+	Full         bool
+	Paths        []string
+	DBTables     []string
+	Components   []string
+	KeepOldFiles bool
 }
 
 // CreateRestore validates a restore request against the snapshot's manifest and
@@ -278,12 +311,40 @@ func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUI
 		getURLs[h] = agentcmd.RestoreChunk{Hash: h, URL: url, Size: c.Size}
 	}
 
+	// Derive the agent-wire `kind` from the requested components (M6 / Track 2).
+	// Empty Components = no component filter = use whatever the snapshot itself
+	// was taken as (the historical behaviour). When Components IS set, the wire
+	// kind narrows accordingly so the agent skips the unrequested half of the
+	// restore engine even on a `full` snapshot.
+	wireKind := deriveWireKind(snap.Kind, sel.Components)
+
+	// P0 URL rewriter (ADR-036): derive target URLs from the live site for
+	// the agent's URL_REWRITE phase. Source URLs come from the snapshot
+	// itself — populated at backup time when the manifest carries them
+	// (post-ADR-036), empty otherwise (the agent falls back to reading the
+	// dump's banner comments). V1 simplification: we send target_site_url
+	// and target_home_url derived from Site.URL; the agent derives content
+	// and upload URLs from there. When source URLs match target URLs the
+	// agent's URL_REWRITE phase short-circuits to a no-op.
+	targetSiteURL := strings.TrimRight(si.URL, "/")
+	targetHomeURL := targetSiteURL // same default — Site.URL IS the home_url
 	out := agentcmd.RestoreRequest{
 		SnapshotID:       snapshotID.String(),
 		RestoreID:        restoreID,
-		Kind:             snap.Kind,
+		Kind:             wireKind,
 		ProgressEndpoint: progressEndpoint,
 		ChunkBytes:       agentcmd.ChunkBytes,
+		KeepOldFiles:     sel.KeepOldFiles,
+		// P0 URL rewriter: target side.
+		TargetSiteURL: targetSiteURL,
+		TargetHomeURL: targetHomeURL,
+		// P0 URL rewriter: source side — empty for pre-ADR-036 snapshots,
+		// agent then reads the dump banner. Don't emit empty strings as
+		// non-omitempty since the JSON tag is omitempty already.
+		SourceSiteURL:    snap.SourceSiteURL,
+		SourceHomeURL:    snap.SourceHomeURL,
+		SourceContentURL: snap.SourceContentURL,
+		SourceUploadURL:  snap.SourceUploadURL,
 	}
 	for _, e := range selected {
 		re := agentcmd.RestoreEntry{LogicalPath: e.Path}
@@ -316,13 +377,27 @@ func (s *Service) PresignChunks(ctx context.Context, tenantID, snapshotID uuid.U
 	if err != nil {
 		return nil, err
 	}
+	// P1 storage adapter: route presign through registry. The registry returns
+	// the per-destination Store when the snapshot carries a non-nil
+	// DestinationID; otherwise it falls back to the CP-global Store. When no
+	// registry is wired we keep the legacy single-store path verbatim.
+	presigner := s.store
+	if s.registry != nil {
+		p, perr := s.registry.PresignerForSnapshot(ctx, snap)
+		if perr != nil {
+			return nil, domain.Internal("backup_presign_route_failed", "failed to resolve presigner for snapshot").WithCause(perr)
+		}
+		if p != nil {
+			presigner = p
+		}
+	}
 	uploads := map[string]string{}
 	for _, h := range hashes {
 		if _, ok := existing[h]; ok {
 			continue // dedup: already stored; skip.
 		}
 		key := chunkS3Key(tenantID, h)
-		url, perr := s.store.PresignPut(ctx, key, s.presignTTL)
+		url, perr := presigner.PresignPut(ctx, key, s.presignTTL)
 		if perr != nil {
 			return nil, domain.Internal("backup_presign_put_failed", "failed to presign chunk upload").WithCause(perr)
 		}
@@ -628,15 +703,84 @@ func (s *Service) EnqueueScheduledBackup(ctx context.Context, sched Schedule) er
 func (s *Service) presignTTLSeconds() int { return int(s.presignTTL.Seconds()) }
 
 // selectEntries resolves a RestoreSelection against a manifest, returning the
-// matching entries. Full selects everything; Paths selects file entries by exact
-// path; DBTables selects db entries by table name. Returns a 422 if the
-// selection matches nothing.
+// matching entries. Full selects everything; Paths selects file entries by
+// exact path; DBTables selects db entries by table name. When Components is
+// non-empty the result is further filtered to entries whose EntryKind matches
+// one of the requested components (M6 / Track 2). Returns a 400 if a requested
+// component has no corresponding entries in the snapshot, and a 422 if the
+// resolved selection matches nothing.
 func selectEntries(entries []ManifestEntry, sel RestoreSelection) ([]ManifestEntry, error) {
+	// Component pre-validation: if the caller asked for a component that the
+	// snapshot doesn't actually carry, fail fast with an operator-readable
+	// message rather than silently dropping back to whatever the manifest
+	// happened to contain.
+	//
+	// Track 5 nuance: "files" is a broad-strokes alias for
+	// {plugin, theme, upload, wp-content}. A snapshot with ANY of those (OR
+	// the legacy 'file' kind) satisfies a "files" request — we don't require
+	// every fine-grained file component to be present.
+	//
+	// Pre-Track-5 snapshots ONLY carry the legacy 'file' kind on their files
+	// parts. componentOfEntryKind maps 'file' to "files", so a "files"
+	// request satisfies for them; a fine-grained "plugin" request against a
+	// legacy snapshot will FAIL here — there's no way for the CP to tell
+	// which sub-bucket a legacy lumped entry belongs to.
+	if len(sel.Components) > 0 {
+		havePresent := map[string]bool{}
+		hasLegacyFile := false
+		for _, e := range entries {
+			havePresent[componentOfEntryKind(e.EntryKind)] = true
+			if e.EntryKind == EntryKindFile {
+				hasLegacyFile = true
+			}
+		}
+		for _, c := range sel.Components {
+			if c == KindFiles {
+				// "files" alias: satisfied if the snapshot has ANY file
+				// component OR a legacy 'file' entry.
+				anyPresent := hasLegacyFile
+				for _, fc := range fileComponentKinds {
+					if havePresent[fc] {
+						anyPresent = true
+						break
+					}
+				}
+				if !anyPresent {
+					return nil, domain.Validation(
+						"component_not_in_snapshot",
+						"Snapshot does not contain files data; choose a different component.",
+					)
+				}
+				continue
+			}
+			if !havePresent[c] {
+				return nil, domain.Validation(
+					"component_not_in_snapshot",
+					"Snapshot does not contain "+c+" data; choose a different component.",
+				)
+			}
+		}
+	}
+
+	allowComponent := componentAllowFn(sel.Components)
+
 	if sel.Full || (len(sel.Paths) == 0 && len(sel.DBTables) == 0) {
 		if len(entries) == 0 {
 			return nil, domain.Validation("empty_manifest", "the snapshot has no manifest entries to restore")
 		}
-		return entries, nil
+		if len(sel.Components) == 0 {
+			return entries, nil
+		}
+		var out []ManifestEntry
+		for _, e := range entries {
+			if allowComponent(e.EntryKind) {
+				out = append(out, e)
+			}
+		}
+		if len(out) == 0 {
+			return nil, domain.Validation("no_matching_entries", "the restore selection matched no manifest entries")
+		}
+		return out, nil
 	}
 	wantPath := map[string]bool{}
 	for _, p := range sel.Paths {
@@ -648,6 +792,9 @@ func selectEntries(entries []ManifestEntry, sel RestoreSelection) ([]ManifestEnt
 	}
 	var out []ManifestEntry
 	for _, e := range entries {
+		if !allowComponent(e.EntryKind) {
+			continue
+		}
 		switch {
 		case e.EntryKind == EntryKindDB && wantTable[e.TableName]:
 			out = append(out, e)
@@ -659,6 +806,187 @@ func selectEntries(entries []ManifestEntry, sel RestoreSelection) ([]ManifestEnt
 		return nil, domain.Validation("no_matching_entries", "the restore selection matched no manifest entries")
 	}
 	return out, nil
+}
+
+// fileComponentKinds is the closed set of fine-grained "file" components
+// introduced in Track 5. The legacy broad-strokes "files" component is an
+// alias for ALL of these. Order matches the agent's COMPONENT_PARTITIONS so
+// audit trails read consistently across the stack.
+var fileComponentKinds = []string{
+	EntryKindPlugin,
+	EntryKindTheme,
+	EntryKindUpload,
+	EntryKindWPContent,
+}
+
+// componentOfEntryKind maps a manifest EntryKind to its component name on the
+// public RestoreCreate wire.
+//
+// Track 5 split — the wire vocabulary is now:
+//   - "files"      (broad-strokes, alias for {plugin, theme, upload, wp-content})
+//   - "db"         (database)
+//   - "plugin"     (fine-grained, plugins.partNNN.zip)
+//   - "theme"      (fine-grained, themes.partNNN.zip)
+//   - "upload"     (fine-grained, uploads.partNNN.zip)
+//   - "wp-content" (fine-grained, the catch-all bucket)
+//
+// Each EntryKind maps to its EXACT wire component:
+//
+//	"db"         -> "db"
+//	"plugin"     -> "plugin"
+//	"theme"      -> "theme"
+//	"upload"     -> "upload"
+//	"wp-content" -> "wp-content"
+//	"file"       -> "files"   (legacy fallback — pre-Track-5 entries)
+//	anything else -> "files"  (defensive default; manifest validation upstream
+//	                            already rejects empty entry_kind)
+func componentOfEntryKind(entryKind string) string {
+	switch entryKind {
+	case EntryKindDB:
+		return KindDB
+	case EntryKindPlugin:
+		return EntryKindPlugin
+	case EntryKindTheme:
+		return EntryKindTheme
+	case EntryKindUpload:
+		return EntryKindUpload
+	case EntryKindWPContent:
+		return EntryKindWPContent
+	}
+	// EntryKindFile (legacy) and any unknown kind: bucket under the broad
+	// "files" component so a "files"-selecting restore still picks them up.
+	return KindFiles
+}
+
+// expandComponentAliases resolves the broad-strokes "files" alias into the four
+// fine-grained file components. After expansion the set is the closed union of
+// {db, plugin, theme, upload, wp-content}. The same component appearing both
+// as an alias parent and explicit child is deduped.
+//
+// This is the canonical "what does the operator actually want" set used by
+// every downstream decision (selectEntries / deriveWireKind).
+func expandComponentAliases(components []string) []string {
+	if len(components) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(components)+len(fileComponentKinds))
+	add := func(c string) {
+		if seen[c] {
+			return
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	for _, c := range components {
+		if c == KindFiles {
+			// Broad-strokes alias: expand to the four file components.
+			for _, fc := range fileComponentKinds {
+				add(fc)
+			}
+			continue
+		}
+		add(c)
+	}
+	return out
+}
+
+// componentAllowFn returns a predicate that reports whether a manifest entry's
+// EntryKind passes the requested component filter. Empty Components allows all
+// kinds (component filter is opt-in).
+//
+// Legacy 'file' entry_kind ALWAYS passes when ANY of the four file components
+// is selected. Pre-Track-5 snapshots don't tag entries with their bucket, so
+// the only safe semantics for "operator asked for plugin only" against a
+// legacy snapshot is "include the lumped wp-content parts" — the agent then
+// extracts the whole tree as it always did. (For brand-new snapshots that
+// carry fine-grained kinds, this clause is unreachable.)
+func componentAllowFn(components []string) func(string) bool {
+	if len(components) == 0 {
+		return func(string) bool { return true }
+	}
+	expanded := expandComponentAliases(components)
+	want := map[string]bool{}
+	for _, c := range expanded {
+		want[c] = true
+	}
+	// Detect whether any file component was requested — if so, legacy
+	// 'file' entries pass through.
+	anyFileComponent := false
+	for _, fc := range fileComponentKinds {
+		if want[fc] {
+			anyFileComponent = true
+			break
+		}
+	}
+	return func(entryKind string) bool {
+		if entryKind == EntryKindFile && anyFileComponent {
+			return true
+		}
+		return want[componentOfEntryKind(entryKind)]
+	}
+}
+
+// deriveWireKind picks the agent-wire `kind` based on the requested components,
+// falling back to the snapshot's own kind when Components is empty.
+//
+// Track 5 / 0.9.6 rules:
+//   - Components empty                                   → snapshotKind
+//     (legacy behaviour: take whatever the snapshot itself was taken as).
+//   - Components covers all 4 file components AND db     → "full".
+//   - Components covers all 4 file components, no db     → "files".
+//   - Components covers only "db"                        → "db".
+//   - Components is a 1-3 subset of file components,
+//     no db                                              → "files"
+//     (the agent will receive ONLY the entry list for the selected
+//     components — partial-restore-over-files-wire).
+//   - Components mixes db + some-but-not-all file
+//     components                                         → "full"
+//     (the agent will receive entries for both halves).
+//
+// The "files" + "db" aliases (broad-strokes selectors used by the legacy UI)
+// are expanded into the fine-grained set first; "files" expands to all four
+// file components. Net behaviour: the V1 UI's `["files","db"]` and the
+// Track-5 explicit `["plugin","theme","upload","wp-content","db"]` produce
+// the same wire kind ("full").
+//
+// The snapshot's own kind is the upper bound — selectEntries already 400s if
+// a component is requested that the snapshot doesn't carry, so by the time we
+// get here we know the snapshot has matching entries for every requested
+// component.
+func deriveWireKind(snapshotKind string, components []string) string {
+	if len(components) == 0 {
+		return snapshotKind
+	}
+	expanded := expandComponentAliases(components)
+	want := map[string]bool{}
+	for _, c := range expanded {
+		want[c] = true
+	}
+	haveDB := want[KindDB]
+	fileCount := 0
+	for _, fc := range fileComponentKinds {
+		if want[fc] {
+			fileCount++
+		}
+	}
+	allFiles := fileCount == len(fileComponentKinds)
+	switch {
+	case allFiles && haveDB:
+		return KindFull
+	case allFiles && !haveDB:
+		return KindFiles
+	case fileCount > 0 && haveDB:
+		// Mixed partial file + db -> agent runs both halves.
+		return KindFull
+	case fileCount > 0 && !haveDB:
+		// Partial file-only restore. Agent's runner uses "files" for both
+		// 1/3/4-component subsets; the entry list narrows the actual work.
+		return KindFiles
+	case haveDB:
+		return KindDB
+	}
+	return snapshotKind
 }
 
 func isHexHash(s string) bool {

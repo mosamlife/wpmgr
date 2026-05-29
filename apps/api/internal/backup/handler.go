@@ -34,9 +34,15 @@ const sseMaxLifetime = 30 * time.Minute
 // Mutations (create backup, restore, put schedule) require operator+; reads
 // (list, get, get schedule, events) require viewer+.
 type Handler struct {
-	svc   *Service
-	hub   *Hub
-	audit *audit.Recorder
+	svc         *Service
+	hub         *Hub
+	audit       *audit.Recorder
+	// envFetcher resolves the agent-shipped environment.json manifest entry's
+	// ordered chunks to a JSON blob. Re-uses the same fetcher adapter the
+	// SQL-inspection endpoint uses (chunk-store-by-presigned-GET); satisfies
+	// the ManifestInspectionFetcher interface. Optional — when nil the
+	// /backups/:snapshotId/environment route returns 503.
+	envFetcher ManifestInspectionFetcher
 }
 
 // NewHandler builds a backup Handler. The hub may be nil in environments that
@@ -44,6 +50,14 @@ type Handler struct {
 // update package's "sse_unsupported" path).
 func NewHandler(svc *Service, hub *Hub, rec *audit.Recorder) *Handler {
 	return &Handler{svc: svc, hub: hub, audit: rec}
+}
+
+// SetEnvironmentFetcher wires the manifest-fetcher used by the
+// environment-fingerprint endpoint. Same adapter as the SQL-inspection
+// endpoint uses (the fetcher is artifact-agnostic — it just concatenates
+// chunks and probes JSON), so callers pass the same instance.
+func (h *Handler) SetEnvironmentFetcher(f ManifestInspectionFetcher) {
+	h.envFetcher = f
 }
 
 // Register mounts the backup routes on the /api/v1 router group.
@@ -55,6 +69,82 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/backups/:snapshotId/restore", authz.RequirePermission(authz.PermSiteWrite), h.createRestore)
 	r.GET("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteRead), h.getSchedule)
 	r.PUT("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteWrite), h.putSchedule)
+	// ADR-037 Sprint 1, 1D — environment fingerprint. Returns the JSON the
+	// agent shipped as the synthetic `environment.json` manifest entry, or 404
+	// when the snapshot pre-dates the env-fingerprint feature. Reads use the
+	// same manifest-fetcher path the sql-inspection endpoint uses.
+	r.GET("/backups/:snapshotId/environment", authz.RequirePermission(authz.PermSiteRead), h.getEnvironment)
+}
+
+// getEnvironment serves the agent-shipped environment.json manifest entry for
+// a snapshot. Mirrors the resolution shape of the sql-inspection endpoint but
+// without the legacy-parser fallback (env fingerprint is agent-only — there's
+// no CP-side reconstruction of "what environment was this dump taken from").
+//
+// Resolution:
+//   1. Snapshot lookup is tenant-scoped (404s on tenant mismatch).
+//   2. Manifest scanned for an entry kind=="environment" or path=="environment.json".
+//      Old snapshots without the entry get a 404 with code env_not_recorded.
+//   3. Fetch ordered chunks via the ManifestInspectionFetcher path (same
+//      adapter handles arbitrary text/JSON artifacts; the SQL-inspection
+//      framing is incidental, not contractual).
+func (h *Handler) getEnvironment(c *gin.Context) {
+	tenantID, ok := tenantOf(c)
+	if !ok {
+		return
+	}
+	snapshotID, ok := uuidParam(c, "snapshotId", "invalid_snapshot_id")
+	if !ok {
+		return
+	}
+	snap, entries, err := h.svc.GetSnapshot(c.Request.Context(), tenantID, snapshotID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	if h.envFetcher == nil {
+		httpx.Error(c, domain.ServiceUnavailable("env_fetch_unwired",
+			"environment fingerprint reader is not configured on this control plane"))
+		return
+	}
+	entry, ok := findEnvironmentEntry(entries)
+	if !ok {
+		httpx.Error(c, domain.NotFound("env_not_recorded",
+			"this snapshot pre-dates the environment-fingerprint feature; rebuild with a v0.9.10+ agent"))
+		return
+	}
+	raw, ferr := h.envFetcher.Fetch(c.Request.Context(), tenantID, snap, entry)
+	if ferr != nil {
+		httpx.Error(c, domain.Internal("env_fetch_failed",
+			"could not fetch the environment fingerprint").WithCause(ferr))
+		return
+	}
+	// Pass-through: the agent ships JSON; we re-emit verbatim. Validates as
+	// JSON in the fetcher already (the adapter probes the bytes for a JSON
+	// parse before returning), so we can write Content-Type: application/json
+	// without re-decoding.
+	c.Data(http.StatusOK, "application/json", raw)
+}
+
+// findEnvironmentEntry locates the agent-supplied environment fingerprint in a
+// manifest. Mirror of findInspectionEntry — typed entry_kind first, literal
+// logical path fallback.
+func findEnvironmentEntry(entries []ManifestEntry) (ManifestEntry, bool) {
+	const (
+		kindEnvironment        = "environment"
+		environmentLogicalPath = "environment.json"
+	)
+	for _, e := range entries {
+		if e.EntryKind == kindEnvironment {
+			return e, true
+		}
+	}
+	for _, e := range entries {
+		if e.Path == environmentLogicalPath {
+			return e, true
+		}
+	}
+	return ManifestEntry{}, false
 }
 
 func (h *Handler) createBackup(c *gin.Context) {
@@ -351,10 +441,19 @@ func (h *Handler) createRestore(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
 		return
 	}
+	// Map the ogen-generated enum-typed components slice to the service's
+	// plain []string. The wire enum is closed ({files, db}); validation
+	// already rejected anything else at decode time.
+	components := make([]string, 0, len(req.Components))
+	for _, c := range req.Components {
+		components = append(components, string(c))
+	}
 	sel := RestoreSelection{
-		Full:     req.Full.Or(false),
-		Paths:    req.Paths,
-		DBTables: req.DbTables,
+		Full:         req.Full.Or(false),
+		Paths:        req.Paths,
+		DBTables:     req.DbTables,
+		Components:   components,
+		KeepOldFiles: req.KeepOldFiles.Or(false),
 	}
 	snap, err := h.svc.CreateRestore(c.Request.Context(), tenantID, snapshotID, sel)
 	if err != nil {
@@ -432,10 +531,12 @@ func (h *Handler) recordRestore(c *gin.Context, snap Snapshot, sel RestoreSelect
 		TargetType: "backup_snapshot",
 		TargetID:   snap.ID.String(),
 		Metadata: map[string]any{
-			"site_id":   snap.SiteID.String(),
-			"full":      sel.Full || (len(sel.Paths) == 0 && len(sel.DBTables) == 0),
-			"paths":     len(sel.Paths),
-			"db_tables": len(sel.DBTables),
+			"site_id":        snap.SiteID.String(),
+			"full":           sel.Full || (len(sel.Paths) == 0 && len(sel.DBTables) == 0),
+			"paths":          len(sel.Paths),
+			"db_tables":      len(sel.DBTables),
+			"components":     sel.Components,
+			"keep_old_files": sel.KeepOldFiles,
 		},
 	})
 }

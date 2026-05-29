@@ -405,6 +405,71 @@ func decodeGetBackupScheduleParams(args [1]string, argsEscaped bool, r *http.Req
 	return params, nil
 }
 
+// GetBackupSqlInspectionParams is parameters of getBackupSqlInspection operation.
+type GetBackupSqlInspectionParams struct {
+	SnapshotId uuid.UUID
+}
+
+func unpackGetBackupSqlInspectionParams(packed middleware.Parameters) (params GetBackupSqlInspectionParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "snapshotId",
+			In:   "path",
+		}
+		params.SnapshotId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetBackupSqlInspectionParams(args [1]string, argsEscaped bool, r *http.Request) (params GetBackupSqlInspectionParams, _ error) {
+	// Decode path: snapshotId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "snapshotId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SnapshotId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "snapshotId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetSiteParams is parameters of getSite operation.
 type GetSiteParams struct {
 	SiteId uuid.UUID

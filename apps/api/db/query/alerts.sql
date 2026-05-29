@@ -7,13 +7,14 @@ WHERE tenant_id = $1;
 
 -- name: UpsertAlertConfig :one
 -- Tenant-scoped create-or-update of the tenant's default alert channel.
-INSERT INTO alert_configs (tenant_id, email_recipients, webhook_url, webhook_secret, enabled)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO alert_configs (tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (tenant_id) DO UPDATE
 SET email_recipients = EXCLUDED.email_recipients,
     webhook_url       = EXCLUDED.webhook_url,
     webhook_secret    = EXCLUDED.webhook_secret,
     enabled           = EXCLUDED.enabled,
+    notify_security   = EXCLUDED.notify_security,
     updated_at        = now()
 RETURNING *;
 

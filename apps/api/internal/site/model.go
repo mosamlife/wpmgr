@@ -76,6 +76,13 @@ type Component struct {
 	Version         string           `json:"version" validate:"max=64"`
 	Active          bool             `json:"active"`
 	AvailableUpdate *AvailableUpdate `json:"available_update,omitempty"`
+	// ADR-037 Sprint 1, 1C — sparse-metadata expansion. Plugin-header URIs +
+	// Network flag. All optional; omitempty keeps the persisted JSON minimal.
+	// Old agents send none of these; new agents may send any subset.
+	PluginURI string `json:"plugin_uri,omitempty" validate:"max=2048"`
+	UpdateURI string `json:"update_uri,omitempty" validate:"max=2048"`
+	AuthorURI string `json:"author_uri,omitempty" validate:"max=2048"`
+	Network   bool   `json:"network,omitempty"`
 }
 
 // AvailableUpdate is the optional per-item available-update advisory recorded
@@ -141,4 +148,39 @@ type Metadata struct {
 	// when there is no core update, or when the agent is old enough that it
 	// does not report the field at all.
 	CoreUpdate *CoreUpdate `json:"core_update,omitempty"`
+	// ADR-037 Sprint 1, 1C — sparse-metadata expansion. Optional and best-
+	// effort: round-tripped through the JSONB inventory column. nil when the
+	// agent reported none of the expansion fields — the sink does not
+	// overwrite previously-stored values in that case.
+	Extras *MetadataExtras `json:"-"`
+}
+
+// MetadataExtras carries the ADR-037 Sprint 1 sparse-metadata expansion. The
+// shape is round-tripped through the existing JSONB inventory column as
+// host_flags / disk / user_count / admin_count peer keys to plugins/themes.
+type MetadataExtras struct {
+	HostFlags  *HostFlags `json:"host_flags,omitempty"`
+	Disk       *Disk      `json:"disk,omitempty"`
+	UserCount  int        `json:"user_count,omitempty"`
+	AdminCount int        `json:"admin_count,omitempty"`
+}
+
+// HostFlags is the hosting-platform fingerprint surfaced from the agent's
+// defined()-based probes. All false when the agent doesn't recognise the host.
+type HostFlags struct {
+	IsPressable bool `json:"is_pressable,omitempty"`
+	IsGridpane  bool `json:"is_gridpane,omitempty"`
+	IsWPEngine  bool `json:"is_wpengine,omitempty"`
+	IsAtomic    bool `json:"is_atomic,omitempty"`
+	IsKinsta    bool `json:"is_kinsta,omitempty"`
+	IsFlywheel  bool `json:"is_flywheel,omitempty"`
+	IsRunCloud  bool `json:"is_runcloud,omitempty"`
+	IsCloudways bool `json:"is_cloudways,omitempty"`
+}
+
+// Disk is the sampled disk-usage snapshot the agent ships. Bytes.
+type Disk struct {
+	WPContentBytes int64 `json:"wp_content_bytes,omitempty"`
+	UploadsBytes   int64 `json:"uploads_bytes,omitempty"`
+	FreeBytes      int64 `json:"free_bytes,omitempty"`
 }

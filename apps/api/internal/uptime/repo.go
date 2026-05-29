@@ -150,6 +150,7 @@ func (r *pgRepo) UpsertAlertConfig(ctx context.Context, cfg AlertConfig) (AlertC
 			WebhookUrl:      cfg.WebhookURL,
 			WebhookSecret:   cfg.WebhookSecret,
 			Enabled:         cfg.Enabled,
+			NotifySecurity:  cfg.NotifySecurity,
 		})
 		if err != nil {
 			return domain.Internal("uptime_upsert_config_failed", "failed to save alert config").WithCause(err)
@@ -171,6 +172,7 @@ func alertConfigFromRow(row sqlc.AlertConfig) AlertConfig {
 		WebhookURL:      row.WebhookUrl,
 		WebhookSecret:   row.WebhookSecret,
 		Enabled:         row.Enabled,
+		NotifySecurity:  row.NotifySecurity,
 		UpdatedAt:       row.UpdatedAt,
 	}
 }

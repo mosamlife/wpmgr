@@ -93,6 +93,39 @@ type metadataDTO struct {
 	// Updates feature: OLD agents send no `core_update` and this stays nil — the
 	// metadata sync still succeeds end-to-end.
 	CoreUpdate *coreUpdateDTO `json:"core_update,omitempty"`
+
+	// ADR-037 Sprint 1, 1C — sparse-metadata expansion. All optional; old
+	// agents send none of these and the sync still succeeds. We expose them on
+	// the agent.Metadata struct so the service layer can surface them to UI
+	// (Site Health card, host platform badge). No migration today: these are
+	// additive on the wire and currently round-tripped via the Site domain's
+	// existing JSONB extras column or left to a future migration.
+	HostFlags  *hostFlagsDTO `json:"host_flags,omitempty"`
+	Disk       *diskDTO      `json:"disk,omitempty"`
+	UserCount  *int          `json:"user_count,omitempty"`
+	AdminCount *int          `json:"admin_count,omitempty"`
+}
+
+// hostFlagsDTO mirrors the defined()-based hosting fingerprint the agent
+// computes. Every field is a flexBool so "1"/"true"/true all decode.
+type hostFlagsDTO struct {
+	IsPressable flexBool `json:"is_pressable"`
+	IsGridpane  flexBool `json:"is_gridpane"`
+	IsWPEngine  flexBool `json:"is_wpengine"`
+	IsAtomic    flexBool `json:"is_atomic"`
+	IsKinsta    flexBool `json:"is_kinsta"`
+	IsFlywheel  flexBool `json:"is_flywheel"`
+	IsRunCloud  flexBool `json:"is_runcloud"`
+	IsCloudways flexBool `json:"is_cloudways"`
+}
+
+// diskDTO is the sampled disk-usage snapshot the agent ships. Sizes are bytes;
+// the wp-content and uploads measurements are capped to a 2-second walk so a
+// huge uploads tree doesn't make the metadata push slow.
+type diskDTO struct {
+	WPContentBytes *int64 `json:"wp_content_bytes,omitempty"`
+	UploadsBytes   *int64 `json:"uploads_bytes,omitempty"`
+	FreeBytes      *int64 `json:"free_bytes,omitempty"`
 }
 
 // componentDTO is the per-plugin/theme tolerant decode target. AvailableUpdate
@@ -104,6 +137,13 @@ type componentDTO struct {
 	Version         flexString          `json:"version"`
 	Active          flexBool            `json:"active"`
 	AvailableUpdate *availableUpdateDTO `json:"available_update,omitempty"`
+	// ADR-037 Sprint 1, 1C — sparse-metadata expansion. URIs from the plugin
+	// header (PluginURI/UpdateURI/AuthorURI) plus the Network flag. All
+	// optional + tolerantly decoded. Old agents send none of these.
+	PluginURI flexString `json:"plugin_uri,omitempty"`
+	UpdateURI flexString `json:"update_uri,omitempty"`
+	AuthorURI flexString `json:"author_uri,omitempty"`
+	Network   flexBool   `json:"network,omitempty"`
 }
 
 // availableUpdateDTO is the per-item update advisory the agent reports. Only
@@ -128,7 +168,16 @@ func (d metadataDTO) toMetadata() Metadata {
 	conv := func(cs []componentDTO) []Component {
 		out := make([]Component, 0, len(cs))
 		for _, c := range cs {
-			comp := Component{Slug: string(c.Slug), Name: string(c.Name), Version: string(c.Version), Active: bool(c.Active)}
+			comp := Component{
+				Slug:      string(c.Slug),
+				Name:      string(c.Name),
+				Version:   string(c.Version),
+				Active:    bool(c.Active),
+				PluginURI: string(c.PluginURI),
+				UpdateURI: string(c.UpdateURI),
+				AuthorURI: string(c.AuthorURI),
+				Network:   bool(c.Network),
+			}
 			if c.AvailableUpdate != nil && string(c.AvailableUpdate.NewVersion) != "" {
 				comp.AvailableUpdate = &AvailableUpdate{
 					NewVersion:  string(c.AvailableUpdate.NewVersion),
@@ -157,7 +206,41 @@ func (d metadataDTO) toMetadata() Metadata {
 			CurrentVersion: string(d.CoreUpdate.CurrentVersion),
 		}
 	}
+	// ADR-037 Sprint 1, 1C — sparse-metadata expansion. All optional; old
+	// agents send none of these.
+	if d.HostFlags != nil {
+		m.HostFlags = &HostFlags{
+			IsPressable: bool(d.HostFlags.IsPressable),
+			IsGridpane:  bool(d.HostFlags.IsGridpane),
+			IsWPEngine:  bool(d.HostFlags.IsWPEngine),
+			IsAtomic:    bool(d.HostFlags.IsAtomic),
+			IsKinsta:    bool(d.HostFlags.IsKinsta),
+			IsFlywheel:  bool(d.HostFlags.IsFlywheel),
+			IsRunCloud:  bool(d.HostFlags.IsRunCloud),
+			IsCloudways: bool(d.HostFlags.IsCloudways),
+		}
+	}
+	if d.Disk != nil {
+		m.Disk = &Disk{
+			WPContentBytes: int64PtrOrZero(d.Disk.WPContentBytes),
+			UploadsBytes:   int64PtrOrZero(d.Disk.UploadsBytes),
+			FreeBytes:      int64PtrOrZero(d.Disk.FreeBytes),
+		}
+	}
+	if d.UserCount != nil {
+		m.UserCount = *d.UserCount
+	}
+	if d.AdminCount != nil {
+		m.AdminCount = *d.AdminCount
+	}
 	return m
+}
+
+func int64PtrOrZero(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // flexStringPtr nil-safely converts a *flexString to a plain string ("" when nil).
@@ -184,6 +267,13 @@ type Metadata struct {
 	// is no core update OR when the agent is old enough that it does not send
 	// the field at all.
 	CoreUpdate *CoreUpdate
+	// ADR-037 Sprint 1, 1C — sparse-metadata expansion. All optional and
+	// best-effort: old agents send nothing here; the sink layer treats absence
+	// as "no signal" (does not overwrite previously-stored values).
+	HostFlags  *HostFlags
+	Disk       *Disk
+	UserCount  int
+	AdminCount int
 }
 
 // Component is one installed plugin/theme. AvailableUpdate is set when the
@@ -194,6 +284,34 @@ type Component struct {
 	Version         string
 	Active          bool
 	AvailableUpdate *AvailableUpdate
+	// ADR-037 Sprint 1, 1C — optional plugin-header URIs and Network flag.
+	// Surfaced from get_plugins(); empty when the plugin header omits them.
+	PluginURI string
+	UpdateURI string
+	AuthorURI string
+	Network   bool
+}
+
+// HostFlags is the hosting-platform fingerprint. Mirrors agent's defined()-
+// based probes. All false on a host the agent doesn't recognise.
+type HostFlags struct {
+	IsPressable bool
+	IsGridpane  bool
+	IsWPEngine  bool
+	IsAtomic    bool
+	IsKinsta    bool
+	IsFlywheel  bool
+	IsRunCloud  bool
+	IsCloudways bool
+}
+
+// Disk is the sampled disk-usage snapshot the agent ships. Bytes; the
+// wp_content/uploads measurements are capped to a 2-second walk so the
+// metadata push stays cheap.
+type Disk struct {
+	WPContentBytes int64
+	UploadsBytes   int64
+	FreeBytes      int64
 }
 
 // AvailableUpdate is the per-item update advisory. Only NewVersion is required;

@@ -39,9 +39,31 @@ const (
 )
 
 // Manifest entry kinds.
+//
+// Track 5 (0.9.6) split EntryKindFile — the legacy lumped wp-content artifact
+// kind — into four mutually exclusive component buckets so an operator can
+// restore plugins / themes / uploads / wp-content-others independently. The
+// agent's FilesArchiver emits one rotating part sequence per component:
+//
+//	EntryKindPlugin    -> plugins.partNNN.zip   (wp-content/plugins/*)
+//	EntryKindTheme     -> themes.partNNN.zip    (wp-content/themes/*)
+//	EntryKindUpload    -> uploads.partNNN.zip   (wp-content/uploads/*)
+//	EntryKindWPContent -> wp-content.partNNN.zip (everything else: mu-plugins,
+//	                                              languages, drop-ins, custom dirs)
+//
+// EntryKindFile is RETAINED for backward compat: pre-Track-5 snapshots have
+// every files-part tagged 'file', and the restorer routes those through the
+// whole-wp-content swap path. New snapshots never emit 'file'.
+//
+// EntryKindInspection lives in sqlinspect_handler.go (kept local to the
+// inspection feature on purpose). It is NOT redeclared here.
 const (
-	EntryKindFile = "file"
-	EntryKindDB   = "db"
+	EntryKindDB        = "db"
+	EntryKindFile      = "file" // legacy — pre-Track-5 lumped files
+	EntryKindPlugin    = "plugin"
+	EntryKindTheme     = "theme"
+	EntryKindUpload    = "upload"
+	EntryKindWPContent = "wp-content" // catch-all: NOT plugin/theme/upload
 )
 
 // Schedule cadences.
@@ -74,6 +96,19 @@ type Snapshot struct {
 	// ProgressUpdatedAt to detect stalled runs.
 	Progress            []byte
 	ProgressUpdatedAt   *time.Time
+	// P0 URL rewriter (ADR-036): siteurl / home / content / upload recorded
+	// at backup time. Drives the restore's URL_REWRITE phase when restoring
+	// to a different environment (dev->prod, staging->prod). Empty strings
+	// for pre-ADR-036 snapshots — the agent then defensively reads the URLs
+	// out of the dump's banner comments instead.
+	SourceSiteURL    string
+	SourceHomeURL    string
+	SourceContentURL string
+	SourceUploadURL  string
+	// P1 storage adapter (ADR-036): which per-site destination this snapshot's
+	// chunks belong to. uuid.Nil routes to the legacy CP-global bucket and is
+	// the value used by every pre-P1 snapshot row.
+	DestinationID uuid.UUID
 }
 
 // ManifestEntry is one file/db entry of a snapshot: an ordered list of

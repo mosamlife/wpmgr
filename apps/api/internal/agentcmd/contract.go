@@ -149,3 +149,13 @@ type RefreshInventoryResponse struct {
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
 }
+
+// DiagnosticsRequest is the POST body for the `diagnostics` command (ADR-037
+// Sprint 2 on-demand refresh). The agent's DiagnosticsCommand takes no params —
+// every probe is unconditional — so the struct is intentionally empty. Reserved
+// for future flags (e.g. category whitelist). The agent returns the full
+// 14-category payload SYNCHRONOUSLY in the 200 body; callers consume the raw
+// JSON body via Client.Diagnostics so the existing diagnostics.Service ingester
+// (which splits the blob into one row per category) stays byte-for-byte the
+// same as the daily cron-push path.
+type DiagnosticsRequest struct{}

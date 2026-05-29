@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
+	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
@@ -165,6 +168,97 @@ func (a *autologinSiteAdapter) GetSiteForAutologin(ctx context.Context, tenantID
 }
 
 var _ autologin.SiteLookup = (*autologinSiteAdapter)(nil)
+
+// diagnosticsSiteAdapter resolves a site's agent URL for the diagnostics
+// refresh enqueuer (ADR-037 Sprint 2). The diagnostics service interface is
+// (tenantID, siteID)-only by design; the enqueuer needs the URL to mint the
+// signed `diagnostics` command, so the adapter looks it up here. A not-found
+// (or RLS-hidden) site surfaces as a domain.NotFound error the handler maps
+// to 404 — that path is unreachable in practice because /diagnostics/refresh
+// is RouterGroup-bound to /sites/:siteId, which the same RLS already gates.
+type diagnosticsSiteAdapter struct {
+	svc *site.Service
+}
+
+func newDiagnosticsSiteAdapter(svc *site.Service) *diagnosticsSiteAdapter {
+	return &diagnosticsSiteAdapter{svc: svc}
+}
+
+func (a *diagnosticsSiteAdapter) GetSiteURL(ctx context.Context, tenantID, siteID uuid.UUID) (string, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return "", err
+	}
+	return s.URL, nil
+}
+
+var _ diagnostics.SiteLookup = (*diagnosticsSiteAdapter)(nil)
+
+// activitySiteAdapter resolves a site's URL + name for an activity-log security
+// alert subject line. It keeps the activity package free of a site import.
+type activitySiteAdapter struct {
+	svc *site.Service
+}
+
+func newActivitySiteAdapter(svc *site.Service) *activitySiteAdapter {
+	return &activitySiteAdapter{svc: svc}
+}
+
+func (a *activitySiteAdapter) URLAndName(ctx context.Context, tenantID, siteID uuid.UUID) (string, string) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return "", ""
+	}
+	return s.URL, s.Name
+}
+
+var _ activity.SiteLookup = (*activitySiteAdapter)(nil)
+
+// activitySecurityAlerter is the seam between the activity log and the EXISTING
+// uptime alert Dispatcher (ADR-037 Sprint 3): a high-severity activity event
+// loads the tenant's AlertConfig, checks Enabled + NotifySecurity, and dispatches
+// through the same Mailer + WebhookPoster as uptime down/recovery alerts. No
+// parallel notification system. Delivery is best-effort: config-load failures
+// and the (gated) decision are swallowed/logged, never surfaced to the agent.
+type activitySecurityAlerter struct {
+	repo       uptime.Repo
+	dispatcher *uptime.Dispatcher
+	clock      domain.Clock
+	logger     *slog.Logger
+}
+
+func newActivitySecurityAlerter(repo uptime.Repo, dispatcher *uptime.Dispatcher, clock domain.Clock, logger *slog.Logger) *activitySecurityAlerter {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &activitySecurityAlerter{repo: repo, dispatcher: dispatcher, clock: clock, logger: logger}
+}
+
+func (a *activitySecurityAlerter) NotifySecurity(ctx context.Context, tenantID, siteID uuid.UUID, summary, eventType, severity, siteURL, siteName string) {
+	cfg, found, err := a.repo.GetAlertConfig(ctx, tenantID)
+	if err != nil {
+		a.logger.Warn("security alert config load failed",
+			slog.String("site_id", siteID.String()), slog.Any("error", err))
+		return
+	}
+	// Gate: only fire when the tenant has a config, it is enabled, and the
+	// operator opted into security notifications.
+	if !found || !cfg.Enabled || !cfg.NotifySecurity {
+		return
+	}
+	a.dispatcher.FireSecurityEvent(ctx, cfg, uptime.SecurityEvent{
+		TenantID:  tenantID,
+		SiteID:    siteID,
+		SiteURL:   siteURL,
+		SiteName:  siteName,
+		Summary:   summary,
+		EventType: eventType,
+		Severity:  severity,
+		FiredAt:   a.clock.Now(),
+	})
+}
+
+var _ activity.SecurityAlerter = (*activitySecurityAlerter)(nil)
 
 func toSiteInfo(s site.Site) update.SiteInfo {
 	plugins, themes := s.ParsedComponents()

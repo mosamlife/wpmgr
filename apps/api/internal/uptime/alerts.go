@@ -124,6 +124,68 @@ func (d *Dispatcher) Fire(ctx context.Context, cfg AlertConfig, alert Alert) {
 	d.recordAudit(ctx, alert, len(cfg.EmailRecipients) > 0, cfg.WebhookURL != "")
 }
 
+// FireSecurityEvent delivers a high-severity ADR-037 activity-log event to the
+// tenant's configured channels, reusing the SAME Mailer + WebhookPoster as the
+// uptime down/recovery path (no parallel notification system). The caller is
+// responsible for gating on cfg.NotifySecurity; this method always delivers.
+// Both channels are best-effort and independent.
+func (d *Dispatcher) FireSecurityEvent(ctx context.Context, cfg AlertConfig, ev SecurityEvent) {
+	name := ev.SiteName
+	if name == "" {
+		name = ev.SiteURL
+	}
+	if name == "" {
+		name = ev.SiteID.String()
+	}
+	subject := fmt.Sprintf("[WPMgr] SECURITY: event on %s", name)
+	body := fmt.Sprintf("Security event on %s: %s\n\nEvent: %s\nSeverity: %s\nDetected at: %s",
+		name, ev.Summary, ev.EventType, ev.Severity, ev.FiredAt.UTC().Format(time.RFC3339))
+
+	if d.mailer != nil && len(cfg.EmailRecipients) > 0 {
+		if err := d.mailer.Send(ctx, cfg.EmailRecipients, subject, body); err != nil {
+			d.logger.Warn("security alert email failed",
+				slog.String("site_id", ev.SiteID.String()),
+				slog.String("event_type", ev.EventType),
+				slog.Any("error", err))
+		}
+	}
+	if d.webhook != nil && cfg.WebhookURL != "" {
+		payload := WebhookPayload{
+			Event:    "security." + ev.EventType,
+			TenantID: ev.TenantID.String(),
+			SiteID:   ev.SiteID.String(),
+			SiteURL:  ev.SiteURL,
+			SiteName: ev.SiteName,
+			Error:    ev.Summary,
+			FiredAt:  ev.FiredAt,
+		}
+		if err := d.webhook.Post(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload); err != nil {
+			d.logger.Warn("security alert webhook failed",
+				slog.String("site_id", ev.SiteID.String()),
+				slog.String("event_type", ev.EventType),
+				slog.Any("error", err))
+		}
+	}
+	if d.audit != nil {
+		_, _ = d.audit.Record(ctx, audit.Event{
+			TenantID:   ev.TenantID,
+			ActorType:  audit.ActorSystem,
+			Action:     ActionAlertSent,
+			TargetType: "site",
+			TargetID:   ev.SiteID.String(),
+			Metadata: map[string]any{
+				"kind":       string(AlertSecurity),
+				"event_type": ev.EventType,
+				"severity":   ev.Severity,
+				"summary":    ev.Summary,
+				"site_url":   ev.SiteURL,
+				"emailed":    len(cfg.EmailRecipients) > 0,
+				"webhooked":  cfg.WebhookURL != "",
+			},
+		})
+	}
+}
+
 func (d *Dispatcher) recordAudit(ctx context.Context, alert Alert, emailed, webhooked bool) {
 	if d.audit == nil {
 		return

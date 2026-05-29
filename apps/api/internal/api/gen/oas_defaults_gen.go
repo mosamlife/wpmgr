@@ -40,6 +40,10 @@ func (s *RestoreCreate) setDefaults() {
 		val := bool(false)
 		s.Full.SetTo(val)
 	}
+	{
+		val := bool(false)
+		s.KeepOldFiles.SetTo(val)
+	}
 }
 
 // setDefaults set default value of fields.

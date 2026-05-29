@@ -28,6 +28,9 @@ import type {
   CreateRestoreErrors,
   CreateRestoreResponses,
   CreateSiteData,
+  CreateSiteDestinationData,
+  CreateSiteDestinationErrors,
+  CreateSiteDestinationResponses,
   CreateSiteErrors,
   CreateSiteResponses,
   CreateTenantData,
@@ -37,6 +40,9 @@ import type {
   CreateUpdateRunErrors,
   CreateUpdateRunResponses,
   DeleteSiteData,
+  DeleteSiteDestinationData,
+  DeleteSiteDestinationErrors,
+  DeleteSiteDestinationResponses,
   DeleteSiteErrors,
   DeleteSiteResponses,
   EnrollData,
@@ -50,6 +56,9 @@ import type {
   GetBackupScheduleData,
   GetBackupScheduleErrors,
   GetBackupScheduleResponses,
+  GetBackupSqlInspectionData,
+  GetBackupSqlInspectionErrors,
+  GetBackupSqlInspectionResponses,
   GetHealthzData,
   GetHealthzResponses,
   GetMeData,
@@ -58,7 +67,16 @@ import type {
   GetReadyzData,
   GetReadyzErrors,
   GetReadyzResponses,
+  GetSiteAvailableUpdatesData,
+  GetSiteAvailableUpdatesErrors,
+  GetSiteAvailableUpdatesResponses,
   GetSiteData,
+  GetSiteDestinationData,
+  GetSiteDestinationErrors,
+  GetSiteDestinationResponses,
+  GetSiteDiagnosticsData,
+  GetSiteDiagnosticsErrors,
+  GetSiteDiagnosticsResponses,
   GetSiteErrors,
   GetSiteResponses,
   GetSiteUptimeData,
@@ -86,6 +104,13 @@ import type {
   ListMembersData,
   ListMembersErrors,
   ListMembersResponses,
+  ListSiteActivityData,
+  ListSiteActivityResponses,
+  ListSiteDestinationsData,
+  ListSiteDestinationsErrors,
+  ListSiteDestinationsResponses,
+  ListSitePhpErrorsData,
+  ListSitePhpErrorsResponses,
   ListSitesData,
   ListSitesResponses,
   ListTenantsData,
@@ -109,6 +134,12 @@ import type {
   PutBackupScheduleData,
   PutBackupScheduleErrors,
   PutBackupScheduleResponses,
+  RefreshSiteDiagnosticsData,
+  RefreshSiteDiagnosticsErrors,
+  RefreshSiteDiagnosticsResponses,
+  RefreshSiteUpdatesData,
+  RefreshSiteUpdatesErrors,
+  RefreshSiteUpdatesResponses,
   RegisterData,
   RegisterErrors,
   RegisterResponses,
@@ -118,6 +149,9 @@ import type {
   SetSiteTagsData,
   SetSiteTagsErrors,
   SetSiteTagsResponses,
+  SilenceSitePhpErrorData,
+  SilenceSitePhpErrorErrors,
+  SilenceSitePhpErrorResponses,
   StreamBackupSnapshotEventsData,
   StreamBackupSnapshotEventsErrors,
   StreamBackupSnapshotEventsResponse,
@@ -126,9 +160,17 @@ import type {
   StreamUpdateRunEventsErrors,
   StreamUpdateRunEventsResponse,
   StreamUpdateRunEventsResponses,
+  TestSiteDestinationData,
+  TestSiteDestinationErrors,
+  TestSiteDestinationResponses,
+  UpdateSiteDestinationData,
+  UpdateSiteDestinationErrors,
+  UpdateSiteDestinationResponses,
   VerifyAuditData,
   VerifyAuditErrors,
   VerifyAuditResponses,
+  VerifySiteActivityData,
+  VerifySiteActivityResponses,
 } from "./types.gen";
 
 export type Options<
@@ -332,6 +374,110 @@ export const revokeApiKey = <ThrowOnError extends boolean = false>(
     RevokeApiKeyErrors,
     ThrowOnError
   >({ url: "/api/v1/api-keys/{apiKeyId}", ...options });
+
+/**
+ * List configured backup destinations for a site
+ *
+ * ADR-036 P1 storage adapter. Returns every destination configured on the
+ * site (`cp` / `local` / `s3_compat`). The encrypted S3 secret is NEVER
+ * returned; `has_secret` reports whether one is stored.
+ *
+ */
+export const listSiteDestinations = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteDestinationsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteDestinationsResponses,
+    ListSiteDestinationsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/destinations", ...options });
+
+/**
+ * Add a backup destination to a site
+ */
+export const createSiteDestination = <ThrowOnError extends boolean = false>(
+  options: Options<CreateSiteDestinationData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateSiteDestinationResponses,
+    CreateSiteDestinationErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/destinations",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Verify credentials for a destination without persisting them
+ *
+ * Returns 200 with `{ok, message}` regardless of success/failure so the
+ * UI can render the operator-readable diagnostic inline. S3-compat
+ * kinds run a HeadBucket + PutObject + DeleteObject probe against the
+ * target bucket; cp/local kinds return ok=true trivially.
+ *
+ */
+export const testSiteDestination = <ThrowOnError extends boolean = false>(
+  options: Options<TestSiteDestinationData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    TestSiteDestinationResponses,
+    TestSiteDestinationErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/destinations/test",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Remove a configured destination
+ */
+export const deleteSiteDestination = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteSiteDestinationData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    DeleteSiteDestinationResponses,
+    DeleteSiteDestinationErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/destinations/{destinationId}", ...options });
+
+/**
+ * Read one configured destination
+ */
+export const getSiteDestination = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteDestinationData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteDestinationResponses,
+    GetSiteDestinationErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/destinations/{destinationId}", ...options });
+
+/**
+ * Update a configured destination (omit secret_key to keep it)
+ */
+export const updateSiteDestination = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateSiteDestinationData, ThrowOnError>,
+) =>
+  (options.client ?? client).patch<
+    UpdateSiteDestinationResponses,
+    UpdateSiteDestinationErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/destinations/{destinationId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * List the active tenant's audit log (admin+)
@@ -795,6 +941,32 @@ export const streamBackupSnapshotEvents = <
   >({ url: "/api/v1/backups/{snapshotId}/events", ...options });
 
 /**
+ * Inspect the SQL dump contained in a backup snapshot
+ *
+ * Returns a structured report on the SQL dump artifact of a backup
+ * snapshot: table inventory, row/byte estimates, charset, table prefix,
+ * and (when the dump looks like a WordPress install) the canonical
+ * siteurl/home/db_version probed from wp_options. Resolution order:
+ * 1. If the snapshot manifest carries an agent-generated inspection
+ * artifact, that JSON is returned (source="agent"). This is the cheap,
+ * always-correct path because the agent has the SQL plaintext locally.
+ * 2. Otherwise the control plane streams the dump artifact, parses it
+ * with the legacy scanner, and caches the result for subsequent calls
+ * (source="cp-legacy"). The first request returns 202 Accepted while
+ * the inspection job runs; the client polls until it gets 200.
+ * Requires viewer+.
+ *
+ */
+export const getBackupSqlInspection = <ThrowOnError extends boolean = false>(
+  options: Options<GetBackupSqlInspectionData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetBackupSqlInspectionResponses,
+    GetBackupSqlInspectionErrors,
+    ThrowOnError
+  >({ url: "/api/v1/backups/{snapshotId}/sql-inspection", ...options });
+
+/**
  * Restore from a backup snapshot (full or partial)
  *
  * Enqueues a restore job. The control plane resolves the (possibly partial)
@@ -851,6 +1023,43 @@ export const putBackupSchedule = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
+
+/**
+ * Trigger an immediate inventory + available-updates refresh
+ *
+ * Enqueues a CP->agent refresh-inventory command for the site. The agent
+ * re-reads its plugin/theme inventory and `update_*` transients and pushes
+ * them back over /agent/v1/metadata. Returns 202 immediately. Requires
+ * viewer+. Returns 409 when the site is offline or unreachable, or 404 if
+ * the site is not enrolled in this tenant.
+ *
+ */
+export const refreshSiteUpdates = <ThrowOnError extends boolean = false>(
+  options: Options<RefreshSiteUpdatesData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RefreshSiteUpdatesResponses,
+    RefreshSiteUpdatesErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/updates/refresh", ...options });
+
+/**
+ * Get the cached per-item available-updates list for a site
+ *
+ * Returns the cached list of plugins/themes (and core) that have an update
+ * available, derived from the agent's last metadata sync. Items are sorted
+ * core -> plugins -> themes, with active before inactive. `as_of` is the
+ * site's last update timestamp. Requires viewer+.
+ *
+ */
+export const getSiteAvailableUpdates = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteAvailableUpdatesData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteAvailableUpdatesResponses,
+    GetSiteAvailableUpdatesErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/updates/available", ...options });
 
 /**
  * Get a site's uptime status over a window
@@ -928,3 +1137,120 @@ export const putAlertConfig = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
+
+/**
+ * Latest site diagnostics by category
+ *
+ * Returns one card per category (14 total) carrying the latest payload
+ * the agent shipped + the collection/freshness timestamps. Categories the
+ * agent has never reported for are returned with a null payload so the UI
+ * can render an "awaiting first sync" placeholder.
+ *
+ */
+export const getSiteDiagnostics = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteDiagnosticsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteDiagnosticsResponses,
+    GetSiteDiagnosticsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/diagnostics", ...options });
+
+/**
+ * Enqueue an on-demand diagnostics command to the agent
+ *
+ * Enqueues a signed `diagnostics` command to the agent. The agent runs
+ * the 14-category collector immediately and pushes the result back to
+ * POST /agent/v1/diagnostics. Returns 202 on accept. Returns 503 with
+ * code `diagnostics_refresh_unwired` when the CP->agent commander has
+ * not yet been wired (V1).
+ *
+ */
+export const refreshSiteDiagnostics = <ThrowOnError extends boolean = false>(
+  options: Options<RefreshSiteDiagnosticsData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RefreshSiteDiagnosticsResponses,
+    RefreshSiteDiagnosticsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/diagnostics/refresh", ...options });
+
+/**
+ * List fingerprint-grouped PHP errors for a site
+ *
+ * Returns the agent-captured PHP errors for the site, grouped by md5
+ * fingerprint. Each row carries the occurrence count, first/last seen
+ * timestamps, and the silenced flag.
+ *
+ */
+export const listSitePhpErrors = <ThrowOnError extends boolean = false>(
+  options: Options<ListSitePhpErrorsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSitePhpErrorsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/errors", ...options });
+
+/**
+ * Silence (or unsilence) a fingerprint-grouped PHP error
+ *
+ * Toggles the silenced flag on a (site, md5) error row. The agent
+ * continues to count silently on its side; the CP UI hides silenced
+ * rows by default.
+ *
+ */
+export const silenceSitePhpError = <ThrowOnError extends boolean = false>(
+  options: Options<SilenceSitePhpErrorData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    SilenceSitePhpErrorResponses,
+    SilenceSitePhpErrorErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/errors/{md5}/silence",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List WordPress activity-log events for a site
+ *
+ * Returns the agent-captured WordPress activity events for the site,
+ * newest first. Each event carries the hash-chain fields (prev_hash,
+ * this_hash) and a server-verified chain_valid flag: the CP recomputes
+ * every event's hash at ingest and flags any tamper (a mutated, inserted,
+ * or deleted historical row) as chain_valid=false. Filter by event_type,
+ * object_type, actor_login, severity, and an occurred-at time range.
+ *
+ */
+export const listSiteActivity = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteActivityData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteActivityResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/activity", ...options });
+
+/**
+ * Re-verify the activity-log hash chain for a site
+ *
+ * Recomputes the entire hash chain for the site server-side from genesis
+ * and reports whether it is intact. When a break is found, break_at_seq
+ * carries the seq of the first event whose recomputed hash (or prev_hash
+ * linkage) does not match — the tamper point. This is the integrity badge
+ * feeding the activity view.
+ *
+ */
+export const verifySiteActivity = <ThrowOnError extends boolean = false>(
+  options: Options<VerifySiteActivityData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    VerifySiteActivityResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/activity/verify", ...options });
