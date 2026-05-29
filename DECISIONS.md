@@ -52,6 +52,8 @@ stay in place with a `Superseded` status and a pointer to the replacement.
 | Email/SMTP | wneessen/go-mail | ADR-029 |
 | Auto-login nonce store | Postgres + Redis (redigo) | ADR-030 |
 | Auto-login token format | Ed25519 JWT (reuse agentcmd) | ADR-031 |
+| Backup engine (agent) | phpbu library, detached subprocess, custom age Crypter + presigned-S3 Sync | ADR-032 (superseded by ADR-033) |
+| Backup engine (agent, V0 final) | Pure-PHP `ifsnop/mysqldump-php` + `ZipArchive`; `fastcgi_finish_request` + `wp_schedule_single_event` watchdog; checkpointed task state | ADR-033 |
 
 ## Phase 3 risk register
 
@@ -680,3 +682,256 @@ before/within Phase 4:
   the cookie issue eligibility against its own policy (allowed roles) AFTER the
   consume succeeds, so even a fully-valid token can't issue a cookie for a
   disallowed role.
+
+## ADR-032: Backup engine (agent) — phpbu library, detached subprocess, custom age Crypter + presigned-S3 Sync
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** M4 shipped the agent's backup pipeline as PHP code running inline
+  in the WP REST request handler: walk `wp-content` → split → age-encrypt each
+  chunk → POST presign → PUT to S3 → POST manifest. The CP held the HTTP
+  connection open the whole time. On real sites this exceeds `php.max_execution_time`,
+  pegs PHP-FPM memory (the encrypt path materializes the chunk in memory), and
+  hits the CP's per-attempt HTTP timeout long before the work completes. The
+  immediate firefight (bumped CP `WPMGR_BACKUP_HTTP_TIMEOUT` 30s → 10m, bumped
+  River per-job timeout 60s → 12m, agent `set_time_limit(0)` + `ignore_user_abort(true)`)
+  buys time but doesn't solve the underlying coupling: backup work has no
+  business living inside a synchronous WP request.
+- **Options considered:**
+
+| Engine | Process model | Real-time progress | S3 model | Custom code | Risk |
+|---|---|---|---|---|---|
+| Keep custom PHP pipeline + `fastcgi_finish_request` | In-FPM, detach response | DIY hooks | presigned-PUT (existing) | All of it (we own every bug) | Same OOM surface; FPM idle timeout still kills it |
+| Action Scheduler / wp-background-processing | WP cron + multi-table queue | Polling its own tables | DIY | Lots — queue + worker loop | Heavy, opinionated WP-specific layer; conflicts with admin context |
+| **phpbu (library, hybrid)** | **Detached `proc_open` PHP CLI subprocess** | **Native event dispatcher** | **Custom `PresignedS3` Sync reuses existing `BackupTransport`** | AgeCrypter + PresignedS3 Sync + ProgressSubscriber (~400 LoC each) | First runtime composer dep on the agent — needs vendor build pipeline |
+| restic / borg / duplicity (binary) | Shell out | Binary stdout only | Bring your own creds | Wrapper + parser | Heavy non-PHP runtime deps; per-host install burden; no presigned-PUT |
+
+  phpbu (6.0.31, Feb 2025, PHP ≥ 8.1) is a mature CLI tool with library-grade
+  internals: `Factory + Runner + Configuration\Loader` are directly instantiable
+  from a long-running PHP process. Its pipeline order is locked **Source → Check
+  → Crypt → Sync → Cleanup**, so an `age` Crypter encrypts in place and the Sync
+  step uploads the ciphertext — exactly our trust model. Its
+  `phpbu\App\Event\Dispatcher` fires per-stage `*_start/_end/_failed` events that
+  a custom subscriber can stream to the CP. Production deps are lean
+  (`sebastianfeldmann/cli`, `symfony/process`); the AWS SDK is `require-dev` only
+  and we avoid it entirely by writing our own Sync.
+
+- **Decision:**
+  1. **Adopt phpbu 6.x as a library** inside a **detached `proc_open` PHP CLI
+     subprocess** spawned from the agent's `backup` command handler. The WP
+     request validates the Ed25519 JWT, persists a `wpmgr_backup_runs` row
+     (`snapshot_id, pid, started_at` — dedup window 5 min to defeat lost-ACK
+     retry storms), writes `wp-content/wpmgr-agent/runs/{run_id}/phpbu.xml`,
+     spawns the runner, and **ACKs the CP immediately**.
+  2. **phpbu `<crypt>` stage SKIPPED** in the config. M4's restore protocol
+     requires per-chunk age envelopes (the agent decrypts each chunk
+     independently as it downloads, never holding the whole archive in
+     memory). A phpbu Crypter step would emit ONE whole-file age envelope and
+     force restore to re-engineer for whole-file decrypt — out of scope for V0.
+     **age happens INSIDE the custom Sync** (one age envelope per 4 MiB
+     chunk), preserving M4 restore as-is. (The research dossier's proposed
+     `AgeCrypter` is therefore deferred — it is the right shape if/when we
+     migrate restore to phpbu's inverse pipeline in a follow-up ADR.)
+  3. **Custom `PresignedS3` Sync** owns chunking + per-chunk age encryption +
+     upload + manifest in one pass. Preserves the CP-as-upload-broker security
+     posture: it stream-reads the plaintext artifact, splits into 4 MiB
+     chunks, age-encrypts each, computes BLAKE3 over the CIPHERTEXT, calls the
+     existing CP endpoints (`POST /agent/v1/backups/{id}/presign` + per-chunk
+     PUT to the returned URL + `POST /agent/v1/backups/{id}/manifest`) —
+     **zero changes to those CP endpoints**. The agent never sees SeaweedFS
+     credentials.
+  4. **Custom `WpmgrProgressSubscriber`** subscribes to every phpbu event and
+     POSTs phase progress to a new **`POST /agent/v1/backups/{id}/progress`**
+     endpoint (Ed25519-signed via the existing agent `Signer`). Per-chunk
+     progress is emitted from the custom Sync (phpbu has no intra-stage events).
+     CP stores latest phase in a new `backup_snapshots.progress JSONB` column;
+     a 60s no-progress watchdog (extension of `health.sweep`) marks stalled
+     runs `failed`.
+  5. **Bump agent PHP requirement** from 8.0 to 8.1 (phpbu minimum; 8.0 is EOL
+     since Nov 2023 anyway). Bump `composer.json` `php` and plugin header
+     `Requires PHP`. Add CI `composer install --no-dev --classmap-authoritative`
+     step; ship `vendor/` (stripped of tests/docs) in the release zip — this is
+     the **first runtime composer dep the agent ships**, so the precedent matters.
+  6. **Frontend (V0)**: TanStack Query polls `GET /api/v1/backups/{id}` at
+     1.5 s while `status='running'`, renders the `progress.phase` +
+     `progress.phase_detail`. V1 reuses the M3 SSE channel pattern.
+  7. **Async pattern fallback**: hosts that disable `proc_open` (rare; some
+     shared-hosting `disable_functions`) fall back to WP-CLI scheduled
+     subprocess driven by a system cron line installed at agent enrollment.
+     Detect at install time; surface as an agent health warning.
+
+- **Consequences:**
+  - **Net win:** backup memory + execution-time pressure leaves the WP request
+    entirely. Backup work runs in its own CLI PHP process with its own memory
+    budget. FPM worker recycling can't kill it.
+  - **Real-time UI:** users see actual phase + chunk progress instead of staring
+    at "running" for 5 minutes.
+  - **Vendor weight:** plugin zip grows ~6–8 MB (phpbu + symfony/process +
+    sebastianfeldmann/cli, stripped of tests/docs). Acceptable for an
+    admin-installed plugin.
+  - **CP contract:** the existing `presign` and `manifest` endpoints are reused
+    unchanged — only one **new** endpoint (`/progress`) and one **new** column
+    (`backup_snapshots.progress`).
+  - **Custom code surface:** ~400 LoC for `AgeCrypter` + `PresignedS3 Sync` +
+    `WpmgrProgressSubscriber` + runner shim + dedup table — small and contained
+    in `apps/agent/includes/phpbu/`.
+  - **Restore stays in agent PHP for V0** (download + decrypt + write is much
+    smaller surface than backup); a follow-up ADR can move restore into phpbu's
+    inverse pipeline if needed.
+  - **Risk R8 (phpbu in maintenance mode, no 6.1 yet):** our value-add is the
+    custom Crypter + Sync + Subscriber, which are 100% ours. If phpbu is ever
+    abandoned we can fork or migrate off without losing orchestration logic.
+  - **Risk R9 (lost-ACK retry storms re-spawning runners):** mitigated by the
+    plugin-side `wpmgr_backup_runs` dedup window AND the existing per-request
+    JWT-replay cache (`class-connector.php`).
+- **Supersedes:** the M4 inline backup pipeline in agent code paths (the
+  `class-backup-command.php` chunk-encrypt-upload loop). The CP-side
+  `presignChunks` / `submitManifest` contracts remain. Implementation lands as
+  **M4.5** (see PLAN.md).
+- **Research dossier:** `docs/research/phpbu-integration-research.md` (commissioned
+  2026-05-28).
+
+## ADR-033: Backup engine (agent, V0 final) — pure-PHP `ifsnop/mysqldump-php` + `ZipArchive` with `fastcgi_finish_request` + `wp_schedule_single_event` resume
+
+- **Status:** Accepted (supersedes ADR-032 for agent code paths; CP-side
+  contracts from ADR-032 are unchanged)
+- **Date:** 2026-05-28
+- **Context:** ADR-032's phpbu integration reached working code (the agent
+  spawned a detached PHP CLI runner via `proc_open` and phpbu's pipeline
+  loaded, registered our custom Sync + Logger, parsed the per-run XML, and
+  executed end-to-end) but **failed at the very first source step**: phpbu's
+  `Mysqldump` source shells out to the `mysqldump` binary, which is not
+  installed on the customer's 1panel-hosted WP container (and is absent on
+  most managed WP hosts — the binary lives in the separate `mysql` container).
+  Replacing phpbu's source with a pure-PHP equivalent surfaces a deeper
+  problem: phpbu also requires `tar`, `proc_open`, and a synchronous
+  long-running PHP process — none of which are universally available on
+  shared/managed WP hosting.
+- **Research:** three parallel agents dissected `wpvivid-backuprestore`
+  (40M+ installs) — the de-facto reference for production WP backup. Three
+  dossiers in `docs/research/wpvivid-{db,file,async-progress-restore}-backup.md`.
+  Consolidated finding: **no mature WP backup plugin assumes binaries are
+  present.** They all use `ifsnop/mysqldump-php` (or a vendored variant) +
+  `ZipArchive` (with PclZip fallback) + checkpointed task state +
+  `wp_schedule_single_event` for stall recovery. The "PHP can't handle large
+  files" concern that motivated ADR-032's phpbu choice is solved by *streaming
+  implementation*, not by switching languages — `ifsnop` pages `LIMIT 5000
+  OFFSET …` straight to `gzwrite`, `ZipArchive` streams files into rotated
+  `.partNNN.zip` archives.
+- **Options considered (post-research):**
+
+| Option | Binary deps | Resume across requests | LoC throwaway | Production WP coverage |
+|---|---|---|---|---|
+| Keep ADR-032 phpbu, document host requirements | mysqldump + tar + proc_open | None | 0 | Excludes ~70 % of managed WP hosting |
+| Hybrid: phpbu pipeline + pure-PHP Sources | None new | None (phpbu pipeline is single-shot) | ~200 | Survives binary absence; still dies on FPM/openresty timeout (we already saw the 504) |
+| **Pivot to WPvivid pattern (V0 final)** | None | **`wp_schedule_single_event` + persisted checkpoint** | ~400 (the phpbu integration) | Works on every WP host that runs FPM (the universal denominator) |
+
+- **Decision:** **Adopt the WPvivid architectural pattern wholesale for the
+  agent backup engine.** Concretely:
+  1. **Composer:** drop `phpbu/phpbu`; add `ifsnop/mysqldump-php` (~600 KB,
+     MIT, pure-PHP). No other new runtime deps.
+  2. **DB dump:** wrap `ifsnop` in a thin `WPMgr\Agent\Backup\DbDumper`.
+     Streams `LIMIT 5000` row pages → `gzwrite` to the per-run scratch dir.
+     `--single-transaction` REPEATABLE READ snapshot. BLOB → HEX. No
+     `LOCK TABLES` (we don't need full backup consistency for V0; the
+     transaction snapshot is sufficient).
+  3. **File archive:** `WPMgr\Agent\Backup\FilesArchiver` uses
+     `ZipArchive` (with PclZip fallback detection for hosts missing the zip
+     extension). Walks `wp-content` via streaming `opendir`/`readdir` with
+     paths written to an on-disk cache file (NOT an in-memory array — that's
+     WPvivid's OOM defense). Rotates archive parts at the configured
+     `chunk_bytes` cap (default 200 MB). Excludes `wpmgr-snapshots`,
+     `wpmgr-agent`, `cache`, `upgrade`, `upgrade-temp-backup`, and symlinks.
+  4. **Async pattern:** the `backup` REST handler validates the JWT,
+     dedups against the `wpmgr_backup_runs` table (unchanged from
+     ADR-032), claims the slot, writes the task row, then calls
+     `fastcgi_finish_request()` (FPM) → ACKs the CP with `{ok: true,
+     detail: "accepted"}` **in well under a second**. The same PHP
+     request then proceeds under `ignore_user_abort(true)` to do the work.
+     This is WPvivid's "fire, flush, self-resume" pattern — works on every
+     FPM host without `proc_open` permissions.
+  5. **Checkpointed state machine:** a new `wpmgr_backup_tasks` plugin-side
+     table replaces the throwaway `wpmgr_backup_runs` dedup with richer
+     state: `{snapshot_id, kind, phase, sub_state JSONB, started_at,
+     last_progress_at, resume_count}`. `phase` is a closed set
+     (`queued / dumping_db / archiving_files / encrypting_uploading /
+     submitting_manifest / completed / failed`). `sub_state` carries
+     per-phase resume cursors (e.g. `{db_table: "...", db_offset: N}` or
+     `{archive_part: N, file_index: M}`). Updated atomically before every
+     `flush()` and after every per-chunk upload.
+  6. **Stall recovery:** on entering the backup, the handler schedules a
+     `wp_schedule_single_event(time()+120, 'wpmgr_backup_watchdog',
+     [snapshot_id])`. The watchdog handler reads the task row; if
+     `last_progress_at` is older than 180 s AND `phase` is not terminal,
+     it increments `resume_count` (cap 6) and re-enters the backup state
+     machine, which dispatches to the right phase from `sub_state`.
+     Across 6 retries this gives an effective ~30-minute recovery window
+     for transient failures without the CP needing to know anything new.
+  7. **Encrypt + upload reuse:** the chunk-encrypt-upload step is mostly
+     **the existing M4 code that ADR-032 was trying to refactor away**.
+     We keep using `WPMgr\Agent\Support\AgeCrypto::encrypt` per 4 MiB
+     chunk + `Blake3::hashHex` over the ciphertext + the existing
+     `BackupTransport::presignChunks` / `putChunk` / `submitManifest`.
+     What changes: the chunks now come from FILES (the dump.sql.gz and
+     files.partNN.zip artifacts) instead of in-memory blobs, so memory
+     stays bounded regardless of total backup size.
+  8. **Progress reporting:** unchanged from ADR-032 — agent posts to
+     `POST /agent/v1/backups/{id}/progress` (Ed25519-signed) at every
+     phase transition and per-chunk during the encrypting_uploading
+     phase. CP stores in `backup_snapshots.progress` JSONB. Frontend
+     polling and watchdog already shipped.
+- **What carries over from ADR-032 (no rework):**
+  - CP `backup_snapshots.progress` JSONB column + watchdog index
+  - CP `POST /agent/v1/backups/:id/progress` endpoint (Ed25519-verified,
+    4 KiB body cap, closed-set phase validation)
+  - CP `ProgressWatchdogWorker` (River periodic, 120 s stall threshold)
+  - CP `BackupRequest.ProgressEndpoint` field + worker plumbing
+  - CP `Backup.HTTPTimeout` config + River per-job timeout override
+  - Frontend `SnapshotProgressCard` + 1.5 s polling
+  - Agent build pipeline (`make agent-vendor` / `agent-zip`)
+  - Agent `wpmgr_backup_runs` dedup table (small extension to richer task table)
+  - Agent `ProgressClient` (signed `/progress` POSTs)
+- **What gets replaced from ADR-032:**
+  - composer dep `phpbu/phpbu` → `ifsnop/mysqldump-php`
+  - `apps/agent/includes/phpbu/PresignedS3.php` (phpbu Sync impl) → replaced
+    by phase-driven uploader in the state machine
+  - `apps/agent/includes/phpbu/WpmgrProgressSubscriber.php` (phpbu
+    Listener+Logger) → deleted; progress posts happen inline
+  - `apps/agent/bin/wpmgr-backup-runner.php` (CLI shim spawned by
+    `proc_open`) → deleted; work runs in the same FPM request via
+    `fastcgi_finish_request`
+  - `apps/agent/includes/commands/class-backup-command.php` spawn flow →
+    replaced by state-machine entry + `fastcgi_finish_request` flush
+- **Consequences:**
+  - **Universal hosting compatibility.** Works on every WP host running
+    FPM (the dominant deployment). No binary requirements, no
+    `proc_open` permission, no CLI PHP path resolution. Where FPM is
+    absent (mod_php on Apache shared hosting), the same code runs
+    synchronously without the early flush — the CP keeps its HTTP
+    connection open and behaves like M4 did, with the same 10 min
+    backup HTTPTimeout we already configured. Acceptable degradation.
+  - **Checkpointed resume is a real safety property** — a backup that
+    crashes at part 3 of 7 resumes from part 3, not from scratch. We
+    couldn't have built this in phpbu.
+  - **Restore stays out of scope for V0.** The current M4 restore path
+    still works (downloads chunks, decrypts in-agent, reassembles).
+    A follow-up ADR will adapt restore to the new artifact shape
+    (one tar+gz + N file parts vs N small chunks per file) — straight
+    file-write, no real change to restore safety.
+  - **~400 LoC of M5.6 agent code is thrown away** (PresignedS3 Sync,
+    WpmgrProgressSubscriber, runner shim, BackupCommand spawn flow,
+    phpbu.xml generator). **~600 LoC replaces it** (DbDumper,
+    FilesArchiver, BackupTaskRunner state machine, watchdog handler).
+    Net agent diff is +200 LoC. CP side is +0.
+  - **The original phpbu motivation ("don't rely on PHP memory
+    management") is preserved** — pure-PHP streaming (`ifsnop`'s
+    `LIMIT 5000` → `gzwrite`, `ZipArchive`'s file-streaming, our
+    chunk-by-chunk age encryption) holds memory to one chunk's worth
+    at any instant. Memory bound is independent of total backup size.
+- **Supersedes:** ADR-032 (for the agent-side backup implementation).
+  CP-side contracts ADR-032 added (progress endpoint, watchdog,
+  progress JSONB) are RETAINED — they are engine-agnostic.
+- **Research dossiers:**
+  - `docs/research/wpvivid-db-backup.md`
+  - `docs/research/wpvivid-file-backup.md`
+  - `docs/research/wpvivid-async-progress-restore.md`

@@ -136,6 +136,40 @@
   - [ ] Tests: unit (mint/consume/double-consume/expired/rate-limit/RBAC); integration testcontainers (concurrent consume — only one wins); PHP (bad sig/replay/redirect sanitizer/role check); Playwright E2E (mock the new tab; assert /wp-admin/-shaped path) — real-WP container E2E is a nice-to-have, defer if heavy
   - [ ] Security review (security-reviewer agent) — MANDATORY before merge; the 16-item checklist from the spec must all pass
   - [ ] Docs: docs/features/autologin.md (user how-to + troubleshooting); docs/agent.md (compatibility: Wordfence strict, iThemes Security strict; filters/actions); docs/security.md (threat model + mitigations)
+- [ ] **M5.6 — Backup engine rebuild on pure-PHP WPvivid pattern (ADR-033 supersedes ADR-032)** ⚠️ M4 + ADR-032 pivot
+  - **Why this exists, twice**: live QA against curvabykerline.in (1panel Docker WP) revealed two layers of problem. Layer 1: M4's inline PHP backup hit openresty 504 at ~3-5 min — that's why ADR-032 moved work to a detached phpbu subprocess. Layer 2: ADR-032's phpbu reached working end-to-end execution but failed at the first source: phpbu shells out to `mysqldump`, which the WP container doesn't ship. A research deep-dive into WPvivid (40M+ installs) showed **no mature WP backup plugin assumes binaries** — they use `ifsnop/mysqldump-php` + `ZipArchive` + `fastcgi_finish_request` + `wp_schedule_single_event` resume. ADR-033 adopts that pattern wholesale. CP-side work from ADR-032 is engine-agnostic and retained.
+  - **What carries over from ADR-032 (no rework)**:
+    - [x] CP `backup_snapshots.progress JSONB` + `progress_updated_at` columns + watchdog index (applied)
+    - [x] CP `POST /agent/v1/backups/:id/progress` endpoint, Ed25519-verified, 4 KiB body cap, closed-set phase validation
+    - [x] CP `ProgressWatchdogWorker` (River periodic, 120 s stall threshold, 30 s tick)
+    - [x] CP `BackupRequest.ProgressEndpoint` field + worker plumbing
+    - [x] CP `Backup.HTTPTimeout` config + River per-job timeout override (10 m / 12 m)
+    - [x] Frontend `SnapshotProgressCard` + 1.5 s polling
+    - [x] Agent build pipeline (`make agent-vendor` + `agent-zip`)
+    - [x] Agent `wpmgr_backup_runs` dedup table (small extension to richer task table below)
+    - [x] Agent `ProgressClient` (signed `/progress` POSTs)
+  - **What gets replaced from ADR-032 (the throwaway)**:
+    - [ ] Drop composer dep `phpbu/phpbu`; add `ifsnop/mysqldump-php`
+    - [ ] Delete `apps/agent/includes/phpbu/PresignedS3.php` (phpbu Sync impl)
+    - [ ] Delete `apps/agent/includes/phpbu/WpmgrProgressSubscriber.php` (phpbu Listener+Logger)
+    - [ ] Delete `apps/agent/bin/wpmgr-backup-runner.php` (CLI runner spawn target)
+    - [ ] Rewrite `apps/agent/includes/commands/class-backup-command.php` for the WPvivid pattern (state-machine entry + `fastcgi_finish_request` flush, no `proc_open`)
+  - **What gets built new (ADR-033 implementation)**:
+    - [x] ADR-033 — pure-PHP `ifsnop/mysqldump-php` + `ZipArchive` + `fastcgi_finish_request` + checkpointed task state
+    - [x] User approval to proceed
+    - [ ] Agent: `composer require ifsnop/mysqldump-php` (~600 KB MIT pure-PHP)
+    - [ ] Agent: new `wpmgr_backup_tasks` table — `{snapshot_id PK, kind, phase, sub_state JSONB, started_at, last_progress_at, resume_count, max_resumes}` (replaces the slimmer `wpmgr_backup_runs` dedup)
+    - [ ] Agent `WPMgr\Agent\Backup\DbDumper` — thin wrapper around `ifsnop/mysqldump-php`. Streams `LIMIT 5000` row pages → `gzwrite` to scratch. `--single-transaction` REPEATABLE READ. BLOB → HEX. Per-table resume cursor saved to `sub_state`
+    - [ ] Agent `WPMgr\Agent\Backup\FilesArchiver` — `ZipArchive`-based (with PclZip fallback detection). Walks `wp-content` via streaming `opendir`/`readdir` with the path list written to an **on-disk cache file** (OOM defense). Rotates `.partNNN.zip` at configured `chunk_bytes` cap (default 200 MB) or 55 k entries. Per-part resume cursor saved to `sub_state`
+    - [ ] Agent `WPMgr\Agent\Backup\TaskRunner` — state machine driver. Phases (closed set): `queued / dumping_db / archiving_files / encrypting_uploading / submitting_manifest / completed / failed`. Each phase reads `sub_state`, does bounded work, updates `last_progress_at` + `sub_state`, posts to `/progress`, transitions
+    - [ ] Agent `WPMgr\Agent\Backup\EncryptAndUpload` — reuses existing `AgeCrypto::encrypt` per 4 MiB chunk + `Blake3::hashHex` over ciphertext + existing `BackupTransport::presignChunks` / `putChunk` / `submitManifest` (M4 transport unchanged). New: reads chunks FROM FILES (the dump.sql.gz, files.partNN.zip) instead of in-memory blobs — memory bound independent of total backup size
+    - [ ] Agent: refactored `class-backup-command.php` — validate JWT → dedup-claim → write task row → `fastcgi_finish_request()` → ACK CP `{ok: true, detail: "accepted"}` → continue under `ignore_user_abort(true)` calling `TaskRunner::run()`. Falls through to synchronous behavior on non-FPM hosts (the M4 ~10 min HTTPTimeout already accommodates that case)
+    - [ ] Agent: `wp_schedule_single_event(time()+120, 'wpmgr_backup_watchdog', [snapshot_id])` on backup entry; watchdog handler reads task, checks `last_progress_at < now()-180s` AND non-terminal `phase` → increments `resume_count` (cap 6) → re-enters `TaskRunner::run()` which resumes from `sub_state`
+    - [ ] Plugin version bump to 0.7.0 (architectural change: phpbu → WPvivid pattern)
+    - [ ] Live QA on curvabykerline.in: db backup, files backup, full backup end-to-end; restore (still uses existing M4 path); schedule fires; concurrent runs refuse via dedup; kill PHP mid-stream and confirm watchdog resumes
+    - [ ] Security review (16-item checklist): JWT-replay shield holds; `/progress` endpoint signature verification; runner cannot escape `wp-content/wpmgr-agent/runs/{id}/` scratch; `wpmgr_backup_tasks` resume_count cap; ZipArchive symlink handling; `ifsnop` SQL escaping; multi-tenant isolation; no plaintext credentials in error responses
+    - [ ] Docs: `docs/agent.md` adds host-compat matrix (FPM vs mod_php, ZipArchive vs PclZip, ifsnop deps); `docs/security.md` adds backup-task threat model; `docs/install.md` clarifies that no binaries are required on the WP host
+  - **Restore stays on M4 path for V0** — the new artifact shape (1 dump.sql.gz + N files.partNN.zip vs M4's per-file chunks) requires a small restore adapter; tracked as a follow-up ADR after V0 ships
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports
 - [ ] M8 — Polish & launch (audit log, V0 release)
