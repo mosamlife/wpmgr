@@ -12,18 +12,20 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent;
 
+use WPMgr\Agent\Backup\FilesRestorer;
+use WPMgr\Agent\Backup\RestoreWatchdog;
+use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Commands\AutologinCommand;
 use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
 use WPMgr\Agent\Commands\InfoCommand;
 use WPMgr\Agent\Commands\MetadataCommand;
+use WPMgr\Agent\Commands\RefreshInventoryCommand;
 use WPMgr\Agent\Commands\RestoreCommand;
 use WPMgr\Agent\Commands\RollbackCommand;
 use WPMgr\Agent\Commands\ScanCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 use WPMgr\Agent\Support\AgeIdentity;
-use WPMgr\Agent\Support\BackupSource;
-use WPMgr\Agent\Support\BackupTransport;
 
 /**
  * Top-level plugin orchestrator.
@@ -67,12 +69,15 @@ final class Plugin
         $this->settings         = new Settings();
         $this->connector        = new Connector($this->keystore, $this->settings);
         $this->signer           = new Signer($this->keystore);
-        $this->router           = new Router($this->connector, $this->commands());
+        // Enrollment + Scheduler must exist BEFORE commands() runs so the
+        // refresh_inventory command can hold references to them — it triggers
+        // a transient refresh + metadata push on demand.
         // Metadata pushes include the agent's age PUBLIC recipient so the CP can
         // register it on sites.age_recipient — M4 backups refuse otherwise.
         $this->enrollment       = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand(new AgeIdentity($this->keystore)));
         $this->scheduler        = new Scheduler($this->settings, $this->enrollment);
-        $this->admin            = new Admin($this->settings, $this->enrollment);
+        $this->router           = new Router($this->connector, $this->commands());
+        $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore);
         $this->autologinReplay  = new ReplayCache();
         $this->autologin        = new AutologinCommand($this->connector, $this->autologinReplay, $this->signer, $this->settings);
     }
@@ -118,6 +123,45 @@ final class Plugin
         add_action(ReplayCache::HOOK_PRUNE, function (): void {
             $this->autologinReplay->prune();
         });
+
+        // M5.6 / ADR-033 — backup task watchdog. BackupCommand schedules a
+        // wp_schedule_single_event firing every ~120 s while a task is
+        // active; the handler inspects the wpmgr_backup_tasks row and
+        // either re-arms itself (alive) or re-enters TaskRunner::run()
+        // (stalled). The single-arg signature matches the wp_schedule_single_event
+        // $args = [$snapshot_id] shape.
+        add_action(Watchdog::HOOK, [Watchdog::class, 'run'], 10, 1);
+
+        // M5.6 / ADR-033 (v0.7.6) — backup-run cron event. BackupCommand
+        // hands off the actual work to this via wp_schedule_single_event +
+        // spawn_cron() so the original REST request can return its ACK in
+        // milliseconds. /wp-cron.php fires in a SEPARATE FPM worker; this
+        // handler dispatches TaskRunner UNCONDITIONALLY (vs Watchdog::run
+        // which short-circuits unless the task is stalled — wrong for the
+        // first-run dispatch path, since a freshly-queued task by
+        // definition is not stalled yet).
+        add_action('wpmgr_backup_run', [Watchdog::class, 'dispatch'], 10, 1);
+
+        // M5.6 / ADR-034 — restore task watchdog (stall detection).
+        // RestoreCommand schedules a wp_schedule_single_event firing every
+        // ~120 s while a restore task is active; the handler inspects the
+        // wpmgr_restore_tasks row and either re-arms itself (alive) or
+        // re-enters RestoreRunner::run (stalled). The two-arg signature
+        // matches wp_schedule_single_event $args = [$snapshotId,$restoreId].
+        add_action(RestoreWatchdog::HOOK, [RestoreWatchdog::class, 'run'], 10, 2);
+
+        // M5.6 / ADR-034 — restore-run cron event. RestoreCommand hands off
+        // the actual work via wp_schedule_single_event + spawn_cron() so
+        // the original REST request can return its ACK in milliseconds.
+        // Dispatched UNCONDITIONALLY (mirrors the backup-side wpmgr_backup_run
+        // contract).
+        add_action(RestoreWatchdog::HOOK_RUN, [RestoreWatchdog::class, 'dispatch'], 10, 2);
+
+        // M5.6 / ADR-034 — 24 h GC of `.wpmgr-old-files-*` and
+        // `.wpmgr-staging-*` directories left behind by RestoreRunner so the
+        // operator has a manual-rollback window. Scheduled by RestoreRunner
+        // on cleanup; the handler sweeps anything older than 24 h.
+        add_action('wpmgr_restore_oldfiles_gc', [FilesRestorer::class, 'gcOldFiles']);
 
         $this->scheduler->registerHooks();
 
@@ -315,21 +359,42 @@ final class Plugin
      */
     private function commands(): array
     {
-        // Shared backup/restore collaborators. The age identity manager owns the
-        // site's PRIVATE backup key (in the encrypted keystore); the transport
-        // reuses the M2 Ed25519 Signer for the CP callbacks.
+        // Shared collaborators. The age identity manager owns the site's
+        // PRIVATE backup key (in the encrypted keystore); BackupCommand uses
+        // it for recipient-match validation, MetadataCommand for the public
+        // recipient push. RestoreCommand instantiates its own seams inside
+        // the cron worker so the REST entry point stays minimal.
         $ageIdentity = new AgeIdentity($this->keystore);
-        $source      = new BackupSource();
-        $transport   = new BackupTransport($this->signer);
 
         return [
             new InfoCommand(),
-            new BackupCommand($ageIdentity, $source, $transport),
-            new RestoreCommand($ageIdentity, $source, $transport),
+            // M5.6 / ADR-033: BackupCommand validates the signed CP request,
+            // dedups, seeds the wpmgr_backup_tasks row, schedules the
+            // watchdog cron event, then hands off via wp_schedule_single_event
+            // + spawn_cron() so the original REST request ACKs in ms.
+            new BackupCommand($ageIdentity),
+            // M5.6 / ADR-034: RestoreCommand mirrors the BackupCommand
+            // pattern — dedup, seed wpmgr_restore_tasks, schedule the
+            // wpmgr_restore_watchdog cron, hand off via wp_schedule_single_event
+            // + spawn_cron() bound to wpmgr_restore_run. No collaborators here;
+            // RestoreRunner builds its own (BackupTransport, AgeIdentity,
+            // FilesRestorer, DbRestorer) inside the cron worker.
+            new RestoreCommand(),
             new UpdateCommand(),
             new RollbackCommand(),
             new ScanCommand(),
             new MetadataCommand($ageIdentity),
+            // v0.9.0 — on-demand refresh: re-poll WP update transients and
+            // immediately push fresh metadata so the dashboard can render
+            // available-update counts without waiting for the 30-min cron.
+            // Closures are used so the command stays unit-testable without
+            // doubling the `final` Enrollment / Scheduler classes.
+            new RefreshInventoryCommand(
+                function (): void {
+                    $this->scheduler->refreshUpdateTransients(true);
+                },
+                fn (): array => $this->enrollment->pushMetadata(),
+            ),
         ];
     }
 

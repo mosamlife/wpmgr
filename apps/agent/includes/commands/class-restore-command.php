@@ -1,26 +1,44 @@
 <?php
 /**
- * Restore command: download, integrity-verify, decrypt, and reassemble a
- * (possibly partial) snapshot.
+ * Restore command: M5.6 / ADR-034 — WPvivid-pattern restore engine.
  *
- * Contract (CP -> agent), mirroring apps/api/internal/agentcmd/backup_contract.go:
+ * Mirror of the M5.6 BackupCommand cron+spawn_cron pattern. Replaces the
+ * legacy in-process M4 restore (which downloaded chunks + decrypted + wrote
+ * files inline inside the REST request — fine for tiny snapshots, would 504
+ * on real sites). The new flow:
+ *
+ *   1. Validate JWT-signed request (Connector did the crypto; we sanity check
+ *      shape + recipient — there's no age_recipient in restore though).
+ *   2. Atomically claim (snapshot_id, restore_id) in `wpmgr_restore_runs` so a
+ *      retry of a lost-ACK doesn't spawn a second runner.
+ *   3. Seed `wpmgr_restore_tasks` row with all runner params nested in
+ *      `sub_state.params` so the watchdog can rehydrate.
+ *   4. Schedule the RestoreWatchdog cron for +120 s (stall detection).
+ *   5. `wp_schedule_single_event(time(), 'wpmgr_restore_run', [...])` + call
+ *      `spawn_cron()` to fire wp-cron in a fresh FPM worker.
+ *   6. Return ACK in milliseconds.
+ *
+ * Wire contract (CP -> agent):
  *   POST /wp-json/wpmgr/v1/command/restore
- *   request:  { "snapshot_id", "kind", "entries": [ { "path", "entry_kind",
- *               "table_name", "mode", "size", "chunks": [ { "blake3",
- *               "get_url", "size" } ] } ] }   (RestoreRequest / RestoreEntry /
- *                                              RestoreChunk)
- *   response: { "ok": bool, "restored_entries": int, "verified": bool,
- *               "log": string }   (RestoreResponse)
+ *   {
+ *     "snapshot_id":       "uuid",
+ *     "restore_id":        "uuid",      // CP-generated; unique per restore run
+ *     "kind":              "files"|"db"|"full",
+ *     "progress_endpoint": "https://cp/.../progress",
+ *     "manifest": {
+ *       "entries": [
+ *         { "logical_path": "database.sql.gz",
+ *           "chunks": [ { "hash": "...", "presigned_url": "...", "size": N }, ... ] },
+ *         { "logical_path": "wp-content.part001.zip", "chunks": [ ... ] },
+ *         ...
+ *       ]
+ *     },
+ *     "chunk_bytes": 4194304   // hint only (presented in preflight telemetry)
+ *   }
+ *   response: { "ok": bool, "detail": string }
  *
- * For each entry the agent processes its chunks IN ORDER: download the
- * ciphertext from the presigned GET URL, recompute blake3 over the downloaded
- * CIPHERTEXT and reject on mismatch (integrity), age-decrypt with the site's
- * stored identity, and reassemble. File entries are written atomically inside a
- * containment-checked path under wp-content; the db entry is imported.
- *
- * No decryption key is present in the request — the agent decrypts with the age
- * identity it alone holds. Presigned URLs are bearer credentials and never
- * logged.
+ * The agent's REPLY means "accepted & runner started". Completion happens
+ * when RestoreRunner posts the `completed` progress event to /progress.
  *
  * @package WPMgr\Agent\Commands
  */
@@ -29,40 +47,35 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
-use WPMgr\Agent\Support\AgeIdentity;
-use WPMgr\Agent\Support\Blake3;
-use WPMgr\Agent\Support\BackupSource;
-use WPMgr\Agent\Support\BackupTransport;
+use WPMgr\Agent\Backup\RestoreRunner;
+use WPMgr\Agent\Backup\RestoreWatchdog;
+use WPMgr\Agent\Schema;
 
 /**
- * Reassembles files / imports the database from an encrypted snapshot.
+ * Accepts a `restore` command from the CP, seeds the task row, and hands
+ * off to the cron-dispatched RestoreRunner via wp_schedule_single_event +
+ * spawn_cron(). Returns ACK in well under a second.
  */
 final class RestoreCommand implements CommandInterface
 {
-    private const ENTRY_FILE = 'file';
-    private const ENTRY_DB   = 'db';
+    /** Valid restore kinds (mirror of CP RestoreRequest.Kind). */
+    private const KINDS = ['files', 'db', 'full'];
 
-    private AgeIdentity $identity;
-
-    private BackupSource $source;
-
-    private BackupTransport $transport;
+    /** Default plaintext chunk size (matches CP agentcmd.ChunkBytes). */
+    private const DEFAULT_CHUNK_BYTES = 4 << 20;
 
     /**
-     * @param AgeIdentity     $identity  Site age identity manager.
-     * @param BackupSource    $source    Filesystem/DB sink seam.
-     * @param BackupTransport $transport S3 download transport seam.
+     * Dedup window: refuse to seed a second task for the same
+     * (snapshot_id, restore_id) within this many seconds of a previous claim.
      */
-    public function __construct(AgeIdentity $identity, BackupSource $source, BackupTransport $transport)
+    private const DEDUP_WINDOW_SECONDS = 300;
+
+    public function __construct()
     {
-        $this->identity  = $identity;
-        $this->source    = $source;
-        $this->transport = $transport;
+        // No collaborators — RestoreRunner instantiates its own seams when
+        // the cron worker picks it up. Matches BackupCommand.
     }
 
-    /**
-     * {@inheritDoc}
-     */
     public function name(): string
     {
         return 'restore';
@@ -72,230 +85,287 @@ final class RestoreCommand implements CommandInterface
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).
-     * @param array<string,mixed> $params Request parameters (RestoreRequest).
-     * @return array{ok:bool,restored_entries:int,verified:bool,log:string}
+     * @param array<string,mixed> $params RestoreRequest fields.
+     * @return array{ok:bool,detail:string}
      */
     public function execute(array $claims, array $params): array
     {
-        $entries = isset($params['entries']) && is_array($params['entries']) ? $params['entries'] : [];
-        if ($entries === []) {
-            return $this->result(false, 0, true, 'no entries to restore');
+        $snapshotId = $this->str($params, 'snapshot_id');
+        $restoreId  = $this->str($params, 'restore_id');
+        $kind       = $this->str($params, 'kind');
+        $progressEp = $this->str($params, 'progress_endpoint');
+
+        $chunkBytes = isset($params['chunk_bytes']) && is_numeric($params['chunk_bytes']) && (int) $params['chunk_bytes'] > 0
+            ? (int) $params['chunk_bytes']
+            : self::DEFAULT_CHUNK_BYTES;
+
+        // --- 1. Input validation -------------------------------------------
+        if ($snapshotId === '' || $restoreId === '') {
+            return $this->refuse('missing snapshot_id or restore_id');
+        }
+        if (!preg_match('/^[a-f0-9-]{36}$/i', $snapshotId)) {
+            return $this->refuse('invalid snapshot id');
+        }
+        if (!preg_match('/^[a-f0-9-]{36}$/i', $restoreId)) {
+            return $this->refuse('invalid restore id');
+        }
+        if (!in_array($kind, self::KINDS, true)) {
+            return $this->refuse('invalid kind');
         }
 
-        $restored = 0;
-        $verified = true;
-        $failures = 0;
+        $chunkDownloads = $this->parseChunkDownloads($params);
+        if ($chunkDownloads === []) {
+            return $this->refuse('no chunk_downloads / manifest entries supplied');
+        }
 
-        foreach ($entries as $entry) {
+        // --- 2. Dedup claim ------------------------------------------------
+        Schema::ensureCurrent();
+        if (!$this->tryClaimDedup($snapshotId, $restoreId)) {
+            return $this->refuse('runner already in flight for this restore');
+        }
+
+        // --- 3. Prepare scratch dir + assemble runner params --------------
+        try {
+            $scratchDir = $this->prepareScratchDir($snapshotId, $restoreId);
+        } catch (\Throwable $e) {
+            $this->releaseDedup($snapshotId, $restoreId);
+            return $this->refuse('scratch dir creation failed');
+        }
+
+        $runnerParams = [
+            'snapshot_id'       => $snapshotId,
+            'restore_id'        => $restoreId,
+            'kind'              => $kind,
+            'progress_endpoint' => $progressEp,
+            'chunk_downloads'   => $chunkDownloads,
+            'chunk_bytes'       => $chunkBytes,
+            'scratch_dir'       => $scratchDir,
+            'wp_content_path'   => defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '',
+            'wp_root'           => defined('ABSPATH') ? ABSPATH : '',
+            'db'                => $this->dbCreds(),
+        ];
+
+        // --- 4. Seed the task row ------------------------------------------
+        $this->seedTaskRow($snapshotId, $restoreId, $kind, $runnerParams);
+
+        // --- 5. Schedule the watchdog -------------------------------------
+        RestoreWatchdog::schedule($snapshotId, $restoreId, RestoreWatchdog::RESCHEDULE_SECONDS);
+
+        // --- 6. Hand off to cron in a separate FPM worker -----------------
+        if (function_exists('wp_schedule_single_event')) {
+            wp_schedule_single_event(time(), RestoreWatchdog::HOOK_RUN, [$snapshotId, $restoreId]);
+        }
+        if (function_exists('spawn_cron')) {
+            @spawn_cron();
+        }
+
+        return ['ok' => true, 'detail' => 'accepted'];
+    }
+
+    /**
+     * Parse the chunk_downloads array out of the request. Accepts both:
+     *   - flat top-level "chunk_downloads": [ { logical_path, chunks }, ... ]
+     *   - nested "manifest": { "entries": [ ... ] } per the wire contract
+     *
+     * @param array<string,mixed> $params
+     * @return list<array<string,mixed>>
+     */
+    private function parseChunkDownloads(array $params): array
+    {
+        $candidates = [];
+        if (isset($params['chunk_downloads']) && is_array($params['chunk_downloads'])) {
+            $candidates = $params['chunk_downloads'];
+        } elseif (isset($params['manifest']) && is_array($params['manifest'])
+            && isset($params['manifest']['entries']) && is_array($params['manifest']['entries'])
+        ) {
+            $candidates = $params['manifest']['entries'];
+        }
+
+        $out = [];
+        foreach ($candidates as $entry) {
             if (!is_array($entry)) {
-                $failures++;
                 continue;
             }
-            try {
-                $outcome = $this->restoreEntry($entry);
-            } catch (\Throwable $e) {
-                $failures++;
+            $logical = isset($entry['logical_path']) && is_string($entry['logical_path'])
+                ? $entry['logical_path']
+                : (isset($entry['path']) && is_string($entry['path']) ? $entry['path'] : '');
+            $chunks  = isset($entry['chunks']) && is_array($entry['chunks']) ? $entry['chunks'] : [];
+            if ($logical === '' || $chunks === []) {
                 continue;
             }
-            if (!$outcome['verified']) {
-                // A blake3 mismatch on any chunk taints the restore's integrity.
-                $verified = false;
-                $failures++;
-                continue;
+            // Normalize each chunk to the runner's expected key names
+            // (`hash`, `presigned_url`). Accept either {hash, presigned_url}
+            // or {blake3, url}/{blake3, get_url} for compatibility with the
+            // M4 manifest shape.
+            $norm = [];
+            foreach ($chunks as $c) {
+                if (!is_array($c)) {
+                    continue;
+                }
+                $hash = (string) ($c['hash'] ?? $c['blake3'] ?? '');
+                $url  = (string) ($c['presigned_url'] ?? $c['url'] ?? $c['get_url'] ?? '');
+                if ($hash === '' || $url === '') {
+                    continue;
+                }
+                $row = ['hash' => $hash, 'presigned_url' => $url];
+                if (isset($c['size']) && is_numeric($c['size'])) {
+                    $row['size'] = (int) $c['size'];
+                }
+                $norm[] = $row;
             }
-            if ($outcome['ok']) {
-                $restored++;
-            } else {
-                $failures++;
+            if ($norm !== []) {
+                $out[] = ['logical_path' => $logical, 'chunks' => $norm];
             }
         }
-
-        $ok = $failures === 0;
-
-        return $this->result($ok, $restored, $verified, $ok ? 'restore completed' : 'restore completed with errors');
-    }
-
-    /**
-     * Restore a single entry: gather its ordered, verified, decrypted plaintext
-     * then write/import it.
-     *
-     * @param array<string,mixed> $entry RestoreEntry.
-     * @return array{ok:bool,verified:bool}
-     * @throws \RuntimeException On a write/import failure.
-     */
-    private function restoreEntry(array $entry): array
-    {
-        $entryKind = isset($entry['entry_kind']) && is_string($entry['entry_kind']) ? $entry['entry_kind'] : '';
-        $path      = isset($entry['path']) && is_string($entry['path']) ? $entry['path'] : '';
-        $mode      = isset($entry['mode']) && is_numeric($entry['mode']) ? (int) $entry['mode'] : 0;
-        $chunks    = isset($entry['chunks']) && is_array($entry['chunks']) ? $entry['chunks'] : [];
-
-        // Reassemble plaintext from the ordered chunks (streaming to a temp file
-        // for files so a large entry never lives fully in memory).
-        if ($entryKind === self::ENTRY_DB) {
-            $plain = $this->reassembleToString($chunks);
-            if ($plain === null) {
-                return ['ok' => false, 'verified' => false];
-            }
-
-            return ['ok' => $this->source->importDatabase($plain), 'verified' => true];
-        }
-
-        if ($entryKind !== self::ENTRY_FILE) {
-            return ['ok' => false, 'verified' => true];
-        }
-
-        $target = $this->source->resolveWritePath($path);
-        if ($target === '') {
-            // Path traversal / outside-wp-content => reject (not an integrity issue).
-            return ['ok' => false, 'verified' => true];
-        }
-
-        return $this->reassembleToFile($chunks, $target, $mode);
-    }
-
-    /**
-     * Download + verify + decrypt all chunks of an entry, concatenated into a
-     * string (used for the db dump).
-     *
-     * @param array<int,mixed> $chunks Ordered RestoreChunk list.
-     * @return string|null Plaintext, or null on integrity/transport failure.
-     */
-    private function reassembleToString(array $chunks): ?string
-    {
-        $out = '';
-        foreach ($chunks as $chunk) {
-            $plain = $this->fetchChunkPlaintext($chunk);
-            if ($plain === null) {
-                return null;
-            }
-            $out .= $plain;
-        }
-
         return $out;
     }
 
     /**
-     * Download + verify + decrypt all chunks, streaming into a temp file, then
-     * atomically move into the containment-checked target path.
-     *
-     * @param array<int,mixed> $chunks Ordered RestoreChunk list.
-     * @param string           $target Absolute target path (inside wp-content).
-     * @param int              $mode   File mode bits to apply.
-     * @return array{ok:bool,verified:bool}
+     * Atomically claim (snapshot_id, restore_id) in wpmgr_restore_runs.
+     * Returns true if we won the race.
      */
-    private function reassembleToFile(array $chunks, string $target, int $mode): array
+    private function tryClaimDedup(string $snapshotId, string $restoreId): bool
     {
-        $dir = dirname($target);
-        if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
-            return ['ok' => false, 'verified' => true];
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return true;
         }
+        $table  = $wpdb->prefix . Schema::BACKUP_RESTORE_RUNS_TABLE;
+        $now    = time();
+        $cutoff = $now - self::DEDUP_WINDOW_SECONDS;
 
-        $tmp = @tempnam($dir, '.wpmgr-restore');
-        if ($tmp === false) {
-            return ['ok' => false, 'verified' => true];
+        // @phpstan-ignore-next-line
+        $existing = $wpdb->get_row($wpdb->prepare(
+            "SELECT pid, started_at FROM {$table} WHERE snapshot_id = %s AND restore_id = %s",
+            $snapshotId,
+            $restoreId
+        ));
+        if (is_object($existing) && (int) $existing->started_at > $cutoff) {
+            return false;
         }
-
-        $handle = @fopen($tmp, 'wb');
-        if ($handle === false) {
-            @unlink($tmp);
-
-            return ['ok' => false, 'verified' => true];
+        if (is_object($existing)) {
+            // @phpstan-ignore-next-line
+            $wpdb->update(
+                $table,
+                ['pid' => getmypid() ?: 0, 'started_at' => $now],
+                ['snapshot_id' => $snapshotId, 'restore_id' => $restoreId],
+                ['%d', '%d'],
+                ['%s', '%s']
+            );
+            return true;
         }
+        // @phpstan-ignore-next-line
+        $inserted = $wpdb->insert(
+            $table,
+            [
+                'snapshot_id' => $snapshotId,
+                'restore_id'  => $restoreId,
+                'pid'         => getmypid() ?: 0,
+                'started_at'  => $now,
+            ],
+            ['%s', '%s', '%d', '%d']
+        );
+        return $inserted !== false;
+    }
 
-        try {
-            foreach ($chunks as $chunk) {
-                $plain = $this->fetchChunkPlaintext($chunk);
-                if ($plain === null) {
-                    // Distinguish integrity failure from a benign empty chunk:
-                    // fetchChunkPlaintext returns null only on download/verify/
-                    // decrypt failure, so treat as an integrity failure.
-                    fclose($handle);
-                    @unlink($tmp);
-
-                    return ['ok' => false, 'verified' => false];
-                }
-                if ($plain !== '' && fwrite($handle, $plain) === false) {
-                    fclose($handle);
-                    @unlink($tmp);
-
-                    return ['ok' => false, 'verified' => true];
-                }
-            }
-        } catch (\Throwable $e) {
-            fclose($handle);
-            @unlink($tmp);
-
-            return ['ok' => false, 'verified' => true];
+    private function releaseDedup(string $snapshotId, string $restoreId): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
         }
-
-        fclose($handle);
-
-        if (!@rename($tmp, $target)) {
-            @unlink($tmp);
-
-            return ['ok' => false, 'verified' => true];
-        }
-        if ($mode > 0) {
-            @chmod($target, $mode & 0777);
-        }
-
-        return ['ok' => true, 'verified' => true];
+        $table = $wpdb->prefix . Schema::BACKUP_RESTORE_RUNS_TABLE;
+        // @phpstan-ignore-next-line
+        @$wpdb->delete($table, ['snapshot_id' => $snapshotId, 'restore_id' => $restoreId], ['%s', '%s']);
     }
 
     /**
-     * Download one chunk's ciphertext, verify blake3 over the CIPHERTEXT, and
-     * age-decrypt it. Returns null on any download/verify/decrypt failure.
-     *
-     * @param mixed $chunk RestoreChunk (path, get_url, blake3, size).
-     * @return string|null Decrypted plaintext, or null on failure.
+     * Create wp-content/wpmgr-agent/restores/{snapshot_id}-{restore_id}/.
+     * Idempotent — watchdog resume returns the same dir.
      */
-    private function fetchChunkPlaintext($chunk): ?string
+    private function prepareScratchDir(string $snapshotId, string $restoreId): string
     {
-        if (!is_array($chunk)) {
-            return null;
+        if (!defined('WP_CONTENT_DIR')) {
+            throw new \RuntimeException('WP_CONTENT_DIR is not defined');
         }
-        $expected = isset($chunk['blake3']) && is_string($chunk['blake3']) ? $chunk['blake3'] : '';
-        $getUrl   = isset($chunk['get_url']) && is_string($chunk['get_url']) ? $chunk['get_url'] : '';
-        if ($expected === '' || $getUrl === '') {
-            return null;
+        $base = WP_CONTENT_DIR . '/wpmgr-agent/restores';
+        if (!is_dir($base) && !mkdir($base, 0700, true) && !is_dir($base)) {
+            throw new \RuntimeException('cannot create restore scratch base');
         }
-
-        $ciphertext = $this->transport->getChunk($getUrl);
-        if ($ciphertext === null) {
-            return null;
+        // Short-id to keep the dir name reasonable.
+        $clean = preg_replace('/[^a-f0-9]/i', '', $restoreId) ?? '';
+        $short = substr($clean, 0, 12);
+        $dir   = $base . '/' . $snapshotId . '-' . $short;
+        if (!is_dir($dir) && !mkdir($dir, 0700) && !is_dir($dir)) {
+            throw new \RuntimeException('cannot create restore scratch dir');
         }
-
-        // INTEGRITY: recompute blake3 over the downloaded ciphertext and compare
-        // in constant time. A tampered/corrupted chunk is rejected here.
-        $actual = Blake3::hashHex($ciphertext);
-        if (!hash_equals($expected, $actual)) {
-            return null;
-        }
-
-        try {
-            return $this->identity->decryptChunk($ciphertext);
-        } catch (\Throwable $e) {
-            return null;
-        }
+        @chmod($dir, 0700);
+        return $dir;
     }
 
     /**
-     * Build a RestoreResponse-shaped result.
+     * Seed the wpmgr_restore_tasks row with INSERT IGNORE so a concurrent
+     * runner doesn't race us.
      *
-     * @param bool   $ok       Whether the restore succeeded.
-     * @param int    $restored Entries restored.
-     * @param bool   $verified Whether every chunk matched its blake3.
-     * @param string $log      Short, secret-free detail.
-     * @return array{ok:bool,restored_entries:int,verified:bool,log:string}
+     * @param array<string,mixed> $runnerParams
      */
-    private function result(bool $ok, int $restored, bool $verified, string $log): array
+    private function seedTaskRow(string $snapshotId, string $restoreId, string $kind, array $runnerParams): void
     {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+        $table = $wpdb->prefix . Schema::BACKUP_RESTORE_TASKS_TABLE;
+        $now   = time();
+        $subState = (string) wp_json_encode(['params' => $runnerParams]);
+
+        // @phpstan-ignore-next-line
+        $wpdb->query($wpdb->prepare(
+            "INSERT IGNORE INTO {$table}
+             (snapshot_id, restore_id, kind, phase, sub_state, started_at, last_progress_at, resume_count, max_resumes)
+             VALUES (%s, %s, %s, %s, %s, %d, %d, %d, %d)",
+            $snapshotId,
+            $restoreId,
+            $kind,
+            RestoreRunner::PHASE_PREFLIGHT,
+            $subState,
+            $now,
+            $now,
+            0,
+            6
+        ));
+    }
+
+    /**
+     * Pull DB credentials from the WP runtime constants.
+     *
+     * @return array{host:string,user:string,password:string,name:string,prefix:string}
+     */
+    private function dbCreds(): array
+    {
+        global $wpdb;
         return [
-            'ok'               => $ok,
-            'restored_entries' => $restored,
-            'verified'         => $verified,
-            'log'              => $log,
+            'host'     => defined('DB_HOST') ? (string) DB_HOST : 'localhost',
+            'user'     => defined('DB_USER') ? (string) DB_USER : '',
+            'password' => defined('DB_PASSWORD') ? (string) DB_PASSWORD : '',
+            'name'     => defined('DB_NAME') ? (string) DB_NAME : '',
+            'prefix'   => is_object($wpdb) && isset($wpdb->prefix) ? (string) $wpdb->prefix : 'wp_',
         ];
+    }
+
+    /**
+     * Refusal response.
+     *
+     * @return array{ok:bool,detail:string}
+     */
+    private function refuse(string $detail): array
+    {
+        return ['ok' => false, 'detail' => $detail];
+    }
+
+    /** @param array<string,mixed> $params */
+    private function str(array $params, string $key): string
+    {
+        return isset($params[$key]) && is_string($params[$key]) ? $params[$key] : '';
     }
 }

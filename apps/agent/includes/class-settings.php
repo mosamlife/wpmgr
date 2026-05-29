@@ -209,4 +209,17 @@ final class Settings
     {
         update_option(self::OPTION_LAST_METADATA, $now, false);
     }
+
+    /**
+     * Clear the last-heartbeat / last-metadata timestamps. Used by the admin
+     * Disconnect flow so the status panel doesn't show a stale "last sync"
+     * after the agent is repointed at a different control plane.
+     *
+     * @return void
+     */
+    public function clearLastSyncTimestamps(): void
+    {
+        delete_option(self::OPTION_LAST_HEARTBEAT);
+        delete_option(self::OPTION_LAST_METADATA);
+    }
 }

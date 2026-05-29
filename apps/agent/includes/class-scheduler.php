@@ -37,6 +37,23 @@ final class Scheduler
     /** Custom cron schedule key for the 5-minute interval. */
     public const SCHEDULE_5MIN = 'wpmgr_agent_5min';
 
+    /**
+     * Custom cron schedule key for the 30-minute interval used by the metadata
+     * push. v0.9.0: was `daily`; bumped to 30 min so dashboards refresh
+     * available-update counts within an operational SLA without thrashing the
+     * WP.org API (Scheduler::runMetadata holds a 5-minute transient lock
+     * around the force-refresh).
+     */
+    public const SCHEDULE_30MIN = 'wpmgr_agent_30min';
+
+    /**
+     * Transient key used to throttle force-refreshes of update_plugins /
+     * update_themes / update_core to once every 5 minutes regardless of how
+     * many metadata events fire (upgrader_process_complete, switch_theme,
+     * activated_plugin all hit the same code path).
+     */
+    public const REFRESH_LOCK_KEY = 'wpmgr_agent_refresh_transients_lock';
+
     /** Window after activation before the safety check deactivates, in seconds. */
     public const SAFETY_WINDOW = 1800;
 
@@ -91,6 +108,11 @@ final class Scheduler
             'display'  => 'Every 5 minutes (WPMgr Agent)',
         ];
 
+        $schedules[self::SCHEDULE_30MIN] = [
+            'interval' => 1800,
+            'display'  => 'Every 30 minutes (WPMgr Agent)',
+        ];
+
         /** @var array<string,array{interval:int,display:string}> $schedules */
         return $schedules;
     }
@@ -107,8 +129,23 @@ final class Scheduler
             if (wp_next_scheduled(self::HOOK_HEARTBEAT) === false) {
                 wp_schedule_event($now + 60, self::SCHEDULE_5MIN, self::HOOK_HEARTBEAT);
             }
+            // v0.9.0: metadata cadence dropped from daily to 30 min so the CP
+            // sees available-update counts refresh on an operator-friendly
+            // SLA. If a pre-v0.9.0 daily cron is already scheduled (re-upload
+            // path), clear it and re-register on the new schedule so existing
+            // installs migrate without an admin action.
+            if (function_exists('wp_get_scheduled_event')) {
+                $existing = wp_get_scheduled_event(self::HOOK_METADATA);
+                if (is_object($existing) && isset($existing->schedule)
+                    && (string) $existing->schedule !== self::SCHEDULE_30MIN
+                ) {
+                    if (function_exists('wp_clear_scheduled_hook')) {
+                        wp_clear_scheduled_hook(self::HOOK_METADATA);
+                    }
+                }
+            }
             if (wp_next_scheduled(self::HOOK_METADATA) === false) {
-                wp_schedule_event($now + 120, 'daily', self::HOOK_METADATA);
+                wp_schedule_event($now + 120, self::SCHEDULE_30MIN, self::HOOK_METADATA);
             }
         }
 
@@ -155,6 +192,15 @@ final class Scheduler
     /**
      * Metadata job: no-op until enrolled.
      *
+     * v0.9.0: before collecting the inventory we force-refresh WordPress's own
+     * update transients so the per-plugin / per-theme / core `available_update`
+     * fields reflect the freshest state WP.org has offered. We hold a 5-minute
+     * transient lock to keep cascading metadata events (upgrader_process_complete,
+     * switch_theme, activated_plugin, deactivated_plugin all fire back-to-back
+     * during a multi-plugin update) from hammering WP.org. The wp_* calls are
+     * @-suppressed: a transient HTTP error must not turn this whole job into
+     * a fatal — the stale inventory still ships.
+     *
      * @return void
      */
     public function runMetadata(): void
@@ -163,7 +209,41 @@ final class Scheduler
             return;
         }
 
+        $this->refreshUpdateTransients();
+
         $this->enrollment->pushMetadata();
+    }
+
+    /**
+     * Force WordPress to re-poll its plugin/theme/core update endpoints, but
+     * at most once per REFRESH_LOCK_KEY window (default 5 minutes).
+     *
+     * Public so a dispatcher (e.g. the RefreshInventoryCommand on-demand
+     * refresh) can reuse the same throttle without re-implementing the lock.
+     *
+     * @param bool $force Bypass the rate-limit lock (used by the on-demand
+     *                    refresh command, which is human-initiated).
+     * @return void
+     */
+    public function refreshUpdateTransients(bool $force = false): void
+    {
+        if (!$force && function_exists('get_transient') && get_transient(self::REFRESH_LOCK_KEY) !== false) {
+            return;
+        }
+        if (function_exists('wp_update_plugins')) {
+            @wp_update_plugins();
+        }
+        if (function_exists('wp_update_themes')) {
+            @wp_update_themes();
+        }
+        if (function_exists('wp_version_check')) {
+            @wp_version_check();
+        }
+        if (function_exists('set_transient') && defined('MINUTE_IN_SECONDS')) {
+            set_transient(self::REFRESH_LOCK_KEY, 1, 5 * MINUTE_IN_SECONDS);
+        } elseif (function_exists('set_transient')) {
+            set_transient(self::REFRESH_LOCK_KEY, 1, 5 * 60);
+        }
     }
 
     /**

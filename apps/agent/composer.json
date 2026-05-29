@@ -4,9 +4,12 @@
   "type": "wordpress-plugin",
   "license": "MIT",
   "require": {
-    "php": ">=8.0",
+    "php": ">=8.1",
+    "ext-mysqli": "*",
+    "ext-openssl": "*",
     "ext-sodium": "*",
-    "ext-openssl": "*"
+    "ext-zlib": "*",
+    "ext-zip": "*"
   },
   "require-dev": {
     "brain/monkey": "^2.6",

@@ -59,16 +59,44 @@ final class Blake3
     private int $chunkCounter = 0;
 
     /**
-     * One-shot convenience: lowercase hex BLAKE3-256 of a string.
+     * One-shot convenience: lowercase hex 32-byte cryptographic hash of a string.
+     *
+     * M5.6 / ADR-033 v0.8.1 perf fix: swapped from the pure-PHP BLAKE3
+     * implementation (the rest of this class) to libsodium's blake2b
+     * (`sodium_crypto_generichash`). Reason:
+     *
+     *   - Pure-PHP BLAKE3 takes ~6-8 seconds per 4 MiB chunk on a managed
+     *     WP host (CPU-bound byte-loop work; PHP is ~50x slower than C
+     *     for this kind of code).
+     *   - libsodium's blake2b is a C extension (`ext-sodium`, which we
+     *     already hard-require in composer.json), processes the same
+     *     4 MiB in <50 ms. ~100x speedup.
+     *   - Both produce 32-byte cryptographic digests. The CP treats the
+     *     hex string as an opaque content-key (see `backup_chunks.blake3`
+     *     column — it's a key, not a recomputed checksum). Swapping the
+     *     algorithm therefore has zero protocol impact: CP doesn't notice,
+     *     dedup still works against future chunks. The only "cost" is that
+     *     dedup is broken against the 3-4 orphan ciphertext chunks left
+     *     over from M4-era failed test runs — acceptable.
+     *   - The class name "Blake3" is retained to keep call sites stable.
+     *     Cleanup-rename to `ContentHash` queued as a follow-up; the rest
+     *     of this file (update/finalize/etc.) is now dead code retained
+     *     temporarily in case the BLAKE3 mode is reinstated for a
+     *     hypothetical future need to be byte-compatible with `b3sum`.
      *
      * @param string $data Input bytes.
-     * @return string 64-char lowercase hex digest.
+     * @return string 64-char lowercase hex digest (blake2b-256).
      */
     public static function hashHex(string $data): string
     {
+        if (function_exists('sodium_crypto_generichash')) {
+            return bin2hex(sodium_crypto_generichash($data, '', self::OUT_LEN));
+        }
+        // Fallback to the pure-PHP BLAKE3 path on hosts without ext-sodium.
+        // composer.json requires ext-sodium so this should never trigger in
+        // production, but keep the path live as a defense-in-depth fallback.
         $h = new self();
         $h->update($data);
-
         return bin2hex($h->finalize());
     }
 

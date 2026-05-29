@@ -35,6 +35,15 @@ final class Admin
     /** admin-post action: sync now (heartbeat + metadata). */
     public const ACTION_SYNC = 'wpmgr_agent_sync';
 
+    /**
+     * admin-post action: disconnect from the current control plane. Wipes
+     * site_id, tenant_id, CP public key, and this site's Ed25519 keypair so a
+     * fresh enrollment (potentially against a different CP) generates a clean
+     * identity. Intentionally preserves the age identity so prior backups stay
+     * decryptable. Operator-confirmed via a JS confirm() on the submit button.
+     */
+    public const ACTION_DISCONNECT = 'wpmgr_agent_disconnect';
+
     /** Transient key for one-shot admin notices. */
     private const NOTICE_TRANSIENT = 'wpmgr_agent_notice';
 
@@ -42,14 +51,18 @@ final class Admin
 
     private Enrollment $enrollment;
 
+    private Keystore $keystore;
+
     /**
      * @param Settings   $settings   Config/enrollment state.
      * @param Enrollment $enrollment Reporting/enrollment client.
+     * @param Keystore   $keystore   Key store (cleared on Disconnect).
      */
-    public function __construct(Settings $settings, Enrollment $enrollment)
+    public function __construct(Settings $settings, Enrollment $enrollment, Keystore $keystore)
     {
         $this->settings   = $settings;
         $this->enrollment = $enrollment;
+        $this->keystore   = $keystore;
     }
 
     /**
@@ -63,6 +76,7 @@ final class Admin
         add_action('admin_post_' . self::ACTION_SAVE_URL, [$this, 'handleSaveUrl']);
         add_action('admin_post_' . self::ACTION_ENROLL, [$this, 'handleEnroll']);
         add_action('admin_post_' . self::ACTION_SYNC, [$this, 'handleSync']);
+        add_action('admin_post_' . self::ACTION_DISCONNECT, [$this, 'handleDisconnect']);
         add_action('admin_notices', [$this, 'renderNotice']);
     }
 
@@ -154,6 +168,25 @@ final class Admin
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_SYNC) . '" />';
             submit_button('Sync now', 'secondary');
             echo '</form>';
+
+            // --- Disconnect (re-pair against a different CP / pairing code) ---
+            // Renders only when enrolled. Clears site_id, tenant_id, the CP
+            // public key, and this site's Ed25519 keypair. The age identity
+            // (chunk-encryption secret) is preserved so prior ciphertext stays
+            // decryptable; the user can wipe it manually if they want a true
+            // clean slate. JS confirm() ensures an accidental click does not
+            // strand the site mid-engagement.
+            echo '<h2>' . esc_html('Re-enroll') . '</h2>';
+            echo '<p class="description">'
+                . esc_html('Clears this site\'s pairing with the current control plane so you can paste a fresh pairing code (e.g. when migrating to a new CP URL). Prior backups remain decryptable.')
+                . '</p>';
+            echo '<form method="post" action="' . $actionUrl . '" onsubmit="return confirm(\''
+                . esc_js('Disconnect from the current control plane? You will need to paste a new pairing code to re-enroll.')
+                . '\');">';
+            wp_nonce_field(self::ACTION_DISCONNECT);
+            echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_DISCONNECT) . '" />';
+            submit_button('Disconnect', 'delete');
+            echo '</form>';
         }
 
         echo '</div>';
@@ -244,6 +277,38 @@ final class Admin
             $this->notice('error', $msg);
         }
 
+        $this->redirectBack();
+    }
+
+    /**
+     * Handle the "Disconnect" post.
+     *
+     * Wipes:
+     *   - site_id + tenant_id (Settings::clearEnrollment)
+     *   - CP public key + this site's Ed25519 keypair (Keystore::clearSiteIdentity)
+     *   - last heartbeat + last metadata timestamps (cosmetic, so the status
+     *     panel doesn't show stale data after re-enrollment)
+     *
+     * Intentionally does NOT clear the age identity. Removing it would orphan
+     * any encrypted backups that still need to be restorable; advanced operators
+     * can wipe it manually by deleting the wpmgr_agent_age_identity option.
+     *
+     * Idempotent and no-network: this is purely local cleanup. The CP-side
+     * site record (and its row in the sites table) is not touched — that has
+     * to be cleaned up separately on the CP if the operator wants the old
+     * site row removed.
+     *
+     * @return void
+     */
+    public function handleDisconnect(): void
+    {
+        $this->guard(self::ACTION_DISCONNECT);
+
+        $this->settings->clearEnrollment();
+        $this->keystore->clearSiteIdentity();
+        $this->settings->clearLastSyncTimestamps();
+
+        $this->notice('success', 'Disconnected from the control plane. Paste a fresh pairing code to re-enroll.');
         $this->redirectBack();
     }
 

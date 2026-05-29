@@ -299,10 +299,39 @@ class UpdateRunner
                 if (!class_exists('\Plugin_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
                     return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
                 }
+
+                // Capture active state BEFORE upgrade. WordPress's
+                // Plugin_Upgrader::upgrade() registers an upgrader_pre_install
+                // hook that calls deactivate_plugins($plugin, silent=true) and
+                // does NOT re-activate after the upgrade finishes. WP-CLI's
+                // `wp plugin update` preserves active state; we mirror that
+                // behaviour here so the PHP-fallback path doesn't strand an
+                // active plugin inactive after a successful upgrade.
+                $pluginsFilePath  = WPMGR_AGENT_DIR; // unused — silence linters about the var
+                $wasActive        = function_exists('is_plugin_active')             ? \is_plugin_active($slug) : false;
+                $wasNetworkActive = function_exists('is_plugin_active_for_network') ? \is_plugin_active_for_network($slug) : false;
+
                 $upgrader = new \Plugin_Upgrader(new \WP_Ajax_Upgrader_Skin());
                 $result   = $upgrader->upgrade($slug);
+                $outcome  = $this->upgraderOutcome($result);
 
-                return $this->upgraderOutcome($result);
+                if ($outcome['ok'] && ($wasActive || $wasNetworkActive) && function_exists('activate_plugin')) {
+                    // Refresh plugin caches before reactivating: the upgrade
+                    // may have changed the main plugin file (slug stays the
+                    // same but the metadata cache is stale).
+                    if (function_exists('wp_clean_plugins_cache')) {
+                        \wp_clean_plugins_cache(true);
+                    }
+                    $activated = \activate_plugin($slug, '', $wasNetworkActive, true);
+                    if (\is_wp_error($activated)) {
+                        $outcome['log'] .= "\n[wpmgr] upgrade succeeded but reactivation failed: "
+                            . $activated->get_error_message();
+                        error_log('WPMgr Agent: post-upgrade reactivation failed for '
+                            . $slug . ': ' . $activated->get_error_message());
+                    }
+                }
+
+                return $outcome;
 
             case 'theme':
                 if (!class_exists('\Theme_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {

@@ -42,7 +42,19 @@ class Schema
      * (add a column, add an index, etc). The migration runner reads the
      * stored option and compares it to this value; mismatch => run dbDelta.
      */
-    public const CURRENT_VERSION = '2';
+    public const CURRENT_VERSION = '5';
+
+    /** Name of the M5.6 phpbu-runner dedup table (unprefixed). */
+    public const BACKUP_RUNS_TABLE = 'wpmgr_backup_runs';
+
+    /** Name of the M5.6/ADR-033 WPvivid-pattern task-state table (unprefixed). */
+    public const BACKUP_TASKS_TABLE = 'wpmgr_backup_tasks';
+
+    /** Name of the M5.6/ADR-034 restore dedup table (unprefixed). */
+    public const BACKUP_RESTORE_RUNS_TABLE = 'wpmgr_restore_runs';
+
+    /** Name of the M5.6/ADR-034 restore task-state table (unprefixed). */
+    public const BACKUP_RESTORE_TASKS_TABLE = 'wpmgr_restore_tasks';
 
     /** Option key storing the last-installed schema version. */
     public const OPTION_DB_VERSION = 'wpmgr_agent_db_version';
@@ -112,8 +124,12 @@ class Schema
             ? (string) $wpdb->get_charset_collate()
             : '';
 
-        $jtiTable    = $prefix . Connector::JTI_TABLE;
-        $replayTable = $prefix . ReplayCache::TABLE;
+        $jtiTable          = $prefix . Connector::JTI_TABLE;
+        $replayTable       = $prefix . ReplayCache::TABLE;
+        $backupRunsTable   = $prefix . self::BACKUP_RUNS_TABLE;
+        $backupTasksTable  = $prefix . self::BACKUP_TASKS_TABLE;
+        $restoreRunsTable  = $prefix . self::BACKUP_RESTORE_RUNS_TABLE;
+        $restoreTasksTable = $prefix . self::BACKUP_RESTORE_TASKS_TABLE;
 
         return [
             // M2: Connector anti-replay table (short window, per-token jti).
@@ -133,6 +149,79 @@ class Schema
                 expires_at BIGINT UNSIGNED NOT NULL,
                 PRIMARY KEY  (jti_hash),
                 KEY expires_at (expires_at)
+            ) {$charset};",
+
+            // M5.6: phpbu runner dedup. Defeats lost-ACK retry storms: if the
+            // CP retries the `backup` command for the SAME snapshot_id while a
+            // runner is already in flight, we refuse to spawn a second one.
+            // `snapshot_id` is the PK; the active row is the one with
+            // started_at within the dedup window. A finished runner clears its
+            // row on exit (best effort), and the watchdog GC sweeps stale rows.
+            self::BACKUP_RUNS_TABLE => "CREATE TABLE {$backupRunsTable} (
+                snapshot_id CHAR(36) NOT NULL,
+                pid INT UNSIGNED NOT NULL,
+                started_at BIGINT UNSIGNED NOT NULL,
+                PRIMARY KEY  (snapshot_id),
+                KEY started_at (started_at)
+            ) {$charset};",
+
+            // M5.6/ADR-033: checkpointed task state for the WPvivid-pattern
+            // backup runner. `sub_state` JSON carries per-phase resume cursors
+            // (file walker offset, mysqldump table+row position, multipart
+            // upload id/parts, etc.); the watchdog re-enters from this row on
+            // stall and resumes from the last checkpoint instead of restarting.
+            // Co-exists with BACKUP_RUNS_TABLE: runs is legacy dedup (PID-keyed
+            // in-flight guard), tasks is the new persistent state machine.
+            self::BACKUP_TASKS_TABLE => "CREATE TABLE {$backupTasksTable} (
+                snapshot_id CHAR(36) NOT NULL,
+                kind VARCHAR(16) NOT NULL,
+                phase VARCHAR(32) NOT NULL DEFAULT 'queued',
+                sub_state LONGTEXT NOT NULL,
+                started_at BIGINT UNSIGNED NOT NULL,
+                last_progress_at BIGINT UNSIGNED NOT NULL,
+                resume_count INT UNSIGNED NOT NULL DEFAULT 0,
+                max_resumes INT UNSIGNED NOT NULL DEFAULT 6,
+                PRIMARY KEY  (snapshot_id),
+                KEY phase (phase),
+                KEY last_progress_at (last_progress_at)
+            ) {$charset};",
+
+            // M5.6/ADR-034: restore dedup. Parallels BACKUP_RUNS_TABLE but is
+            // keyed by (snapshot_id, restore_id): a single snapshot can be
+            // restored repeatedly (each attempt is a fresh restore_id), but a
+            // given (snapshot, restore_id) pair must execute at most once. The
+            // CP retrying a lost-ACK is the failure mode this defeats. Active
+            // row is one whose started_at is within DEDUP_WINDOW_SECONDS of
+            // now; a finished runner deletes its row.
+            self::BACKUP_RESTORE_RUNS_TABLE => "CREATE TABLE {$restoreRunsTable} (
+                snapshot_id CHAR(36) NOT NULL,
+                restore_id CHAR(36) NOT NULL,
+                pid INT UNSIGNED NOT NULL,
+                started_at BIGINT UNSIGNED NOT NULL,
+                PRIMARY KEY  (snapshot_id, restore_id),
+                KEY started_at (started_at)
+            ) {$charset};",
+
+            // M5.6/ADR-034: checkpointed task state for the WPvivid-pattern
+            // restore runner. Mirrors BACKUP_TASKS_TABLE shape. PK is
+            // (snapshot_id, restore_id) so a customer can re-attempt a failed
+            // restore with a new restore_id without colliding with the old
+            // row. sub_state.params holds the runner config (endpoints, db
+            // creds, chunk download maps) so the watchdog can rehydrate the
+            // runner without re-receiving them from the CP.
+            self::BACKUP_RESTORE_TASKS_TABLE => "CREATE TABLE {$restoreTasksTable} (
+                snapshot_id CHAR(36) NOT NULL,
+                restore_id CHAR(36) NOT NULL,
+                kind VARCHAR(16) NOT NULL,
+                phase VARCHAR(32) NOT NULL DEFAULT 'preflight',
+                sub_state LONGTEXT NOT NULL,
+                started_at BIGINT UNSIGNED NOT NULL,
+                last_progress_at BIGINT UNSIGNED NOT NULL,
+                resume_count INT UNSIGNED NOT NULL DEFAULT 0,
+                max_resumes INT UNSIGNED NOT NULL DEFAULT 6,
+                PRIMARY KEY  (snapshot_id, restore_id),
+                KEY phase (phase),
+                KEY last_progress_at (last_progress_at)
             ) {$charset};",
         ];
     }

@@ -142,22 +142,116 @@ class BackupTransport
      */
     public function getChunk(string $presignedUrl): ?string
     {
+        $res = $this->getChunkWithStatus($presignedUrl);
+        return $res['ok'] ? $res['body'] : null;
+    }
+
+    /**
+     * Download a ciphertext chunk and return a structured result the caller can
+     * inspect to make a retry/no-retry decision and emit a useful error message.
+     *
+     * The returned shape is intentionally rich enough to drive the v0.8.6
+     * restore-side retry loop without leaking the presigned URL itself:
+     *
+     *   ok            true iff status was 2xx and body was a string.
+     *   status        HTTP status code (0 on WP_Error / connect failure).
+     *   body          response body bytes on success, '' otherwise.
+     *   error         WP_Error message excerpt (truncated), or '' if none.
+     *   body_excerpt  first 200 chars of the (non-2xx) body, for diagnostics.
+     *   host          host of the presigned URL (NOT the path/query/sig), for
+     *                 operator-side grep without leaking the bearer URL.
+     *   retryable     true if the caller should back off and retry: WP_Error
+     *                 (network/DNS/timeout), HTTP 408/425/429, or any 5xx.
+     *                 False on 2xx (no retry needed) AND on terminal 4xx
+     *                 (404 missing, 403/400 malformed/expired — retrying won't
+     *                 help; the URL is the same on each attempt).
+     *
+     * The presigned URL itself is NEVER returned or logged. Bearer credentials
+     * stay inside this method.
+     *
+     * @param string $presignedUrl Presigned S3 GET URL (bearer credential).
+     * @return array{ok:bool,status:int,body:string,error:string,body_excerpt:string,host:string,retryable:bool}
+     */
+    public function getChunkWithStatus(string $presignedUrl): array
+    {
+        $host = $this->hostOf($presignedUrl);
         $response = wp_remote_get(
             $presignedUrl,
             ['timeout' => self::TIMEOUT]
         );
 
         if ($this->isWpError($response)) {
-            return null;
+            $msg = '';
+            if (is_object($response) && method_exists($response, 'get_error_message')) {
+                $msg = (string) $response->get_error_message();
+            }
+            return [
+                'ok'           => false,
+                'status'       => 0,
+                'body'         => '',
+                'error'        => substr($msg, 0, 240),
+                'body_excerpt' => '',
+                'host'         => $host,
+                // Network/transport-level errors are always worth retrying:
+                // DNS hiccup, TLS handshake reset, CF tunnel blip, socket
+                // timeout. WP_Error means we never saw an HTTP status.
+                'retryable'    => true,
+            ];
         }
+
         $status = (int) wp_remote_retrieve_response_code($response);
-        if ($status < 200 || $status >= 300) {
-            return null;
+        if ($status >= 200 && $status < 300) {
+            $body = wp_remote_retrieve_body($response);
+            $body = is_string($body) ? $body : '';
+            return [
+                'ok'           => true,
+                'status'       => $status,
+                'body'         => $body,
+                'error'        => '',
+                'body_excerpt' => '',
+                'host'         => $host,
+                'retryable'    => false,
+            ];
         }
 
-        $body = wp_remote_retrieve_body($response);
+        $raw = wp_remote_retrieve_body($response);
+        $raw = is_string($raw) ? $raw : '';
 
-        return is_string($body) ? $body : null;
+        // Retry classification — mirror WPvivid's remote-connect retry
+        // semantics (`WPVIVID_REMOTE_CONNECT_RETRY_TIMES=3`, see
+        // `docs/research/wpvivid-async-progress-restore.md` §7) plus the
+        // standard "5xx + 408/425/429 retryable, terminal 4xx is not":
+        //   - 5xx: gateway/origin transient (e.g. SeaweedFS restart, CF 502).
+        //   - 408 Request Timeout / 425 Too Early / 429 Too Many Requests.
+        //   - everything else 4xx is terminal — the same presigned URL will
+        //     keep producing the same answer.
+        $retryable = ($status >= 500 && $status < 600)
+            || $status === 408
+            || $status === 425
+            || $status === 429;
+
+        return [
+            'ok'           => false,
+            'status'       => $status,
+            'body'         => '',
+            'error'        => '',
+            'body_excerpt' => substr($raw, 0, 200),
+            'host'         => $host,
+            'retryable'    => $retryable,
+        ];
+    }
+
+    /**
+     * Extract the host of a URL (used by getChunkWithStatus for diagnostics
+     * that don't leak the presigned bearer URL).
+     */
+    private function hostOf(string $url): string
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || !isset($parts['host']) || !is_string($parts['host'])) {
+            return '';
+        }
+        return $parts['host'];
     }
 
     /**

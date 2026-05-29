@@ -229,6 +229,25 @@ final class Keystore
     }
 
     /**
+     * Clear the keys that bind this agent to a specific control-plane
+     * enrollment: the CP's Ed25519 public key, and this site's Ed25519
+     * keypair. Used by the admin "Disconnect" flow so a fresh enrollment
+     * (potentially against a different CP) generates a new identity.
+     *
+     * Intentionally does NOT touch the age identity (OPTION_AGE_IDENTITY) —
+     * deleting it would orphan ciphertext from any prior backups, making
+     * them undecryptable. The operator can wipe it manually if they want a
+     * true clean slate.
+     *
+     * @return void
+     */
+    public function clearSiteIdentity(): void
+    {
+        delete_option(self::OPTION_CP_PUBLIC_KEY);
+        delete_option(self::OPTION_SITE_KEYPAIR);
+    }
+
+    /**
      * Persist the site's age X25519 secret scalar (raw 32 bytes), encrypted.
      *
      * The secret is the ONLY key that can decrypt this site's backups. It is
