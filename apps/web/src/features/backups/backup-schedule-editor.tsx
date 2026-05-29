@@ -14,6 +14,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FieldError } from "@/components/forms/field-error";
+import { FormSection } from "@/components/forms/form-section";
+import { StickySaveBar } from "@/components/forms/sticky-save-bar";
 import {
   useBackupSchedule,
   usePutBackupSchedule,
@@ -25,6 +28,11 @@ import type { BackupScheduleUpdate } from "@wpmgr/api";
 // none is configured) and PUTs changes via react-hook-form + Zod. Cadence
 // defaults to daily; retention is a rolling-window day count plus a count of
 // monthly archives to keep beyond the window.
+//
+// Sprint 4 (forms): per-section "Save" buttons removed. Dirty state surfaces
+// in a global `StickySaveBar` pinned to the viewport bottom; validation
+// happens on blur (`mode: "onBlur"`) and errors render through `FieldError`
+// in the what/why/how shape from DESIGN.md.
 
 const formSchema = z.object({
   enabled: z.boolean(),
@@ -58,6 +66,7 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: DEFAULTS,
+    mode: "onBlur",
   });
 
   // Seed the form once the schedule loads (or stays at defaults when none).
@@ -86,7 +95,14 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
       retention_days: Number(values.retention_days),
       monthly_archive_keep: Number(values.monthly_archive_keep),
     };
-    save.mutate(body, { onError: () => {} });
+    save.mutate(body, {
+      onSuccess: () => {
+        // Re-seed defaults so isDirty drops back to false and the save bar
+        // slides away.
+        reset(values);
+      },
+      onError: () => {},
+    });
   }
 
   return (
@@ -102,17 +118,12 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
       </CardHeader>
       <CardContent>
         {isPending ? (
-          <p
-            role="status"
-            className="text-sm text-[var(--color-muted-foreground)]"
-          >
+          <p role="status" className="text-sm text-muted-foreground">
             Loading schedule…
           </p>
         ) : isError ? (
           <div role="alert" className="space-y-2">
-            <p className="text-sm text-[var(--color-destructive)]">
-              {error.message}
-            </p>
+            <p className="text-sm text-destructive">{error.message}</p>
             <Button variant="outline" size="sm" onClick={() => void refetch()}>
               Retry
             </Button>
@@ -121,97 +132,131 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
           <form
             onSubmit={(e) => void handleSubmit(onSubmit)(e)}
             noValidate
-            className="space-y-4"
+            // Bottom padding clears the sticky save bar so the last input
+            // stays scrollable above the floating chrome.
+            className="space-y-0 pb-24"
           >
-            <label className="flex items-center gap-2 text-sm font-medium">
-              <Checkbox {...register("enabled")} />
-              Enable scheduled backups
-            </label>
-
-            <fieldset
-              disabled={!enabled}
-              className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+            <FormSection
+              title="Run scheduled backups"
+              description="When enabled, backups run on the chosen cadence and follow the retention policy below."
             >
-              <div className="space-y-1">
-                <Label htmlFor="cadence">Cadence</Label>
-                <select
-                  id="cadence"
-                  {...register("cadence")}
-                  className="h-9 w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] focus-visible:outline-none disabled:opacity-50"
-                >
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly</option>
-                  <option value="monthly">Monthly</option>
-                </select>
-              </div>
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <Checkbox {...register("enabled")} />
+                Enable scheduled backups
+              </label>
+            </FormSection>
 
-              <div className="space-y-1">
-                <Label htmlFor="schedule-kind">What to back up</Label>
-                <select
-                  id="schedule-kind"
-                  {...register("kind")}
-                  className="h-9 w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] focus-visible:outline-none disabled:opacity-50"
-                >
-                  <option value="full">Full (files + database)</option>
-                  <option value="files">Files only</option>
-                  <option value="db">Database only</option>
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <Label htmlFor="retention-days">Retention (days)</Label>
-                <Input
-                  id="retention-days"
-                  type="number"
-                  min={1}
-                  max={3650}
-                  {...register("retention_days")}
-                  aria-invalid={errors.retention_days ? "true" : undefined}
-                />
-                {errors.retention_days ? (
-                  <p className="text-xs text-[var(--color-destructive)]">
-                    {errors.retention_days.message}
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="space-y-1">
-                <Label htmlFor="monthly-keep">Monthly archives to keep</Label>
-                <Input
-                  id="monthly-keep"
-                  type="number"
-                  min={0}
-                  max={120}
-                  {...register("monthly_archive_keep")}
-                  aria-invalid={errors.monthly_archive_keep ? "true" : undefined}
-                />
-                {errors.monthly_archive_keep ? (
-                  <p className="text-xs text-[var(--color-destructive)]">
-                    {errors.monthly_archive_keep.message}
-                  </p>
-                ) : null}
-              </div>
-            </fieldset>
-
-            {save.isError ? (
-              <p role="alert" className="text-sm text-[var(--color-destructive)]">
-                {save.error.message}
-              </p>
-            ) : null}
-            {save.isSuccess && !isDirty ? (
-              <p
-                role="status"
-                className="text-sm text-[var(--color-muted-foreground)]"
+            <FormSection
+              title="Cadence"
+              description="How often backups are taken and what they include."
+            >
+              <fieldset
+                disabled={!enabled}
+                className="grid grid-cols-1 gap-4 sm:grid-cols-2"
               >
-                Schedule saved.
-              </p>
-            ) : null}
+                <div className="space-y-1">
+                  <Label htmlFor="cadence">Cadence</Label>
+                  <select
+                    id="cadence"
+                    {...register("cadence")}
+                    className="h-9 w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] disabled:opacity-50"
+                  >
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                  </select>
+                  <p className="text-sm text-muted-foreground">
+                    Daily fits production sites. Weekly suits staging.
+                  </p>
+                </div>
 
-            <div className="flex justify-end">
-              <Button type="submit" disabled={save.isPending}>
-                {save.isPending ? "Saving…" : "Save schedule"}
-              </Button>
-            </div>
+                <div className="space-y-1">
+                  <Label htmlFor="schedule-kind">What to back up</Label>
+                  <select
+                    id="schedule-kind"
+                    {...register("kind")}
+                    className="h-9 w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] disabled:opacity-50"
+                  >
+                    <option value="full">Full (files + database)</option>
+                    <option value="files">Files only</option>
+                    <option value="db">Database only</option>
+                  </select>
+                  <p className="text-sm text-muted-foreground">
+                    Full is safest. Database-only is fastest.
+                  </p>
+                </div>
+              </fieldset>
+            </FormSection>
+
+            <FormSection
+              title="Retention"
+              description="How long snapshots stay in storage before they are pruned."
+            >
+              <fieldset
+                disabled={!enabled}
+                className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+              >
+                <div className="space-y-1">
+                  <Label htmlFor="retention-days">Retention (days)</Label>
+                  <Input
+                    id="retention-days"
+                    type="number"
+                    min={1}
+                    max={3650}
+                    {...register("retention_days")}
+                    aria-invalid={errors.retention_days ? "true" : undefined}
+                    aria-describedby="retention-days-help"
+                  />
+                  <p
+                    id="retention-days-help"
+                    className="text-sm text-muted-foreground"
+                  >
+                    Rolling window. 30 days is the default.
+                  </p>
+                  <FieldError
+                    what={errors.retention_days?.message}
+                    why="Retention must be between 1 and 3650 days."
+                    how="Enter a whole number above."
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="monthly-keep">Monthly archives to keep</Label>
+                  <Input
+                    id="monthly-keep"
+                    type="number"
+                    min={0}
+                    max={120}
+                    {...register("monthly_archive_keep")}
+                    aria-invalid={
+                      errors.monthly_archive_keep ? "true" : undefined
+                    }
+                    aria-describedby="monthly-keep-help"
+                  />
+                  <p
+                    id="monthly-keep-help"
+                    className="text-sm text-muted-foreground"
+                  >
+                    Long-term archives beyond the rolling window.
+                  </p>
+                  <FieldError
+                    what={errors.monthly_archive_keep?.message}
+                    why="Monthly archives must be between 0 and 120."
+                    how="Enter a whole number above."
+                  />
+                </div>
+              </fieldset>
+            </FormSection>
+
+            <StickySaveBar
+              isDirty={isDirty}
+              isPending={save.isPending}
+              errorMessage={save.isError ? save.error.message : null}
+              onSave={() => handleSubmit(onSubmit)()}
+              onDiscard={() => reset()}
+              saveLabel="Update schedule"
+              discardLabel="Discard changes"
+            />
           </form>
         )}
       </CardContent>

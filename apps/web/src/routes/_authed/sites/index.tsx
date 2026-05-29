@@ -15,7 +15,7 @@ import {
   type WizardTarget,
 } from "@/features/updates/update-wizard";
 import { useMe, canOperate } from "@/features/auth/use-auth";
-import { toast } from "@/lib/toast";
+import { toast } from "@/components/toast";
 import type { Site } from "@wpmgr/api";
 
 export const Route = createFileRoute("/_authed/sites/")({
@@ -82,7 +82,7 @@ function SitesPage() {
   const handleOpenAutoLogin = useCallback(
     (site: Site) => {
       if (!autoLogin) return;
-      toast.message(`Opening ${site.name}...`);
+      toast.info(`Opening ${site.name}`);
       loginMutation.mutate(
         { siteId: site.id },
         {
@@ -90,7 +90,13 @@ function SitesPage() {
             window.open(data.redirect_url, "_blank", "noopener,noreferrer");
           },
           onError: (err) => {
-            toast.error(err.message);
+            toast.error(`Could not open ${site.name}`, {
+              description: err.message,
+              action: {
+                label: "Try again",
+                onClick: () => handleOpenAutoLogin(site),
+              },
+            });
           },
         },
       );
@@ -125,7 +131,17 @@ function SitesPage() {
     // TODO(sprint-4): wire to POST /api/v1/backups/bulk (endpoint exists in
     // the API; needs a confirm modal + toast). Stubbed for the transform
     // animation review.
-    toast.message(`Backup queued for ${selection.count} sites`);
+    toast.success(`Backup queued for ${selection.count} sites`, {
+      description: "We will surface per-site results as they finish.",
+      action: {
+        label: "View activity",
+        onClick: () => {
+          // TODO(sprint-4): deep link to the activity drawer once it lands.
+          // eslint-disable-next-line no-console
+          console.debug("[sites] open activity for bulk backup");
+        },
+      },
+    });
     // eslint-disable-next-line no-console
     console.debug("[sites] bulk backup", {
       siteIds: Array.from(selection.selected),
@@ -135,16 +151,14 @@ function SitesPage() {
   const handleBulkRestore = useCallback(() => {
     // TODO(sprint-4): restore is currently per-site; a fleet-wide restore
     // wizard is a separate design surface.
-    toast.message("Fleet-wide restore lands in Sprint 4");
-    // eslint-disable-next-line no-console
-    console.debug("[sites] bulk restore", {
-      siteIds: Array.from(selection.selected),
-    });
-  }, [selection]);
+    toast.info("Fleet-wide restore lands in Sprint 4");
+  }, []);
 
   const handleBulkOpenWpAdmin = useCallback(() => {
     if (!autoLogin) {
-      toast.error("Auto-login requires admin permissions");
+      toast.error("Auto-login requires admin permissions", {
+        description: "Ask an admin to grant the role, then retry.",
+      });
       return;
     }
     const ids = Array.from(selection.selected);
@@ -153,7 +167,7 @@ function SitesPage() {
     // TODO(sprint-4): replace inline loop with the existing useAutoLogin
     // queue + per-site progress toast.
     const cap = Math.min(ids.length, 8);
-    toast.message(`Opening ${cap} sites in wp-admin`);
+    toast.info(`Opening ${cap} sites in wp-admin`);
     for (let i = 0; i < cap; i++) {
       const site = selectedSites.find((s) => s.id === ids[i]);
       if (!site) continue;
@@ -164,7 +178,9 @@ function SitesPage() {
             window.open(data.redirect_url, "_blank", "noopener,noreferrer");
           },
           onError: (err) => {
-            toast.error(`${site.name}: ${err.message}`);
+            toast.error(`Could not open ${site.name}`, {
+              description: err.message,
+            });
           },
         },
       );
@@ -173,23 +189,25 @@ function SitesPage() {
 
   const handleBulkTag = useCallback(() => {
     // TODO(sprint-4): open a tag-picker modal (bulk-drawer subagent owns it).
-    toast.message(`Tagging ${selection.count} sites lands in Sprint 4`);
+    toast.info(`Tagging ${selection.count} sites lands in Sprint 4`);
   }, [selection.count]);
 
   const handleBulkSetClient = useCallback(() => {
     // TODO(sprint-4): open a client-picker modal.
-    toast.message(`Setting client on ${selection.count} sites lands in Sprint 4`);
+    toast.info(`Setting client on ${selection.count} sites lands in Sprint 4`);
   }, [selection.count]);
 
   const handleBulkPauseMonitoring = useCallback(() => {
     // TODO(sprint-4): wire to the monitoring service pause endpoint.
-    toast.message(`Pausing monitoring on ${selection.count} sites lands in Sprint 4`);
+    toast.info(`Pausing monitoring on ${selection.count} sites lands in Sprint 4`);
   }, [selection.count]);
 
   const handleBulkDelete = useCallback(() => {
     // TODO(sprint-4): open a destructive confirm modal that requires typing
     // the resource count (per DESIGN.md "Destructive requires typing").
-    toast.error(`Bulk delete on ${selection.count} sites needs a confirm modal`);
+    toast.error("Bulk delete needs a confirm modal", {
+      description: `Refusing to delete ${selection.count} sites without typed confirmation.`,
+    });
   }, [selection.count]);
 
   return (

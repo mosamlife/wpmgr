@@ -31,7 +31,7 @@ import {
   type SiteAvailableUpdates,
 } from "@/features/updates/types";
 import { relativeTime } from "@/lib/utils";
-import { toast } from "@/lib/toast";
+import { toast } from "@/components/toast";
 
 // AvailableUpdatesCard — the per-site "what needs updating" panel mounted on
 // the site detail page. Drives a row-per-target table with:
@@ -79,14 +79,24 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
   async function onRefresh() {
     try {
       await refresh.mutateAsync();
-      toast.success("Refresh requested. Updates will reappear in a moment.");
+      toast.success("Refresh requested", {
+        description: "Updates will reappear in a moment.",
+      });
     } catch (err) {
       if (err instanceof RefreshConflictError) {
-        toast.message("A refresh is already in progress for this site.");
+        // Not actually an error path — the agent is already doing the thing.
+        // info() reads as "status update, no action needed".
+        toast.info("A refresh is already in progress for this site");
         return;
       }
       const message = err instanceof Error ? err.message : "Refresh failed";
-      toast.error(message);
+      toast.error("Could not refresh updates", {
+        description: message,
+        action: {
+          label: "Try again",
+          onClick: () => void onRefresh(),
+        },
+      });
     }
   }
 
@@ -577,11 +587,19 @@ function BulkFooter({
     try {
       await create.mutateAsync(body);
       const count = items.length + (includeCore ? 1 : 0);
-      toast.success(`Started ${count} update${count === 1 ? "" : "s"}.`);
+      toast.success(`Started ${count} update${count === 1 ? "" : "s"}`, {
+        description: "The agent will report back as each one finishes.",
+      });
       onCleared();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not start";
-      toast.error(message);
+      toast.error("Update did not start", {
+        description: message,
+        action: {
+          label: "Try again",
+          onClick: () => void submit(includeAll),
+        },
+      });
     }
   }
 

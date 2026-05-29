@@ -217,6 +217,26 @@
   100% { transform: translateX(100%); }
 }
 
+/* Sprint 4 surface 4.13: skeleton loader pulse. Per DESIGN.md the muted
+   surface oscillates opacity 0.4 → 0.7 → 0.4 over 1.4s linear so a wall of
+   skeleton rows reads as breathing rather than flickering. The animation is
+   applied via the `.wpmgr-skeleton-pulse` utility — opacity-only so we never
+   animate layout properties. The reduced-motion @media block above neutralizes
+   it for operators with the OS preference set. */
+@keyframes wpmgr-skeleton-pulse {
+  0%   { opacity: 0.4; }
+  50%  { opacity: 0.7; }
+  100% { opacity: 0.4; }
+}
+
+.wpmgr-skeleton-pulse {
+  animation: wpmgr-skeleton-pulse 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wpmgr-skeleton-pulse { animation: none; opacity: 0.55; }
+}
+
 /* Sprint 3 surface 4.4: command-palette entrance/exit. Keyframes are paired
    with data-state attributes that cmdk's Radix Dialog wrapper sets, so the
    panel scales from 0.96 to 1 while fading in over 180ms (DESIGN.md

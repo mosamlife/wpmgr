@@ -13,6 +13,9 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FieldError } from "@/components/forms/field-error";
+import { FormSection } from "@/components/forms/form-section";
+import { StickySaveBar } from "@/components/forms/sticky-save-bar";
 import {
   useAlertConfig,
   usePutAlertConfig,
@@ -24,6 +27,10 @@ import type { AlertConfigUpdate } from "@wpmgr/api";
 // optional webhook URL. GETs the current config (or null when none) and PUTs
 // changes via react-hook-form + Zod, with an optimistic cache update in the
 // mutation hook.
+//
+// Sprint 4 (forms): per-section "Save" button removed in favor of a global
+// `StickySaveBar`. Validation runs on blur and surfaces through `FieldError`
+// in the what/why/how shape from DESIGN.md.
 
 const formSchema = z.object({
   // A textarea of recipients; validation happens after splitting (below).
@@ -34,14 +41,14 @@ const formSchema = z.object({
         const list = splitRecipients(raw);
         return list.length > 0;
       },
-      { message: "Add at least one email recipient." },
+      { message: "No recipients" },
     )
     .refine(
       (raw) => splitRecipients(raw).every((e) => z.string().email().safeParse(e).success),
-      { message: "One or more entries is not a valid email address." },
+      { message: "Invalid email address" },
     ),
   webhook_url: z
-    .union([z.literal(""), z.string().url("Enter a valid URL or leave blank.")])
+    .union([z.literal(""), z.string().url("Invalid URL")])
     .optional(),
 });
 
@@ -67,6 +74,7 @@ export function AlertConfigForm() {
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: { recipients: "", webhook_url: "" },
+    mode: "onBlur",
   });
 
   // Seed the form once the config loads (or stays empty when none configured).
@@ -83,7 +91,13 @@ export function AlertConfigForm() {
       email_recipients: splitRecipients(values.recipients),
       webhook_url: values.webhook_url?.trim() ? values.webhook_url.trim() : "",
     };
-    save.mutate(body, { onError: () => {} });
+    save.mutate(body, {
+      onSuccess: () => {
+        // Re-seed so isDirty drops and the sticky bar slides away.
+        reset(values);
+      },
+      onError: () => {},
+    });
   }
 
   return (
@@ -97,17 +111,12 @@ export function AlertConfigForm() {
       </CardHeader>
       <CardContent>
         {isPending ? (
-          <p
-            role="status"
-            className="text-sm text-[var(--color-muted-foreground)]"
-          >
+          <p role="status" className="text-sm text-muted-foreground">
             Loading alert settings…
           </p>
         ) : isError ? (
           <div role="alert" className="space-y-2">
-            <p className="text-sm text-[var(--color-destructive)]">
-              {error.message}
-            </p>
+            <p className="text-sm text-destructive">{error.message}</p>
             <Button variant="outline" size="sm" onClick={() => void refetch()}>
               Retry
             </Button>
@@ -116,67 +125,76 @@ export function AlertConfigForm() {
           <form
             onSubmit={(e) => void handleSubmit(onSubmit)(e)}
             noValidate
-            className="space-y-4"
+            // Bottom padding clears the sticky save bar so the last input
+            // stays visible above the floating chrome.
+            className="space-y-0 pb-24"
           >
-            <div className="space-y-1">
-              <Label htmlFor="recipients">Email recipients</Label>
-              <textarea
-                id="recipients"
-                rows={3}
-                {...register("recipients")}
-                aria-invalid={errors.recipients ? "true" : undefined}
-                aria-describedby="recipients-help"
-                placeholder="ops@example.com, oncall@example.com"
-                className="w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] focus-visible:outline-none"
-              />
-              <p
-                id="recipients-help"
-                className="text-xs text-[var(--color-muted-foreground)]"
-              >
-                One per line, or separated by commas.
-              </p>
-              {errors.recipients ? (
-                <p className="text-xs text-[var(--color-destructive)]">
-                  {errors.recipients.message}
+            <FormSection
+              title="Email recipients"
+              description="Operators who should receive downtime emails. Applies tenant-wide."
+            >
+              <div className="space-y-1">
+                <Label htmlFor="recipients">Email recipients</Label>
+                <textarea
+                  id="recipients"
+                  rows={3}
+                  {...register("recipients")}
+                  aria-invalid={errors.recipients ? "true" : undefined}
+                  aria-describedby="recipients-help"
+                  placeholder="ops@example.com, oncall@example.com"
+                  className="w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+                />
+                <p
+                  id="recipients-help"
+                  className="text-sm text-muted-foreground"
+                >
+                  One per line, or separated by commas.
                 </p>
-              ) : null}
-            </div>
+                <FieldError
+                  what={errors.recipients?.message}
+                  why="At least one valid email address is required."
+                  how="Edit the list above."
+                />
+              </div>
+            </FormSection>
 
-            <div className="space-y-1">
-              <Label htmlFor="webhook_url">Webhook URL (optional)</Label>
-              <Input
-                id="webhook_url"
-                type="url"
-                {...register("webhook_url")}
-                aria-invalid={errors.webhook_url ? "true" : undefined}
-                placeholder="https://hooks.example.com/wpmgr"
-              />
-              {errors.webhook_url ? (
-                <p className="text-xs text-[var(--color-destructive)]">
-                  {errors.webhook_url.message}
+            <FormSection
+              title="Webhook"
+              description="Optional. Receives a JSON payload on every downtime event."
+            >
+              <div className="space-y-1">
+                <Label htmlFor="webhook_url">Webhook URL (optional)</Label>
+                <Input
+                  id="webhook_url"
+                  type="url"
+                  {...register("webhook_url")}
+                  aria-invalid={errors.webhook_url ? "true" : undefined}
+                  aria-describedby="webhook-help"
+                  placeholder="https://hooks.example.com/wpmgr"
+                />
+                <p
+                  id="webhook-help"
+                  className="text-sm text-muted-foreground"
+                >
+                  Must use https. Leave blank to disable webhooks.
                 </p>
-              ) : null}
-            </div>
+                <FieldError
+                  what={errors.webhook_url?.message}
+                  why="It must start with https:// or be blank."
+                  how="Edit the URL above."
+                />
+              </div>
+            </FormSection>
 
-            {save.isError ? (
-              <p role="alert" className="text-sm text-[var(--color-destructive)]">
-                {save.error.message}
-              </p>
-            ) : null}
-            {save.isSuccess && !isDirty ? (
-              <p
-                role="status"
-                className="text-sm text-[var(--color-muted-foreground)]"
-              >
-                Alert settings saved.
-              </p>
-            ) : null}
-
-            <div className="flex justify-end">
-              <Button type="submit" disabled={save.isPending}>
-                {save.isPending ? "Saving…" : "Save alert settings"}
-              </Button>
-            </div>
+            <StickySaveBar
+              isDirty={isDirty}
+              isPending={save.isPending}
+              errorMessage={save.isError ? save.error.message : null}
+              onSave={() => handleSubmit(onSubmit)()}
+              onDiscard={() => reset()}
+              saveLabel="Save changes"
+              discardLabel="Discard changes"
+            />
           </form>
         )}
       </CardContent>

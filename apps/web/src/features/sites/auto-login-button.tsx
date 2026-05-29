@@ -17,7 +17,7 @@ import {
   type AutoLoginInput,
 } from "@/features/sites/use-autologin";
 import { UserPickerModal } from "@/features/sites/user-picker-modal";
-import { toast } from "@/lib/toast";
+import { toast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 
 // Phase 5.5 — One-click login control.
@@ -58,7 +58,10 @@ export function AutoLoginButton({
 
   const runAutoLogin = useCallback(
     (input: Omit<AutoLoginInput, "siteId">) => {
-      toast.message("Opening site…");
+      // Transient progress notice — operators expect a beat of "we heard you"
+      // before the new tab pops. info() carries no action: it's purely a
+      // status read.
+      toast.info("Opening site");
       mutation.mutate(
         { siteId, ...input },
         {
@@ -67,8 +70,14 @@ export function AutoLoginButton({
           },
           onError: (err) => {
             // The mutation only ever throws AutoLoginError (or, defensively,
-            // a network-shape one — also AutoLoginError).
-            toast.error(autoLoginErrorMessage(err));
+            // a network-shape one — also AutoLoginError). Verb action retries
+            // with the same input so the operator can recover in one click.
+            toast.error(autoLoginErrorMessage(err), {
+              action: {
+                label: "Try again",
+                onClick: () => runAutoLogin(input),
+              },
+            });
           },
         },
       );
