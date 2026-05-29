@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Check, X } from "lucide-react";
+import { Check, X, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -218,7 +218,7 @@ export function DestinationForm({
       path_prefix: v.path_prefix,
       access_key_id: v.access_key_id,
       // For an existing row with a stored secret, the operator may want to
-      // re-test without re-entering it — but the test endpoint doesn't have
+      // re-test without re-entering it -- but the test endpoint doesn't have
       // access to the at-rest ciphertext. We require an explicit secret.
       secret_key: v.secret_key,
       force_path_style: v.force_path_style,
@@ -228,9 +228,9 @@ export function DestinationForm({
   const isS3 = kind === "s3_compat";
 
   return (
-    <form
-      onSubmit={(e) => void handleSubmit(onSubmit)(e)}
-      noValidate
+    <div
+      role="form"
+      aria-label={editing ? "Edit destination" : "Add destination"}
       className="space-y-5"
     >
       {/* Kind radio group --------------------------------------------------*/}
@@ -244,7 +244,7 @@ export function DestinationForm({
             [
               { id: "cp", label: "CP storage", hint: "WPMgr-managed bucket (default)" },
               { id: "local", label: "Local folder", hint: "wp-content/wpmgr-backups on this site" },
-              { id: "s3_compat", label: "S3-compatible", hint: "Your bucket (AWS / Wasabi / B2 / …)" },
+              { id: "s3_compat", label: "S3-compatible", hint: "Your bucket (AWS / Wasabi / B2 / ...)" },
             ] satisfies { id: SiteDestinationKind; label: string; hint: string }[]
           ).map((opt) => (
             <label
@@ -269,7 +269,7 @@ export function DestinationForm({
         </div>
         {editing ? (
           <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
-            Kind cannot be changed on an existing destination. Delete and recreate
+            Destination type cannot be changed after creation. Delete and recreate
             to switch.
           </p>
         ) : null}
@@ -315,15 +315,29 @@ export function DestinationForm({
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="endpoint">Endpoint URL</Label>
-              <Input id="endpoint" placeholder="https://s3.amazonaws.com" {...register("endpoint")} />
+              <Input
+                id="endpoint"
+                placeholder="https://s3.amazonaws.com"
+                className="font-mono text-xs"
+                {...register("endpoint")}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="region">Region</Label>
-              <Input id="region" placeholder="us-east-1" {...register("region")} />
+              <Input
+                id="region"
+                placeholder="us-east-1"
+                className="font-mono text-xs"
+                {...register("region")}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="bucket">Bucket</Label>
-              <Input id="bucket" {...register("bucket")} />
+              <Input
+                id="bucket"
+                className="font-mono text-xs"
+                {...register("bucket")}
+              />
               {errors.bucket ? (
                 <p role="alert" className="text-sm text-[var(--color-destructive)]">
                   {errors.bucket.message}
@@ -332,11 +346,21 @@ export function DestinationForm({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="path_prefix">Path prefix</Label>
-              <Input id="path_prefix" placeholder="wpmgr/" {...register("path_prefix")} />
+              <Input
+                id="path_prefix"
+                placeholder="wpmgr/"
+                className="font-mono text-xs"
+                {...register("path_prefix")}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="access_key_id">Access key ID</Label>
-              <Input id="access_key_id" autoComplete="off" {...register("access_key_id")} />
+              <Input
+                id="access_key_id"
+                autoComplete="off"
+                className="font-mono text-xs"
+                {...register("access_key_id")}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="secret_key">Secret access key</Label>
@@ -348,8 +372,9 @@ export function DestinationForm({
                 {...register("secret_key")}
               />
               {hasStoredSecret ? (
-                <p className="text-xs" style={{ color: "rgb(202 138 4)" }}>
-                  A secret is already stored. Re-enter to save changes.
+                <p className="flex items-center gap-1.5 text-xs text-[var(--color-warning,theme(colors.amber.600))]">
+                  <TriangleAlert aria-hidden="true" className="size-3.5 shrink-0" />
+                  A secret is already stored. Re-enter only to replace it.
                 </p>
               ) : null}
             </div>
@@ -379,14 +404,14 @@ export function DestinationForm({
           role="status"
           className={`flex items-start gap-2 rounded-md border p-3 text-sm ${
             test.data.ok
-              ? "border-green-500/40 text-green-700 dark:text-green-300"
+              ? "border-[var(--color-success,theme(colors.green.500))]/40 text-[var(--color-foreground)]"
               : "border-[var(--color-destructive)]/40 text-[var(--color-destructive)]"
           }`}
         >
           {test.data.ok ? (
-            <Check aria-hidden className="mt-0.5 size-4" />
+            <Check aria-hidden="true" className="mt-0.5 size-4 text-[var(--color-success,theme(colors.green.600))]" />
           ) : (
-            <X aria-hidden className="mt-0.5 size-4" />
+            <X aria-hidden="true" className="mt-0.5 size-4" />
           )}
           <span className="flex-1">{test.data.message}</span>
         </div>
@@ -399,8 +424,12 @@ export function DestinationForm({
 
       {/* Buttons -----------------------------------------------------------*/}
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" disabled={isSubmitting || create.isPending || update.isPending}>
-          {editing ? "Save changes" : "Create destination"}
+        <Button
+          type="button"
+          disabled={isSubmitting || create.isPending || update.isPending}
+          onClick={() => void handleSubmit(onSubmit)()}
+        >
+          {editing ? "Save changes" : "Add destination"}
         </Button>
         {isS3 ? (
           <Button
@@ -429,6 +458,6 @@ export function DestinationForm({
           {update.error.message}
         </p>
       ) : null}
-    </form>
+    </div>
   );
 }

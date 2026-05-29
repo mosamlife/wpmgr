@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -300,24 +301,28 @@ export function BulkActionDrawer({
               <div className="min-w-0">
                 <h2
                   id="bulk-drawer-title"
-                  className="text-base font-semibold text-foreground truncate"
+                  title={title}
+                  className="truncate text-base font-semibold text-foreground"
                 >
                   {title}
                 </h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {totals.done} / {totals.total} done
+                <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                  <span className="font-mono">{totals.done}</span> /{" "}
+                  <span className="font-mono">{totals.total}</span> done
                   {totals.failed > 0 ? (
                     <>
                       {" · "}
                       <span className="text-destructive">
-                        {totals.failed} failed
+                        <span className="font-mono">{totals.failed}</span>{" "}
+                        failed
                       </span>
                     </>
                   ) : null}
                   {totals.inFlight > 0 ? (
                     <>
                       {" · "}
-                      {totals.inFlight} in progress
+                      <span className="font-mono">{totals.inFlight}</span> in
+                      progress
                     </>
                   ) : null}
                 </p>
@@ -377,7 +382,9 @@ interface SiteRow {
   rollup: UpdateTask["status"];
 }
 
-function BulkSiteRow({
+// Each SSE tick re-renders the drawer with a fresh `run` from react-query.
+// React.memo skips per-row reconciliation when only one row's tasks changed.
+const BulkSiteRow = memo(function BulkSiteRow({
   row,
   hostname,
   onRetry,
@@ -403,10 +410,16 @@ function BulkSiteRow({
         pulse={isRunning}
         label={`${hostname}: ${statusLabel(row.rollup)}`}
       />
-      <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
+      <span
+        className="min-w-0 flex-1 truncate font-mono text-sm text-foreground"
+        title={hostname}
+      >
         {hostname}
       </span>
-      <span className="hidden min-w-0 flex-[2] truncate text-sm text-muted-foreground sm:inline">
+      <span
+        className="hidden min-w-0 flex-[2] truncate text-sm text-muted-foreground sm:inline"
+        title={detailFor(lead)}
+      >
         {detailFor(lead)}
       </span>
       <span className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -421,12 +434,12 @@ function BulkSiteRow({
           onClick={() => onRetry(failed.id)}
         >
           <RotateCw aria-hidden="true" />
-          Retry
+          Retry update
         </Button>
       ) : null}
     </li>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

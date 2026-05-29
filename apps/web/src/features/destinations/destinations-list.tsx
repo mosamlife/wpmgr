@@ -1,10 +1,10 @@
 // Destinations list (ADR-036 P1). Renders the configured destinations for a
 // site with edit/delete affordances and an inline "Add destination" form
 // toggle. The default destination wears a chip; per-row buttons trigger the
-// form modal / destructive confirm dialog.
+// form inline / destructive confirm dialog.
 
 import { useState } from "react";
-import { Trash2, Pencil, Plus, Server, HardDrive, Cloud } from "lucide-react";
+import { Trash2, Pencil, Plus, Server, HardDrive, Cloud, Database } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +17,9 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
+import { PageError } from "@/components/feedback";
+import { CopyableMono } from "@/components/shared/copyable-mono";
+import { StatusChip } from "@/components/status";
 import type { SiteDestination, SiteDestinationKind } from "@wpmgr/api";
 
 import {
@@ -32,9 +35,28 @@ const KIND_LABEL: Record<SiteDestinationKind, string> = {
 };
 
 function KindIcon({ kind }: { kind: SiteDestinationKind }) {
-  if (kind === "local") return <HardDrive aria-hidden className="size-4" />;
-  if (kind === "s3_compat") return <Cloud aria-hidden className="size-4" />;
-  return <Server aria-hidden className="size-4" />;
+  if (kind === "local") return <HardDrive aria-hidden="true" className="size-4" />;
+  if (kind === "s3_compat") return <Cloud aria-hidden="true" className="size-4" />;
+  return <Server aria-hidden="true" className="size-4" />;
+}
+
+/** Human-readable location summary for the "Where" column. */
+function whereFor(d: SiteDestination): React.ReactNode {
+  if (d.kind === "s3_compat") {
+    const path = d.bucket
+      ? `${d.bucket}${d.path_prefix ? `/${d.path_prefix}` : ""}`
+      : null;
+    return path ? <CopyableMono value={path} label={`Copy bucket path for ${d.label}`} /> : null;
+  }
+  if (d.kind === "local") {
+    return (
+      <CopyableMono
+        value="wp-content/wpmgr-backups"
+        label={`Copy path for ${d.label}`}
+      />
+    );
+  }
+  return <span className="text-[var(--color-muted-foreground)]">WPMgr managed storage</span>;
 }
 
 export interface DestinationsListProps {
@@ -42,7 +64,14 @@ export interface DestinationsListProps {
 }
 
 export function DestinationsList({ siteId }: DestinationsListProps) {
-  const { data, isPending, isError, error, refetch } = useDestinations(siteId);
+  const {
+    data,
+    isPending,
+    isError,
+    error,
+    refetch,
+    isRefetching,
+  } = useDestinations(siteId);
   const del = useDeleteDestination(siteId);
 
   const [editing, setEditing] = useState<SiteDestination | null>(null);
@@ -60,19 +89,19 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
   }
 
   return (
-    <section aria-labelledby="destinations-heading" className="space-y-6">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h2 id="destinations-heading" className="text-xl font-semibold">
-            Backup destinations
-          </h2>
-          <p className="text-sm text-[var(--color-muted-foreground)]">
-            Where this site&apos;s backup chunks should be stored.
-          </p>
-        </div>
+    <section aria-labelledby="destinations-list-heading" className="space-y-6">
+      <div className="flex items-center justify-between gap-3">
+        <h2 id="destinations-list-heading" className="text-base font-semibold">
+          Destinations for this site
+        </h2>
         {!adding && !editing ? (
-          <Button onClick={() => setAdding(true)}>
-            <Plus aria-hidden className="size-4" /> Add destination
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setAdding(true)}
+          >
+            <Plus aria-hidden="true" className="size-4" />
+            Add destination
           </Button>
         ) : null}
       </div>
@@ -99,14 +128,13 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
           Loading destinations…
         </p>
       ) : isError ? (
-        <div role="alert" className="space-y-3">
-          <p className="text-[var(--color-destructive)]">
-            Failed to load destinations: {error.message}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
-          </Button>
-        </div>
+        <PageError
+          what="Could not load destinations."
+          why={error.message}
+          onRetry={() => void refetch()}
+          retryLabel="Reload destinations"
+          isRetrying={isRefetching}
+        />
       ) : data.length === 0 ? (
         <EmptyState />
       ) : (
@@ -117,7 +145,7 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
               <TableRow>
                 <TableHead>Destination</TableHead>
                 <TableHead>Kind</TableHead>
-                <TableHead>Where</TableHead>
+                <TableHead>Location</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="sr-only">Actions</TableHead>
               </TableRow>
@@ -130,30 +158,25 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
                       <KindIcon kind={d.kind} />
                       <span>{d.label}</span>
                       {d.is_default ? (
-                        <Badge variant="default">Default</Badge>
+                        <Badge variant="secondary">Default</Badge>
                       ) : null}
                     </div>
                   </TableCell>
-                  <TableCell>{KIND_LABEL[d.kind]}</TableCell>
-                  <TableCell className="text-sm text-[var(--color-muted-foreground)]">
-                    {d.kind === "s3_compat"
-                      ? `${d.bucket}${d.path_prefix ? `/${d.path_prefix}` : ""}`
-                      : d.kind === "local"
-                        ? "wp-content/wpmgr-backups"
-                        : "WPMgr managed storage"}
+                  <TableCell className="text-sm">{KIND_LABEL[d.kind]}</TableCell>
+                  <TableCell className="text-sm">
+                    {whereFor(d)}
                   </TableCell>
                   <TableCell>
                     {d.kind === "s3_compat" && !d.has_secret ? (
-                      <span className="text-[var(--color-destructive)] text-sm">
-                        Secret missing
-                      </span>
+                      <StatusChip tone="destructive" label="Secret missing" />
                     ) : (
-                      <span className="text-sm">Ready</span>
+                      <StatusChip tone="success" label="Ready" />
                     )}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
                       <Button
+                        type="button"
                         variant="outline"
                         size="sm"
                         onClick={() => {
@@ -162,15 +185,18 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
                         }}
                         aria-label={`Edit ${d.label}`}
                       >
-                        <Pencil aria-hidden className="size-4" /> Edit
+                        <Pencil aria-hidden="true" className="size-4" />
+                        Edit
                       </Button>
                       <Button
+                        type="button"
                         variant="outline"
                         size="sm"
                         onClick={() => setDeleteTarget(d)}
                         aria-label={`Delete ${d.label}`}
                       >
-                        <Trash2 aria-hidden className="size-4" /> Delete
+                        <Trash2 aria-hidden="true" className="size-4" />
+                        Delete
                       </Button>
                     </div>
                   </TableCell>
@@ -207,11 +233,25 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
 
 function EmptyState() {
   return (
-    <div className="rounded-xl border border-dashed border-[var(--color-border)] p-8 text-center">
-      <p className="text-sm">
-        No destinations yet. WPMgr ships backups to our managed storage by
-        default. Add a destination here if you want to send them elsewhere too.
-      </p>
+    <div
+      role="status"
+      aria-label="No destinations configured"
+      className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-[var(--color-border)] py-12 text-center"
+    >
+      <Database
+        aria-hidden="true"
+        strokeWidth={1.5}
+        className="size-8 text-[var(--color-muted-foreground)]/50"
+      />
+      <div className="space-y-1">
+        <p className="text-balance text-sm font-medium text-[var(--color-foreground)]">
+          No destinations configured.
+        </p>
+        <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
+          WPMgr ships backups to managed storage by default. Add a destination
+          to send them elsewhere too.
+        </p>
+      </div>
     </div>
   );
 }

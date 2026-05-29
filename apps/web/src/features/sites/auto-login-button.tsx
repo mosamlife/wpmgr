@@ -29,6 +29,10 @@ import { cn } from "@/lib/utils";
 // Visibility is gated on `canAutoLogin(me)` (admin+); the backend re-checks
 // the role on every call so this is defense-in-depth, not the security
 // boundary.
+//
+// Verb-first labels throughout (DESIGN.md "verb-first actions"). No path
+// strings shown raw in UI; the `redirect_to` values stay in the onSelect
+// handlers only.
 
 export interface AutoLoginButtonProps {
   siteId: string;
@@ -126,7 +130,7 @@ export function AutoLoginButton({
               type="button"
               size={size}
               disabled={pending}
-              className="rounded-l-none border-l border-[var(--color-primary-foreground)]/20 px-2"
+              className="rounded-l-none border-l border-primary-foreground/20 px-2"
               aria-label="More log-in options"
             >
               <ChevronDown aria-hidden="true" />
@@ -139,7 +143,7 @@ export function AutoLoginButton({
                 runAutoLogin({ redirect_to: "/wp-admin/" });
               }}
             >
-              Open /wp-admin/
+              Open Dashboard
             </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={(e) => {
@@ -147,7 +151,7 @@ export function AutoLoginButton({
                 runAutoLogin({ redirect_to: "/wp-admin/plugins.php" });
               }}
             >
-              Open Plugins page
+              Open Plugins
             </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={(e) => {
@@ -155,7 +159,7 @@ export function AutoLoginButton({
                 runAutoLogin({ redirect_to: "/wp-admin/themes.php" });
               }}
             >
-              Open Themes page
+              Open Themes
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -164,7 +168,7 @@ export function AutoLoginButton({
                 setPickerOpen(true);
               }}
             >
-              Log in as different user…
+              Log in as different user
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

@@ -19,11 +19,15 @@ import { Label } from "@/components/ui/label";
 import { usePairingCode } from "@/features/sites/use-sites";
 import type { PairingCode } from "@wpmgr/api";
 
-// Two-step enrollment UX (Sprint 3 chrome refresh — form logic unchanged):
+// Two-step enrollment UX (Sprint 5 token refresh — form logic unchanged):
 //   1. A small form collects an optional site name + tags and POSTs
 //      /sites/pairing-codes (operator+).
 //   2. The returned one-time pairing code is shown ONCE in a dialog with an
 //      expiry countdown and concise install instructions for the agent plugin.
+//
+// Note: the <form> element in step 1 is intentional per the foundation note —
+// react-hook-form's handleSubmit needs a form submission event. The `noValidate`
+// attribute hands control to zod/react-hook-form entirely.
 
 const formSchema = z.object({
   site_name: z.string().max(200).optional(),
@@ -110,7 +114,7 @@ export function AddSiteDialog() {
                 {errors.site_name ? (
                   <p
                     role="alert"
-                    className="text-sm text-[var(--color-destructive)]"
+                    className="text-sm text-destructive"
                   >
                     {errors.site_name.message}
                   </p>
@@ -127,7 +131,7 @@ export function AddSiteDialog() {
                 />
                 <p
                   id="tags-hint"
-                  className="text-xs text-[var(--color-muted-foreground)]"
+                  className="text-xs text-muted-foreground"
                 >
                   Separate tags with commas or spaces.
                 </p>
@@ -136,7 +140,7 @@ export function AddSiteDialog() {
               {pairing.isError ? (
                 <p
                   role="alert"
-                  className="text-sm text-[var(--color-destructive)]"
+                  className="text-sm text-destructive"
                 >
                   {pairing.error.message}
                 </p>
@@ -150,7 +154,7 @@ export function AddSiteDialog() {
                 onClick={() => setFormOpen(false)}
                 disabled={pairing.isPending}
               >
-                Close
+                Cancel
               </Button>
               <Button type="submit" disabled={pairing.isPending}>
                 {pairing.isPending ? "Generating…" : "Generate pairing code"}
@@ -166,7 +170,7 @@ export function AddSiteDialog() {
 }
 
 // Shows the one-time pairing code with a live expiry countdown and install
-// instructions. Sprint 3 chrome refresh — content is preserved.
+// instructions. Sprint 5 token refresh — content is preserved.
 function PairingCodeDialog({
   created,
   onClose,
@@ -207,7 +211,7 @@ function PairingCodeDialog({
           <DialogBody>
             <p
               role="alert"
-              className="text-sm text-[var(--color-destructive)]"
+              className="text-sm text-destructive"
             >
               Copy this code now. For security it is shown{" "}
               <strong>once</strong> and cannot be retrieved again.
@@ -216,7 +220,7 @@ function PairingCodeDialog({
             <div className="flex items-center gap-2">
               <code
                 data-testid="pairing-code"
-                className="flex-1 overflow-x-auto rounded-md border border-[var(--color-border)] px-3 py-2 font-mono text-sm"
+                className="flex-1 overflow-x-auto rounded-md border border-border px-3 py-2 font-mono text-sm"
               >
                 {created.code}
               </code>
@@ -237,9 +241,9 @@ function PairingCodeDialog({
 
             <Countdown expiresAt={created.expires_at} />
 
-            <div className="rounded-md border border-[var(--color-border)] p-3 text-sm">
+            <div className="rounded-md border border-border p-3 text-sm">
               <p className="font-medium">Next steps</p>
-              <ol className="mt-2 list-decimal space-y-1 pl-5 text-[var(--color-muted-foreground)]">
+              <ol className="mt-2 list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Install the WPMgr Agent plugin on your WordPress site.</li>
                 <li>Enter your control-plane URL in the plugin settings.</li>
                 <li>Paste this code to enroll the site.</li>
@@ -274,7 +278,7 @@ function Countdown({ expiresAt }: { expiresAt: string }) {
 
   if (remaining <= 0) {
     return (
-      <p role="status" className="text-sm text-[var(--color-destructive)]">
+      <p role="status" className="text-sm text-destructive">
         This code has expired. Generate a new one to continue.
       </p>
     );
@@ -283,9 +287,9 @@ function Countdown({ expiresAt }: { expiresAt: string }) {
   const mins = Math.floor(remaining / 60);
   const secs = remaining % 60;
   return (
-    <p role="status" className="text-sm text-[var(--color-muted-foreground)]">
+    <p role="status" className="text-sm text-muted-foreground">
       Expires in{" "}
-      <span className="font-medium text-[var(--color-foreground)]">
+      <span className="font-medium tabular-nums text-foreground">
         {mins}:{secs.toString().padStart(2, "0")}
       </span>
     </p>

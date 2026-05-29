@@ -8,19 +8,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { StatusChip } from "@/components/status";
 
 type ComponentType = "plugin" | "theme";
 
-// Forward-compatible shape: Track B's OpenAPI regen adds `available_update` to
-// SiteComponent. Until the generated types catch up, treat the field as an
-// optional opaque marker — its presence (not its value) is what we filter on.
-type ComponentWithMaybeUpdate = SiteComponent & {
-  available_update?: unknown;
-};
-
 interface Row extends SiteComponent {
   type: ComponentType;
+}
+
+// A component belongs in this table iff it has no outstanding update.
+// `available_update == null` catches both null (explicitly checked, no update)
+// and undefined (field absent from wire, i.e. not yet checked).
+function hasNoUpdate(c: SiteComponent): boolean {
+  return c.available_update == null;
 }
 
 /**
@@ -28,6 +28,10 @@ interface Row extends SiteComponent {
  * EXCLUDING anything with an outstanding update. Those rows are surfaced by
  * `AvailableUpdatesCard` so the user has one obvious place to act on them;
  * this card is the long-tail "everything else that's already up to date".
+ *
+ * Layout mirrors the activity-row density: name is the visual lead; slug in
+ * font-mono beneath it for uniqueness; version + status as structured columns.
+ * Tokens only — no off-token palette colors; StatusChip for active state.
  */
 export function SiteComponentsTable({
   plugins = [],
@@ -36,14 +40,6 @@ export function SiteComponentsTable({
   plugins?: SiteComponent[];
   themes?: SiteComponent[];
 }) {
-  // A component is "up to date" (and so belongs in this table) iff it has no
-  // `available_update` field on the wire. Track B will set it to null when
-  // explicitly checked, so null/undefined both mean "no update available".
-  const hasNoUpdate = (c: SiteComponent): boolean => {
-    const ext = c as ComponentWithMaybeUpdate;
-    return ext.available_update == null;
-  };
-
   const rows: Row[] = [
     ...plugins
       .filter(hasNoUpdate)
@@ -55,14 +51,14 @@ export function SiteComponentsTable({
 
   if (rows.length === 0) {
     return (
-      <p className="text-sm text-[var(--color-muted-foreground)]">
+      <p className="text-sm text-muted-foreground">
         No components reported yet. They appear after the agent syncs.
       </p>
     );
   }
 
   return (
-    <div className="rounded-xl border border-[var(--color-border)]">
+    <div className="rounded-xl border border-border">
       <Table>
         <caption className="sr-only">Installed plugins and themes</caption>
         <TableHeader>
@@ -70,24 +66,49 @@ export function SiteComponentsTable({
             <TableHead>Name</TableHead>
             <TableHead>Type</TableHead>
             <TableHead>Version</TableHead>
-            <TableHead>Active</TableHead>
+            <TableHead>Status</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
             <TableRow key={`${row.type}:${row.slug}`}>
-              <TableCell className="font-medium">
-                {row.name ?? row.slug}
+              {/* Name + slug: name as the visual lead, slug in mono beneath */}
+              <TableCell>
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium text-foreground">
+                    {row.name ?? row.slug}
+                  </span>
+                  {row.name ? (
+                    <span
+                      className="font-mono text-[11px] text-muted-foreground"
+                      title={row.slug}
+                    >
+                      {row.slug}
+                    </span>
+                  ) : null}
+                </span>
               </TableCell>
-              <TableCell className="capitalize">{row.type}</TableCell>
-              <TableCell className="text-[var(--color-muted-foreground)]">
-                {row.version ?? "—"}
+
+              {/* Type — capitalize */}
+              <TableCell>
+                <span className="font-mono text-xs capitalize text-muted-foreground">
+                  {row.type}
+                </span>
               </TableCell>
+
+              {/* Version — mono + tabular-nums */}
+              <TableCell className="font-mono tabular-nums text-xs text-muted-foreground">
+                {row.version ?? (
+                  <span aria-hidden="true">{"–"}</span>
+                )}
+              </TableCell>
+
+              {/* Active status — StatusChip (dot + label), never bare Badge */}
               <TableCell>
                 {row.active ? (
-                  <Badge variant="success">Active</Badge>
+                  <StatusChip tone="success" label="Active" />
                 ) : (
-                  <Badge variant="muted">Inactive</Badge>
+                  <StatusChip tone="muted" label="Inactive" />
                 )}
               </TableCell>
             </TableRow>
@@ -97,4 +118,3 @@ export function SiteComponentsTable({
     </div>
   );
 }
-

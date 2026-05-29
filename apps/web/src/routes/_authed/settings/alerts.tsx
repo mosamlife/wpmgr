@@ -1,7 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { PageHeader } from "@/components/shared/page-header";
 import { useMe, canOperate } from "@/features/auth/use-auth";
 import { AlertConfigForm } from "@/features/monitoring/alert-config-form";
+
+// Future field: notify_security (boolean) -- suppress/surface security scanner
+// alerts per-tenant. Needs an ogen regen once the backend route is wired.
+// Do not add it here until the OpenAPI spec is updated.
 
 export const Route = createFileRoute("/_authed/settings/alerts")({
   component: AlertSettingsPage,
@@ -13,14 +18,10 @@ function AlertSettingsPage() {
 
   return (
     <section aria-labelledby="alerts-heading" className="max-w-2xl space-y-6">
-      <div>
-        <h1 id="alerts-heading" className="text-2xl font-semibold">
-          Alert settings
-        </h1>
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          Configure how this tenant is notified about site downtime.
-        </p>
-      </div>
+      <PageHeader
+        title="Alert settings"
+        subline="Configure how this tenant is notified when monitored sites go down."
+      />
 
       {operate ? (
         <AlertConfigForm />

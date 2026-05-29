@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { MoreHorizontal, Zap } from "lucide-react";
+import { Check, Copy, MoreHorizontal, Zap } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
 import {
   DropdownMenu,
@@ -61,11 +63,7 @@ function SiteDetailLayout() {
   return (
     <div className="mx-auto w-full max-w-[1200px]">
       {isPending ? (
-        <div className="px-6 py-8">
-          <p role="status" className="text-sm text-muted-foreground">
-            Loading site…
-          </p>
-        </div>
+        <SiteShellSkeleton />
       ) : isError ? (
         <div className="px-6 py-8">
           {error instanceof NotFoundError ? (
@@ -95,32 +93,78 @@ function SiteDetailLayout() {
   );
 }
 
+// ── Loading skeleton ────────────────────────────────────────────────────────
+
+function SiteShellSkeleton() {
+  return (
+    <>
+      {/* Header strip skeleton */}
+      <div className="-mx-6 flex h-12 items-center gap-3 border-b border-border bg-background px-6">
+        <div className="flex min-w-0 flex-col gap-1">
+          <Skeleton className="h-3.5 w-32" />
+          <Skeleton className="h-2.5 w-48" />
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Skeleton className="h-8 w-28 rounded-md" />
+          <Skeleton className="size-8 rounded-md" />
+        </div>
+      </div>
+      {/* Tab bar skeleton */}
+      <div className="-mx-6 flex h-12 items-center gap-6 border-b border-border bg-background px-6">
+        {TABS.map((t) => (
+          <Skeleton key={t.to} className="h-3 w-14" />
+        ))}
+      </div>
+    </>
+  );
+}
+
 // ── Header + tab bar shell ──────────────────────────────────────────────────
 
 function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
+  const [copied, setCopied] = useState(false);
+
   const hostname = hostnameOf(site.url);
   const adminUrl = `${stripTrailingSlash(site.url)}/wp-admin/`;
   const tone = toneForHealth(site.health_status);
   const toneLabel = labelForHealth(site.health_status);
   const lastSeen = relativeTime(site.last_seen_at) ?? undefined;
 
+  const copySiteId = () => {
+    void navigator.clipboard.writeText(site.id).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
   return (
     <>
       {/* Site header strip. Scrolls with the page — only the AppShell topbar
-          stays pinned. */}
+          stays pinned. Shows site name + font-mono URL subtext + status chip. */}
       <header
         className={cn(
           "-mx-6 flex h-12 items-center gap-3 border-b border-border bg-background px-6",
           "min-w-0",
         )}
       >
-        <div
-          className="truncate font-mono text-base text-foreground"
-          title={hostname}
-        >
-          {hostname}
+        {/* Name + URL: name as the visual primary, hostname in mono as the URL */}
+        <div className="flex min-w-0 flex-col gap-px">
+          <span
+            className="truncate text-sm font-medium text-foreground"
+            title={site.name}
+          >
+            {site.name}
+          </span>
+          <span
+            className="truncate font-mono text-[11px] text-muted-foreground"
+            title={site.url}
+          >
+            {hostname}
+          </span>
         </div>
+
         <StatusChip tone={tone} label={toneLabel} time={lastSeen} />
+
         <div className="ml-auto flex items-center gap-2">
           <Button asChild size="sm" aria-label="Open in wp-admin">
             <a href={adminUrl} target="_blank" rel="noopener noreferrer">
@@ -143,8 +187,18 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
               <DropdownMenuItem disabled title="Coming soon">
                 Run health check
               </DropdownMenuItem>
-              <DropdownMenuItem disabled title="Coming soon">
-                Copy site ID
+              <DropdownMenuItem onClick={copySiteId}>
+                {copied ? (
+                  <>
+                    <Check aria-hidden="true" className="size-4" />
+                    Copied site ID
+                  </>
+                ) : (
+                  <>
+                    <Copy aria-hidden="true" className="size-4" />
+                    Copy site ID
+                  </>
+                )}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled title="Coming soon">

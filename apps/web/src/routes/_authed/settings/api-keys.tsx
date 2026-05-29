@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Copy, Check, Trash2 } from "lucide-react";
+import { KeyRound, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +25,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
+import { PageError } from "@/components/feedback";
+import { PageHeader } from "@/components/shared/page-header";
+import { CopyableMono } from "@/components/shared/copyable-mono";
+import { DefinitionList, KvRow } from "@/components/shared/definition-list";
+import { StatusChip } from "@/components/status";
 import { useMe, canManage } from "@/features/auth/use-auth";
 import {
   useApiKeys,
@@ -48,7 +53,8 @@ function ApiKeysPage() {
   const { data: me } = useMe();
   const manage = canManage(me);
 
-  const { data: keys, isPending, isError, error, refetch } = useApiKeys();
+  const { data: keys, isPending, isError, error, refetch, isRefetching } =
+    useApiKeys();
   const createMutation = useCreateApiKey();
   const revokeMutation = useRevokeApiKey();
 
@@ -56,8 +62,8 @@ function ApiKeysPage() {
   // so it can be shown in a dialog and copied. It is never persisted.
   const [created, setCreated] = useState<ApiKeyCreated | null>(null);
 
-  // Sprint 3: revoke is destructive, so it goes through the typed-confirmation
-  // pattern. `revokeTarget` holds the key the operator is about to revoke.
+  // Revoke is destructive, so it goes through the typed-confirmation pattern.
+  // `revokeTarget` holds the key the operator is about to revoke.
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
 
   const {
@@ -91,23 +97,19 @@ function ApiKeysPage() {
 
   return (
     <section aria-labelledby="api-keys-heading" className="space-y-6">
-      <div>
-        <h1 id="api-keys-heading" className="text-2xl font-semibold">
-          API keys
-        </h1>
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          Programmatic access tokens for the active tenant.
-        </p>
-      </div>
+      <PageHeader
+        title="API keys"
+        subline="Programmatic access tokens for the active tenant."
+      />
 
       {manage ? (
-        <form
-          onSubmit={(e) => void onCreate(e)}
-          noValidate
+        <div
+          role="form"
+          aria-label="Create API key"
           className="flex flex-wrap items-end gap-3 rounded-xl border border-[var(--color-border)] p-4"
         >
           <div className="space-y-2">
-            <Label htmlFor="name">New key name</Label>
+            <Label htmlFor="name">Key name</Label>
             <Input
               id="name"
               className="w-56"
@@ -133,7 +135,11 @@ function ApiKeysPage() {
               <option value="viewer">Viewer</option>
             </select>
           </div>
-          <Button type="submit" disabled={createMutation.isPending}>
+          <Button
+            type="button"
+            onClick={() => void onCreate()}
+            disabled={createMutation.isPending}
+          >
             Create key
           </Button>
           {createMutation.isError ? (
@@ -141,24 +147,43 @@ function ApiKeysPage() {
               {createMutation.error.message}
             </p>
           ) : null}
-        </form>
+        </div>
       ) : null}
 
       {isPending ? (
         <p role="status" className="text-[var(--color-muted-foreground)]">
-          Loading API keys…
+          Loading keys…
         </p>
       ) : isError ? (
-        <div role="alert" className="space-y-3">
-          <p className="text-[var(--color-destructive)]">
-            Failed to load API keys: {error.message}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
-          </Button>
-        </div>
+        <PageError
+          what="Could not load API keys."
+          why={error.message}
+          onRetry={() => void refetch()}
+          retryLabel="Reload keys"
+          isRetrying={isRefetching}
+        />
       ) : keys.length === 0 ? (
-        <p className="text-[var(--color-muted-foreground)]">No API keys yet.</p>
+        <div
+          role="status"
+          aria-label="No API keys"
+          className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-[var(--color-border)] py-12 text-center"
+        >
+          <KeyRound
+            aria-hidden="true"
+            strokeWidth={1.5}
+            className="size-8 text-[var(--color-muted-foreground)]/50"
+          />
+          <div className="space-y-1">
+            <p className="text-balance text-sm font-medium text-[var(--color-foreground)]">
+              No API keys yet.
+            </p>
+            <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
+              {manage
+                ? "Create a key above to grant programmatic access."
+                : "Ask an admin to create a key."}
+            </p>
+          </div>
+        </div>
       ) : (
         <div className="rounded-xl border border-[var(--color-border)]">
           <Table>
@@ -178,23 +203,26 @@ function ApiKeysPage() {
                 <TableRow key={k.id}>
                   <TableCell className="font-medium">{k.name}</TableCell>
                   <TableCell>
-                    <code>{k.prefix}…</code>
+                    <span className="font-mono text-xs tabular-nums">
+                      {k.prefix}&hellip;
+                    </span>
                   </TableCell>
                   <TableCell className="capitalize">{k.role}</TableCell>
-                  <TableCell className="text-[var(--color-muted-foreground)]">
+                  <TableCell className="tabular-nums text-[var(--color-muted-foreground)]">
                     {k.created_at}
                   </TableCell>
                   <TableCell>
                     {k.revoked_at ? (
-                      <span className="text-[var(--color-muted-foreground)]">Revoked</span>
+                      <StatusChip tone="muted" label="Revoked" />
                     ) : (
-                      "Active"
+                      <StatusChip tone="success" label="Active" pulse />
                     )}
                   </TableCell>
                   {manage ? (
                     <TableCell className="text-right">
                       {k.revoked_at ? null : (
                         <Button
+                          type="button"
                           variant="outline"
                           size="sm"
                           disabled={revokeMutation.isPending}
@@ -222,23 +250,24 @@ function ApiKeysPage() {
         onConfirm={performRevoke}
         title={`Revoke API key "${revokeTarget?.name ?? ""}"`}
         consequencesBody={
-          <div className="space-y-2">
+          <div className="space-y-3">
             <p>
               Any service or script using this token will lose access
               immediately. The token cannot be reactivated; you&apos;ll need to
               create a new one and redeploy callers.
             </p>
             {revokeTarget ? (
-              <p className="text-[var(--color-muted-foreground)]">
-                Prefix:{" "}
-                <code className="font-mono text-xs text-[var(--color-foreground)]">
-                  {revokeTarget.prefix}…
-                </code>
-                <span className="mx-2">·</span>Role:{" "}
-                <span className="capitalize text-[var(--color-foreground)]">
-                  {revokeTarget.role}
-                </span>
-              </p>
+              <DefinitionList>
+                <KvRow
+                  label="Prefix"
+                  value={
+                    <span className="font-mono text-xs">
+                      {revokeTarget.prefix}&hellip;
+                    </span>
+                  }
+                />
+                <KvRow label="Role" value={<span className="capitalize">{revokeTarget.role}</span>} />
+              </DefinitionList>
             ) : null}
           </div>
         }
@@ -254,7 +283,7 @@ function ApiKeysPage() {
   );
 }
 
-// Modal that surfaces the full token exactly once (Sprint 3 chrome refresh).
+// Modal that surfaces the full token exactly once.
 function ShowOnceDialog({
   created,
   onClose,
@@ -262,24 +291,11 @@ function ShowOnceDialog({
   created: ApiKeyCreated | null;
   onClose: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
-
   // Reset the copied indicator whenever a new key is shown; preserve it across
   // re-renders while the dialog is open so the checkmark stays.
   const [prevCreated, setPrevCreated] = useState(created);
   if (created !== prevCreated) {
     setPrevCreated(created);
-    if (created) setCopied(false);
-  }
-
-  async function copy() {
-    if (!created) return;
-    try {
-      await navigator.clipboard.writeText(created.token);
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
   }
 
   return (
@@ -290,29 +306,26 @@ function ShowOnceDialog({
             <DialogTitle id="key-created-title">API key created</DialogTitle>
           </DialogHeader>
 
-          <DialogBody>
+          <DialogBody className="space-y-4">
             <p role="alert" className="text-sm text-[var(--color-destructive)]">
               Copy this key now. For security it will <strong>not</strong> be
               shown again.
             </p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 overflow-x-auto rounded-md border border-[var(--color-border)] px-3 py-2 font-mono text-sm">
-                {created.token}
-              </code>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void copy()}
-              >
-                {copied ? (
-                  <Check aria-hidden="true" />
-                ) : (
-                  <Copy aria-hidden="true" />
-                )}
-                {copied ? "Copied" : "Copy token"}
-              </Button>
+            <div className="space-y-1.5">
+              <Label>Token</Label>
+              <CopyableMono
+                value={created.token}
+                label="Copy token"
+                className="w-full"
+              />
             </div>
+            <DefinitionList
+              rows={[
+                { label: "Name", value: created.api_key.name },
+                { label: "Role", value: <span className="capitalize">{created.api_key.role}</span> },
+                { label: "Prefix", value: created.api_key.prefix, mono: true },
+              ]}
+            />
           </DialogBody>
 
           <DialogFooter className="pt-2">

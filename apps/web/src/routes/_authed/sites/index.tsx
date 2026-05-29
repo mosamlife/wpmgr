@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { PageError } from "@/components/feedback";
+import { FilterEmpty, SitesPageEmpty } from "@/components/empty";
+import { PageHeader } from "@/components/shared/page-header";
 import { useSites } from "@/features/sites/use-sites";
 import { SitesTable } from "@/features/sites/sites-table";
 import { SitesToolbar } from "@/features/sites/sites-toolbar";
@@ -36,7 +38,7 @@ function SitesPage() {
   // every filter change so the wiring path stays observable.
   const appliedTag = "";
 
-  const { data: sites, isPending, isError, error, refetch } =
+  const { data: sites, isPending, isError, error, refetch, isFetching } =
     useSites(appliedTag);
 
   // Selection and density lifted to the route so the toolbar and table share
@@ -126,7 +128,7 @@ function SitesPage() {
       // `kind` through so it preselects the right step. For now we surface
       // the intent so the wire-up landing zone is unambiguous.
       // TODO(sprint-4): pipe `kind` into UpdateWizard initial step.
-       
+
       console.debug("[sites] bulk update", {
         kind,
         siteIds: Array.from(selection.selected),
@@ -149,12 +151,12 @@ function SitesPage() {
         label: "View activity",
         onClick: () => {
           // TODO(sprint-4): deep link to the activity drawer once it lands.
-           
+
           console.debug("[sites] open activity for bulk backup");
         },
       },
     });
-     
+
     console.debug("[sites] bulk backup", {
       siteIds: Array.from(selection.selected),
     });
@@ -222,41 +224,42 @@ function SitesPage() {
     });
   }, [selection.count]);
 
+  // Build a human-readable filter summary for the empty-search state.
+  const filterDescription = search.trim()
+    ? `"${search.trim()}"`
+    : "";
+
+  const showFilterEmpty =
+    !isPending && !isError && sites !== undefined && sites.length > 0 && visibleSites.length === 0;
+
   return (
     <section aria-labelledby="sites-heading" className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 id="sites-heading" className="text-2xl font-semibold">
-          Sites
-        </h1>
-      </div>
+      <PageHeader
+        title="Sites"
+        subline={
+          isPending
+            ? undefined
+            : sites !== undefined && sites.length > 0
+              ? `${sites.length} site${sites.length === 1 ? "" : "s"} enrolled`
+              : undefined
+        }
+        actions={operate ? <AddSiteDialog /> : undefined}
+      />
 
       {isPending ? (
-        <p role="status" className="text-muted-foreground">
-          Loading sites
-        </p>
+        <SitesTableSkeleton />
       ) : isError ? (
-        <div role="alert" className="space-y-3">
-          <p className="text-destructive">
-            Failed to load sites: {error.message}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
-          </Button>
-        </div>
+        <PageError
+          what="Could not load sites."
+          why={error instanceof Error ? error.message : "The server returned an unexpected response."}
+          onRetry={() => void refetch()}
+          retryLabel="Reload sites"
+          isRetrying={isFetching}
+        />
       ) : sites.length === 0 ? (
-        <div className="space-y-3 border border-dashed border-border bg-background p-8 text-center">
-          <p className="text-muted-foreground">
-            No sites yet.{" "}
-            {operate
-              ? "Use Add site to generate a pairing code and enroll your first WordPress site."
-              : "Ask an operator to add the first site."}
-          </p>
-          {operate ? (
-            <div className="flex justify-center">
-              <AddSiteDialog />
-            </div>
-          ) : null}
-        </div>
+        <SitesPageEmpty
+          cta={operate ? undefined : <AddSitePlaceholder />}
+        />
       ) : (
         <>
           <SitesToolbar
@@ -277,13 +280,20 @@ function SitesPage() {
             onBulkDelete={handleBulkDelete}
             addSiteSlot={operate ? <AddSiteDialog /> : <AddSitePlaceholder />}
           />
-          <SitesTable
-            sites={visibleSites}
-            isLoading={isPending}
-            selection={operate ? selection : undefined}
-            densityState={densityState}
-            onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
-          />
+          {showFilterEmpty ? (
+            <FilterEmpty
+              description={filterDescription}
+              onClearFilters={() => setSearch("")}
+            />
+          ) : (
+            <SitesTable
+              sites={visibleSites}
+              isLoading={isPending}
+              selection={operate ? selection : undefined}
+              densityState={densityState}
+              onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
+            />
+          )}
         </>
       )}
 
@@ -303,19 +313,49 @@ function SitesPage() {
   );
 }
 
+// Table-shaped skeleton so the loading state has the same spatial footprint as
+// the real table. Row count (6) is enough to fill a typical viewport without
+// over-committing on screen real estate.
+function SitesTableSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-busy="true"
+      aria-label="Loading sites"
+      className="overflow-hidden rounded-lg border border-border"
+    >
+      <span className="sr-only">Loading sites</span>
+      {/* Header row */}
+      <div className="flex h-11 items-center gap-4 border-b border-border bg-background px-4">
+        <Skeleton className="size-4 rounded" />
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="ml-4 h-3 w-16" />
+        <Skeleton className="ml-auto h-3 w-12" />
+      </div>
+      {/* Body rows */}
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div
+          key={i}
+          className="flex h-14 items-center gap-4 border-b border-border px-4 last:border-0"
+        >
+          <Skeleton className="size-4 rounded" />
+          <div className="flex flex-1 flex-col gap-1.5">
+            <Skeleton className="h-3.5 w-48" />
+            <Skeleton className="h-2.5 w-24" />
+          </div>
+          <Skeleton className="h-5 w-16 rounded-sm" />
+          <Skeleton className="h-3.5 w-12 font-mono" />
+          <Skeleton className="h-3.5 w-10 font-mono" />
+          <Skeleton className="h-6 w-6 rounded" />
+          <Skeleton className="h-6 w-6 rounded" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Read-only operators see the toolbar without an Add Site primary; we render
 // an inert placeholder so the row layout stays stable across roles.
 function AddSitePlaceholder() {
-  return (
-    <Button
-      type="button"
-      disabled
-      aria-disabled="true"
-      title="Add site requires operator permissions"
-      className="opacity-50"
-    >
-      <Plus aria-hidden="true" />
-      Add site
-    </Button>
-  );
+  return null;
 }

@@ -116,6 +116,9 @@ interface SiteRow {
   readonly hostname: string;
   readonly statusTone: StatusTone;
   readonly statusLabel: string;
+  /** ISO-8601 string for the <time datetime> attribute; null when unknown. */
+  readonly lastSeenAt: string | null;
+  /** Human-readable relative time ("4m", "2h") for display. */
   readonly lastSeenAgo: string | null;
   readonly updatesCount: number;
   readonly updatesSeverity: "minor" | "major";
@@ -161,6 +164,7 @@ function rowOf(site: Site): SiteRow {
     hostname: hostnameFromUrl(site.url),
     statusTone: tone,
     statusLabel: label,
+    lastSeenAt: site.last_seen_at ?? null,
     lastSeenAgo: shortRelativeTime(site.last_seen_at),
     updatesCount: 0,
     updatesSeverity: "minor",
@@ -239,28 +243,49 @@ function buildColumns(
     {
       id: "url",
       accessorFn: (row) => row.hostname,
-      header: "URL",
+      header: "Site",
       enableSorting: true,
       size: COL_URL_MIN_PX,
       cell: ({ row }) => {
-        const { hostname, statusTone, statusLabel, lastSeenAgo, site } =
+        const { hostname, statusTone, statusLabel, lastSeenAgo, lastSeenAt, site } =
           row.original;
         return (
           <div className="flex min-w-0 flex-col gap-0.5">
+            {/* Site name — primary link; falls back to hostname when name is absent */}
             <Link
               to="/sites/$siteId"
               params={{ siteId: site.id }}
-              className="truncate font-mono text-sm text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              className="truncate text-sm font-medium text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               onClick={(e) => e.stopPropagation()}
             >
-              {hostname}
+              {site.name || hostname}
             </Link>
-            <StatusChip
-              tone={statusTone}
-              label={statusLabel}
-              time={lastSeenAgo ?? undefined}
-              pulse={statusTone === "success"}
-            />
+            {/* Hostname in font-mono; hidden when name === hostname to avoid repetition */}
+            {site.name && site.name !== hostname ? (
+              <span className="truncate font-mono text-xs text-muted-foreground">
+                {hostname}
+              </span>
+            ) : null}
+            {/* Status chip + last-seen in a semantic <time> for accessibility */}
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+              <StatusChip
+                tone={statusTone}
+                label={statusLabel}
+                pulse={statusTone === "success"}
+              />
+              {lastSeenAgo && lastSeenAt ? (
+                <>
+                  <span aria-hidden="true" className="text-muted-foreground">·</span>
+                  <time
+                    dateTime={lastSeenAt}
+                    title={new Date(lastSeenAt).toLocaleString()}
+                    className="font-mono tabular-nums text-muted-foreground"
+                  >
+                    {lastSeenAgo}
+                  </time>
+                </>
+              ) : null}
+            </span>
           </div>
         );
       },
