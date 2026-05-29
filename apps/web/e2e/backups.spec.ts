@@ -238,16 +238,27 @@ test("open a snapshot and run a full restore", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText(/destructive/i)).toBeVisible();
 
-  // Full restore is selected by default; restore stays disabled until the
-  // overwrite is acknowledged.
-  const restoreBtn = page.getByRole("button", { name: "Restore", exact: true });
-  await expect(restoreBtn).toBeDisabled();
-  await page.getByLabel(/overwrites the live site/).check();
-  await expect(restoreBtn).toBeEnabled();
+  // Full restore is selected by default. Clicking "Restore site" opens the
+  // destructive-confirm modal where the operator types the snapshot id prefix
+  // (fallback when no host is available) to enable the destructive button.
+  await page.getByRole("button", { name: "Restore site", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: /^Restore .* from backup/ }),
+  ).toBeVisible();
 
-  await restoreBtn.click();
+  const confirmBtn = page
+    .getByRole("button", { name: "Restore site", exact: true })
+    .last();
+  await expect(confirmBtn).toBeDisabled();
 
-  // Dialog closes after the POST resolves.
+  // Type the snapshot id prefix (the fallback resourceName).
+  const prefix = SNAPSHOT_ID.slice(0, 8);
+  await page.getByLabel(/Type .* to confirm/).fill(prefix);
+  await expect(confirmBtn).toBeEnabled();
+
+  await confirmBtn.click();
+
+  // Both dialogs close after the POST resolves.
   await expect(
     page.getByRole("heading", { name: "Restore from snapshot" }),
   ).toBeHidden();

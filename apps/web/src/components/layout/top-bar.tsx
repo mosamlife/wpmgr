@@ -23,7 +23,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { useShellState } from "@/components/layout/app-shell";
+import { useCommandPalette } from "@/features/command/use-command-palette";
 import { useLogout, useMe } from "@/features/auth/use-auth";
+import { useBulkAction } from "@/features/sites/use-bulk-action";
 import { BUILD_VERSION } from "@/lib/build";
 import { cn } from "@/lib/utils";
 
@@ -98,19 +100,7 @@ export function TopBar() {
           {BUILD_VERSION}
         </code>
         <ThemeToggle />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Notifications"
-          // TODO(sprint-3): wire to notifications center.
-          onClick={() => {
-            // No-op until Sprint 3.
-            if (import.meta.env.DEV) console.debug("[topbar] notifications clicked");
-          }}
-        >
-          <Bell aria-hidden="true" />
-        </Button>
+        <NotificationsBell />
         <Button
           type="button"
           variant="ghost"
@@ -227,17 +217,17 @@ function Breadcrumb({ crumbs }: { crumbs: Crumb[] }) {
 
 // ── Command-palette placeholder ─────────────────────────────────────────────
 
+// Sprint 3 surface 4.4 wires this to the cmdk-backed CommandPalette mounted
+// by AppShell. Clicking opens the palette; the keyboard shortcut (⌘K on Mac,
+// Ctrl-K elsewhere) is owned by the provider so it works everywhere.
 function CommandPalettePlaceholder() {
+  const { setOpen } = useCommandPalette();
   return (
     <button
       type="button"
-      // TODO(sprint-3): wire to cmdk. For now this is a non-functional
-      // placeholder that *looks* like the future input so the layout's spend
-      // is committed and the operator forms a mental model.
-      onClick={() => {
-        if (import.meta.env.DEV) console.debug("[topbar] command palette placeholder");
-      }}
+      onClick={() => setOpen(true)}
       aria-label="Open command palette"
+      aria-keyshortcuts="Meta+K Control+K"
       className={cn(
         "hidden h-9 w-full max-w-[28rem] items-center gap-2 rounded-md border border-border bg-muted px-3 text-sm text-muted-foreground md:inline-flex",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
@@ -250,6 +240,49 @@ function CommandPalettePlaceholder() {
         ⌘K
       </kbd>
     </button>
+  );
+}
+
+// ── Notifications bell ──────────────────────────────────────────────────────
+
+/**
+ * Notifications bell. Sprint 3 wires this to the BulkActionProvider: when
+ * one or more bulk runs are in-flight, a small red dot appears in the
+ * top-right of the icon and clicking the bell re-opens the most recent
+ * un-settled run. With no in-flight runs the bell is a placeholder until
+ * the broader notifications center lands (post-Phase-4).
+ */
+function NotificationsBell() {
+  const { inFlightCount, reopenLatest } = useBulkAction();
+  const hasInFlight = inFlightCount > 0;
+  const label = hasInFlight
+    ? `Notifications (${inFlightCount} update${
+        inFlightCount === 1 ? "" : "s"
+      } in progress)`
+    : "Notifications";
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      aria-label={label}
+      className="relative"
+      onClick={() => {
+        if (hasInFlight) {
+          reopenLatest();
+          return;
+        }
+        if (import.meta.env.DEV) console.debug("[topbar] notifications clicked");
+      }}
+    >
+      <Bell aria-hidden="true" />
+      {hasInFlight ? (
+        <span
+          aria-hidden="true"
+          className="absolute -top-1 -right-1 size-2 rounded-full bg-destructive"
+        />
+      ) : null}
+    </Button>
   );
 }
 

@@ -17,6 +17,7 @@ import {
   type StatusTone,
 } from "@/components/status";
 import { useSite, NotFoundError } from "@/features/sites/use-sites";
+import { useRecordRecentSite } from "@/features/command/use-recent-sites";
 import {
   SiteComponentsTable,
   countUpToDate,
@@ -63,6 +64,11 @@ function SiteDetailPage() {
   const { data: site, isPending, isError, error, refetch } = useSite(siteId);
   const { data: me } = useMe();
   const operate = canOperate(me);
+
+  // Sprint 3 surface 4.4: feed the command palette's "recently viewed" list.
+  // No-op until the site has loaded; once it does, the next ⌘K surface ranks
+  // this site at the top of the Navigate group as "Go to {hostname}".
+  useRecordRecentSite(site);
 
   return (
     <div className="mx-auto w-full max-w-[1200px]">

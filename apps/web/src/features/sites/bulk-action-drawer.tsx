@@ -61,12 +61,12 @@ export function BulkActionProvider({ children }: { children: ReactNode }) {
 
   const openWithRun = useCallback((runId: string, title: string) => {
     setRuns((prev) => {
-      const existing = prev.findIndex((r) => r.runId === runId);
-      if (existing !== -1) {
+      const existing = prev.find((r) => r.runId === runId);
+      if (existing) {
         // Same run id triggered twice: refresh the title in place.
-        const next = prev.slice();
-        next[existing] = { ...next[existing], title };
-        return next;
+        return prev.map((r) =>
+          r.runId === runId ? { ...r, title } : r,
+        );
       }
       return [...prev, { runId, title, settled: false }];
     });
@@ -94,12 +94,11 @@ export function BulkActionProvider({ children }: { children: ReactNode }) {
 
   const markSettled = useCallback((runId: string) => {
     setRuns((prev) => {
-      const idx = prev.findIndex((r) => r.runId === runId);
-      if (idx === -1) return prev;
-      if (prev[idx].settled) return prev;
-      const next = prev.slice();
-      next[idx] = { ...next[idx], settled: true };
-      return next;
+      const target = prev.find((r) => r.runId === runId);
+      if (!target || target.settled) return prev;
+      return prev.map((r) =>
+        r.runId === runId ? { ...r, settled: true } : r,
+      );
     });
   }, []);
 

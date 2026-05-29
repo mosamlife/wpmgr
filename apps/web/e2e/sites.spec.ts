@@ -162,10 +162,10 @@ test("Add site generates and shows a one-time pairing code", async ({ page }) =>
   // Open the Add site form (header action).
   await page.getByRole("button", { name: "Add site" }).first().click();
   await expect(
-    page.getByRole("heading", { name: "Add a site" }),
+    page.getByRole("heading", { name: "Add site", exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Generate code" }).click();
+  await page.getByRole("button", { name: "Generate pairing code" }).click();
 
   // Pairing dialog surfaces the one-time code + "shown once" warning.
   await expect(

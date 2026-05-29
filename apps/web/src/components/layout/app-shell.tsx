@@ -10,6 +10,8 @@ import {
 
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/top-bar";
+import { MountedCommandPalette } from "@/features/command/command-palette";
+import { CommandPaletteProvider } from "@/features/command/command-palette-provider";
 
 // Phase 4 / Sprint 1 surfaces 4.1 + 4.2 + 4.3: AppShell, Sidebar, TopBar.
 //
@@ -112,18 +114,23 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <ShellContext.Provider value={shellState}>
-      <div
-        className={`grid h-dvh grid-cols-[1fr] grid-rows-[48px_1fr] bg-background text-foreground ${desktopColsClass}`}
-      >
-        <Sidebar />
-        <TopBar />
-        <main
-          id="main-content"
-          className="col-start-1 row-start-2 overflow-y-auto bg-background px-8 py-6 md:col-start-2"
+      <CommandPaletteProvider>
+        <div
+          className={`grid h-dvh grid-cols-[1fr] grid-rows-[48px_1fr] bg-background text-foreground ${desktopColsClass}`}
         >
-          {children}
-        </main>
-      </div>
+          <Sidebar />
+          <TopBar />
+          <main
+            id="main-content"
+            className="col-start-1 row-start-2 overflow-y-auto bg-background px-8 py-6 md:col-start-2"
+          >
+            {children}
+          </main>
+        </div>
+        {/* Mounted once so the close animation runs; visibility is driven by
+            the provider's `open` state. */}
+        <MountedCommandPalette />
+      </CommandPaletteProvider>
     </ShellContext.Provider>
   );
 }

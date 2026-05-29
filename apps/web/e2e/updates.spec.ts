@@ -156,12 +156,12 @@ test("select a site, run the dry-run wizard, and see live task statuses", async 
   await page.getByRole("button", { name: /Update 1 selected/ }).click();
 
   // Wizard opens; dry run is on by default. Choose to update core.
-  await expect(page.getByRole("heading", { name: "Bulk update" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Update sites" })).toBeVisible();
   await page.getByLabel("WordPress core (to latest)").check();
   await expect(page.getByLabel(/Dry run/)).toBeChecked();
 
   // Submit -> POST /updates -> navigate to run detail.
-  await page.getByRole("button", { name: "Preview update" }).click();
+  await page.getByRole("button", { name: /Preview 1 update/ }).click();
 
   await expect(page.getByRole("heading", { name: /^Run/ })).toBeVisible();
   await expect(page.getByText("Dry run")).toBeVisible();

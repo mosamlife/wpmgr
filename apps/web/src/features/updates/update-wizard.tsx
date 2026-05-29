@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,6 +25,10 @@ import type { Site, UpdateItem, UpdateRunCreate } from "@wpmgr/api";
 //   - a dry-run toggle (default ON so the first submit is a safe preview)
 //   - an optional schedule time
 // Submitting POSTs /api/v1/updates and navigates to the run detail page.
+//
+// Sprint 3 chrome refresh: native <dialog> replaced with the shared Dialog
+// primitive (motion-animated, --scrim backdrop, 480px panel). Form logic and
+// step structure unchanged — Sprint 4 forms-architect owns the inputs.
 
 export type WizardTarget =
   | { kind: "sites"; siteIds: string[] }
@@ -78,23 +91,8 @@ export function UpdateWizard({
   // sites). May be empty — the user can still add slugs manually.
   sites: Site[];
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  // Sync native <dialog> open state with React state (no ref touch in render).
-  useEffect(() => {
-    const el = dialogRef.current;
-    if (!el) return;
-    if (open && !el.open) el.showModal();
-    if (!open && el.open) el.close();
-  }, [open]);
-
   return (
-    <dialog
-      ref={dialogRef}
-      onClose={onClose}
-      aria-labelledby="update-wizard-title"
-      className="m-auto w-full max-w-lg rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-[var(--scrim)]"
-    >
+    <Dialog open={open} onClose={onClose}>
       {/* Keying on (open + target) remounts the form so its local state resets
           cleanly each time the wizard is opened — no setState-in-effect. */}
       {open && target ? (
@@ -105,7 +103,7 @@ export function UpdateWizard({
           onClose={onClose}
         />
       ) : null}
-    </dialog>
+    </Dialog>
   );
 }
 
@@ -161,6 +159,12 @@ function WizardForm({
       ? `${target.siteIds.length} selected site${target.siteIds.length === 1 ? "" : "s"}`
       : `sites tagged “${target.tag}”`;
 
+  const submitLabel = create.isPending
+    ? "Starting…"
+    : dryRun
+      ? `Preview ${items.length} update${items.length === 1 ? "" : "s"}`
+      : `Apply ${items.length} update${items.length === 1 ? "" : "s"}`;
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (items.length === 0) return;
@@ -184,139 +188,137 @@ function WizardForm({
   }
 
   return (
-    <form onSubmit={(e) => void onSubmit(e)} noValidate className="space-y-5">
-      <div>
-        <h2 id="update-wizard-title" className="text-lg font-semibold">
-          Bulk update
-        </h2>
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          Targeting {targetDescribed}. Choose what to update; a dry run previews
-          changes without modifying any site.
-        </p>
-      </div>
+    <DialogContent ariaLabelledBy="update-wizard-title">
+      <form onSubmit={(e) => void onSubmit(e)} noValidate>
+        <DialogHeader>
+          <DialogTitle id="update-wizard-title">Update sites</DialogTitle>
+          <DialogDescription>
+            Targeting {targetDescribed}. A dry run previews changes without
+            modifying any site.
+          </DialogDescription>
+        </DialogHeader>
 
-      <fieldset className="space-y-3">
-        <legend className="text-sm font-medium">What to update</legend>
+        <DialogBody>
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-medium">What to update</legend>
 
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={updateCore}
-            onChange={(e) => setUpdateCore(e.target.checked)}
-          />
-          WordPress core (to latest)
-        </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={updateCore}
+                onChange={(e) => setUpdateCore(e.target.checked)}
+              />
+              WordPress core (to latest)
+            </label>
 
-        {options.length > 0 ? (
-          <div className="space-y-1">
-            <p className="text-xs text-[var(--color-muted-foreground)]">
-              Plugins &amp; themes detected on the selected sites:
-            </p>
-            <ul className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-[var(--color-border)] p-2">
-              {options.map((opt) => {
-                const key = `${opt.type}:${opt.slug}`;
-                const id = `opt-${key}`;
-                return (
-                  <li key={key}>
-                    <label
-                      htmlFor={id}
-                      className="flex items-center gap-2 text-sm"
-                    >
-                      <Checkbox
-                        id={id}
-                        checked={selectedSlugs.has(key)}
-                        onChange={() => toggleSlug(key)}
-                      />
-                      <span className="font-medium">{opt.label}</span>
-                      <span className="text-xs text-[var(--color-muted-foreground)] capitalize">
-                        {opt.type}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
+            {options.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  Plugins &amp; themes detected on the selected sites:
+                </p>
+                <ul className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-[var(--color-border)] p-2">
+                  {options.map((opt) => {
+                    const key = `${opt.type}:${opt.slug}`;
+                    const id = `opt-${key}`;
+                    return (
+                      <li key={key}>
+                        <label
+                          htmlFor={id}
+                          className="flex items-center gap-2 text-sm"
+                        >
+                          <Checkbox
+                            id={id}
+                            checked={selectedSlugs.has(key)}
+                            onChange={() => toggleSlug(key)}
+                          />
+                          <span className="font-medium">{opt.label}</span>
+                          <span className="text-xs text-[var(--color-muted-foreground)] capitalize">
+                            {opt.type}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="space-y-1">
+              <Label htmlFor="manual-slugs">Additional plugin slugs</Label>
+              <Input
+                id="manual-slugs"
+                placeholder="akismet, jetpack"
+                value={manualSlugs}
+                onChange={(e) => setManualSlugs(e.target.value)}
+                aria-describedby="manual-slugs-hint"
+              />
+              <p
+                id="manual-slugs-hint"
+                className="text-xs text-[var(--color-muted-foreground)]"
+              >
+                Comma- or space-separated. Each updates to its latest version.
+              </p>
+            </div>
+          </fieldset>
+
+          <div className="space-y-3 rounded-md border border-[var(--color-border)] p-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <Checkbox
+                checked={dryRun}
+                onChange={(e) => setDryRun(e.target.checked)}
+              />
+              Dry run (preview only — no sites are modified)
+            </label>
+
+            <div className="space-y-1">
+              <Label htmlFor="schedule-at">Schedule (optional)</Label>
+              <Input
+                id="schedule-at"
+                type="datetime-local"
+                value={scheduleAt}
+                onChange={(e) => setScheduleAt(e.target.value)}
+                className="w-60"
+              />
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                Leave empty to run immediately.
+              </p>
+            </div>
           </div>
-        ) : null}
 
-        <div className="space-y-1">
-          <Label htmlFor="manual-slugs">Additional plugin slugs</Label>
-          <Input
-            id="manual-slugs"
-            placeholder="akismet, jetpack"
-            value={manualSlugs}
-            onChange={(e) => setManualSlugs(e.target.value)}
-            aria-describedby="manual-slugs-hint"
-          />
-          <p
-            id="manual-slugs-hint"
-            className="text-xs text-[var(--color-muted-foreground)]"
+          {items.length === 0 ? (
+            <p className="text-sm text-[var(--color-muted-foreground)]">
+              Select at least one thing to update.
+            </p>
+          ) : (
+            <p className="text-sm text-[var(--color-muted-foreground)]">
+              {items.length} item{items.length === 1 ? "" : "s"} will be{" "}
+              {dryRun ? "previewed" : "updated"}.
+            </p>
+          )}
+
+          {create.isError ? (
+            <p role="alert" className="text-sm text-[var(--color-destructive)]">
+              {create.error.message}
+            </p>
+          ) : null}
+        </DialogBody>
+
+        <DialogFooter className="pt-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onClose}
+            disabled={create.isPending}
           >
-            Comma- or space-separated. Each updates to its latest version.
-          </p>
-        </div>
-      </fieldset>
-
-      <div className="space-y-3 rounded-md border border-[var(--color-border)] p-3">
-        <label className="flex items-center gap-2 text-sm font-medium">
-          <Checkbox
-            checked={dryRun}
-            onChange={(e) => setDryRun(e.target.checked)}
-          />
-          Dry run (preview only — no sites are modified)
-        </label>
-
-        <div className="space-y-1">
-          <Label htmlFor="schedule-at">Schedule (optional)</Label>
-          <Input
-            id="schedule-at"
-            type="datetime-local"
-            value={scheduleAt}
-            onChange={(e) => setScheduleAt(e.target.value)}
-            className="w-60"
-          />
-          <p className="text-xs text-[var(--color-muted-foreground)]">
-            Leave empty to run immediately.
-          </p>
-        </div>
-      </div>
-
-      {items.length === 0 ? (
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          Select at least one thing to update.
-        </p>
-      ) : (
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          {items.length} item{items.length === 1 ? "" : "s"} will be{" "}
-          {dryRun ? "previewed" : "updated"}.
-        </p>
-      )}
-
-      {create.isError ? (
-        <p role="alert" className="text-sm text-[var(--color-destructive)]">
-          {create.error.message}
-        </p>
-      ) : null}
-
-      <div className="flex justify-end gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onClose}
-          disabled={create.isPending}
-        >
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          disabled={create.isPending || items.length === 0}
-        >
-          {create.isPending
-            ? "Starting…"
-            : dryRun
-              ? "Preview update"
-              : "Start update"}
-        </Button>
-      </div>
-    </form>
+            Close
+          </Button>
+          <Button
+            type="submit"
+            disabled={create.isPending || items.length === 0}
+          >
+            {submitLabel}
+          </Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
   );
 }

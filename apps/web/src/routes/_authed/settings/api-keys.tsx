@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -6,6 +6,14 @@ import { z } from "zod";
 import { Copy, Check, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -16,13 +24,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { useMe, canManage } from "@/features/auth/use-auth";
 import {
   useApiKeys,
   useCreateApiKey,
   useRevokeApiKey,
 } from "@/features/api-keys/use-api-keys";
-import type { ApiKeyCreated } from "@wpmgr/api";
+import type { ApiKey, ApiKeyCreated } from "@wpmgr/api";
 
 export const Route = createFileRoute("/_authed/settings/api-keys")({
   component: ApiKeysPage,
@@ -47,6 +56,10 @@ function ApiKeysPage() {
   // so it can be shown in a dialog and copied. It is never persisted.
   const [created, setCreated] = useState<ApiKeyCreated | null>(null);
 
+  // Sprint 3: revoke is destructive, so it goes through the typed-confirmation
+  // pattern. `revokeTarget` holds the key the operator is about to revoke.
+  const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
+
   const {
     register,
     handleSubmit,
@@ -64,6 +77,17 @@ function ApiKeysPage() {
     setCreated(result);
     reset();
   });
+
+  async function performRevoke() {
+    if (!revokeTarget) return;
+    try {
+      await revokeMutation.mutateAsync(revokeTarget.id);
+      setRevokeTarget(null);
+    } catch {
+      // Mutation error stays surfaced on the page; confirm dialog stays open
+      // so the operator can retry.
+    }
+  }
 
   return (
     <section aria-labelledby="api-keys-heading" className="space-y-6">
@@ -174,11 +198,11 @@ function ApiKeysPage() {
                           variant="outline"
                           size="sm"
                           disabled={revokeMutation.isPending}
-                          onClick={() => revokeMutation.mutate(k.id)}
+                          onClick={() => setRevokeTarget(k)}
                           aria-label={`Revoke ${k.name}`}
                         >
                           <Trash2 aria-hidden="true" />
-                          Revoke
+                          Revoke key
                         </Button>
                       )}
                     </TableCell>
@@ -191,13 +215,46 @@ function ApiKeysPage() {
       )}
 
       <ShowOnceDialog created={created} onClose={() => setCreated(null)} />
+
+      <DestructiveConfirm
+        open={revokeTarget !== null}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={performRevoke}
+        title={`Revoke API key "${revokeTarget?.name ?? ""}"`}
+        consequencesBody={
+          <div className="space-y-2">
+            <p>
+              Any service or script using this token will lose access
+              immediately. The token cannot be reactivated; you&apos;ll need to
+              create a new one and redeploy callers.
+            </p>
+            {revokeTarget ? (
+              <p className="text-[var(--color-muted-foreground)]">
+                Prefix:{" "}
+                <code className="font-mono text-xs text-[var(--color-foreground)]">
+                  {revokeTarget.prefix}…
+                </code>
+                <span className="mx-2">·</span>Role:{" "}
+                <span className="capitalize text-[var(--color-foreground)]">
+                  {revokeTarget.role}
+                </span>
+              </p>
+            ) : null}
+          </div>
+        }
+        resourceName={revokeTarget?.name ?? ""}
+        confirmLabel="Revoke key"
+        cancelLabel="Keep key"
+        isPending={revokeMutation.isPending}
+        errorMessage={
+          revokeMutation.isError ? revokeMutation.error.message : null
+        }
+      />
     </section>
   );
 }
 
-// Modal that surfaces the full token exactly once. Uses the native <dialog>
-// element (showModal) so it traps focus and is dismissable, without pulling in
-// an extra UI dependency.
+// Modal that surfaces the full token exactly once (Sprint 3 chrome refresh).
 function ShowOnceDialog({
   created,
   onClose,
@@ -205,15 +262,10 @@ function ShowOnceDialog({
   created: ApiKeyCreated | null;
   onClose: () => void;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (created && !el.open) el.showModal();
-    if (!created && el.open) el.close();
-    setCopied(false);
+    if (created) setCopied(false);
   }, [created]);
 
   async function copy() {
@@ -227,37 +279,45 @@ function ShowOnceDialog({
   }
 
   return (
-    <dialog
-      ref={ref}
-      onClose={onClose}
-      aria-labelledby="key-created-title"
-      className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-[var(--scrim)]"
-    >
+    <Dialog open={created !== null} onClose={onClose}>
       {created ? (
-        <div className="space-y-4">
-          <h2 id="key-created-title" className="text-lg font-semibold">
-            API key created
-          </h2>
-          <p role="alert" className="text-sm text-[var(--color-destructive)]">
-            Copy this key now. For security it will <strong>not</strong> be shown
-            again.
-          </p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto rounded-md border border-[var(--color-border)] px-3 py-2 text-sm">
-              {created.token}
-            </code>
-            <Button type="button" variant="outline" size="sm" onClick={() => void copy()}>
-              {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-              {copied ? "Copied" : "Copy"}
-            </Button>
-          </div>
-          <div className="flex justify-end">
+        <DialogContent ariaLabelledBy="key-created-title">
+          <DialogHeader>
+            <DialogTitle id="key-created-title">API key created</DialogTitle>
+          </DialogHeader>
+
+          <DialogBody>
+            <p role="alert" className="text-sm text-[var(--color-destructive)]">
+              Copy this key now. For security it will <strong>not</strong> be
+              shown again.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 overflow-x-auto rounded-md border border-[var(--color-border)] px-3 py-2 font-mono text-sm">
+                {created.token}
+              </code>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void copy()}
+              >
+                {copied ? (
+                  <Check aria-hidden="true" />
+                ) : (
+                  <Copy aria-hidden="true" />
+                )}
+                {copied ? "Copied" : "Copy token"}
+              </Button>
+            </div>
+          </DialogBody>
+
+          <DialogFooter className="pt-2">
             <Button type="button" onClick={onClose}>
-              Done
+              Close
             </Button>
-          </div>
-        </div>
+          </DialogFooter>
+        </DialogContent>
       ) : null}
-    </dialog>
+    </Dialog>
   );
 }
