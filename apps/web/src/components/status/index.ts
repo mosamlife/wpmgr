@@ -2,8 +2,9 @@
  * Status indicator primitives. Pure presentational components — props in,
  * JSX out. No data fetching. See DESIGN.md "Components" for the contract.
  */
-export { StatusDot, useStatusPulse } from "./status-dot";
+export { StatusDot } from "./status-dot";
 export type { StatusDotProps, StatusTone } from "./status-dot";
+export { useStatusPulse } from "./use-status-pulse";
 
 export { StatusChip } from "./status-chip";
 export type { StatusChipProps } from "./status-chip";

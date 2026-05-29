@@ -1,17 +1,13 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/top-bar";
 import { MountedCommandPalette } from "@/features/command/command-palette";
 import { CommandPaletteProvider } from "@/features/command/command-palette-provider";
+import {
+  ShellContext,
+  type ShellState,
+} from "@/components/layout/app-shell-context";
 
 // Phase 4 / Sprint 1 surfaces 4.1 + 4.2 + 4.3: AppShell, Sidebar, TopBar.
 //
@@ -41,29 +37,6 @@ import { CommandPaletteProvider } from "@/features/command/command-palette-provi
 // component state per the ADRs.
 
 const COLLAPSED_KEY = "wpmgr.sidebar.collapsed";
-
-interface ShellState {
-  collapsed: boolean;
-  toggleCollapsed: () => void;
-  mobileOpen: boolean;
-  setMobileOpen: (open: boolean) => void;
-}
-
-const ShellContext = createContext<ShellState | null>(null);
-
-/**
- * Shell state hook. Components inside `<AppShell>` (Sidebar, TopBar, future
- * surfaces that need to know about the collapsed rail) read here. Throws if
- * called outside the provider - that's a programming error, not a runtime
- * one.
- */
-export function useShellState(): ShellState {
-  const ctx = useContext(ShellContext);
-  if (!ctx) {
-    throw new Error("useShellState must be used inside <AppShell>");
-  }
-  return ctx;
-}
 
 function readCollapsed(): boolean {
   if (typeof window === "undefined") return false;

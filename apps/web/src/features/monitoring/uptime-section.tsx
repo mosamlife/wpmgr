@@ -14,10 +14,8 @@ import {
   NotFoundError,
   type UptimeWindow,
 } from "@/features/monitoring/use-uptime";
-import {
-  UptimeStatusBadge,
-  statusFromStatus,
-} from "@/features/monitoring/uptime-badges";
+import { UptimeStatusBadge } from "@/features/monitoring/uptime-badges";
+import { statusFromStatus } from "@/features/monitoring/uptime-badges-helpers";
 import { UptimeChart } from "@/features/monitoring/uptime-chart";
 import { relativeTime } from "@/lib/utils";
 import type { UptimeStatus } from "@wpmgr/api";

@@ -10,11 +10,10 @@ import { useCallback, useEffect, useState } from "react";
 // Storage layout:
 //   localStorage["wpmgr.onboarding.completed"] = "true" | absent
 //
-// SSR / no-window safety: the hook initializes to `isOnboarding: true` (the
-// safer default for a fresh tenant) and reconciles on mount once we can read
-// localStorage. This avoids flashing the empty state on initial paint for
-// tenants who have already completed onboarding — they see the wizard for one
-// frame at most, which is acceptable for a single-tenant dashboard.
+// SSR / no-window safety: readCompleted() guards against a missing window, so
+// the lazy useState initializer is safe in both SSR and browser environments.
+// Tenants who have already completed onboarding get the correct state from the
+// very first render; no reconcile pass is needed.
 
 const STORAGE_KEY = "wpmgr.onboarding.completed";
 
@@ -42,11 +41,11 @@ export interface OnboardingState {
 export function useOnboardingState(): OnboardingState {
   const [completed, setCompleted] = useState<boolean>(readCompleted);
 
-  // Reconcile from storage on mount (covers the SSR-safe initial render path)
-  // and listen for cross-tab changes so a "Reset onboarding" action in another
-  // tab takes effect here without a refresh.
+  // Listen for cross-tab changes so a "Reset onboarding" action in another
+  // tab takes effect here without a refresh. The initial value is already
+  // read directly in the useState lazy initializer above, so no synchronous
+  // setState is needed on mount.
   useEffect(() => {
-    setCompleted(readCompleted());
     function onStorage(e: StorageEvent) {
       if (e.key !== STORAGE_KEY) return;
       setCompleted(e.newValue === "true");

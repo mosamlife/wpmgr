@@ -1,10 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-import {
-  SiteComponentsTable,
-  countUpToDate,
-} from "@/features/sites/site-components-table";
+import { SiteComponentsTable } from "@/features/sites/site-components-table";
+import { countUpToDate } from "@/features/sites/site-components-helpers";
 import { SiteTagsEditor } from "@/features/sites/site-tags-editor";
 import { AutoLoginButton } from "@/features/sites/auto-login-button";
 import { useSite } from "@/features/sites/use-sites";

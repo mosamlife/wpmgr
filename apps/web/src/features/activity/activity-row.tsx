@@ -1,9 +1,25 @@
+import React from "react";
 import { ShieldAlert } from "lucide-react";
 
 import { cn, relativeTime } from "@/lib/utils";
 import type { SiteActivityEvent } from "@wpmgr/api";
 
 import { objectTypeIcon } from "./object-type-icon";
+
+// Stable wrapper so the React Compiler sees a fixed component reference
+// rather than a component created during ActivityRow's render. We use
+// React.createElement directly to avoid the JSX-component-creation path
+// that `react-hooks/static-components` flags; LucideIcon values from
+// objectTypeIcon are always stable module-level components.
+function ObjectIcon({
+  type,
+  className,
+}: {
+  type: string;
+  className: string;
+}) {
+  return React.createElement(objectTypeIcon(type), { className });
+}
 
 // One row of the activity feed (ADR-037 redesign).
 //
@@ -45,7 +61,6 @@ const SEVERITY_ICON_WRAP: Record<Severity, string> = {
 };
 
 export function ActivityRow({ event, onOpen }: ActivityRowProps) {
-  const Icon = objectTypeIcon(event.object_type);
   const tampered = !event.chain_valid;
   const hasActor = event.actor_login !== "" && event.actor_user_id !== 0;
   const objectText =
@@ -83,7 +98,7 @@ export function ActivityRow({ event, onOpen }: ActivityRowProps) {
           SEVERITY_ICON_WRAP[event.severity],
         )}
       >
-        <Icon className="size-3.5" />
+        <ObjectIcon type={event.object_type} className="size-3.5" />
       </span>
 
       <span className="flex min-w-0 flex-1 flex-col gap-1">

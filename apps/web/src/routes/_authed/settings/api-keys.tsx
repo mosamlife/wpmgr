@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -264,9 +264,13 @@ function ShowOnceDialog({
 }) {
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
+  // Reset the copied indicator whenever a new key is shown; preserve it across
+  // re-renders while the dialog is open so the checkmark stays.
+  const [prevCreated, setPrevCreated] = useState(created);
+  if (created !== prevCreated) {
+    setPrevCreated(created);
     if (created) setCopied(false);
-  }, [created]);
+  }
 
   async function copy() {
     if (!created) return;

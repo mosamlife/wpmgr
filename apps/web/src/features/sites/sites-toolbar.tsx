@@ -243,7 +243,7 @@ function FilterDropdown({
   // Sprint 4 (touching useSites() is out of this scope). We surface the
   // intent via console.debug so changes are observable in dev.
   const handleSelect = (value: string | null) => {
-    // eslint-disable-next-line no-console
+     
     console.debug("[sites-toolbar] filter change", {
       kind: filterKind,
       value,

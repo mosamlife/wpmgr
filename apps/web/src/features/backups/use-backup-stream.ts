@@ -122,7 +122,7 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
     if (!snapshotId) return;
     if (typeof EventSource === "undefined") {
       // SSR or ancient browser — leave polling as the only mechanism.
-      // eslint-disable-next-line no-console
+       
       console.warn("[wpmgr-sse] EventSource not available — polling only");
       return;
     }
@@ -131,7 +131,7 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
     let failures = 0;
     let markedLive = false;
     const url = `/api/v1/backups/${encodeURIComponent(snapshotId)}/events`;
-    // eslint-disable-next-line no-console
+     
     console.log("[wpmgr-sse] mount + open EventSource", { build: BUILD_VERSION, snapshotId, url });
     const source = new EventSource(url, { withCredentials: true });
 
@@ -156,7 +156,7 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
 
     source.onopen = () => {
       if (closed) return;
-      // eslint-disable-next-line no-console
+       
       console.log("[wpmgr-sse] onopen", { snapshotId });
       failures = 0;
       markLive();
@@ -174,11 +174,11 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
         parsed = backupEventSchema.parse(raw);
       } catch (err) {
         // Malformed frame (or a comment that somehow surfaced as data) — drop.
-        // eslint-disable-next-line no-console
+         
         console.warn("[wpmgr-sse] dropped malformed frame", { snapshotId, err, raw: msg.data?.slice?.(0, 200) });
         return;
       }
-      // eslint-disable-next-line no-console
+       
       console.log("[wpmgr-sse] event", { phase: parsed.phase, status: parsed.status, detail: parsed.phase_detail });
       if (parsed.snapshot_id !== snapshotId) return;
 
@@ -214,7 +214,7 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
       // EventSource will auto-reconnect on its own; we only count and bail out
       // once we've crossed the threshold.
       failures += 1;
-      // eslint-disable-next-line no-console
+       
       console.warn("[wpmgr-sse] onerror", { snapshotId, failures, readyState: source.readyState, err });
       // Drop the live flag immediately so polling can resume even on the
       // first hiccup — it'll come back on the next onopen.

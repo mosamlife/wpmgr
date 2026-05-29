@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 
@@ -61,7 +61,7 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
     register,
     handleSubmit,
     reset,
-    watch,
+    control,
     formState: { errors, isDirty },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -85,7 +85,7 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
     );
   }, [schedule, isPending, reset]);
 
-  const enabled = watch("enabled");
+  const enabled = useWatch({ control, name: "enabled" });
 
   function onSubmit(values: FormValues) {
     const body: BackupScheduleUpdate = {

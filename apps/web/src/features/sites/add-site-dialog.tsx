@@ -176,9 +176,13 @@ function PairingCodeDialog({
 }) {
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
+  // Reset the copied indicator whenever a new pairing code is shown; preserve
+  // it across re-renders while the dialog is open so the checkmark stays.
+  const [prevCreated, setPrevCreated] = useState(created);
+  if (created !== prevCreated) {
+    setPrevCreated(created);
     if (created) setCopied(false);
-  }, [created]);
+  }
 
   async function copy() {
     if (!created) return;

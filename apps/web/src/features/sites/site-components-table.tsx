@@ -98,14 +98,3 @@ export function SiteComponentsTable({
   );
 }
 
-/** Count of plugins+themes that have NO outstanding update. */
-export function countUpToDate(
-  plugins: SiteComponent[] = [],
-  themes: SiteComponent[] = [],
-): number {
-  const hasNoUpdate = (c: SiteComponent): boolean => {
-    const ext = c as ComponentWithMaybeUpdate;
-    return ext.available_update == null;
-  };
-  return plugins.filter(hasNoUpdate).length + themes.filter(hasNoUpdate).length;
-}

@@ -183,7 +183,7 @@ function isPhaseId(v: unknown): v is PhaseId {
 }
 
 export function formatProgress(snapshot: BackupSnapshot): FormattedProgress {
-  const raw = snapshot.progress as Record<string, unknown> | undefined;
+  const raw = snapshot.progress;
   const rawPhase = raw?.phase;
   const phase: PhaseId = isPhaseId(rawPhase)
     ? rawPhase

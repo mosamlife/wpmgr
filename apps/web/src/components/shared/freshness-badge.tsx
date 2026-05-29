@@ -1,4 +1,5 @@
 import { cn, relativeTime } from "@/lib/utils";
+import { useNow } from "@/lib/use-now";
 
 // FreshnessBadge — "Updated 4m ago" / "Stale · 2d ago" / "Never", extracted from
 // the per-card freshness logic in health/diagnostic-card.tsx (ADR-037 Batch 0).
@@ -23,6 +24,11 @@ export function FreshnessBadge({
   staleAfterSeconds = DEFAULT_STALE_AFTER_SECONDS,
   className,
 }: FreshnessBadgeProps) {
+  // useNow must run before any early return to satisfy the Rules of Hooks.
+  // It updates every 30 s — coarse enough not to thrash, fine enough that
+  // freshness flips within half a minute of crossing the boundary.
+  const now = useNow(30_000);
+
   const rel = collectedAt ? relativeTime(collectedAt) : null;
 
   if (!collectedAt || !rel) {
@@ -38,7 +44,7 @@ export function FreshnessBadge({
     );
   }
 
-  const ageSeconds = (Date.now() - Date.parse(collectedAt)) / 1000;
+  const ageSeconds = (now - Date.parse(collectedAt)) / 1000;
   const stale = ageSeconds > staleAfterSeconds;
 
   if (stale) {

@@ -70,6 +70,27 @@ export function useCrossfade(isLoading: boolean): UseCrossfadeResult {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rafRef = useRef<number | null>(null);
 
+  // Store the previous isLoading value in state (stored-prev-in-state pattern,
+  // per React docs). Reading/writing refs during render is forbidden by
+  // react-hooks/refs; using a state variable avoids that entirely. When
+  // isLoading flips we call setPhase during the render pass — this is allowed;
+  // the lint rule only bans synchronous setState inside effect bodies.
+  const [prevIsLoading, setPrevIsLoading] = useState<boolean>(isLoading);
+  if (prevIsLoading !== isLoading) {
+    setPrevIsLoading(isLoading);
+    // Apply the phase transition immediately in this render pass so the DOM
+    // is already in the right shape when the effect fires.
+    if (isLoading) {
+      // Flipped back to loading (e.g. a refetch). The effect will cancel
+      // any in-flight timers/rafs on its next run.
+      setPhase("loading");
+    } else {
+      // Loading just finished. Mount the content layer at opacity 0
+      // ("entering") so the DOM node exists before we start the CSS transition.
+      setPhase("entering");
+    }
+  }
+
   useEffect(() => {
     const clearAll = () => {
       if (timerRef.current) {
@@ -82,18 +103,19 @@ export function useCrossfade(isLoading: boolean): UseCrossfadeResult {
       }
     };
 
+    // Always cancel previous timers before starting new ones.
     clearAll();
 
+    // When loading is true the render pass already set phase to "loading";
+    // there is nothing async to schedule.
     if (isLoading) {
-      setPhase("loading");
       return clearAll;
     }
 
-    // Loading just finished. Mount the content layer at opacity 0
-    // ("entering"), then on the next animation frame flip to "fading" so
-    // the CSS transition has a "from" value to interpolate from. After
-    // 500ms unmount the skeleton.
-    setPhase("entering");
+    // The render pass already set phase to "entering". Schedule the rAF
+    // double-pump to flip to "fading" so the CSS transition has a "from"
+    // value to interpolate from. After CROSSFADE_DURATION_MS, unmount the
+    // skeleton by transitioning to "loaded".
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = requestAnimationFrame(() => {
         setPhase("fading");

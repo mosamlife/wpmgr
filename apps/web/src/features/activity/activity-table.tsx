@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { ShieldCheck, ShieldAlert, Search, Inbox } from "lucide-react";
 
@@ -52,7 +52,10 @@ export function ActivityTable({ siteId }: { siteId: string }) {
   );
   const verify = useActivityVerify(siteId);
 
-  const rows = data ?? [];
+  // Stabilise the rows reference so downstream useMemos don't recompute on
+  // every render when `data` stays the same object but the `?? []` fallback
+  // would otherwise produce a fresh array each time.
+  const rows = useMemo(() => data ?? [], [data]);
 
   // Derive the object_type chip set from whatever the current page returned, so
   // the filter reflects the site's real event surface without a second query.
@@ -242,11 +245,10 @@ function DayGroup({
   events: SiteActivityEvent[];
   onOpen: (event: SiteActivityEvent) => void;
 }) {
-  // First-mount fadeUp only — re-fetches (30s poll) must not re-fire the
-  // entrance, which would read as flicker to an operator scanning the feed.
-  const hasMounted = useRef(false);
-  const firstMount = !hasMounted.current;
-  hasMounted.current = true;
+  // `initial="initial"` on a mounted motion element plays the entrance once.
+  // Framer Motion does not replay the initial animation on re-renders of an
+  // already-mounted component, so re-fetches (30s poll) will not re-fire the
+  // entrance — no extra gate is needed.
 
   return (
     <div>
@@ -255,7 +257,7 @@ function DayGroup({
       </div>
       <motion.ul
         variants={fadeUp}
-        initial={firstMount ? "initial" : false}
+        initial="initial"
         animate="animate"
         className="divide-y divide-border"
       >

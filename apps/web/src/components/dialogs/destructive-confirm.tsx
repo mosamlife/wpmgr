@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -65,9 +65,11 @@ export function DestructiveConfirm({
   // Reset the typed value whenever the dialog opens; preserve it across
   // re-renders while open so a failed confirmation doesn't wipe the operator's
   // input (they may want to retry).
-  useEffect(() => {
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open) setTyped("");
-  }, [open]);
+  }
 
   const matches = typed === resourceName;
   const canConfirm = matches && !isPending;

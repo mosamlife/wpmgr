@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, LogIn, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -56,6 +56,11 @@ export function AutoLoginButton({
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
 
+  // runRef holds the latest runAutoLogin so the toast "Try again" action can
+  // call it without the callback depending on itself (breaks the rules-of-hooks
+  // immutability requirement when the function is listed in its own dep array).
+  const runRef = useRef((_input: Omit<AutoLoginInput, "siteId">) => {});
+
   const runAutoLogin = useCallback(
     (input: Omit<AutoLoginInput, "siteId">) => {
       // Transient progress notice — operators expect a beat of "we heard you"
@@ -75,7 +80,7 @@ export function AutoLoginButton({
             toast.error(autoLoginErrorMessage(err), {
               action: {
                 label: "Try again",
-                onClick: () => runAutoLogin(input),
+                onClick: () => runRef.current(input),
               },
             });
           },
@@ -84,6 +89,12 @@ export function AutoLoginButton({
     },
     [mutation, openTab, siteId],
   );
+
+  // Keep the ref in sync so any already-rendered toast "Try again" button
+  // always calls the latest version of the callback.
+  useEffect(() => {
+    runRef.current = runAutoLogin;
+  }, [runAutoLogin]);
 
   // Gate visibility on role. Render nothing if the user cannot autologin —
   // the action is invisible (not just disabled) for clarity.

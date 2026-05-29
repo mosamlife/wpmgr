@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 
 import { Button } from "@/components/ui/button";
-import { useShellState } from "@/components/layout/app-shell";
+import { useShellState } from "@/components/layout/app-shell-context";
 import { cn } from "@/lib/utils";
 import { dur, ease } from "@/lib/motion-presets";
 

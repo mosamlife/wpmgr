@@ -22,7 +22,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { useShellState } from "@/components/layout/app-shell";
+import { useShellState } from "@/components/layout/app-shell-context";
 import { useCommandPalette } from "@/features/command/use-command-palette";
 import { useLogout, useMe } from "@/features/auth/use-auth";
 import { useBulkAction } from "@/features/sites/use-bulk-action";

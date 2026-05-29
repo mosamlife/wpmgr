@@ -9,7 +9,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { useShellState } from "@/components/layout/app-shell";
+import { useShellState } from "@/components/layout/app-shell-context";
 import { cn } from "@/lib/utils";
 
 // Phase 4 / Sprint 1 surface 4.2 - primary navigation.
@@ -398,7 +398,7 @@ function CollapsedGroup({
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false);
+        if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
       }}
     >
       <button

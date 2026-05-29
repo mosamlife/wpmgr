@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { formatBytes, relativeTime } from "@/lib/utils";
+import { useNow } from "@/lib/use-now";
 
 import { LiveIndicator } from "@/components/shared/live-indicator";
 
@@ -37,6 +38,10 @@ import { formatElapsed, useEta, useEtaSamples } from "./use-eta";
 import { useBackupStream } from "./use-backup-stream";
 
 export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot }) {
+  // now ticks every second; the elapsed display reads state, not the live
+  // clock, keeping this render pure (react-hooks/purity).
+  const now = useNow(1000);
+
   const stream = useBackupStream(snapshot.id);
   const fp = useMemo(() => formatProgress(snapshot), [snapshot]);
   const isRestore = isRestorePhase(fp.phase);
@@ -53,16 +58,17 @@ export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot })
   }, [fp.percent]);
   const etaLabel = useEta(samples);
 
-  // Elapsed (seconds since created_at) refreshed every render — that's
-  // ~3x/sec during a live backup which is plenty smooth.
+  // Elapsed (seconds since created_at) ticks via `now` (~1/sec for live
+  // backups). Terminal snapshots have finished_at set so the value is stable
+  // regardless of `now` advancing.
   const elapsedLabel = useMemo(() => {
     const createdMs = Date.parse(snapshot.created_at);
     if (!Number.isFinite(createdMs)) return null;
     const finishedMs = snapshot.finished_at
       ? Date.parse(snapshot.finished_at)
-      : Date.now();
+      : now;
     return formatElapsed((finishedMs - createdMs) / 1000);
-  }, [snapshot.created_at, snapshot.finished_at, snapshot.progress_updated_at]);
+  }, [snapshot.created_at, snapshot.finished_at, now]);
 
   // For terminal snapshots reset the ETA buffer once so the next backup
   // starts clean.

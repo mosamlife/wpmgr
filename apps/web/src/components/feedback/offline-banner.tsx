@@ -40,21 +40,21 @@ export interface OfflineBannerProps {
 /**
  * useNetworkOnline — subscribes to navigator online/offline events.
  *
- * SSR-safe: returns `true` (online) before hydration so the banner never
- * paints a wrong initial state. On first effect run we sync to the real
- * `navigator.onLine` value.
+ * SSR-safe: the lazy initializer reads navigator.onLine at first render.
+ * When window/navigator are absent (SSR, some embedded webviews) it
+ * defaults to true so the banner never paints on first paint.
  */
 function useNetworkOnline(): boolean {
-  const [online, setOnline] = useState<boolean>(true);
+  // Lazy initializer — runs once, synchronously, before the first paint.
+  // Defensive: some embedded webviews leave navigator.onLine undefined.
+  const [online, setOnline] = useState<boolean>(() => {
+    if (typeof navigator !== "undefined" && typeof navigator.onLine === "boolean") {
+      return navigator.onLine;
+    }
+    return true;
+  });
 
   useEffect(() => {
-    // Defensive: some embedded webviews leave navigator.onLine undefined.
-    const initial =
-      typeof navigator !== "undefined" && typeof navigator.onLine === "boolean"
-        ? navigator.onLine
-        : true;
-    setOnline(initial);
-
     function handleOnline() {
       setOnline(true);
     }

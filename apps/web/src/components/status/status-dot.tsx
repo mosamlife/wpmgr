@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 
 import { cn } from "@/lib/utils";
 import { statusPulse } from "@/lib/motion-presets";
+import { useStatusPulse } from "@/components/status/use-status-pulse";
 
 /**
  * Tone palette for status indicators across the app. Maps 1:1 to semantic
@@ -48,28 +48,6 @@ const toneToBg: Record<StatusTone, string> = {
   info: "bg-info",
   muted: "bg-muted-foreground",
 };
-
-/**
- * useStatusPulse — returns a monotonically-incrementing key that bumps every
- * time `value` changes (after the first render). Pair with `motion`'s
- * `animate` keyed off the value to fire a one-shot pulse on transition.
- *
- * Exposed for surfaces that compose their own indicator and don't want the
- * `<StatusDot>` chrome — e.g. the run-detail page that paints a custom
- * progress dot inline. Internal `StatusDot` consumers should just set
- * `pulseOnChange`.
- */
-export function useStatusPulse<T>(value: T): number {
-  const [key, setKey] = useState(0);
-  const previous = useRef<T>(value);
-  useEffect(() => {
-    if (previous.current !== value) {
-      previous.current = value;
-      setKey((k) => k + 1);
-    }
-  }, [value]);
-  return key;
-}
 
 /**
  * StatusDot — 8px filled circle in a semantic color.

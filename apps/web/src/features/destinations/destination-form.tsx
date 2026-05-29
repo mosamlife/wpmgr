@@ -3,7 +3,7 @@
 // affordance on the secret field once a destination is persisted.
 
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Check, X } from "lucide-react";
@@ -136,7 +136,8 @@ export function DestinationForm({
   const {
     register,
     handleSubmit,
-    watch,
+    control,
+    getValues,
     setValue,
     formState: { errors, isSubmitting },
     reset,
@@ -156,7 +157,7 @@ export function DestinationForm({
     },
   });
 
-  const kind = watch("kind") as SiteDestinationKind;
+  const kind = useWatch({ control, name: "kind" });
   const [providerId, setProviderId] = useState("custom");
 
   function applyPreset(id: string) {
@@ -185,7 +186,7 @@ export function DestinationForm({
         body.secret_key = values.secret_key;
       }
       const d = await update.mutateAsync({
-        destinationId: initial!.id,
+        destinationId: initial.id,
         body,
       });
       if (onSaved) onSaved(d);
@@ -208,7 +209,7 @@ export function DestinationForm({
   }
 
   async function onTest() {
-    const v = watch();
+    const v = getValues();
     await test.mutateAsync({
       kind: v.kind,
       endpoint: v.endpoint,

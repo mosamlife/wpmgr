@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 /**
  * Table row density mode. Compact is the operator default per DESIGN.md.
@@ -28,23 +28,35 @@ function readStoredDensity(): SitesDensity {
 
 /**
  * Density mode hook, synced to localStorage. SSR-safe (defaults to "compact"
- * during hydration; reconciles from storage on mount).
+ * when localStorage is unavailable or the stored value is absent).
+ *
+ * Precedence: explicit override > localStorage > DEFAULT_DENSITY.
+ *
+ * When override changes between renders we apply it via the stored-prev-in-
+ * state pattern (React docs pattern for derived state). Calling setDensityState
+ * in the render body is allowed — the lint rule only bans synchronous setState
+ * calls inside effect bodies.
  */
 export function useSitesDensity(
   override?: SitesDensity,
 ): [SitesDensity, (next: SitesDensity) => void] {
+  // Lazy initializer runs once, reading the correct value before first paint.
   const [density, setDensityState] = useState<SitesDensity>(
-    override ?? DEFAULT_DENSITY,
+    () => override ?? readStoredDensity(),
   );
 
-  // Hydrate from localStorage once, unless caller forces an override.
-  useEffect(() => {
-    if (override) {
-      setDensityState(override);
-      return;
-    }
-    setDensityState(readStoredDensity());
-  }, [override]);
+  // Store the previous override value in state so we can detect changes during
+  // the render pass (stored-prev-in-state pattern). No ref — the lint rule
+  // react-hooks/refs bans reading/writing refs during render.
+  const [prevOverride, setPrevOverride] = useState<SitesDensity | undefined>(
+    override,
+  );
+  if (prevOverride !== override) {
+    // Override changed — synchronously update both the tracked value and the
+    // active density during this render pass. React will flush these together.
+    setPrevOverride(override);
+    setDensityState(override ?? readStoredDensity());
+  }
 
   const setDensity = useCallback(
     (next: SitesDensity) => {

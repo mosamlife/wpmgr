@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 
@@ -79,6 +79,12 @@ function SitesPage() {
   // One-click login wired here so the table stays presentational. The mutation
   // returns a short-lived redirect URL that we open in a new tab.
   const loginMutation = useAutoLogin();
+
+  // openAutoLoginRef holds the latest handleOpenAutoLogin so the toast "Try
+  // again" action can call it without the callback closing over itself (which
+  // would violate the rules-of-hooks immutability constraint).
+  const openAutoLoginRef = useRef((_site: Site) => {});
+
   const handleOpenAutoLogin = useCallback(
     (site: Site) => {
       if (!autoLogin) return;
@@ -94,7 +100,7 @@ function SitesPage() {
               description: err.message,
               action: {
                 label: "Try again",
-                onClick: () => handleOpenAutoLogin(site),
+                onClick: () => openAutoLoginRef.current(site),
               },
             });
           },
@@ -103,6 +109,12 @@ function SitesPage() {
     },
     [autoLogin, loginMutation],
   );
+
+  // Keep the ref current so any already-rendered toast retains a live handle
+  // to the latest version of the callback.
+  useEffect(() => {
+    openAutoLoginRef.current = handleOpenAutoLogin;
+  }, [handleOpenAutoLogin]);
 
   // -------------------------------------------------------------------------
   // Bulk action handlers (Sprint 3 wires the obvious ones, stubs the rest)
@@ -114,7 +126,7 @@ function SitesPage() {
       // `kind` through so it preselects the right step. For now we surface
       // the intent so the wire-up landing zone is unambiguous.
       // TODO(sprint-4): pipe `kind` into UpdateWizard initial step.
-      // eslint-disable-next-line no-console
+       
       console.debug("[sites] bulk update", {
         kind,
         siteIds: Array.from(selection.selected),
@@ -137,12 +149,12 @@ function SitesPage() {
         label: "View activity",
         onClick: () => {
           // TODO(sprint-4): deep link to the activity drawer once it lands.
-          // eslint-disable-next-line no-console
+           
           console.debug("[sites] open activity for bulk backup");
         },
       },
     });
-    // eslint-disable-next-line no-console
+     
     console.debug("[sites] bulk backup", {
       siteIds: Array.from(selection.selected),
     });
