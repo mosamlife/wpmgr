@@ -20,6 +20,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { useBackups, useCreateBackup } from "@/features/backups/use-backups";
 import { StatusBadge, KindBadge } from "@/features/backups/backup-badges";
+import { InlineSnapshotProgress } from "@/features/backups/inline-snapshot-progress";
 import { BackupScheduleEditor } from "@/features/backups/backup-schedule-editor";
 import { formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupCreate } from "@wpmgr/api";
@@ -162,7 +163,12 @@ function SnapshotList({ siteId }: { siteId: string }) {
               <KindBadge kind={snap.kind} />
             </TableCell>
             <TableCell>
-              <StatusBadge status={snap.status} />
+              <div className="flex flex-col gap-1">
+                <StatusBadge status={snap.status} />
+                {snap.status === "running" || snap.status === "pending" ? (
+                  <InlineSnapshotProgress snapshot={snap} />
+                ) : null}
+              </div>
             </TableCell>
             <TableCell>{formatBytes(snap.total_size)}</TableCell>
             <TableCell>{snap.chunk_count ?? "—"}</TableCell>

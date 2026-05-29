@@ -59,12 +59,15 @@ export function useUpdateRuns(): UseQueryResult<UpdateRun[], Error> {
 /**
  * Fetch a single run with its tasks. `enablePolling` turns on background
  * refetching (used as the SSE fallback) and stops once the run completes.
+ * `enabled` lets callers gate the query while they're still resolving a runId
+ * (e.g. the per-row update flow on the site detail page).
  */
 export function useUpdateRun(
   runId: string,
-  options?: { poll?: boolean },
+  options?: { poll?: boolean; enabled?: boolean },
 ): UseQueryResult<UpdateRun, Error> {
   const poll = options?.poll ?? false;
+  const enabled = options?.enabled ?? true;
   return useQuery({
     queryKey: updatesKeys.detail(runId),
     queryFn: async () => {
@@ -76,6 +79,7 @@ export function useUpdateRun(
       if (!data) throw new Error("Empty response");
       return data;
     },
+    enabled: enabled && runId !== "",
     // Poll every 2s while enabled AND the run is not yet completed.
     refetchInterval: (query) =>
       poll && query.state.data?.status !== "completed" ? 2000 : false,
@@ -207,7 +211,14 @@ export function useRunEventStream(
       if (!closed) onStateRef.current?.("live");
     };
 
-    source.onmessage = (msg: MessageEvent<string>) => {
+    // The CP emits NAMED `event: task` frames (see apps/api/internal/update
+    // handler.go writeEvent). `EventSource.onmessage` only fires for the
+    // default unnamed `message` event, so a named-event stream silently
+    // delivers nothing — which was the v0.9.0 bug: rows stayed "Queued"
+    // forever even though the run had succeeded server-side. We listen on
+    // the named event AND keep onmessage as a defensive fallback in case the
+    // wire ever changes back to unnamed frames.
+    const handleFrame = (msg: MessageEvent<string>) => {
       if (closed) return;
       let event: UpdateEvent;
       try {
@@ -222,6 +233,8 @@ export function useRunEventStream(
         onStateRef.current?.("closed");
       }
     };
+    source.addEventListener("task", handleFrame as EventListener);
+    source.onmessage = handleFrame;
 
     source.onerror = () => {
       // EventSource auto-reconnects, but a hard failure (proxy/unsupported)
@@ -234,6 +247,7 @@ export function useRunEventStream(
 
     return () => {
       closed = true;
+      source.removeEventListener("task", handleFrame as EventListener);
       source.close();
     };
   }, [enabled, runId, queryClient]);

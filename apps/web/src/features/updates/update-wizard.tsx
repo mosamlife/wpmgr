@@ -93,7 +93,7 @@ export function UpdateWizard({
       ref={dialogRef}
       onClose={onClose}
       aria-labelledby="update-wizard-title"
-      className="m-auto w-full max-w-lg rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-black/50"
+      className="m-auto w-full max-w-lg rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-[var(--scrim)]"
     >
       {/* Keying on (open + target) remounts the form so its local state resets
           cleanly each time the wizard is opened — no setState-in-effect. */}

@@ -92,7 +92,7 @@ export function AddSiteDialog() {
         ref={formRef}
         onClose={() => setFormOpen(false)}
         aria-labelledby="add-site-title"
-        className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-black/50"
+        className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-[var(--scrim)]"
       >
         <form onSubmit={(e) => void onSubmit(e)} noValidate className="space-y-4">
           <div>
@@ -198,7 +198,7 @@ function PairingCodeDialog({
       ref={ref}
       onClose={onClose}
       aria-labelledby="pairing-code-title"
-      className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-black/50"
+      className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-[var(--scrim)]"
     >
       {created ? (
         <div className="space-y-4">

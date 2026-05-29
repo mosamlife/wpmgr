@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import {
   useQuery,
   useMutation,
@@ -21,6 +22,7 @@ import {
 } from "@wpmgr/api";
 
 import { toError } from "@/features/auth/use-auth";
+import { isStreamLive, subscribeLiveStreams } from "./use-backup-stream";
 
 // Server-state hooks for the M4 Backups domain (snapshots, restore, schedule).
 // Built on the generated @wpmgr/api SDK; each call returns
@@ -84,6 +86,17 @@ export function useBackups(
 export function useBackup(
   snapshotId: string,
 ): UseQueryResult<BackupSnapshotDetail, Error> {
+  // Subscribe to the SSE-live registry so React schedules a re-evaluation of
+  // `refetchInterval` whenever a stream opens or closes for this snapshot.
+  // We don't actually need to read the resulting boolean — the snapshotId
+  // check inside refetchInterval is the source of truth — but useSyncExternalStore
+  // is what triggers TanStack Query to re-evaluate the interval.
+  useSyncExternalStore(
+    subscribeLiveStreams,
+    () => isStreamLive(snapshotId),
+    () => false,
+  );
+
   return useQuery({
     queryKey: backupsKeys.detail(snapshotId),
     queryFn: async () => {
@@ -97,10 +110,17 @@ export function useBackup(
       if (!data) throw new Error("Empty response");
       return data;
     },
-    refetchInterval: (query) =>
-      query.state.data && !isTerminal(query.state.data.snapshot.status)
-        ? 2000
-        : false,
+    // M5.6 / ADR-032: when a `useBackupStream(snapshotId)` SSE channel is
+    // healthy the live cache patches drive UI freshness and polling is
+    // suppressed. When the stream is absent or has fallen back, poll every
+    // 1 s (tightened from 1.5 s per WPvivid UX research recommending ≤1 s
+    // for a "live" feel). Stops once the snapshot is terminal.
+    refetchInterval: (query) => {
+      if (!query.state.data) return false;
+      if (isTerminal(query.state.data.snapshot.status)) return false;
+      if (isStreamLive(snapshotId)) return false;
+      return 1000;
+    },
   });
 }
 

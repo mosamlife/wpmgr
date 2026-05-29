@@ -1,122 +1,129 @@
-import type { ReactNode } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { Globe, LogOut, KeyRound, RefreshCw, BellRing } from "lucide-react";
-
-import { Button } from "@/components/ui/button";
-import { ThemeToggle } from "@/components/layout/theme-toggle";
 import {
-  useMe,
-  useLogout,
-  activeRole,
-  canManage,
-  canOperate,
-} from "@/features/auth/use-auth";
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
-// Authenticated app shell: semantic landmarks (banner header, nav sidebar,
-// main). The header shows the logged-in user, their active tenant role, and a
-// working logout. Auth state comes from TanStack Query (GET /auth/me) — the
-// guard guarantees `me` is present by the time this renders.
-export function AppShell({ children }: { children: ReactNode }) {
-  const { data: me } = useMe();
-  const logout = useLogout();
-  const navigate = useNavigate();
+import { Sidebar } from "@/components/layout/sidebar";
+import { TopBar } from "@/components/layout/top-bar";
 
-  const role = activeRole(me);
-  const showKeys = canManage(me);
-  const showAlerts = canOperate(me);
+// Phase 4 / Sprint 1 surfaces 4.1 + 4.2 + 4.3: AppShell, Sidebar, TopBar.
+//
+// Layout grid (per DESIGN.md "App shell" spec - 240px sidebar, 48px topbar,
+// 24/32 content padding):
+//
+//   ┌────────────┬──────────────────────────────┐
+//   │            │ TopBar (48px)                │
+//   │ Sidebar    ├──────────────────────────────┤
+//   │ (240 / 64) │ Main (overflow-y-auto)       │
+//   │            │                              │
+//   └────────────┴──────────────────────────────┘
+//
+// Sidebar spans both rows; TopBar + Main share the right column. Borders, not
+// shadows, carry the separation (DESIGN.md "Elevation & Depth").
+//
+// State:
+//   - `collapsed` - desktop sidebar 240↔64. Persisted to
+//     localStorage["wpmgr.sidebar.collapsed"]. The toggle never animates
+//     width - the grid template column swaps discretely (DESIGN.md "Don't
+//     animate width, height, padding, margin, top, or left").
+//   - `mobileOpen` - narrow viewports (<768px) hide the sidebar by default;
+//     the TopBar exposes a menu button that slides it in via transform.
+//
+// State is local React state + localStorage. No new global store - the
+// project keeps server state in TanStack Query and ephemeral shell state in
+// component state per the ADRs.
 
-  function handleLogout() {
-    logout.mutate(undefined, {
-      onSettled: () => void navigate({ to: "/login" }),
-    });
+const COLLAPSED_KEY = "wpmgr.sidebar.collapsed";
+
+interface ShellState {
+  collapsed: boolean;
+  toggleCollapsed: () => void;
+  mobileOpen: boolean;
+  setMobileOpen: (open: boolean) => void;
+}
+
+const ShellContext = createContext<ShellState | null>(null);
+
+/**
+ * Shell state hook. Components inside `<AppShell>` (Sidebar, TopBar, future
+ * surfaces that need to know about the collapsed rail) read here. Throws if
+ * called outside the provider - that's a programming error, not a runtime
+ * one.
+ */
+export function useShellState(): ShellState {
+  const ctx = useContext(ShellContext);
+  if (!ctx) {
+    throw new Error("useShellState must be used inside <AppShell>");
   }
+  return ctx;
+}
+
+function readCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(COLLAPSED_KEY) === "1";
+  } catch {
+    // Private mode / quota denied - fall back to expanded.
+    return false;
+  }
+}
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const [collapsed, setCollapsed] = useState<boolean>(readCollapsed);
+  const [mobileOpen, setMobileOpen] = useState<boolean>(false);
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // Ignore storage failures; the toggle still works for the session.
+      }
+      return next;
+    });
+  }, []);
+
+  // Lock body scroll while the mobile drawer is open so the underlying main
+  // pane doesn't scroll behind it.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [mobileOpen]);
+
+  const shellState = useMemo<ShellState>(
+    () => ({ collapsed, toggleCollapsed, mobileOpen, setMobileOpen }),
+    [collapsed, toggleCollapsed, mobileOpen],
+  );
+
+  // Two static template strings so Tailwind extracts both at build time.
+  const desktopColsClass = collapsed
+    ? "md:grid-cols-[64px_1fr]"
+    : "md:grid-cols-[240px_1fr]";
 
   return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3">
-        <Link
-          to="/sites"
-          className="flex items-center gap-2 font-semibold"
-          aria-label="WPMgr home"
+    <ShellContext.Provider value={shellState}>
+      <div
+        className={`grid h-dvh grid-cols-[1fr] grid-rows-[48px_1fr] bg-background text-foreground ${desktopColsClass}`}
+      >
+        <Sidebar />
+        <TopBar />
+        <main
+          id="main-content"
+          className="col-start-1 row-start-2 overflow-y-auto bg-background px-8 py-6 md:col-start-2"
         >
-          <Globe aria-hidden="true" className="size-5" />
-          <span>WPMgr</span>
-        </Link>
-        <div className="flex items-center gap-3">
-          {me ? (
-            <span className="hidden text-sm text-[var(--color-muted-foreground)] sm:inline">
-              {me.user.email}
-              {role ? (
-                <span className="ml-2 rounded-full bg-[var(--color-accent)] px-2 py-0.5 text-xs capitalize">
-                  {role}
-                </span>
-              ) : null}
-            </span>
-          ) : null}
-          <ThemeToggle />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleLogout}
-            disabled={logout.isPending}
-            aria-label="Log out"
-          >
-            <LogOut aria-hidden="true" />
-            <span>Logout</span>
-          </Button>
-        </div>
-      </header>
-
-      <div className="flex flex-1">
-        <nav
-          aria-label="Primary"
-          className="w-48 shrink-0 border-r border-[var(--color-border)] p-4"
-        >
-          <ul className="space-y-1 text-sm">
-            <li>
-              <Link
-                to="/sites"
-                className="block rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
-              >
-                Sites
-              </Link>
-            </li>
-            <li>
-              <Link
-                to="/updates"
-                className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
-              >
-                <RefreshCw aria-hidden="true" className="size-4" />
-                Updates
-              </Link>
-            </li>
-            {showAlerts ? (
-              <li>
-                <Link
-                  to="/settings/alerts"
-                  className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
-                >
-                  <BellRing aria-hidden="true" className="size-4" />
-                  Alerts
-                </Link>
-              </li>
-            ) : null}
-            {showKeys ? (
-              <li>
-                <Link
-                  to="/settings/api-keys"
-                  className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-[var(--color-accent)] [&.active]:bg-[var(--color-accent)] [&.active]:font-medium"
-                >
-                  <KeyRound aria-hidden="true" className="size-4" />
-                  API keys
-                </Link>
-              </li>
-            ) : null}
-          </ul>
-        </nav>
-
-        <main className="flex-1 p-6">{children}</main>
+          {children}
+        </main>
       </div>
-    </div>
+    </ShellContext.Provider>
   );
 }

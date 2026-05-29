@@ -231,7 +231,7 @@ function ShowOnceDialog({
       ref={ref}
       onClose={onClose}
       aria-labelledby="key-created-title"
-      className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-black/50"
+      className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-[var(--scrim)]"
     >
       {created ? (
         <div className="space-y-4">

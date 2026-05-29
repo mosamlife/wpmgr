@@ -84,7 +84,7 @@ export function UserPickerModal({
       ref={dialogRef}
       onClose={onClose}
       aria-labelledby="user-picker-title"
-      className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-black/50"
+      className="m-auto w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-6 text-[var(--color-foreground)] backdrop:bg-[var(--scrim)]"
     >
       <form onSubmit={(e) => void onValid(e)} noValidate className="space-y-4">
         <div>

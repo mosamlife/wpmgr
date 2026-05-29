@@ -1,59 +1,131 @@
 @import "tailwindcss";
 
-/* Dark mode via the `.dark` class on <html> (ADR: class strategy). */
 @custom-variant dark (&:is(.dark *));
 
-/*
- * shadcn/ui design tokens (Tailwind v4 + CSS variables). Light theme on
- * :root, dark theme under .dark. Values are the shadcn "new-york" defaults.
- */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  /* Surfaces - tinted neutrals at hue 195, chroma 0.008 */
+  --background:         oklch(99%   0.004 195);
+  --foreground:         oklch(18%   0.012 195);
+  --card:               oklch(100%  0     0);
+  --card-foreground:    oklch(18%   0.012 195);
+  --popover:            oklch(100%  0     0);
+  --popover-foreground: oklch(18%   0.012 195);
+  --muted:              oklch(96%   0.006 195);
+  --muted-foreground:   oklch(48%   0.012 195);
+  --accent:             oklch(94%   0.012 195);
+  --accent-foreground:  oklch(22%   0.012 195);
+  --border:             oklch(91%   0.008 195);
+  --input:              oklch(91%   0.008 195);
+  --ring:               oklch(58%   0.12  195);
+  --scrim: oklch(15% 0.008 195 / 0.55);   /* light-mode modal backdrop, deep tinted with alpha */
+
+  --primary:            oklch(58%   0.12  195);
+  --primary-foreground: oklch(99%   0.004 195);
+  --primary-hover:      oklch(53%   0.13  195);
+  --primary-pressed:    oklch(48%   0.14  195);
+
+  --success:               oklch(58% 0.14  155);
+  --success-foreground:    oklch(99% 0.004 155);
+  --success-subtle:        oklch(95% 0.025 155);
+  --success-subtle-fg:     oklch(32% 0.10  155);
+
+  --warning:               oklch(70% 0.14   75);
+  --warning-foreground:    oklch(20% 0.06   75);
+  --warning-subtle:        oklch(95% 0.04   75);
+  --warning-subtle-fg:     oklch(38% 0.10   75);
+
+  --destructive:            oklch(58% 0.20  25);
+  --destructive-foreground: oklch(99% 0.004 25);
+  --destructive-subtle:     oklch(95% 0.03  25);
+  --destructive-subtle-fg:  oklch(40% 0.15  25);
+
+  --info:               oklch(58% 0.10  235);
+  --info-foreground:    oklch(99% 0.004 235);
+  --info-subtle:        oklch(95% 0.02  235);
+  --info-subtle-fg:     oklch(35% 0.10  235);
+
+  --severity-critical:  oklch(45% 0.22   25);
+  --severity-high:      oklch(58% 0.20   25);
+  --severity-medium:    oklch(70% 0.14   75);
+  --severity-low:       oklch(58% 0.10  235);
+
+  --chart-1: oklch(58% 0.12 195);
+  --chart-2: oklch(60% 0.14 155);
+  --chart-3: oklch(62% 0.16  75);
+  --chart-4: oklch(60% 0.16 320);
+  --chart-5: oklch(58% 0.10 235);
+
+  --radius: 0.5rem;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --background:         oklch(15%   0.012 195);
+  --foreground:         oklch(94%   0.008 195);
+  --card:               oklch(19%   0.014 195);
+  --card-foreground:    oklch(94%   0.008 195);
+  --popover:            oklch(22%   0.016 195);
+  --popover-foreground: oklch(94%   0.008 195);
+  --muted:              oklch(22%   0.012 195);
+  --muted-foreground:   oklch(65%   0.014 195);
+  --accent:             oklch(26%   0.018 195);
+  --accent-foreground:  oklch(94%   0.008 195);
+  --border:             oklch(28%   0.014 195);
+  --input:              oklch(24%   0.014 195);
+  --ring:               oklch(68%   0.14  195);
+  --scrim: oklch(0% 0 0 / 0.65);          /* dark-mode modal backdrop, near-black with alpha */
+
+  --primary:            oklch(68%   0.14  195);
+  --primary-foreground: oklch(15%   0.012 195);
+  --primary-hover:      oklch(73%   0.14  195);
+  --primary-pressed:    oklch(78%   0.13  195);
+
+  --success:               oklch(68% 0.16  155);
+  --success-foreground:    oklch(15% 0.012 155);
+  --success-subtle:        oklch(28% 0.08  155);
+  --success-subtle-fg:     oklch(85% 0.10  155);
+
+  --warning:               oklch(78% 0.16   75);
+  --warning-foreground:    oklch(15% 0.012  75);
+  --warning-subtle:        oklch(32% 0.08   75);
+  --warning-subtle-fg:     oklch(86% 0.12   75);
+
+  --destructive:            oklch(68% 0.22   25);
+  --destructive-foreground: oklch(15% 0.012 25);
+  --destructive-subtle:     oklch(30% 0.10   25);
+  --destructive-subtle-fg:  oklch(88% 0.12   25);
+
+  --info:               oklch(68% 0.12  235);
+  --info-foreground:    oklch(15% 0.012 235);
+  --info-subtle:        oklch(28% 0.06  235);
+  --info-subtle-fg:     oklch(86% 0.08  235);
+
+  --severity-critical:  oklch(58% 0.22   25);
+  --severity-high:      oklch(68% 0.20   25);
+  --severity-medium:    oklch(78% 0.16   75);
+  --severity-low:       oklch(68% 0.12  235);
 }
 
-/* Map the CSS variables to Tailwind theme tokens (bg-background, text-foreground, ...). */
 @theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --text-2xs:  0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs:   0.75rem;
+  --text-xs--line-height:  1.125rem;
+  --text-sm:   0.875rem;
+  --text-sm--line-height:  1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg:   1.125rem;
+  --text-lg--line-height:  1.625rem;
+  --text-xl:   1.375rem;
+  --text-xl--line-height:  1.75rem;
+  --text-2xl:  1.75rem;
+  --text-2xl--line-height: 2.125rem;
+  --text-3xl:  2.25rem;
+  --text-3xl--line-height: 2.5rem;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -62,8 +134,6 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
@@ -73,28 +143,76 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --color-scrim: var(--scrim);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-subtle: var(--success-subtle);
+  --color-success-subtle-fg: var(--success-subtle-fg);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-warning-subtle-fg: var(--warning-subtle-fg);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-subtle: var(--info-subtle);
+  --color-info-subtle-fg: var(--info-subtle-fg);
+
+  --color-severity-critical: var(--severity-critical);
+  --color-severity-high: var(--severity-high);
+  --color-severity-medium: var(--severity-medium);
+  --color-severity-low: var(--severity-low);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --shadow-xs: 0 1px 0 var(--border);
+  --shadow-sm: 0 1px 2px 0 oklch(0% 0 0 / 0.05);
+  --shadow-md: 0 4px 12px -2px oklch(0% 0 0 / 0.08), 0 2px 4px -2px oklch(0% 0 0 / 0.04);
+  --shadow-lg: 0 12px 24px -8px oklch(0% 0 0 / 0.12), 0 4px 8px -4px oklch(0% 0 0 / 0.06);
+
+  --duration-instant: 100ms;
+  --duration-fast:    180ms;
+  --duration-base:    240ms;
+  --duration-slow:    340ms;
+  --duration-slower:  500ms;
+
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo:  cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-quart:  cubic-bezier(0.5, 0, 0.75, 0);
+  --ease-in-out:    cubic-bezier(0.65, 0, 0.35, 1);
 }
 
 @layer base {
-  * {
-    border-color: var(--color-border);
-  }
-
+  html { font-family: var(--font-sans); }
   body {
-    background-color: var(--color-background);
-    color: var(--color-foreground);
-    font-family:
-      ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
+    background: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "cv11", "ss01", "ss03";
   }
+  code, kbd, pre, samp { font-family: var(--font-mono); }
 
-  /* WCAG 2.2 AA: always-visible focus indicator for keyboard users. */
-  :focus-visible {
-    outline: 2px solid var(--color-ring);
-    outline-offset: 2px;
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
+}
+
+/* Preserved from prior globals.css: M5.6 progress indicator shimmer for
+   indeterminate Progress (queued, dumping_db, submitting_manifest, started
+   phases that lack a percent). Animates the indicator's translateX from
+   off-canvas left to off-canvas right, giving a left to right wipe.
+   Width=100% so the bar fully fills then sweeps out the other side. */
+@keyframes wpmgr-shimmer {
+  0%   { transform: translateX(-100%); }
+  60%  { transform: translateX(0%); }
+  100% { transform: translateX(100%); }
 }

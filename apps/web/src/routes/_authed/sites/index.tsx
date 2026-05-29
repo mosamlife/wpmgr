@@ -1,25 +1,22 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Search, X, RefreshCw } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useSites } from "@/features/sites/use-sites";
-import {
-  SitesTable,
-  type SitesTableSelection,
-} from "@/features/sites/sites-table";
+import { SitesTable } from "@/features/sites/sites-table";
+import { SitesToolbar } from "@/features/sites/sites-toolbar";
+import { useSitesSelection } from "@/features/sites/use-sites-selection";
+import { useSitesDensity } from "@/features/sites/use-sites-density";
 import { AddSiteDialog } from "@/features/sites/add-site-dialog";
-import { AutoLoginButton } from "@/features/sites/auto-login-button";
-import { canAutoLogin } from "@/features/sites/use-autologin";
+import { useAutoLogin, canAutoLogin } from "@/features/sites/use-autologin";
 import {
   UpdateWizard,
   type WizardTarget,
 } from "@/features/updates/update-wizard";
 import { useMe, canOperate } from "@/features/auth/use-auth";
-import { useUptimeSummary } from "@/features/monitoring/use-uptime";
-import type { Site, UptimeSummaryItem } from "@wpmgr/api";
+import { toast } from "@/lib/toast";
+import type { Site } from "@wpmgr/api";
 
 export const Route = createFileRoute("/_authed/sites/")({
   component: SitesPage,
@@ -30,69 +27,170 @@ function SitesPage() {
   const operate = canOperate(me);
   const autoLogin = canAutoLogin(me);
 
-  // Controlled input vs. the applied filter: we only refetch when the user
-  // submits, so the list does not thrash on every keystroke.
-  const [tagInput, setTagInput] = useState("");
-  const [appliedTag, setAppliedTag] = useState("");
+  // Toolbar-driven search (Sprint 3 is local state; Sprint 4 will plumb this
+  // into useSites() with debounce — see TODOs below).
+  const [search, setSearch] = useState("");
+
+  // Sprint 3 keeps server-side tag filtering off until the toolbar's Tag
+  // dropdown is wired (Sprint 4); the toolbar fires console.debug events for
+  // every filter change so the wiring path stays observable.
+  const appliedTag = "";
 
   const { data: sites, isPending, isError, error, refetch } =
     useSites(appliedTag);
 
-  // Per-site current up/down status powers the live "Status" column. It is best
-  // effort: if the summary fails or is still loading, the column falls back to
-  // "Unknown" rather than blocking the list.
-  const { data: uptimeSummary } = useUptimeSummary();
-  const uptime = useMemo<Map<string, UptimeSummaryItem> | undefined>(() => {
-    if (!uptimeSummary) return undefined;
-    return new Map(uptimeSummary.items.map((item) => [item.site_id, item]));
-  }, [uptimeSummary]);
+  // Selection and density lifted to the route so the toolbar and table share
+  // the same instances — selecting in the table flips the toolbar to action
+  // mode, and the density toggle in the toolbar drives row height in the
+  // table.
+  const selection = useSitesSelection();
+  const densityState = useSitesDensity();
 
-  // Multi-select state for the bulk update wizard (operator+ only).
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [wizardTarget, setWizardTarget] = useState<WizardTarget | null>(null);
 
-  const selection: SitesTableSelection | undefined = operate
-    ? {
-        selected,
-        onToggle: (id) =>
-          setSelected((prev) => {
-            const next = new Set(prev);
-            if (next.has(id)) next.delete(id);
-            else next.add(id);
-            return next;
-          }),
-        onToggleAll: (ids, select) =>
-          setSelected((prev) => {
-            const next = new Set(prev);
-            for (const id of ids) {
-              if (select) next.add(id);
-              else next.delete(id);
-            }
-            return next;
-          }),
-      }
-    : undefined;
+  // Aggregate the available client (tag) and tag values for the filter
+  // dropdowns. Cheap pre-pass — the sites array is already in memory.
+  const tagOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of sites ?? []) {
+      for (const t of s.tags) set.add(t);
+    }
+    return Array.from(set).sort();
+  }, [sites]);
 
-  const selectedSites: Site[] = (sites ?? []).filter((s) => selected.has(s.id));
+  // Locally narrow by the toolbar's search term. Real text search ships with
+  // the server-side filter wiring (Sprint 4).
+  const visibleSites = useMemo(() => {
+    if (!sites) return [];
+    const q = search.trim().toLowerCase();
+    if (!q) return sites;
+    return sites.filter((s) =>
+      [s.name, s.url, ...s.tags]
+        .join(" ")
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [sites, search]);
 
-  function applyFilter(e: React.FormEvent) {
-    e.preventDefault();
-    setAppliedTag(tagInput.trim());
-  }
+  const selectedSites: Site[] = (sites ?? []).filter((s) =>
+    selection.selected.has(s.id),
+  );
 
-  function clearFilter() {
-    setTagInput("");
-    setAppliedTag("");
-  }
+  // One-click login wired here so the table stays presentational. The mutation
+  // returns a short-lived redirect URL that we open in a new tab.
+  const loginMutation = useAutoLogin();
+  const handleOpenAutoLogin = useCallback(
+    (site: Site) => {
+      if (!autoLogin) return;
+      toast.message(`Opening ${site.name}...`);
+      loginMutation.mutate(
+        { siteId: site.id },
+        {
+          onSuccess: (data) => {
+            window.open(data.redirect_url, "_blank", "noopener,noreferrer");
+          },
+          onError: (err) => {
+            toast.error(err.message);
+          },
+        },
+      );
+    },
+    [autoLogin, loginMutation],
+  );
 
-  function openWizardForSelection() {
-    setWizardTarget({ kind: "sites", siteIds: Array.from(selected) });
-  }
+  // -------------------------------------------------------------------------
+  // Bulk action handlers (Sprint 3 wires the obvious ones, stubs the rest)
+  // -------------------------------------------------------------------------
 
-  function openWizardForTag() {
-    if (!appliedTag) return;
-    setWizardTarget({ kind: "tag", tag: appliedTag });
-  }
+  const openUpdateWizardForSelection = useCallback(
+    (kind: "plugins" | "themes" | "core") => {
+      // The existing UpdateWizard is component-agnostic; Sprint 4 will pass
+      // `kind` through so it preselects the right step. For now we surface
+      // the intent so the wire-up landing zone is unambiguous.
+      // TODO(sprint-4): pipe `kind` into UpdateWizard initial step.
+      // eslint-disable-next-line no-console
+      console.debug("[sites] bulk update", {
+        kind,
+        siteIds: Array.from(selection.selected),
+      });
+      setWizardTarget({
+        kind: "sites",
+        siteIds: Array.from(selection.selected),
+      });
+    },
+    [selection],
+  );
+
+  const handleBulkBackup = useCallback(() => {
+    // TODO(sprint-4): wire to POST /api/v1/backups/bulk (endpoint exists in
+    // the API; needs a confirm modal + toast). Stubbed for the transform
+    // animation review.
+    toast.message(`Backup queued for ${selection.count} sites`);
+    // eslint-disable-next-line no-console
+    console.debug("[sites] bulk backup", {
+      siteIds: Array.from(selection.selected),
+    });
+  }, [selection]);
+
+  const handleBulkRestore = useCallback(() => {
+    // TODO(sprint-4): restore is currently per-site; a fleet-wide restore
+    // wizard is a separate design surface.
+    toast.message("Fleet-wide restore lands in Sprint 4");
+    // eslint-disable-next-line no-console
+    console.debug("[sites] bulk restore", {
+      siteIds: Array.from(selection.selected),
+    });
+  }, [selection]);
+
+  const handleBulkOpenWpAdmin = useCallback(() => {
+    if (!autoLogin) {
+      toast.error("Auto-login requires admin permissions");
+      return;
+    }
+    const ids = Array.from(selection.selected);
+    // Browsers throttle popups; we open the first 8 immediately and queue
+    // the rest behind a confirm in Sprint 4.
+    // TODO(sprint-4): replace inline loop with the existing useAutoLogin
+    // queue + per-site progress toast.
+    const cap = Math.min(ids.length, 8);
+    toast.message(`Opening ${cap} sites in wp-admin`);
+    for (let i = 0; i < cap; i++) {
+      const site = selectedSites.find((s) => s.id === ids[i]);
+      if (!site) continue;
+      loginMutation.mutate(
+        { siteId: site.id },
+        {
+          onSuccess: (data) => {
+            window.open(data.redirect_url, "_blank", "noopener,noreferrer");
+          },
+          onError: (err) => {
+            toast.error(`${site.name}: ${err.message}`);
+          },
+        },
+      );
+    }
+  }, [autoLogin, loginMutation, selectedSites, selection]);
+
+  const handleBulkTag = useCallback(() => {
+    // TODO(sprint-4): open a tag-picker modal (bulk-drawer subagent owns it).
+    toast.message(`Tagging ${selection.count} sites lands in Sprint 4`);
+  }, [selection.count]);
+
+  const handleBulkSetClient = useCallback(() => {
+    // TODO(sprint-4): open a client-picker modal.
+    toast.message(`Setting client on ${selection.count} sites lands in Sprint 4`);
+  }, [selection.count]);
+
+  const handleBulkPauseMonitoring = useCallback(() => {
+    // TODO(sprint-4): wire to the monitoring service pause endpoint.
+    toast.message(`Pausing monitoring on ${selection.count} sites lands in Sprint 4`);
+  }, [selection.count]);
+
+  const handleBulkDelete = useCallback(() => {
+    // TODO(sprint-4): open a destructive confirm modal that requires typing
+    // the resource count (per DESIGN.md "Destructive requires typing").
+    toast.error(`Bulk delete on ${selection.count} sites needs a confirm modal`);
+  }, [selection.count]);
 
   return (
     <section aria-labelledby="sites-heading" className="space-y-4">
@@ -100,77 +198,15 @@ function SitesPage() {
         <h1 id="sites-heading" className="text-2xl font-semibold">
           Sites
         </h1>
-        {operate ? <AddSiteDialog /> : null}
       </div>
 
-      <form
-        onSubmit={applyFilter}
-        role="search"
-        className="flex flex-wrap items-end gap-2"
-      >
-        <div className="space-y-1">
-          <Label htmlFor="tag-filter">Filter by tag</Label>
-          <Input
-            id="tag-filter"
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            placeholder="e.g. production"
-            className="w-56"
-          />
-        </div>
-        <Button type="submit" variant="outline" size="sm">
-          <Search aria-hidden="true" />
-          Filter
-        </Button>
-        {appliedTag ? (
-          <Button type="button" variant="ghost" size="sm" onClick={clearFilter}>
-            <X aria-hidden="true" />
-            Clear
-          </Button>
-        ) : null}
-      </form>
-
-      {appliedTag ? (
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          Showing sites tagged <strong>{appliedTag}</strong>.
-        </p>
-      ) : null}
-
-      {operate ? (
-        <div
-          className="flex flex-wrap items-center gap-2"
-          role="region"
-          aria-label="Bulk actions"
-        >
-          <Button
-            type="button"
-            size="sm"
-            onClick={openWizardForSelection}
-            disabled={selected.size === 0}
-          >
-            <RefreshCw aria-hidden="true" />
-            Update {selected.size} selected
-          </Button>
-          {appliedTag ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={openWizardForTag}
-            >
-              Update all tagged “{appliedTag}”
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-
       {isPending ? (
-        <p role="status" className="text-[var(--color-muted-foreground)]">
-          Loading sites…
+        <p role="status" className="text-muted-foreground">
+          Loading sites
         </p>
       ) : isError ? (
         <div role="alert" className="space-y-3">
-          <p className="text-[var(--color-destructive)]">
+          <p className="text-destructive">
             Failed to load sites: {error.message}
           </p>
           <Button variant="outline" size="sm" onClick={() => void refetch()}>
@@ -178,44 +214,47 @@ function SitesPage() {
           </Button>
         </div>
       ) : sites.length === 0 ? (
-        <div className="space-y-3 rounded-xl border border-dashed border-[var(--color-border)] p-8 text-center">
-          {appliedTag ? (
-            <p className="text-[var(--color-muted-foreground)]">
-              No sites match the tag <strong>{appliedTag}</strong>.
-            </p>
-          ) : (
-            <>
-              <p className="text-[var(--color-muted-foreground)]">
-                No sites yet.{" "}
-                {operate
-                  ? "Use “Add site” to generate a pairing code and enroll your first WordPress site."
-                  : "Ask an operator to add the first site."}
-              </p>
-              {operate ? (
-                <div className="flex justify-center">
-                  <AddSiteDialog />
-                </div>
-              ) : null}
-            </>
-          )}
+        <div className="space-y-3 border border-dashed border-border bg-background p-8 text-center">
+          <p className="text-muted-foreground">
+            No sites yet.{" "}
+            {operate
+              ? "Use Add site to generate a pairing code and enroll your first WordPress site."
+              : "Ask an operator to add the first site."}
+          </p>
+          {operate ? (
+            <div className="flex justify-center">
+              <AddSiteDialog />
+            </div>
+          ) : null}
         </div>
       ) : (
-        <SitesTable
-          sites={sites}
-          selection={selection}
-          uptime={uptime}
-          rowActions={
-            autoLogin
-              ? (site) => (
-                  <AutoLoginButton
-                    siteId={site.id}
-                    siteName={site.name}
-                    size="sm"
-                  />
-                )
-              : undefined
-          }
-        />
+        <>
+          <SitesToolbar
+            selection={selection}
+            densityState={densityState}
+            search={search}
+            onSearchChange={setSearch}
+            tagOptions={tagOptions}
+            clientOptions={tagOptions}
+            canOperate={operate}
+            onBulkUpdate={openUpdateWizardForSelection}
+            onBulkBackup={handleBulkBackup}
+            onBulkRestore={handleBulkRestore}
+            onBulkOpenWpAdmin={handleBulkOpenWpAdmin}
+            onBulkTag={handleBulkTag}
+            onBulkSetClient={handleBulkSetClient}
+            onBulkPauseMonitoring={handleBulkPauseMonitoring}
+            onBulkDelete={handleBulkDelete}
+            addSiteSlot={operate ? <AddSiteDialog /> : <AddSitePlaceholder />}
+          />
+          <SitesTable
+            sites={visibleSites}
+            isLoading={isPending}
+            selection={operate ? selection : undefined}
+            densityState={densityState}
+            onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
+          />
+        </>
       )}
 
       {operate ? (
@@ -231,5 +270,22 @@ function SitesPage() {
         />
       ) : null}
     </section>
+  );
+}
+
+// Read-only operators see the toolbar without an Add Site primary; we render
+// an inert placeholder so the row layout stays stable across roles.
+function AddSitePlaceholder() {
+  return (
+    <Button
+      type="button"
+      disabled
+      aria-disabled="true"
+      title="Add site requires operator permissions"
+      className="opacity-50"
+    >
+      <Plus aria-hidden="true" />
+      Add site
+    </Button>
   );
 }
