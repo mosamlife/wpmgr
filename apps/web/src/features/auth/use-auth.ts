@@ -130,7 +130,7 @@ export function useLogout(): UseMutationResult<void, Error, void> {
 // Both call through the configured Hey API client (credentials: "include").
 // ---------------------------------------------------------------------------
 
-/** PATCH /api/v1/auth/me — update the display name. */
+/** PATCH /auth/me — update the display name. */
 export function useUpdateProfile(): UseMutationResult<
   Me,
   Error,
@@ -140,7 +140,7 @@ export function useUpdateProfile(): UseMutationResult<
   return useMutation({
     mutationFn: async (body) => {
       const result = await client.patch({
-        url: "/api/v1/auth/me",
+        url: "/auth/me",
         body,
         headers: { "Content-Type": "application/json" },
       });
@@ -154,7 +154,7 @@ export function useUpdateProfile(): UseMutationResult<
   });
 }
 
-/** POST /api/v1/auth/me/password — change the account password. */
+/** POST /auth/me/password — change the account password. */
 export function useChangePassword(): UseMutationResult<
   void,
   Error,
@@ -163,7 +163,7 @@ export function useChangePassword(): UseMutationResult<
   return useMutation({
     mutationFn: async (body) => {
       const result = await client.post({
-        url: "/api/v1/auth/me/password",
+        url: "/auth/me/password",
         body,
         headers: { "Content-Type": "application/json" },
       });
