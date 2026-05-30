@@ -14,10 +14,15 @@
  *   - Hard cap = 10 000 rows. On cap, evict OLDEST by `last_seen ASC`.
  *
  * Ship cadence:
- *   - Heartbeat (every 5 min, runs in Scheduler::runHeartbeat) calls
- *     `ErrorMonitor::shipBatch()` to upload up to 50 NEWEST unsilenced rows
- *     since the `since_id` cursor stored in wp-options. CP dedupes server-side
- *     on `(site_id, md5)`.
+ *   - A dedicated 5-min cron (Scheduler::HOOK_ERRORS_SHIP) AND the heartbeat
+ *     backstop both call Plugin::shipErrors() -> ErrorMonitor::shipBatch() to
+ *     upload up to 50 NEWEST unsilenced rows above the cursor; the CP dedupes
+ *     server-side on `(site_id, md5)`. (Before this was wired, errors only rode
+ *     the daily diagnostics cron, so they reached the dashboard hours late.)
+ *   - handleShutdown() additionally schedules a one-shot ship ~1s out
+ *     (IMMEDIATE_SHIP_HOOK) whenever a fatal occurs, for sub-minute latency on
+ *     active sites; deduped via wp_next_scheduled so a fatal burst schedules at
+ *     most one pending event.
  *
  * Hand-off to the mu-plugin loader:
  *   - The mu-plugin (`a-wpmgr-error-trap.php`) is installed into
@@ -81,6 +86,14 @@ final class ErrorMonitor
      * Holds JSON: { "error_level": <int E_* bitmask>, "ignore_md5s": ["<32hex>", ...] }
      */
     public const OPTION_CONFIG = 'wpmgr_error_config';
+
+    /**
+     * Cron hook for a near-immediate one-shot error ship scheduled by
+     * handleShutdown() when a fatal occurs. MUST equal Scheduler::HOOK_ERRORS_SHIP
+     * (the same hook the dedicated 5-min cron + heartbeat backstop bind
+     * Plugin::shipErrors() to) so the scheduled event drains the batch.
+     */
+    public const IMMEDIATE_SHIP_HOOK = 'wpmgr_agent_errors_ship';
 
     /**
      * The full set of non-fatal codes this class can intercept via
@@ -285,6 +298,17 @@ final class ErrorMonitor
             (int) ($err['line'] ?? 0),
             'fatal'
         );
+
+        // A fatal just occurred — schedule a near-immediate one-shot ship so it
+        // reaches the dashboard within seconds on an active site, instead of
+        // waiting for the 5-min cron. Deduped via wp_next_scheduled so a burst
+        // of fatals leaves at most one pending event. WP-Cron still needs a
+        // request to fire it, but on a live site the next hit does so promptly.
+        if (function_exists('wp_schedule_single_event') && function_exists('wp_next_scheduled')) {
+            if (wp_next_scheduled(self::IMMEDIATE_SHIP_HOOK) === false) {
+                wp_schedule_single_event(time() + 1, self::IMMEDIATE_SHIP_HOOK);
+            }
+        }
     }
 
     /**

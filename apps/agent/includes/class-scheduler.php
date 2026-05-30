@@ -52,6 +52,16 @@ final class Scheduler
      */
     public const HOOK_ACTIVITY_SHIP = 'wpmgr_agent_activity_ship';
 
+    /**
+     * Dedicated PHP-error ship cron hook (every 5 min). Plugin::registerHooks
+     * binds Plugin::shipErrors() to this AND to the heartbeat backstop. Mirrors
+     * HOOK_ACTIVITY_SHIP: previously errors only rode the daily diagnostics
+     * cron, so they reached the dashboard hours late; this guarantees a 5-min
+     * drain. ErrorMonitor::IMMEDIATE_SHIP_HOOK is the SAME hook string so a
+     * fatal can schedule a one-shot near-immediate ship onto it.
+     */
+    public const HOOK_ERRORS_SHIP = 'wpmgr_agent_errors_ship';
+
     /** Custom cron schedule key for the 5-minute interval. */
     public const SCHEDULE_5MIN = 'wpmgr_agent_5min';
 
@@ -181,6 +191,13 @@ final class Scheduler
             if (wp_next_scheduled(self::HOOK_ACTIVITY_SHIP) === false) {
                 wp_schedule_event($now + 90, self::SCHEDULE_5MIN, self::HOOK_ACTIVITY_SHIP);
             }
+
+            // PHP-error shipper, every 5 min (same cadence as activity). Handler
+            // bound in Plugin. Offset 100s so it does not collide with the
+            // activity tick at +90s.
+            if (wp_next_scheduled(self::HOOK_ERRORS_SHIP) === false) {
+                wp_schedule_event($now + 100, self::SCHEDULE_5MIN, self::HOOK_ERRORS_SHIP);
+            }
         }
 
         // One-shot safety check ~30 minutes out, unless disabled by constant.
@@ -211,6 +228,8 @@ final class Scheduler
         wp_clear_scheduled_hook(self::HOOK_DIAGNOSTICS);
         // ADR-037 Sprint 3 — clear the activity-ship cron on deactivation.
         wp_clear_scheduled_hook(self::HOOK_ACTIVITY_SHIP);
+        // Clear the dedicated PHP-error ship cron on deactivation.
+        wp_clear_scheduled_hook(self::HOOK_ERRORS_SHIP);
     }
 
     /**

@@ -276,6 +276,15 @@ final class Plugin
         // Priority 25 so it runs after the activity ship (priority 20).
         add_action(Scheduler::HOOK_HEARTBEAT, [$this, 'shipLoginEventsPublic'], 25);
 
+        // PHP-error ship: dedicated 5-min cron (HOOK_ERRORS_SHIP) + heartbeat
+        // backstop (priority 30, after login events at 25). Previously errors
+        // shipped ONLY on the daily diagnostics cron, so they reached the
+        // dashboard hours late / "randomly"; this gives them the same 5-min
+        // cadence as activity + login events. A fatal also schedules a one-shot
+        // ship onto HOOK_ERRORS_SHIP for sub-minute latency (ErrorMonitor).
+        add_action(Scheduler::HOOK_ERRORS_SHIP, [$this, 'shipErrors']);
+        add_action(Scheduler::HOOK_HEARTBEAT, [$this, 'shipErrors'], 30);
+
         // ADR-037 Sprint 2 — install the error monitor + heal the mu-plugin
         // copy on every boot. install() is idempotent; the mu-installer
         // short-circuits via a sha1_file content match.
@@ -606,31 +615,10 @@ final class Plugin
             update_option(self::OPTION_LAST_DIAGNOSTICS_AT, time(), false);
         }
 
-        // Also ship any pending PHP-error batch on this same cron tick.
-        // ErrorMonitor::shipBatch returns up to 50 newest unsilenced rows
-        // above the stored cursor; the CP advances the cursor in its
-        // response. We POST the batch and advance our local cursor to the
-        // highest id we sent on a 2xx.
-        $errors = $this->errorMonitor->shipBatch();
-        if ($errors !== []) {
-            $highest     = 0;
-            $maxLastSeen = 0;
-            foreach ($errors as $row) {
-                $id = (int) ($row['id'] ?? 0);
-                if ($id > $highest) {
-                    $highest = $id;
-                }
-                $ls = (int) ($row['last_seen'] ?? 0);
-                if ($ls > $maxLastSeen) {
-                    $maxLastSeen = $ls;
-                }
-            }
-            $result = $this->shipPayload('/agent/v1/errors', ['errors' => $errors]);
-            if (is_array($result) && ($result['ok'] ?? false)) {
-                $this->errorMonitor->advanceCursor($highest);
-                $this->errorMonitor->advanceShipTs($maxLastSeen);
-            }
-        }
+        // Also drain any pending PHP-error batch on this tick. The PRIMARY
+        // cadence is now the dedicated 5-min HOOK_ERRORS_SHIP cron + heartbeat
+        // backstop (shipErrors()); keeping the call here too is harmless.
+        $this->shipErrors();
 
         // S2 — ship any pending login-event batch on this same cron tick.
         // LoginProtection::shipBatch returns up to SHIP_BATCH (100) newest rows
@@ -638,6 +626,45 @@ final class Plugin
         // cursor to the highest id we sent on a 2xx, mirroring the error-ship
         // block above.
         $this->shipLoginEvents();
+    }
+
+    /**
+     * Drain and ship any pending PHP-error batch to /agent/v1/errors. Bound to
+     * the dedicated 5-min HOOK_ERRORS_SHIP cron AND the heartbeat backstop
+     * (priority 30), and also called from runDiagnostics() — mirroring how
+     * activity + login events ship, so captured errors reach the dashboard
+     * within ~5 min (or seconds for a fatal that scheduled a one-shot ship)
+     * instead of riding the daily diagnostics cron. shipBatch() returns up to
+     * 50 rows above the cursor; we POST them and advance the cursor on a 2xx.
+     *
+     * @return void
+     */
+    public function shipErrors(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        $errors = $this->errorMonitor->shipBatch();
+        if ($errors === []) {
+            return;
+        }
+        $highest     = 0;
+        $maxLastSeen = 0;
+        foreach ($errors as $row) {
+            $id = (int) ($row['id'] ?? 0);
+            if ($id > $highest) {
+                $highest = $id;
+            }
+            $ls = (int) ($row['last_seen'] ?? 0);
+            if ($ls > $maxLastSeen) {
+                $maxLastSeen = $ls;
+            }
+        }
+        $result = $this->shipPayload('/agent/v1/errors', ['errors' => $errors]);
+        if (is_array($result) && ($result['ok'] ?? false)) {
+            $this->errorMonitor->advanceCursor($highest);
+            $this->errorMonitor->advanceShipTs($maxLastSeen);
+        }
     }
 
     /**
