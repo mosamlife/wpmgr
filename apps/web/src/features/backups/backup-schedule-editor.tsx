@@ -57,14 +57,6 @@ function formatInSiteTz(iso: string, timezone: string): string {
   }
 }
 
-/** Build a UTC offset label like "UTC+5:30" or "UTC-7" from gmt_offset. */
-function offsetLabel(gmt_offset: number): string {
-  const sign = gmt_offset >= 0 ? "+" : "-";
-  const abs = Math.abs(gmt_offset);
-  const h = Math.floor(abs);
-  const m = Math.round((abs - h) * 60);
-  return m === 0 ? `UTC${sign}${h}` : `UTC${sign}${h}:${String(m).padStart(2, "0")}`;
-}
 
 // ---------------------------------------------------------------------------
 // Form types + Zod schema
@@ -231,11 +223,14 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
     });
   }
 
-  const timezone = schedule?.timezone ?? "";
-  const gmtOffset = schedule?.gmt_offset ?? 0;
-  const tzLabel = timezone
-    ? `${timezone} (${offsetLabel(gmtOffset)})`
-    : "UTC (site timezone unknown)";
+  // Run times are displayed in the operator's OWN (browser) timezone so they're
+  // readable, while the schedule is anchored server-side to the site's
+  // WordPress timezone. siteTz is the resolved site zone ("" or "UTC" until
+  // WordPress reports one via diagnostics).
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const siteTz = (schedule?.timezone ?? "").trim();
+  const siteTzKnown = siteTz !== "" && siteTz !== "UTC";
+  const anchorLabel = siteTzKnown ? siteTz : "UTC";
 
   return (
     <Card>
@@ -259,11 +254,24 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
           </div>
         ) : (
           <>
-            {/* Timezone notice — read-only, shown above the form */}
+            {/* Timezone notice — display tz vs anchor tz */}
             <p className="mb-4 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Times are in the site's timezone:{" "}
-              <span className="font-medium text-foreground">{tzLabel}</span>.
-              This is set by WordPress and cannot be changed here.
+              Times below are shown in your timezone{" "}
+              <span className="font-medium text-foreground">({browserTz})</span>.{" "}
+              {siteTzKnown ? (
+                <>
+                  Backups run on the site's WordPress clock{" "}
+                  <span className="font-medium text-foreground">({siteTz})</span>
+                  ; the run time you set is interpreted there.
+                </>
+              ) : (
+                <>
+                  The site's WordPress timezone hasn't been reported yet, so the
+                  run time you set is interpreted as{" "}
+                  <span className="font-medium text-foreground">UTC</span> for
+                  now.
+                </>
+              )}
             </p>
 
             {/* Next-run status strip */}
@@ -273,14 +281,14 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
                   <NextRunLine
                     label="Next run"
                     iso={schedule.next_run_at}
-                    timezone={timezone}
+                    timezone={browserTz}
                   />
                 )}
                 {schedule.last_run_at && (
                   <NextRunLine
                     label="Last run"
                     iso={schedule.last_run_at}
-                    timezone={timezone}
+                    timezone={browserTz}
                   />
                 )}
                 {schedule.next_runs.length > 0 && (
@@ -294,7 +302,7 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
                           <NextRunLine
                             label=""
                             iso={iso}
-                            timezone={timezone}
+                            timezone={browserTz}
                             compact
                           />
                         </li>
@@ -418,7 +426,7 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
                       <p id="run-hour-help" className="text-xs text-muted-foreground">
                         {cadence === "every_n_hours"
                           ? "The sequence of N-hour slots is anchored to this hour."
-                          : `In the site timezone (${tzLabel}).`}
+                          : `Interpreted on the ${anchorLabel} clock; the run shows in your local time above.`}
                       </p>
                       <FieldError
                         what={errors.run_hour?.message}

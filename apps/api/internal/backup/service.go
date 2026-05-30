@@ -787,7 +787,10 @@ func (s *Service) GetSchedule(ctx context.Context, tenantID, siteID uuid.UUID) (
 	}
 	// Populate read-only Timezone + GmtOffset from the site's WordPress settings
 	// (the scheduler resolves these at fire time; the response DTO surfaces them
-	// so the UI can display run times in the site's local timezone).
+	// so the UI can display run times in the site's local timezone). Default to
+	// UTC so the field is never empty even if the site lookup fails or the WP
+	// timezone has not been reported via diagnostics yet.
+	sched.Timezone = "UTC"
 	if si, siErr := s.sites.GetBackupSiteInfo(ctx, tenantID, siteID); siErr == nil {
 		loc := resolveLocation(si.WpTimezone, si.WpGmtOffset)
 		sched.Timezone = loc.String()
