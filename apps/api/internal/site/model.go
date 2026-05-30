@@ -37,8 +37,15 @@ type Site struct {
 	// AgeRecipient is the per-site age PUBLIC recipient backups are encrypted to
 	// (client-side, on the agent). The control plane never holds the identity.
 	AgeRecipient string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// WpTimezone is the IANA timezone name from the site's WordPress settings
+	// (captured by the agent's diagnostics identity category). Empty when
+	// diagnostics have not yet been ingested.
+	WpTimezone string
+	// WpGmtOffset is the site's GMT offset in fractional hours (e.g. 5.5 for
+	// +05:30). Used as a fallback when WpTimezone is empty.
+	WpGmtOffset float64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // CreateInput is the validated input for creating a site under a tenant.

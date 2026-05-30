@@ -34,9 +34,9 @@ const sseMaxLifetime = 30 * time.Minute
 // Mutations (create backup, restore, put schedule) require operator+; reads
 // (list, get, get schedule, events) require viewer+.
 type Handler struct {
-	svc         *Service
-	hub         *Hub
-	audit       *audit.Recorder
+	svc   *Service
+	hub   *Hub
+	audit *audit.Recorder
 	// envFetcher resolves the agent-shipped environment.json manifest entry's
 	// ordered chunks to a JSON blob. Re-uses the same fetcher adapter the
 	// SQL-inspection endpoint uses (chunk-store-by-presigned-GET); satisfies
@@ -82,12 +82,12 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 // no CP-side reconstruction of "what environment was this dump taken from").
 //
 // Resolution:
-//   1. Snapshot lookup is tenant-scoped (404s on tenant mismatch).
-//   2. Manifest scanned for an entry kind=="environment" or path=="environment.json".
-//      Old snapshots without the entry get a 404 with code env_not_recorded.
-//   3. Fetch ordered chunks via the ManifestInspectionFetcher path (same
-//      adapter handles arbitrary text/JSON artifacts; the SQL-inspection
-//      framing is incidental, not contractual).
+//  1. Snapshot lookup is tenant-scoped (404s on tenant mismatch).
+//  2. Manifest scanned for an entry kind=="environment" or path=="environment.json".
+//     Old snapshots without the entry get a 404 with code env_not_recorded.
+//  3. Fetch ordered chunks via the ManifestInspectionFetcher path (same
+//     adapter handles arbitrary text/JSON artifacts; the SQL-inspection
+//     framing is incidental, not contractual).
 func (h *Handler) getEnvironment(c *gin.Context) {
 	tenantID, ok := tenantOf(c)
 	if !ok {
@@ -520,6 +520,19 @@ func (h *Handler) putSchedule(c *gin.Context) {
 		Enabled:            req.Enabled.Or(true),
 		RetentionDays:      req.RetentionDays.Or(0),
 		MonthlyArchiveKeep: req.MonthlyArchiveKeep.Or(-1),
+		RunHour:            req.RunHour.Or(2),
+		RunMinute:          req.RunMinute.Or(0),
+		KeepLast:           req.KeepLast.Or(7),
+	}
+	// Map nullable int32 timing fields (OptNilInt32 → *int32).
+	if v, ok := req.DayOfWeek.Get(); ok {
+		in.DayOfWeek = &v
+	}
+	if v, ok := req.DayOfMonth.Get(); ok {
+		in.DayOfMonth = &v
+	}
+	if v, ok := req.FrequencyHours.Get(); ok {
+		in.FrequencyHours = &v
 	}
 	sched, err := h.svc.PutSchedule(c.Request.Context(), in)
 	if err != nil {
@@ -645,14 +658,66 @@ func toAPISchedule(s Schedule) gen.BackupSchedule {
 		Enabled:            s.Enabled,
 		RetentionDays:      s.RetentionDays,
 		MonthlyArchiveKeep: s.MonthlyArchiveKeep,
+		RunHour:            s.RunHour,
+		RunMinute:          s.RunMinute,
+		KeepLast:           s.KeepLast,
+		Timezone:           s.Timezone,
+		GmtOffset:          s.GmtOffset,
 		NextRunAt:          s.NextRunAt,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}
+	// Map nullable timing fields (*int32 → OptNilInt32).
+	if s.DayOfWeek != nil {
+		out.DayOfWeek = gen.NewOptNilInt32(*s.DayOfWeek)
+	} else {
+		out.DayOfWeek.SetToNull()
+	}
+	if s.DayOfMonth != nil {
+		out.DayOfMonth = gen.NewOptNilInt32(*s.DayOfMonth)
+	} else {
+		out.DayOfMonth.SetToNull()
+	}
+	if s.FrequencyHours != nil {
+		out.FrequencyHours = gen.NewOptNilInt32(*s.FrequencyHours)
+	} else {
+		out.FrequencyHours.SetToNull()
+	}
 	if s.LastRunAt != nil {
 		out.LastRunAt = gen.NewOptDateTime(*s.LastRunAt)
 	}
+	// Compute the next ~3 occurrences for the upcoming-preview strip.
+	out.NextRuns = scheduleNextRuns(s, 3)
 	return out
+}
+
+// scheduleNextRuns computes the next n occurrence times after s.NextRunAt for
+// the preview strip. It uses the resolved timezone from s.Timezone (already
+// stored on the Schedule by PutSchedule/GetSchedule). Falls back to UTC when
+// the timezone cannot be loaded (should never happen — PutSchedule validates it).
+func scheduleNextRuns(s Schedule, n int) []time.Time {
+	if n <= 0 || s.NextRunAt.IsZero() {
+		return nil
+	}
+	loc := resolveLocation(s.Timezone, s.GmtOffset)
+	dow := optInt32ToInt(s.DayOfWeek)
+	dom := optInt32ToInt(s.DayOfMonth)
+	fh := optInt32ToInt(s.FrequencyHours)
+	jitter := SiteJitter(s.SiteID)
+
+	runs := make([]time.Time, 0, n)
+	// The first occurrence is the already-computed next_run_at.
+	cur := s.NextRunAt
+	runs = append(runs, cur.UTC())
+	// Compute subsequent occurrences by chaining nextOccurrence from each prior result.
+	for len(runs) < n {
+		cur = nextOccurrence(cur, s.Cadence,
+			int(s.RunHour), int(s.RunMinute),
+			dow, dom, fh,
+			jitter, loc)
+		runs = append(runs, cur.UTC())
+	}
+	return runs
 }
 
 // --- gin helpers ---

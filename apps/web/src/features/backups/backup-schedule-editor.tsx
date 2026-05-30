@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useForm, useWatch } from "react-hook-form";
+import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 
@@ -13,7 +13,8 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { FieldError } from "@/components/forms/field-error";
 import { FormSection } from "@/components/forms/form-section";
 import { StickySaveBar } from "@/components/forms/sticky-save-bar";
@@ -24,25 +25,107 @@ import {
 import { relativeTime } from "@/lib/utils";
 import type { BackupScheduleUpdate } from "@wpmgr/api";
 
-// Backup schedule editor (operator+). GETs the current schedule (or null when
-// none is configured) and PUTs changes via react-hook-form + Zod. Cadence
-// defaults to daily; retention is a rolling-window day count plus a count of
-// monthly archives to keep beyond the window.
-//
-// Sprint 4 (forms): per-section "Save" buttons removed. Dirty state surfaces
-// in a global `StickySaveBar` pinned to the viewport bottom; validation
-// happens on blur (`mode: "onBlur"`) and errors render through `FieldError`
-// in the what/why/how shape from DESIGN.md.
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-const formSchema = z.object({
-  enabled: z.boolean(),
-  cadence: z.enum(["daily", "weekly", "monthly"]),
-  kind: z.enum(["files", "db", "full"]),
-  retention_days: z.coerce.number().int().min(1).max(3650),
-  monthly_archive_keep: z.coerce.number().int().min(0).max(120),
-});
+/**
+ * Format an absolute date-time string in the site's timezone using
+ * Intl.DateTimeFormat. Falls back to UTC when timezone is empty or invalid.
+ */
+function formatInSiteTz(iso: string, timezone: string): string {
+  const tz = timezone.trim() || "UTC";
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(new Date(iso));
+  } catch {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: "UTC",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(new Date(iso));
+  }
+}
 
-type FormValues = z.input<typeof formSchema>;
+/** Build a UTC offset label like "UTC+5:30" or "UTC-7" from gmt_offset. */
+function offsetLabel(gmt_offset: number): string {
+  const sign = gmt_offset >= 0 ? "+" : "-";
+  const abs = Math.abs(gmt_offset);
+  const h = Math.floor(abs);
+  const m = Math.round((abs - h) * 60);
+  return m === 0 ? `UTC${sign}${h}` : `UTC${sign}${h}:${String(m).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Form types + Zod schema
+// ---------------------------------------------------------------------------
+
+// Define FormValues explicitly so react-hook-form's TFieldValues is concrete.
+// z.coerce.number() in Zod v4 has input type `unknown`, which would widen
+// FormValues to unknown if we used z.infer directly. By declaring the type
+// separately and casting the resolver we keep full type-safety.
+export type FormValues = {
+  enabled: boolean;
+  cadence: "hourly" | "every_n_hours" | "daily" | "weekly" | "monthly";
+  kind: "files" | "db" | "full";
+  retention_days: number;
+  monthly_archive_keep: number;
+  keep_last: number;
+  run_hour: number;
+  run_minute: number;
+  day_of_week: number | null;
+  day_of_month: number | null;
+  frequency_hours: number | null;
+};
+
+const formSchema = z
+  .object({
+    enabled: z.boolean(),
+    cadence: z.enum(["hourly", "every_n_hours", "daily", "weekly", "monthly"]),
+    kind: z.enum(["files", "db", "full"]),
+    retention_days: z.coerce.number().int().min(1).max(3650),
+    monthly_archive_keep: z.coerce.number().int().min(0).max(120),
+    keep_last: z.coerce.number().int().min(0).max(9999),
+    run_hour: z.coerce.number().int().min(0).max(23),
+    run_minute: z.coerce.number().int().min(0).max(59),
+    day_of_week: z.number().int().min(0).max(6).nullable(),
+    day_of_month: z.number().int().min(1).max(28).nullable(),
+    frequency_hours: z.number().int().min(1).max(24).nullable(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.cadence === "weekly" && val.day_of_week === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["day_of_week"],
+        message: "Day of week is required for weekly cadence.",
+      });
+    }
+    if (val.cadence === "monthly" && val.day_of_month === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["day_of_month"],
+        message: "Day of month is required for monthly cadence.",
+      });
+    }
+    if (val.cadence === "every_n_hours" && val.frequency_hours === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["frequency_hours"],
+        message: "Frequency (hours) is required for every-N-hours cadence.",
+      });
+    }
+  });
 
 const DEFAULTS: FormValues = {
   enabled: true,
@@ -50,7 +133,27 @@ const DEFAULTS: FormValues = {
   kind: "full",
   retention_days: 30,
   monthly_archive_keep: 12,
+  keep_last: 7,
+  run_hour: 2,
+  run_minute: 0,
+  day_of_week: null,
+  day_of_month: null,
+  frequency_hours: null,
 };
+
+const DAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 export function BackupScheduleEditor({ siteId }: { siteId: string }) {
   const { data: schedule, isPending, isError, error, refetch } =
@@ -64,28 +167,47 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
     control,
     formState: { errors, isDirty },
   } = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
+    // Cast required: zodResolver infers its generic from the Zod schema's
+    // own output type (which uses `unknown` for coerce fields); our FormValues
+    // type is the concrete equivalent, so the cast is safe.
+    resolver: zodResolver(formSchema) as import("react-hook-form").Resolver<FormValues>,
     defaultValues: DEFAULTS,
     mode: "onBlur",
   });
 
-  // Seed the form once the schedule loads (or stays at defaults when none).
+  // Seed form from the server response once loaded.
   useEffect(() => {
     if (isPending) return;
-    reset(
-      schedule
-        ? {
-            enabled: schedule.enabled,
-            cadence: schedule.cadence,
-            kind: schedule.kind,
-            retention_days: schedule.retention_days,
-            monthly_archive_keep: schedule.monthly_archive_keep,
-          }
-        : DEFAULTS,
-    );
+    if (!schedule) {
+      reset(DEFAULTS);
+      return;
+    }
+    reset({
+      enabled: schedule.enabled,
+      cadence: schedule.cadence,
+      kind: schedule.kind,
+      retention_days: schedule.retention_days,
+      monthly_archive_keep: schedule.monthly_archive_keep,
+      keep_last: schedule.keep_last,
+      run_hour: schedule.run_hour,
+      run_minute: schedule.run_minute,
+      day_of_week: schedule.day_of_week ?? null,
+      day_of_month: schedule.day_of_month ?? null,
+      frequency_hours: schedule.frequency_hours ?? null,
+    });
   }, [schedule, isPending, reset]);
 
+  const cadence = useWatch({ control, name: "cadence" });
   const enabled = useWatch({ control, name: "enabled" });
+
+  const showTimeOfDay =
+    cadence === "daily" ||
+    cadence === "weekly" ||
+    cadence === "monthly" ||
+    cadence === "every_n_hours";
+  const showFrequencyHours = cadence === "every_n_hours";
+  const showDayOfWeek = cadence === "weekly";
+  const showDayOfMonth = cadence === "monthly";
 
   function onSubmit(values: FormValues) {
     const body: BackupScheduleUpdate = {
@@ -94,16 +216,27 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
       kind: values.kind,
       retention_days: Number(values.retention_days),
       monthly_archive_keep: Number(values.monthly_archive_keep),
+      keep_last: Number(values.keep_last),
+      run_hour: Number(values.run_hour),
+      run_minute: Number(values.run_minute),
+      // Send null explicitly to clear fields when switching cadences.
+      day_of_week: values.cadence === "weekly" ? (values.day_of_week ?? 0) : undefined,
+      day_of_month: values.cadence === "monthly" ? (values.day_of_month ?? 1) : undefined,
+      frequency_hours: values.cadence === "every_n_hours" ? (values.frequency_hours ?? 6) : undefined,
     };
     save.mutate(body, {
       onSuccess: () => {
-        // Re-seed defaults so isDirty drops back to false and the save bar
-        // slides away.
         reset(values);
       },
       onError: () => {},
     });
   }
+
+  const timezone = schedule?.timezone ?? "";
+  const gmtOffset = schedule?.gmt_offset ?? 0;
+  const tzLabel = timezone
+    ? `${timezone} (${offsetLabel(gmtOffset)})`
+    : "UTC (site timezone unknown)";
 
   return (
     <Card>
@@ -111,9 +244,6 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
         <CardTitle>Backup schedule</CardTitle>
         <CardDescription>
           Automatic backups and how long to keep them.
-          {schedule?.next_run_at
-            ? ` Next run ${relativeTime(schedule.next_run_at) ?? "soon"}.`
-            : ""}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -129,137 +259,396 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
             </Button>
           </div>
         ) : (
-          <form
-            onSubmit={(e) => void handleSubmit(onSubmit)(e)}
-            noValidate
-            // Bottom padding clears the sticky save bar so the last input
-            // stays scrollable above the floating chrome.
-            className="space-y-0 pb-24"
-          >
-            <FormSection
-              title="Run scheduled backups"
-              description="When enabled, backups run on the chosen cadence and follow the retention policy below."
-            >
-              <label className="flex items-center gap-2 text-sm font-medium">
-                <Checkbox {...register("enabled")} />
-                Enable scheduled backups
-              </label>
-            </FormSection>
+          <>
+            {/* Timezone notice — read-only, shown above the form */}
+            <p className="mb-4 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              Times are in the site's timezone:{" "}
+              <span className="font-medium text-foreground">{tzLabel}</span>.
+              This is set by WordPress and cannot be changed here.
+            </p>
 
-            <FormSection
-              title="Cadence"
-              description="How often backups are taken and what they include."
+            {/* Next-run status strip */}
+            {schedule && (
+              <div className="mb-6 space-y-2">
+                {schedule.next_run_at && (
+                  <NextRunLine
+                    label="Next run"
+                    iso={schedule.next_run_at}
+                    timezone={timezone}
+                  />
+                )}
+                {schedule.last_run_at && (
+                  <NextRunLine
+                    label="Last run"
+                    iso={schedule.last_run_at}
+                    timezone={timezone}
+                  />
+                )}
+                {schedule.next_runs.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Next 3 runs
+                    </p>
+                    <ol className="space-y-0.5">
+                      {schedule.next_runs.map((iso) => (
+                        <li key={iso} className="text-xs">
+                          <NextRunLine
+                            label=""
+                            iso={iso}
+                            timezone={timezone}
+                            compact
+                          />
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <form
+              onSubmit={(e) => void handleSubmit(onSubmit)(e)}
+              noValidate
+              className="space-y-0 pb-24"
             >
-              <fieldset
-                disabled={!enabled}
-                className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+              {/* Enable toggle */}
+              <FormSection
+                title="Run scheduled backups"
+                description="When enabled, backups run on the chosen cadence and follow the retention policy below."
               >
-                <div className="space-y-1">
-                  <Label htmlFor="cadence">Cadence</Label>
-                  <select
-                    id="cadence"
-                    {...register("cadence")}
-                    className="h-9 w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] disabled:opacity-50"
-                  >
-                    <option value="daily">Daily</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                  </select>
-                  <p className="text-sm text-muted-foreground">
-                    Daily fits production sites. Weekly suits staging.
-                  </p>
+                <div className="flex items-center gap-3">
+                  <Controller
+                    control={control}
+                    name="enabled"
+                    render={({ field }) => (
+                      <Switch
+                        id="schedule-enabled"
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    )}
+                  />
+                  <Label htmlFor="schedule-enabled" className="cursor-pointer">
+                    Enable scheduled backups
+                  </Label>
                 </div>
+              </FormSection>
 
-                <div className="space-y-1">
-                  <Label htmlFor="schedule-kind">What to back up</Label>
-                  <select
-                    id="schedule-kind"
-                    {...register("kind")}
-                    className="h-9 w-full rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] disabled:opacity-50"
-                  >
-                    <option value="full">Full (files + database)</option>
-                    <option value="files">Files only</option>
-                    <option value="db">Database only</option>
-                  </select>
-                  <p className="text-sm text-muted-foreground">
-                    Full is safest. Database-only is fastest.
-                  </p>
-                </div>
-              </fieldset>
-            </FormSection>
-
-            <FormSection
-              title="Retention"
-              description="How long snapshots stay in storage before they are pruned."
-            >
-              <fieldset
-                disabled={!enabled}
-                className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+              {/* Cadence + kind */}
+              <FormSection
+                title="Cadence"
+                description="How often backups are taken and what they include."
               >
-                <div className="space-y-1">
-                  <Label htmlFor="retention-days">Retention (days)</Label>
-                  <Input
-                    id="retention-days"
-                    type="number"
-                    min={1}
-                    max={3650}
-                    {...register("retention_days")}
-                    aria-invalid={errors.retention_days ? "true" : undefined}
-                    aria-describedby="retention-days-help"
-                  />
-                  <p
-                    id="retention-days-help"
-                    className="text-sm text-muted-foreground"
-                  >
-                    Rolling window. 30 days is the default.
-                  </p>
-                  <FieldError
-                    what={errors.retention_days?.message}
-                    why="Retention must be between 1 and 3650 days."
-                    how="Enter a whole number above."
-                  />
-                </div>
+                <fieldset
+                  disabled={!enabled}
+                  className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+                >
+                  <div className="space-y-1">
+                    <Label htmlFor="cadence">Cadence</Label>
+                    <Select id="cadence" {...register("cadence")}>
+                      <option value="hourly">Hourly</option>
+                      <option value="every_n_hours">Every N hours</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Daily fits production sites. Weekly suits staging.
+                    </p>
+                  </div>
 
-                <div className="space-y-1">
-                  <Label htmlFor="monthly-keep">Monthly archives to keep</Label>
-                  <Input
-                    id="monthly-keep"
-                    type="number"
-                    min={0}
-                    max={120}
-                    {...register("monthly_archive_keep")}
-                    aria-invalid={
-                      errors.monthly_archive_keep ? "true" : undefined
-                    }
-                    aria-describedby="monthly-keep-help"
-                  />
-                  <p
-                    id="monthly-keep-help"
-                    className="text-sm text-muted-foreground"
-                  >
-                    Long-term archives beyond the rolling window.
-                  </p>
-                  <FieldError
-                    what={errors.monthly_archive_keep?.message}
-                    why="Monthly archives must be between 0 and 120."
-                    how="Enter a whole number above."
-                  />
-                </div>
-              </fieldset>
-            </FormSection>
+                  <div className="space-y-1">
+                    <Label htmlFor="schedule-kind">What to back up</Label>
+                    <Select id="schedule-kind" {...register("kind")}>
+                      <option value="full">Full (files + database)</option>
+                      <option value="files">Files only</option>
+                      <option value="db">Database only</option>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Full is safest. Database-only is fastest.
+                    </p>
+                  </div>
+                </fieldset>
 
-            <StickySaveBar
-              isDirty={isDirty}
-              isPending={save.isPending}
-              errorMessage={save.isError ? save.error.message : null}
-              onSave={() => handleSubmit(onSubmit)()}
-              onDiscard={() => reset()}
-              saveLabel="Update schedule"
-              discardLabel="Discard changes"
-            />
-          </form>
+                {/* Frequency hours — every_n_hours only */}
+                {showFrequencyHours && (
+                  <fieldset disabled={!enabled} className="space-y-1">
+                    <Label htmlFor="frequency-hours">
+                      Run every (hours)
+                    </Label>
+                    <Select
+                      id="frequency-hours"
+                      {...register("frequency_hours")}
+                      aria-invalid={errors.frequency_hours ? "true" : undefined}
+                    >
+                      {[1, 2, 3, 4, 6, 8, 12, 24].map((h) => (
+                        <option key={h} value={h}>
+                          {h === 1 ? "Every hour" : `Every ${h} hours`}
+                        </option>
+                      ))}
+                    </Select>
+                    <FieldError
+                      what={errors.frequency_hours?.message}
+                      why="Frequency must be between 1 and 24 hours."
+                      how="Select a frequency above."
+                    />
+                  </fieldset>
+                )}
+
+                {/* Time of day — daily, weekly, monthly, every_n_hours anchor */}
+                {showTimeOfDay && (
+                  <fieldset
+                    disabled={!enabled}
+                    className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+                  >
+                    <div className="space-y-1">
+                      <Label htmlFor="run-hour">
+                        {cadence === "every_n_hours"
+                          ? "Anchor hour (0-23)"
+                          : "Run hour (0-23)"}
+                      </Label>
+                      <Input
+                        id="run-hour"
+                        type="number"
+                        min={0}
+                        max={23}
+                        {...register("run_hour")}
+                        aria-invalid={errors.run_hour ? "true" : undefined}
+                        aria-describedby="run-hour-help"
+                      />
+                      <p id="run-hour-help" className="text-xs text-muted-foreground">
+                        {cadence === "every_n_hours"
+                          ? "The sequence of N-hour slots is anchored to this hour."
+                          : `In the site timezone (${tzLabel}).`}
+                      </p>
+                      <FieldError
+                        what={errors.run_hour?.message}
+                        why="Hour must be between 0 and 23."
+                        how="Enter a whole number."
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="run-minute">Run minute (0-59)</Label>
+                      <Input
+                        id="run-minute"
+                        type="number"
+                        min={0}
+                        max={59}
+                        {...register("run_minute")}
+                        aria-invalid={errors.run_minute ? "true" : undefined}
+                        aria-describedby="run-minute-help"
+                      />
+                      <p id="run-minute-help" className="text-xs text-muted-foreground">
+                        Minute within the hour. Defaults to 0.
+                      </p>
+                      <FieldError
+                        what={errors.run_minute?.message}
+                        why="Minute must be between 0 and 59."
+                        how="Enter a whole number."
+                      />
+                    </div>
+                  </fieldset>
+                )}
+
+                {/* Day of week — weekly */}
+                {showDayOfWeek && (
+                  <fieldset disabled={!enabled} className="space-y-1">
+                    <Label htmlFor="day-of-week">Day of week</Label>
+                    <Select
+                      id="day-of-week"
+                      {...register("day_of_week")}
+                      aria-invalid={errors.day_of_week ? "true" : undefined}
+                    >
+                      {DAY_NAMES.map((name, i) => (
+                        <option key={i} value={i}>
+                          {name}
+                        </option>
+                      ))}
+                    </Select>
+                    <FieldError
+                      what={errors.day_of_week?.message}
+                      why="Day of week is required for weekly cadence."
+                      how="Select a day above."
+                    />
+                  </fieldset>
+                )}
+
+                {/* Day of month — monthly */}
+                {showDayOfMonth && (
+                  <fieldset disabled={!enabled} className="space-y-1">
+                    <Label htmlFor="day-of-month">Day of month (1–28)</Label>
+                    <Input
+                      id="day-of-month"
+                      type="number"
+                      min={1}
+                      max={28}
+                      {...register("day_of_month")}
+                      aria-invalid={errors.day_of_month ? "true" : undefined}
+                      aria-describedby="day-of-month-help"
+                    />
+                    <p
+                      id="day-of-month-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Capped at 28 to avoid month-end ambiguity.
+                    </p>
+                    <FieldError
+                      what={errors.day_of_month?.message}
+                      why="Day of month must be between 1 and 28."
+                      how="Enter a whole number above."
+                    />
+                  </fieldset>
+                )}
+              </FormSection>
+
+              {/* Retention */}
+              <FormSection
+                title="Retention"
+                description="How long snapshots stay in storage before they are pruned. The stricter of the two limits applies."
+              >
+                <fieldset
+                  disabled={!enabled}
+                  className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+                >
+                  <div className="space-y-1">
+                    <Label htmlFor="retention-days">Retention (days)</Label>
+                    <Input
+                      id="retention-days"
+                      type="number"
+                      min={1}
+                      max={3650}
+                      {...register("retention_days")}
+                      aria-invalid={errors.retention_days ? "true" : undefined}
+                      aria-describedby="retention-days-help"
+                    />
+                    <p
+                      id="retention-days-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Rolling window. 30 days is the default.
+                    </p>
+                    <FieldError
+                      what={errors.retention_days?.message}
+                      why="Retention must be between 1 and 3650 days."
+                      how="Enter a whole number above."
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="keep-last">Keep at least (count)</Label>
+                    <Input
+                      id="keep-last"
+                      type="number"
+                      min={0}
+                      max={9999}
+                      {...register("keep_last")}
+                      aria-invalid={errors.keep_last ? "true" : undefined}
+                      aria-describedby="keep-last-help"
+                    />
+                    <p
+                      id="keep-last-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Minimum snapshots retained regardless of age. Default 7.
+                    </p>
+                    <FieldError
+                      what={errors.keep_last?.message}
+                      why="Must be a non-negative whole number."
+                      how="Enter a whole number above."
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="monthly-keep">Monthly archives</Label>
+                    <Input
+                      id="monthly-keep"
+                      type="number"
+                      min={0}
+                      max={120}
+                      {...register("monthly_archive_keep")}
+                      aria-invalid={
+                        errors.monthly_archive_keep ? "true" : undefined
+                      }
+                      aria-describedby="monthly-keep-help"
+                    />
+                    <p
+                      id="monthly-keep-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Long-term archives beyond the rolling window.
+                    </p>
+                    <FieldError
+                      what={errors.monthly_archive_keep?.message}
+                      why="Monthly archives must be between 0 and 120."
+                      how="Enter a whole number above."
+                    />
+                  </div>
+                </fieldset>
+              </FormSection>
+
+              <StickySaveBar
+                isDirty={isDirty}
+                isPending={save.isPending}
+                errorMessage={save.isError ? save.error.message : null}
+                onSave={() => handleSubmit(onSubmit)()}
+                onDiscard={() => reset()}
+                saveLabel="Update schedule"
+                discardLabel="Discard changes"
+              />
+            </form>
+          </>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NextRunLine — renders one scheduled time as absolute (site tz) + relative
+// ---------------------------------------------------------------------------
+
+interface NextRunLineProps {
+  label: string;
+  iso: string;
+  timezone: string;
+  compact?: boolean;
+}
+
+function NextRunLine({ label, iso, timezone, compact = false }: NextRunLineProps) {
+  const abs = formatInSiteTz(iso, timezone);
+  const rel = relativeTime(iso);
+
+  if (compact) {
+    return (
+      <time
+        dateTime={iso}
+        title={iso}
+        className="text-xs tabular-nums text-muted-foreground"
+      >
+        {abs}
+        {rel ? (
+          <span className="ml-1.5 font-normal text-muted-foreground/70">
+            ({rel})
+          </span>
+        ) : null}
+      </time>
+    );
+  }
+
+  return (
+    <p className="text-xs text-muted-foreground">
+      {label}:{" "}
+      <time
+        dateTime={iso}
+        title={iso}
+        className="font-medium text-foreground tabular-nums"
+      >
+        {abs}
+      </time>
+      {rel ? (
+        <span className="ml-1.5 text-muted-foreground/70">({rel})</span>
+      ) : null}
+    </p>
   );
 }

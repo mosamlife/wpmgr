@@ -99,8 +99,11 @@ type Deps struct {
 	// m16 — Restore Runs + Logs. RestoreRunH serves the per-site restore
 	// history and the by-id detail + phase-log endpoints.
 	RestoreRunH *backup.RestoreRunHandler
-	ServiceName string
-	Version     string
+	// M17 — Schedule Runs. ScheduleRunH serves the per-site schedule run
+	// queue (upcoming + past) and the by-id detail endpoint.
+	ScheduleRunH *backup.ScheduleRunHandler
+	ServiceName  string
+	Version      string
 }
 
 // Server bundles the HTTP server and its dependencies.
@@ -233,6 +236,10 @@ func New(deps Deps) *Server {
 	// m16 — restore run history + phase log.
 	if deps.RestoreRunH != nil {
 		deps.RestoreRunH.Register(v1)
+	}
+	// M17 — schedule run queue (upcoming + past history).
+	if deps.ScheduleRunH != nil {
+		deps.ScheduleRunH.Register(v1)
 	}
 
 	return s

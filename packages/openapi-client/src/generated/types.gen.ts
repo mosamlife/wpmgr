@@ -745,12 +745,48 @@ export type BackupSchedule = {
   id: string;
   tenant_id: string;
   site_id: string;
-  cadence: "daily" | "weekly" | "monthly";
+  cadence: "hourly" | "every_n_hours" | "daily" | "weekly" | "monthly";
   kind: "files" | "db" | "full";
   enabled: boolean;
   retention_days: number;
   monthly_archive_keep: number;
+  /**
+   * Hour of day (0-23) in the site timezone at which the backup fires.
+   */
+  run_hour: number;
+  /**
+   * Minute (0-59) within the hour at which the backup fires.
+   */
+  run_minute: number;
+  /**
+   * Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.
+   */
+  day_of_week?: number;
+  /**
+   * Day of month (1-28, capped) for monthly cadence; null otherwise.
+   */
+  day_of_month?: number;
+  /**
+   * Interval in hours for every_n_hours cadence; null otherwise.
+   */
+  frequency_hours?: number;
+  /**
+   * Minimum number of snapshots to retain regardless of age.
+   */
+  keep_last: number;
+  /**
+   * Read-only. IANA timezone name (or fixed-offset label) resolved from the site's WordPress timezone. Used by the UI to display run times.
+   */
+  timezone: string;
+  /**
+   * Read-only. GMT offset in hours (e.g. 5.5 for +05:30) from the site's WordPress settings.
+   */
+  gmt_offset: number;
   next_run_at: string;
+  /**
+   * Read-only. The next ~3 scheduled occurrence times (RFC 3339 UTC) for the upcoming-preview strip in the UI.
+   */
+  next_runs: Array<string>;
   last_run_at?: string;
   created_at: string;
   updated_at: string;
@@ -760,7 +796,7 @@ export type BackupSchedule = {
  * Create or update a site's backup schedule (daily default).
  */
 export type BackupScheduleUpdate = {
-  cadence?: "daily" | "weekly" | "monthly";
+  cadence?: "hourly" | "every_n_hours" | "daily" | "weekly" | "monthly";
   kind?: "files" | "db" | "full";
   enabled?: boolean;
   /**
@@ -771,6 +807,30 @@ export type BackupScheduleUpdate = {
    * Number of monthly-archive snapshots to keep beyond the window.
    */
   monthly_archive_keep?: number;
+  /**
+   * Hour of day (0-23) in the site timezone at which the backup fires.
+   */
+  run_hour?: number;
+  /**
+   * Minute (0-59) within the hour at which the backup fires.
+   */
+  run_minute?: number;
+  /**
+   * Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.
+   */
+  day_of_week?: number;
+  /**
+   * Day of month (1-28, capped) for monthly cadence; null otherwise.
+   */
+  day_of_month?: number;
+  /**
+   * Interval in hours for every_n_hours cadence; null otherwise.
+   */
+  frequency_hours?: number;
+  /**
+   * Minimum number of snapshots to retain regardless of age.
+   */
+  keep_last?: number;
 };
 
 /**

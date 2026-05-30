@@ -17,6 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import { PageError } from "@/components/feedback";
@@ -31,6 +32,11 @@ import {
   type RestoreRun,
   type RestoreStatus,
 } from "@/features/backups/use-restores";
+import {
+  useScheduleRuns,
+  type ScheduleRun,
+  type ScheduleRunStatus,
+} from "@/features/backups/use-schedule-runs";
 import { BackupScheduleEditor } from "@/features/backups/backup-schedule-editor";
 import { formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupCreate } from "@wpmgr/api";
@@ -83,6 +89,18 @@ export function BackupsSection({
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Backup schedule runs</CardTitle>
+          <CardDescription>
+            Upcoming scheduled backups and past run history for this site.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ScheduleRunsSection siteId={siteId} />
+        </CardContent>
+      </Card>
+
       {canOperate ? <BackupScheduleEditor siteId={siteId} /> : null}
     </div>
   );
@@ -103,20 +121,20 @@ function BackupNowControl({ siteId }: { siteId: string }) {
           <Label htmlFor="backup-kind" className="sr-only">
             What to back up
           </Label>
-          <select
+          <Select
             id="backup-kind"
             value={kind}
             onChange={(e) =>
               setKind(e.target.value as NonNullable<BackupCreate["kind"]>)
             }
-            className="h-8 rounded-md border border-[var(--color-input)] bg-transparent px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+            className="h-8 px-2 text-xs"
           >
             {KINDS.map((k) => (
               <option key={k.value} value={k.value}>
                 {k.label}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
         <Button size="sm" onClick={onBackup} disabled={create.isPending}>
           {create.isPending ? "Starting…" : "Run backup"}
@@ -367,6 +385,184 @@ function RestoreRow({ run }: { run: RestoreRun }) {
       <TableCell className="text-right">
         <Button asChild variant="outline" size="sm">
           <Link to="/restores/$restoreId" params={{ restoreId: run.id }}>
+            View
+          </Link>
+        </Button>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Backup schedule runs section
+// ---------------------------------------------------------------------------
+
+const SCHEDULE_STATUS_TONE: Record<ScheduleRunStatus, StatusTone> = {
+  scheduled: "muted",
+  queued: "muted",
+  running: "info",
+  completed: "success",
+  failed: "destructive",
+  skipped: "warning",
+  canceled: "muted",
+};
+
+const SCHEDULE_STATUS_LABEL: Record<ScheduleRunStatus, string> = {
+  scheduled: "Scheduled",
+  queued: "Queued",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  skipped: "Skipped",
+  canceled: "Canceled",
+};
+
+function ScheduleRunsSection({ siteId }: { siteId: string }) {
+  const { data, isPending, isError, error, refetch } = useScheduleRuns(siteId);
+
+  if (isPending) {
+    return (
+      <div role="status" aria-label="Loading schedule runs" className="space-y-2">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-9 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <PageError
+        what="Could not load schedule run history."
+        why={error.message}
+        onRetry={() => void refetch()}
+      />
+    );
+  }
+
+  const { upcoming, past } = data;
+
+  return (
+    <div className="space-y-6">
+      {/* Upcoming */}
+      <div>
+        <h3 className="mb-2 text-sm font-semibold text-foreground">Upcoming</h3>
+        {upcoming.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No upcoming runs. Enable the backup schedule to queue runs.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Scheduled for</TableHead>
+                  <TableHead>Kind</TableHead>
+                  <TableHead>
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {upcoming.map((run) => (
+                  <ScheduleRunRow key={run.id} run={run} />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+
+      {/* Past */}
+      <div>
+        <h3 className="mb-2 text-sm font-semibold text-foreground">Past</h3>
+        {past.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No past runs yet.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Scheduled for</TableHead>
+                  <TableHead>Kind</TableHead>
+                  <TableHead>Snapshot</TableHead>
+                  <TableHead>
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {past.map((run) => (
+                  <ScheduleRunRow key={run.id} run={run} showSnapshot />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScheduleRunRow({
+  run,
+  showSnapshot = false,
+}: {
+  run: ScheduleRun;
+  showSnapshot?: boolean;
+}) {
+  const isRunning = run.status === "running";
+  const scheduledLabel = relativeTime(run.scheduled_for) ?? "–";
+
+  return (
+    <TableRow>
+      <TableCell>
+        <StatusChip
+          tone={SCHEDULE_STATUS_TONE[run.status]}
+          label={SCHEDULE_STATUS_LABEL[run.status]}
+          pulse={isRunning}
+        />
+        {run.status === "failed" && run.error ? (
+          <span
+            role="alert"
+            className="mt-1 block text-xs text-destructive-subtle-fg"
+          >
+            {run.error}
+          </span>
+        ) : null}
+      </TableCell>
+      <TableCell className="tabular-nums text-sm" title={run.scheduled_for}>
+        <time dateTime={run.scheduled_for}>{scheduledLabel}</time>
+      </TableCell>
+      <TableCell className="text-sm">{run.kind}</TableCell>
+      {showSnapshot ? (
+        <TableCell>
+          {run.snapshot_id ? (
+            <Button asChild variant="link" size="sm" className="h-auto p-0">
+              <Link
+                to="/backups/$snapshotId"
+                params={{ snapshotId: run.snapshot_id }}
+              >
+                <code className="font-mono text-xs">
+                  {run.snapshot_id.slice(0, 8)}
+                </code>
+              </Link>
+            </Button>
+          ) : (
+            <span className="text-xs text-muted-foreground">–</span>
+          )}
+        </TableCell>
+      ) : null}
+      <TableCell className="text-right">
+        <Button asChild variant="outline" size="sm">
+          <Link
+            to="/schedule-runs/$runId"
+            params={{ runId: run.id }}
+          >
             View
           </Link>
         </Button>

@@ -145,6 +145,8 @@ func (l *backupSiteLookup) GetBackupSiteInfo(ctx context.Context, tenantID, site
 		URL:          s.URL,
 		Enrolled:     s.EnrolledAt != nil,
 		AgeRecipient: s.AgeRecipient,
+		WpTimezone:   s.WpTimezone,
+		WpGmtOffset:  s.WpGmtOffset,
 	}, nil
 }
 

@@ -21,10 +21,10 @@ func TestInitialFrameToSend(t *testing.T) {
 	stale := time.Now().UTC().Add(-5 * time.Minute)
 
 	cases := []struct {
-		name        string
-		snap        Snapshot
-		wantSend    bool
-		wantPhase   string
+		name      string
+		snap      Snapshot
+		wantSend  bool
+		wantPhase string
 	}{
 		{
 			name: "running phase always sent",

@@ -1069,10 +1069,30 @@ type BackupSchedule struct {
 	Enabled            bool                  `json:"enabled"`
 	RetentionDays      int32                 `json:"retention_days"`
 	MonthlyArchiveKeep int32                 `json:"monthly_archive_keep"`
-	NextRunAt          time.Time             `json:"next_run_at"`
-	LastRunAt          OptDateTime           `json:"last_run_at"`
-	CreatedAt          time.Time             `json:"created_at"`
-	UpdatedAt          time.Time             `json:"updated_at"`
+	// Hour of day (0-23) in the site timezone at which the backup fires.
+	RunHour int32 `json:"run_hour"`
+	// Minute (0-59) within the hour at which the backup fires.
+	RunMinute int32 `json:"run_minute"`
+	// Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.
+	DayOfWeek OptNilInt32 `json:"day_of_week"`
+	// Day of month (1-28, capped) for monthly cadence; null otherwise.
+	DayOfMonth OptNilInt32 `json:"day_of_month"`
+	// Interval in hours for every_n_hours cadence; null otherwise.
+	FrequencyHours OptNilInt32 `json:"frequency_hours"`
+	// Minimum number of snapshots to retain regardless of age.
+	KeepLast int32 `json:"keep_last"`
+	// Read-only. IANA timezone name (or fixed-offset label) resolved from the site's WordPress timezone.
+	// Used by the UI to display run times.
+	Timezone string `json:"timezone"`
+	// Read-only. GMT offset in hours (e.g. 5.5 for +05:30) from the site's WordPress settings.
+	GmtOffset float64   `json:"gmt_offset"`
+	NextRunAt time.Time `json:"next_run_at"`
+	// Read-only. The next ~3 scheduled occurrence times (RFC 3339 UTC) for the upcoming-preview strip in
+	// the UI.
+	NextRuns  []time.Time `json:"next_runs"`
+	LastRunAt OptDateTime `json:"last_run_at"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -1115,9 +1135,54 @@ func (s *BackupSchedule) GetMonthlyArchiveKeep() int32 {
 	return s.MonthlyArchiveKeep
 }
 
+// GetRunHour returns the value of RunHour.
+func (s *BackupSchedule) GetRunHour() int32 {
+	return s.RunHour
+}
+
+// GetRunMinute returns the value of RunMinute.
+func (s *BackupSchedule) GetRunMinute() int32 {
+	return s.RunMinute
+}
+
+// GetDayOfWeek returns the value of DayOfWeek.
+func (s *BackupSchedule) GetDayOfWeek() OptNilInt32 {
+	return s.DayOfWeek
+}
+
+// GetDayOfMonth returns the value of DayOfMonth.
+func (s *BackupSchedule) GetDayOfMonth() OptNilInt32 {
+	return s.DayOfMonth
+}
+
+// GetFrequencyHours returns the value of FrequencyHours.
+func (s *BackupSchedule) GetFrequencyHours() OptNilInt32 {
+	return s.FrequencyHours
+}
+
+// GetKeepLast returns the value of KeepLast.
+func (s *BackupSchedule) GetKeepLast() int32 {
+	return s.KeepLast
+}
+
+// GetTimezone returns the value of Timezone.
+func (s *BackupSchedule) GetTimezone() string {
+	return s.Timezone
+}
+
+// GetGmtOffset returns the value of GmtOffset.
+func (s *BackupSchedule) GetGmtOffset() float64 {
+	return s.GmtOffset
+}
+
 // GetNextRunAt returns the value of NextRunAt.
 func (s *BackupSchedule) GetNextRunAt() time.Time {
 	return s.NextRunAt
+}
+
+// GetNextRuns returns the value of NextRuns.
+func (s *BackupSchedule) GetNextRuns() []time.Time {
+	return s.NextRuns
 }
 
 // GetLastRunAt returns the value of LastRunAt.
@@ -1175,9 +1240,54 @@ func (s *BackupSchedule) SetMonthlyArchiveKeep(val int32) {
 	s.MonthlyArchiveKeep = val
 }
 
+// SetRunHour sets the value of RunHour.
+func (s *BackupSchedule) SetRunHour(val int32) {
+	s.RunHour = val
+}
+
+// SetRunMinute sets the value of RunMinute.
+func (s *BackupSchedule) SetRunMinute(val int32) {
+	s.RunMinute = val
+}
+
+// SetDayOfWeek sets the value of DayOfWeek.
+func (s *BackupSchedule) SetDayOfWeek(val OptNilInt32) {
+	s.DayOfWeek = val
+}
+
+// SetDayOfMonth sets the value of DayOfMonth.
+func (s *BackupSchedule) SetDayOfMonth(val OptNilInt32) {
+	s.DayOfMonth = val
+}
+
+// SetFrequencyHours sets the value of FrequencyHours.
+func (s *BackupSchedule) SetFrequencyHours(val OptNilInt32) {
+	s.FrequencyHours = val
+}
+
+// SetKeepLast sets the value of KeepLast.
+func (s *BackupSchedule) SetKeepLast(val int32) {
+	s.KeepLast = val
+}
+
+// SetTimezone sets the value of Timezone.
+func (s *BackupSchedule) SetTimezone(val string) {
+	s.Timezone = val
+}
+
+// SetGmtOffset sets the value of GmtOffset.
+func (s *BackupSchedule) SetGmtOffset(val float64) {
+	s.GmtOffset = val
+}
+
 // SetNextRunAt sets the value of NextRunAt.
 func (s *BackupSchedule) SetNextRunAt(val time.Time) {
 	s.NextRunAt = val
+}
+
+// SetNextRuns sets the value of NextRuns.
+func (s *BackupSchedule) SetNextRuns(val []time.Time) {
+	s.NextRuns = val
 }
 
 // SetLastRunAt sets the value of LastRunAt.
@@ -1201,14 +1311,18 @@ func (*BackupSchedule) putBackupScheduleRes() {}
 type BackupScheduleCadence string
 
 const (
-	BackupScheduleCadenceDaily   BackupScheduleCadence = "daily"
-	BackupScheduleCadenceWeekly  BackupScheduleCadence = "weekly"
-	BackupScheduleCadenceMonthly BackupScheduleCadence = "monthly"
+	BackupScheduleCadenceHourly      BackupScheduleCadence = "hourly"
+	BackupScheduleCadenceEveryNHours BackupScheduleCadence = "every_n_hours"
+	BackupScheduleCadenceDaily       BackupScheduleCadence = "daily"
+	BackupScheduleCadenceWeekly      BackupScheduleCadence = "weekly"
+	BackupScheduleCadenceMonthly     BackupScheduleCadence = "monthly"
 )
 
 // AllValues returns all BackupScheduleCadence values.
 func (BackupScheduleCadence) AllValues() []BackupScheduleCadence {
 	return []BackupScheduleCadence{
+		BackupScheduleCadenceHourly,
+		BackupScheduleCadenceEveryNHours,
 		BackupScheduleCadenceDaily,
 		BackupScheduleCadenceWeekly,
 		BackupScheduleCadenceMonthly,
@@ -1218,6 +1332,10 @@ func (BackupScheduleCadence) AllValues() []BackupScheduleCadence {
 // MarshalText implements encoding.TextMarshaler.
 func (s BackupScheduleCadence) MarshalText() ([]byte, error) {
 	switch s {
+	case BackupScheduleCadenceHourly:
+		return []byte(s), nil
+	case BackupScheduleCadenceEveryNHours:
+		return []byte(s), nil
 	case BackupScheduleCadenceDaily:
 		return []byte(s), nil
 	case BackupScheduleCadenceWeekly:
@@ -1232,6 +1350,12 @@ func (s BackupScheduleCadence) MarshalText() ([]byte, error) {
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (s *BackupScheduleCadence) UnmarshalText(data []byte) error {
 	switch BackupScheduleCadence(data) {
+	case BackupScheduleCadenceHourly:
+		*s = BackupScheduleCadenceHourly
+		return nil
+	case BackupScheduleCadenceEveryNHours:
+		*s = BackupScheduleCadenceEveryNHours
+		return nil
 	case BackupScheduleCadenceDaily:
 		*s = BackupScheduleCadenceDaily
 		return nil
@@ -1304,6 +1428,18 @@ type BackupScheduleUpdate struct {
 	RetentionDays OptInt32 `json:"retention_days"`
 	// Number of monthly-archive snapshots to keep beyond the window.
 	MonthlyArchiveKeep OptInt32 `json:"monthly_archive_keep"`
+	// Hour of day (0-23) in the site timezone at which the backup fires.
+	RunHour OptInt32 `json:"run_hour"`
+	// Minute (0-59) within the hour at which the backup fires.
+	RunMinute OptInt32 `json:"run_minute"`
+	// Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.
+	DayOfWeek OptNilInt32 `json:"day_of_week"`
+	// Day of month (1-28, capped) for monthly cadence; null otherwise.
+	DayOfMonth OptNilInt32 `json:"day_of_month"`
+	// Interval in hours for every_n_hours cadence; null otherwise.
+	FrequencyHours OptNilInt32 `json:"frequency_hours"`
+	// Minimum number of snapshots to retain regardless of age.
+	KeepLast OptInt32 `json:"keep_last"`
 }
 
 // GetCadence returns the value of Cadence.
@@ -1331,6 +1467,36 @@ func (s *BackupScheduleUpdate) GetMonthlyArchiveKeep() OptInt32 {
 	return s.MonthlyArchiveKeep
 }
 
+// GetRunHour returns the value of RunHour.
+func (s *BackupScheduleUpdate) GetRunHour() OptInt32 {
+	return s.RunHour
+}
+
+// GetRunMinute returns the value of RunMinute.
+func (s *BackupScheduleUpdate) GetRunMinute() OptInt32 {
+	return s.RunMinute
+}
+
+// GetDayOfWeek returns the value of DayOfWeek.
+func (s *BackupScheduleUpdate) GetDayOfWeek() OptNilInt32 {
+	return s.DayOfWeek
+}
+
+// GetDayOfMonth returns the value of DayOfMonth.
+func (s *BackupScheduleUpdate) GetDayOfMonth() OptNilInt32 {
+	return s.DayOfMonth
+}
+
+// GetFrequencyHours returns the value of FrequencyHours.
+func (s *BackupScheduleUpdate) GetFrequencyHours() OptNilInt32 {
+	return s.FrequencyHours
+}
+
+// GetKeepLast returns the value of KeepLast.
+func (s *BackupScheduleUpdate) GetKeepLast() OptInt32 {
+	return s.KeepLast
+}
+
 // SetCadence sets the value of Cadence.
 func (s *BackupScheduleUpdate) SetCadence(val OptBackupScheduleUpdateCadence) {
 	s.Cadence = val
@@ -1356,17 +1522,51 @@ func (s *BackupScheduleUpdate) SetMonthlyArchiveKeep(val OptInt32) {
 	s.MonthlyArchiveKeep = val
 }
 
+// SetRunHour sets the value of RunHour.
+func (s *BackupScheduleUpdate) SetRunHour(val OptInt32) {
+	s.RunHour = val
+}
+
+// SetRunMinute sets the value of RunMinute.
+func (s *BackupScheduleUpdate) SetRunMinute(val OptInt32) {
+	s.RunMinute = val
+}
+
+// SetDayOfWeek sets the value of DayOfWeek.
+func (s *BackupScheduleUpdate) SetDayOfWeek(val OptNilInt32) {
+	s.DayOfWeek = val
+}
+
+// SetDayOfMonth sets the value of DayOfMonth.
+func (s *BackupScheduleUpdate) SetDayOfMonth(val OptNilInt32) {
+	s.DayOfMonth = val
+}
+
+// SetFrequencyHours sets the value of FrequencyHours.
+func (s *BackupScheduleUpdate) SetFrequencyHours(val OptNilInt32) {
+	s.FrequencyHours = val
+}
+
+// SetKeepLast sets the value of KeepLast.
+func (s *BackupScheduleUpdate) SetKeepLast(val OptInt32) {
+	s.KeepLast = val
+}
+
 type BackupScheduleUpdateCadence string
 
 const (
-	BackupScheduleUpdateCadenceDaily   BackupScheduleUpdateCadence = "daily"
-	BackupScheduleUpdateCadenceWeekly  BackupScheduleUpdateCadence = "weekly"
-	BackupScheduleUpdateCadenceMonthly BackupScheduleUpdateCadence = "monthly"
+	BackupScheduleUpdateCadenceHourly      BackupScheduleUpdateCadence = "hourly"
+	BackupScheduleUpdateCadenceEveryNHours BackupScheduleUpdateCadence = "every_n_hours"
+	BackupScheduleUpdateCadenceDaily       BackupScheduleUpdateCadence = "daily"
+	BackupScheduleUpdateCadenceWeekly      BackupScheduleUpdateCadence = "weekly"
+	BackupScheduleUpdateCadenceMonthly     BackupScheduleUpdateCadence = "monthly"
 )
 
 // AllValues returns all BackupScheduleUpdateCadence values.
 func (BackupScheduleUpdateCadence) AllValues() []BackupScheduleUpdateCadence {
 	return []BackupScheduleUpdateCadence{
+		BackupScheduleUpdateCadenceHourly,
+		BackupScheduleUpdateCadenceEveryNHours,
 		BackupScheduleUpdateCadenceDaily,
 		BackupScheduleUpdateCadenceWeekly,
 		BackupScheduleUpdateCadenceMonthly,
@@ -1376,6 +1576,10 @@ func (BackupScheduleUpdateCadence) AllValues() []BackupScheduleUpdateCadence {
 // MarshalText implements encoding.TextMarshaler.
 func (s BackupScheduleUpdateCadence) MarshalText() ([]byte, error) {
 	switch s {
+	case BackupScheduleUpdateCadenceHourly:
+		return []byte(s), nil
+	case BackupScheduleUpdateCadenceEveryNHours:
+		return []byte(s), nil
 	case BackupScheduleUpdateCadenceDaily:
 		return []byte(s), nil
 	case BackupScheduleUpdateCadenceWeekly:
@@ -1390,6 +1594,12 @@ func (s BackupScheduleUpdateCadence) MarshalText() ([]byte, error) {
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (s *BackupScheduleUpdateCadence) UnmarshalText(data []byte) error {
 	switch BackupScheduleUpdateCadence(data) {
+	case BackupScheduleUpdateCadenceHourly:
+		*s = BackupScheduleUpdateCadenceHourly
+		return nil
+	case BackupScheduleUpdateCadenceEveryNHours:
+		*s = BackupScheduleUpdateCadenceEveryNHours
+		return nil
 	case BackupScheduleUpdateCadenceDaily:
 		*s = BackupScheduleUpdateCadenceDaily
 		return nil
@@ -3343,6 +3553,69 @@ func (o OptNilDateTime) Get() (v time.Time, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilDateTime) Or(d time.Time) time.Time {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilInt32 returns new OptNilInt32 with value set to v.
+func NewOptNilInt32(v int32) OptNilInt32 {
+	return OptNilInt32{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilInt32 is optional nullable int32.
+type OptNilInt32 struct {
+	Value int32
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilInt32 was set.
+func (o OptNilInt32) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilInt32) Reset() {
+	var v int32
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilInt32) SetTo(v int32) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilInt32) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilInt32) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v int32
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilInt32) Get() (v int32, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilInt32) Or(d int32) int32 {
 	if v, ok := o.Get(); ok {
 		return v
 	}

@@ -51,9 +51,9 @@ type IngestSink interface {
 // RefreshInventoryWorker) without changing the RefreshEnqueuer interface in
 // service.go — that interface is intentionally (tenantID, siteID)-only.
 type RefreshEnqueuerImpl struct {
-	cmd    AgentDiagnosticsClient
-	sites  SiteLookup
-	sink   IngestSink
+	cmd   AgentDiagnosticsClient
+	sites SiteLookup
+	sink  IngestSink
 }
 
 // NewRefreshEnqueuer builds a RefreshEnqueuerImpl. All deps are required;

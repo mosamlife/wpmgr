@@ -10,6 +10,9 @@ export function cn(...inputs: ClassValue[]): string {
  * Format an ISO-8601 timestamp as a short relative string ("just now", "2m
  * ago", "3h ago", "5d ago"). Returns null for missing/invalid input so callers
  * can render their own placeholder. `now` is injectable for testing.
+ *
+ * For future instants (seconds < 0), returns a forward-relative label such as
+ * "in 6h" or "in 3d" so schedule previews render correctly.
  */
 export function relativeTime(
   iso: string | null | undefined,
@@ -19,7 +22,20 @@ export function relativeTime(
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return null;
   const seconds = Math.round((now - then) / 1000);
-  if (seconds < 0) return "in the future";
+  if (seconds < 0) {
+    // Future instant: show a forward-relative label.
+    const abs = Math.abs(seconds);
+    if (abs < 45) return "in a moment";
+    const minutes = Math.round(abs / 60);
+    if (minutes < 60) return `in ${minutes}m`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `in ${hours}h`;
+    const days = Math.round(hours / 24);
+    if (days < 30) return `in ${days}d`;
+    const months = Math.round(days / 30);
+    if (months < 12) return `in ${months}mo`;
+    return `in ${Math.round(months / 12)}y`;
+  }
   if (seconds < 45) return "just now";
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;

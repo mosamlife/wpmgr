@@ -18,6 +18,8 @@
 package backup
 
 import (
+	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,9 +70,11 @@ const (
 
 // Schedule cadences.
 const (
-	CadenceDaily   = "daily"
-	CadenceWeekly  = "weekly"
-	CadenceMonthly = "monthly"
+	CadenceHourly      = "hourly"
+	CadenceEveryNHours = "every_n_hours"
+	CadenceDaily       = "daily"
+	CadenceWeekly      = "weekly"
+	CadenceMonthly     = "monthly"
 )
 
 // Snapshot is one backup of a site.
@@ -94,8 +98,8 @@ type Snapshot struct {
 	// Shape: {"phase": "...", "phase_detail": {...}}. Empty {} until the first
 	// runner POST lands. The UI renders this; the watchdog scans
 	// ProgressUpdatedAt to detect stalled runs.
-	Progress            []byte
-	ProgressUpdatedAt   *time.Time
+	Progress          []byte
+	ProgressUpdatedAt *time.Time
 	// P0 URL rewriter (ADR-036): siteurl / home / content / upload recorded
 	// at backup time. Drives the restore's URL_REWRITE phase when restoring
 	// to a different environment (dev->prod, staging->prod). Empty strings
@@ -149,6 +153,14 @@ type Schedule struct {
 	Enabled            bool
 	RetentionDays      int32
 	MonthlyArchiveKeep int32
+	RunHour            int32
+	RunMinute          int32
+	DayOfWeek          *int32
+	DayOfMonth         *int32
+	FrequencyHours     *int32
+	Timezone           string  // resolved IANA name (or fixed-offset label) for DTO display
+	GmtOffset          float64 // GMT offset hours from the site's wp_gmt_offset (for DTO display)
+	KeepLast           int32
 	NextRunAt          time.Time
 	LastRunAt          *time.Time
 	CreatedAt          time.Time
@@ -168,7 +180,7 @@ func validKind(kind string) bool {
 // validCadence reports whether c is a known schedule cadence.
 func validCadence(c string) bool {
 	switch c {
-	case CadenceDaily, CadenceWeekly, CadenceMonthly:
+	case CadenceHourly, CadenceEveryNHours, CadenceDaily, CadenceWeekly, CadenceMonthly:
 		return true
 	default:
 		return false
@@ -176,15 +188,208 @@ func validCadence(c string) bool {
 }
 
 // nextRun computes the next run time for a cadence from a base time.
+// Deprecated: use nextOccurrence instead. Kept for backward-compatibility with
+// code paths not yet migrated (service.go PutSchedule / EnqueueScheduledBackup).
 func nextRun(base time.Time, cadence string) time.Time {
 	switch cadence {
 	case CadenceWeekly:
 		return base.AddDate(0, 0, 7)
 	case CadenceMonthly:
 		return base.AddDate(0, 1, 0)
-	default: // daily
+	default: // daily (and unrecognised cadences)
 		return base.AddDate(0, 0, 1)
 	}
+}
+
+// resolveLocation converts a WordPress timezone string (IANA) or a numeric GMT
+// offset (hours, possibly fractional e.g. 5.5 for +05:30) into a *time.Location.
+//
+// Resolution order:
+//  1. IANA name via time.LoadLocation (DST-aware, preferred).
+//  2. Fixed zone from gmtOffset hours (handles half-hour offsets like +05:30).
+//  3. time.UTC as final fallback.
+func resolveLocation(wpTimezone string, gmtOffset float64) *time.Location {
+	if wpTimezone != "" {
+		if loc, err := time.LoadLocation(wpTimezone); err == nil {
+			return loc
+		}
+	}
+	// Fixed zone: convert fractional hours to whole seconds. Format the label
+	// with the half-hour component so +05:30 sites (e.g. India) are labeled
+	// "UTC+05:30" rather than the truncated "UTC+5".
+	offsetSec := int(gmtOffset * 3600)
+	if offsetSec != 0 {
+		sign, abs := "+", offsetSec
+		if abs < 0 {
+			sign, abs = "-", -abs
+		}
+		name := fmt.Sprintf("UTC%s%02d:%02d", sign, abs/3600, (abs%3600)/60)
+		return time.FixedZone(name, offsetSec)
+	}
+	return time.UTC
+}
+
+// validateTimezone returns an error when the IANA timezone name cannot be
+// loaded. An empty name is accepted (falls back to gmtOffset / UTC).
+func validateTimezone(name string) error {
+	if name == "" {
+		return nil
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return fmt.Errorf("unknown timezone %q: %w", name, err)
+	}
+	return nil
+}
+
+// validateSchedule enforces cadence–field consistency. dow must be set iff
+// weekly; dom must be set iff monthly; freqHours must be set iff every_n_hours.
+func validateSchedule(cadence string, dow, dom, freqHours *int32) error {
+	switch cadence {
+	case CadenceWeekly:
+		if dow == nil {
+			return fmt.Errorf("day_of_week is required for weekly cadence")
+		}
+		if *dow < 0 || *dow > 6 {
+			return fmt.Errorf("day_of_week must be between 0 (Sun) and 6 (Sat)")
+		}
+	case CadenceMonthly:
+		if dom == nil {
+			return fmt.Errorf("day_of_month is required for monthly cadence")
+		}
+		if *dom < 1 || *dom > 28 {
+			return fmt.Errorf("day_of_month must be between 1 and 28")
+		}
+	case CadenceEveryNHours:
+		if freqHours == nil {
+			return fmt.Errorf("frequency_hours is required for every_n_hours cadence")
+		}
+		if *freqHours < 1 || *freqHours > 24 {
+			return fmt.Errorf("frequency_hours must be between 1 and 24")
+		}
+	}
+	return nil
+}
+
+// nextOccurrence computes the next scheduled occurrence after now for the given
+// cadence. All computation is performed in loc; the return value is UTC,
+// truncated to the minute. jitterMinutes (0–15, deterministic per site) is
+// added as a sub-minute offset so that sites with the same config do not all
+// fire at the exact same second.
+//
+// Callers derive jitterMinutes from the site_id hash:
+//
+//	jitter := int(fnvHash(siteID) % 16)
+//
+// Callers pass now from the clock — this function never reads the wall clock.
+func nextOccurrence(now time.Time, cadence string, hour, minute int, dow, dom, freqHours *int, jitterMinutes int, loc *time.Location) time.Time {
+	// Clamp jitter to [0, 15].
+	if jitterMinutes < 0 {
+		jitterMinutes = 0
+	}
+	if jitterMinutes > 15 {
+		jitterMinutes = 15
+	}
+
+	switch cadence {
+	case CadenceHourly:
+		return nextHourly(now, minute, jitterMinutes, loc)
+	case CadenceEveryNHours:
+		fh := 1
+		if freqHours != nil {
+			fh = *freqHours
+		}
+		return nextEveryNHours(now, hour, minute, fh, jitterMinutes, loc)
+	case CadenceWeekly:
+		wd := 0
+		if dow != nil {
+			wd = *dow
+		}
+		return nextWeekly(now, hour, minute, wd, jitterMinutes, loc)
+	case CadenceMonthly:
+		d := 1
+		if dom != nil {
+			d = *dom
+		}
+		return nextMonthly(now, hour, minute, d, jitterMinutes, loc)
+	default: // CadenceDaily and any unrecognised value
+		return nextDaily(now, hour, minute, jitterMinutes, loc)
+	}
+}
+
+// SiteJitter computes a deterministic per-site jitter in [0, 15] minutes from
+// the site UUID. The result is stable: same site_id always yields the same
+// offset. Exported so the scheduler can use it without re-implementing the hash.
+func SiteJitter(siteID uuid.UUID) int {
+	h := fnv.New32a()
+	_, _ = h.Write(siteID[:])
+	return int(h.Sum32() % 16)
+}
+
+// nextDaily returns the next daily occurrence strictly after now.
+func nextDaily(now time.Time, hour, minute, jitterMinutes int, loc *time.Location) time.Time {
+	nowLoc := now.In(loc)
+	candidate := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), hour, minute+jitterMinutes, 0, 0, loc)
+	if !candidate.After(now) {
+		candidate = candidate.AddDate(0, 0, 1)
+	}
+	return candidate.UTC().Truncate(time.Minute)
+}
+
+// nextWeekly returns the next occurrence whose weekday matches wd (0=Sun..6=Sat).
+func nextWeekly(now time.Time, hour, minute, wd, jitterMinutes int, loc *time.Location) time.Time {
+	nowLoc := now.In(loc)
+	candidate := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), hour, minute+jitterMinutes, 0, 0, loc)
+	// Advance until we land on the right weekday.
+	target := time.Weekday(wd)
+	for candidate.Weekday() != target || !candidate.After(now) {
+		candidate = candidate.AddDate(0, 0, 1)
+	}
+	return candidate.UTC().Truncate(time.Minute)
+}
+
+// nextMonthly returns the next occurrence on day d (capped at 28) of the month.
+func nextMonthly(now time.Time, hour, minute, d, jitterMinutes int, loc *time.Location) time.Time {
+	if d < 1 {
+		d = 1
+	}
+	if d > 28 {
+		d = 28
+	}
+	nowLoc := now.In(loc)
+	candidate := time.Date(nowLoc.Year(), nowLoc.Month(), d, hour, minute+jitterMinutes, 0, 0, loc)
+	if !candidate.After(now) {
+		candidate = time.Date(nowLoc.Year(), nowLoc.Month()+1, d, hour, minute+jitterMinutes, 0, 0, loc)
+	}
+	return candidate.UTC().Truncate(time.Minute)
+}
+
+// nextHourly returns the next occurrence at :minute past the hour strictly
+// after now.
+func nextHourly(now time.Time, minute, jitterMinutes int, loc *time.Location) time.Time {
+	nowLoc := now.In(loc)
+	candidate := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), nowLoc.Hour(), minute+jitterMinutes, 0, 0, loc)
+	if !candidate.After(now) {
+		candidate = candidate.Add(time.Hour)
+	}
+	return candidate.UTC().Truncate(time.Minute)
+}
+
+// nextEveryNHours returns the next slot in the daily sequence anchored at
+// hour:minute, stepping by freqHours, strictly after now.
+func nextEveryNHours(now time.Time, hour, minute, freqHours, jitterMinutes int, loc *time.Location) time.Time {
+	if freqHours <= 0 {
+		freqHours = 1
+	}
+	nowLoc := now.In(loc)
+	// Anchor: hour:minute on the current day in loc.
+	anchor := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), hour, minute+jitterMinutes, 0, 0, loc)
+	// Walk forward by freqHours steps starting from anchor until we are strictly
+	// past now. If anchor is already past now it is our candidate.
+	candidate := anchor
+	for !candidate.After(now) {
+		candidate = candidate.Add(time.Duration(freqHours) * time.Hour)
+	}
+	return candidate.UTC().Truncate(time.Minute)
 }
 
 // chunkS3Key returns the content-addressed, tenant-namespaced object key for a

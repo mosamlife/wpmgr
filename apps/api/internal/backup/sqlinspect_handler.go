@@ -66,10 +66,10 @@ type ManifestInspectionFetcher interface {
 // pointing at the missing tier) so the endpoint is reachable on a partial
 // rollout where, e.g., the cache backend is wired but the River job is not.
 type InspectionDeps struct {
-	Enqueuer       InspectionEnqueuer
-	Cache          InspectionCache
-	ManifestFetch  ManifestInspectionFetcher
-	Logger         *slog.Logger
+	Enqueuer      InspectionEnqueuer
+	Cache         InspectionCache
+	ManifestFetch ManifestInspectionFetcher
+	Logger        *slog.Logger
 	// PollLocation, when non-empty, is the URL template the handler emits in
 	// the 202 Accepted Location header. Defaults to the request URL.
 	PollLocation string
@@ -229,9 +229,9 @@ func snapshotHasDB(snap Snapshot, entries []ManifestEntry) bool {
 
 // findInspectionEntry locates the agent-supplied SQL inspection artifact in a
 // manifest, if present. Two locator strategies (in priority order):
-//   1. EntryKind == "inspection" — the typed-after-M6 agent path.
-//   2. Path == "sql-inspection.json" — the un-typed agent path used before
-//      EntryKindInspection landed on the contract.
+//  1. EntryKind == "inspection" — the typed-after-M6 agent path.
+//  2. Path == "sql-inspection.json" — the un-typed agent path used before
+//     EntryKindInspection landed on the contract.
 func findInspectionEntry(entries []ManifestEntry) (ManifestEntry, bool) {
 	for _, e := range entries {
 		if e.EntryKind == EntryKindInspection {

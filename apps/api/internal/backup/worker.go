@@ -207,14 +207,14 @@ func (w *BackupWorker) recordAudit(ctx context.Context, snap Snapshot, action st
 // the River job so the worker can update the run status on start/success/fail.
 // uuid.Nil when the restore run store is not wired (graceful degradation).
 type RestoreArgs struct {
-	TenantID      uuid.UUID `json:"tenant_id"`
-	SnapshotID    uuid.UUID `json:"snapshot_id"`
-	Full          bool      `json:"full"`
-	Paths         []string  `json:"paths,omitempty"`
-	DBTables      []string  `json:"db_tables,omitempty"`
-	Components    []string  `json:"components,omitempty"`
-	KeepOldFiles  bool      `json:"keep_old_files,omitempty"`
-	RestoreRunID  uuid.UUID `json:"restore_run_id,omitempty"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+	SnapshotID   uuid.UUID `json:"snapshot_id"`
+	Full         bool      `json:"full"`
+	Paths        []string  `json:"paths,omitempty"`
+	DBTables     []string  `json:"db_tables,omitempty"`
+	Components   []string  `json:"components,omitempty"`
+	KeepOldFiles bool      `json:"keep_old_files,omitempty"`
+	RestoreRunID uuid.UUID `json:"restore_run_id,omitempty"`
 }
 
 // Kind implements river.JobArgs.
@@ -651,11 +651,11 @@ func (w *SqlInspectLegacyWorker) Timeout(*river.Job[SqlInspectLegacyArgs]) time.
 
 // Work runs one legacy SQL inspection pass:
 //
-//   1. Open the plaintext dump stream.
-//   2. Pipe it through sqlinspect.Inspect with the job's context.
-//   3. On ctx.DeadlineExceeded (the SqlInspectLegacyTimeout), keep whatever
-//      partial report Inspect produced and mark it Truncated=true.
-//   4. Marshal the report and write it to the cache.
+//  1. Open the plaintext dump stream.
+//  2. Pipe it through sqlinspect.Inspect with the job's context.
+//  3. On ctx.DeadlineExceeded (the SqlInspectLegacyTimeout), keep whatever
+//     partial report Inspect produced and mark it Truncated=true.
+//  4. Marshal the report and write it to the cache.
 //
 // The job ALWAYS writes a cache entry (even on partial failure) so the
 // operator gets a deterministic answer rather than an infinite-202 polling

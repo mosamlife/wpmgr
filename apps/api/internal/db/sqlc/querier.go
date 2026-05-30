@@ -97,12 +97,18 @@ type Querier interface {
 	// backup_schedules
 	// ---------------------------------------------------------------------------
 	GetBackupScheduleForSite(ctx context.Context, arg GetBackupScheduleForSiteParams) (BackupSchedule, error)
+	// Returns the site fields the backup scheduler needs: enrollment status,
+	// agent URL, age recipient for encryption, and the WP timezone columns
+	// added in M17 (wp_timezone IANA name + wp_gmt_offset fallback).
+	// Runs tenant-scoped (the caller sets app.tenant_id before this query).
+	GetBackupSiteInfo(ctx context.Context, arg GetBackupSiteInfoParams) (GetBackupSiteInfoRow, error)
 	GetBackupSnapshot(ctx context.Context, arg GetBackupSnapshotParams) (BackupSnapshot, error)
 	GetLastAuditHash(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
 	// tenant is known.
 	GetPairingCodeByHash(ctx context.Context, codeHash string) (PairingCode, error)
+	GetScheduleRun(ctx context.Context, arg GetScheduleRunParams) (BackupScheduleRun, error)
 	GetSite(ctx context.Context, arg GetSiteParams) (Site, error)
 	// Cross-tenant read of one site's alert state (app.agent GUC) for the probe job.
 	GetSiteAlertState(ctx context.Context, siteID uuid.UUID) (SiteAlertState, error)
@@ -183,6 +189,10 @@ type Querier interface {
 	// It relies on the memberships_self_read policy (app.user_id GUC), so it must be
 	// run via InUserTx, not InTenantTx.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
+	// Terminal runs (completed/failed/skipped/canceled) for a site, newest first.
+	ListPastScheduleRuns(ctx context.Context, arg ListPastScheduleRunsParams) ([]BackupScheduleRun, error)
+	// All runs for a site (upcoming + past), newest scheduled_for first.
+	ListScheduleRunsBySite(ctx context.Context, arg ListScheduleRunsBySiteParams) ([]BackupScheduleRun, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
 	// Watchdog feeder: a running snapshot whose latest progress is older than the
 	// stall threshold (or whose runner never reported any progress despite being
@@ -200,6 +210,9 @@ type Querier interface {
 	// periodic retention GC. Runs cross-tenant under the app.agent GUC (the
 	// backup_snapshots_gc SELECT policy); the prune then runs per tenant.
 	ListTenantsWithCompletedSnapshots(ctx context.Context) ([]uuid.UUID, error)
+	// Runs that have not yet fired: status 'scheduled' or 'queued', scheduled_for
+	// in the future. Used for the UI upcoming preview (typically 1–3 rows).
+	ListUpcomingScheduleRuns(ctx context.Context, arg ListUpcomingScheduleRunsParams) ([]BackupScheduleRun, error)
 	ListUpdateRuns(ctx context.Context, arg ListUpdateRunsParams) ([]UpdateRun, error)
 	ListUpdateTasksForRun(ctx context.Context, arg ListUpdateTasksForRunParams) ([]UpdateTask, error)
 	// Used on the Redis-hot-path success: Redis already produced the payload, but
@@ -214,6 +227,16 @@ type Querier interface {
 	PruneAgentNonces(ctx context.Context, createdAt time.Time) (int64, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
 	SetBackupSnapshotArchived(ctx context.Context, arg SetBackupSnapshotArchivedParams) error
+	// Links the pending snapshot_id to a run and advances its status to 'queued'.
+	SetScheduleRunSnapshot(ctx context.Context, arg SetScheduleRunSnapshotParams) (BackupScheduleRun, error)
+	// Advances a run to a terminal or intermediate status by its primary key.
+	// started_at and finished_at are set conditionally so they are only written
+	// once (the scheduler calls this for running→completed/failed transitions).
+	SetScheduleRunStatusByID(ctx context.Context, arg SetScheduleRunStatusByIDParams) (BackupScheduleRun, error)
+	// Reconciliation path: when the linked snapshot reaches a terminal status,
+	// update the run row to match. Keyed on snapshot_id so the snapshot finalize
+	// path does not need to carry the run id. Runs tenant-scoped.
+	SetScheduleRunStatusBySnapshot(ctx context.Context, arg SetScheduleRunStatusBySnapshotParams) (BackupScheduleRun, error)
 	// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
 	// never holds the matching identity (private key); it cannot decrypt backups.
 	SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipientParams) (Site, error)
@@ -248,7 +271,22 @@ type Querier interface {
 	// hash ⇒ identical bytes) and returns the existing row. refcount is managed
 	// separately by IncrementChunkRefcount.
 	UpsertBackupChunk(ctx context.Context, arg UpsertBackupChunkParams) (BackupChunk, error)
+	// Inserts or updates a backup schedule. next_run_at is intentionally NOT
+	// included in the ON CONFLICT DO UPDATE set: the service decides when to
+	// recompute it (only when timing fields actually change). This prevents a
+	// non-timing edit (e.g. retention_days change) from resetting the next run.
 	UpsertBackupSchedule(ctx context.Context, arg UpsertBackupScheduleParams) (BackupSchedule, error)
+	// M17 backup_schedule_runs queries. Mirrors the restore_runs query style.
+	// Every tenant-scoped method is called with app.tenant_id already set.
+	// The scheduler's cross-tenant materializer writes run under the agent context
+	// (app.agent='on'), like ListDueBackupSchedules.
+	// ---------------------------------------------------------------------------
+	// backup_schedule_runs
+	// ---------------------------------------------------------------------------
+	// Pre-inserts the next scheduled run row idempotently. On conflict
+	// (schedule_id, scheduled_for) — e.g. CP restart — updates status only when
+	// the existing row is still 'scheduled' so a queued/running row is untouched.
+	UpsertScheduleRun(ctx context.Context, arg UpsertScheduleRunParams) (BackupScheduleRun, error)
 	// Cross-tenant upsert of a site's alert state (app.agent GUC). The probe worker
 	// writes the new transition memory after each probe.
 	UpsertSiteAlertState(ctx context.Context, arg UpsertSiteAlertStateParams) (SiteAlertState, error)

@@ -214,6 +214,7 @@ func run() error {
 	var backupH *backup.Handler
 	var backupAgentH *backup.AgentHandler
 	var restoreRunH *backup.RestoreRunHandler
+	var scheduleRunH *backup.ScheduleRunHandler
 	var backupWorker *backup.BackupWorker
 	var restoreWorker *backup.RestoreWorker
 	var gcWorker *backup.GCWorker
@@ -299,6 +300,12 @@ func run() error {
 		// Wire the auth service as the UserDirectory so restore run DTOs resolve
 		// triggered_by UUIDs to human-readable email + name.
 		restoreRunH.SetUserDirectory(authSvc)
+		// M17 — Schedule run queue (upcoming + past history).
+		scheduleRunH = backup.NewScheduleRunHandler(backupSvc)
+		scheduleRunH.SetUserDirectory(authSvc)
+		// Wire the schedule-run store into the backup service so the scheduler
+		// materializes run rows and the reconciliation hooks update them.
+		backupSvc.SetScheduleRunStore(backup.NewScheduleRunRepo(pool))
 		// M6 / Track 4: agent-supplied inspection artifact fetcher. Streams the
 		// ordered chunks of the manifest's `sql-inspection.json` entry from the
 		// blobstore and validates the result is JSON. V0 agents ship the report
@@ -672,7 +679,9 @@ func run() error {
 		ScanH: scanH,
 		// m16 — Restore Runs + Logs.
 		RestoreRunH: restoreRunH,
-		ServiceName: cfg.OTel.ServiceName,
+		// M17 — Schedule Run queue.
+		ScheduleRunH: scheduleRunH,
+		ServiceName:  cfg.OTel.ServiceName,
 		Version:     version,
 	})
 

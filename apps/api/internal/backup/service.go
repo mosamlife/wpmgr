@@ -16,12 +16,15 @@ import (
 
 // SiteInfo is the minimal site projection the backup service needs: identity,
 // the agent target URL, enrollment status, and the age PUBLIC recipient backups
-// for the site are encrypted to.
+// for the site are encrypted to. WpTimezone/WpGmtOffset are the M17 timezone
+// fields for schedule computation.
 type SiteInfo struct {
 	ID           uuid.UUID
 	URL          string
 	Enrolled     bool
 	AgeRecipient string
+	WpTimezone   string
+	WpGmtOffset  float64
 }
 
 // SiteLookup resolves the target site (implemented by the site service, wired
@@ -59,18 +62,18 @@ type PresignerForSnapshot interface {
 
 // Service holds the backup orchestration logic.
 type Service struct {
-	repo       Repo
-	sites      SiteLookup
-	enqueuer   Enqueuer
-	store      Presigner
+	repo     Repo
+	sites    SiteLookup
+	enqueuer Enqueuer
+	store    Presigner
 	// registry is the optional ADR-036 P1 router: when non-nil, presignPut
 	// consults it to find the right Presigner for the snapshot's destination.
 	// Falls back to `store` (the CP-global Store) when nil OR when the
 	// registry returns the same default Store anyway.
-	registry           PresignerForSnapshot
-	clock              domain.Clock
-	hub                *Hub
-	presignTTL         time.Duration
+	registry   PresignerForSnapshot
+	clock      domain.Clock
+	hub        *Hub
+	presignTTL time.Duration
 	// retention defaults (overridable per schedule).
 	retentionDays      int
 	monthlyArchiveKeep int
@@ -78,6 +81,9 @@ type Service struct {
 	// Optional: when nil, the restore_run persistence is silently skipped (so
 	// existing integrations that have not set the store yet keep working).
 	restoreRuns RestoreRunStore
+	// scheduleRuns persists backup_schedule_runs (M17 queue materialization).
+	// Optional: when nil, schedule run rows are skipped (graceful degradation).
+	scheduleRuns ScheduleRunStore
 }
 
 // SetRegistry wires the ADR-036 P1 storage-adapter router. Calling this AFTER
@@ -107,6 +113,11 @@ func (s *Service) SetHub(h *Hub) { s.hub = h }
 // at startup (after NewService) before serving traffic. Optional: if never
 // called, restore_run rows are not created (graceful degradation).
 func (s *Service) SetRestoreRunStore(rs RestoreRunStore) { s.restoreRuns = rs }
+
+// SetScheduleRunStore wires the schedule-run persistence store (M17). Call
+// once at startup after NewService. Optional: if never called, schedule_run
+// rows are silently skipped (graceful degradation).
+func (s *Service) SetScheduleRunStore(ss ScheduleRunStore) { s.scheduleRuns = ss }
 
 // publish is a nil-safe helper around hub.Publish.
 func (s *Service) publish(ev BackupEvent) {
@@ -233,8 +244,8 @@ type RestoreSelection struct {
 // CreateRestoreResult is returned by CreateRestore so callers get both the
 // snapshot and the newly-created restore_run ID.
 type CreateRestoreResult struct {
-	Snapshot      Snapshot
-	RestoreRunID  uuid.UUID // uuid.Nil when the store is not wired
+	Snapshot     Snapshot
+	RestoreRunID uuid.UUID // uuid.Nil when the store is not wired
 }
 
 // CreateRestore validates a restore request against the snapshot's manifest,
@@ -509,10 +520,20 @@ func (s *Service) SubmitManifest(ctx context.Context, tenantID, snapshotID uuid.
 			Status:      completed.Status,
 		})
 	}
+	// Reconcile the linked schedule run to 'completed' (best-effort; 0-row
+	// no-op when no schedule run is linked to this snapshot).
+	if s.scheduleRuns != nil {
+		_, _ = s.scheduleRuns.SetScheduleRunStatusBySnapshot(ctx, tenantID, snapshotID, SetScheduleRunStatusInput{
+			TenantID:    tenantID,
+			Status:      ScheduleRunStatusCompleted,
+			SetFinished: true,
+		})
+	}
 	return chunkRefs, stored, nil
 }
 
 // MarkRunning transitions a snapshot to running (called by the backup worker).
+// Reconciliation: also transitions any linked schedule run to 'running'.
 func (s *Service) MarkRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
 	snap, err := s.repo.MarkSnapshotRunning(ctx, tenantID, snapshotID)
 	if err != nil {
@@ -524,10 +545,21 @@ func (s *Service) MarkRunning(ctx context.Context, tenantID, snapshotID uuid.UUI
 		PhaseDetail: map[string]any{},
 		Status:      snap.Status,
 	})
+	// Reconcile the linked schedule run to 'running' (best-effort: no linked
+	// run is a harmless 0-row no-op from SetScheduleRunStatusBySnapshot).
+	if s.scheduleRuns != nil {
+		_, _ = s.scheduleRuns.SetScheduleRunStatusBySnapshot(ctx, tenantID, snapshotID, SetScheduleRunStatusInput{
+			TenantID:   tenantID,
+			Status:     ScheduleRunStatusRunning,
+			SetStarted: true,
+		})
+	}
 	return snap, nil
 }
 
-// FailSnapshot marks a snapshot failed (called by the backup worker on error).
+// FailSnapshot marks a snapshot failed (called by the backup worker on error or
+// by the progress watchdog). Reconciliation: also transitions any linked
+// schedule run to 'failed' so history never sticks on 'running'.
 func (s *Service) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (Snapshot, error) {
 	snap, err := s.repo.FailSnapshot(ctx, tenantID, snapshotID, msg)
 	if err != nil {
@@ -539,6 +571,16 @@ func (s *Service) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UU
 		PhaseDetail: map[string]any{"error": msg},
 		Status:      snap.Status,
 	})
+	// Reconcile the linked schedule run to 'failed' (best-effort).
+	if s.scheduleRuns != nil {
+		errMsg := msg
+		_, _ = s.scheduleRuns.SetScheduleRunStatusBySnapshot(ctx, tenantID, snapshotID, SetScheduleRunStatusInput{
+			TenantID:    tenantID,
+			Status:      ScheduleRunStatusFailed,
+			Error:       &errMsg,
+			SetFinished: true,
+		})
+	}
 	return snap, nil
 }
 
@@ -739,7 +781,19 @@ func (s *Service) GetSchedule(ctx context.Context, tenantID, siteID uuid.UUID) (
 	if tenantID == uuid.Nil {
 		return Schedule{}, domain.Forbidden("tenant_required", "a tenant context is required")
 	}
-	return s.repo.GetSchedule(ctx, tenantID, siteID)
+	sched, err := s.repo.GetSchedule(ctx, tenantID, siteID)
+	if err != nil {
+		return Schedule{}, err
+	}
+	// Populate read-only Timezone + GmtOffset from the site's WordPress settings
+	// (the scheduler resolves these at fire time; the response DTO surfaces them
+	// so the UI can display run times in the site's local timezone).
+	if si, siErr := s.sites.GetBackupSiteInfo(ctx, tenantID, siteID); siErr == nil {
+		loc := resolveLocation(si.WpTimezone, si.WpGmtOffset)
+		sched.Timezone = loc.String()
+		sched.GmtOffset = si.WpGmtOffset
+	}
+	return sched, nil
 }
 
 // PutScheduleInput is the validated schedule input.
@@ -751,10 +805,22 @@ type PutScheduleInput struct {
 	Enabled            bool
 	RetentionDays      int32
 	MonthlyArchiveKeep int32
+	// Timing fields (M17).
+	RunHour        int32
+	RunMinute      int32
+	DayOfWeek      *int32
+	DayOfMonth     *int32
+	FrequencyHours *int32
+	KeepLast       int32
 }
 
-// PutSchedule creates/updates a site's backup schedule. next_run_at is computed
-// from now per the cadence so the first run fires on the next boundary.
+// PutSchedule creates/updates a site's backup schedule.
+//
+// next_run_at is only (re)computed when the row is NEW or a timing field
+// (cadence/run_hour/run_minute/day_of_week/day_of_month/frequency_hours)
+// changed. Otherwise, the existing next_run_at is preserved so a non-timing
+// edit (e.g. changing retention_days) does not push the next run a full cycle
+// forward.
 func (s *Service) PutSchedule(ctx context.Context, in PutScheduleInput) (Schedule, error) {
 	if in.TenantID == uuid.Nil {
 		return Schedule{}, domain.Forbidden("tenant_required", "a tenant context is required")
@@ -764,7 +830,7 @@ func (s *Service) PutSchedule(ctx context.Context, in PutScheduleInput) (Schedul
 		cadence = CadenceDaily
 	}
 	if !validCadence(cadence) {
-		return Schedule{}, domain.Validation("invalid_cadence", "cadence must be daily, weekly, or monthly")
+		return Schedule{}, domain.Validation("invalid_cadence", "cadence must be one of hourly, every_n_hours, daily, weekly, or monthly")
 	}
 	kind := strings.TrimSpace(strings.ToLower(in.Kind))
 	if kind == "" {
@@ -772,6 +838,28 @@ func (s *Service) PutSchedule(ctx context.Context, in PutScheduleInput) (Schedul
 	}
 	if !validKind(kind) {
 		return Schedule{}, domain.Validation("invalid_kind", "kind must be files, db, or full")
+	}
+	// Validate cadence–field consistency.
+	if err := validateSchedule(cadence, in.DayOfWeek, in.DayOfMonth, in.FrequencyHours); err != nil {
+		return Schedule{}, domain.Validation("invalid_schedule", err.Error())
+	}
+	// Bound every timing field to its DB CHECK range so out-of-range input is a
+	// clean 422 (not a Postgres CHECK 500) and the int32→int16 cast in the repo
+	// can never wrap (e.g. run_hour=98304 silently wrapping to hour 0).
+	if in.RunHour < 0 || in.RunHour > 23 {
+		return Schedule{}, domain.Validation("invalid_run_hour", "run_hour must be between 0 and 23")
+	}
+	if in.RunMinute < 0 || in.RunMinute > 59 {
+		return Schedule{}, domain.Validation("invalid_run_minute", "run_minute must be between 0 and 59")
+	}
+	if in.DayOfWeek != nil && (*in.DayOfWeek < 0 || *in.DayOfWeek > 6) {
+		return Schedule{}, domain.Validation("invalid_day_of_week", "day_of_week must be between 0 and 6")
+	}
+	if in.DayOfMonth != nil && (*in.DayOfMonth < 1 || *in.DayOfMonth > 28) {
+		return Schedule{}, domain.Validation("invalid_day_of_month", "day_of_month must be between 1 and 28")
+	}
+	if in.FrequencyHours != nil && (*in.FrequencyHours < 1 || *in.FrequencyHours > 24) {
+		return Schedule{}, domain.Validation("invalid_frequency_hours", "frequency_hours must be between 1 and 24")
 	}
 	retention := in.RetentionDays
 	if retention <= 0 {
@@ -781,13 +869,57 @@ func (s *Service) PutSchedule(ctx context.Context, in PutScheduleInput) (Schedul
 	if archive < 0 {
 		archive = int32(s.monthlyArchiveKeep)
 	}
-
-	// Verify the site exists in this tenant before scheduling.
-	if _, err := s.sites.GetBackupSiteInfo(ctx, in.TenantID, in.SiteID); err != nil {
-		return Schedule{}, err
+	keepLast := in.KeepLast
+	if keepLast < 0 {
+		keepLast = 7 // sane default
 	}
 
-	return s.repo.UpsertSchedule(ctx, UpsertScheduleInput{
+	// Resolve the site's timezone from wp_timezone/wp_gmt_offset (NOT operator input).
+	si, err := s.sites.GetBackupSiteInfo(ctx, in.TenantID, in.SiteID)
+	if err != nil {
+		return Schedule{}, err
+	}
+	loc := resolveLocation(si.WpTimezone, si.WpGmtOffset)
+
+	// Determine whether to recompute next_run_at. Load the existing row to
+	// compare timing fields; treat "not found" as a new row.
+	nextRunAt := s.clock.Now() // will be replaced below
+	existing, getErr := s.repo.GetSchedule(ctx, in.TenantID, in.SiteID)
+	isNew := getErr != nil // domain.NotFound → new row; any error → treat as new (safe)
+	if isNew {
+		// New row: compute first occurrence.
+		jitter := SiteJitter(in.SiteID)
+		dow := optInt32ToInt(in.DayOfWeek)
+		dom := optInt32ToInt(in.DayOfMonth)
+		fh := optInt32ToInt(in.FrequencyHours)
+		nextRunAt = nextOccurrence(s.clock.Now(), cadence,
+			int(in.RunHour), int(in.RunMinute),
+			dow, dom, fh,
+			jitter, loc)
+	} else {
+		// Existing row: recompute only when any timing field changed.
+		timingChanged := existing.Cadence != cadence ||
+			existing.RunHour != in.RunHour ||
+			existing.RunMinute != in.RunMinute ||
+			!optInt32Equal(existing.DayOfWeek, in.DayOfWeek) ||
+			!optInt32Equal(existing.DayOfMonth, in.DayOfMonth) ||
+			!optInt32Equal(existing.FrequencyHours, in.FrequencyHours)
+		if timingChanged {
+			jitter := SiteJitter(in.SiteID)
+			dow := optInt32ToInt(in.DayOfWeek)
+			dom := optInt32ToInt(in.DayOfMonth)
+			fh := optInt32ToInt(in.FrequencyHours)
+			nextRunAt = nextOccurrence(s.clock.Now(), cadence,
+				int(in.RunHour), int(in.RunMinute),
+				dow, dom, fh,
+				jitter, loc)
+		} else {
+			// Preserve the current next_run_at.
+			nextRunAt = existing.NextRunAt
+		}
+	}
+
+	out, upsertErr := s.repo.UpsertSchedule(ctx, UpsertScheduleInput{
 		TenantID:           in.TenantID,
 		SiteID:             in.SiteID,
 		Cadence:            cadence,
@@ -795,8 +927,21 @@ func (s *Service) PutSchedule(ctx context.Context, in PutScheduleInput) (Schedul
 		Enabled:            in.Enabled,
 		RetentionDays:      retention,
 		MonthlyArchiveKeep: archive,
-		NextRunAt:          nextRun(s.clock.Now(), cadence),
+		NextRunAt:          nextRunAt,
+		RunHour:            in.RunHour,
+		RunMinute:          in.RunMinute,
+		DayOfWeek:          in.DayOfWeek,
+		DayOfMonth:         in.DayOfMonth,
+		FrequencyHours:     in.FrequencyHours,
+		KeepLast:           keepLast,
 	})
+	if upsertErr != nil {
+		return Schedule{}, upsertErr
+	}
+	// Populate the read-only Timezone and GmtOffset fields from the resolved site zone.
+	out.Timezone = loc.String()
+	out.GmtOffset = si.WpGmtOffset
+	return out, nil
 }
 
 // DueSchedules returns enabled, due schedules across all tenants (scheduler).
@@ -808,21 +953,108 @@ func (s *Service) DueSchedules(ctx context.Context, limit int32) ([]Schedule, er
 }
 
 // EnqueueScheduledBackup records a pending snapshot for a due schedule, enqueues
-// the backup job, and advances the schedule's next_run_at. Used by the scheduler
-// periodic job. It resolves the site's recipient at enqueue time.
+// the backup job, advances the schedule's next_run_at, and (when the schedule
+// run store is wired) materializes the M17 schedule run row. Used by the
+// scheduler periodic job. It resolves the site's recipient at enqueue time.
+//
+// Transaction flow (M17):
+//  1. AgentUpsertScheduleRun(scheduled_for=sched.NextRunAt) → 'queued'
+//  2. CreateSnapshot (tenant-scoped)
+//  3. SetScheduleRunSnapshot (link run → snapshot)
+//  4. EnqueueBackup (River)
+//  5. AdvanceScheduleRun (next_run_at = nextOccurrence)
+//  6. Pre-insert next 'scheduled' run row
+//
+// Un-enrollable / no-recipient site → run marked 'skipped' (visible in history)
+// and schedule still advances (no busy-loop).
 func (s *Service) EnqueueScheduledBackup(ctx context.Context, sched Schedule) error {
 	si, err := s.sites.GetBackupSiteInfo(ctx, sched.TenantID, sched.SiteID)
 	if err != nil {
 		return err
 	}
-	// Always advance the schedule so a non-enrollable/recipient-less site does not
-	// busy-loop the scheduler.
-	defer func() {
-		_ = s.repo.AdvanceScheduleRun(ctx, sched.TenantID, sched.ID, nextRun(s.clock.Now(), sched.Cadence))
-	}()
+	// Resolve the site's timezone for next-occurrence computation.
+	loc := resolveLocation(si.WpTimezone, si.WpGmtOffset)
+	jitter := SiteJitter(sched.SiteID)
+	dow := optInt32ToInt(sched.DayOfWeek)
+	dom := optInt32ToInt(sched.DayOfMonth)
+	fh := optInt32ToInt(sched.FrequencyHours)
+	nextAt := nextOccurrence(s.clock.Now(), sched.Cadence,
+		int(sched.RunHour), int(sched.RunMinute),
+		dow, dom, fh,
+		jitter, loc)
+
+	// Un-enrollable / no-recipient path: mark run skipped and advance.
 	if !si.Enrolled || si.AgeRecipient == "" {
-		return fmt.Errorf("scheduled backup skipped: site not enrolled or no age recipient")
+		reason := "site not enrolled"
+		if si.Enrolled && si.AgeRecipient == "" {
+			reason = "no age recipient configured"
+		}
+		skipReason := reason
+		if s.scheduleRuns != nil {
+			triggeredBy := "schedule"
+			_, _ = s.scheduleRuns.AgentUpsertScheduleRun(ctx, UpsertScheduleRunInput{
+				TenantID:     sched.TenantID,
+				SiteID:       sched.SiteID,
+				ScheduleID:   sched.ID,
+				ScheduledFor: sched.NextRunAt,
+				Status:       ScheduleRunStatusSkipped,
+				Kind:         sched.Kind,
+				TriggeredBy:  &triggeredBy,
+			})
+			// Pre-insert next scheduled row.
+			_, _ = s.scheduleRuns.AgentUpsertScheduleRun(ctx, UpsertScheduleRunInput{
+				TenantID:     sched.TenantID,
+				SiteID:       sched.SiteID,
+				ScheduleID:   sched.ID,
+				ScheduledFor: nextAt,
+				Status:       ScheduleRunStatusScheduled,
+				Kind:         sched.Kind,
+				TriggeredBy:  &triggeredBy,
+			})
+		}
+		_ = s.repo.AdvanceScheduleRun(ctx, sched.TenantID, sched.ID, nextAt)
+		return fmt.Errorf("scheduled backup skipped: %s", skipReason)
 	}
+
+	// Happy path. Advance next_run_at and pre-insert the next scheduled row
+	// FIRST so a crash mid-fire can never re-fire this same slot — worst case is
+	// one missed backup, never a duplicate storm. The firing row uses the slot
+	// we are firing (firingSlot) while the pre-insert uses nextAt; the
+	// UNIQUE(schedule_id, scheduled_for) keeps the two rows distinct.
+	triggeredBy := "schedule"
+	firingSlot := sched.NextRunAt
+	_ = s.repo.AdvanceScheduleRun(ctx, sched.TenantID, sched.ID, nextAt)
+	if s.scheduleRuns != nil {
+		_, _ = s.scheduleRuns.AgentUpsertScheduleRun(ctx, UpsertScheduleRunInput{
+			TenantID:     sched.TenantID,
+			SiteID:       sched.SiteID,
+			ScheduleID:   sched.ID,
+			ScheduledFor: nextAt,
+			Status:       ScheduleRunStatusScheduled,
+			Kind:         sched.Kind,
+			TriggeredBy:  &triggeredBy,
+		})
+	}
+
+	// Materialize the run row for the slot we are firing. An upsert error here
+	// is fatal: never create a snapshot with no linked run row to reconcile.
+	var runID uuid.UUID
+	if s.scheduleRuns != nil {
+		run, rerr := s.scheduleRuns.AgentUpsertScheduleRun(ctx, UpsertScheduleRunInput{
+			TenantID:     sched.TenantID,
+			SiteID:       sched.SiteID,
+			ScheduleID:   sched.ID,
+			ScheduledFor: firingSlot,
+			Status:       ScheduleRunStatusQueued,
+			Kind:         sched.Kind,
+			TriggeredBy:  &triggeredBy,
+		})
+		if rerr != nil {
+			return fmt.Errorf("materialize schedule run: %w", rerr)
+		}
+		runID = run.ID
+	}
+
 	snap, err := s.repo.CreateSnapshot(ctx, CreateSnapshotInput{
 		TenantID:     sched.TenantID,
 		SiteID:       sched.SiteID,
@@ -832,7 +1064,29 @@ func (s *Service) EnqueueScheduledBackup(ctx context.Context, sched Schedule) er
 	if err != nil {
 		return err
 	}
-	return s.enqueuer.EnqueueBackup(ctx, sched.TenantID, snap.ID)
+
+	// Link snapshot to the schedule run.
+	if s.scheduleRuns != nil && runID != uuid.Nil {
+		_, _ = s.scheduleRuns.SetScheduleRunSnapshot(ctx, sched.TenantID, runID, snap.ID)
+	}
+
+	// Enqueue the backup job. If this fails the snapshot exists but no worker
+	// will ever run it — mark the (now snapshot-linked) run failed so history
+	// does not stick on "queued".
+	if err := s.enqueuer.EnqueueBackup(ctx, sched.TenantID, snap.ID); err != nil {
+		if s.scheduleRuns != nil && runID != uuid.Nil {
+			msg := "enqueue failed: " + err.Error()
+			_, _ = s.scheduleRuns.SetScheduleRunStatusBySnapshot(ctx, sched.TenantID, snap.ID, SetScheduleRunStatusInput{
+				TenantID:    sched.TenantID,
+				Status:      ScheduleRunStatusFailed,
+				Error:       &msg,
+				SetFinished: true,
+			})
+		}
+		return err
+	}
+
+	return nil
 }
 
 // presignTTLSeconds is the presign TTL in seconds (advisory, surfaced to the
@@ -1124,6 +1378,27 @@ func deriveWireKind(snapshotKind string, components []string) string {
 		return KindDB
 	}
 	return snapshotKind
+}
+
+// optInt32ToInt converts a nullable int32 pointer to a nullable int pointer.
+// Returns nil when the input is nil.
+func optInt32ToInt(p *int32) *int {
+	if p == nil {
+		return nil
+	}
+	v := int(*p)
+	return &v
+}
+
+// optInt32Equal reports whether two nullable int32 pointers hold the same value.
+func optInt32Equal(a, b *int32) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 func isHexHash(s string) bool {

@@ -473,6 +473,8 @@ func toModel(s sqlc.Site) Site {
 		Components:     s.Components,
 		Tags:           s.Tags,
 		AgeRecipient:   s.AgeRecipient,
+		WpTimezone:     s.WpTimezone,
+		WpGmtOffset:    float64(s.WpGmtOffset),
 		CreatedAt:      s.CreatedAt,
 		UpdatedAt:      s.UpdatedAt,
 	}

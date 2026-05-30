@@ -63,6 +63,11 @@ CREATE TABLE sites (
     -- (private key). Empty until a recipient is set. The CP cannot decrypt
     -- backups: it never holds the identity (ADR — trust model).
     age_recipient text      NOT NULL DEFAULT '',
+    -- M17 backup-schedule: timezone fields captured from diagnostics identity
+    -- category (timezone_string / gmt_offset). Used by the backup scheduler to
+    -- compute the next run instant in the site's own WordPress timezone.
+    wp_timezone   text      NOT NULL DEFAULT '',
+    wp_gmt_offset real      NOT NULL DEFAULT 0,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
@@ -516,13 +521,22 @@ CREATE TABLE backup_schedules (
     id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
     site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
-    -- cadence: daily | weekly | monthly.
-    cadence       text        NOT NULL DEFAULT 'daily',
+    -- cadence: hourly | every_n_hours | daily | weekly | monthly.
+    cadence       text        NOT NULL DEFAULT 'daily'
+                  CHECK (cadence IN ('hourly','every_n_hours','daily','weekly','monthly')),
     -- kind: files | db | full (the snapshot kind each scheduled run takes).
-    kind          text        NOT NULL DEFAULT 'full',
+    kind          text        NOT NULL DEFAULT 'full'
+                  CHECK (kind IN ('files','db','full')),
     enabled       boolean     NOT NULL DEFAULT true,
     retention_days        integer NOT NULL DEFAULT 30,
     monthly_archive_keep  integer NOT NULL DEFAULT 12,
+    -- M17 time-of-day / day-of-week / day-of-month fields.
+    run_hour      smallint    NOT NULL DEFAULT 2   CHECK (run_hour   BETWEEN 0 AND 23),
+    run_minute    smallint    NOT NULL DEFAULT 0   CHECK (run_minute BETWEEN 0 AND 59),
+    day_of_week   smallint    NULL                 CHECK (day_of_week  BETWEEN 0 AND 6),
+    day_of_month  smallint    NULL                 CHECK (day_of_month BETWEEN 1 AND 28),
+    frequency_hours smallint  NULL                 CHECK (frequency_hours BETWEEN 1 AND 24),
+    keep_last     integer     NOT NULL DEFAULT 7   CHECK (keep_last >= 0),
     next_run_at   timestamptz NOT NULL DEFAULT now(),
     last_run_at   timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now(),
@@ -546,6 +560,57 @@ CREATE POLICY backup_schedules_tenant_isolation ON backup_schedules
 CREATE POLICY backup_schedules_scheduler ON backup_schedules
     FOR SELECT
     USING (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- backup_schedule_runs  (M17 — materialized schedule queue)
+-- ---------------------------------------------------------------------------
+-- One row per scheduled or past backup fire for a site schedule. Mirrors
+-- restore_runs. A 'scheduled' row is pre-inserted for the next upcoming fire;
+-- the scheduler advances it to 'queued' then the worker transitions it to
+-- running/completed/failed/skipped. The UNIQUE(schedule_id, scheduled_for)
+-- constraint makes the pre-insert idempotent across CP restarts.
+CREATE TABLE backup_schedule_runs (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    schedule_id   uuid        NOT NULL REFERENCES backup_schedules (id) ON DELETE CASCADE,
+    snapshot_id   uuid        REFERENCES backup_snapshots (id) ON DELETE SET NULL,
+    scheduled_for timestamptz NOT NULL,
+    status        text        NOT NULL DEFAULT 'scheduled'
+                  CHECK (status IN ('scheduled','queued','running','completed','failed','skipped','canceled')),
+    kind          text        NOT NULL DEFAULT 'full',
+    error         text,
+    triggered_by  text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    started_at    timestamptz,
+    finished_at   timestamptz,
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX backup_schedule_runs_tenant_site_for_idx
+    ON backup_schedule_runs (tenant_id, site_id, scheduled_for DESC);
+CREATE INDEX backup_schedule_runs_status_for_idx
+    ON backup_schedule_runs (status, scheduled_for);
+CREATE INDEX backup_schedule_runs_schedule_id_idx
+    ON backup_schedule_runs (schedule_id);
+CREATE UNIQUE INDEX backup_schedule_runs_schedule_for_key
+    ON backup_schedule_runs (schedule_id, scheduled_for);
+
+ALTER TABLE backup_schedule_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_schedule_runs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY backup_schedule_runs_tenant_isolation ON backup_schedule_runs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- FOR ALL: the scheduler INSERTs and UPDATEs rows cross-tenant under
+-- app.agent='on'. Unlike restore_runs (agent reads only), the schedule
+-- materializer both writes (pre-insert upcoming run) and updates (transition
+-- to queued/running/completed/failed/skipped) across tenant boundaries.
+CREATE POLICY backup_schedule_runs_agent ON backup_schedule_runs
+    FOR ALL
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- alert_configs  (M5 — uptime downtime/recovery alerting)

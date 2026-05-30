@@ -164,6 +164,14 @@ func (s *Service) IngestDiagnostics(ctx context.Context, tenantID, siteID uuid.U
 			return count, err
 		}
 		count++
+
+		// At identity ingest, persist the WordPress timezone onto the site row
+		// so the backup scheduler can resolve the correct time zone without a
+		// separate lookup. Failures here are non-fatal: a malformed identity
+		// payload must not abort the whole diagnostics ingest.
+		if cat == CategoryIdentity {
+			s.ingestSiteTimezone(ctx, tenantID, siteID, payload)
+		}
 	}
 	return count, nil
 }
@@ -208,9 +216,9 @@ type ErrorBatchEntry struct {
 	LastSeen        flexInt64 `json:"last_seen"`
 	OccurrenceCount flexInt64 `json:"occurrence_count"`
 	Backtrace       []struct {
-		File     string   `json:"file"`
-		Line     flexInt  `json:"line"`
-		Function string   `json:"function"`
+		File     string  `json:"file"`
+		Line     flexInt `json:"line"`
+		Function string  `json:"function"`
 	} `json:"backtrace"`
 }
 
@@ -332,6 +340,29 @@ func (s *Service) RefreshAgent(ctx context.Context, tenantID, siteID uuid.UUID) 
 		return errUnwired
 	}
 	return s.enqueuer.EnqueueRefreshDiagnostics(ctx, tenantID, siteID)
+}
+
+// ingestSiteTimezone extracts 'timezone' (IANA string) and 'gmt_offset'
+// (float) from the identity category payload and persists them onto the site
+// row. It is intentionally best-effort: a missing, null, or malformed field
+// is silently skipped (the column defaults stay intact).
+func (s *Service) ingestSiteTimezone(ctx context.Context, tenantID, siteID uuid.UUID, payload json.RawMessage) {
+	// Decode only the two fields we care about; extra fields are ignored.
+	var identity struct {
+		Timezone  string  `json:"timezone"`
+		GMTOffset float64 `json:"gmt_offset"`
+	}
+	if err := json.Unmarshal(payload, &identity); err != nil {
+		// Malformed payload — skip silently.
+		return
+	}
+	// Nothing to update: both fields are at their zero values.
+	if identity.Timezone == "" && identity.GMTOffset == 0 {
+		return
+	}
+	// Non-fatal: log nothing here (the caller controls observability); the
+	// diagnostics ingest already succeeded at this point.
+	_ = s.repo.UpdateSiteTimezone(ctx, tenantID, siteID, identity.Timezone, identity.GMTOffset)
 }
 
 // agentCollectedAt pulls the agent-side collection timestamp out of the

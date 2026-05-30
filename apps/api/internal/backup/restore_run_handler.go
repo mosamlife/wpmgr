@@ -27,8 +27,8 @@ type UserDirectory interface {
 // enforced by authz.RequirePermission. These are hand-rolled Gin routes
 // (NOT ogen/openapi-generated) mirroring the backup/scan handler patterns.
 type RestoreRunHandler struct {
-	svc       *Service
-	userDir   UserDirectory // optional; nil → triggered_by_email/name stay null
+	svc     *Service
+	userDir UserDirectory // optional; nil → triggered_by_email/name stay null
 }
 
 // NewRestoreRunHandler builds a RestoreRunHandler.
@@ -60,20 +60,20 @@ func (h *RestoreRunHandler) Register(r *gin.RouterGroup) {
 
 // restoreRunDTO is the wire shape for a restore run.
 type restoreRunDTO struct {
-	ID                 string   `json:"id"`
-	SiteID             string   `json:"site_id"`
-	SnapshotID         string   `json:"snapshot_id"`
-	Mode               string   `json:"mode"`
-	Components         []string `json:"components"`
-	Status             string   `json:"status"`
-	CurrentPhase       string   `json:"current_phase,omitempty"`
-	Error              string   `json:"error,omitempty"`
-	TriggeredBy        string   `json:"triggered_by,omitempty"`
-	TriggeredByEmail   *string  `json:"triggered_by_email"`
-	TriggeredByName    *string  `json:"triggered_by_name"`
-	CreatedAt          string   `json:"created_at"`
-	StartedAt          string   `json:"started_at,omitempty"`
-	FinishedAt         string   `json:"finished_at,omitempty"`
+	ID               string   `json:"id"`
+	SiteID           string   `json:"site_id"`
+	SnapshotID       string   `json:"snapshot_id"`
+	Mode             string   `json:"mode"`
+	Components       []string `json:"components"`
+	Status           string   `json:"status"`
+	CurrentPhase     string   `json:"current_phase,omitempty"`
+	Error            string   `json:"error,omitempty"`
+	TriggeredBy      string   `json:"triggered_by,omitempty"`
+	TriggeredByEmail *string  `json:"triggered_by_email"`
+	TriggeredByName  *string  `json:"triggered_by_name"`
+	CreatedAt        string   `json:"created_at"`
+	StartedAt        string   `json:"started_at,omitempty"`
+	FinishedAt       string   `json:"finished_at,omitempty"`
 }
 
 type restoreRunListDTO struct {

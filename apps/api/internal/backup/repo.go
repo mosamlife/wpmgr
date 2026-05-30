@@ -95,6 +95,13 @@ type UpsertScheduleInput struct {
 	RetentionDays      int32
 	MonthlyArchiveKeep int32
 	NextRunAt          time.Time
+	// New timing fields (M17).
+	RunHour        int32
+	RunMinute      int32
+	DayOfWeek      *int32
+	DayOfMonth     *int32
+	FrequencyHours *int32
+	KeepLast       int32
 }
 
 // StalledSnapshot is the cross-tenant projection used by the M5.6 progress
@@ -404,6 +411,22 @@ func (r *pgRepo) GetSchedule(ctx context.Context, tenantID, siteID uuid.UUID) (S
 func (r *pgRepo) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (Schedule, error) {
 	var out Schedule
 	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+		// Convert int32 pointer fields to *int16 for sqlc.
+		var dow *int16
+		if in.DayOfWeek != nil {
+			v := int16(*in.DayOfWeek)
+			dow = &v
+		}
+		var dom *int16
+		if in.DayOfMonth != nil {
+			v := int16(*in.DayOfMonth)
+			dom = &v
+		}
+		var fh *int16
+		if in.FrequencyHours != nil {
+			v := int16(*in.FrequencyHours)
+			fh = &v
+		}
 		row, err := sqlc.New(tx).UpsertBackupSchedule(ctx, sqlc.UpsertBackupScheduleParams{
 			TenantID:           in.TenantID,
 			SiteID:             in.SiteID,
@@ -413,6 +436,12 @@ func (r *pgRepo) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (Sc
 			RetentionDays:      in.RetentionDays,
 			MonthlyArchiveKeep: in.MonthlyArchiveKeep,
 			NextRunAt:          in.NextRunAt,
+			RunHour:            int16(in.RunHour),
+			RunMinute:          int16(in.RunMinute),
+			DayOfWeek:          dow,
+			DayOfMonth:         dom,
+			FrequencyHours:     fh,
+			KeepLast:           in.KeepLast,
 		})
 		if err != nil {
 			return domain.Internal("backup_schedule_upsert_failed", "failed to save schedule").WithCause(err)
@@ -642,9 +671,24 @@ func toSchedule(s sqlc.BackupSchedule) Schedule {
 		Enabled:            s.Enabled,
 		RetentionDays:      s.RetentionDays,
 		MonthlyArchiveKeep: s.MonthlyArchiveKeep,
+		RunHour:            int32(s.RunHour),
+		RunMinute:          int32(s.RunMinute),
+		KeepLast:           s.KeepLast,
 		NextRunAt:          s.NextRunAt,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
+	}
+	if s.DayOfWeek != nil {
+		v := int32(*s.DayOfWeek)
+		out.DayOfWeek = &v
+	}
+	if s.DayOfMonth != nil {
+		v := int32(*s.DayOfMonth)
+		out.DayOfMonth = &v
+	}
+	if s.FrequencyHours != nil {
+		v := int32(*s.FrequencyHours)
+		out.FrequencyHours = &v
 	}
 	if s.LastRunAt.Valid {
 		t := s.LastRunAt.Time

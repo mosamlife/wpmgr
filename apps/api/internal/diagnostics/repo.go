@@ -333,6 +333,34 @@ func (r *Repo) DeleteStaleErrors(ctx context.Context, retention time.Duration) (
 	return deleted, err
 }
 
+// UpdateSiteTimezone writes the WordPress timezone fields onto the site row.
+// It runs inside InTenantTx (tenant-scoped, no agent flag needed) so the
+// standard tenant_isolation RLS policy permits the UPDATE.
+//
+// Both fields are optional — empty timezone or zero offset are stored as-is
+// (the migration defaults are ” and 0 respectively). The caller must guard
+// against a nil/malformed payload before calling this method.
+func (r *Repo) UpdateSiteTimezone(ctx context.Context, tenantID, siteID uuid.UUID, wpTimezone string, wpGMTOffset float64) error {
+	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx,
+			`UPDATE sites
+			    SET wp_timezone   = $3,
+			        wp_gmt_offset = $4
+			  WHERE tenant_id = $1
+			    AND id        = $2`,
+			tenantID, siteID, wpTimezone, wpGMTOffset,
+		)
+		if err != nil {
+			return domain.Internal("site_timezone_update_failed", "failed to update site timezone").WithCause(err)
+		}
+		// A zero rows-affected result means the site row doesn't exist (e.g. a
+		// stale agent with a deleted site). Treat as a no-op rather than a hard
+		// error so the diagnostics ingest still succeeds for the other categories.
+		_ = ct
+		return nil
+	})
+}
+
 // strFromInt is a tiny helper for building $-arg numbers in the dynamic
 // WHERE clauses above without pulling in fmt.Sprintf on the hot path.
 func strFromInt(n int) string {

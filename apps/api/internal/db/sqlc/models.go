@@ -114,10 +114,33 @@ type BackupSchedule struct {
 	Enabled            bool               `json:"enabled"`
 	RetentionDays      int32              `json:"retention_days"`
 	MonthlyArchiveKeep int32              `json:"monthly_archive_keep"`
+	RunHour            int16              `json:"run_hour"`
+	RunMinute          int16              `json:"run_minute"`
+	DayOfWeek          *int16             `json:"day_of_week"`
+	DayOfMonth         *int16             `json:"day_of_month"`
+	FrequencyHours     *int16             `json:"frequency_hours"`
+	KeepLast           int32              `json:"keep_last"`
 	NextRunAt          time.Time          `json:"next_run_at"`
 	LastRunAt          pgtype.Timestamptz `json:"last_run_at"`
 	CreatedAt          time.Time          `json:"created_at"`
 	UpdatedAt          time.Time          `json:"updated_at"`
+}
+
+type BackupScheduleRun struct {
+	ID           uuid.UUID          `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	SiteID       uuid.UUID          `json:"site_id"`
+	ScheduleID   uuid.UUID          `json:"schedule_id"`
+	SnapshotID   pgtype.UUID        `json:"snapshot_id"`
+	ScheduledFor time.Time          `json:"scheduled_for"`
+	Status       string             `json:"status"`
+	Kind         string             `json:"kind"`
+	Error        *string            `json:"error"`
+	TriggeredBy  *string            `json:"triggered_by"`
+	CreatedAt    time.Time          `json:"created_at"`
+	StartedAt    pgtype.Timestamptz `json:"started_at"`
+	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
 }
 
 type BackupSnapshot struct {
@@ -180,6 +203,8 @@ type Site struct {
 	Components     []byte             `json:"components"`
 	Tags           []string           `json:"tags"`
 	AgeRecipient   string             `json:"age_recipient"`
+	WpTimezone     string             `json:"wp_timezone"`
+	WpGmtOffset    float32            `json:"wp_gmt_offset"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
 }
@@ -192,6 +217,24 @@ type SiteAlertState struct {
 	InIncident      bool               `json:"in_incident"`
 	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+type SiteUptimeProbe struct {
+	ID         uuid.UUID          `json:"id"`
+	TenantID   uuid.UUID          `json:"tenant_id"`
+	SiteID     uuid.UUID          `json:"site_id"`
+	ProbedAt   time.Time          `json:"probed_at"`
+	Up         bool               `json:"up"`
+	HttpStatus int32              `json:"http_status"`
+	DnsMs      float64            `json:"dns_ms"`
+	ConnectMs  float64            `json:"connect_ms"`
+	TlsMs      float64            `json:"tls_ms"`
+	TtfbMs     float64            `json:"ttfb_ms"`
+	TotalMs    float64            `json:"total_ms"`
+	TlsExpiry  pgtype.Timestamptz `json:"tls_expiry"`
+	TlsIssuer  string             `json:"tls_issuer"`
+	TlsSubject string             `json:"tls_subject"`
+	ErrorText  string             `json:"error_text"`
 }
 
 type Tenant struct {

@@ -73,11 +73,11 @@ type AppendRestoreEventInput struct {
 
 // MarkRestoreRunStatusInput carries the parameters for a status transition.
 type MarkRestoreRunStatusInput struct {
-	TenantID   uuid.UUID
-	RunID      uuid.UUID
-	Status     string
-	Error      string  // non-empty only on failed
-	SetStarted bool    // set started_at = now()
+	TenantID    uuid.UUID
+	RunID       uuid.UUID
+	Status      string
+	Error       string // non-empty only on failed
+	SetStarted  bool   // set started_at = now()
 	SetFinished bool   // set finished_at = now()
 }
 

@@ -2949,8 +2949,54 @@ func (s *BackupSchedule) encodeFields(e *jx.Encoder) {
 		e.Int32(s.MonthlyArchiveKeep)
 	}
 	{
+		e.FieldStart("run_hour")
+		e.Int32(s.RunHour)
+	}
+	{
+		e.FieldStart("run_minute")
+		e.Int32(s.RunMinute)
+	}
+	{
+		if s.DayOfWeek.Set {
+			e.FieldStart("day_of_week")
+			s.DayOfWeek.Encode(e)
+		}
+	}
+	{
+		if s.DayOfMonth.Set {
+			e.FieldStart("day_of_month")
+			s.DayOfMonth.Encode(e)
+		}
+	}
+	{
+		if s.FrequencyHours.Set {
+			e.FieldStart("frequency_hours")
+			s.FrequencyHours.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("keep_last")
+		e.Int32(s.KeepLast)
+	}
+	{
+		e.FieldStart("timezone")
+		e.Str(s.Timezone)
+	}
+	{
+		e.FieldStart("gmt_offset")
+		e.Float64(s.GmtOffset)
+	}
+	{
 		e.FieldStart("next_run_at")
 		json.EncodeDateTime(e, s.NextRunAt)
+	}
+	{
+		e.FieldStart("next_runs")
+		e.ArrStart()
+		for _, elem := range s.NextRuns {
+			json.EncodeDateTime(e, elem)
+		}
+		e.ArrEnd()
 	}
 	{
 		if s.LastRunAt.Set {
@@ -2968,7 +3014,7 @@ func (s *BackupSchedule) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfBackupSchedule = [12]string{
+var jsonFieldsNameOfBackupSchedule = [21]string{
 	0:  "id",
 	1:  "tenant_id",
 	2:  "site_id",
@@ -2977,10 +3023,19 @@ var jsonFieldsNameOfBackupSchedule = [12]string{
 	5:  "enabled",
 	6:  "retention_days",
 	7:  "monthly_archive_keep",
-	8:  "next_run_at",
-	9:  "last_run_at",
-	10: "created_at",
-	11: "updated_at",
+	8:  "run_hour",
+	9:  "run_minute",
+	10: "day_of_week",
+	11: "day_of_month",
+	12: "frequency_hours",
+	13: "keep_last",
+	14: "timezone",
+	15: "gmt_offset",
+	16: "next_run_at",
+	17: "next_runs",
+	18: "last_run_at",
+	19: "created_at",
+	20: "updated_at",
 }
 
 // Decode decodes BackupSchedule from json.
@@ -2988,7 +3043,7 @@ func (s *BackupSchedule) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode BackupSchedule to nil")
 	}
-	var requiredBitSet [2]uint8
+	var requiredBitSet [3]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -3084,8 +3139,98 @@ func (s *BackupSchedule) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"monthly_archive_keep\"")
 			}
-		case "next_run_at":
+		case "run_hour":
 			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int32()
+				s.RunHour = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"run_hour\"")
+			}
+		case "run_minute":
+			requiredBitSet[1] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int32()
+				s.RunMinute = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"run_minute\"")
+			}
+		case "day_of_week":
+			if err := func() error {
+				s.DayOfWeek.Reset()
+				if err := s.DayOfWeek.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"day_of_week\"")
+			}
+		case "day_of_month":
+			if err := func() error {
+				s.DayOfMonth.Reset()
+				if err := s.DayOfMonth.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"day_of_month\"")
+			}
+		case "frequency_hours":
+			if err := func() error {
+				s.FrequencyHours.Reset()
+				if err := s.FrequencyHours.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"frequency_hours\"")
+			}
+		case "keep_last":
+			requiredBitSet[1] |= 1 << 5
+			if err := func() error {
+				v, err := d.Int32()
+				s.KeepLast = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"keep_last\"")
+			}
+		case "timezone":
+			requiredBitSet[1] |= 1 << 6
+			if err := func() error {
+				v, err := d.Str()
+				s.Timezone = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"timezone\"")
+			}
+		case "gmt_offset":
+			requiredBitSet[1] |= 1 << 7
+			if err := func() error {
+				v, err := d.Float64()
+				s.GmtOffset = float64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"gmt_offset\"")
+			}
+		case "next_run_at":
+			requiredBitSet[2] |= 1 << 0
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.NextRunAt = v
@@ -3095,6 +3240,26 @@ func (s *BackupSchedule) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"next_run_at\"")
+			}
+		case "next_runs":
+			requiredBitSet[2] |= 1 << 1
+			if err := func() error {
+				s.NextRuns = make([]time.Time, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem time.Time
+					v, err := json.DecodeDateTime(d)
+					elem = v
+					if err != nil {
+						return err
+					}
+					s.NextRuns = append(s.NextRuns, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"next_runs\"")
 			}
 		case "last_run_at":
 			if err := func() error {
@@ -3107,7 +3272,7 @@ func (s *BackupSchedule) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_run_at\"")
 			}
 		case "created_at":
-			requiredBitSet[1] |= 1 << 2
+			requiredBitSet[2] |= 1 << 3
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -3119,7 +3284,7 @@ func (s *BackupSchedule) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "updated_at":
-			requiredBitSet[1] |= 1 << 3
+			requiredBitSet[2] |= 1 << 4
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -3139,9 +3304,10 @@ func (s *BackupSchedule) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [2]uint8{
+	for i, mask := range [3]uint8{
 		0b11111111,
-		0b00001101,
+		0b11100011,
+		0b00011011,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -3203,6 +3369,10 @@ func (s *BackupScheduleCadence) Decode(d *jx.Decoder) error {
 	}
 	// Try to use constant string.
 	switch BackupScheduleCadence(v) {
+	case BackupScheduleCadenceHourly:
+		*s = BackupScheduleCadenceHourly
+	case BackupScheduleCadenceEveryNHours:
+		*s = BackupScheduleCadenceEveryNHours
 	case BackupScheduleCadenceDaily:
 		*s = BackupScheduleCadenceDaily
 	case BackupScheduleCadenceWeekly:
@@ -3310,14 +3480,56 @@ func (s *BackupScheduleUpdate) encodeFields(e *jx.Encoder) {
 			s.MonthlyArchiveKeep.Encode(e)
 		}
 	}
+	{
+		if s.RunHour.Set {
+			e.FieldStart("run_hour")
+			s.RunHour.Encode(e)
+		}
+	}
+	{
+		if s.RunMinute.Set {
+			e.FieldStart("run_minute")
+			s.RunMinute.Encode(e)
+		}
+	}
+	{
+		if s.DayOfWeek.Set {
+			e.FieldStart("day_of_week")
+			s.DayOfWeek.Encode(e)
+		}
+	}
+	{
+		if s.DayOfMonth.Set {
+			e.FieldStart("day_of_month")
+			s.DayOfMonth.Encode(e)
+		}
+	}
+	{
+		if s.FrequencyHours.Set {
+			e.FieldStart("frequency_hours")
+			s.FrequencyHours.Encode(e)
+		}
+	}
+	{
+		if s.KeepLast.Set {
+			e.FieldStart("keep_last")
+			s.KeepLast.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfBackupScheduleUpdate = [5]string{
-	0: "cadence",
-	1: "kind",
-	2: "enabled",
-	3: "retention_days",
-	4: "monthly_archive_keep",
+var jsonFieldsNameOfBackupScheduleUpdate = [11]string{
+	0:  "cadence",
+	1:  "kind",
+	2:  "enabled",
+	3:  "retention_days",
+	4:  "monthly_archive_keep",
+	5:  "run_hour",
+	6:  "run_minute",
+	7:  "day_of_week",
+	8:  "day_of_month",
+	9:  "frequency_hours",
+	10: "keep_last",
 }
 
 // Decode decodes BackupScheduleUpdate from json.
@@ -3379,6 +3591,66 @@ func (s *BackupScheduleUpdate) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"monthly_archive_keep\"")
 			}
+		case "run_hour":
+			if err := func() error {
+				s.RunHour.Reset()
+				if err := s.RunHour.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"run_hour\"")
+			}
+		case "run_minute":
+			if err := func() error {
+				s.RunMinute.Reset()
+				if err := s.RunMinute.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"run_minute\"")
+			}
+		case "day_of_week":
+			if err := func() error {
+				s.DayOfWeek.Reset()
+				if err := s.DayOfWeek.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"day_of_week\"")
+			}
+		case "day_of_month":
+			if err := func() error {
+				s.DayOfMonth.Reset()
+				if err := s.DayOfMonth.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"day_of_month\"")
+			}
+		case "frequency_hours":
+			if err := func() error {
+				s.FrequencyHours.Reset()
+				if err := s.FrequencyHours.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"frequency_hours\"")
+			}
+		case "keep_last":
+			if err := func() error {
+				s.KeepLast.Reset()
+				if err := s.KeepLast.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"keep_last\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -3419,6 +3691,10 @@ func (s *BackupScheduleUpdateCadence) Decode(d *jx.Decoder) error {
 	}
 	// Try to use constant string.
 	switch BackupScheduleUpdateCadence(v) {
+	case BackupScheduleUpdateCadenceHourly:
+		*s = BackupScheduleUpdateCadenceHourly
+	case BackupScheduleUpdateCadenceEveryNHours:
+		*s = BackupScheduleUpdateCadenceEveryNHours
 	case BackupScheduleUpdateCadenceDaily:
 		*s = BackupScheduleUpdateCadenceDaily
 	case BackupScheduleUpdateCadenceWeekly:
@@ -7437,6 +7713,57 @@ func (s OptNilDateTime) MarshalJSON() ([]byte, error) {
 func (s *OptNilDateTime) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d, json.DecodeDateTime)
+}
+
+// Encode encodes int32 as json.
+func (o OptNilInt32) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Int32(int32(o.Value))
+}
+
+// Decode decodes int32 from json.
+func (o *OptNilInt32) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilInt32 to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v int32
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	v, err := d.Int32()
+	if err != nil {
+		return err
+	}
+	o.Value = int32(v)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilInt32) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilInt32) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
 }
 
 // Encode encodes int64 as json.

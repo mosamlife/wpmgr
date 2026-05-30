@@ -1722,7 +1722,13 @@ export const BackupScheduleSchema = {
     "enabled",
     "retention_days",
     "monthly_archive_keep",
+    "run_hour",
+    "run_minute",
+    "keep_last",
+    "timezone",
+    "gmt_offset",
     "next_run_at",
+    "next_runs",
     "created_at",
     "updated_at",
   ],
@@ -1741,7 +1747,7 @@ export const BackupScheduleSchema = {
     },
     cadence: {
       type: "string",
-      enum: ["daily", "weekly", "monthly"],
+      enum: ["hourly", "every_n_hours", "daily", "weekly", "monthly"],
     },
     kind: {
       type: "string",
@@ -1758,9 +1764,75 @@ export const BackupScheduleSchema = {
       type: "integer",
       format: "int32",
     },
+    run_hour: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      maximum: 23,
+      description:
+        "Hour of day (0-23) in the site timezone at which the backup fires.",
+    },
+    run_minute: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      maximum: 59,
+      description: "Minute (0-59) within the hour at which the backup fires.",
+    },
+    day_of_week: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      maximum: 6,
+      nullable: true,
+      description:
+        "Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.",
+    },
+    day_of_month: {
+      type: "integer",
+      format: "int32",
+      minimum: 1,
+      maximum: 28,
+      nullable: true,
+      description:
+        "Day of month (1-28, capped) for monthly cadence; null otherwise.",
+    },
+    frequency_hours: {
+      type: "integer",
+      format: "int32",
+      minimum: 1,
+      maximum: 24,
+      nullable: true,
+      description:
+        "Interval in hours for every_n_hours cadence; null otherwise.",
+    },
+    keep_last: {
+      type: "integer",
+      format: "int32",
+      description: "Minimum number of snapshots to retain regardless of age.",
+    },
+    timezone: {
+      type: "string",
+      description:
+        "Read-only. IANA timezone name (or fixed-offset label) resolved from the site's WordPress timezone. Used by the UI to display run times.",
+    },
+    gmt_offset: {
+      type: "number",
+      description:
+        "Read-only. GMT offset in hours (e.g. 5.5 for +05:30) from the site's WordPress settings.",
+    },
     next_run_at: {
       type: "string",
       format: "date-time",
+    },
+    next_runs: {
+      type: "array",
+      description:
+        "Read-only. The next ~3 scheduled occurrence times (RFC 3339 UTC) for the upcoming-preview strip in the UI.",
+      items: {
+        type: "string",
+        format: "date-time",
+      },
     },
     last_run_at: {
       type: "string",
@@ -1783,7 +1855,7 @@ export const BackupScheduleUpdateSchema = {
   properties: {
     cadence: {
       type: "string",
-      enum: ["daily", "weekly", "monthly"],
+      enum: ["hourly", "every_n_hours", "daily", "weekly", "monthly"],
       default: "daily",
     },
     kind: {
@@ -1806,6 +1878,53 @@ export const BackupScheduleUpdateSchema = {
       format: "int32",
       description:
         "Number of monthly-archive snapshots to keep beyond the window.",
+    },
+    run_hour: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      maximum: 23,
+      description:
+        "Hour of day (0-23) in the site timezone at which the backup fires.",
+    },
+    run_minute: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      maximum: 59,
+      description: "Minute (0-59) within the hour at which the backup fires.",
+    },
+    day_of_week: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      maximum: 6,
+      nullable: true,
+      description:
+        "Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.",
+    },
+    day_of_month: {
+      type: "integer",
+      format: "int32",
+      minimum: 1,
+      maximum: 28,
+      nullable: true,
+      description:
+        "Day of month (1-28, capped) for monthly cadence; null otherwise.",
+    },
+    frequency_hours: {
+      type: "integer",
+      format: "int32",
+      minimum: 1,
+      maximum: 24,
+      nullable: true,
+      description:
+        "Interval in hours for every_n_hours cadence; null otherwise.",
+    },
+    keep_last: {
+      type: "integer",
+      format: "int32",
+      description: "Minimum number of snapshots to retain regardless of age.",
     },
   },
 } as const;

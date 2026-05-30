@@ -34,9 +34,9 @@ func TestEventsSSEWireFormat(t *testing.T) {
 	// tenant/snapshot resolution step. We seed an in-memory "snapshot" so the
 	// initial frame has a known shape.
 	seed := Snapshot{
-		ID:       snapID,
-		Status:   StatusRunning,
-		Progress: []byte(`{"phase":"dumping_db","phase_detail":{"rows":12345}}`),
+		ID:        snapID,
+		Status:    StatusRunning,
+		Progress:  []byte(`{"phase":"dumping_db","phase_detail":{"rows":12345}}`),
 		UpdatedAt: time.Date(2026, 5, 28, 17, 55, 0, 0, time.UTC),
 	}
 

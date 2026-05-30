@@ -183,19 +183,29 @@ SELECT * FROM backup_schedules
 WHERE tenant_id = $1 AND site_id = $2;
 
 -- name: UpsertBackupSchedule :one
+-- Inserts or updates a backup schedule. next_run_at is intentionally NOT
+-- included in the ON CONFLICT DO UPDATE set: the service decides when to
+-- recompute it (only when timing fields actually change). This prevents a
+-- non-timing edit (e.g. retention_days change) from resetting the next run.
 INSERT INTO backup_schedules (
     tenant_id, site_id, cadence, kind, enabled, retention_days,
-    monthly_archive_keep, next_run_at
+    monthly_archive_keep, next_run_at,
+    run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 ON CONFLICT (site_id)
-DO UPDATE SET cadence = EXCLUDED.cadence,
-              kind = EXCLUDED.kind,
-              enabled = EXCLUDED.enabled,
-              retention_days = EXCLUDED.retention_days,
+DO UPDATE SET cadence              = EXCLUDED.cadence,
+              kind                 = EXCLUDED.kind,
+              enabled              = EXCLUDED.enabled,
+              retention_days       = EXCLUDED.retention_days,
               monthly_archive_keep = EXCLUDED.monthly_archive_keep,
-              next_run_at = EXCLUDED.next_run_at,
-              updated_at = now()
+              run_hour             = EXCLUDED.run_hour,
+              run_minute           = EXCLUDED.run_minute,
+              day_of_week          = EXCLUDED.day_of_week,
+              day_of_month         = EXCLUDED.day_of_month,
+              frequency_hours      = EXCLUDED.frequency_hours,
+              keep_last            = EXCLUDED.keep_last,
+              updated_at           = now()
 RETURNING *;
 
 -- name: ListDueBackupSchedules :many
@@ -214,3 +224,13 @@ UPDATE backup_schedules
 SET last_run_at = now(), next_run_at = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
 RETURNING *;
+
+-- name: GetBackupSiteInfo :one
+-- Returns the site fields the backup scheduler needs: enrollment status,
+-- agent URL, age recipient for encryption, and the WP timezone columns
+-- added in M17 (wp_timezone IANA name + wp_gmt_offset fallback).
+-- Runs tenant-scoped (the caller sets app.tenant_id before this query).
+SELECT id, tenant_id, url, enrolled_at, age_recipient,
+       wp_timezone, wp_gmt_offset
+FROM sites
+WHERE id = $1 AND tenant_id = $2;
