@@ -538,6 +538,7 @@ var allowedProgressPhases = map[string]struct{}{
 	"swap_files":         {},
 	"restore_db":         {},
 	"migrate_db":         {}, // V0 skipped but allow the value
+	"url_rewrite":        {}, // agent's actual search-replace phase (RestoreRunner::PHASE_URL_REWRITE)
 	"swap_db":            {},
 	"post_hooks":         {},
 	"maintenance_off":    {},
