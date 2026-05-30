@@ -242,6 +242,69 @@ func (r *Repo) SetSilenced(ctx context.Context, tenantID, siteID uuid.UUID, md5 
 	})
 }
 
+// GetErrorConfig returns the stored error config for (tenantID, siteID).
+// found=false (and no error) when no row exists yet; callers should default
+// to agentcmd.DefaultErrorLevel with an empty ignore list.
+func (r *Repo) GetErrorConfig(ctx context.Context, tenantID, siteID uuid.UUID) (ErrorConfig, bool, error) {
+	var out ErrorConfig
+	var found bool
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx,
+			`SELECT tenant_id, site_id, error_level, ignore_md5s, updated_at
+			 FROM site_error_config
+			 WHERE tenant_id = $1 AND site_id = $2`,
+			tenantID, siteID,
+		)
+		var ignoreMD5s []string
+		if err := row.Scan(&out.TenantID, &out.SiteID, &out.ErrorLevel, &ignoreMD5s, &out.UpdatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return domain.Internal("error_config_get_failed", "failed to get error config").WithCause(err)
+		}
+		if ignoreMD5s == nil {
+			ignoreMD5s = []string{}
+		}
+		out.IgnoreMD5s = ignoreMD5s
+		found = true
+		return nil
+	})
+	return out, found, err
+}
+
+// UpsertErrorConfig inserts or replaces the error config for (tenantID, siteID).
+// updated_at is refreshed on every upsert. Returns the stored config.
+func (r *Repo) UpsertErrorConfig(ctx context.Context, cfg ErrorConfig) (ErrorConfig, error) {
+	var out ErrorConfig
+	ignoreMD5s := cfg.IgnoreMD5s
+	if ignoreMD5s == nil {
+		ignoreMD5s = []string{}
+	}
+	err := r.pool.InTenantTx(ctx, cfg.TenantID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx,
+			`INSERT INTO site_error_config
+				(tenant_id, site_id, error_level, ignore_md5s, updated_at)
+			 VALUES ($1, $2, $3, $4, now())
+			 ON CONFLICT (site_id) DO UPDATE
+			   SET error_level  = EXCLUDED.error_level,
+			       ignore_md5s  = EXCLUDED.ignore_md5s,
+			       updated_at   = now()
+			 RETURNING tenant_id, site_id, error_level, ignore_md5s, updated_at`,
+			cfg.TenantID, cfg.SiteID, cfg.ErrorLevel, ignoreMD5s,
+		)
+		var md5s []string
+		if err := row.Scan(&out.TenantID, &out.SiteID, &out.ErrorLevel, &md5s, &out.UpdatedAt); err != nil {
+			return domain.Internal("error_config_upsert_failed", "failed to upsert error config").WithCause(err)
+		}
+		if md5s == nil {
+			md5s = []string{}
+		}
+		out.IgnoreMD5s = md5s
+		return nil
+	})
+	return out, err
+}
+
 // DeleteStaleErrors removes agent_php_errors rows whose last_seen_at is
 // older than the given retention window. It runs cross-tenant under
 // app.agent = 'on' (the same GUC the backup retention GC uses) so a single

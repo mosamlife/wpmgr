@@ -2077,6 +2077,7 @@ func (*Error) getBackupSqlInspectionRes()  {}
 func (*Error) getMeRes()                   {}
 func (*Error) getSiteAvailableUpdatesRes() {}
 func (*Error) getSiteDiagnosticsRes()      {}
+func (*Error) getSiteErrorConfigRes()      {}
 func (*Error) getSiteRes()                 {}
 func (*Error) getSiteUptimeRes()           {}
 func (*Error) getTenantRes()               {}
@@ -4318,6 +4319,14 @@ func (s *PairingCodeCreate) SetTags(val []string) {
 	s.Tags = val
 }
 
+type PatchSiteErrorConfigBadRequest Error
+
+func (*PatchSiteErrorConfigBadRequest) patchSiteErrorConfigRes() {}
+
+type PatchSiteErrorConfigNotFound Error
+
+func (*PatchSiteErrorConfigNotFound) patchSiteErrorConfigRes() {}
+
 // Ref: #/components/schemas/Readiness
 type Readiness struct {
 	Status ReadinessStatus `json:"status"`
@@ -6399,6 +6408,69 @@ func (s *SiteDiagnosticsList) SetItems(val []SiteDiagnosticsCard) {
 }
 
 func (*SiteDiagnosticsList) getSiteDiagnosticsRes() {}
+
+// Ref: #/components/schemas/SiteErrorConfig
+type SiteErrorConfig struct {
+	// PHP E_* bitmask the agent applies to wp_debug_log collection.
+	// Default 6143 = E_ALL & ~E_STRICT (WordPress default).
+	ErrorLevel int32 `json:"error_level"`
+	// Ordered list of 32-character lowercase hex md5 fingerprints
+	// (md5(code:file:line:message)) the agent must suppress without
+	// counting or reporting. An empty list clears all suppression.
+	IgnoreMd5s []string `json:"ignore_md5s"`
+}
+
+// GetErrorLevel returns the value of ErrorLevel.
+func (s *SiteErrorConfig) GetErrorLevel() int32 {
+	return s.ErrorLevel
+}
+
+// GetIgnoreMd5s returns the value of IgnoreMd5s.
+func (s *SiteErrorConfig) GetIgnoreMd5s() []string {
+	return s.IgnoreMd5s
+}
+
+// SetErrorLevel sets the value of ErrorLevel.
+func (s *SiteErrorConfig) SetErrorLevel(val int32) {
+	s.ErrorLevel = val
+}
+
+// SetIgnoreMd5s sets the value of IgnoreMd5s.
+func (s *SiteErrorConfig) SetIgnoreMd5s(val []string) {
+	s.IgnoreMd5s = val
+}
+
+func (*SiteErrorConfig) getSiteErrorConfigRes()   {}
+func (*SiteErrorConfig) patchSiteErrorConfigRes() {}
+
+// Ref: #/components/schemas/SiteErrorConfigUpdate
+type SiteErrorConfigUpdate struct {
+	// PHP E_* bitmask to apply. Must be >0 and fit in int32.
+	ErrorLevel int32 `json:"error_level"`
+	// Full canonical ignore-list (replaces the stored list atomically).
+	// Each entry must be exactly 32 lowercase hex characters.
+	IgnoreMd5s []string `json:"ignore_md5s"`
+}
+
+// GetErrorLevel returns the value of ErrorLevel.
+func (s *SiteErrorConfigUpdate) GetErrorLevel() int32 {
+	return s.ErrorLevel
+}
+
+// GetIgnoreMd5s returns the value of IgnoreMd5s.
+func (s *SiteErrorConfigUpdate) GetIgnoreMd5s() []string {
+	return s.IgnoreMd5s
+}
+
+// SetErrorLevel sets the value of ErrorLevel.
+func (s *SiteErrorConfigUpdate) SetErrorLevel(val int32) {
+	s.ErrorLevel = val
+}
+
+// SetIgnoreMd5s sets the value of IgnoreMd5s.
+func (s *SiteErrorConfigUpdate) SetIgnoreMd5s(val []string) {
+	s.IgnoreMd5s = val
+}
 
 type SiteHealthStatus string
 

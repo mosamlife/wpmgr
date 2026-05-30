@@ -522,10 +522,11 @@ func run() error {
 	diagnosticsH := diagnostics.NewHandler(diagnosticsSvc, auditRec)
 	diagnosticsAgentH := agent.NewDiagnosticsHandler(diagnosticsSvc)
 	errorsAgentH := agent.NewErrorsHandler(diagnosticsSvc)
+	diagSiteAdapter := newDiagnosticsSiteAdapter(siteSvc)
 	if diagCmd, ok := commander.(diagnostics.AgentDiagnosticsClient); ok {
 		diagEnq := diagnostics.NewRefreshEnqueuer(
 			diagCmd,
-			newDiagnosticsSiteAdapter(siteSvc),
+			diagSiteAdapter,
 			diagnosticsSvc,
 		)
 		if diagEnq != nil {
@@ -534,6 +535,17 @@ func run() error {
 		}
 	} else {
 		logger.Warn("diagnostics refresh enqueuer not wired: CP->agent commander unavailable (signing key empty?)")
+	}
+	// S1.2 — error config push: wire the agentcmd client when the commander
+	// supports the sync_error_config verb. The same SSRF client and signer
+	// used for the diagnostics refresh are reused here (the update commander
+	// is the full agentcmd.Client in real-mode builds; it now also satisfies
+	// AgentErrorConfigClient via SyncErrorConfig).
+	if errCfgCmd, ok := commander.(diagnostics.AgentErrorConfigClient); ok {
+		diagnosticsSvc.SetErrorConfigClient(errCfgCmd, diagSiteAdapter)
+		logger.Info("error config sync client wired")
+	} else {
+		logger.Warn("error config sync client not wired: CP->agent commander unavailable (signing key empty?)")
 	}
 
 	// ADR-037 Sprint 3 — WordPress activity log. The CP re-verifies the agent's
@@ -825,6 +837,10 @@ func (disabledCommander) Update(_ context.Context, _ uuid.UUID, _ string, _ agen
 
 func (disabledCommander) Rollback(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error) {
 	return agentcmd.RollbackResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) SyncErrorConfig(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.ErrorConfigRequest) (agentcmd.ErrorConfigResult, error) {
+	return agentcmd.ErrorConfigResult{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

@@ -15,6 +15,7 @@ import type { PhpError } from "@wpmgr/api";
 
 import { ErrorRow } from "./error-row";
 import { ErrorDetailDrawer } from "./error-detail-drawer";
+import { ErrorConfigPanel } from "./error-config-panel";
 import { usePHPErrors, useSilenceError } from "./use-errors";
 
 // The PHP-error monitor table for one site (ADR-037 Batch 4, Impeccable Restyle).
@@ -69,6 +70,7 @@ export function ErrorsTable({ siteId }: { siteId: string }) {
           >
             Reload
           </Button>
+          <ErrorConfigPanel siteId={siteId} />
         </div>
       </div>
 
@@ -115,6 +117,7 @@ export function ErrorsTable({ siteId }: { siteId: string }) {
 
       {/* Detail drawer — always rendered so AnimatePresence can exit cleanly */}
       <ErrorDetailDrawer
+        siteId={siteId}
         error={active}
         onClose={() => setActive(null)}
         onSilence={(silenced) => {

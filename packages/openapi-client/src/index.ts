@@ -73,6 +73,9 @@ export {
   refreshSiteDiagnostics,
   listSitePhpErrors,
   silenceSitePhpError,
+  // error config (S1.2)
+  getSiteErrorConfig,
+  patchSiteErrorConfig,
   // activity log (ADR-037 Sprint 3)
   listSiteActivity,
   verifySiteActivity,
@@ -215,6 +218,13 @@ export type {
   ListSitePhpErrorsData,
   ListSitePhpErrorsResponse,
   SilenceSitePhpErrorData,
+  // error config (S1.2)
+  SiteErrorConfig,
+  SiteErrorConfigUpdate,
+  GetSiteErrorConfigData,
+  GetSiteErrorConfigResponse,
+  PatchSiteErrorConfigData,
+  PatchSiteErrorConfigResponse,
   // activity log (ADR-037 Sprint 3)
   SiteActivityEvent,
   SiteActivityList,

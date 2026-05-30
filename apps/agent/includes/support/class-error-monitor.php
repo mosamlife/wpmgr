@@ -33,6 +33,13 @@
  *     `gzcompress` so a single recurring fatal does not blow out InnoDB row
  *     size.
  *
+ * S1.2 — error config (ignore-list + level):
+ *   - `wpmgr_error_config` wp-option holds `{ "error_level": <int>, "ignore_md5s": [...] }`.
+ *   - `error_level`: bitmask of non-fatal codes to capture; fatals always captured.
+ *   - `ignore_md5s`: fingerprints to drop entirely (no INSERT/UPDATE).
+ *   - Config is written by the `sync_error_config` signed command and read on
+ *     every request via a static per-request cache (one get_option() per boot).
+ *
  * @package WPMgr\Agent\Support
  */
 
@@ -70,9 +77,111 @@ final class ErrorMonitor
     public const GLOBAL_PENDING = 'wpmgr_agent_pending_errors';
 
     /**
+     * wp-options key for the per-site error config pushed by the control plane.
+     * Holds JSON: { "error_level": <int E_* bitmask>, "ignore_md5s": ["<32hex>", ...] }
+     */
+    public const OPTION_CONFIG = 'wpmgr_error_config';
+
+    /**
+     * The full set of non-fatal codes this class can intercept via
+     * set_error_handler. Never widened by config — only narrowed.
+     */
+    private const HANDLEABLE_NON_FATAL = E_WARNING | E_NOTICE | E_USER_WARNING | E_USER_NOTICE | E_DEPRECATED | E_USER_DEPRECATED;
+
+    /**
+     * Fatal-class codes. The shutdown handler matches against this mask.
+     * Config can NEVER disable fatal capture.
+     */
+    private const FATAL_MASK = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR;
+
+    /**
+     * Per-instance config cache. Populated on first call to loadConfig() and
+     * cleared by applyConfig() so subsequent record() calls in the same request
+     * (e.g. during unit tests) pick up the updated config without re-reading
+     * wp-options. In production each PHP worker services one request and exits,
+     * so "same request" is the only case where invalidation matters.
+     *
+     * @var array{error_level:int,ignore_md5s:array<int,string>}|null
+     */
+    private ?array $configCache = null;
+
+    /**
+     * Load and validate the error config from wp-options. Cached per-instance
+     * (one get_option() per request lifetime).
+     *
+     * Returns safe defaults when the option is absent, not valid JSON, or
+     * contains out-of-range values:
+     *   - error_level: HANDLEABLE_NON_FATAL (captures everything, preserving
+     *     pre-S1.2 behaviour until an operator narrows the mask).
+     *   - ignore_md5s: [] (nothing ignored by default).
+     *
+     * Validation rules (mirror WP Remote's isValidErrorLevel):
+     *   - error_level must satisfy `($level & E_ALL) === $level` (only known
+     *     E_* bits are set).
+     *   - ignore_md5s entries must be exactly 32 lowercase hex characters;
+     *     invalid entries are silently dropped rather than rejecting the whole
+     *     config.
+     *
+     * @return array{error_level:int,ignore_md5s:array<int,string>}
+     */
+    private function loadConfig(): array
+    {
+        if ($this->configCache !== null) {
+            return $this->configCache;
+        }
+
+        $defaults = [
+            'error_level' => self::HANDLEABLE_NON_FATAL,
+            'ignore_md5s' => [],
+        ];
+
+        $raw = function_exists('get_option') ? get_option(self::OPTION_CONFIG, null) : null;
+        if (!is_string($raw) || $raw === '') {
+            $this->configCache = $defaults;
+            return $this->configCache;
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            $this->configCache = $defaults;
+            return $this->configCache;
+        }
+
+        // Validate error_level: must be an integer whose bits are all within E_ALL.
+        $level = isset($decoded['error_level']) ? $decoded['error_level'] : self::HANDLEABLE_NON_FATAL;
+        if (!is_int($level) || ($level & E_ALL) !== $level || $level < 0) {
+            $level = self::HANDLEABLE_NON_FATAL;
+        }
+
+        // Validate ignore_md5s: keep only 32-char hex strings.
+        $rawMd5s = isset($decoded['ignore_md5s']) && is_array($decoded['ignore_md5s'])
+            ? $decoded['ignore_md5s']
+            : [];
+        $ignoreMd5s = [];
+        foreach ($rawMd5s as $entry) {
+            if (is_string($entry) && preg_match('/^[0-9a-f]{32}$/', $entry) === 1) {
+                $ignoreMd5s[] = $entry;
+            }
+        }
+
+        $this->configCache = [
+            'error_level' => $level,
+            'ignore_md5s' => $ignoreMd5s,
+        ];
+
+        return $this->configCache;
+    }
+
+    /**
      * Install the error + shutdown handlers. Idempotent — repeated calls are
      * safe (set_error_handler stacks; we keep a static flag so we install at
      * most once per request).
+     *
+     * The set_error_handler mask is computed from the stored config, intersected
+     * with HANDLEABLE_NON_FATAL so config can only NARROW the captured set, never
+     * widen it beyond what the handler can actually intercept. If the intersected
+     * mask is 0 (operator silenced all non-fatals), we still register the shutdown
+     * handler so fatals are always captured.
      *
      * @return void
      */
@@ -87,9 +196,18 @@ final class ErrorMonitor
         // Drain any errors the mu-plugin captured before plugins_loaded.
         $this->drainBootstrapQueue();
 
-        // Cover NOTICE/WARNING/DEPRECATED. Fatals are caught by the shutdown
-        // function below (error_get_last is the only way to see them).
-        set_error_handler([$this, 'handleError'], E_WARNING | E_NOTICE | E_USER_WARNING | E_USER_NOTICE | E_DEPRECATED | E_USER_DEPRECATED);
+        // Derive the set_error_handler mask from config, narrowed to the
+        // handleable non-fatal set. Fatals are always captured via shutdown.
+        $config    = $this->loadConfig();
+        $errorMask = $config['error_level'] & self::HANDLEABLE_NON_FATAL;
+
+        if ($errorMask !== 0) {
+            set_error_handler([$this, 'handleError'], $errorMask);
+        }
+
+        // Always register the shutdown handler regardless of config — fatals
+        // (E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR,
+        // E_RECOVERABLE_ERROR) are NEVER suppressible via error_level config.
         register_shutdown_function([$this, 'handleShutdown']);
     }
 
@@ -172,6 +290,13 @@ final class ErrorMonitor
     /**
      * Insert-or-update one error row.
      *
+     * Early-return gates (applied in order before any DB work):
+     *   1. md5 ignore-list: if the fingerprint appears in the CP-pushed
+     *      `ignore_md5s` config list, the error is dropped entirely.
+     *   2. Level mask: if the error code is non-fatal AND is not within the
+     *      configured `error_level` bitmask, the error is dropped. Fatal codes
+     *      (shutdown handler path) bypass this check — they are ALWAYS recorded.
+     *
      * @param int $code PHP error code (E_* constant).
      * @param string $message Error message.
      * @param string $file Source file path.
@@ -189,6 +314,23 @@ final class ErrorMonitor
             return;
         }
         $md5 = md5($code . ':' . $file . ':' . $line . ':' . $message);
+
+        // --- S1.2 ignore-list + level gating ---
+        $config = $this->loadConfig();
+
+        // Gate 1: md5 ignore-list — drop entirely if fingerprint is silenced.
+        if (in_array($md5, $config['ignore_md5s'], true)) {
+            return;
+        }
+
+        // Gate 2: level mask — non-fatal codes must be within the configured
+        // bitmask. Fatal codes (shutdown handler) always pass through.
+        $isFatal = ($code & self::FATAL_MASK) !== 0;
+        if (!$isFatal && ($code & $config['error_level']) === 0) {
+            return;
+        }
+        // --- end S1.2 gating ---
+
         $table = $wpdb->prefix . self::TABLE;
         $now = time();
 
@@ -293,6 +435,94 @@ final class ErrorMonitor
                 $batch
             )
         );
+    }
+
+    /**
+     * Validate and persist the CP-pushed error config. Called by the
+     * `sync_error_config` command handler after the JWT has been verified.
+     *
+     * Validation mirrors loadConfig(): error_level must satisfy
+     * `($level & E_ALL) === $level`; ignore_md5s entries must be 32 hex chars.
+     * Invalid entries are silently dropped (best-effort). The resulting config
+     * is written to wp-options as JSON under OPTION_CONFIG.
+     *
+     * Best-effort cleanup: when fingerprints are newly added to ignore_md5s the
+     * corresponding rows are deleted from the capture table so they disappear
+     * from the dashboard immediately (mirrors WP Remote's intent — the operator
+     * silenced them, so showing historical data is misleading). Failure to
+     * delete is silently ignored; the rows will be suppressed from the next ship
+     * batch anyway by loadConfig()'s ignore gate.
+     *
+     * The static loadConfig() cache is invalidated by clearing it so the new
+     * config is picked up for the remainder of this request.
+     *
+     * @param int            $errorLevel  Desired non-fatal capture mask.
+     * @param array<mixed>   $ignoreMd5s  Fingerprints to silence.
+     * @return void
+     */
+    public function applyConfig(int $errorLevel, array $ignoreMd5s): void
+    {
+        // Validate and clamp error_level.
+        if (($errorLevel & E_ALL) !== $errorLevel || $errorLevel < 0) {
+            $errorLevel = self::HANDLEABLE_NON_FATAL;
+        }
+
+        // Validate ignore_md5s: keep only 32-char lowercase hex.
+        $cleanMd5s = [];
+        foreach ($ignoreMd5s as $entry) {
+            if (is_string($entry) && preg_match('/^[0-9a-f]{32}$/', $entry) === 1) {
+                $cleanMd5s[] = $entry;
+            }
+        }
+
+        // Persist.
+        $encoded = (string) json_encode([
+            'error_level' => $errorLevel,
+            'ignore_md5s' => $cleanMd5s,
+        ]);
+        if (function_exists('update_option')) {
+            update_option(self::OPTION_CONFIG, $encoded, false);
+        }
+
+        // Invalidate the per-instance config cache so subsequent record() calls
+        // in the same request pick up the new config without re-reading wp-options.
+        // In production this matters primarily in unit tests; in a live request the
+        // PHP worker exits after the REST response is sent.
+        $this->configCache = null;
+
+        // Best-effort: delete existing rows whose md5 is now ignored, so they
+        // disappear from the dashboard immediately.
+        if ($cleanMd5s !== []) {
+            $this->deleteIgnoredRows($cleanMd5s);
+        }
+    }
+
+    /**
+     * Delete rows whose md5 fingerprint is in the given ignore list.
+     * Best-effort — failure is silently swallowed.
+     *
+     * @param array<int,string> $md5s Fingerprints to remove.
+     * @return void
+     */
+    private function deleteIgnoredRows(array $md5s): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb) || $md5s === []) {
+            return;
+        }
+        $table = $wpdb->prefix . self::TABLE;
+        try {
+            // Build a safe IN(...) clause using prepare() placeholders.
+            $placeholders = implode(', ', array_fill(0, count($md5s), '%s'));
+            $wpdb->query(
+                $wpdb->prepare(
+                    "DELETE FROM {$table} WHERE md5 IN ({$placeholders})",
+                    ...$md5s
+                )
+            );
+        } catch (\Throwable $e) {
+            // Never let cleanup fatal the request.
+        }
     }
 
     /**

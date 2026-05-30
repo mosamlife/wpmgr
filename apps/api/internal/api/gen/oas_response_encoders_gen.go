@@ -1072,6 +1072,39 @@ func encodeGetSiteDiagnosticsResponse(response GetSiteDiagnosticsRes, w http.Res
 	}
 }
 
+func encodeGetSiteErrorConfigResponse(response GetSiteErrorConfigRes, w http.ResponseWriter, span trace.Span) error {
+	switch response := response.(type) {
+	case *SiteErrorConfig:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(200)
+		span.SetStatus(codes.Ok, http.StatusText(200))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *Error:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(404)
+		span.SetStatus(codes.Error, http.StatusText(404))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	default:
+		return errors.Errorf("unexpected response type: %T", response)
+	}
+}
+
 func encodeGetSiteUptimeResponse(response GetSiteUptimeRes, w http.ResponseWriter, span trace.Span) error {
 	switch response := response.(type) {
 	case *UptimeStatus:
@@ -1655,6 +1688,52 @@ func encodeOidcLoginResponse(response OidcLoginRes, w http.ResponseWriter, span 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(501)
 		span.SetStatus(codes.Error, http.StatusText(501))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	default:
+		return errors.Errorf("unexpected response type: %T", response)
+	}
+}
+
+func encodePatchSiteErrorConfigResponse(response PatchSiteErrorConfigRes, w http.ResponseWriter, span trace.Span) error {
+	switch response := response.(type) {
+	case *SiteErrorConfig:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(200)
+		span.SetStatus(codes.Ok, http.StatusText(200))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *PatchSiteErrorConfigBadRequest:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(400)
+		span.SetStatus(codes.Error, http.StatusText(400))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *PatchSiteErrorConfigNotFound:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(404)
+		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)

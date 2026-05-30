@@ -1055,6 +1055,36 @@ export type PhpErrorSilence = {
   silenced?: boolean;
 };
 
+export type SiteErrorConfig = {
+  /**
+   * PHP E_* bitmask the agent applies to wp_debug_log collection.
+   * Default 6143 = E_ALL & ~E_STRICT (WordPress default).
+   *
+   */
+  error_level: number;
+  /**
+   * Ordered list of 32-character lowercase hex md5 fingerprints
+   * (md5(code:file:line:message)) the agent must suppress without
+   * counting or reporting. An empty list clears all suppression.
+   *
+   */
+  ignore_md5s: Array<string>;
+};
+
+export type SiteErrorConfigUpdate = {
+  /**
+   * PHP E_* bitmask to apply. Must be >0 and fit in int32.
+   *
+   */
+  error_level: number;
+  /**
+   * Full canonical ignore-list (replaces the stored list atomically).
+   * Each entry must be exactly 32 lowercase hex characters.
+   *
+   */
+  ignore_md5s: Array<string>;
+};
+
 export type SiteActivityEvent = {
   /**
    * The CP-side row id (stringified BIGSERIAL).
@@ -2808,6 +2838,68 @@ export type SilenceSitePhpErrorResponses = {
 
 export type SilenceSitePhpErrorResponse =
   SilenceSitePhpErrorResponses[keyof SilenceSitePhpErrorResponses];
+
+export type GetSiteErrorConfigData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/errors/config";
+};
+
+export type GetSiteErrorConfigErrors = {
+  /**
+   * Site not found
+   */
+  404: Error;
+};
+
+export type GetSiteErrorConfigError =
+  GetSiteErrorConfigErrors[keyof GetSiteErrorConfigErrors];
+
+export type GetSiteErrorConfigResponses = {
+  /**
+   * Error config
+   */
+  200: SiteErrorConfig;
+};
+
+export type GetSiteErrorConfigResponse =
+  GetSiteErrorConfigResponses[keyof GetSiteErrorConfigResponses];
+
+export type PatchSiteErrorConfigData = {
+  body: SiteErrorConfigUpdate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/errors/config";
+};
+
+export type PatchSiteErrorConfigErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Site not found
+   */
+  404: Error;
+};
+
+export type PatchSiteErrorConfigError =
+  PatchSiteErrorConfigErrors[keyof PatchSiteErrorConfigErrors];
+
+export type PatchSiteErrorConfigResponses = {
+  /**
+   * Config stored (and pushed to agent unless the push failed)
+   */
+  200: SiteErrorConfig;
+};
+
+export type PatchSiteErrorConfigResponse =
+  PatchSiteErrorConfigResponses[keyof PatchSiteErrorConfigResponses];
 
 export type ListSiteActivityData = {
   body?: never;

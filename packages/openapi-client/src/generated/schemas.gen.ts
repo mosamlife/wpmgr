@@ -2258,6 +2258,47 @@ export const PHPErrorSilenceSchema = {
   },
 } as const;
 
+export const SiteErrorConfigSchema = {
+  type: "object",
+  required: ["error_level", "ignore_md5s"],
+  properties: {
+    error_level: {
+      type: "integer",
+      format: "int32",
+      description:
+        "PHP E_* bitmask the agent applies to wp_debug_log collection.\nDefault 6143 = E_ALL & ~E_STRICT (WordPress default).\n",
+    },
+    ignore_md5s: {
+      type: "array",
+      description:
+        "Ordered list of 32-character lowercase hex md5 fingerprints\n(md5(code:file:line:message)) the agent must suppress without\ncounting or reporting. An empty list clears all suppression.\n",
+      items: {
+        type: "string",
+      },
+    },
+  },
+} as const;
+
+export const SiteErrorConfigUpdateSchema = {
+  type: "object",
+  required: ["error_level", "ignore_md5s"],
+  properties: {
+    error_level: {
+      type: "integer",
+      format: "int32",
+      description: "PHP E_* bitmask to apply. Must be >0 and fit in int32.\n",
+    },
+    ignore_md5s: {
+      type: "array",
+      description:
+        "Full canonical ignore-list (replaces the stored list atomically).\nEach entry must be exactly 32 lowercase hex characters.\n",
+      items: {
+        type: "string",
+      },
+    },
+  },
+} as const;
+
 export const SiteActivityEventSchema = {
   type: "object",
   required: [

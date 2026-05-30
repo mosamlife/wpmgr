@@ -3935,6 +3935,153 @@ func (s *Server) handleGetSiteDiagnosticsRequest(args [1]string, argsEscaped boo
 	}
 }
 
+// handleGetSiteErrorConfigRequest handles getSiteErrorConfig operation.
+//
+// Returns the site's PHP error-level mask and md5 ignore-list. When no
+// config row has been saved yet the defaults are returned: error_level=6143
+// (WordPress default E_ALL & ~E_STRICT) and an empty ignore_md5s list.
+// The config is pushed to the agent on each PATCH; this GET only reads
+// the CP-side stored value.
+//
+// GET /api/v1/sites/{siteId}/errors/config
+func (s *Server) handleGetSiteErrorConfigRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteErrorConfig"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.HTTPRouteKey.String("/api/v1/sites/{siteId}/errors/config"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), GetSiteErrorConfigOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: GetSiteErrorConfigOperation,
+			ID:   "getSiteErrorConfig",
+		}
+	)
+	params, err := decodeGetSiteErrorConfigParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	var rawBody []byte
+
+	var response GetSiteErrorConfigRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    GetSiteErrorConfigOperation,
+			OperationSummary: "Get the per-site PHP error reporting config",
+			OperationID:      "getSiteErrorConfig",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params: middleware.Parameters{
+				{
+					Name: "siteId",
+					In:   "path",
+				}: params.SiteId,
+			},
+			Raw: r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = GetSiteErrorConfigParams
+			Response = GetSiteErrorConfigRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			unpackGetSiteErrorConfigParams,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.GetSiteErrorConfig(ctx, params)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.GetSiteErrorConfig(ctx, params)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeGetSiteErrorConfigResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleGetSiteUptimeRequest handles getSiteUptime operation.
 //
 // Returns the uptime % and average latency for a site over the requested
@@ -6690,6 +6837,177 @@ func (s *Server) handleOidcLoginRequest(args [0]string, argsEscaped bool, w http
 	}
 
 	if err := encodeOidcLoginResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
+// handlePatchSiteErrorConfigRequest handles patchSiteErrorConfig operation.
+//
+// Stores the PHP error-level mask and md5 ignore-list for the site, then
+// pushes the new config to the agent via a signed `sync_error_config`
+// command. Returns the stored config on success.
+// Validation:
+// - `error_level` must be a positive integer that fits in int32 (>0,
+// ≤2147483647). Typical values: 6143 (WP default), 32767 (E_ALL),
+// 0x7FFFFFFF (all flags set).
+// - Each entry in `ignore_md5s` must be exactly 32 lowercase hex
+// characters (the md5(code:file:line:message) fingerprint produced
+// by the agent).
+// If the agent push fails after the config is successfully stored the
+// response is still HTTP 200 with the stored config; an
+// `X-Agent-Push-Warning` response header carries the push error message
+// so the UI can surface it as a non-blocking warning.
+//
+// PATCH /api/v1/sites/{siteId}/errors/config
+func (s *Server) handlePatchSiteErrorConfigRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("patchSiteErrorConfig"),
+		semconv.HTTPRequestMethodKey.String("PATCH"),
+		semconv.HTTPRouteKey.String("/api/v1/sites/{siteId}/errors/config"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), PatchSiteErrorConfigOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: PatchSiteErrorConfigOperation,
+			ID:   "patchSiteErrorConfig",
+		}
+	)
+	params, err := decodePatchSiteErrorConfigParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	var rawBody []byte
+	request, rawBody, close, err := s.decodePatchSiteErrorConfigRequest(r)
+	if err != nil {
+		err = &ogenerrors.DecodeRequestError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeRequest", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+	defer func() {
+		if err := close(); err != nil {
+			recordError("CloseRequest", err)
+		}
+	}()
+
+	var response PatchSiteErrorConfigRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    PatchSiteErrorConfigOperation,
+			OperationSummary: "Save per-site PHP error reporting config and push to agent",
+			OperationID:      "patchSiteErrorConfig",
+			Body:             request,
+			RawBody:          rawBody,
+			Params: middleware.Parameters{
+				{
+					Name: "siteId",
+					In:   "path",
+				}: params.SiteId,
+			},
+			Raw: r,
+		}
+
+		type (
+			Request  = *SiteErrorConfigUpdate
+			Params   = PatchSiteErrorConfigParams
+			Response = PatchSiteErrorConfigRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			unpackPatchSiteErrorConfigParams,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.PatchSiteErrorConfig(ctx, request, params)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.PatchSiteErrorConfig(ctx, request, params)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodePatchSiteErrorConfigResponse(response, w, span); err != nil {
 		defer recordError("EncodeResponse", err)
 		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
 			s.cfg.ErrorHandler(ctx, w, r, err)

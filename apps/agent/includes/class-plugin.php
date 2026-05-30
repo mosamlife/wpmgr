@@ -25,6 +25,7 @@ use WPMgr\Agent\Commands\RefreshInventoryCommand;
 use WPMgr\Agent\Commands\RestoreCommand;
 use WPMgr\Agent\Commands\RollbackCommand;
 use WPMgr\Agent\Commands\ScanCommand;
+use WPMgr\Agent\Commands\SyncErrorConfigCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
@@ -503,6 +504,10 @@ final class Plugin
             // daily push via the wpmgr_agent_diagnostics_daily cron event,
             // routed through runDiagnostics() below.
             new DiagnosticsCommand(),
+            // S1.2 — per-site error config sync. The CP pushes an error_level
+            // bitmask + ignore_md5s fingerprint list; the agent writes it to
+            // OPTION_CONFIG and ErrorMonitor honours it on the next record().
+            new SyncErrorConfigCommand($this->errorMonitor),
         ];
     }
 

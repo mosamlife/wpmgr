@@ -40,6 +40,8 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g.POST("/diagnostics/refresh", authz.RequirePermission(authz.PermSiteWrite), h.refresh)
 	g.GET("/errors", authz.RequirePermission(authz.PermSiteRead), h.listErrors)
 	g.POST("/errors/:md5/silence", authz.RequirePermission(authz.PermSiteWrite), h.silenceError)
+	g.GET("/errors/config", authz.RequirePermission(authz.PermSiteRead), h.getErrorConfig)
+	g.PATCH("/errors/config", authz.RequirePermission(authz.PermSiteWrite), h.patchErrorConfig)
 }
 
 // diagnosticsCardDTO is the per-card shape rendered by the UI. `payload` is
@@ -265,4 +267,106 @@ func actorType(p domain.Principal) string {
 		return audit.ActorAPIKey
 	}
 	return audit.ActorUser
+}
+
+// errorConfigDTO is the JSON shape for both GET and PATCH /errors/config.
+type errorConfigDTO struct {
+	ErrorLevel int      `json:"error_level"`
+	IgnoreMD5s []string `json:"ignore_md5s"`
+}
+
+// errorConfigPatchBody is the PATCH /errors/config request body.
+type errorConfigPatchBody struct {
+	ErrorLevel int      `json:"error_level"`
+	IgnoreMD5s []string `json:"ignore_md5s"`
+}
+
+func (h *Handler) getErrorConfig(c *gin.Context) {
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	siteID, err := uuid.Parse(c.Param("siteId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_site_id", "siteId is not a valid UUID"))
+		return
+	}
+	cfg, err := h.svc.GetErrorConfig(c.Request.Context(), p.TenantID, siteID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	md5s := cfg.IgnoreMD5s
+	if md5s == nil {
+		md5s = []string{}
+	}
+	c.JSON(http.StatusOK, errorConfigDTO{
+		ErrorLevel: cfg.ErrorLevel,
+		IgnoreMD5s: md5s,
+	})
+}
+
+func (h *Handler) patchErrorConfig(c *gin.Context) {
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	siteID, err := uuid.Parse(c.Param("siteId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_site_id", "siteId is not a valid UUID"))
+		return
+	}
+	var body errorConfigPatchBody
+	if err := bindJSON(c, &body); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	if body.IgnoreMD5s == nil {
+		body.IgnoreMD5s = []string{}
+	}
+
+	cfg := ErrorConfig{
+		ErrorLevel: body.ErrorLevel,
+		IgnoreMD5s: body.IgnoreMD5s,
+	}
+	saved, err := h.svc.SaveErrorConfig(c.Request.Context(), p.TenantID, siteID, cfg)
+	if err != nil {
+		// If the error is a "config stored but agent push failed" wrapper,
+		// still return 200 with the stored config — the store succeeded.
+		// Map any domain validation / internal errors normally.
+		if de, ok := domain.AsDomain(err); ok {
+			_ = de
+			httpx.Error(c, err)
+			return
+		}
+		// Non-domain error = agent push failure after successful store.
+		// Return 200 with stored config; include the push warning in a header
+		// so the UI can surface it without breaking the happy path.
+		c.Header("X-Agent-Push-Warning", err.Error())
+		md5s := saved.IgnoreMD5s
+		if md5s == nil {
+			md5s = []string{}
+		}
+		c.JSON(http.StatusOK, errorConfigDTO{
+			ErrorLevel: saved.ErrorLevel,
+			IgnoreMD5s: md5s,
+		})
+		return
+	}
+
+	_, _ = h.audit.Record(c.Request.Context(), audit.Event{
+		TenantID:   p.TenantID,
+		ActorType:  actorType(p),
+		ActorID:    p.ActorID(),
+		Action:     "site_error_config.update",
+		TargetType: "site",
+		TargetID:   siteID.String(),
+		Metadata: map[string]any{
+			"error_level":  saved.ErrorLevel,
+			"ignore_count": len(saved.IgnoreMD5s),
+		},
+	})
+
+	md5s := saved.IgnoreMD5s
+	if md5s == nil {
+		md5s = []string{}
+	}
+	c.JSON(http.StatusOK, errorConfigDTO{
+		ErrorLevel: saved.ErrorLevel,
+		IgnoreMD5s: md5s,
+	})
 }

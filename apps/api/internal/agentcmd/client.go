@@ -111,6 +111,23 @@ func (c *Client) RefreshInventory(ctx context.Context, siteID uuid.UUID, siteURL
 	return out, nil
 }
 
+// SyncErrorConfig sends the signed `sync_error_config` command to the site's
+// agent, pushing the per-site PHP error-level mask and ignore-list. siteID is
+// the target site's stable enrollment UUID, bound into the JWT's aud claim.
+// An ok=false response (with a 200 HTTP status) is treated as an error with
+// the agent's detail message — the caller should propagate it as a transient
+// failure rather than storing the config as successfully applied.
+func (c *Client) SyncErrorConfig(ctx context.Context, siteID uuid.UUID, siteURL string, req ErrorConfigRequest) (ErrorConfigResult, error) {
+	var out ErrorConfigResult
+	if err := c.post(ctx, siteID, siteURL, "sync_error_config", req, &out); err != nil {
+		return ErrorConfigResult{}, err
+	}
+	if !out.OK {
+		return out, fmt.Errorf("sync_error_config rejected by agent: %s", out.Detail)
+	}
+	return out, nil
+}
+
 // Diagnostics sends the signed `diagnostics` command to the site's agent and
 // returns the RAW 14-category JSON body. siteID is bound into the JWT's aud
 // claim. Unlike the typed commands above, the response is NOT decoded into a

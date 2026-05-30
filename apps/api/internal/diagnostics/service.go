@@ -3,17 +3,33 @@ package diagnostics
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-// Service is a thin orchestrator: Repo + RefreshEnqueuer (optional). Held
-// stateless so handlers can compose it freely.
+// AgentErrorConfigClient is the subset of agentcmd.Client the service needs to
+// push an error config to the agent. *agentcmd.Client satisfies it via its
+// SyncErrorConfig method. Declared as an interface so tests can substitute a
+// fake without spinning up the SSRF transport.
+type AgentErrorConfigClient interface {
+	SyncErrorConfig(ctx context.Context, siteID uuid.UUID, siteURL string, req agentcmd.ErrorConfigRequest) (agentcmd.ErrorConfigResult, error)
+}
+
+// Service is a thin orchestrator: Repo + RefreshEnqueuer (optional) +
+// AgentErrorConfigClient (optional). Held stateless so handlers can compose
+// it freely.
 type Service struct {
-	repo     *Repo
-	enqueuer RefreshEnqueuer
+	repo        *Repo
+	enqueuer    RefreshEnqueuer
+	errorClient AgentErrorConfigClient
+	siteLookup  SiteLookup
 }
 
 // RefreshEnqueuer enqueues an on-demand diagnostics command to the agent.
@@ -33,6 +49,91 @@ func NewService(repo *Repo) *Service {
 // starts).
 func (s *Service) SetRefreshEnqueuer(e RefreshEnqueuer) {
 	s.enqueuer = e
+}
+
+// SetErrorConfigClient wires the agentcmd client for pushing error config to
+// the agent. Must be called before any SyncErrorConfig call. The SiteLookup
+// is required alongside it so the service can resolve the site URL without a
+// hard dependency on the site package.
+func (s *Service) SetErrorConfigClient(client AgentErrorConfigClient, sites SiteLookup) {
+	s.errorClient = client
+	s.siteLookup = sites
+}
+
+// md5Re validates a 32-character lowercase hex md5 fingerprint.
+var md5Re = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// GetErrorConfig returns the stored error config for (tenantID, siteID).
+// When no row exists yet it returns the default (error_level=6143, empty list).
+func (s *Service) GetErrorConfig(ctx context.Context, tenantID, siteID uuid.UUID) (ErrorConfig, error) {
+	cfg, found, err := s.repo.GetErrorConfig(ctx, tenantID, siteID)
+	if err != nil {
+		return ErrorConfig{}, err
+	}
+	if !found {
+		return ErrorConfig{
+			TenantID:   tenantID,
+			SiteID:     siteID,
+			ErrorLevel: agentcmd.DefaultErrorLevel,
+			IgnoreMD5s: []string{},
+		}, nil
+	}
+	return cfg, nil
+}
+
+// SaveErrorConfig validates the new config, upserts it in the database, and
+// pushes it to the agent via the sync_error_config command. Returns the stored
+// config. If the agentcmd client is not wired the upsert still succeeds and
+// the config is stored — the push is skipped with a logged warning rather
+// than a hard failure (the operator can trigger a manual re-sync later).
+func (s *Service) SaveErrorConfig(ctx context.Context, tenantID, siteID uuid.UUID, cfg ErrorConfig) (ErrorConfig, error) {
+	// --- validation ---
+	if cfg.ErrorLevel <= 0 {
+		return ErrorConfig{}, domain.Validation("invalid_error_level", "error_level must be a positive PHP E_* bitmask")
+	}
+	if cfg.ErrorLevel > (1<<31 - 1) {
+		return ErrorConfig{}, domain.Validation("invalid_error_level", "error_level overflows int32")
+	}
+	if cfg.IgnoreMD5s == nil {
+		cfg.IgnoreMD5s = []string{}
+	}
+	for _, m := range cfg.IgnoreMD5s {
+		if !md5Re.MatchString(m) {
+			return ErrorConfig{}, domain.Validation("invalid_md5", fmt.Sprintf("ignore_md5s entry %q is not a valid 32-char lowercase hex md5", m))
+		}
+	}
+	cfg.TenantID = tenantID
+	cfg.SiteID = siteID
+
+	// --- persist ---
+	saved, err := s.repo.UpsertErrorConfig(ctx, cfg)
+	if err != nil {
+		return ErrorConfig{}, err
+	}
+
+	// --- push to agent (best-effort) ---
+	if s.errorClient != nil && s.siteLookup != nil {
+		siteURL, lookupErr := s.siteLookup.GetSiteURL(ctx, tenantID, siteID)
+		if lookupErr == nil {
+			md5s := saved.IgnoreMD5s
+			if md5s == nil {
+				md5s = []string{}
+			}
+			if _, pushErr := s.errorClient.SyncErrorConfig(ctx, siteID, siteURL, agentcmd.ErrorConfigRequest{
+				ErrorLevel: saved.ErrorLevel,
+				IgnoreMD5s: md5s,
+			}); pushErr != nil {
+				// Non-fatal: the config is already persisted. The agent will
+				// pick it up on next sync or when the operator re-saves.
+				// We return the stored config + the push error wrapped so
+				// the handler can surface it as a 207-style warning if desired.
+				return saved, fmt.Errorf("config stored but agent push failed: %w", pushErr)
+			}
+		}
+		// site URL lookup failure is also non-fatal — config is still stored.
+	}
+
+	return saved, nil
 }
 
 // IngestDiagnostics splits the agent-shipped 14-category blob into one

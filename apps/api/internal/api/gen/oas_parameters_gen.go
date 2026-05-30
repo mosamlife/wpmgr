@@ -967,6 +967,71 @@ func decodeGetSiteDiagnosticsParams(args [1]string, argsEscaped bool, r *http.Re
 	return params, nil
 }
 
+// GetSiteErrorConfigParams is parameters of getSiteErrorConfig operation.
+type GetSiteErrorConfigParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetSiteErrorConfigParams(packed middleware.Parameters) (params GetSiteErrorConfigParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetSiteErrorConfigParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteErrorConfigParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetSiteUptimeParams is parameters of getSiteUptime operation.
 type GetSiteUptimeParams struct {
 	SiteId uuid.UUID
@@ -3586,6 +3651,71 @@ func decodeOidcCallbackParams(args [0]string, argsEscaped bool, r *http.Request)
 		return params, &ogenerrors.DecodeParamError{
 			Name: "state",
 			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// PatchSiteErrorConfigParams is parameters of patchSiteErrorConfig operation.
+type PatchSiteErrorConfigParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackPatchSiteErrorConfigParams(packed middleware.Parameters) (params PatchSiteErrorConfigParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodePatchSiteErrorConfigParams(args [1]string, argsEscaped bool, r *http.Request) (params PatchSiteErrorConfigParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
 			Err:  err,
 		}
 	}

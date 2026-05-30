@@ -29,7 +29,7 @@ var (
 	rn16AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn45AllowedHeaders = map[string]string{
+	rn46AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn17AllowedHeaders = map[string]string{
@@ -50,16 +50,19 @@ var (
 	rn18AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn67AllowedHeaders = map[string]string{
+	rn68AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn22AllowedHeaders = map[string]string{
 		"PATCH": "Content-Type",
 	}
-	rn66AllowedHeaders = map[string]string{
+	rn37AllowedHeaders = map[string]string{
+		"PATCH": "Content-Type",
+	}
+	rn67AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn63AllowedHeaders = map[string]string{
+	rn64AllowedHeaders = map[string]string{
 		"PUT": "Content-Type",
 	}
 	rn19AllowedHeaders = map[string]string{
@@ -68,10 +71,10 @@ var (
 	rn20AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn51AllowedHeaders = map[string]string{
+	rn52AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn60AllowedHeaders = map[string]string{
+	rn61AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn24AllowedHeaders = map[string]string{
@@ -522,7 +525,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn45AllowedHeaders,
+									allowedHeaders: rn46AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -883,7 +886,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 													default:
 														s.notAllowed(w, r, notAllowedParams{
 															allowedMethods: "POST",
-															allowedHeaders: rn67AllowedHeaders,
+															allowedHeaders: rn68AllowedHeaders,
 															acceptPost:     "application/json",
 															acceptPatch:    "",
 														})
@@ -1026,6 +1029,43 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 											break
 										}
 
+										if len(elem) == 0 {
+											break
+										}
+										switch elem[0] {
+										case 'c': // Prefix: "config"
+											origElem := elem
+											if l := len("config"); len(elem) >= l && elem[0:l] == "config" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch r.Method {
+												case "GET":
+													s.handleGetSiteErrorConfigRequest([1]string{
+														args[0],
+													}, elemIsEscaped, w, r)
+												case "PATCH":
+													s.handlePatchSiteErrorConfigRequest([1]string{
+														args[0],
+													}, elemIsEscaped, w, r)
+												default:
+													s.notAllowed(w, r, notAllowedParams{
+														allowedMethods: "GET,PATCH",
+														allowedHeaders: rn37AllowedHeaders,
+														acceptPost:     "",
+														acceptPatch:    "application/json",
+													})
+												}
+
+												return
+											}
+
+											elem = origElem
+										}
 										// Param: "md5"
 										// Match until "/"
 										idx := strings.IndexByte(elem, '/')
@@ -1058,7 +1098,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 												default:
 													s.notAllowed(w, r, notAllowedParams{
 														allowedMethods: "POST",
-														allowedHeaders: rn66AllowedHeaders,
+														allowedHeaders: rn67AllowedHeaders,
 														acceptPost:     "application/json",
 														acceptPatch:    "",
 													})
@@ -1089,7 +1129,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 										default:
 											s.notAllowed(w, r, notAllowedParams{
 												allowedMethods: "PUT",
-												allowedHeaders: rn63AllowedHeaders,
+												allowedHeaders: rn64AllowedHeaders,
 												acceptPost:     "",
 												acceptPatch:    "",
 											})
@@ -1422,7 +1462,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "POST",
-										allowedHeaders: rn51AllowedHeaders,
+										allowedHeaders: rn52AllowedHeaders,
 										acceptPost:     "application/json",
 										acceptPatch:    "",
 									})
@@ -1563,7 +1603,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "POST",
-									allowedHeaders: rn60AllowedHeaders,
+									allowedHeaders: rn61AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -2670,6 +2710,46 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 											break
 										}
 
+										if len(elem) == 0 {
+											break
+										}
+										switch elem[0] {
+										case 'c': // Prefix: "config"
+											origElem := elem
+											if l := len("config"); len(elem) >= l && elem[0:l] == "config" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch method {
+												case "GET":
+													r.name = GetSiteErrorConfigOperation
+													r.summary = "Get the per-site PHP error reporting config"
+													r.operationID = "getSiteErrorConfig"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/errors/config"
+													r.args = args
+													r.count = 1
+													return r, true
+												case "PATCH":
+													r.name = PatchSiteErrorConfigOperation
+													r.summary = "Save per-site PHP error reporting config and push to agent"
+													r.operationID = "patchSiteErrorConfig"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/errors/config"
+													r.args = args
+													r.count = 1
+													return r, true
+												default:
+													return
+												}
+											}
+
+											elem = origElem
+										}
 										// Param: "md5"
 										// Match until "/"
 										idx := strings.IndexByte(elem, '/')

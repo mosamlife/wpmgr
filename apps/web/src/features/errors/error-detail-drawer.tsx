@@ -13,8 +13,10 @@ import {
 import { DefinitionList, KvRow } from "@/components/shared/definition-list";
 import { relativeTime } from "@/lib/utils";
 import type { PhpError, PhpErrorFrame } from "@wpmgr/api";
+import { toast } from "@/components/toast/use-toast-helpers";
 
 import { PHPSeverityChip } from "./php-severity-chip";
+import { useErrorConfig, useUpdateErrorConfig } from "./use-error-config";
 
 // Detail drawer for one PHP error fingerprint (ADR-037 Batch 4, Impeccable
 // Restyle). The UI library ships no Sheet primitive yet, so we render the
@@ -32,18 +34,47 @@ import { PHPSeverityChip } from "./php-severity-chip";
 // capture sprint lands; the pre block is kept so the column is always present.
 
 export interface ErrorDetailDrawerProps {
+  siteId: string;
   error: PhpError | null;
   onClose: () => void;
   onSilence: (silenced: boolean) => void;
 }
 
 export function ErrorDetailDrawer({
+  siteId,
   error,
   onClose,
   onSilence,
 }: ErrorDetailDrawerProps) {
   const [copied, setCopied] = useState(false);
+  const { data: config } = useErrorConfig(siteId);
+  const updateConfig = useUpdateErrorConfig(siteId);
+
   if (!error) return null;
+
+  const isAlreadyIgnored = config?.ignore_md5s.includes(error.md5) ?? false;
+
+  function handleIgnore() {
+    if (!config) return;
+    const next = isAlreadyIgnored
+      ? config.ignore_md5s.filter((m) => m !== error!.md5)
+      : [...config.ignore_md5s, error!.md5];
+    updateConfig.mutate(
+      { error_level: config.error_level, ignore_md5s: next },
+      {
+        onSuccess: () => {
+          toast.success(
+            isAlreadyIgnored ? "Fingerprint removed from ignore-list." : "Fingerprint added to ignore-list.",
+            { description: isAlreadyIgnored ? "The agent will capture this error again." : "The agent will suppress this error fingerprint." },
+          );
+          onClose();
+        },
+        onError: (err: Error) => {
+          toast.error("Could not update ignore-list.", { description: err.message });
+        },
+      },
+    );
+  }
 
   const copy = () => {
     void navigator.clipboard.writeText(error.md5).then(() => {
@@ -164,6 +195,24 @@ export function ErrorDetailDrawer({
             onClick={() => onSilence(!error.silenced)}
           >
             {error.silenced ? "Unsilence" : "Silence"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleIgnore}
+            disabled={updateConfig.isPending || !config}
+            aria-busy={updateConfig.isPending}
+            title={
+              isAlreadyIgnored
+                ? "Remove this fingerprint from the agent ignore-list"
+                : "Add this fingerprint to the agent ignore-list (durable, survives restarts)"
+            }
+          >
+            {updateConfig.isPending
+              ? "Saving..."
+              : isAlreadyIgnored
+                ? "Unignore"
+                : "Ignore this error"}
           </Button>
           <Button type="button" onClick={onClose}>
             Close

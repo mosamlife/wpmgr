@@ -322,6 +322,19 @@ func (UnimplementedHandler) GetSiteDiagnostics(ctx context.Context, params GetSi
 	return r, ht.ErrNotImplemented
 }
 
+// GetSiteErrorConfig implements getSiteErrorConfig operation.
+//
+// Returns the site's PHP error-level mask and md5 ignore-list. When no
+// config row has been saved yet the defaults are returned: error_level=6143
+// (WordPress default E_ALL & ~E_STRICT) and an empty ignore_md5s list.
+// The config is pushed to the agent on each PATCH; this GET only reads
+// the CP-side stored value.
+//
+// GET /api/v1/sites/{siteId}/errors/config
+func (UnimplementedHandler) GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (r GetSiteErrorConfigRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetSiteUptime implements getSiteUptime operation.
 //
 // Returns the uptime % and average latency for a site over the requested
@@ -505,6 +518,28 @@ func (UnimplementedHandler) OidcCallback(ctx context.Context, params OidcCallbac
 //
 // GET /auth/oidc/login
 func (UnimplementedHandler) OidcLogin(ctx context.Context) (r OidcLoginRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// PatchSiteErrorConfig implements patchSiteErrorConfig operation.
+//
+// Stores the PHP error-level mask and md5 ignore-list for the site, then
+// pushes the new config to the agent via a signed `sync_error_config`
+// command. Returns the stored config on success.
+// Validation:
+// - `error_level` must be a positive integer that fits in int32 (>0,
+// ≤2147483647). Typical values: 6143 (WP default), 32767 (E_ALL),
+// 0x7FFFFFFF (all flags set).
+// - Each entry in `ignore_md5s` must be exactly 32 lowercase hex
+// characters (the md5(code:file:line:message) fingerprint produced
+// by the agent).
+// If the agent push fails after the config is successfully stored the
+// response is still HTTP 200 with the stored config; an
+// `X-Agent-Push-Warning` response header carries the push error message
+// so the UI can surface it as a non-blocking warning.
+//
+// PATCH /api/v1/sites/{siteId}/errors/config
+func (UnimplementedHandler) PatchSiteErrorConfig(ctx context.Context, req *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (r PatchSiteErrorConfigRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

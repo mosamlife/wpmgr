@@ -1606,6 +1606,81 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  # ── S1.2 PHP-error ignore-list + error-level config ─────────────────────────
+  /api/v1/sites/{siteId}/errors/config:
+    get:
+      operationId: getSiteErrorConfig
+      summary: Get the per-site PHP error reporting config
+      description: |
+        Returns the site's PHP error-level mask and md5 ignore-list. When no
+        config row has been saved yet the defaults are returned: error_level=6143
+        (WordPress default E_ALL & ~E_STRICT) and an empty ignore_md5s list.
+        The config is pushed to the agent on each PATCH; this GET only reads
+        the CP-side stored value.
+      tags: [diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Error config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteErrorConfig"
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: patchSiteErrorConfig
+      summary: Save per-site PHP error reporting config and push to agent
+      description: |
+        Stores the PHP error-level mask and md5 ignore-list for the site, then
+        pushes the new config to the agent via a signed `sync_error_config`
+        command. Returns the stored config on success.
+
+        Validation:
+          - `error_level` must be a positive integer that fits in int32 (>0,
+            ≤2147483647). Typical values: 6143 (WP default), 32767 (E_ALL),
+            0x7FFFFFFF (all flags set).
+          - Each entry in `ignore_md5s` must be exactly 32 lowercase hex
+            characters (the md5(code:file:line:message) fingerprint produced
+            by the agent).
+
+        If the agent push fails after the config is successfully stored the
+        response is still HTTP 200 with the stored config; an
+        `X-Agent-Push-Warning` response header carries the push error message
+        so the UI can surface it as a non-blocking warning.
+      tags: [diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteErrorConfigUpdate"
+      responses:
+        "200":
+          description: Config stored (and pushed to agent unless the push failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteErrorConfig"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   # ── ADR-037 Sprint 3 — WordPress activity log (tamper-evident) ──────────────
   /api/v1/sites/{siteId}/activity:
     get:
@@ -3353,6 +3428,45 @@ components:
           type: boolean
           default: true
           description: Whether to silence (default true).
+    # ── S1.2 PHP-error ignore-list + error-level config ────────────────────
+    SiteErrorConfig:
+      type: object
+      required:
+        - error_level
+        - ignore_md5s
+      properties:
+        error_level:
+          type: integer
+          format: int32
+          description: |
+            PHP E_* bitmask the agent applies to wp_debug_log collection.
+            Default 6143 = E_ALL & ~E_STRICT (WordPress default).
+        ignore_md5s:
+          type: array
+          description: |
+            Ordered list of 32-character lowercase hex md5 fingerprints
+            (md5(code:file:line:message)) the agent must suppress without
+            counting or reporting. An empty list clears all suppression.
+          items:
+            type: string
+    SiteErrorConfigUpdate:
+      type: object
+      required:
+        - error_level
+        - ignore_md5s
+      properties:
+        error_level:
+          type: integer
+          format: int32
+          description: |
+            PHP E_* bitmask to apply. Must be >0 and fit in int32.
+        ignore_md5s:
+          type: array
+          description: |
+            Full canonical ignore-list (replaces the stored list atomically).
+            Each entry must be exactly 32 lowercase hex characters.
+          items:
+            type: string
     # ── ADR-037 Sprint 3 — WordPress activity log ──────────────────────────
     SiteActivityEvent:
       type: object

@@ -93,6 +93,10 @@ type GetSiteDiagnosticsRes interface {
 	getSiteDiagnosticsRes()
 }
 
+type GetSiteErrorConfigRes interface {
+	getSiteErrorConfigRes()
+}
+
 type GetSiteRes interface {
 	getSiteRes()
 }
@@ -143,6 +147,10 @@ type OidcCallbackRes interface {
 
 type OidcLoginRes interface {
 	oidcLoginRes()
+}
+
+type PatchSiteErrorConfigRes interface {
+	patchSiteErrorConfigRes()
 }
 
 type PutAlertConfigRes interface {

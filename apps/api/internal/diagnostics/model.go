@@ -111,6 +111,20 @@ type PHPError struct {
 	UpdatedAt       time.Time
 }
 
+// ErrorConfig is the per-site PHP error reporting configuration stored in
+// site_error_config and pushed to the agent via the sync_error_config command.
+//
+// ErrorLevel is the PHP E_* bitmask (e.g. 6143 = E_ALL & ~E_STRICT, the WP
+// default). IgnoreMD5s is the ordered list of md5 fingerprints the agent must
+// suppress without counting or reporting. An empty list clears all suppression.
+type ErrorConfig struct {
+	TenantID   uuid.UUID
+	SiteID     uuid.UUID
+	ErrorLevel int
+	IgnoreMD5s []string
+	UpdatedAt  time.Time
+}
+
 // ValidCategory reports whether c is one of the known buckets (14 legacy
 // WPMgr-extra categories + the v0.9.14 `wp_native` full Site-Health dump).
 func ValidCategory(c Category) bool {

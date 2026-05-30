@@ -259,6 +259,16 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/diagnostics
 	GetSiteDiagnostics(ctx context.Context, params GetSiteDiagnosticsParams) (GetSiteDiagnosticsRes, error)
+	// GetSiteErrorConfig invokes getSiteErrorConfig operation.
+	//
+	// Returns the site's PHP error-level mask and md5 ignore-list. When no
+	// config row has been saved yet the defaults are returned: error_level=6143
+	// (WordPress default E_ALL & ~E_STRICT) and an empty ignore_md5s list.
+	// The config is pushed to the agent on each PATCH; this GET only reads
+	// the CP-side stored value.
+	//
+	// GET /api/v1/sites/{siteId}/errors/config
+	GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error)
 	// GetSiteUptime invokes getSiteUptime operation.
 	//
 	// Returns the uptime % and average latency for a site over the requested
@@ -388,6 +398,25 @@ type Invoker interface {
 	//
 	// GET /auth/oidc/login
 	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	// PatchSiteErrorConfig invokes patchSiteErrorConfig operation.
+	//
+	// Stores the PHP error-level mask and md5 ignore-list for the site, then
+	// pushes the new config to the agent via a signed `sync_error_config`
+	// command. Returns the stored config on success.
+	// Validation:
+	// - `error_level` must be a positive integer that fits in int32 (>0,
+	// ≤2147483647). Typical values: 6143 (WP default), 32767 (E_ALL),
+	// 0x7FFFFFFF (all flags set).
+	// - Each entry in `ignore_md5s` must be exactly 32 lowercase hex
+	// characters (the md5(code:file:line:message) fingerprint produced
+	// by the agent).
+	// If the agent push fails after the config is successfully stored the
+	// response is still HTTP 200 with the stored config; an
+	// `X-Agent-Push-Warning` response header carries the push error message
+	// so the UI can surface it as a non-blocking warning.
+	//
+	// PATCH /api/v1/sites/{siteId}/errors/config
+	PatchSiteErrorConfig(ctx context.Context, request *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (PatchSiteErrorConfigRes, error)
 	// PutAlertConfig invokes putAlertConfig operation.
 	//
 	// Sets the email recipients, webhook URL + signing secret, and enabled flag
@@ -2938,6 +2967,103 @@ func (c *Client) sendGetSiteDiagnostics(ctx context.Context, params GetSiteDiagn
 	return result, nil
 }
 
+// GetSiteErrorConfig invokes getSiteErrorConfig operation.
+//
+// Returns the site's PHP error-level mask and md5 ignore-list. When no
+// config row has been saved yet the defaults are returned: error_level=6143
+// (WordPress default E_ALL & ~E_STRICT) and an empty ignore_md5s list.
+// The config is pushed to the agent on each PATCH; this GET only reads
+// the CP-side stored value.
+//
+// GET /api/v1/sites/{siteId}/errors/config
+func (c *Client) GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error) {
+	res, err := c.sendGetSiteErrorConfig(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (res GetSiteErrorConfigRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteErrorConfig"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/errors/config"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteErrorConfigOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/errors/config"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteErrorConfigResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSiteUptime invokes getSiteUptime operation.
 //
 // Returns the uptime % and average latency for a site over the requested
@@ -5026,6 +5152,115 @@ func (c *Client) sendOidcLogin(ctx context.Context) (res OidcLoginRes, err error
 
 	stage = "DecodeResponse"
 	result, err := decodeOidcLoginResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PatchSiteErrorConfig invokes patchSiteErrorConfig operation.
+//
+// Stores the PHP error-level mask and md5 ignore-list for the site, then
+// pushes the new config to the agent via a signed `sync_error_config`
+// command. Returns the stored config on success.
+// Validation:
+// - `error_level` must be a positive integer that fits in int32 (>0,
+// ≤2147483647). Typical values: 6143 (WP default), 32767 (E_ALL),
+// 0x7FFFFFFF (all flags set).
+// - Each entry in `ignore_md5s` must be exactly 32 lowercase hex
+// characters (the md5(code:file:line:message) fingerprint produced
+// by the agent).
+// If the agent push fails after the config is successfully stored the
+// response is still HTTP 200 with the stored config; an
+// `X-Agent-Push-Warning` response header carries the push error message
+// so the UI can surface it as a non-blocking warning.
+//
+// PATCH /api/v1/sites/{siteId}/errors/config
+func (c *Client) PatchSiteErrorConfig(ctx context.Context, request *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (PatchSiteErrorConfigRes, error) {
+	res, err := c.sendPatchSiteErrorConfig(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPatchSiteErrorConfig(ctx context.Context, request *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (res PatchSiteErrorConfigRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("patchSiteErrorConfig"),
+		semconv.HTTPRequestMethodKey.String("PATCH"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/errors/config"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PatchSiteErrorConfigOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/errors/config"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PATCH", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePatchSiteErrorConfigRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodePatchSiteErrorConfigResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
