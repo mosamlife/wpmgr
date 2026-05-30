@@ -2086,6 +2086,7 @@ func (*Error) logoutRes()                  {}
 func (*Error) oidcLoginRes()               {}
 func (*Error) putAlertConfigRes()          {}
 func (*Error) putBackupScheduleRes()       {}
+func (*Error) putSiteLoginBrandRes()       {}
 func (*Error) putSiteLoginProtectionRes()  {}
 func (*Error) refreshSiteDiagnosticsRes()  {}
 func (*Error) setSiteTagsRes()             {}
@@ -6673,6 +6674,103 @@ func (s *SiteList) GetItems() []Site {
 // SetItems sets the value of Items.
 func (s *SiteList) SetItems(val []Site) {
 	s.Items = val
+}
+
+// Ref: #/components/schemas/SiteLoginBrand
+type SiteLoginBrand struct {
+	// Full URL of the image shown on the WP login page. Empty string
+	// means no override (WordPress default logo is used).
+	LogoURL string `json:"logo_url"`
+	// URL the logo links to on the login page. Empty string means no
+	// override (WordPress default link is used).
+	LogoLink string `json:"logo_link"`
+	// Text shown below the logo on the login page. Empty string means
+	// no custom message. Maximum 2000 characters.
+	Message string `json:"message"`
+	// When the config was last saved. Absent for the built-in default.
+	UpdatedAt OptDateTime `json:"updated_at"`
+}
+
+// GetLogoURL returns the value of LogoURL.
+func (s *SiteLoginBrand) GetLogoURL() string {
+	return s.LogoURL
+}
+
+// GetLogoLink returns the value of LogoLink.
+func (s *SiteLoginBrand) GetLogoLink() string {
+	return s.LogoLink
+}
+
+// GetMessage returns the value of Message.
+func (s *SiteLoginBrand) GetMessage() string {
+	return s.Message
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SiteLoginBrand) GetUpdatedAt() OptDateTime {
+	return s.UpdatedAt
+}
+
+// SetLogoURL sets the value of LogoURL.
+func (s *SiteLoginBrand) SetLogoURL(val string) {
+	s.LogoURL = val
+}
+
+// SetLogoLink sets the value of LogoLink.
+func (s *SiteLoginBrand) SetLogoLink(val string) {
+	s.LogoLink = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SiteLoginBrand) SetMessage(val string) {
+	s.Message = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SiteLoginBrand) SetUpdatedAt(val OptDateTime) {
+	s.UpdatedAt = val
+}
+
+func (*SiteLoginBrand) putSiteLoginBrandRes() {}
+
+// Ref: #/components/schemas/SiteLoginBrandUpdate
+type SiteLoginBrandUpdate struct {
+	// Full http/https URL of the login logo image, or `""` to clear.
+	LogoURL string `json:"logo_url"`
+	// Http/https URL the login logo links to, or `""` to clear.
+	LogoLink string `json:"logo_link"`
+	// Text shown below the login logo (max 2000 chars), or `""` to clear.
+	Message string `json:"message"`
+}
+
+// GetLogoURL returns the value of LogoURL.
+func (s *SiteLoginBrandUpdate) GetLogoURL() string {
+	return s.LogoURL
+}
+
+// GetLogoLink returns the value of LogoLink.
+func (s *SiteLoginBrandUpdate) GetLogoLink() string {
+	return s.LogoLink
+}
+
+// GetMessage returns the value of Message.
+func (s *SiteLoginBrandUpdate) GetMessage() string {
+	return s.Message
+}
+
+// SetLogoURL sets the value of LogoURL.
+func (s *SiteLoginBrandUpdate) SetLogoURL(val string) {
+	s.LogoURL = val
+}
+
+// SetLogoLink sets the value of LogoLink.
+func (s *SiteLoginBrandUpdate) SetLogoLink(val string) {
+	s.LogoLink = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SiteLoginBrandUpdate) SetMessage(val string) {
+	s.Message = val
 }
 
 // Ref: #/components/schemas/SiteLoginEvent

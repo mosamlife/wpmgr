@@ -1292,6 +1292,49 @@ export type SiteLoginEventList = {
   items: Array<SiteLoginEvent>;
 };
 
+export type SiteLoginBrand = {
+  /**
+   * Full URL of the image shown on the WP login page. Empty string
+   * means no override (WordPress default logo is used).
+   *
+   */
+  logo_url: string;
+  /**
+   * URL the logo links to on the login page. Empty string means no
+   * override (WordPress default link is used).
+   *
+   */
+  logo_link: string;
+  /**
+   * Text shown below the logo on the login page. Empty string means
+   * no custom message. Maximum 2000 characters.
+   *
+   */
+  message: string;
+  /**
+   * When the config was last saved. Absent for the built-in default.
+   */
+  updated_at?: string;
+};
+
+export type SiteLoginBrandUpdate = {
+  /**
+   * Full http/https URL of the login logo image, or `""` to clear.
+   *
+   */
+  logo_url: string;
+  /**
+   * http/https URL the login logo links to, or `""` to clear.
+   *
+   */
+  logo_link: string;
+  /**
+   * Text shown below the login logo (max 2000 chars), or `""` to clear.
+   *
+   */
+  message: string;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -3213,3 +3256,51 @@ export type ListSiteLoginEventsResponses = {
 
 export type ListSiteLoginEventsResponse =
   ListSiteLoginEventsResponses[keyof ListSiteLoginEventsResponses];
+
+export type GetSiteLoginBrandData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/login-brand";
+};
+
+export type GetSiteLoginBrandResponses = {
+  /**
+   * Current login brand config
+   */
+  200: SiteLoginBrand;
+};
+
+export type GetSiteLoginBrandResponse =
+  GetSiteLoginBrandResponses[keyof GetSiteLoginBrandResponses];
+
+export type PutSiteLoginBrandData = {
+  body: SiteLoginBrandUpdate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/login-brand";
+};
+
+export type PutSiteLoginBrandErrors = {
+  /**
+   * Validation error (invalid URL scheme or message too long)
+   */
+  422: Error;
+};
+
+export type PutSiteLoginBrandError =
+  PutSiteLoginBrandErrors[keyof PutSiteLoginBrandErrors];
+
+export type PutSiteLoginBrandResponses = {
+  /**
+   * Stored login brand config
+   */
+  200: SiteLoginBrand;
+};
+
+export type PutSiteLoginBrandResponse =
+  PutSiteLoginBrandResponses[keyof PutSiteLoginBrandResponses];

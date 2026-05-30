@@ -24,14 +24,17 @@ use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Commands\RefreshInventoryCommand;
 use WPMgr\Agent\Commands\RestoreCommand;
 use WPMgr\Agent\Commands\RollbackCommand;
+use WPMgr\Agent\Commands\GetFileCommand;
 use WPMgr\Agent\Commands\ScanCommand;
 use WPMgr\Agent\Commands\SyncErrorConfigCommand;
+use WPMgr\Agent\Commands\SyncLoginBrandCommand;
 use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
 use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ErrorMonitor;
+use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\MuPluginInstaller;
 
@@ -111,6 +114,13 @@ final class Plugin
     private LoginProtection $loginProtection;
 
     /**
+     * Login Whitelabel — cosmetic login-page branding pushed from the CP.
+     * Applies logo, logo link, and a short message to wp-login.php via WP
+     * hooks when at least one brand field is non-empty.
+     */
+    private LoginBrand $loginBrand;
+
+    /**
      * Private constructor wires the object graph.
      */
     private function __construct()
@@ -143,6 +153,9 @@ final class Plugin
         // The ActivityLog is passed so block events are emitted as structured
         // activity rows for free (CP alerting picks them up on the next ship).
         $this->loginProtection = new LoginProtection($this->activityLog);
+        // Login Whitelabel — cosmetic branding pushed from the CP. No external
+        // dependencies; constructed here so sync_login_brand can hold a reference.
+        $this->loginBrand = new LoginBrand();
 
         $this->router           = new Router($this->connector, $this->commands());
         $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore);
@@ -280,6 +293,11 @@ final class Plugin
         if ($this->loginProtection->isEnabled()) {
             $this->muInstaller->installWaf();
         }
+
+        // Login Whitelabel — bind login_head/login_headerurl/login_message hooks
+        // only when at least one brand field is non-empty (self-gating). The
+        // call is idempotent (static guard inside LoginBrand::install).
+        $this->loginBrand->install();
 
         if (function_exists('is_admin') && is_admin()) {
             $this->admin->registerHooks();
@@ -520,6 +538,11 @@ final class Plugin
             new UpdateCommand(),
             new RollbackCommand(),
             new ScanCommand(),
+            // S3 — on-demand single-file fetch for scan findings inspection.
+            // The CP only calls this for a path already stored as a finding
+            // (server-side guard); agent enforces containment + dir/symlink/
+            // size guards here independently.
+            new GetFileCommand(),
             new MetadataCommand($ageIdentity),
             // v0.9.0 — on-demand refresh: re-poll WP update transients and
             // immediately push fresh metadata so the dashboard can render
@@ -550,6 +573,10 @@ final class Plugin
             // S2 — IP unblock. The CP sends a single IP; LoginProtection::unblockIp
             // deletes its failure rows so the failure counter resets to zero.
             new UnblockIpCommand($this->loginProtection),
+            // Login Whitelabel — cosmetic branding sync. The CP pushes logo_url,
+            // logo_link, and message; LoginBrand::applyConfig validates and writes
+            // wpmgr_login_brand; the login-page hooks pick it up on next request.
+            new SyncLoginBrandCommand($this->loginBrand),
         ];
     }
 

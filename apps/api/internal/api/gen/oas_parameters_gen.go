@@ -1032,6 +1032,71 @@ func decodeGetSiteErrorConfigParams(args [1]string, argsEscaped bool, r *http.Re
 	return params, nil
 }
 
+// GetSiteLoginBrandParams is parameters of getSiteLoginBrand operation.
+type GetSiteLoginBrandParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetSiteLoginBrandParams(packed middleware.Parameters) (params GetSiteLoginBrandParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetSiteLoginBrandParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteLoginBrandParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetSiteLoginProtectionParams is parameters of getSiteLoginProtection operation.
 type GetSiteLoginProtectionParams struct {
 	SiteId uuid.UUID
@@ -4020,6 +4085,71 @@ func unpackPutBackupScheduleParams(packed middleware.Parameters) (params PutBack
 }
 
 func decodePutBackupScheduleParams(args [1]string, argsEscaped bool, r *http.Request) (params PutBackupScheduleParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// PutSiteLoginBrandParams is parameters of putSiteLoginBrand operation.
+type PutSiteLoginBrandParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackPutSiteLoginBrandParams(packed middleware.Parameters) (params PutSiteLoginBrandParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodePutSiteLoginBrandParams(args [1]string, argsEscaped bool, r *http.Request) (params PutSiteLoginBrandParams, _ error) {
 	// Decode path: siteId.
 	if err := func() error {
 		param := args[0]

@@ -84,6 +84,9 @@ export {
   putSiteLoginProtection,
   unblockSiteIp,
   listSiteLoginEvents,
+  // login whitelabel (M14)
+  getSiteLoginBrand,
+  putSiteLoginBrand,
 } from "./generated/sdk.gen";
 
 // --- Domain + request/response types ----------------------------------------
@@ -254,4 +257,11 @@ export type {
   UnblockSiteIpResponse,
   ListSiteLoginEventsData,
   ListSiteLoginEventsResponse,
+  // login whitelabel (M14)
+  SiteLoginBrand,
+  SiteLoginBrandUpdate,
+  GetSiteLoginBrandData,
+  GetSiteLoginBrandResponse,
+  PutSiteLoginBrandData,
+  PutSiteLoginBrandResponse,
 } from "./generated/types.gen";

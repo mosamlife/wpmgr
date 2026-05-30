@@ -11,6 +11,8 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
+	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
 	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
@@ -234,6 +236,50 @@ func (a *securitySiteAdapter) GetSiteURL(ctx context.Context, tenantID, siteID u
 }
 
 var _ security.SiteLookup = (*securitySiteAdapter)(nil)
+
+// loginBrandSiteAdapter resolves a site's agent URL for the loginbrand service
+// (M14 Login Whitelabel). Keeps the loginbrand package free of a site import.
+type loginBrandSiteAdapter struct {
+	svc *site.Service
+}
+
+func newLoginBrandSiteAdapter(svc *site.Service) *loginBrandSiteAdapter {
+	return &loginBrandSiteAdapter{svc: svc}
+}
+
+func (a *loginBrandSiteAdapter) GetSiteURL(ctx context.Context, tenantID, siteID uuid.UUID) (string, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return "", err
+	}
+	return s.URL, nil
+}
+
+var _ loginbrand.SiteLookup = (*loginBrandSiteAdapter)(nil)
+
+// scanSiteAdapter resolves site info for the scan domain (agent URL +
+// wp_version). Keeps the scan package free of a site import.
+type scanSiteAdapter struct {
+	svc *site.Service
+}
+
+func newScanSiteAdapter(svc *site.Service) *scanSiteAdapter {
+	return &scanSiteAdapter{svc: svc}
+}
+
+func (a *scanSiteAdapter) GetScanSiteInfo(ctx context.Context, tenantID, siteID uuid.UUID) (scan.ScanSiteInfo, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return scan.ScanSiteInfo{}, err
+	}
+	return scan.ScanSiteInfo{
+		URL:       s.URL,
+		WPVersion: s.WPVersion,
+		Enrolled:  s.EnrolledAt != nil,
+	}, nil
+}
+
+var _ scan.SiteLookup = (*scanSiteAdapter)(nil)
 
 // activitySecurityAlerter is the seam between the activity log and the EXISTING
 // uptime alert Dispatcher (ADR-037 Sprint 3): a high-severity activity event

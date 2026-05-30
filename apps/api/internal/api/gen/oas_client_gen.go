@@ -269,6 +269,15 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/errors/config
 	GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error)
+	// GetSiteLoginBrand invokes getSiteLoginBrand operation.
+	//
+	// Returns the current login brand config (logo URL, logo link, message)
+	// for the site. When no config has been saved yet, returns the all-empty
+	// default (all string fields are `""`), which the agent interprets as
+	// "no override" (WordPress built-in login logo / no custom message).
+	//
+	// GET /api/v1/sites/{siteId}/login-brand
+	GetSiteLoginBrand(ctx context.Context, params GetSiteLoginBrandParams) (*SiteLoginBrand, error)
 	// GetSiteLoginProtection invokes getSiteLoginProtection operation.
 	//
 	// Returns the current login-protection mode, brute-force thresholds, IP
@@ -448,6 +457,21 @@ type Invoker interface {
 	//
 	// PUT /api/v1/sites/{siteId}/backup-schedule
 	PutBackupSchedule(ctx context.Context, request *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
+	// PutSiteLoginBrand invokes putSiteLoginBrand operation.
+	//
+	// Stores the new login brand config and pushes it to the agent via the
+	// signed `sync_login_brand` command. If the agent push fails after a
+	// successful store, HTTP 200 is still returned with the stored config;
+	// the push error is surfaced in the `X-Agent-Push-Warning` response
+	// header so callers can surface it as a non-blocking warning.
+	// **Validation**:
+	// - `logo_url` and `logo_link` must be empty (`""`) or a valid
+	// `http`/`https` URL (other schemes are rejected with 422).
+	// - `message` must be at most 2000 characters.
+	// - All fields are optional; omitted or `""` fields mean "no override".
+	//
+	// PUT /api/v1/sites/{siteId}/login-brand
+	PutSiteLoginBrand(ctx context.Context, request *SiteLoginBrandUpdate, params PutSiteLoginBrandParams) (PutSiteLoginBrandRes, error)
 	// PutSiteLoginProtection invokes putSiteLoginProtection operation.
 	//
 	// Stores the new config and pushes it to the agent via the signed
@@ -3105,6 +3129,102 @@ func (c *Client) sendGetSiteErrorConfig(ctx context.Context, params GetSiteError
 	return result, nil
 }
 
+// GetSiteLoginBrand invokes getSiteLoginBrand operation.
+//
+// Returns the current login brand config (logo URL, logo link, message)
+// for the site. When no config has been saved yet, returns the all-empty
+// default (all string fields are `""`), which the agent interprets as
+// "no override" (WordPress built-in login logo / no custom message).
+//
+// GET /api/v1/sites/{siteId}/login-brand
+func (c *Client) GetSiteLoginBrand(ctx context.Context, params GetSiteLoginBrandParams) (*SiteLoginBrand, error) {
+	res, err := c.sendGetSiteLoginBrand(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteLoginBrand(ctx context.Context, params GetSiteLoginBrandParams) (res *SiteLoginBrand, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteLoginBrand"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/login-brand"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteLoginBrandOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/login-brand"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteLoginBrandResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSiteLoginProtection invokes getSiteLoginProtection operation.
 //
 // Returns the current login-protection mode, brute-force thresholds, IP
@@ -5706,6 +5826,111 @@ func (c *Client) sendPutBackupSchedule(ctx context.Context, request *BackupSched
 
 	stage = "DecodeResponse"
 	result, err := decodePutBackupScheduleResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PutSiteLoginBrand invokes putSiteLoginBrand operation.
+//
+// Stores the new login brand config and pushes it to the agent via the
+// signed `sync_login_brand` command. If the agent push fails after a
+// successful store, HTTP 200 is still returned with the stored config;
+// the push error is surfaced in the `X-Agent-Push-Warning` response
+// header so callers can surface it as a non-blocking warning.
+// **Validation**:
+// - `logo_url` and `logo_link` must be empty (`""`) or a valid
+// `http`/`https` URL (other schemes are rejected with 422).
+// - `message` must be at most 2000 characters.
+// - All fields are optional; omitted or `""` fields mean "no override".
+//
+// PUT /api/v1/sites/{siteId}/login-brand
+func (c *Client) PutSiteLoginBrand(ctx context.Context, request *SiteLoginBrandUpdate, params PutSiteLoginBrandParams) (PutSiteLoginBrandRes, error) {
+	res, err := c.sendPutSiteLoginBrand(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPutSiteLoginBrand(ctx context.Context, request *SiteLoginBrandUpdate, params PutSiteLoginBrandParams) (res PutSiteLoginBrandRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("putSiteLoginBrand"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/login-brand"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PutSiteLoginBrandOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/login-brand"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePutSiteLoginBrandRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodePutSiteLoginBrandResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

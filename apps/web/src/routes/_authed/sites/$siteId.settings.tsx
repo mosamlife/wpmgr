@@ -5,6 +5,7 @@ import { SiteComponentsTable } from "@/features/sites/site-components-table";
 import { countUpToDate } from "@/features/sites/site-components-helpers";
 import { SiteTagsEditor } from "@/features/sites/site-tags-editor";
 import { AutoLoginButton } from "@/features/sites/auto-login-button";
+import { LoginBrandPanel } from "@/features/sites/login-brand-panel";
 import { useSite } from "@/features/sites/use-sites";
 import { useMe, canOperate } from "@/features/auth/use-auth";
 import type { Site } from "@wpmgr/api";
@@ -135,6 +136,16 @@ function SettingsCard({
           action to the audit trail.
         </p>
         <AutoLoginButton siteId={site.id} siteName={site.name} />
+      </div>
+      <hr className="border-border" aria-hidden="true" />
+      <div className="space-y-3 p-6">
+        <h3 className="text-sm font-semibold text-foreground">
+          Login page branding
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Customise the logo, logo link, and message shown on wp-login.php.
+        </p>
+        <LoginBrandPanel siteId={site.id} />
       </div>
     </div>
   );

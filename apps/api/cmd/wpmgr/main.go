@@ -33,8 +33,10 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
+	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
+	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
 	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
@@ -419,6 +421,25 @@ func run() error {
 	// runs once per hour sweeping rows older than 30 days.
 	phpErrorsGCWorker := diagnostics.NewErrorsGCWorker(diagnosticsRepo, 30*24*time.Hour, logger)
 
+	// S3 — Malware / File-Integrity Scan. Workers are built here (before River)
+	// with a nil enqueuer; the enqueuer is wired post-River-start via SetEnqueuer
+	// so the worker can re-enqueue partial iterations using the started River client.
+	scanRepo := scan.NewRepo(pool)
+	scanSvc := scan.NewService(scanRepo, auditRec)
+	scanH := scan.NewHandler(scanSvc)
+	scanChecksums := scan.NewChecksumProvider(scanRepo, ssrfClient)
+	scanSiteAdapter := newScanSiteAdapter(siteSvc)
+	var scanWorker *scan.ScanRunWorker
+	var scanHashGCWorker *scan.HashGCWorker
+	if scanCmd, ok := commander.(scan.AgentScanClient); ok {
+		scanWorker = scan.NewScanRunWorker(scanRepo, scanChecksums, scanCmd, scanSiteAdapter, nil, auditRec, logger)
+		scanHashGCWorker = scan.NewHashGCWorker(scanRepo, 24*time.Hour, logger)
+		scanSvc.SetAgentClient(scanCmd, scanSiteAdapter)
+		logger.Info("scan agent client wired")
+	} else {
+		logger.Warn("scan agent client not wired: CP->agent commander unavailable (signing key empty?)")
+	}
+
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
 		healthChecker:          healthChecker,
 		healthInterval:         cfg.Agent.HealthInterval,
@@ -436,6 +457,9 @@ func run() error {
 		uptimeWorker:           uptimeWorker,
 		probeInterval:          cfg.Uptime.ProbeInterval,
 		phpErrorsGCWorker:      phpErrorsGCWorker,
+		// S3 scan workers (nil when signing key is not configured).
+		scanRunWorker:    scanWorker,
+		scanHashGCWorker: scanHashGCWorker,
 	})
 	if err != nil {
 		return err
@@ -454,6 +478,16 @@ func run() error {
 	if backupSvc != nil {
 		backupSvc.SetEnqueuer(backup.NewRiverEnqueuer(riverClient))
 	}
+
+	// S3 scan: wire the River enqueuer into the service + worker now that River
+	// has started. The scan service needs it for StartRun; the worker needs it
+	// to re-enqueue partial iterations.
+	scanEnqueuer := scan.NewRiverEnqueuer(riverClient)
+	scanSvc.SetEnqueuer(scanEnqueuer)
+	if scanWorker != nil {
+		scanWorker.SetEnqueuer(scanEnqueuer)
+	}
+
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout)
 		defer cancel()
@@ -577,6 +611,21 @@ func run() error {
 		logger.Warn("security agent client not wired: CP->agent commander unavailable (signing key empty?)")
 	}
 
+	// M14 — Login Whitelabel. The loginbrand service stores per-site login brand
+	// config (logo URL, logo link, message) and pushes it to the agent via the
+	// signed `sync_login_brand` command. The agent client is wired when the
+	// commander supports the SyncLoginBrand method (every real-mode build does).
+	loginBrandRepo := loginbrand.NewRepo(pool)
+	loginBrandSvc := loginbrand.NewService(loginBrandRepo)
+	loginBrandH := loginbrand.NewHandler(loginBrandSvc, auditRec)
+	loginBrandSiteAdapter := newLoginBrandSiteAdapter(siteSvc)
+	if lbCmd, ok := commander.(loginbrand.AgentLoginBrandClient); ok {
+		loginBrandSvc.SetAgentClient(lbCmd, loginBrandSiteAdapter)
+		logger.Info("login brand agent client wired")
+	} else {
+		logger.Warn("login brand agent client not wired: CP->agent commander unavailable (signing key empty?)")
+	}
+
 	srv := server.New(server.Deps{
 		Config:          cfg,
 		Logger:          logger,
@@ -609,8 +658,12 @@ func run() error {
 		// S2 — Login Protection + IP store.
 		SecurityH:      securityH,
 		SecurityAgentH: securityAgentH,
-		ServiceName:     cfg.OTel.ServiceName,
-		Version:         version,
+		// M14 — Login Whitelabel.
+		LoginBrandH: loginBrandH,
+		// S3 — Malware / File-Integrity Scan.
+		ScanH:       scanH,
+		ServiceName: cfg.OTel.ServiceName,
+		Version:     version,
 	})
 
 	return srv.Run(ctx)
@@ -693,6 +746,9 @@ type riverDeps struct {
 	probeInterval          time.Duration
 	// S1.1 (D) — PHP-error retention GC. Always non-nil (wired unconditionally).
 	phpErrorsGCWorker *diagnostics.ErrorsGCWorker
+	// S3 — Malware / File-Integrity Scan workers (nil when signing key empty).
+	scanRunWorker    *scan.ScanRunWorker
+	scanHashGCWorker *scan.HashGCWorker
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -817,6 +873,22 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		))
 	}
 
+	// S3 — Malware / File-Integrity Scan. The scan_run worker drives the
+	// multi-step hash-streaming loop; the hash GC worker sweeps orphan
+	// staging rows every hour.
+	if d.scanRunWorker != nil {
+		river.AddWorker(workers, d.scanRunWorker)
+		queues[scan.ScanRunQueue] = river.QueueConfig{MaxWorkers: 4}
+	}
+	if d.scanHashGCWorker != nil {
+		river.AddWorker(workers, d.scanHashGCWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return scan.HashGCArgs{}, nil },
+			nil,
+		))
+	}
+
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Logger:       logger,
 		Queues:       queues,
@@ -870,6 +942,18 @@ func (disabledCommander) SyncSecurityConfig(_ context.Context, _ uuid.UUID, _ st
 
 func (disabledCommander) UnblockIP(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.UnblockIPRequest) (agentcmd.UnblockIPResult, error) {
 	return agentcmd.UnblockIPResult{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) SyncLoginBrand(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.LoginBrandRequest) (agentcmd.LoginBrandResult, error) {
+	return agentcmd.LoginBrandResult{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) Scan(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.ScanRequest) (agentcmd.ScanResponse, error) {
+	return agentcmd.ScanResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) GetFile(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.GetFileRequest) (agentcmd.GetFileResponse, error) {
+	return agentcmd.GetFileResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

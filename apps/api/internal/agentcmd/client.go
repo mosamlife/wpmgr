@@ -159,6 +159,49 @@ func (c *Client) UnblockIP(ctx context.Context, siteID uuid.UUID, siteURL string
 	return out, nil
 }
 
+// SyncLoginBrand sends the signed `sync_login_brand` command to the site's
+// agent, pushing the per-site login brand config (logo URL, logo link,
+// message). siteID is the target site's stable enrollment UUID, bound into the
+// JWT's aud claim. An ok=false response (with a 200 HTTP status) is treated as
+// an error with the agent's detail message.
+func (c *Client) SyncLoginBrand(ctx context.Context, siteID uuid.UUID, siteURL string, req LoginBrandRequest) (LoginBrandResult, error) {
+	var out LoginBrandResult
+	if err := c.post(ctx, siteID, siteURL, "sync_login_brand", req, &out); err != nil {
+		return LoginBrandResult{}, err
+	}
+	if !out.OK {
+		return out, fmt.Errorf("sync_login_brand rejected by agent: %s", out.Detail)
+	}
+	return out, nil
+}
+
+// Scan sends the signed `scan` command to the site's agent, which walks the
+// filesystem and returns an inline batch of file hashes. siteID is bound into
+// the JWT's aud claim. DoOnce is used because the JWT jti is single-use; River
+// retries with a fresh JWT. An old agent without the scan route returns a 404
+// which surfaces here as the canonical "status 404" error; the worker maps it
+// to "agent_too_old". The response body can be up to ~4 MiB (core ≈ 2.5k
+// files ≈ 225 KB; full-site batches fit within the configured 512-file cap).
+func (c *Client) Scan(ctx context.Context, siteID uuid.UUID, siteURL string, req ScanRequest) (ScanResponse, error) {
+	var out ScanResponse
+	if err := c.post(ctx, siteID, siteURL, "scan", req, &out); err != nil {
+		return ScanResponse{}, err
+	}
+	return out, nil
+}
+
+// GetFile sends the signed `get_file` command to the site's agent, fetching
+// up to max_bytes of a single file as base64. siteID is bound into the JWT's
+// aud claim. The CP only calls this for paths that are already stored findings
+// (server-side guard). DoOnce is used because the JWT jti is single-use.
+func (c *Client) GetFile(ctx context.Context, siteID uuid.UUID, siteURL string, req GetFileRequest) (GetFileResponse, error) {
+	var out GetFileResponse
+	if err := c.post(ctx, siteID, siteURL, "get_file", req, &out); err != nil {
+		return GetFileResponse{}, err
+	}
+	return out, nil
+}
+
 // Diagnostics sends the signed `diagnostics` command to the site's agent and
 // returns the RAW 14-category JSON body. siteID is bound into the JWT's aud
 // claim. Unlike the typed commands above, the response is NOT decoded into a

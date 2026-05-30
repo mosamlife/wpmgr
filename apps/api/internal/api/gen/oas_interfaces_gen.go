@@ -161,6 +161,10 @@ type PutBackupScheduleRes interface {
 	putBackupScheduleRes()
 }
 
+type PutSiteLoginBrandRes interface {
+	putSiteLoginBrandRes()
+}
+
 type PutSiteLoginProtectionRes interface {
 	putSiteLoginProtectionRes()
 }

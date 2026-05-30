@@ -2643,3 +2643,53 @@ export const SiteLoginEventListSchema = {
     },
   },
 } as const;
+
+export const SiteLoginBrandSchema = {
+  type: "object",
+  required: ["logo_url", "logo_link", "message"],
+  properties: {
+    logo_url: {
+      type: "string",
+      description:
+        "Full URL of the image shown on the WP login page. Empty string\nmeans no override (WordPress default logo is used).\n",
+    },
+    logo_link: {
+      type: "string",
+      description:
+        "URL the logo links to on the login page. Empty string means no\noverride (WordPress default link is used).\n",
+    },
+    message: {
+      type: "string",
+      description:
+        "Text shown below the logo on the login page. Empty string means\nno custom message. Maximum 2000 characters.\n",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "When the config was last saved. Absent for the built-in default.",
+    },
+  },
+} as const;
+
+export const SiteLoginBrandUpdateSchema = {
+  type: "object",
+  required: ["logo_url", "logo_link", "message"],
+  properties: {
+    logo_url: {
+      type: "string",
+      description:
+        'Full http/https URL of the login logo image, or `""` to clear.\n',
+    },
+    logo_link: {
+      type: "string",
+      description:
+        'http/https URL the login logo links to, or `""` to clear.\n',
+    },
+    message: {
+      type: "string",
+      description:
+        'Text shown below the login logo (max 2000 chars), or `""` to clear.\n',
+    },
+  },
+} as const;

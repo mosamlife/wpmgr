@@ -1889,6 +1889,63 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SiteLoginEventList"
+  # ── M14 Login Whitelabel ────────────────────────────────────────────────────
+  /api/v1/sites/{siteId}/login-brand:
+    get:
+      operationId: getSiteLoginBrand
+      summary: Get the login brand config for a site
+      description: |
+        Returns the current login brand config (logo URL, logo link, message)
+        for the site. When no config has been saved yet, returns the all-empty
+        default (all string fields are `""`), which the agent interprets as
+        "no override" (WordPress built-in login logo / no custom message).
+      tags: [loginbrand]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Current login brand config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteLoginBrand"
+    put:
+      operationId: putSiteLoginBrand
+      summary: Save (and push to agent) the login brand config
+      description: |
+        Stores the new login brand config and pushes it to the agent via the
+        signed `sync_login_brand` command. If the agent push fails after a
+        successful store, HTTP 200 is still returned with the stored config;
+        the push error is surfaced in the `X-Agent-Push-Warning` response
+        header so callers can surface it as a non-blocking warning.
+
+        **Validation**:
+          - `logo_url` and `logo_link` must be empty (`""`) or a valid
+            `http`/`https` URL (other schemes are rejected with 422).
+          - `message` must be at most 2000 characters.
+          - All fields are optional; omitted or `""` fields mean "no override".
+      tags: [loginbrand]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteLoginBrandUpdate"
+      responses:
+        "200":
+          description: Stored login brand config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteLoginBrand"
+        "422":
+          description: Validation error (invalid URL scheme or message too long)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     Limit:
@@ -3872,3 +3929,49 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SiteLoginEvent"
+    # ── M14 Login Whitelabel ─────────────────────────────────────────────────
+    SiteLoginBrand:
+      type: object
+      required:
+        - logo_url
+        - logo_link
+        - message
+      properties:
+        logo_url:
+          type: string
+          description: |
+            Full URL of the image shown on the WP login page. Empty string
+            means no override (WordPress default logo is used).
+        logo_link:
+          type: string
+          description: |
+            URL the logo links to on the login page. Empty string means no
+            override (WordPress default link is used).
+        message:
+          type: string
+          description: |
+            Text shown below the logo on the login page. Empty string means
+            no custom message. Maximum 2000 characters.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the config was last saved. Absent for the built-in default.
+    SiteLoginBrandUpdate:
+      type: object
+      required:
+        - logo_url
+        - logo_link
+        - message
+      properties:
+        logo_url:
+          type: string
+          description: |
+            Full http/https URL of the login logo image, or `""` to clear.
+        logo_link:
+          type: string
+          description: |
+            http/https URL the login logo links to, or `""` to clear.
+        message:
+          type: string
+          description: |
+            Text shown below the login logo (max 2000 chars), or `""` to clear.

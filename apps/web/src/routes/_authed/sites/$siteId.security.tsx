@@ -1,21 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ShieldOff } from "lucide-react";
-
-import { Button } from "@/components/ui/button";
 
 import { LoginProtectionPanel } from "@/features/security/login-protection-panel";
 import { LoginEventsTable } from "@/features/security/login-events-table";
+import { ScanPanel } from "@/features/security/scan-panel";
 
-// `/sites/$siteId/security` — two sections:
+// `/sites/$siteId/security` — three sections:
 //
-//   1. Login Protection (S2) — config panel + recent events table. This is the
-//      focus of this sprint. See features/security/ for data hooks and components.
+//   1. Login Protection (S2) — config panel + recent events table.
 //
-//   2. Vulnerabilities — scan stub (honest empty state, no fabricated data).
-//      Retained for future-sprint implementation. When the scan endpoint lands:
+//   2. Vulnerabilities — WPScan-based vuln scan (future sprint stub).
+//      Retained from prior batch. When the scan endpoint lands:
 //        - swap the empty state for an ErrorsTable-style table pattern
 //        - use VulnSeverityChip for severity cells
-//        - keep DefinitionList/KvRow for the detail drawer
+//
+//   3. Integrity scan (S3) — core file integrity scan using WordPress.org
+//      checksums. Powered by hand-rolled Gin endpoints (not in ogen client).
 
 export const Route = createFileRoute("/_authed/sites/$siteId/security")({
   component: SecurityTab,
@@ -64,31 +63,26 @@ function SecurityTab() {
           aria-label="No scan results yet"
           className="flex flex-col items-center gap-3 py-12 text-center"
         >
-          <ShieldOff
-            aria-hidden="true"
-            strokeWidth={1.5}
-            className="size-8 text-[var(--color-muted-foreground)]/50"
-          />
-          <div className="space-y-1">
-            <p className="text-balance text-sm font-medium text-[var(--color-foreground)]">
-              Not scanned yet.
-            </p>
-            <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
-              Run a scan to check plugins, themes, and WordPress core against the
-              WPScan database.
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled
-            aria-disabled="true"
-            title="Scan endpoint coming in a future release."
-          >
-            Run scan
-          </Button>
+          <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
+            Run a scan to check plugins, themes, and WordPress core against the
+            WPScan database.
+          </p>
         </div>
+      </section>
+
+      {/* ── Section 3: Integrity scan (S3) ── */}
+      <section
+        aria-labelledby="integrity-scan-heading"
+        className="px-6 pt-6 pb-8 space-y-4"
+      >
+        <h2
+          id="integrity-scan-heading"
+          className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+        >
+          Integrity scan
+        </h2>
+
+        <ScanPanel siteId={siteId} />
       </section>
     </div>
   );

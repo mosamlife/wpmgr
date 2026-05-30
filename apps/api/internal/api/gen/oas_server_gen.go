@@ -249,6 +249,15 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/errors/config
 	GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error)
+	// GetSiteLoginBrand implements getSiteLoginBrand operation.
+	//
+	// Returns the current login brand config (logo URL, logo link, message)
+	// for the site. When no config has been saved yet, returns the all-empty
+	// default (all string fields are `""`), which the agent interprets as
+	// "no override" (WordPress built-in login logo / no custom message).
+	//
+	// GET /api/v1/sites/{siteId}/login-brand
+	GetSiteLoginBrand(ctx context.Context, params GetSiteLoginBrandParams) (*SiteLoginBrand, error)
 	// GetSiteLoginProtection implements getSiteLoginProtection operation.
 	//
 	// Returns the current login-protection mode, brute-force thresholds, IP
@@ -428,6 +437,21 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/backup-schedule
 	PutBackupSchedule(ctx context.Context, req *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
+	// PutSiteLoginBrand implements putSiteLoginBrand operation.
+	//
+	// Stores the new login brand config and pushes it to the agent via the
+	// signed `sync_login_brand` command. If the agent push fails after a
+	// successful store, HTTP 200 is still returned with the stored config;
+	// the push error is surfaced in the `X-Agent-Push-Warning` response
+	// header so callers can surface it as a non-blocking warning.
+	// **Validation**:
+	// - `logo_url` and `logo_link` must be empty (`""`) or a valid
+	// `http`/`https` URL (other schemes are rejected with 422).
+	// - `message` must be at most 2000 characters.
+	// - All fields are optional; omitted or `""` fields mean "no override".
+	//
+	// PUT /api/v1/sites/{siteId}/login-brand
+	PutSiteLoginBrand(ctx context.Context, req *SiteLoginBrandUpdate, params PutSiteLoginBrandParams) (PutSiteLoginBrandRes, error)
 	// PutSiteLoginProtection implements putSiteLoginProtection operation.
 	//
 	// Stores the new config and pushes it to the agent via the signed

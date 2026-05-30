@@ -81,6 +81,8 @@ import type {
   GetSiteErrorConfigErrors,
   GetSiteErrorConfigResponses,
   GetSiteErrors,
+  GetSiteLoginBrandData,
+  GetSiteLoginBrandResponses,
   GetSiteLoginProtectionData,
   GetSiteLoginProtectionResponses,
   GetSiteResponses,
@@ -144,6 +146,9 @@ import type {
   PutBackupScheduleData,
   PutBackupScheduleErrors,
   PutBackupScheduleResponses,
+  PutSiteLoginBrandData,
+  PutSiteLoginBrandErrors,
+  PutSiteLoginBrandResponses,
   PutSiteLoginProtectionData,
   PutSiteLoginProtectionErrors,
   PutSiteLoginProtectionResponses,
@@ -1418,3 +1423,53 @@ export const listSiteLoginEvents = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: "/api/v1/sites/{siteId}/security/login-events", ...options });
+
+/**
+ * Get the login brand config for a site
+ *
+ * Returns the current login brand config (logo URL, logo link, message)
+ * for the site. When no config has been saved yet, returns the all-empty
+ * default (all string fields are `""`), which the agent interprets as
+ * "no override" (WordPress built-in login logo / no custom message).
+ *
+ */
+export const getSiteLoginBrand = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteLoginBrandData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteLoginBrandResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/login-brand", ...options });
+
+/**
+ * Save (and push to agent) the login brand config
+ *
+ * Stores the new login brand config and pushes it to the agent via the
+ * signed `sync_login_brand` command. If the agent push fails after a
+ * successful store, HTTP 200 is still returned with the stored config;
+ * the push error is surfaced in the `X-Agent-Push-Warning` response
+ * header so callers can surface it as a non-blocking warning.
+ *
+ * **Validation**:
+ * - `logo_url` and `logo_link` must be empty (`""`) or a valid
+ * `http`/`https` URL (other schemes are rejected with 422).
+ * - `message` must be at most 2000 characters.
+ * - All fields are optional; omitted or `""` fields mean "no override".
+ *
+ */
+export const putSiteLoginBrand = <ThrowOnError extends boolean = false>(
+  options: Options<PutSiteLoginBrandData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    PutSiteLoginBrandResponses,
+    PutSiteLoginBrandErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/login-brand",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });

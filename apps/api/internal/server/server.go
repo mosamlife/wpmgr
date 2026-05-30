@@ -24,7 +24,9 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
+	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
+	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
 	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
@@ -86,8 +88,16 @@ type Deps struct {
 	// SecurityAgentH ingests the agent's login-event batch at
 	// POST /agent/v1/security/login-events.
 	SecurityAgentH *agent.SecurityLoginEventsHandler
-	ServiceName     string
-	Version         string
+	// M14 — Login Whitelabel.
+	// LoginBrandH serves the operator-facing login brand routes under
+	// /api/v1/sites/{siteId}/login-brand.
+	LoginBrandH *loginbrand.Handler
+	// S3 — Malware / File-Integrity Scan. ScanH serves operator-facing scan
+	// run management + findings under /api/v1/sites/{siteId}/scans and
+	// /api/v1/findings/{id}/ignore.
+	ScanH       *scan.Handler
+	ServiceName string
+	Version     string
 }
 
 // Server bundles the HTTP server and its dependencies.
@@ -208,6 +218,14 @@ func New(deps Deps) *Server {
 	// S2 — operator-facing security routes (login protection config + events).
 	if deps.SecurityH != nil {
 		deps.SecurityH.Register(v1)
+	}
+	// M14 — operator-facing login brand routes.
+	if deps.LoginBrandH != nil {
+		deps.LoginBrandH.Register(v1)
+	}
+	// S3 — operator-facing scan run management + findings routes.
+	if deps.ScanH != nil {
+		deps.ScanH.Register(v1)
 	}
 
 	return s
