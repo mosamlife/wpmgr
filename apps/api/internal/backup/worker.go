@@ -202,14 +202,19 @@ func (w *BackupWorker) recordAudit(ctx context.Context, snap Snapshot, action st
 // restore to a subset of the snapshot's content kinds ("files" and/or "db");
 // KeepOldFiles is forwarded to the agent so it can decide whether to preserve
 // the pre-restore wp-content tree as a manual rollback affordance.
+//
+// RestoreRunID is the m16 restore_runs PK threaded from CreateRestore through
+// the River job so the worker can update the run status on start/success/fail.
+// uuid.Nil when the restore run store is not wired (graceful degradation).
 type RestoreArgs struct {
-	TenantID     uuid.UUID `json:"tenant_id"`
-	SnapshotID   uuid.UUID `json:"snapshot_id"`
-	Full         bool      `json:"full"`
-	Paths        []string  `json:"paths,omitempty"`
-	DBTables     []string  `json:"db_tables,omitempty"`
-	Components   []string  `json:"components,omitempty"`
-	KeepOldFiles bool      `json:"keep_old_files,omitempty"`
+	TenantID      uuid.UUID `json:"tenant_id"`
+	SnapshotID    uuid.UUID `json:"snapshot_id"`
+	Full          bool      `json:"full"`
+	Paths         []string  `json:"paths,omitempty"`
+	DBTables      []string  `json:"db_tables,omitempty"`
+	Components    []string  `json:"components,omitempty"`
+	KeepOldFiles  bool      `json:"keep_old_files,omitempty"`
+	RestoreRunID  uuid.UUID `json:"restore_run_id,omitempty"`
 }
 
 // Kind implements river.JobArgs.
@@ -262,15 +267,16 @@ func (w *RestoreWorker) Timeout(*river.Job[RestoreArgs]) time.Duration { return 
 // Work assembles and dispatches one restore. The flow:
 //
 //  1. Mint a fresh `restore_id` (CP-side dedup key for this attempt).
-//  2. Resolve the snapshot's manifest entries and presign GET URLs for each
+//  2. Transition the restore_run to running (if the run ID was threaded in).
+//  3. Resolve the snapshot's manifest entries and presign GET URLs for each
 //     chunk via PlanRestore (which builds the new ADR-034 wire shape).
-//  3. Emit ONE `preflight` progress event so the SSE hub fans out a
+//  4. Emit ONE `preflight` progress event so the SSE hub fans out a
 //     "Worker dispatching restore" tick to the UI BEFORE the (slow) agent
 //     POST returns.
-//  4. POST the signed `restore` command to the agent and wait for the ACK.
-//  5. On ACK ok=true: return nil — the WORKER is done; the agent now drives
+//  5. POST the signed `restore` command to the agent and wait for the ACK.
+//  6. On ACK ok=true: return nil — the WORKER is done; the agent now drives
 //     completion via /progress events through the existing endpoint.
-//  6. On agent refusal or transport error: emit a `failed` progress event
+//  7. On agent refusal or transport error: emit a `failed` progress event
 //     (which the SSE hub fans out + the existing service code records to
 //     audit) so the UI surfaces the failure without waiting for a watchdog.
 //
@@ -291,8 +297,30 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 	restoreID := uuid.NewString()
 	progressEndpoint := w.progressEndpoint(a.SnapshotID)
 
+	// Transition the restore run to running (best-effort: a nil store or a DB
+	// error here must not abort the actual restore dispatch).
+	runID := a.RestoreRunID
+	if w.svc.restoreRuns != nil && runID != uuid.Nil {
+		_ = w.svc.restoreRuns.MarkRestoreRunStatus(ctx, MarkRestoreRunStatusInput{
+			TenantID:   a.TenantID,
+			RunID:      runID,
+			Status:     RestoreStatusRunning,
+			SetStarted: true,
+		})
+	}
+
 	plan, snap, si, err := w.svc.PlanRestore(ctx, a.TenantID, a.SnapshotID, sel, restoreID, progressEndpoint)
 	if err != nil {
+		// If the plan fails we still try to finalize the run as failed.
+		if w.svc.restoreRuns != nil && runID != uuid.Nil {
+			_ = w.svc.restoreRuns.MarkRestoreRunStatus(ctx, MarkRestoreRunStatusInput{
+				TenantID:    a.TenantID,
+				RunID:       runID,
+				Status:      RestoreStatusFailed,
+				Error:       err.Error(),
+				SetFinished: true,
+			})
+		}
 		return err
 	}
 	if !si.Enrolled {
@@ -302,6 +330,8 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 			"restore_id": restoreID,
 			"error":      "site not enrolled",
 		})
+		// RecordProgress -> persistRestoreRunEvent will finalize the run via the
+		// terminal-phase path when the store is wired. No double-write needed.
 		return nil
 	}
 

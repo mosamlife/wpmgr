@@ -96,6 +96,9 @@ type Deps struct {
 	// run management + findings under /api/v1/sites/{siteId}/scans and
 	// /api/v1/findings/{id}/ignore.
 	ScanH       *scan.Handler
+	// m16 — Restore Runs + Logs. RestoreRunH serves the per-site restore
+	// history and the by-id detail + phase-log endpoints.
+	RestoreRunH *backup.RestoreRunHandler
 	ServiceName string
 	Version     string
 }
@@ -226,6 +229,10 @@ func New(deps Deps) *Server {
 	// S3 — operator-facing scan run management + findings routes.
 	if deps.ScanH != nil {
 		deps.ScanH.Register(v1)
+	}
+	// m16 — restore run history + phase log.
+	if deps.RestoreRunH != nil {
+		deps.RestoreRunH.Register(v1)
 	}
 
 	return s

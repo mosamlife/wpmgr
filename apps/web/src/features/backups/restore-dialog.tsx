@@ -80,6 +80,7 @@ export function RestoreDialog({
   open,
   onClose,
   onRequested,
+  onRestoreRunId,
   snapshotId,
   entries,
   siteHost,
@@ -94,6 +95,9 @@ export function RestoreDialog({
       requested — waiting for agent" banner that bridges the perceptual gap
       between click and the first SSE phase event landing. */
   onRequested?: () => void;
+  /** Called with the restore_run_id from the 202 body so the caller can
+      navigate to /restores/{id} for the live restore log. */
+  onRestoreRunId?: (restoreRunId: string) => void;
   snapshotId: string;
   entries: BackupManifestEntry[];
   /** Hostname for the typed-confirmation step. Falls back to the snapshot
@@ -121,6 +125,7 @@ export function RestoreDialog({
           entries={entries}
           onClose={onClose}
           onRequested={onRequested}
+          onRestoreRunId={onRestoreRunId}
           siteHost={siteHost}
           snapshotTakenAt={snapshotTakenAt}
           sourceSiteUrl={sourceSiteUrl}
@@ -136,6 +141,7 @@ function RestoreForm({
   entries,
   onClose,
   onRequested,
+  onRestoreRunId,
   siteHost,
   snapshotTakenAt,
   sourceSiteUrl,
@@ -145,6 +151,7 @@ function RestoreForm({
   entries: BackupManifestEntry[];
   onClose: () => void;
   onRequested?: () => void;
+  onRestoreRunId?: (restoreRunId: string) => void;
   siteHost?: string;
   snapshotTakenAt?: string;
   sourceSiteUrl?: string;
@@ -290,8 +297,11 @@ function RestoreForm({
     };
 
     try {
-      await restore.mutateAsync(body);
+      const result = await restore.mutateAsync(body);
       onRequested?.();
+      if (result.restore_run_id) {
+        onRestoreRunId?.(result.restore_run_id);
+      }
       setConfirmOpen(false);
       onClose();
     } catch {

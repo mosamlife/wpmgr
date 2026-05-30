@@ -17,12 +17,20 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import { PageError } from "@/components/feedback";
+import { StatusChip } from "@/components/status/status-chip";
+import type { StatusTone } from "@/components/status/status-dot";
 import { useBackups, useCreateBackup } from "@/features/backups/use-backups";
 import { StatusBadge, KindBadge } from "@/features/backups/backup-badges";
 import { InlineSnapshotProgress } from "@/features/backups/inline-snapshot-progress";
-import { isRestoreActive } from "@/features/backups/format-progress";
+import { isRestoreActive, PHASE_LABEL } from "@/features/backups/format-progress";
+import {
+  useRestoreRuns,
+  type RestoreRun,
+  type RestoreStatus,
+} from "@/features/backups/use-restores";
 import { BackupScheduleEditor } from "@/features/backups/backup-schedule-editor";
 import { formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupCreate } from "@wpmgr/api";
@@ -60,6 +68,18 @@ export function BackupsSection({
         </CardHeader>
         <CardContent>
           <SnapshotList siteId={siteId} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Restore history</CardTitle>
+          <CardDescription>
+            Restores initiated from any snapshot of this site, newest first.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <RestoreHistory siteId={siteId} />
         </CardContent>
       </Card>
 
@@ -210,5 +230,129 @@ function SnapshotList({ siteId }: { siteId: string }) {
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Restore history
+// ---------------------------------------------------------------------------
+
+const RESTORE_STATUS_TONE: Record<RestoreStatus, StatusTone> = {
+  queued: "muted",
+  running: "info",
+  completed: "success",
+  failed: "destructive",
+  rolled_back: "destructive",
+};
+
+const RESTORE_STATUS_LABEL: Record<RestoreStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  rolled_back: "Rolled back",
+};
+
+function phaseLabel(phase: string | null): string {
+  if (!phase) return "–";
+  return (PHASE_LABEL as Record<string, string>)[phase] ?? phase;
+}
+
+function RestoreHistory({ siteId }: { siteId: string }) {
+  const { data, isPending, isError, error, refetch } = useRestoreRuns(siteId);
+
+  if (isPending) {
+    return (
+      <div
+        role="status"
+        aria-label="Loading restore history"
+        className="space-y-2"
+      >
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-9 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <PageError
+        what="Could not load restore history."
+        why={error.message}
+        onRetry={() => void refetch()}
+      />
+    );
+  }
+
+  if (data.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No restores yet. Restores initiated from a snapshot will appear here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Status</TableHead>
+            <TableHead>Phase</TableHead>
+            <TableHead>Snapshot</TableHead>
+            <TableHead>Started</TableHead>
+            <TableHead>Triggered by</TableHead>
+            <TableHead>
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {data.map((run) => (
+            <RestoreRow key={run.id} run={run} />
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function RestoreRow({ run }: { run: RestoreRun }) {
+  const isRunning = run.status === "running";
+  const timeLabel =
+    relativeTime(run.started_at ?? run.created_at) ?? "–";
+
+  return (
+    <TableRow>
+      <TableCell>
+        <StatusChip
+          tone={RESTORE_STATUS_TONE[run.status]}
+          label={RESTORE_STATUS_LABEL[run.status]}
+          pulse={isRunning}
+        />
+      </TableCell>
+      <TableCell className="text-sm">
+        {phaseLabel(run.current_phase)}
+      </TableCell>
+      <TableCell>
+        <code className="font-mono text-xs text-muted-foreground">
+          {run.snapshot_id.slice(0, 8)}
+        </code>
+      </TableCell>
+      <TableCell className="tabular-nums text-sm" title={run.started_at ?? run.created_at}>
+        <time dateTime={run.started_at ?? run.created_at}>{timeLabel}</time>
+      </TableCell>
+      <TableCell className="text-sm text-muted-foreground">
+        {run.triggered_by ?? "–"}
+      </TableCell>
+      <TableCell className="text-right">
+        <Button asChild variant="outline" size="sm">
+          <Link to="/restores/$restoreId" params={{ restoreId: run.id }}>
+            View
+          </Link>
+        </Button>
+      </TableCell>
+    </TableRow>
   );
 }

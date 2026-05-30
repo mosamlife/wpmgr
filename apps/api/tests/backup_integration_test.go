@@ -49,7 +49,7 @@ func (e *stubEnqueuer) EnqueueBackup(_ context.Context, _, snapshotID uuid.UUID)
 	return nil
 }
 
-func (e *stubEnqueuer) EnqueueRestore(_ context.Context, _, _ uuid.UUID, sel backup.RestoreSelection) error {
+func (e *stubEnqueuer) EnqueueRestore(_ context.Context, _, _ uuid.UUID, sel backup.RestoreSelection, _ uuid.UUID) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.restores = append(e.restores, sel)

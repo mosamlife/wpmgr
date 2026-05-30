@@ -455,14 +455,29 @@ func (h *Handler) createRestore(c *gin.Context) {
 		Components:   components,
 		KeepOldFiles: req.KeepOldFiles.Or(false),
 	}
-	snap, err := h.svc.CreateRestore(c.Request.Context(), tenantID, snapshotID, sel)
+
+	var triggeredBy string
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
+		triggeredBy = p.ActorID()
+	}
+
+	result, err := h.svc.CreateRestore(c.Request.Context(), tenantID, snapshotID, sel, triggeredBy)
 	if err != nil {
 		httpx.Error(c, err)
 		return
 	}
-	h.recordRestore(c, snap, sel)
-	out := toAPISnapshot(snap)
-	c.JSON(http.StatusAccepted, &out)
+	h.recordRestore(c, result.Snapshot, sel)
+	out := toAPISnapshot(result.Snapshot)
+	// Include the restore_run_id in the response so callers can navigate to it.
+	type createRestoreResponse struct {
+		gen.BackupSnapshot
+		RestoreRunID string `json:"restore_run_id,omitempty"`
+	}
+	resp := createRestoreResponse{BackupSnapshot: out}
+	if result.RestoreRunID != uuid.Nil {
+		resp.RestoreRunID = result.RestoreRunID.String()
+	}
+	c.JSON(http.StatusAccepted, &resp)
 }
 
 func (h *Handler) getSchedule(c *gin.Context) {

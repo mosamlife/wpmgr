@@ -213,6 +213,7 @@ func run() error {
 	var backupSvc *backup.Service
 	var backupH *backup.Handler
 	var backupAgentH *backup.AgentHandler
+	var restoreRunH *backup.RestoreRunHandler
 	var backupWorker *backup.BackupWorker
 	var restoreWorker *backup.RestoreWorker
 	var gcWorker *backup.GCWorker
@@ -275,6 +276,9 @@ func run() error {
 			MonthlyArchiveKeep: cfg.Backup.MonthlyArchiveKeep,
 		})
 		backupSvc.SetHub(backupHub)
+		// m16 — Restore Runs + Logs: wire the restore-run repo into the backup
+		// service so CreateRestore + RecordProgress persist durable run entities.
+		backupSvc.SetRestoreRunStore(backup.NewRestoreRunRepo(pool))
 		cpBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
 		// River's default per-job context deadline is 60s — far too short for a
 		// real-site backup. Override with the configured backup HTTPTimeout plus
@@ -291,6 +295,7 @@ func run() error {
 		progressWatchdog = backup.NewProgressWatchdogWorker(backupSvc, 120*time.Second, logger)
 		backupH = backup.NewHandler(backupSvc, backupHub, auditRec)
 		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
+		restoreRunH = backup.NewRestoreRunHandler(backupSvc)
 		// M6 / Track 4: agent-supplied inspection artifact fetcher. Streams the
 		// ordered chunks of the manifest's `sql-inspection.json` entry from the
 		// blobstore and validates the result is JSON. V0 agents ship the report
@@ -661,7 +666,9 @@ func run() error {
 		// M14 — Login Whitelabel.
 		LoginBrandH: loginBrandH,
 		// S3 — Malware / File-Integrity Scan.
-		ScanH:       scanH,
+		ScanH: scanH,
+		// m16 — Restore Runs + Logs.
+		RestoreRunH: restoreRunH,
 		ServiceName: cfg.OTel.ServiceName,
 		Version:     version,
 	})

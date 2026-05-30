@@ -34,7 +34,11 @@ type SiteLookup interface {
 // main).
 type Enqueuer interface {
 	EnqueueBackup(ctx context.Context, tenantID, snapshotID uuid.UUID) error
-	EnqueueRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection) error
+	// EnqueueRestore enqueues a restore job. restoreRunID is the restore_run row
+	// that was already persisted by CreateRestore; the worker reads it from the
+	// job args to update the run status as it progresses. uuid.Nil is accepted
+	// when the restore run store is not wired (graceful degradation).
+	EnqueueRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection, restoreRunID uuid.UUID) error
 }
 
 // Presigner mints presigned PUT/GET URLs over object storage and reports keys.
@@ -70,6 +74,10 @@ type Service struct {
 	// retention defaults (overridable per schedule).
 	retentionDays      int
 	monthlyArchiveKeep int
+	// restoreRuns persists first-class restore run entities + their phase logs.
+	// Optional: when nil, the restore_run persistence is silently skipped (so
+	// existing integrations that have not set the store yet keep working).
+	restoreRuns RestoreRunStore
 }
 
 // SetRegistry wires the ADR-036 P1 storage-adapter router. Calling this AFTER
@@ -94,6 +102,11 @@ func (s *Service) SetEnqueuer(e Enqueuer) { s.enqueuer = e }
 // calls are no-ops (so unit/integration tests need not construct one). Mirrors
 // the M3 update hub wiring; see internal/backup/hub.go.
 func (s *Service) SetHub(h *Hub) { s.hub = h }
+
+// SetRestoreRunStore wires the restore-run persistence store. Call this once
+// at startup (after NewService) before serving traffic. Optional: if never
+// called, restore_run rows are not created (graceful degradation).
+func (s *Service) SetRestoreRunStore(rs RestoreRunStore) { s.restoreRuns = rs }
 
 // publish is a nil-safe helper around hub.Publish.
 func (s *Service) publish(ev BackupEvent) {
@@ -217,33 +230,66 @@ type RestoreSelection struct {
 	KeepOldFiles bool
 }
 
-// CreateRestore validates a restore request against the snapshot's manifest and
-// enqueues a background restore job. The selection is validated here so an
-// invalid path/table fails fast with a 422 (the worker only assembles the
-// presigned plan).
-func (s *Service) CreateRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection) (Snapshot, error) {
+// CreateRestoreResult is returned by CreateRestore so callers get both the
+// snapshot and the newly-created restore_run ID.
+type CreateRestoreResult struct {
+	Snapshot      Snapshot
+	RestoreRunID  uuid.UUID // uuid.Nil when the store is not wired
+}
+
+// CreateRestore validates a restore request against the snapshot's manifest,
+// inserts a restore_runs row (if the store is wired), and enqueues a
+// background restore job. The selection is validated here so an invalid
+// path/table fails fast with a 422 (the worker only assembles the presigned
+// plan).
+func (s *Service) CreateRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection, triggeredBy string) (CreateRestoreResult, error) {
 	if tenantID == uuid.Nil {
-		return Snapshot{}, domain.Forbidden("tenant_required", "a tenant context is required")
+		return CreateRestoreResult{}, domain.Forbidden("tenant_required", "a tenant context is required")
 	}
 	snap, err := s.repo.GetSnapshot(ctx, tenantID, snapshotID)
 	if err != nil {
-		return Snapshot{}, err
+		return CreateRestoreResult{}, err
 	}
 	if snap.Status != StatusCompleted {
-		return Snapshot{}, domain.Validation("snapshot_not_restorable", "only a completed snapshot can be restored")
+		return CreateRestoreResult{}, domain.Validation("snapshot_not_restorable", "only a completed snapshot can be restored")
 	}
 	entries, err := s.repo.ListManifest(ctx, tenantID, snapshotID)
 	if err != nil {
-		return Snapshot{}, err
+		return CreateRestoreResult{}, err
 	}
 	// Validate the selection resolves to >=1 entry.
 	if _, err := selectEntries(entries, sel); err != nil {
-		return Snapshot{}, err
+		return CreateRestoreResult{}, err
 	}
-	if err := s.enqueuer.EnqueueRestore(ctx, tenantID, snapshotID, sel); err != nil {
-		return Snapshot{}, err
+
+	// Persist the restore run (best-effort: a store failure is returned as an
+	// error since the run ID must be threaded into the job args).
+	var restoreRunID uuid.UUID
+	if s.restoreRuns != nil {
+		// Derive the "mode" from the selection: full/partial files/db.
+		mode := deriveWireKind(snap.Kind, sel.Components)
+		if sel.Full || (len(sel.Paths) == 0 && len(sel.DBTables) == 0 && len(sel.Components) == 0) {
+			mode = snap.Kind // full restore of whatever the snapshot was
+		}
+		run, rerr := s.restoreRuns.CreateRestoreRun(ctx, CreateRestoreRunInput{
+			TenantID:    tenantID,
+			SiteID:      snap.SiteID,
+			SnapshotID:  snapshotID,
+			Mode:        mode,
+			Components:  sel.Components,
+			Selection:   marshalSelection(sel),
+			TriggeredBy: triggeredBy,
+		})
+		if rerr != nil {
+			return CreateRestoreResult{}, rerr
+		}
+		restoreRunID = run.ID
 	}
-	return snap, nil
+
+	if err := s.enqueuer.EnqueueRestore(ctx, tenantID, snapshotID, sel, restoreRunID); err != nil {
+		return CreateRestoreResult{}, err
+	}
+	return CreateRestoreResult{Snapshot: snap, RestoreRunID: restoreRunID}, nil
 }
 
 // PlanRestore assembles the ADR-034 v0.8.1 restore plan for a (possibly partial)
@@ -549,6 +595,16 @@ var allowedProgressPhases = map[string]struct{}{
 // RecordProgress validates and persists a single agent progress POST. Returns
 // the bytes that were stored (canonical JSON) for logging/debugging — NEVER
 // log the raw agent input verbatim, only the validated shape.
+//
+// When the phase is a restore phase AND an active restore run exists for the
+// snapshot, this method additionally:
+//   - appends a restore_run_events row (phase, status, message, detail);
+//   - updates restore_runs.current_phase;
+//   - on a terminal restore phase (completed/failed/rolled_back) transitions
+//     the run status to the terminal state (idempotent guard in the repo).
+//
+// The restore-run writes are best-effort: a failure there is logged but does
+// NOT abort the primary progress recording or the SSE publish.
 func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.UUID, phase string, phaseDetail map[string]any) ([]byte, error) {
 	if tenantID == uuid.Nil {
 		return nil, domain.Forbidden("tenant_required", "a tenant context is required")
@@ -582,7 +638,87 @@ func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.
 		PhaseDetail: phaseDetail,
 		Status:      snap.Status,
 	})
+
+	// Restore-run event persistence (best-effort). Only act when:
+	//   1. The restore run store is wired.
+	//   2. The phase is a restore phase.
+	if s.restoreRuns != nil && isRestorePhase(phase) {
+		s.persistRestoreRunEvent(ctx, tenantID, snapshotID, phase, phaseDetail)
+	}
+
 	return raw, nil
+}
+
+// persistRestoreRunEvent is the best-effort restore-run event persistence
+// helper. It is called from RecordProgress with the validated phase; any
+// failure is silently swallowed so the existing progress recording is never
+// broken by restore-run bookkeeping.
+func (s *Service) persistRestoreRunEvent(ctx context.Context, tenantID, snapshotID uuid.UUID, phase string, phaseDetail map[string]any) {
+	run, err := s.restoreRuns.ActiveRestoreRunForSnapshot(ctx, tenantID, snapshotID)
+	if err != nil {
+		// domain.NotFound is expected when no restore is active — not a bug.
+		return
+	}
+
+	// Extract message from phase_detail (the agent sets phase_detail.message).
+	message := ""
+	if m, ok := phaseDetail["message"]; ok {
+		if ms, ok := m.(string); ok {
+			message = ms
+		}
+	}
+
+	// Derive the event status from the phase name; terminal phases carry their
+	// own status, others are "running".
+	evStatus := "running"
+	if isTerminalRestorePhase(phase) {
+		evStatus = phase // completed / failed / rolled_back double as status
+	}
+
+	// Marshal the phase_detail for detail storage.
+	var detailJSON []byte
+	if phaseDetail != nil {
+		if b, merr := json.Marshal(phaseDetail); merr == nil {
+			detailJSON = b
+		}
+	}
+
+	// Append the event row.
+	_ = func() error {
+		_, rerr := s.restoreRuns.AppendRestoreEvent(ctx, AppendRestoreEventInput{
+			TenantID:     tenantID,
+			RestoreRunID: run.ID,
+			Phase:        phase,
+			Status:       evStatus,
+			Message:      message,
+			Detail:       detailJSON,
+		})
+		return rerr
+	}()
+
+	// Advance current_phase.
+	_ = s.restoreRuns.UpdateRestoreRunPhase(ctx, tenantID, run.ID, phase)
+
+	// Finalize on terminal phases — idempotent (repo guards with WHERE status
+	// NOT IN terminal).
+	if isTerminalRestorePhase(phase) {
+		errMsg := ""
+		if phase == "failed" {
+			if e, ok := phaseDetail["error"]; ok {
+				if es, ok := e.(string); ok {
+					errMsg = es
+				}
+			}
+		}
+		terminalStatus := phase // "completed" / "failed" / "rolled_back"
+		_ = s.restoreRuns.MarkRestoreRunStatus(ctx, MarkRestoreRunStatusInput{
+			TenantID:    tenantID,
+			RunID:       run.ID,
+			Status:      terminalStatus,
+			Error:       errMsg,
+			SetFinished: true,
+		})
+	}
 }
 
 // ListStalledRunningSnapshots is the watchdog feeder: cross-tenant enumeration

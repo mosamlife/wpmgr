@@ -51,8 +51,9 @@ func (e *RiverEnqueuer) EnqueueSqlInspectLegacy(ctx context.Context, tenantID, s
 }
 
 // EnqueueRestore inserts one restore job carrying the (possibly partial)
-// selection.
-func (e *RiverEnqueuer) EnqueueRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection) error {
+// selection. restoreRunID is threaded through so the worker can update the
+// restore_run row as it progresses. uuid.Nil is accepted gracefully.
+func (e *RiverEnqueuer) EnqueueRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection, restoreRunID uuid.UUID) error {
 	args := RestoreArgs{
 		TenantID:     tenantID,
 		SnapshotID:   snapshotID,
@@ -61,6 +62,7 @@ func (e *RiverEnqueuer) EnqueueRestore(ctx context.Context, tenantID, snapshotID
 		DBTables:     sel.DBTables,
 		Components:   sel.Components,
 		KeepOldFiles: sel.KeepOldFiles,
+		RestoreRunID: restoreRunID,
 	}
 	if _, err := e.client.Insert(ctx, args, nil); err != nil {
 		return fmt.Errorf("enqueue restore: %w", err)

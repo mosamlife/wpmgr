@@ -153,14 +153,23 @@ export function useCreateBackup(
   });
 }
 
+/** The 202 body from POST /backups/{snapshotId}/restore (includes restore_run_id alongside snapshot fields). */
+export interface CreateRestoreResult {
+  snapshot: BackupSnapshot;
+  restore_run_id: string | null;
+}
+
 /**
  * Start a restore job from a snapshot (operator+). The API returns the snapshot
  * whose status reflects the queued restore; we seed the detail cache with it so
  * polling can track the restore to completion.
+ *
+ * The result includes `restore_run_id` (from the 202 body alongside the snapshot
+ * fields) so the caller can navigate to /restores/{restore_run_id} immediately.
  */
 export function useCreateRestore(
   snapshotId: string,
-): UseMutationResult<BackupSnapshot, Error, RestoreCreate> {
+): UseMutationResult<CreateRestoreResult, Error, RestoreCreate> {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (body: RestoreCreate) => {
@@ -173,9 +182,15 @@ export function useCreateRestore(
       }
       if (error) throw toError(error);
       if (!data) throw new Error("Empty response");
-      return data;
+      // The API 202 body is the snapshot fields merged with `restore_run_id`.
+      // The generated type only knows BackupSnapshot; we read the extra field
+      // from the raw body by casting (it's present on the wire but not typed).
+      const raw = data as Record<string, unknown>;
+      const restoreRunId =
+        typeof raw.restore_run_id === "string" ? raw.restore_run_id : null;
+      return { snapshot: data, restore_run_id: restoreRunId };
     },
-    onSuccess: (snapshot) => {
+    onSuccess: ({ snapshot }) => {
       queryClient.setQueryData<BackupSnapshotDetail>(
         backupsKeys.detail(snapshotId),
         (prev) => (prev ? { ...prev, snapshot } : prev),

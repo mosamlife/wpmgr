@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -124,6 +124,7 @@ function SnapshotDetailView({
   const [restoreRequestedAt, setRestoreRequestedAt] = useState<number | null>(
     null,
   );
+  const navigate = useNavigate();
 
   // Resolve the originating site so the back-link returns to the right
   // Backups tab (not the global sites list) and so the destructive-confirm
@@ -298,6 +299,12 @@ function SnapshotDetailView({
           open={restoreOpen}
           onClose={() => setRestoreOpen(false)}
           onRequested={() => setRestoreRequestedAt(Date.now())}
+          onRestoreRunId={(runId) => {
+            void navigate({
+              to: "/restores/$restoreId",
+              params: { restoreId: runId },
+            });
+          }}
           snapshotId={snapshot.id}
           entries={entries}
           siteHost={site ? hostOf(site.url) : undefined}
