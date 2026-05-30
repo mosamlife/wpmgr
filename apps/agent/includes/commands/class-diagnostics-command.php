@@ -187,22 +187,28 @@ final class DiagnosticsCommand implements CommandInterface
         if (!defined('ABSPATH')) {
             return ['_error' => 'no_abspath'];
         }
+        // WP_Debug_Data::debug_data() calls admin HELPER functions that live in
+        // wp-admin/includes and are NOT autoloaded under REST/cron contexts —
+        // most notably get_home_path() (file.php). Load every helper it touches
+        // best-effort, ALWAYS (not only when the class itself needs loading): a
+        // host where WP_Debug_Data is already loaded but get_home_path() is not
+        // still fatals with "Call to undefined function get_home_path()".
+        // require_once is idempotent, so this is safe even in admin context.
+        $deps = [
+            ABSPATH . 'wp-admin/includes/file.php',                 // get_home_path()
+            ABSPATH . 'wp-admin/includes/plugin.php',               // get_plugins(), get_mu_plugins()
+            ABSPATH . 'wp-admin/includes/update.php',               // get_core_updates(), ...
+            ABSPATH . 'wp-admin/includes/misc.php',
+            ABSPATH . 'wp-admin/includes/theme.php',                // wp_get_themes() helpers
+            ABSPATH . 'wp-admin/includes/translation-install.php',
+        ];
+        foreach ($deps as $dep) {
+            if (file_exists($dep)) {
+                require_once $dep;
+            }
+        }
         $debugFile = ABSPATH . 'wp-admin/includes/class-wp-debug-data.php';
         if (!class_exists('\\WP_Debug_Data') && file_exists($debugFile)) {
-            // Some sub-deps of WP_Debug_Data live in admin/update.php and
-            // admin/translation-install.php; load them best-effort.
-            $deps = [
-                ABSPATH . 'wp-admin/includes/update.php',
-                ABSPATH . 'wp-admin/includes/translation-install.php',
-                ABSPATH . 'wp-admin/includes/plugin.php',
-                ABSPATH . 'wp-admin/includes/misc.php',
-                ABSPATH . 'wp-admin/includes/theme.php',
-            ];
-            foreach ($deps as $dep) {
-                if (file_exists($dep)) {
-                    require_once $dep;
-                }
-            }
             require_once $debugFile;
         }
         if (!class_exists('\\WP_Debug_Data')) {
