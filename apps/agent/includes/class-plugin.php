@@ -199,11 +199,12 @@ final class Plugin
 
         // Autologin replay-table maintenance: drop expired rows hourly. The
         // cron event is scheduled at activation; this hook binds the handler.
-        // Wrap in a void closure: ReplayCache::prune() returns an int (rows
-        // purged), but WP cron callbacks must not return anything.
-        add_action(ReplayCache::HOOK_PRUNE, function (): void {
-            $this->autologinReplay->prune();
-        });
+        // Bound to a real method, NOT a closure: a Closure captured in
+        // $wp_filter can trigger "Serialization of 'Closure' is not allowed"
+        // when a persistent object cache or a cron-inspector plugin serializes
+        // the hook table. pruneAutologinReplay() swallows prune()'s int return
+        // (WP cron callbacks must not return a value).
+        add_action(ReplayCache::HOOK_PRUNE, [$this, 'pruneAutologinReplay']);
 
         // M5.6 / ADR-033 — backup task watchdog. BackupCommand schedules a
         // wp_schedule_single_event firing every ~120 s while a task is
@@ -626,6 +627,19 @@ final class Plugin
         // cursor to the highest id we sent on a 2xx, mirroring the error-ship
         // block above.
         $this->shipLoginEvents();
+    }
+
+    /**
+     * Cron handler bound to ReplayCache::HOOK_PRUNE (hourly): drop expired
+     * autologin replay rows. A real public method (not a closure) so the WP
+     * hook table never holds a Closure. ReplayCache::prune() returns an int
+     * (rows purged); we discard it because WP cron callbacks must return void.
+     *
+     * @return void
+     */
+    public function pruneAutologinReplay(): void
+    {
+        $this->autologinReplay->prune();
     }
 
     /**
