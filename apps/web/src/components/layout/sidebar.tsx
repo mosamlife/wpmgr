@@ -229,27 +229,28 @@ function NavGroupItem({ group, pathname, collapsed }: GroupProps) {
     );
   }
 
-  // Group with sub-items. The group row is a non-link header that shows
-  // when the group is expanded (active). Sub-items render below.
+  // Group with sub-items. The header is a section label; the sub-items ALWAYS
+  // render below it so every route is reachable from the expanded sidebar.
+  // (Previously they were gated on `active`, which hid a group's children
+  // unless you were already inside that group — leaving Backups/Migrations/
+  // Uptime/Performance/Vulnerabilities/Audit unreachable from the nav.)
   return (
     <div>
       <GroupHeader group={group} active={active} />
-      {active ? (
-        <ul className="mt-0.5 flex flex-col gap-0.5">
-          {group.items!.map((item) => (
-            <li key={item.label}>
-              <NavLeaf
-                label={item.label}
-                to={item.to}
-                count={item.count}
-                todo={item.todo}
-                active={item.to ? isActive(pathname, item.to) : false}
-                variant="sub"
-              />
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <ul className="mt-0.5 flex flex-col gap-0.5">
+        {group.items!.map((item) => (
+          <li key={item.label}>
+            <NavLeaf
+              label={item.label}
+              to={item.to}
+              count={item.count}
+              todo={item.todo}
+              active={item.to ? isActive(pathname, item.to) : false}
+              variant="sub"
+            />
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
