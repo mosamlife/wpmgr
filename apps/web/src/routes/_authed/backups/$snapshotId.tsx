@@ -21,7 +21,7 @@ import { SqlInspectionCard } from "@/features/backups/sql-inspection-card";
 import { ManifestCard } from "@/features/backups/manifest-card";
 import { useSqlInspection } from "@/features/backups/use-sql-inspection";
 import { useBackupStream } from "@/features/backups/use-backup-stream";
-import { formatProgress, isRestorePhase } from "@/features/backups/format-progress";
+import { isRestoreActive } from "@/features/backups/format-progress";
 import {
   useSnapshotEnvironment,
   type EnvFingerprint,
@@ -99,10 +99,12 @@ function DetailSkeleton() {
   );
 }
 
-/** True when snapshot.progress carries an active restore phase. */
+/** True when snapshot.progress carries an active restore phase. Delegates to
+ *  the shared helper, which gates on the restore PHASE (not on
+ *  formatProgress().isTerminal — that flag is poisoned by status==="completed",
+ *  which is the steady state during a restore overlay). */
 function hasActiveRestorePhase(snapshot: BackupSnapshot): boolean {
-  const fp = formatProgress(snapshot);
-  return isRestorePhase(fp.phase) && !fp.isTerminal;
+  return isRestoreActive(snapshot);
 }
 
 /** True when this snapshot is a running backup OR an in-flight restore. */

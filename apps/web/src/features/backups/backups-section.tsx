@@ -22,6 +22,7 @@ import { PageError } from "@/components/feedback";
 import { useBackups, useCreateBackup } from "@/features/backups/use-backups";
 import { StatusBadge, KindBadge } from "@/features/backups/backup-badges";
 import { InlineSnapshotProgress } from "@/features/backups/inline-snapshot-progress";
+import { isRestoreActive } from "@/features/backups/format-progress";
 import { BackupScheduleEditor } from "@/features/backups/backup-schedule-editor";
 import { formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupCreate } from "@wpmgr/api";
@@ -168,7 +169,9 @@ function SnapshotList({ siteId }: { siteId: string }) {
             <TableCell>
               <div className="flex flex-col gap-1">
                 <StatusBadge status={snap.status} />
-                {snap.status === "running" || snap.status === "pending" ? (
+                {snap.status === "running" ||
+                snap.status === "pending" ||
+                isRestoreActive(snap) ? (
                   <InlineSnapshotProgress snapshot={snap} />
                 ) : null}
                 {snap.status === "failed" && snap.error ? (

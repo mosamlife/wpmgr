@@ -142,6 +142,26 @@ export function isRestorePhase(phase: PhaseId): boolean {
   return RESTORE_PHASE_IDS.has(phase);
 }
 
+/**
+ * True when the snapshot is actively running a RESTORE.
+ *
+ * A restore OVERLAYS a completed snapshot: snapshot.status stays "completed" for
+ * the entire restore (ADR-034), so we MUST NOT use formatProgress().isTerminal
+ * here — that flag is true whenever status === "completed" and would report
+ * every live restore as already finished (the Batch-2 regression that hid the
+ * restore progress card while the SSE stream was patching live phases). Gate on
+ * the PHASE only: a restore is active while its phase is a restore phase that
+ * has not reached a phase-level terminal (completed / failed / rolled_back).
+ */
+export function isRestoreActive(snapshot: BackupSnapshot): boolean {
+  const fp = formatProgress(snapshot);
+  const phaseTerminal =
+    fp.phase === "completed" ||
+    fp.phase === "failed" ||
+    fp.phase === "rolled_back";
+  return isRestorePhase(fp.phase) && !phaseTerminal;
+}
+
 export interface FormattedProgress {
   phase: PhaseId;
   /** Render-ready phase label. */

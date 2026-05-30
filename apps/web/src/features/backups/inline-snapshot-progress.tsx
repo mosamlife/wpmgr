@@ -16,7 +16,7 @@ import { useMemo } from "react";
 import type { BackupSnapshot } from "@wpmgr/api";
 import { Progress } from "@/components/ui/progress";
 
-import { buildStepperPhases, formatProgress, isRestorePhase } from "./format-progress";
+import { buildStepperPhases, formatProgress, isRestoreActive } from "./format-progress";
 import { PhaseStepper } from "./phase-stepper";
 import { useBackupStream } from "./use-backup-stream";
 
@@ -30,7 +30,9 @@ export function InlineSnapshotProgress({ snapshot }: { snapshot: BackupSnapshot 
   //     is an overlay on a completed backup — but progress.phase is one of the
   //     restore phase values)
   const isRunningBackup = snapshot.status === "running" || snapshot.status === "pending";
-  const isRunningRestore = isRestorePhase(fp.phase) && !fp.isTerminal;
+  // Gate restore on the shared phase-based helper, NOT fp.isTerminal — a restore
+  // overlays a "completed" snapshot, so isTerminal is always true during one.
+  const isRunningRestore = isRestoreActive(snapshot);
   if (!isRunningBackup && !isRunningRestore) return null;
 
   const stepperPhases = buildStepperPhases(fp.phase, snapshot.status);
