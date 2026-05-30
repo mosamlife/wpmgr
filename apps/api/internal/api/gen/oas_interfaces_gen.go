@@ -161,6 +161,10 @@ type PutBackupScheduleRes interface {
 	putBackupScheduleRes()
 }
 
+type PutSiteLoginProtectionRes interface {
+	putSiteLoginProtectionRes()
+}
+
 type RefreshSiteDiagnosticsRes interface {
 	refreshSiteDiagnosticsRes()
 }
@@ -187,6 +191,10 @@ type SilenceSitePHPErrorRes interface {
 
 type TestSiteDestinationRes interface {
 	testSiteDestinationRes()
+}
+
+type UnblockSiteIPRes interface {
+	unblockSiteIPRes()
 }
 
 type UpdateSiteDestinationRes interface {

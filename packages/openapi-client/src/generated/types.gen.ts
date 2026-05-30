@@ -1154,6 +1154,144 @@ export type ActivityVerifyResult = {
   total: number;
 };
 
+export type SecurityThresholds = {
+  /**
+   * Number of failures before a CAPTCHA challenge is shown.
+   */
+  captcha_limit: number;
+  /**
+   * Number of failures before a temporary block is applied.
+   */
+  temp_block_limit: number;
+  /**
+   * Number of failures before a permanent block is applied.
+   */
+  block_all_limit: number;
+  /**
+   * Seconds of inactivity that reset the failure counter.
+   *
+   */
+  failed_login_gap: number;
+  /**
+   * Seconds after a successful login before a new failure series begins.
+   *
+   */
+  success_login_gap: number;
+  /**
+   * Seconds a permanent block remains active.
+   */
+  all_blocked_gap: number;
+};
+
+export type SiteLoginProtectionConfig = {
+  /**
+   * Login protection mode:
+   * - `disabled` — no login protection active.
+   * - `audit` — record events but do not block.
+   * - `protect` — record events AND block based on thresholds.
+   *
+   */
+  mode: "disabled" | "audit" | "protect";
+  thresholds: SecurityThresholds;
+  /**
+   * HTTP header the agent reads to extract the real client IP (e.g.
+   * `REMOTE_ADDR`, `HTTP_X_FORWARDED_FOR`).
+   *
+   */
+  ip_header: string;
+  /**
+   * CIDRs that always bypass all checks (IPv4 or IPv6, with prefix length).
+   *
+   */
+  allow_cidrs: Array<string>;
+  /**
+   * CIDRs that are always denied before threshold evaluation.
+   *
+   */
+  deny_cidrs: Array<string>;
+  /**
+   * When the config was last saved. Absent for the built-in default.
+   */
+  updated_at?: string;
+};
+
+export type SiteLoginProtectionConfigUpdate = {
+  /**
+   * Login protection mode.
+   */
+  mode: "disabled" | "audit" | "protect";
+  thresholds: SecurityThresholds;
+  /**
+   * HTTP header the agent reads for the real client IP.
+   */
+  ip_header: string;
+  /**
+   * CIDRs always allowed. Empty = no static allowlist. When mode=protect
+   * and this list is empty the CP auto-adds the operator's IP (/32 or /128).
+   *
+   */
+  allow_cidrs: Array<string>;
+  /**
+   * CIDRs always denied before threshold evaluation. Empty = none.
+   */
+  deny_cidrs: Array<string>;
+};
+
+export type UnblockIpRequest = {
+  /**
+   * The IPv4 or IPv6 address to unblock.
+   */
+  ip: string;
+};
+
+export type UnblockIpResult = {
+  /**
+   * Whether the agent successfully removed the block.
+   */
+  ok: boolean;
+  /**
+   * Short human-readable note from the agent.
+   */
+  detail: string;
+};
+
+export type SiteLoginEvent = {
+  /**
+   * CP-side row id (BIGSERIAL).
+   */
+  id: number;
+  /**
+   * Agent-side event id (cursor tracking).
+   */
+  agent_event_id: number;
+  /**
+   * Client IP address.
+   */
+  ip: string;
+  /**
+   * 1=failure, 2=success, 3=blocked.
+   */
+  status: 1 | 2 | 3;
+  /**
+   * Agent-assigned event category.
+   */
+  category: string;
+  /**
+   * Attempted username.
+   */
+  username: string;
+  /**
+   * Agent-side request id for correlation.
+   */
+  request_id: string;
+  occurred_at: string;
+  ingested_at: string;
+};
+
+export type SiteLoginEventList = {
+  items: Array<SiteLoginEvent>;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -2965,3 +3103,113 @@ export type VerifySiteActivityResponses = {
 
 export type VerifySiteActivityResponse =
   VerifySiteActivityResponses[keyof VerifySiteActivityResponses];
+
+export type GetSiteLoginProtectionData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/login-protection";
+};
+
+export type GetSiteLoginProtectionResponses = {
+  /**
+   * Current login-protection config
+   */
+  200: SiteLoginProtectionConfig;
+};
+
+export type GetSiteLoginProtectionResponse =
+  GetSiteLoginProtectionResponses[keyof GetSiteLoginProtectionResponses];
+
+export type PutSiteLoginProtectionData = {
+  body: SiteLoginProtectionConfigUpdate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/login-protection";
+};
+
+export type PutSiteLoginProtectionErrors = {
+  /**
+   * Validation error (invalid mode, CIDR, or thresholds)
+   */
+  422: Error;
+};
+
+export type PutSiteLoginProtectionError =
+  PutSiteLoginProtectionErrors[keyof PutSiteLoginProtectionErrors];
+
+export type PutSiteLoginProtectionResponses = {
+  /**
+   * Stored login-protection config (including any auto-added operator CIDR)
+   */
+  200: SiteLoginProtectionConfig;
+};
+
+export type PutSiteLoginProtectionResponse =
+  PutSiteLoginProtectionResponses[keyof PutSiteLoginProtectionResponses];
+
+export type UnblockSiteIpData = {
+  body: UnblockIpRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/unblock-ip";
+};
+
+export type UnblockSiteIpErrors = {
+  /**
+   * Validation error (invalid IP address)
+   */
+  422: Error;
+  /**
+   * Security agent client not wired
+   */
+  503: Error;
+};
+
+export type UnblockSiteIpError = UnblockSiteIpErrors[keyof UnblockSiteIpErrors];
+
+export type UnblockSiteIpResponses = {
+  /**
+   * Unblock result
+   */
+  200: UnblockIpResult;
+};
+
+export type UnblockSiteIpResponse =
+  UnblockSiteIpResponses[keyof UnblockSiteIpResponses];
+
+export type ListSiteLoginEventsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    /**
+     * Maximum number of events to return.
+     */
+    limit?: number;
+    /**
+     * Filter by login-event status: 1=failure, 2=success, 3=blocked.
+     * Omit to return all statuses.
+     *
+     */
+    status?: 1 | 2 | 3;
+  };
+  url: "/api/v1/sites/{siteId}/security/login-events";
+};
+
+export type ListSiteLoginEventsResponses = {
+  /**
+   * Login event list
+   */
+  200: SiteLoginEventList;
+};
+
+export type ListSiteLoginEventsResponse =
+  ListSiteLoginEventsResponses[keyof ListSiteLoginEventsResponses];

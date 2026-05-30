@@ -2424,3 +2424,222 @@ export const ActivityVerifyResultSchema = {
     },
   },
 } as const;
+
+export const SecurityThresholdsSchema = {
+  type: "object",
+  required: [
+    "captcha_limit",
+    "temp_block_limit",
+    "block_all_limit",
+    "failed_login_gap",
+    "success_login_gap",
+    "all_blocked_gap",
+  ],
+  properties: {
+    captcha_limit: {
+      type: "integer",
+      format: "int32",
+      description: "Number of failures before a CAPTCHA challenge is shown.",
+    },
+    temp_block_limit: {
+      type: "integer",
+      format: "int32",
+      description: "Number of failures before a temporary block is applied.",
+    },
+    block_all_limit: {
+      type: "integer",
+      format: "int32",
+      description: "Number of failures before a permanent block is applied.",
+    },
+    failed_login_gap: {
+      type: "integer",
+      format: "int32",
+      description: "Seconds of inactivity that reset the failure counter.\n",
+    },
+    success_login_gap: {
+      type: "integer",
+      format: "int32",
+      description:
+        "Seconds after a successful login before a new failure series begins.\n",
+    },
+    all_blocked_gap: {
+      type: "integer",
+      format: "int32",
+      description: "Seconds a permanent block remains active.",
+    },
+  },
+} as const;
+
+export const SiteLoginProtectionConfigSchema = {
+  type: "object",
+  required: ["mode", "thresholds", "ip_header", "allow_cidrs", "deny_cidrs"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["disabled", "audit", "protect"],
+      description:
+        "Login protection mode:\n  - `disabled` — no login protection active.\n  - `audit` — record events but do not block.\n  - `protect` — record events AND block based on thresholds.\n",
+    },
+    thresholds: {
+      $ref: "#/components/schemas/SecurityThresholds",
+    },
+    ip_header: {
+      type: "string",
+      description:
+        "HTTP header the agent reads to extract the real client IP (e.g.\n`REMOTE_ADDR`, `HTTP_X_FORWARDED_FOR`).\n",
+    },
+    allow_cidrs: {
+      type: "array",
+      description:
+        "CIDRs that always bypass all checks (IPv4 or IPv6, with prefix length).\n",
+      items: {
+        type: "string",
+      },
+    },
+    deny_cidrs: {
+      type: "array",
+      description:
+        "CIDRs that are always denied before threshold evaluation.\n",
+      items: {
+        type: "string",
+      },
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "When the config was last saved. Absent for the built-in default.",
+    },
+  },
+} as const;
+
+export const SiteLoginProtectionConfigUpdateSchema = {
+  type: "object",
+  required: ["mode", "thresholds", "ip_header", "allow_cidrs", "deny_cidrs"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["disabled", "audit", "protect"],
+      description: "Login protection mode.",
+    },
+    thresholds: {
+      $ref: "#/components/schemas/SecurityThresholds",
+    },
+    ip_header: {
+      type: "string",
+      description: "HTTP header the agent reads for the real client IP.",
+    },
+    allow_cidrs: {
+      type: "array",
+      description:
+        "CIDRs always allowed. Empty = no static allowlist. When mode=protect\nand this list is empty the CP auto-adds the operator's IP (/32 or /128).\n",
+      items: {
+        type: "string",
+      },
+    },
+    deny_cidrs: {
+      type: "array",
+      description:
+        "CIDRs always denied before threshold evaluation. Empty = none.",
+      items: {
+        type: "string",
+      },
+    },
+  },
+} as const;
+
+export const UnblockIPRequestSchema = {
+  type: "object",
+  required: ["ip"],
+  properties: {
+    ip: {
+      type: "string",
+      description: "The IPv4 or IPv6 address to unblock.",
+    },
+  },
+} as const;
+
+export const UnblockIPResultSchema = {
+  type: "object",
+  required: ["ok", "detail"],
+  properties: {
+    ok: {
+      type: "boolean",
+      description: "Whether the agent successfully removed the block.",
+    },
+    detail: {
+      type: "string",
+      description: "Short human-readable note from the agent.",
+    },
+  },
+} as const;
+
+export const SiteLoginEventSchema = {
+  type: "object",
+  required: [
+    "id",
+    "agent_event_id",
+    "ip",
+    "status",
+    "category",
+    "username",
+    "request_id",
+    "occurred_at",
+    "ingested_at",
+  ],
+  properties: {
+    id: {
+      type: "integer",
+      format: "int64",
+      description: "CP-side row id (BIGSERIAL).",
+    },
+    agent_event_id: {
+      type: "integer",
+      format: "int64",
+      description: "Agent-side event id (cursor tracking).",
+    },
+    ip: {
+      type: "string",
+      description: "Client IP address.",
+    },
+    status: {
+      type: "integer",
+      format: "int32",
+      enum: [1, 2, 3],
+      description: "1=failure, 2=success, 3=blocked.",
+    },
+    category: {
+      type: "string",
+      description: "Agent-assigned event category.",
+    },
+    username: {
+      type: "string",
+      description: "Attempted username.",
+    },
+    request_id: {
+      type: "string",
+      description: "Agent-side request id for correlation.",
+    },
+    occurred_at: {
+      type: "string",
+      format: "date-time",
+    },
+    ingested_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteLoginEventListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteLoginEvent",
+      },
+    },
+  },
+} as const;

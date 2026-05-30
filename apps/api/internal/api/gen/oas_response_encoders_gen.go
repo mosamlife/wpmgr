@@ -1105,6 +1105,20 @@ func encodeGetSiteErrorConfigResponse(response GetSiteErrorConfigRes, w http.Res
 	}
 }
 
+func encodeGetSiteLoginProtectionResponse(response *SiteLoginProtectionConfig, w http.ResponseWriter, span trace.Span) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
+	span.SetStatus(codes.Ok, http.StatusText(200))
+
+	e := new(jx.Encoder)
+	response.Encode(e)
+	if _, err := e.WriteTo(w); err != nil {
+		return errors.Wrap(err, "write")
+	}
+
+	return nil
+}
+
 func encodeGetSiteUptimeResponse(response GetSiteUptimeRes, w http.ResponseWriter, span trace.Span) error {
 	switch response := response.(type) {
 	case *UptimeStatus:
@@ -1502,6 +1516,20 @@ func encodeListSiteDestinationsResponse(response ListSiteDestinationsRes, w http
 	}
 }
 
+func encodeListSiteLoginEventsResponse(response *SiteLoginEventList, w http.ResponseWriter, span trace.Span) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
+	span.SetStatus(codes.Ok, http.StatusText(200))
+
+	e := new(jx.Encoder)
+	response.Encode(e)
+	if _, err := e.WriteTo(w); err != nil {
+		return errors.Wrap(err, "write")
+	}
+
+	return nil
+}
+
 func encodeListSitePHPErrorsResponse(response *PHPErrorList, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
@@ -1814,6 +1842,39 @@ func encodePutBackupScheduleResponse(response PutBackupScheduleRes, w http.Respo
 	}
 }
 
+func encodePutSiteLoginProtectionResponse(response PutSiteLoginProtectionRes, w http.ResponseWriter, span trace.Span) error {
+	switch response := response.(type) {
+	case *SiteLoginProtectionConfig:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(200)
+		span.SetStatus(codes.Ok, http.StatusText(200))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *Error:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(422)
+		span.SetStatus(codes.Error, http.StatusText(422))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	default:
+		return errors.Errorf("unexpected response type: %T", response)
+	}
+}
+
 func encodeRefreshSiteDiagnosticsResponse(response RefreshSiteDiagnosticsRes, w http.ResponseWriter, span trace.Span) error {
 	switch response := response.(type) {
 	case *RefreshSiteDiagnosticsAccepted:
@@ -2081,6 +2142,52 @@ func encodeTestSiteDestinationResponse(response TestSiteDestinationRes, w http.R
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(403)
 		span.SetStatus(codes.Error, http.StatusText(403))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	default:
+		return errors.Errorf("unexpected response type: %T", response)
+	}
+}
+
+func encodeUnblockSiteIPResponse(response UnblockSiteIPRes, w http.ResponseWriter, span trace.Span) error {
+	switch response := response.(type) {
+	case *UnblockIPResult:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(200)
+		span.SetStatus(codes.Ok, http.StatusText(200))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *UnblockSiteIPUnprocessableEntity:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(422)
+		span.SetStatus(codes.Error, http.StatusText(422))
+
+		e := new(jx.Encoder)
+		response.Encode(e)
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+
+		return nil
+
+	case *UnblockSiteIPServiceUnavailable:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(503)
+		span.SetStatus(codes.Error, http.StatusText(503))
 
 		e := new(jx.Encoder)
 		response.Encode(e)

@@ -11,6 +11,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 	"github.com/mosamlife/wpmgr/apps/api/internal/uptime"
@@ -213,6 +214,26 @@ func (a *activitySiteAdapter) URLAndName(ctx context.Context, tenantID, siteID u
 }
 
 var _ activity.SiteLookup = (*activitySiteAdapter)(nil)
+
+// securitySiteAdapter resolves a site's agent URL for the security service
+// (ADR-037 S2). Keeps the security package free of a site import.
+type securitySiteAdapter struct {
+	svc *site.Service
+}
+
+func newSecuritySiteAdapter(svc *site.Service) *securitySiteAdapter {
+	return &securitySiteAdapter{svc: svc}
+}
+
+func (a *securitySiteAdapter) GetSiteURL(ctx context.Context, tenantID, siteID uuid.UUID) (string, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return "", err
+	}
+	return s.URL, nil
+}
+
+var _ security.SiteLookup = (*securitySiteAdapter)(nil)
 
 // activitySecurityAlerter is the seam between the activity log and the EXISTING
 // uptime alert Dispatcher (ADR-037 Sprint 3): a high-severity activity event

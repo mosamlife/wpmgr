@@ -150,12 +150,13 @@ final class ErrorMonitorConfigTest extends TestCase
             'ignore_md5s' => [$validMd5, $invalidMd5, $tooShort, 12345],
         ]);
         Functions\when('get_option')->justReturn($encoded);
-        Functions\when('update_option')->justReturn(true);
 
         // applyConfig validates the same rules; use it as a white-box probe.
+        // NOTE: only an expect() here — a parallel when('update_option') would
+        // shadow this strict expectation and make ->once() record zero calls.
         Functions\expect('update_option')
             ->once()
-            ->andReturnUsing(function (string $key, string $value): bool {
+            ->andReturnUsing(function (string $key, string $value) use ($validMd5): bool {
                 $decoded = json_decode($value, true);
                 // Only the valid 32-hex entry should survive.
                 \PHPUnit\Framework\TestCase::assertSame([$validMd5], $decoded['ignore_md5s']);

@@ -335,6 +335,18 @@ func (UnimplementedHandler) GetSiteErrorConfig(ctx context.Context, params GetSi
 	return r, ht.ErrNotImplemented
 }
 
+// GetSiteLoginProtection implements getSiteLoginProtection operation.
+//
+// Returns the current login-protection mode, brute-force thresholds, IP
+// header selection, and CIDR allow/deny lists for the site. When no config
+// has been saved yet, returns the built-in defaults (mode=protect, standard
+// thresholds, REMOTE_ADDR, empty CIDR lists).
+//
+// GET /api/v1/sites/{siteId}/security/login-protection
+func (UnimplementedHandler) GetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (r *SiteLoginProtectionConfig, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetSiteUptime implements getSiteUptime operation.
 //
 // Returns the uptime % and average latency for a site over the requested
@@ -444,6 +456,17 @@ func (UnimplementedHandler) ListSiteActivity(ctx context.Context, params ListSit
 //
 // GET /api/v1/sites/{siteId}/destinations
 func (UnimplementedHandler) ListSiteDestinations(ctx context.Context, params ListSiteDestinationsParams) (r ListSiteDestinationsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListSiteLoginEvents implements listSiteLoginEvents operation.
+//
+// Returns the agent-ingested login events for the site, ordered by
+// `occurred_at` descending (newest first). Filter by `status` (1=failure,
+// 2=success, 3=blocked). Default limit is 100; max 500.
+//
+// GET /api/v1/sites/{siteId}/security/login-events
+func (UnimplementedHandler) ListSiteLoginEvents(ctx context.Context, params ListSiteLoginEventsParams) (r *SiteLoginEventList, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -563,6 +586,24 @@ func (UnimplementedHandler) PutBackupSchedule(ctx context.Context, req *BackupSc
 	return r, ht.ErrNotImplemented
 }
 
+// PutSiteLoginProtection implements putSiteLoginProtection operation.
+//
+// Stores the new config and pushes it to the agent via the signed
+// `sync_security_config` command. If the agent push fails after a
+// successful store, HTTP 200 is still returned with the stored config;
+// the push error is surfaced in the `X-Agent-Push-Warning` response
+// header so callers can surface it as a non-blocking warning.
+// **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
+// the CP automatically adds the requesting operator's client IP (/32 for
+// IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
+// operator from enabling protection and immediately locking themselves out.
+// The auto-added CIDR is reflected in the returned config.
+//
+// PUT /api/v1/sites/{siteId}/security/login-protection
+func (UnimplementedHandler) PutSiteLoginProtection(ctx context.Context, req *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (r PutSiteLoginProtectionRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // RefreshSiteDiagnostics implements refreshSiteDiagnostics operation.
 //
 // Enqueues a signed `diagnostics` command to the agent. The agent runs
@@ -638,6 +679,18 @@ func (UnimplementedHandler) SilenceSitePHPError(ctx context.Context, req OptPHPE
 //
 // POST /api/v1/sites/{siteId}/destinations/test
 func (UnimplementedHandler) TestSiteDestination(ctx context.Context, req *SiteDestinationTest, params TestSiteDestinationParams) (r TestSiteDestinationRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// UnblockSiteIP implements unblockSiteIP operation.
+//
+// Sends the signed `unblock_ip` command to the site's agent, removing any
+// active block for the given IP. Returns `ok=true` on success; `ok=false`
+// with a `detail` message when the agent rejects or cannot apply the
+// unblock (still HTTP 200 — it is an application-level, not transport, failure).
+//
+// POST /api/v1/sites/{siteId}/security/unblock-ip
+func (UnimplementedHandler) UnblockSiteIP(ctx context.Context, req *UnblockIPRequest, params UnblockSiteIPParams) (r UnblockSiteIPRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

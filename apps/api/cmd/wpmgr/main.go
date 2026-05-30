@@ -35,6 +35,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
+	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
@@ -559,6 +560,23 @@ func run() error {
 	activityH := activity.NewHandler(activitySvc)
 	activityAgentH := agent.NewActivityHandler(activitySvc)
 
+	// S2 — Login Protection + IP store. The security service stores per-site
+	// login-protection config, pushes it to the agent via the signed
+	// `sync_security_config` command, ingests login events, and exposes an
+	// unblock-IP action. The agent client is wired when the commander supports
+	// the security command verbs (every real-mode build does).
+	securityRepo := security.NewRepo(pool)
+	securitySvc := security.NewService(securityRepo)
+	securityH := security.NewHandler(securitySvc, auditRec)
+	securityAgentH := agent.NewSecurityLoginEventsHandler(securitySvc)
+	secSiteAdapter := newSecuritySiteAdapter(siteSvc)
+	if secCmd, ok := commander.(security.AgentSecurityClient); ok {
+		securitySvc.SetAgentClient(secCmd, secSiteAdapter)
+		logger.Info("security agent client wired")
+	} else {
+		logger.Warn("security agent client not wired: CP->agent commander unavailable (signing key empty?)")
+	}
+
 	srv := server.New(server.Deps{
 		Config:          cfg,
 		Logger:          logger,
@@ -588,6 +606,9 @@ func run() error {
 		// ADR-037 Sprint 3 wiring — activity log + agent ingest.
 		ActivityH:      activityH,
 		ActivityAgentH: activityAgentH,
+		// S2 — Login Protection + IP store.
+		SecurityH:      securityH,
+		SecurityAgentH: securityAgentH,
 		ServiceName:     cfg.OTel.ServiceName,
 		Version:         version,
 	})
@@ -841,6 +862,14 @@ func (disabledCommander) Rollback(_ context.Context, _ uuid.UUID, _ string, _ ag
 
 func (disabledCommander) SyncErrorConfig(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.ErrorConfigRequest) (agentcmd.ErrorConfigResult, error) {
 	return agentcmd.ErrorConfigResult{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) SyncSecurityConfig(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.SecurityConfigRequest) (agentcmd.SecurityConfigResult, error) {
+	return agentcmd.SecurityConfigResult{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) UnblockIP(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.UnblockIPRequest) (agentcmd.UnblockIPResult, error) {
+	return agentcmd.UnblockIPResult{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

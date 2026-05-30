@@ -269,6 +269,15 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/errors/config
 	GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error)
+	// GetSiteLoginProtection invokes getSiteLoginProtection operation.
+	//
+	// Returns the current login-protection mode, brute-force thresholds, IP
+	// header selection, and CIDR allow/deny lists for the site. When no config
+	// has been saved yet, returns the built-in defaults (mode=protect, standard
+	// thresholds, REMOTE_ADDR, empty CIDR lists).
+	//
+	// GET /api/v1/sites/{siteId}/security/login-protection
+	GetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (*SiteLoginProtectionConfig, error)
 	// GetSiteUptime invokes getSiteUptime operation.
 	//
 	// Returns the uptime % and average latency for a site over the requested
@@ -348,6 +357,14 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/destinations
 	ListSiteDestinations(ctx context.Context, params ListSiteDestinationsParams) (ListSiteDestinationsRes, error)
+	// ListSiteLoginEvents invokes listSiteLoginEvents operation.
+	//
+	// Returns the agent-ingested login events for the site, ordered by
+	// `occurred_at` descending (newest first). Filter by `status` (1=failure,
+	// 2=success, 3=blocked). Default limit is 100; max 500.
+	//
+	// GET /api/v1/sites/{siteId}/security/login-events
+	ListSiteLoginEvents(ctx context.Context, params ListSiteLoginEventsParams) (*SiteLoginEventList, error)
 	// ListSitePHPErrors invokes listSitePHPErrors operation.
 	//
 	// Returns the agent-captured PHP errors for the site, grouped by md5
@@ -431,6 +448,21 @@ type Invoker interface {
 	//
 	// PUT /api/v1/sites/{siteId}/backup-schedule
 	PutBackupSchedule(ctx context.Context, request *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
+	// PutSiteLoginProtection invokes putSiteLoginProtection operation.
+	//
+	// Stores the new config and pushes it to the agent via the signed
+	// `sync_security_config` command. If the agent push fails after a
+	// successful store, HTTP 200 is still returned with the stored config;
+	// the push error is surfaced in the `X-Agent-Push-Warning` response
+	// header so callers can surface it as a non-blocking warning.
+	// **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
+	// the CP automatically adds the requesting operator's client IP (/32 for
+	// IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
+	// operator from enabling protection and immediately locking themselves out.
+	// The auto-added CIDR is reflected in the returned config.
+	//
+	// PUT /api/v1/sites/{siteId}/security/login-protection
+	PutSiteLoginProtection(ctx context.Context, request *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (PutSiteLoginProtectionRes, error)
 	// RefreshSiteDiagnostics invokes refreshSiteDiagnostics operation.
 	//
 	// Enqueues a signed `diagnostics` command to the agent. The agent runs
@@ -488,6 +520,15 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/destinations/test
 	TestSiteDestination(ctx context.Context, request *SiteDestinationTest, params TestSiteDestinationParams) (TestSiteDestinationRes, error)
+	// UnblockSiteIP invokes unblockSiteIP operation.
+	//
+	// Sends the signed `unblock_ip` command to the site's agent, removing any
+	// active block for the given IP. Returns `ok=true` on success; `ok=false`
+	// with a `detail` message when the agent rejects or cannot apply the
+	// unblock (still HTTP 200 — it is an application-level, not transport, failure).
+	//
+	// POST /api/v1/sites/{siteId}/security/unblock-ip
+	UnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error)
 	// UpdateSiteDestination invokes updateSiteDestination operation.
 	//
 	// Update a configured destination (omit secret_key to keep it).
@@ -3064,6 +3105,102 @@ func (c *Client) sendGetSiteErrorConfig(ctx context.Context, params GetSiteError
 	return result, nil
 }
 
+// GetSiteLoginProtection invokes getSiteLoginProtection operation.
+//
+// Returns the current login-protection mode, brute-force thresholds, IP
+// header selection, and CIDR allow/deny lists for the site. When no config
+// has been saved yet, returns the built-in defaults (mode=protect, standard
+// thresholds, REMOTE_ADDR, empty CIDR lists).
+//
+// GET /api/v1/sites/{siteId}/security/login-protection
+func (c *Client) GetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (*SiteLoginProtectionConfig, error) {
+	res, err := c.sendGetSiteLoginProtection(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (res *SiteLoginProtectionConfig, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteLoginProtection"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/security/login-protection"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteLoginProtectionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/security/login-protection"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteLoginProtectionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSiteUptime invokes getSiteUptime operation.
 //
 // Returns the uptime % and average latency for a site over the requested
@@ -4319,6 +4456,139 @@ func (c *Client) sendListSiteDestinations(ctx context.Context, params ListSiteDe
 	return result, nil
 }
 
+// ListSiteLoginEvents invokes listSiteLoginEvents operation.
+//
+// Returns the agent-ingested login events for the site, ordered by
+// `occurred_at` descending (newest first). Filter by `status` (1=failure,
+// 2=success, 3=blocked). Default limit is 100; max 500.
+//
+// GET /api/v1/sites/{siteId}/security/login-events
+func (c *Client) ListSiteLoginEvents(ctx context.Context, params ListSiteLoginEventsParams) (*SiteLoginEventList, error) {
+	res, err := c.sendListSiteLoginEvents(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListSiteLoginEvents(ctx context.Context, params ListSiteLoginEventsParams) (res *SiteLoginEventList, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listSiteLoginEvents"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/security/login-events"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListSiteLoginEventsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/security/login-events"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "status" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "status",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Status.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(int32(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListSiteLoginEventsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ListSitePHPErrors invokes listSitePHPErrors operation.
 //
 // Returns the agent-captured PHP errors for the site, grouped by md5
@@ -5443,6 +5713,111 @@ func (c *Client) sendPutBackupSchedule(ctx context.Context, request *BackupSched
 	return result, nil
 }
 
+// PutSiteLoginProtection invokes putSiteLoginProtection operation.
+//
+// Stores the new config and pushes it to the agent via the signed
+// `sync_security_config` command. If the agent push fails after a
+// successful store, HTTP 200 is still returned with the stored config;
+// the push error is surfaced in the `X-Agent-Push-Warning` response
+// header so callers can surface it as a non-blocking warning.
+// **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
+// the CP automatically adds the requesting operator's client IP (/32 for
+// IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
+// operator from enabling protection and immediately locking themselves out.
+// The auto-added CIDR is reflected in the returned config.
+//
+// PUT /api/v1/sites/{siteId}/security/login-protection
+func (c *Client) PutSiteLoginProtection(ctx context.Context, request *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (PutSiteLoginProtectionRes, error) {
+	res, err := c.sendPutSiteLoginProtection(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPutSiteLoginProtection(ctx context.Context, request *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (res PutSiteLoginProtectionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("putSiteLoginProtection"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/security/login-protection"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PutSiteLoginProtectionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/security/login-protection"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePutSiteLoginProtectionRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodePutSiteLoginProtectionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // RefreshSiteDiagnostics invokes refreshSiteDiagnostics operation.
 //
 // Enqueues a signed `diagnostics` command to the agent. The agent runs
@@ -6113,6 +6488,105 @@ func (c *Client) sendTestSiteDestination(ctx context.Context, request *SiteDesti
 
 	stage = "DecodeResponse"
 	result, err := decodeTestSiteDestinationResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// UnblockSiteIP invokes unblockSiteIP operation.
+//
+// Sends the signed `unblock_ip` command to the site's agent, removing any
+// active block for the given IP. Returns `ok=true` on success; `ok=false`
+// with a `detail` message when the agent rejects or cannot apply the
+// unblock (still HTTP 200 — it is an application-level, not transport, failure).
+//
+// POST /api/v1/sites/{siteId}/security/unblock-ip
+func (c *Client) UnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error) {
+	res, err := c.sendUnblockSiteIP(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (res UnblockSiteIPRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("unblockSiteIP"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/security/unblock-ip"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, UnblockSiteIPOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/security/unblock-ip"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeUnblockSiteIPRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeUnblockSiteIPResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

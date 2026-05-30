@@ -128,6 +128,37 @@ func (c *Client) SyncErrorConfig(ctx context.Context, siteID uuid.UUID, siteURL 
 	return out, nil
 }
 
+// SyncSecurityConfig sends the signed `sync_security_config` command to the
+// site's agent, pushing the per-site login-protection mode, thresholds, and
+// CIDR allow/deny lists. siteID is the target site's stable enrollment UUID,
+// bound into the JWT's aud claim.  An ok=false response (with a 200 HTTP
+// status) is treated as an error with the agent's detail message.
+func (c *Client) SyncSecurityConfig(ctx context.Context, siteID uuid.UUID, siteURL string, req SecurityConfigRequest) (SecurityConfigResult, error) {
+	var out SecurityConfigResult
+	if err := c.post(ctx, siteID, siteURL, "sync_security_config", req, &out); err != nil {
+		return SecurityConfigResult{}, err
+	}
+	if !out.OK {
+		return out, fmt.Errorf("sync_security_config rejected by agent: %s", out.Detail)
+	}
+	return out, nil
+}
+
+// UnblockIP sends the signed `unblock_ip` command to the site's agent,
+// removing any active block for the given IP address. siteID is the target
+// site's stable enrollment UUID, bound into the JWT's aud claim. An ok=false
+// response (with a 200 HTTP status) is treated as an error.
+func (c *Client) UnblockIP(ctx context.Context, siteID uuid.UUID, siteURL string, req UnblockIPRequest) (UnblockIPResult, error) {
+	var out UnblockIPResult
+	if err := c.post(ctx, siteID, siteURL, "unblock_ip", req, &out); err != nil {
+		return UnblockIPResult{}, err
+	}
+	if !out.OK {
+		return out, fmt.Errorf("unblock_ip rejected by agent: %s", out.Detail)
+	}
+	return out, nil
+}
+
 // Diagnostics sends the signed `diagnostics` command to the site's agent and
 // returns the RAW 14-category JSON body. siteID is bound into the JWT's aud
 // claim. Unlike the typed commands above, the response is NOT decoded into a

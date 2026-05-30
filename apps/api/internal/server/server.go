@@ -25,6 +25,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
+	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
@@ -78,6 +79,13 @@ type Deps struct {
 	// ActivityAgentH ingests the agent's hash-chained activity batch at
 	// POST /agent/v1/activity.
 	ActivityAgentH *agent.ActivityHandler
+	// S2 — Login Protection + IP store.
+	// SecurityH serves the operator-facing security routes under
+	// /api/v1/sites/{siteId}/security/...
+	SecurityH *security.Handler
+	// SecurityAgentH ingests the agent's login-event batch at
+	// POST /agent/v1/security/login-events.
+	SecurityAgentH *agent.SecurityLoginEventsHandler
 	ServiceName     string
 	Version         string
 }
@@ -153,6 +161,11 @@ func New(deps Deps) *Server {
 		if deps.ActivityAgentH != nil {
 			deps.ActivityAgentH.Register(agentGroup)
 		}
+		// S2 — agent ingest route for login events. Authenticated via the same
+		// Ed25519 signed-request middleware as all other agent routes.
+		if deps.SecurityAgentH != nil {
+			deps.SecurityAgentH.Register(agentGroup)
+		}
 	}
 
 	// Everything under /api/v1 requires an authenticated principal with an
@@ -191,6 +204,10 @@ func New(deps Deps) *Server {
 	// ADR-037 Sprint 3 — operator-facing activity log + chain verify.
 	if deps.ActivityH != nil {
 		deps.ActivityH.Register(v1)
+	}
+	// S2 — operator-facing security routes (login protection config + events).
+	if deps.SecurityH != nil {
+		deps.SecurityH.Register(v1)
 	}
 
 	return s

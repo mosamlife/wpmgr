@@ -2086,6 +2086,7 @@ func (*Error) logoutRes()                  {}
 func (*Error) oidcLoginRes()               {}
 func (*Error) putAlertConfigRes()          {}
 func (*Error) putBackupScheduleRes()       {}
+func (*Error) putSiteLoginProtectionRes()  {}
 func (*Error) refreshSiteDiagnosticsRes()  {}
 func (*Error) setSiteTagsRes()             {}
 func (*Error) silenceSitePHPErrorRes()     {}
@@ -2385,6 +2386,23 @@ func (*ListSiteDestinationsForbidden) listSiteDestinationsRes() {}
 type ListSiteDestinationsUnauthorized Error
 
 func (*ListSiteDestinationsUnauthorized) listSiteDestinationsRes() {}
+
+type ListSiteLoginEventsStatus int32
+
+const (
+	ListSiteLoginEventsStatus1 ListSiteLoginEventsStatus = 1
+	ListSiteLoginEventsStatus2 ListSiteLoginEventsStatus = 2
+	ListSiteLoginEventsStatus3 ListSiteLoginEventsStatus = 3
+)
+
+// AllValues returns all ListSiteLoginEventsStatus values.
+func (ListSiteLoginEventsStatus) AllValues() []ListSiteLoginEventsStatus {
+	return []ListSiteLoginEventsStatus{
+		ListSiteLoginEventsStatus1,
+		ListSiteLoginEventsStatus2,
+		ListSiteLoginEventsStatus3,
+	}
+}
 
 type ListSitePHPErrorsSilenced string
 
@@ -3169,6 +3187,52 @@ func (o OptListSiteActivitySeverity) Get() (v ListSiteActivitySeverity, ok bool)
 
 // Or returns value if set, or given parameter if does not.
 func (o OptListSiteActivitySeverity) Or(d ListSiteActivitySeverity) ListSiteActivitySeverity {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptListSiteLoginEventsStatus returns new OptListSiteLoginEventsStatus with value set to v.
+func NewOptListSiteLoginEventsStatus(v ListSiteLoginEventsStatus) OptListSiteLoginEventsStatus {
+	return OptListSiteLoginEventsStatus{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListSiteLoginEventsStatus is optional ListSiteLoginEventsStatus.
+type OptListSiteLoginEventsStatus struct {
+	Value ListSiteLoginEventsStatus
+	Set   bool
+}
+
+// IsSet returns true if OptListSiteLoginEventsStatus was set.
+func (o OptListSiteLoginEventsStatus) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListSiteLoginEventsStatus) Reset() {
+	var v ListSiteLoginEventsStatus
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListSiteLoginEventsStatus) SetTo(v ListSiteLoginEventsStatus) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListSiteLoginEventsStatus) Get() (v ListSiteLoginEventsStatus, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListSiteLoginEventsStatus) Or(d ListSiteLoginEventsStatus) ListSiteLoginEventsStatus {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -4733,6 +4797,82 @@ func (s *Role) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// Ref: #/components/schemas/SecurityThresholds
+type SecurityThresholds struct {
+	// Number of failures before a CAPTCHA challenge is shown.
+	CaptchaLimit int32 `json:"captcha_limit"`
+	// Number of failures before a temporary block is applied.
+	TempBlockLimit int32 `json:"temp_block_limit"`
+	// Number of failures before a permanent block is applied.
+	BlockAllLimit int32 `json:"block_all_limit"`
+	// Seconds of inactivity that reset the failure counter.
+	FailedLoginGap int32 `json:"failed_login_gap"`
+	// Seconds after a successful login before a new failure series begins.
+	SuccessLoginGap int32 `json:"success_login_gap"`
+	// Seconds a permanent block remains active.
+	AllBlockedGap int32 `json:"all_blocked_gap"`
+}
+
+// GetCaptchaLimit returns the value of CaptchaLimit.
+func (s *SecurityThresholds) GetCaptchaLimit() int32 {
+	return s.CaptchaLimit
+}
+
+// GetTempBlockLimit returns the value of TempBlockLimit.
+func (s *SecurityThresholds) GetTempBlockLimit() int32 {
+	return s.TempBlockLimit
+}
+
+// GetBlockAllLimit returns the value of BlockAllLimit.
+func (s *SecurityThresholds) GetBlockAllLimit() int32 {
+	return s.BlockAllLimit
+}
+
+// GetFailedLoginGap returns the value of FailedLoginGap.
+func (s *SecurityThresholds) GetFailedLoginGap() int32 {
+	return s.FailedLoginGap
+}
+
+// GetSuccessLoginGap returns the value of SuccessLoginGap.
+func (s *SecurityThresholds) GetSuccessLoginGap() int32 {
+	return s.SuccessLoginGap
+}
+
+// GetAllBlockedGap returns the value of AllBlockedGap.
+func (s *SecurityThresholds) GetAllBlockedGap() int32 {
+	return s.AllBlockedGap
+}
+
+// SetCaptchaLimit sets the value of CaptchaLimit.
+func (s *SecurityThresholds) SetCaptchaLimit(val int32) {
+	s.CaptchaLimit = val
+}
+
+// SetTempBlockLimit sets the value of TempBlockLimit.
+func (s *SecurityThresholds) SetTempBlockLimit(val int32) {
+	s.TempBlockLimit = val
+}
+
+// SetBlockAllLimit sets the value of BlockAllLimit.
+func (s *SecurityThresholds) SetBlockAllLimit(val int32) {
+	s.BlockAllLimit = val
+}
+
+// SetFailedLoginGap sets the value of FailedLoginGap.
+func (s *SecurityThresholds) SetFailedLoginGap(val int32) {
+	s.FailedLoginGap = val
+}
+
+// SetSuccessLoginGap sets the value of SuccessLoginGap.
+func (s *SecurityThresholds) SetSuccessLoginGap(val int32) {
+	s.SuccessLoginGap = val
+}
+
+// SetAllBlockedGap sets the value of AllBlockedGap.
+func (s *SecurityThresholds) SetAllBlockedGap(val int32) {
+	s.AllBlockedGap = val
 }
 
 // SilenceSitePHPErrorNoContent is response for SilenceSitePHPError operation.
@@ -6535,6 +6675,395 @@ func (s *SiteList) SetItems(val []Site) {
 	s.Items = val
 }
 
+// Ref: #/components/schemas/SiteLoginEvent
+type SiteLoginEvent struct {
+	// CP-side row id (BIGSERIAL).
+	ID int64 `json:"id"`
+	// Agent-side event id (cursor tracking).
+	AgentEventID int64 `json:"agent_event_id"`
+	// Client IP address.
+	IP string `json:"ip"`
+	// 1=failure, 2=success, 3=blocked.
+	Status SiteLoginEventStatus `json:"status"`
+	// Agent-assigned event category.
+	Category string `json:"category"`
+	// Attempted username.
+	Username string `json:"username"`
+	// Agent-side request id for correlation.
+	RequestID  string    `json:"request_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	IngestedAt time.Time `json:"ingested_at"`
+}
+
+// GetID returns the value of ID.
+func (s *SiteLoginEvent) GetID() int64 {
+	return s.ID
+}
+
+// GetAgentEventID returns the value of AgentEventID.
+func (s *SiteLoginEvent) GetAgentEventID() int64 {
+	return s.AgentEventID
+}
+
+// GetIP returns the value of IP.
+func (s *SiteLoginEvent) GetIP() string {
+	return s.IP
+}
+
+// GetStatus returns the value of Status.
+func (s *SiteLoginEvent) GetStatus() SiteLoginEventStatus {
+	return s.Status
+}
+
+// GetCategory returns the value of Category.
+func (s *SiteLoginEvent) GetCategory() string {
+	return s.Category
+}
+
+// GetUsername returns the value of Username.
+func (s *SiteLoginEvent) GetUsername() string {
+	return s.Username
+}
+
+// GetRequestID returns the value of RequestID.
+func (s *SiteLoginEvent) GetRequestID() string {
+	return s.RequestID
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *SiteLoginEvent) GetOccurredAt() time.Time {
+	return s.OccurredAt
+}
+
+// GetIngestedAt returns the value of IngestedAt.
+func (s *SiteLoginEvent) GetIngestedAt() time.Time {
+	return s.IngestedAt
+}
+
+// SetID sets the value of ID.
+func (s *SiteLoginEvent) SetID(val int64) {
+	s.ID = val
+}
+
+// SetAgentEventID sets the value of AgentEventID.
+func (s *SiteLoginEvent) SetAgentEventID(val int64) {
+	s.AgentEventID = val
+}
+
+// SetIP sets the value of IP.
+func (s *SiteLoginEvent) SetIP(val string) {
+	s.IP = val
+}
+
+// SetStatus sets the value of Status.
+func (s *SiteLoginEvent) SetStatus(val SiteLoginEventStatus) {
+	s.Status = val
+}
+
+// SetCategory sets the value of Category.
+func (s *SiteLoginEvent) SetCategory(val string) {
+	s.Category = val
+}
+
+// SetUsername sets the value of Username.
+func (s *SiteLoginEvent) SetUsername(val string) {
+	s.Username = val
+}
+
+// SetRequestID sets the value of RequestID.
+func (s *SiteLoginEvent) SetRequestID(val string) {
+	s.RequestID = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *SiteLoginEvent) SetOccurredAt(val time.Time) {
+	s.OccurredAt = val
+}
+
+// SetIngestedAt sets the value of IngestedAt.
+func (s *SiteLoginEvent) SetIngestedAt(val time.Time) {
+	s.IngestedAt = val
+}
+
+// Ref: #/components/schemas/SiteLoginEventList
+type SiteLoginEventList struct {
+	Items []SiteLoginEvent `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *SiteLoginEventList) GetItems() []SiteLoginEvent {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *SiteLoginEventList) SetItems(val []SiteLoginEvent) {
+	s.Items = val
+}
+
+// 1=failure, 2=success, 3=blocked.
+type SiteLoginEventStatus int32
+
+const (
+	SiteLoginEventStatus1 SiteLoginEventStatus = 1
+	SiteLoginEventStatus2 SiteLoginEventStatus = 2
+	SiteLoginEventStatus3 SiteLoginEventStatus = 3
+)
+
+// AllValues returns all SiteLoginEventStatus values.
+func (SiteLoginEventStatus) AllValues() []SiteLoginEventStatus {
+	return []SiteLoginEventStatus{
+		SiteLoginEventStatus1,
+		SiteLoginEventStatus2,
+		SiteLoginEventStatus3,
+	}
+}
+
+// Ref: #/components/schemas/SiteLoginProtectionConfig
+type SiteLoginProtectionConfig struct {
+	// Login protection mode:
+	// - `disabled` — no login protection active.
+	// - `audit` — record events but do not block.
+	// - `protect` — record events AND block based on thresholds.
+	Mode       SiteLoginProtectionConfigMode `json:"mode"`
+	Thresholds SecurityThresholds            `json:"thresholds"`
+	// HTTP header the agent reads to extract the real client IP (e.g.
+	// `REMOTE_ADDR`, `HTTP_X_FORWARDED_FOR`).
+	IPHeader string `json:"ip_header"`
+	// CIDRs that always bypass all checks (IPv4 or IPv6, with prefix length).
+	AllowCidrs []string `json:"allow_cidrs"`
+	// CIDRs that are always denied before threshold evaluation.
+	DenyCidrs []string `json:"deny_cidrs"`
+	// When the config was last saved. Absent for the built-in default.
+	UpdatedAt OptDateTime `json:"updated_at"`
+}
+
+// GetMode returns the value of Mode.
+func (s *SiteLoginProtectionConfig) GetMode() SiteLoginProtectionConfigMode {
+	return s.Mode
+}
+
+// GetThresholds returns the value of Thresholds.
+func (s *SiteLoginProtectionConfig) GetThresholds() SecurityThresholds {
+	return s.Thresholds
+}
+
+// GetIPHeader returns the value of IPHeader.
+func (s *SiteLoginProtectionConfig) GetIPHeader() string {
+	return s.IPHeader
+}
+
+// GetAllowCidrs returns the value of AllowCidrs.
+func (s *SiteLoginProtectionConfig) GetAllowCidrs() []string {
+	return s.AllowCidrs
+}
+
+// GetDenyCidrs returns the value of DenyCidrs.
+func (s *SiteLoginProtectionConfig) GetDenyCidrs() []string {
+	return s.DenyCidrs
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SiteLoginProtectionConfig) GetUpdatedAt() OptDateTime {
+	return s.UpdatedAt
+}
+
+// SetMode sets the value of Mode.
+func (s *SiteLoginProtectionConfig) SetMode(val SiteLoginProtectionConfigMode) {
+	s.Mode = val
+}
+
+// SetThresholds sets the value of Thresholds.
+func (s *SiteLoginProtectionConfig) SetThresholds(val SecurityThresholds) {
+	s.Thresholds = val
+}
+
+// SetIPHeader sets the value of IPHeader.
+func (s *SiteLoginProtectionConfig) SetIPHeader(val string) {
+	s.IPHeader = val
+}
+
+// SetAllowCidrs sets the value of AllowCidrs.
+func (s *SiteLoginProtectionConfig) SetAllowCidrs(val []string) {
+	s.AllowCidrs = val
+}
+
+// SetDenyCidrs sets the value of DenyCidrs.
+func (s *SiteLoginProtectionConfig) SetDenyCidrs(val []string) {
+	s.DenyCidrs = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SiteLoginProtectionConfig) SetUpdatedAt(val OptDateTime) {
+	s.UpdatedAt = val
+}
+
+func (*SiteLoginProtectionConfig) putSiteLoginProtectionRes() {}
+
+// Login protection mode:
+// - `disabled` — no login protection active.
+// - `audit` — record events but do not block.
+// - `protect` — record events AND block based on thresholds.
+type SiteLoginProtectionConfigMode string
+
+const (
+	SiteLoginProtectionConfigModeDisabled SiteLoginProtectionConfigMode = "disabled"
+	SiteLoginProtectionConfigModeAudit    SiteLoginProtectionConfigMode = "audit"
+	SiteLoginProtectionConfigModeProtect  SiteLoginProtectionConfigMode = "protect"
+)
+
+// AllValues returns all SiteLoginProtectionConfigMode values.
+func (SiteLoginProtectionConfigMode) AllValues() []SiteLoginProtectionConfigMode {
+	return []SiteLoginProtectionConfigMode{
+		SiteLoginProtectionConfigModeDisabled,
+		SiteLoginProtectionConfigModeAudit,
+		SiteLoginProtectionConfigModeProtect,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteLoginProtectionConfigMode) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteLoginProtectionConfigModeDisabled:
+		return []byte(s), nil
+	case SiteLoginProtectionConfigModeAudit:
+		return []byte(s), nil
+	case SiteLoginProtectionConfigModeProtect:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteLoginProtectionConfigMode) UnmarshalText(data []byte) error {
+	switch SiteLoginProtectionConfigMode(data) {
+	case SiteLoginProtectionConfigModeDisabled:
+		*s = SiteLoginProtectionConfigModeDisabled
+		return nil
+	case SiteLoginProtectionConfigModeAudit:
+		*s = SiteLoginProtectionConfigModeAudit
+		return nil
+	case SiteLoginProtectionConfigModeProtect:
+		*s = SiteLoginProtectionConfigModeProtect
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/SiteLoginProtectionConfigUpdate
+type SiteLoginProtectionConfigUpdate struct {
+	// Login protection mode.
+	Mode       SiteLoginProtectionConfigUpdateMode `json:"mode"`
+	Thresholds SecurityThresholds                  `json:"thresholds"`
+	// HTTP header the agent reads for the real client IP.
+	IPHeader string `json:"ip_header"`
+	// CIDRs always allowed. Empty = no static allowlist. When mode=protect
+	// and this list is empty the CP auto-adds the operator's IP (/32 or /128).
+	AllowCidrs []string `json:"allow_cidrs"`
+	// CIDRs always denied before threshold evaluation. Empty = none.
+	DenyCidrs []string `json:"deny_cidrs"`
+}
+
+// GetMode returns the value of Mode.
+func (s *SiteLoginProtectionConfigUpdate) GetMode() SiteLoginProtectionConfigUpdateMode {
+	return s.Mode
+}
+
+// GetThresholds returns the value of Thresholds.
+func (s *SiteLoginProtectionConfigUpdate) GetThresholds() SecurityThresholds {
+	return s.Thresholds
+}
+
+// GetIPHeader returns the value of IPHeader.
+func (s *SiteLoginProtectionConfigUpdate) GetIPHeader() string {
+	return s.IPHeader
+}
+
+// GetAllowCidrs returns the value of AllowCidrs.
+func (s *SiteLoginProtectionConfigUpdate) GetAllowCidrs() []string {
+	return s.AllowCidrs
+}
+
+// GetDenyCidrs returns the value of DenyCidrs.
+func (s *SiteLoginProtectionConfigUpdate) GetDenyCidrs() []string {
+	return s.DenyCidrs
+}
+
+// SetMode sets the value of Mode.
+func (s *SiteLoginProtectionConfigUpdate) SetMode(val SiteLoginProtectionConfigUpdateMode) {
+	s.Mode = val
+}
+
+// SetThresholds sets the value of Thresholds.
+func (s *SiteLoginProtectionConfigUpdate) SetThresholds(val SecurityThresholds) {
+	s.Thresholds = val
+}
+
+// SetIPHeader sets the value of IPHeader.
+func (s *SiteLoginProtectionConfigUpdate) SetIPHeader(val string) {
+	s.IPHeader = val
+}
+
+// SetAllowCidrs sets the value of AllowCidrs.
+func (s *SiteLoginProtectionConfigUpdate) SetAllowCidrs(val []string) {
+	s.AllowCidrs = val
+}
+
+// SetDenyCidrs sets the value of DenyCidrs.
+func (s *SiteLoginProtectionConfigUpdate) SetDenyCidrs(val []string) {
+	s.DenyCidrs = val
+}
+
+// Login protection mode.
+type SiteLoginProtectionConfigUpdateMode string
+
+const (
+	SiteLoginProtectionConfigUpdateModeDisabled SiteLoginProtectionConfigUpdateMode = "disabled"
+	SiteLoginProtectionConfigUpdateModeAudit    SiteLoginProtectionConfigUpdateMode = "audit"
+	SiteLoginProtectionConfigUpdateModeProtect  SiteLoginProtectionConfigUpdateMode = "protect"
+)
+
+// AllValues returns all SiteLoginProtectionConfigUpdateMode values.
+func (SiteLoginProtectionConfigUpdateMode) AllValues() []SiteLoginProtectionConfigUpdateMode {
+	return []SiteLoginProtectionConfigUpdateMode{
+		SiteLoginProtectionConfigUpdateModeDisabled,
+		SiteLoginProtectionConfigUpdateModeAudit,
+		SiteLoginProtectionConfigUpdateModeProtect,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteLoginProtectionConfigUpdateMode) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteLoginProtectionConfigUpdateModeDisabled:
+		return []byte(s), nil
+	case SiteLoginProtectionConfigUpdateModeAudit:
+		return []byte(s), nil
+	case SiteLoginProtectionConfigUpdateModeProtect:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteLoginProtectionConfigUpdateMode) UnmarshalText(data []byte) error {
+	switch SiteLoginProtectionConfigUpdateMode(data) {
+	case SiteLoginProtectionConfigUpdateModeDisabled:
+		*s = SiteLoginProtectionConfigUpdateModeDisabled
+		return nil
+	case SiteLoginProtectionConfigUpdateModeAudit:
+		*s = SiteLoginProtectionConfigUpdateModeAudit
+		return nil
+	case SiteLoginProtectionConfigUpdateModeProtect:
+		*s = SiteLoginProtectionConfigUpdateModeProtect
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type SiteStatus string
 
 const (
@@ -7010,6 +7539,60 @@ func (*TestSiteDestinationForbidden) testSiteDestinationRes() {}
 type TestSiteDestinationUnauthorized Error
 
 func (*TestSiteDestinationUnauthorized) testSiteDestinationRes() {}
+
+// Ref: #/components/schemas/UnblockIPRequest
+type UnblockIPRequest struct {
+	// The IPv4 or IPv6 address to unblock.
+	IP string `json:"ip"`
+}
+
+// GetIP returns the value of IP.
+func (s *UnblockIPRequest) GetIP() string {
+	return s.IP
+}
+
+// SetIP sets the value of IP.
+func (s *UnblockIPRequest) SetIP(val string) {
+	s.IP = val
+}
+
+// Ref: #/components/schemas/UnblockIPResult
+type UnblockIPResult struct {
+	// Whether the agent successfully removed the block.
+	Ok bool `json:"ok"`
+	// Short human-readable note from the agent.
+	Detail string `json:"detail"`
+}
+
+// GetOk returns the value of Ok.
+func (s *UnblockIPResult) GetOk() bool {
+	return s.Ok
+}
+
+// GetDetail returns the value of Detail.
+func (s *UnblockIPResult) GetDetail() string {
+	return s.Detail
+}
+
+// SetOk sets the value of Ok.
+func (s *UnblockIPResult) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *UnblockIPResult) SetDetail(val string) {
+	s.Detail = val
+}
+
+func (*UnblockIPResult) unblockSiteIPRes() {}
+
+type UnblockSiteIPServiceUnavailable Error
+
+func (*UnblockSiteIPServiceUnavailable) unblockSiteIPRes() {}
+
+type UnblockSiteIPUnprocessableEntity Error
+
+func (*UnblockSiteIPUnprocessableEntity) unblockSiteIPRes() {}
 
 // One thing to update on a site.
 // Ref: #/components/schemas/UpdateItem

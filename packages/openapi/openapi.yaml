@@ -1757,6 +1757,138 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ActivityVerifyResult"
+  # ── S2 — Login Protection + IP store ───────────────────────────────────────
+  /api/v1/sites/{siteId}/security/login-protection:
+    get:
+      operationId: getSiteLoginProtection
+      summary: Get the login-protection config for a site
+      description: |
+        Returns the current login-protection mode, brute-force thresholds, IP
+        header selection, and CIDR allow/deny lists for the site. When no config
+        has been saved yet, returns the built-in defaults (mode=protect, standard
+        thresholds, REMOTE_ADDR, empty CIDR lists).
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Current login-protection config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteLoginProtectionConfig"
+    put:
+      operationId: putSiteLoginProtection
+      summary: Save (and push to agent) the login-protection config
+      description: |
+        Stores the new config and pushes it to the agent via the signed
+        `sync_security_config` command. If the agent push fails after a
+        successful store, HTTP 200 is still returned with the stored config;
+        the push error is surfaced in the `X-Agent-Push-Warning` response
+        header so callers can surface it as a non-blocking warning.
+
+        **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
+        the CP automatically adds the requesting operator's client IP (/32 for
+        IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
+        operator from enabling protection and immediately locking themselves out.
+        The auto-added CIDR is reflected in the returned config.
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteLoginProtectionConfigUpdate"
+      responses:
+        "200":
+          description: Stored login-protection config (including any auto-added operator CIDR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteLoginProtectionConfig"
+        "422":
+          description: Validation error (invalid mode, CIDR, or thresholds)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/security/unblock-ip:
+    post:
+      operationId: unblockSiteIP
+      summary: Unblock an IP address on the site
+      description: |
+        Sends the signed `unblock_ip` command to the site's agent, removing any
+        active block for the given IP. Returns `ok=true` on success; `ok=false`
+        with a `detail` message when the agent rejects or cannot apply the
+        unblock (still HTTP 200 — it is an application-level, not transport, failure).
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnblockIPRequest"
+      responses:
+        "200":
+          description: Unblock result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnblockIPResult"
+        "422":
+          description: Validation error (invalid IP address)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Security agent client not wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/security/login-events:
+    get:
+      operationId: listSiteLoginEvents
+      summary: List login events for a site
+      description: |
+        Returns the agent-ingested login events for the site, ordered by
+        `occurred_at` descending (newest first). Filter by `status` (1=failure,
+        2=success, 3=blocked). Default limit is 100; max 500.
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 500
+            default: 100
+          description: Maximum number of events to return.
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            enum: [1, 2, 3]
+          description: |
+            Filter by login-event status: 1=failure, 2=success, 3=blocked.
+            Omit to return all statuses.
+      responses:
+        "200":
+          description: Login event list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteLoginEventList"
 components:
   parameters:
     Limit:
@@ -3564,3 +3696,179 @@ components:
         total:
           type: integer
           description: Total number of events folded during verification.
+    # ── S2 — Login Protection + IP store ───────────────────────────────────
+    SecurityThresholds:
+      type: object
+      required:
+        - captcha_limit
+        - temp_block_limit
+        - block_all_limit
+        - failed_login_gap
+        - success_login_gap
+        - all_blocked_gap
+      properties:
+        captcha_limit:
+          type: integer
+          format: int32
+          description: Number of failures before a CAPTCHA challenge is shown.
+        temp_block_limit:
+          type: integer
+          format: int32
+          description: Number of failures before a temporary block is applied.
+        block_all_limit:
+          type: integer
+          format: int32
+          description: Number of failures before a permanent block is applied.
+        failed_login_gap:
+          type: integer
+          format: int32
+          description: |
+            Seconds of inactivity that reset the failure counter.
+        success_login_gap:
+          type: integer
+          format: int32
+          description: |
+            Seconds after a successful login before a new failure series begins.
+        all_blocked_gap:
+          type: integer
+          format: int32
+          description: Seconds a permanent block remains active.
+    SiteLoginProtectionConfig:
+      type: object
+      required:
+        - mode
+        - thresholds
+        - ip_header
+        - allow_cidrs
+        - deny_cidrs
+      properties:
+        mode:
+          type: string
+          enum: [disabled, audit, protect]
+          description: |
+            Login protection mode:
+              - `disabled` — no login protection active.
+              - `audit` — record events but do not block.
+              - `protect` — record events AND block based on thresholds.
+        thresholds:
+          $ref: "#/components/schemas/SecurityThresholds"
+        ip_header:
+          type: string
+          description: |
+            HTTP header the agent reads to extract the real client IP (e.g.
+            `REMOTE_ADDR`, `HTTP_X_FORWARDED_FOR`).
+        allow_cidrs:
+          type: array
+          description: |
+            CIDRs that always bypass all checks (IPv4 or IPv6, with prefix length).
+          items:
+            type: string
+        deny_cidrs:
+          type: array
+          description: |
+            CIDRs that are always denied before threshold evaluation.
+          items:
+            type: string
+        updated_at:
+          type: string
+          format: date-time
+          description: When the config was last saved. Absent for the built-in default.
+    SiteLoginProtectionConfigUpdate:
+      type: object
+      required:
+        - mode
+        - thresholds
+        - ip_header
+        - allow_cidrs
+        - deny_cidrs
+      properties:
+        mode:
+          type: string
+          enum: [disabled, audit, protect]
+          description: Login protection mode.
+        thresholds:
+          $ref: "#/components/schemas/SecurityThresholds"
+        ip_header:
+          type: string
+          description: HTTP header the agent reads for the real client IP.
+        allow_cidrs:
+          type: array
+          description: |
+            CIDRs always allowed. Empty = no static allowlist. When mode=protect
+            and this list is empty the CP auto-adds the operator's IP (/32 or /128).
+          items:
+            type: string
+        deny_cidrs:
+          type: array
+          description: CIDRs always denied before threshold evaluation. Empty = none.
+          items:
+            type: string
+    UnblockIPRequest:
+      type: object
+      required: [ip]
+      properties:
+        ip:
+          type: string
+          description: The IPv4 or IPv6 address to unblock.
+    UnblockIPResult:
+      type: object
+      required: [ok, detail]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the agent successfully removed the block.
+        detail:
+          type: string
+          description: Short human-readable note from the agent.
+    SiteLoginEvent:
+      type: object
+      required:
+        - id
+        - agent_event_id
+        - ip
+        - status
+        - category
+        - username
+        - request_id
+        - occurred_at
+        - ingested_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: CP-side row id (BIGSERIAL).
+        agent_event_id:
+          type: integer
+          format: int64
+          description: Agent-side event id (cursor tracking).
+        ip:
+          type: string
+          description: Client IP address.
+        status:
+          type: integer
+          format: int32
+          enum: [1, 2, 3]
+          description: "1=failure, 2=success, 3=blocked."
+        category:
+          type: string
+          description: Agent-assigned event category.
+        username:
+          type: string
+          description: Attempted username.
+        request_id:
+          type: string
+          description: Agent-side request id for correlation.
+        occurred_at:
+          type: string
+          format: date-time
+        ingested_at:
+          type: string
+          format: date-time
+    SiteLoginEventList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteLoginEvent"

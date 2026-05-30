@@ -81,6 +81,8 @@ import type {
   GetSiteErrorConfigErrors,
   GetSiteErrorConfigResponses,
   GetSiteErrors,
+  GetSiteLoginProtectionData,
+  GetSiteLoginProtectionResponses,
   GetSiteResponses,
   GetSiteUptimeData,
   GetSiteUptimeErrors,
@@ -112,6 +114,8 @@ import type {
   ListSiteDestinationsData,
   ListSiteDestinationsErrors,
   ListSiteDestinationsResponses,
+  ListSiteLoginEventsData,
+  ListSiteLoginEventsResponses,
   ListSitePhpErrorsData,
   ListSitePhpErrorsResponses,
   ListSitesData,
@@ -140,6 +144,9 @@ import type {
   PutBackupScheduleData,
   PutBackupScheduleErrors,
   PutBackupScheduleResponses,
+  PutSiteLoginProtectionData,
+  PutSiteLoginProtectionErrors,
+  PutSiteLoginProtectionResponses,
   RefreshSiteDiagnosticsData,
   RefreshSiteDiagnosticsErrors,
   RefreshSiteDiagnosticsResponses,
@@ -169,6 +176,9 @@ import type {
   TestSiteDestinationData,
   TestSiteDestinationErrors,
   TestSiteDestinationResponses,
+  UnblockSiteIpData,
+  UnblockSiteIpErrors,
+  UnblockSiteIpResponses,
   UpdateSiteDestinationData,
   UpdateSiteDestinationErrors,
   UpdateSiteDestinationResponses,
@@ -1316,3 +1326,95 @@ export const verifySiteActivity = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: "/api/v1/sites/{siteId}/activity/verify", ...options });
+
+/**
+ * Get the login-protection config for a site
+ *
+ * Returns the current login-protection mode, brute-force thresholds, IP
+ * header selection, and CIDR allow/deny lists for the site. When no config
+ * has been saved yet, returns the built-in defaults (mode=protect, standard
+ * thresholds, REMOTE_ADDR, empty CIDR lists).
+ *
+ */
+export const getSiteLoginProtection = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteLoginProtectionData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteLoginProtectionResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/security/login-protection", ...options });
+
+/**
+ * Save (and push to agent) the login-protection config
+ *
+ * Stores the new config and pushes it to the agent via the signed
+ * `sync_security_config` command. If the agent push fails after a
+ * successful store, HTTP 200 is still returned with the stored config;
+ * the push error is surfaced in the `X-Agent-Push-Warning` response
+ * header so callers can surface it as a non-blocking warning.
+ *
+ * **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
+ * the CP automatically adds the requesting operator's client IP (/32 for
+ * IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
+ * operator from enabling protection and immediately locking themselves out.
+ * The auto-added CIDR is reflected in the returned config.
+ *
+ */
+export const putSiteLoginProtection = <ThrowOnError extends boolean = false>(
+  options: Options<PutSiteLoginProtectionData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    PutSiteLoginProtectionResponses,
+    PutSiteLoginProtectionErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/security/login-protection",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Unblock an IP address on the site
+ *
+ * Sends the signed `unblock_ip` command to the site's agent, removing any
+ * active block for the given IP. Returns `ok=true` on success; `ok=false`
+ * with a `detail` message when the agent rejects or cannot apply the
+ * unblock (still HTTP 200 — it is an application-level, not transport, failure).
+ *
+ */
+export const unblockSiteIp = <ThrowOnError extends boolean = false>(
+  options: Options<UnblockSiteIpData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    UnblockSiteIpResponses,
+    UnblockSiteIpErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/security/unblock-ip",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List login events for a site
+ *
+ * Returns the agent-ingested login events for the site, ordered by
+ * `occurred_at` descending (newest first). Filter by `status` (1=failure,
+ * 2=success, 3=blocked). Default limit is 100; max 500.
+ *
+ */
+export const listSiteLoginEvents = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteLoginEventsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteLoginEventsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/security/login-events", ...options });

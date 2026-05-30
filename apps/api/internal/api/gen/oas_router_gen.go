@@ -29,7 +29,7 @@ var (
 	rn16AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn46AllowedHeaders = map[string]string{
+	rn47AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn17AllowedHeaders = map[string]string{
@@ -50,7 +50,7 @@ var (
 	rn18AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn68AllowedHeaders = map[string]string{
+	rn71AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn22AllowedHeaders = map[string]string{
@@ -59,10 +59,16 @@ var (
 	rn37AllowedHeaders = map[string]string{
 		"PATCH": "Content-Type",
 	}
-	rn67AllowedHeaders = map[string]string{
+	rn70AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn64AllowedHeaders = map[string]string{
+	rn38AllowedHeaders = map[string]string{
+		"PUT": "Content-Type",
+	}
+	rn73AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+	rn67AllowedHeaders = map[string]string{
 		"PUT": "Content-Type",
 	}
 	rn19AllowedHeaders = map[string]string{
@@ -71,10 +77,10 @@ var (
 	rn20AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn52AllowedHeaders = map[string]string{
+	rn55AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn61AllowedHeaders = map[string]string{
+	rn64AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn24AllowedHeaders = map[string]string{
@@ -525,7 +531,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn46AllowedHeaders,
+									allowedHeaders: rn47AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -886,7 +892,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 													default:
 														s.notAllowed(w, r, notAllowedParams{
 															allowedMethods: "POST",
-															allowedHeaders: rn68AllowedHeaders,
+															allowedHeaders: rn71AllowedHeaders,
 															acceptPost:     "application/json",
 															acceptPatch:    "",
 														})
@@ -1098,7 +1104,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 												default:
 													s.notAllowed(w, r, notAllowedParams{
 														allowedMethods: "POST",
-														allowedHeaders: rn67AllowedHeaders,
+														allowedHeaders: rn70AllowedHeaders,
 														acceptPost:     "application/json",
 														acceptPatch:    "",
 													})
@@ -1107,6 +1113,119 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 												return
 											}
 
+										}
+
+									}
+
+								case 's': // Prefix: "security/"
+
+									if l := len("security/"); len(elem) >= l && elem[0:l] == "security/" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										break
+									}
+									switch elem[0] {
+									case 'l': // Prefix: "login-"
+
+										if l := len("login-"); len(elem) >= l && elem[0:l] == "login-" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											break
+										}
+										switch elem[0] {
+										case 'e': // Prefix: "events"
+
+											if l := len("events"); len(elem) >= l && elem[0:l] == "events" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch r.Method {
+												case "GET":
+													s.handleListSiteLoginEventsRequest([1]string{
+														args[0],
+													}, elemIsEscaped, w, r)
+												default:
+													s.notAllowed(w, r, notAllowedParams{
+														allowedMethods: "GET",
+														allowedHeaders: nil,
+														acceptPost:     "",
+														acceptPatch:    "",
+													})
+												}
+
+												return
+											}
+
+										case 'p': // Prefix: "protection"
+
+											if l := len("protection"); len(elem) >= l && elem[0:l] == "protection" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch r.Method {
+												case "GET":
+													s.handleGetSiteLoginProtectionRequest([1]string{
+														args[0],
+													}, elemIsEscaped, w, r)
+												case "PUT":
+													s.handlePutSiteLoginProtectionRequest([1]string{
+														args[0],
+													}, elemIsEscaped, w, r)
+												default:
+													s.notAllowed(w, r, notAllowedParams{
+														allowedMethods: "GET,PUT",
+														allowedHeaders: rn38AllowedHeaders,
+														acceptPost:     "",
+														acceptPatch:    "",
+													})
+												}
+
+												return
+											}
+
+										}
+
+									case 'u': // Prefix: "unblock-ip"
+
+										if l := len("unblock-ip"); len(elem) >= l && elem[0:l] == "unblock-ip" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch r.Method {
+											case "POST":
+												s.handleUnblockSiteIPRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											default:
+												s.notAllowed(w, r, notAllowedParams{
+													allowedMethods: "POST",
+													allowedHeaders: rn73AllowedHeaders,
+													acceptPost:     "application/json",
+													acceptPatch:    "",
+												})
+											}
+
+											return
 										}
 
 									}
@@ -1129,7 +1248,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 										default:
 											s.notAllowed(w, r, notAllowedParams{
 												allowedMethods: "PUT",
-												allowedHeaders: rn64AllowedHeaders,
+												allowedHeaders: rn67AllowedHeaders,
 												acceptPost:     "",
 												acceptPatch:    "",
 											})
@@ -1462,7 +1581,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "POST",
-										allowedHeaders: rn52AllowedHeaders,
+										allowedHeaders: rn55AllowedHeaders,
 										acceptPost:     "application/json",
 										acceptPatch:    "",
 									})
@@ -1603,7 +1722,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "POST",
-									allowedHeaders: rn61AllowedHeaders,
+									allowedHeaders: rn64AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -2788,6 +2907,118 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 												}
 											}
 
+										}
+
+									}
+
+								case 's': // Prefix: "security/"
+
+									if l := len("security/"); len(elem) >= l && elem[0:l] == "security/" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										break
+									}
+									switch elem[0] {
+									case 'l': // Prefix: "login-"
+
+										if l := len("login-"); len(elem) >= l && elem[0:l] == "login-" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											break
+										}
+										switch elem[0] {
+										case 'e': // Prefix: "events"
+
+											if l := len("events"); len(elem) >= l && elem[0:l] == "events" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch method {
+												case "GET":
+													r.name = ListSiteLoginEventsOperation
+													r.summary = "List login events for a site"
+													r.operationID = "listSiteLoginEvents"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/security/login-events"
+													r.args = args
+													r.count = 1
+													return r, true
+												default:
+													return
+												}
+											}
+
+										case 'p': // Prefix: "protection"
+
+											if l := len("protection"); len(elem) >= l && elem[0:l] == "protection" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch method {
+												case "GET":
+													r.name = GetSiteLoginProtectionOperation
+													r.summary = "Get the login-protection config for a site"
+													r.operationID = "getSiteLoginProtection"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/security/login-protection"
+													r.args = args
+													r.count = 1
+													return r, true
+												case "PUT":
+													r.name = PutSiteLoginProtectionOperation
+													r.summary = "Save (and push to agent) the login-protection config"
+													r.operationID = "putSiteLoginProtection"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/security/login-protection"
+													r.args = args
+													r.count = 1
+													return r, true
+												default:
+													return
+												}
+											}
+
+										}
+
+									case 'u': // Prefix: "unblock-ip"
+
+										if l := len("unblock-ip"); len(elem) >= l && elem[0:l] == "unblock-ip" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch method {
+											case "POST":
+												r.name = UnblockSiteIPOperation
+												r.summary = "Unblock an IP address on the site"
+												r.operationID = "unblockSiteIP"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/security/unblock-ip"
+												r.args = args
+												r.count = 1
+												return r, true
+											default:
+												return
+											}
 										}
 
 									}

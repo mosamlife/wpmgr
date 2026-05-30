@@ -39,14 +39,23 @@ namespace WPMgr\Agent\Support;
  */
 final class MuPluginInstaller
 {
-    /** Destination basename within wp-content/mu-plugins/. */
+    /** Destination basename within wp-content/mu-plugins/ for the error-trap. */
     public const DEST_BASENAME = 'a-wpmgr-error-trap.php';
 
-    /** Source basename within the plugin's `mu-plugin-loader/` directory. */
+    /** Source basename within the plugin's `mu-plugin-loader/` directory (error-trap). */
     public const SOURCE_BASENAME = 'a-wpmgr-error-trap.php';
 
-    /** wp-options flag set when install has been verified at least once. */
+    /** Destination basename within wp-content/mu-plugins/ for the WAF IP gate. */
+    public const WAF_DEST_BASENAME = 'a-wpmgr-waf.php';
+
+    /** Source basename within the plugin's `mu-plugin-loader/` directory (WAF gate). */
+    public const WAF_SOURCE_BASENAME = 'a-wpmgr-waf.php';
+
+    /** wp-options flag set when error-trap install has been verified at least once. */
     public const OPTION_INSTALLED = 'wpmgr_agent_mu_installed_at';
+
+    /** wp-options flag set when WAF install has been verified at least once. */
+    public const OPTION_WAF_INSTALLED = 'wpmgr_agent_mu_waf_installed_at';
 
     private string $pluginDir;
 
@@ -107,6 +116,101 @@ final class MuPluginInstaller
         }
         $this->markInstalled();
         return true;
+    }
+
+    /**
+     * Ensure the WAF mu-plugin file is present and up-to-date. Mirrors install()
+     * but operates on the WAF source/destination pair.
+     *
+     * The WAF gate (a-wpmgr-waf.php) reads wpmgr_security_config directly via
+     * $wpdb and fires BEFORE WordPress boots, so updating it to match the
+     * source on every plugins_loaded call guarantees the gate binary stays
+     * current even after a plugin update that rewrote the source file.
+     *
+     * Idempotent: same source content + same destination content = no-op.
+     *
+     * @return bool True when the WAF mu-plugin is in place; false when install
+     *              was attempted but failed (e.g. mu-plugins/ not writable).
+     */
+    public function installWaf(): bool
+    {
+        $source = $this->pluginDir . '/mu-plugin-loader/' . self::WAF_SOURCE_BASENAME;
+        if (!file_exists($source) || !is_readable($source)) {
+            return false;
+        }
+
+        $muDir = defined('WPMU_PLUGIN_DIR') ? (string) constant('WPMU_PLUGIN_DIR') : (defined('WP_CONTENT_DIR') ? constant('WP_CONTENT_DIR') . '/mu-plugins' : '');
+        if ($muDir === '') {
+            return false;
+        }
+
+        if (!is_dir($muDir)) {
+            if (!@mkdir($muDir, 0755, true) && !is_dir($muDir)) {
+                return false;
+            }
+        }
+
+        $dest = rtrim($muDir, '/\\') . '/' . self::WAF_DEST_BASENAME;
+
+        // Content-fingerprint short-circuit: if the destination matches the
+        // source byte-for-byte, do nothing.
+        if (file_exists($dest) && @sha1_file($dest) === @sha1_file($source)) {
+            $this->markWafInstalled();
+            return true;
+        }
+
+        $bytes = @file_get_contents($source);
+        if ($bytes === false) {
+            return false;
+        }
+        $written = @file_put_contents($dest, $bytes);
+        if ($written === false) {
+            return false;
+        }
+        $this->markWafInstalled();
+        return true;
+    }
+
+    /**
+     * Remove the WAF mu-plugin file. Called on plugin deactivation.
+     *
+     * @return bool
+     */
+    public function uninstallWaf(): bool
+    {
+        $muDir = defined('WPMU_PLUGIN_DIR') ? (string) constant('WPMU_PLUGIN_DIR') : '';
+        if ($muDir === '') {
+            return false;
+        }
+        $dest = rtrim($muDir, '/\\') . '/' . self::WAF_DEST_BASENAME;
+        if (!file_exists($dest)) {
+            return true;
+        }
+        if (function_exists('delete_option')) {
+            delete_option(self::OPTION_WAF_INSTALLED);
+        }
+        return (bool) @unlink($dest);
+    }
+
+    /**
+     * Report whether the WAF mu-plugin is currently present.
+     */
+    public function isWafInstalled(): bool
+    {
+        $muDir = defined('WPMU_PLUGIN_DIR') ? (string) constant('WPMU_PLUGIN_DIR') : '';
+        if ($muDir === '') {
+            return false;
+        }
+        $dest = rtrim($muDir, '/\\') . '/' . self::WAF_DEST_BASENAME;
+        return file_exists($dest);
+    }
+
+    private function markWafInstalled(): void
+    {
+        if (!function_exists('update_option')) {
+            return;
+        }
+        update_option(self::OPTION_WAF_INSTALLED, time(), false);
     }
 
     /**

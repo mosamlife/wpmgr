@@ -260,6 +260,20 @@ func encodePutBackupScheduleRequest(
 	return nil
 }
 
+func encodePutSiteLoginProtectionRequest(
+	req *SiteLoginProtectionConfigUpdate,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeRegisterRequest(
 	req *RegisterRequest,
 	r *http.Request,
@@ -310,6 +324,20 @@ func encodeSilenceSitePHPErrorRequest(
 
 func encodeTestSiteDestinationRequest(
 	req *SiteDestinationTest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUnblockSiteIPRequest(
+	req *UnblockIPRequest,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

@@ -79,6 +79,11 @@ export {
   // activity log (ADR-037 Sprint 3)
   listSiteActivity,
   verifySiteActivity,
+  // login protection (S2)
+  getSiteLoginProtection,
+  putSiteLoginProtection,
+  unblockSiteIp,
+  listSiteLoginEvents,
 } from "./generated/sdk.gen";
 
 // --- Domain + request/response types ----------------------------------------
@@ -233,4 +238,20 @@ export type {
   ListSiteActivityResponse,
   VerifySiteActivityData,
   VerifySiteActivityResponse,
+  // login protection (S2)
+  SecurityThresholds,
+  SiteLoginProtectionConfig,
+  SiteLoginProtectionConfigUpdate,
+  UnblockIpRequest,
+  UnblockIpResult,
+  SiteLoginEvent,
+  SiteLoginEventList,
+  GetSiteLoginProtectionData,
+  GetSiteLoginProtectionResponse,
+  PutSiteLoginProtectionData,
+  PutSiteLoginProtectionResponse,
+  UnblockSiteIpData,
+  UnblockSiteIpResponse,
+  ListSiteLoginEventsData,
+  ListSiteLoginEventsResponse,
 } from "./generated/types.gen";

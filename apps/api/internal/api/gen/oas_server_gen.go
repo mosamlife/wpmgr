@@ -249,6 +249,15 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/errors/config
 	GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error)
+	// GetSiteLoginProtection implements getSiteLoginProtection operation.
+	//
+	// Returns the current login-protection mode, brute-force thresholds, IP
+	// header selection, and CIDR allow/deny lists for the site. When no config
+	// has been saved yet, returns the built-in defaults (mode=protect, standard
+	// thresholds, REMOTE_ADDR, empty CIDR lists).
+	//
+	// GET /api/v1/sites/{siteId}/security/login-protection
+	GetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (*SiteLoginProtectionConfig, error)
 	// GetSiteUptime implements getSiteUptime operation.
 	//
 	// Returns the uptime % and average latency for a site over the requested
@@ -328,6 +337,14 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/destinations
 	ListSiteDestinations(ctx context.Context, params ListSiteDestinationsParams) (ListSiteDestinationsRes, error)
+	// ListSiteLoginEvents implements listSiteLoginEvents operation.
+	//
+	// Returns the agent-ingested login events for the site, ordered by
+	// `occurred_at` descending (newest first). Filter by `status` (1=failure,
+	// 2=success, 3=blocked). Default limit is 100; max 500.
+	//
+	// GET /api/v1/sites/{siteId}/security/login-events
+	ListSiteLoginEvents(ctx context.Context, params ListSiteLoginEventsParams) (*SiteLoginEventList, error)
 	// ListSitePHPErrors implements listSitePHPErrors operation.
 	//
 	// Returns the agent-captured PHP errors for the site, grouped by md5
@@ -411,6 +428,21 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/backup-schedule
 	PutBackupSchedule(ctx context.Context, req *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
+	// PutSiteLoginProtection implements putSiteLoginProtection operation.
+	//
+	// Stores the new config and pushes it to the agent via the signed
+	// `sync_security_config` command. If the agent push fails after a
+	// successful store, HTTP 200 is still returned with the stored config;
+	// the push error is surfaced in the `X-Agent-Push-Warning` response
+	// header so callers can surface it as a non-blocking warning.
+	// **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
+	// the CP automatically adds the requesting operator's client IP (/32 for
+	// IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
+	// operator from enabling protection and immediately locking themselves out.
+	// The auto-added CIDR is reflected in the returned config.
+	//
+	// PUT /api/v1/sites/{siteId}/security/login-protection
+	PutSiteLoginProtection(ctx context.Context, req *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (PutSiteLoginProtectionRes, error)
 	// RefreshSiteDiagnostics implements refreshSiteDiagnostics operation.
 	//
 	// Enqueues a signed `diagnostics` command to the agent. The agent runs
@@ -468,6 +500,15 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/destinations/test
 	TestSiteDestination(ctx context.Context, req *SiteDestinationTest, params TestSiteDestinationParams) (TestSiteDestinationRes, error)
+	// UnblockSiteIP implements unblockSiteIP operation.
+	//
+	// Sends the signed `unblock_ip` command to the site's agent, removing any
+	// active block for the given IP. Returns `ok=true` on success; `ok=false`
+	// with a `detail` message when the agent rejects or cannot apply the
+	// unblock (still HTTP 200 — it is an application-level, not transport, failure).
+	//
+	// POST /api/v1/sites/{siteId}/security/unblock-ip
+	UnblockSiteIP(ctx context.Context, req *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error)
 	// UpdateSiteDestination implements updateSiteDestination operation.
 	//
 	// Update a configured destination (omit secret_key to keep it).

@@ -26,10 +26,13 @@ use WPMgr\Agent\Commands\RestoreCommand;
 use WPMgr\Agent\Commands\RollbackCommand;
 use WPMgr\Agent\Commands\ScanCommand;
 use WPMgr\Agent\Commands\SyncErrorConfigCommand;
+use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
+use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ErrorMonitor;
+use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\MuPluginInstaller;
 
 /**
@@ -100,6 +103,14 @@ final class Plugin
     private ActivityLog $activityLog;
 
     /**
+     * S2 — login-protection engine. Registers the authenticate/wp_login/
+     * wp_login_failed hooks when mode != disabled; records login events to
+     * wpmgr_login_events and ships batches to /agent/v1/security/login-events
+     * on the heartbeat.
+     */
+    private LoginProtection $loginProtection;
+
+    /**
      * Private constructor wires the object graph.
      */
     private function __construct()
@@ -115,23 +126,28 @@ final class Plugin
         // register it on sites.age_recipient — M4 backups refuse otherwise.
         $this->enrollment       = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand(new AgeIdentity($this->keystore)));
         $this->scheduler        = new Scheduler($this->settings, $this->enrollment);
+
+        // Monitors/recorders/engines that COMMAND HANDLERS hold references to must
+        // be constructed BEFORE commands() runs. commands() executes inside the
+        // Router constructor below; sync_error_config / sync_security_config /
+        // unblock_ip pass $this->errorMonitor and $this->loginProtection into their
+        // handler constructors, and reading an uninitialised typed property there
+        // is a fatal ("must not be accessed before initialization"). Order:
+        //   ADR-037 S2 error monitor + mu-plugin installer,
+        //   ADR-037 S3 activity recorder,
+        //   S2 login-protection engine (depends on the activity recorder).
+        $this->errorMonitor = new ErrorMonitor();
+        $pluginDir = defined('WPMGR_AGENT_DIR') ? (string) constant('WPMGR_AGENT_DIR') : '';
+        $this->muInstaller = new MuPluginInstaller($pluginDir);
+        $this->activityLog = new ActivityLog();
+        // The ActivityLog is passed so block events are emitted as structured
+        // activity rows for free (CP alerting picks them up on the next ship).
+        $this->loginProtection = new LoginProtection($this->activityLog);
+
         $this->router           = new Router($this->connector, $this->commands());
         $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore);
         $this->autologinReplay  = new ReplayCache();
         $this->autologin        = new AutologinCommand($this->connector, $this->autologinReplay, $this->signer, $this->settings);
-
-        // ADR-037 Sprint 2 — error monitor + mu-plugin installer. Constructed
-        // here so they are reachable from registerHooks() and the activate()
-        // path; install() is called below in maybeRunSchemaMigrations after
-        // the schema is verified.
-        $this->errorMonitor = new ErrorMonitor();
-        $pluginDir = defined('WPMGR_AGENT_DIR') ? (string) constant('WPMGR_AGENT_DIR') : '';
-        $this->muInstaller = new MuPluginInstaller($pluginDir);
-
-        // ADR-037 Sprint 3 — activity recorder. Hooks are bound in
-        // registerHooks(); the 5-min ship cron + heartbeat backstop drain
-        // batches to the CP.
-        $this->activityLog = new ActivityLog();
     }
 
     /**
@@ -241,11 +257,29 @@ final class Plugin
         // so activity reaches the CP even if the dedicated cron event was lost.
         add_action(Scheduler::HOOK_HEARTBEAT, [$this, 'shipActivity'], 20);
 
+        // S2 — heartbeat backstop for login events: drain a batch right after
+        // each heartbeat so login-event rows reach the CP within 5 minutes
+        // even on sites where the daily diagnostics cron fires infrequently.
+        // Priority 25 so it runs after the activity ship (priority 20).
+        add_action(Scheduler::HOOK_HEARTBEAT, [$this, 'shipLoginEventsPublic'], 25);
+
         // ADR-037 Sprint 2 — install the error monitor + heal the mu-plugin
         // copy on every boot. install() is idempotent; the mu-installer
         // short-circuits via a sha1_file content match.
         $this->errorMonitor->install();
         $this->muInstaller->install();
+
+        // S2 — install login-protection hooks when mode != disabled. The call
+        // is idempotent (static guard inside LoginProtection::install). We also
+        // install the WAF mu-plugin so the early IP-deny gate is armed on the
+        // next request even before WordPress fully boots.
+        $this->loginProtection->install();
+        // Only arm the early IP-deny WAF mu-plugin when protection is actually
+        // enabled. An inert (unconfigured) site installs no security mu-plugin,
+        // so a fresh plugin update cannot affect the request path at all.
+        if ($this->loginProtection->isEnabled()) {
+            $this->muInstaller->installWaf();
+        }
 
         if (function_exists('is_admin') && is_admin()) {
             $this->admin->registerHooks();
@@ -508,6 +542,14 @@ final class Plugin
             // bitmask + ignore_md5s fingerprint list; the agent writes it to
             // OPTION_CONFIG and ErrorMonitor honours it on the next record().
             new SyncErrorConfigCommand($this->errorMonitor),
+            // S2 — security config sync. The CP pushes mode + thresholds +
+            // ip_header + allow_cidrs + deny_cidrs; LoginProtection::applyConfig
+            // validates, writes wpmgr_security_config, and clears the instance
+            // cache so block decisions in this request see the new values.
+            new SyncSecurityConfigCommand($this->loginProtection),
+            // S2 — IP unblock. The CP sends a single IP; LoginProtection::unblockIp
+            // deletes its failure rows so the failure counter resets to zero.
+            new UnblockIpCommand($this->loginProtection),
         ];
     }
 
@@ -561,6 +603,59 @@ final class Plugin
                 $this->errorMonitor->advanceCursor($highest);
                 $this->errorMonitor->advanceShipTs($maxLastSeen);
             }
+        }
+
+        // S2 — ship any pending login-event batch on this same cron tick.
+        // LoginProtection::shipBatch returns up to SHIP_BATCH (100) newest rows
+        // above the stored cursor. We POST the batch and advance the local
+        // cursor to the highest id we sent on a 2xx, mirroring the error-ship
+        // block above.
+        $this->shipLoginEvents();
+    }
+
+    /**
+     * Public wrapper bound to the HOOK_HEARTBEAT action (priority 25). Delegates
+     * to shipLoginEvents() after verifying enrollment. WP action callbacks must
+     * be public; the private helper keeps the logic contained.
+     *
+     * @return void
+     */
+    public function shipLoginEventsPublic(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        $this->shipLoginEvents();
+    }
+
+    /**
+     * Ship a batch of pending login events to /agent/v1/security/login-events.
+     * No-op until enrolled and until the batch is non-empty. Mirrors the error-
+     * ship block in runDiagnostics() and is also called from the heartbeat
+     * backstop (shipActivity priority 20) so events drain even if the daily
+     * diagnostics cron fires infrequently.
+     *
+     * @return void
+     */
+    private function shipLoginEvents(): void
+    {
+        $loginEvents = $this->loginProtection->shipBatch();
+        if ($loginEvents === []) {
+            return;
+        }
+        $highest = 0;
+        foreach ($loginEvents as $row) {
+            $id = (int) ($row['id'] ?? 0);
+            if ($id > $highest) {
+                $highest = $id;
+            }
+        }
+        $result = $this->shipPayload(
+            '/agent/v1/security/login-events',
+            ['login_events' => $loginEvents]
+        );
+        if (is_array($result) && ($result['ok'] ?? false)) {
+            $this->loginProtection->advanceCursor($highest);
         }
     }
 
