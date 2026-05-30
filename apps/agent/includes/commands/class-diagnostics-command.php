@@ -36,13 +36,14 @@
  *     are useful for the operator and our existing payload already exposes
  *     wp_content_dir.
  *
- * `recurse_dirsize` perf — WP_Debug_Data::debug_data() calls recurse_dirsize
- * for wp-paths-sizes. On a 100 GB+ uploads tree this can blow past PHP's
- * max_execution_time. We pre-warm the wp-paths-sizes section under a 10s
- * budget per top-level directory (ABSPATH, themes, plugins, uploads). When
- * we time out, the section's `total_size` is annotated with
- * `directory_size_status: "timeout"` and the offending field's value is set
- * to "Partial — directory size check exceeded the time budget".
+ * Directory sizes (ADR-037 reliable-diagnostics fix) — decoupled from the push.
+ * A dedicated cron event (wpmgr_agent_sizes_daily, 15 min before this push) runs
+ * SizeProbe::compute() with set_time_limit(0) and persists last-good to the
+ * non-autoloaded wp_option wpmgr_agent_dir_sizes. mergeDirectorySizes() reads
+ * that cache — it NEVER calls get_sizes() or recurse_dirsize() inline. Status
+ * is 'ok'|'partial'|'stale'|'pending'; the push always ships sizes (or pending)
+ * so the CP never receives a null wp-paths-sizes section. Method is annotated
+ * as 'du', 'php', or 'disk' so the web UI can surface a tooltip.
  *
  * @package WPMgr\Agent\Commands
  */
@@ -50,6 +51,8 @@
 declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Diagnostics\SizeProbe;
 
 /**
  * The 14-category site-health collector. Stateless: no DB writes, no caching;
@@ -76,51 +79,82 @@ final class DiagnosticsCommand implements CommandInterface
      */
     public function execute(array $claims, array $params): array
     {
-        $identity   = $this->collectIdentity();
-        $php        = $this->collectPHP();
-        $mysql      = $this->collectMySQL();
-        $filesystem = $this->collectFilesystem();
-        $http       = $this->collectHTTP();
-        $cron       = $this->collectCron();
-        $themes     = $this->collectThemes();
-        $plugins    = $this->collectPlugins();
-        $users      = $this->collectUsers();
-        $security   = $this->collectSecurity();
-        $https      = $this->collectHTTPS();
-        $mail       = $this->collectMail();
-        $performance = $this->collectPerformance();
-        $hosting    = $this->collectHosting();
+        // Per-category fault isolation via safeCollect: a throw or fatal in ONE
+        // probe annotates that category's blob with _error/_message and lets
+        // every other category ship intact. Previously a single slow/failed probe
+        // would abort the entire payload (no try/catch at this level) and the CP
+        // would receive nothing.
+        $identity    = $this->safeCollect('identity',    fn () => $this->collectIdentity());
+        $php         = $this->safeCollect('php',         fn () => $this->collectPHP());
+        $mysql       = $this->safeCollect('mysql',       fn () => $this->collectMySQL());
+        $filesystem  = $this->safeCollect('filesystem',  fn () => $this->collectFilesystem());
+        $http        = $this->safeCollect('http',        fn () => $this->collectHTTP());
+        $cron        = $this->safeCollect('cron',        fn () => $this->collectCron());
+        $themes      = $this->safeCollect('themes',      fn () => $this->collectThemes());
+        $plugins     = $this->safeCollect('plugins',     fn () => $this->collectPlugins());
+        $users       = $this->safeCollect('users',       fn () => $this->collectUsers());
+        $security    = $this->safeCollect('security',    fn () => $this->collectSecurity());
+        $https       = $this->safeCollect('https',       fn () => $this->collectHTTPS());
+        $mail        = $this->safeCollect('mail',        fn () => $this->collectMail());
+        $performance = $this->safeCollect('performance', fn () => $this->collectPerformance());
+        $hosting     = $this->safeCollect('hosting',     fn () => $this->collectHosting());
 
         // Leapfrog: site_as_of_hash is computed AFTER plugins+themes are
         // gathered so it can include every slug+version + WP core + PHP. It
-        // changes when ANY managed component moves.
-        $identity['site_as_of_hash'] = $this->siteAsOfHash($identity, $php, $themes, $plugins);
+        // changes when ANY managed component moves. Only add when identity is
+        // a real array (not an error blob).
+        if (!isset($identity['_error'])) {
+            $identity['site_as_of_hash'] = $this->siteAsOfHash($identity, $php, $themes, $plugins);
+        }
 
-        // Full Site-Health parity. Wrapped in try/catch so a buggy third-party
+        // Full Site-Health parity. Wrapped in safeCollect so a buggy third-party
         // `debug_information` filter contribution cannot fatal the daily
         // diagnostics push. If WP_Debug_Data is unloadable we surface that as
         // wp_native = ['_error' => 'wp_debug_data_unavailable'] and the legacy
         // 14-category collector above still ships intact.
-        $wpNative = $this->collectWpNative();
+        $wpNative = $this->safeCollect('wp_native', fn () => $this->collectWpNative());
 
         return [
-            'wp_native'   => $wpNative,
-            'identity'    => $identity,
-            'php'         => $php,
-            'mysql'       => $mysql,
-            'filesystem'  => $filesystem,
-            'http'        => $http,
-            'cron'        => $cron,
-            'themes'      => $themes,
-            'plugins'     => $plugins,
-            'users'       => $users,
-            'security'    => $security,
-            'https'       => $https,
-            'mail'        => $mail,
-            'performance' => $performance,
-            'hosting'     => $hosting,
+            'wp_native'    => $wpNative,
+            'identity'     => $identity,
+            'php'          => $php,
+            'mysql'        => $mysql,
+            'filesystem'   => $filesystem,
+            'http'         => $http,
+            'cron'         => $cron,
+            'themes'       => $themes,
+            'plugins'      => $plugins,
+            'users'        => $users,
+            'security'     => $security,
+            'https'        => $https,
+            'mail'         => $mail,
+            'performance'  => $performance,
+            'hosting'      => $hosting,
             'collected_at' => time(),
         ];
+    }
+
+    /**
+     * Fault-isolating wrapper for each collect* category. A Throwable from the
+     * probe function annotates only that category's blob with _error/_message;
+     * every other category ships intact. Returns the probe result unchanged when
+     * no exception is thrown.
+     *
+     * @param string   $name Category name (used in the error blob).
+     * @param callable $fn   Zero-argument callable returning array<string,mixed>.
+     * @return array<string,mixed>
+     */
+    private function safeCollect(string $name, callable $fn): array
+    {
+        try {
+            $result = $fn();
+            return is_array($result) ? $result : ['_error' => $name . '_non_array'];
+        } catch (\Throwable $e) {
+            return [
+                '_error'    => $name . '_failed',
+                '_message'  => $e->getMessage(),
+            ];
+        }
     }
 
     /**
@@ -196,96 +230,154 @@ final class DiagnosticsCommand implements CommandInterface
         // as "Loading&hellip;" (the v0.9.14 bug). We run get_sizes() ourselves
         // — exactly what the WP async handler does — and overwrite each field's
         // value + debug with the computed size + raw byte count.
+        // mergeDirectorySizes reads last-good from SizeProbe (never calls
+        // get_sizes() inline). Always writes directory_size_status so the web UI
+        // can render an appropriate chip (ok / partial / stale / pending).
         $dirsizeStatus = $this->mergeDirectorySizes($data);
-        if ($dirsizeStatus !== 'ok'
-            && isset($data['wp-paths-sizes']) && is_array($data['wp-paths-sizes'])) {
-            // Surface partial/failed computation so the UI can show a "Partial"
-            // chip instead of silently rendering stale or placeholder values.
-            $data['wp-paths-sizes']['directory_size_status'] = $dirsizeStatus;
+        if (!isset($data['wp-paths-sizes']) || !is_array($data['wp-paths-sizes'])) {
+            $data['wp-paths-sizes'] = [];
         }
+        $data['wp-paths-sizes']['directory_size_status'] = $dirsizeStatus;
 
         return $this->redactWpNative($data);
     }
 
     /**
-     * Compute the actual directory + database sizes via
-     * `WP_Debug_Data::get_sizes()` and merge them into the wp-paths-sizes
-     * section IN PLACE, overwriting the "Loading&hellip;" placeholders that
-     * debug_data() leaves behind.
+     * Merge last-good directory sizes from the SizeProbe cache into the
+     * wp-paths-sizes section IN PLACE.
      *
-     * get_sizes() is the exact method WP's own async AJAX handler
-     * (wp_ajax_health-check-get-sizes) calls to fill the Site Health Info
-     * screen. It runs recurse_dirsize() per top-level path under an internal
-     * time budget derived from max_execution_time, plus get_database_size().
-     * Its return shape is `key => { size: <human string|"…not exist…">, debug:
-     * <raw int bytes|string> }`.
+     * This method NEVER calls WP_Debug_Data::get_sizes() or recurse_dirsize()
+     * inline. The walk runs in the dedicated wpmgr_agent_sizes_daily cron event
+     * (SizeProbe::compute()) with set_time_limit(0) and its result is persisted
+     * in the non-autoloaded wp_option wpmgr_agent_dir_sizes.
      *
-     * We map each computed entry onto the existing field:
-     *   - field['value'] := human size string (what the UI dl shows by default)
-     *   - field['debug'] := raw bytes int (what card-directory-sizes.tsx reads
-     *     via fieldDebugNumber to re-format with our own formatBytes)
+     * Status values:
+     *   'ok'      — last-good present, computed within the last 26 hours, no
+     *               per-dir misses.
+     *   'partial' — last-good present but one or more dirs had a miss (prior
+     *               value kept per-dir, see SizeProbe).
+     *   'stale'   — last-good present but older than 26 hours (cron may be
+     *               delayed or execution failed).
+     *   'pending' — no last-good at all; a one-shot HOOK_SIZES is scheduled
+     *               5 seconds out so the next push will have data.
      *
-     * Returns 'ok' when every size field resolved to a real value, 'partial'
-     * when at least one still looks like a placeholder (huge tree timed out),
-     * or 'unavailable' when get_sizes() is missing / threw.
+     * Also writes directory_size_method (du|php|disk|cached) and
+     * directory_size_computed_at (unix timestamp) into the section, plus
+     * disk_total and disk_free for the volume signal.
      *
      * @param array<string,mixed> $data WP_Debug_Data::debug_data() output, by reference.
+     * @return string Status string: 'ok'|'partial'|'stale'|'pending'.
      */
     private function mergeDirectorySizes(array &$data): string
     {
-        if (!method_exists('\\WP_Debug_Data', 'get_sizes')) {
-            return 'unavailable';
-        }
         if (!isset($data['wp-paths-sizes']['fields'])
             || !is_array($data['wp-paths-sizes']['fields'])) {
-            return 'unavailable';
+            // Section missing — ensure it exists so downstream code can annotate it.
+            $data['wp-paths-sizes'] = ['fields' => []];
         }
 
-        // Give the size walk room. WP's get_sizes() reads max_execution_time
-        // and self-budgets, but on FPM that's often 0 (unlimited) or short; a
-        // best-effort bump means a few-hundred-MB site finishes cleanly.
-        if (function_exists('set_time_limit')) {
-            @set_time_limit(60);
+        $probe    = new SizeProbe();
+        $lastGood = $probe->lastGood();
+
+        if ($lastGood === null) {
+            // No persisted data at all — schedule a one-shot size refresh
+            // so the next push will have data. Return 'pending' so the UI
+            // can show "computing in the background" rather than empty.
+            if (function_exists('wp_schedule_single_event')) {
+                wp_schedule_single_event(time() + 5, \WPMgr\Agent\Scheduler::HOOK_SIZES);
+            }
+            // Surface disk volume even when sizes are pending — always O(1).
+            $this->mergeDiskVolume($data, null);
+            return 'pending';
         }
 
-        try {
-            $sizes = \WP_Debug_Data::get_sizes();
-        } catch (\Throwable $e) {
-            return 'unavailable';
-        }
-        if (!is_array($sizes)) {
-            return 'unavailable';
-        }
+        // Determine freshness: stale if last computed > 26h ago.
+        $computedAt  = (int) ($lastGood['computed_at'] ?? 0);
+        $twentySixH  = defined('HOUR_IN_SECONDS') ? 26 * HOUR_IN_SECONDS : 26 * 3600;
+        $isStale     = $computedAt > 0 && (time() - $computedAt) > $twentySixH;
+        $isPartial   = (bool) ($lastGood['partial'] ?? false);
+        $method      = is_string($lastGood['method'] ?? null) ? (string) $lastGood['method'] : 'cached';
 
-        $status = 'ok';
-        foreach ($sizes as $key => $info) {
-            if (!is_string($key)
-                || !isset($data['wp-paths-sizes']['fields'][$key])
-                || !is_array($data['wp-paths-sizes']['fields'][$key])
-                || !is_array($info)) {
+        // Map each persisted size into the wp-paths-sizes fields.
+        $sizes = is_array($lastGood['sizes'] ?? null) ? $lastGood['sizes'] : [];
+        foreach ($sizes as $key => $sizeEntry) {
+            if (!is_string($key) || !is_array($sizeEntry)) {
                 continue;
             }
-            if (array_key_exists('size', $info)) {
-                $data['wp-paths-sizes']['fields'][$key]['value'] = $info['size'];
+            $bytes = isset($sizeEntry['bytes']) && is_int($sizeEntry['bytes'])
+                ? $sizeEntry['bytes']
+                : null;
+            $human = isset($sizeEntry['human']) && is_string($sizeEntry['human'])
+                ? $sizeEntry['human']
+                : '';
+
+            if (!isset($data['wp-paths-sizes']['fields'][$key])
+                || !is_array($data['wp-paths-sizes']['fields'][$key])) {
+                $data['wp-paths-sizes']['fields'][$key] = [];
             }
-            if (array_key_exists('debug', $info)) {
-                $data['wp-paths-sizes']['fields'][$key]['debug'] = $info['debug'];
+            if ($bytes !== null) {
+                $data['wp-paths-sizes']['fields'][$key]['debug'] = $bytes;
             }
-            // A size that came back as the placeholder (or any value still
-            // carrying the "Loading" / hellip marker) means the walk didn't
-            // finish — flag the section as partial so the UI shows a chip.
-            $debug = isset($info['debug']) ? $info['debug'] : null;
-            if (!is_int($debug) && !(is_string($debug) && ctype_digit($debug))) {
-                // database_size/total_size debug is an int; dir debug is an int
-                // on success. A non-numeric debug for a *_size key (other than
-                // the legitimate "does not exist" fonts case) signals a miss.
-                if (str_ends_with($key, '_size') && $key !== 'fonts_size') {
-                    $status = 'partial';
+            if ($human !== '') {
+                $data['wp-paths-sizes']['fields'][$key]['value'] = $human;
+            }
+        }
+
+        // Annotate the section with freshness metadata the web UI can consume.
+        $data['wp-paths-sizes']['directory_size_method']      = $method;
+        $data['wp-paths-sizes']['directory_size_computed_at'] = $computedAt;
+
+        // Surface disk volume.
+        $this->mergeDiskVolume($data, $lastGood);
+
+        if ($isStale) {
+            return 'stale';
+        }
+        if ($isPartial) {
+            return 'partial';
+        }
+        return 'ok';
+    }
+
+    /**
+     * Write disk_total and disk_free fields into the wp-paths-sizes section.
+     *
+     * @param array<string,mixed>      $data     WP_Debug_Data output, by reference.
+     * @param array<string,mixed>|null $lastGood Persisted SizeProbe blob or null.
+     */
+    private function mergeDiskVolume(array &$data, ?array $lastGood): void
+    {
+        $diskTotal = null;
+        $diskFree  = null;
+
+        if ($lastGood !== null) {
+            $diskTotal = isset($lastGood['disk_total_bytes']) && is_int($lastGood['disk_total_bytes'])
+                ? $lastGood['disk_total_bytes']
+                : null;
+            $diskFree = isset($lastGood['disk_free_bytes']) && is_int($lastGood['disk_free_bytes'])
+                ? $lastGood['disk_free_bytes']
+                : null;
+        }
+
+        // Always try the O(1) live read as a fallback / refresh.
+        $contentDir = defined('WP_CONTENT_DIR') ? (string) constant('WP_CONTENT_DIR') : '';
+        if ($contentDir !== '') {
+            if ($diskTotal === null && function_exists('disk_total_space')) {
+                $dt = @disk_total_space($contentDir);
+                if (is_numeric($dt)) {
+                    $diskTotal = (int) $dt;
+                }
+            }
+            if ($diskFree === null && function_exists('disk_free_space')) {
+                $df = @disk_free_space($contentDir);
+                if (is_numeric($df)) {
+                    $diskFree = (int) $df;
                 }
             }
         }
 
-        return $status;
+        $data['wp-paths-sizes']['disk_total_bytes'] = $diskTotal;
+        $data['wp-paths-sizes']['disk_free_bytes']  = $diskFree;
     }
 
     /**

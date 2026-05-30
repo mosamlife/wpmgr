@@ -45,11 +45,23 @@ export interface WpNativeSection {
   show_count?: boolean;
   private?: boolean;
   fields?: Record<string, WpNativeField>;
-  // The agent annotates wp-paths-sizes with a status tag when the dirsize
-  // walk didn't fully resolve. Surfaced to the operator as a stale-warning
-  // chip. "partial" = at least one size timed out; "unavailable" = get_sizes()
-  // was missing or threw; "timeout" kept for back-compat with v0.9.14 agents.
-  directory_size_status?: "ok" | "partial" | "timeout" | "unavailable";
+  // The agent annotates wp-paths-sizes with a status tag describing the dirsize
+  // walk. "ok" = fresh + complete; "partial" = at least one size timed out;
+  // "unavailable" = get_sizes() missing/threw; "timeout" kept for back-compat
+  // with v0.9.14 agents. v0.9.30+ (decoupled cron walk + last-good cache) adds
+  // "stale" = showing the last successful scan while a background refresh runs,
+  // and "pending" = first scan still computing (sizes not yet available).
+  directory_size_status?:
+    | "ok"
+    | "partial"
+    | "timeout"
+    | "unavailable"
+    | "stale"
+    | "pending";
+  // v0.9.30+: how the sizes were computed ("du" | "php" | "disk" | "cached")
+  // and when (unix seconds), for a freshness hint.
+  directory_size_method?: string;
+  directory_size_computed_at?: number;
 }
 
 // WP_Debug_Data returns several strings HTML-entity-encoded (e.g. the

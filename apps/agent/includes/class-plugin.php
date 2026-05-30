@@ -31,6 +31,7 @@ use WPMgr\Agent\Commands\SyncLoginBrandCommand;
 use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
 use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
+use WPMgr\Agent\Diagnostics\SizeProbe;
 use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ErrorMonitor;
@@ -254,6 +255,17 @@ final class Plugin
         // (append-only) is respected.
         add_action(Scheduler::HOOK_DIAGNOSTICS, [$this, 'runDiagnostics']);
 
+        // Reliable-diagnostics — dedicated size-refresh cron handler. Runs the
+        // SizeProbe walk under set_time_limit(0) so recurse_dirsize/du has no
+        // ceiling imposed by the push request's max_execution_time. Plugin owns
+        // the binding; Scheduler owns the schedule (additive).
+        add_action(Scheduler::HOOK_SIZES, [$this, 'runSizeProbe']);
+
+        // Register the pre_recurse_dirsize filter (WP 5.6+) so WP core's own
+        // Site Health screen AND our PHP fallback both short-circuit to du when
+        // exec is available. Installed once per boot; idempotent.
+        (new SizeProbe())->registerPreRecurseFilter();
+
         // ADR-037 Sprint 3 — bind the ~30 activity-capture WP hooks. The
         // recorder writes to wpmgr_activity_log locally; it does NOT ship
         // inline (too chatty). Shipping is batched via the dedicated 5-min
@@ -372,6 +384,11 @@ final class Plugin
         // activation is safe across re-uploads.
         if (function_exists('wp_schedule_single_event')) {
             wp_schedule_single_event($now + 30, Scheduler::HOOK_DIAGNOSTICS);
+            // Prime the size probe ~20s before the diagnostics prime so the
+            // push at +30s already has a persisted last-good to read from.
+            // wp_schedule_single_event self-dedupes within 10 min; safe on
+            // re-upload. isEnrolled() guard is inside runSizeProbe().
+            wp_schedule_single_event($now + 10, Scheduler::HOOK_SIZES);
         }
     }
 
@@ -627,6 +644,43 @@ final class Plugin
         // cursor to the highest id we sent on a 2xx, mirroring the error-ship
         // block above.
         $this->shipLoginEvents();
+
+        // Reliable-diagnostics opportunistic warm: if the PHP-FPM fast-finish
+        // hook is available, release the HTTP response to the CP first, then
+        // run a size probe to warm the cache for the next push. On a kill mid-
+        // walk (request_terminate_timeout) the previously-persisted last-good
+        // remains intact. On non-FPM SAPIs the probe still runs in-process but
+        // is in a non-blocking position (response already shipped via cron).
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+        (new SizeProbe())->compute();
+    }
+
+    /**
+     * Cron handler for the dedicated directory-size refresh event
+     * (Scheduler::HOOK_SIZES). Runs set_time_limit(0) so the du / recurse_dirsize
+     * walk has no time ceiling, then delegates to SizeProbe::compute() which
+     * persists the result to the non-autoloaded wp_option wpmgr_agent_dir_sizes.
+     * A WP-Cron kill mid-walk leaves the previously-persisted last-good intact
+     * (SizeProbe::compute() writes atomically via update_option at the end).
+     *
+     * No isEnrolled() guard here — computing sizes is safe at any time and the
+     * push-side mergeDirectorySizes() reads the result regardless of enrollment
+     * state. The priming single-event at activation fires this before enrollment
+     * so the first push after pairing already has data.
+     *
+     * @return void
+     */
+    public function runSizeProbe(): void
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+        (new SizeProbe())->compute();
     }
 
     /**

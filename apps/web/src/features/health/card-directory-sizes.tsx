@@ -88,9 +88,13 @@ export function CardDirectorySizes({
       note={
         status === "unavailable"
           ? "Sizes unavailable on this WordPress version"
-          : partial
-            ? "Partial: a directory walk did not finish in time"
-            : undefined
+          : status === "pending"
+            ? "Computing directory sizes in the background — check back shortly"
+            : status === "stale"
+              ? "Showing the last successful scan; refreshing in the background"
+              : partial
+                ? "Partial: a directory walk did not finish in time"
+                : undefined
       }
     >
       {rows.length > 0 ? (

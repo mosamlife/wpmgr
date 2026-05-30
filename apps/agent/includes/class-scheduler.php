@@ -43,6 +43,16 @@ final class Scheduler
     public const HOOK_DIAGNOSTICS = 'wpmgr_agent_diagnostics_daily';
 
     /**
+     * Reliable-diagnostics fix — dedicated directory-size computation cron hook
+     * (daily, offset ~15 minutes before the diagnostics push). Decouples the
+     * tree walk from the push request so recurse_dirsize or du runs in its own
+     * request with set_time_limit(0), not inline under the 10s HTTP timeout.
+     * The callback is bound by Plugin::registerHooks; Scheduler only owns the
+     * schedule, mirroring HOOK_DIAGNOSTICS.
+     */
+    public const HOOK_SIZES = 'wpmgr_agent_sizes_daily';
+
+    /**
      * ADR-037 Sprint 3 — dedicated activity-log ship cron hook (every 5 min).
      * The callback is bound by Plugin::registerHooks (Plugin owns ActivityLog +
      * the signed-POST helper); Scheduler only owns the SCHEDULE so Sprint 1's
@@ -186,6 +196,15 @@ final class Scheduler
                 wp_schedule_event($now + 600 + $jitter, 'daily', self::HOOK_DIAGNOSTICS);
             }
 
+            // Reliable-diagnostics — size-refresh cron, daily, offset ~15 min
+            // BEFORE the diagnostics push so the push always reads fresh cache.
+            // Per-site jitter (same deterministic crc32 as diagnosticsJitter)
+            // keeps the fleet spread across the window.
+            if (wp_next_scheduled(self::HOOK_SIZES) === false) {
+                $sizesOffset = max(0, $this->diagnosticsJitter() - 900); // 15 min earlier
+                wp_schedule_event($now + 300 + $sizesOffset, 'daily', self::HOOK_SIZES);
+            }
+
             // ADR-037 Sprint 3 — activity-log shipper, every 5 min (piggybacks
             // the heartbeat cadence). The handler is bound in Plugin.
             if (wp_next_scheduled(self::HOOK_ACTIVITY_SHIP) === false) {
@@ -226,6 +245,8 @@ final class Scheduler
         wp_clear_scheduled_hook(self::HOOK_SAFETY);
         // ADR-037 Sprint 2 — also clear the diagnostics cron on deactivation.
         wp_clear_scheduled_hook(self::HOOK_DIAGNOSTICS);
+        // Reliable-diagnostics — clear the size-refresh cron on deactivation.
+        wp_clear_scheduled_hook(self::HOOK_SIZES);
         // ADR-037 Sprint 3 — clear the activity-ship cron on deactivation.
         wp_clear_scheduled_hook(self::HOOK_ACTIVITY_SHIP);
         // Clear the dedicated PHP-error ship cron on deactivation.
@@ -280,6 +301,18 @@ final class Scheduler
             $sixHours = defined('HOUR_IN_SECONDS') ? 6 * HOUR_IN_SECONDS : 6 * 3600;
             if ($last === 0 || (time() - $last) > $sixHours) {
                 wp_schedule_single_event(time() + 10, self::HOOK_DIAGNOSTICS);
+            }
+        }
+
+        // Reliable-diagnostics backstop: if last-good sizes are missing or
+        // older than 30 hours, schedule a one-shot size refresh 10s out.
+        // Self-dedupes within WP's 10-min cron dedup window.
+        if (function_exists('get_option') && function_exists('wp_schedule_single_event')) {
+            $sizesBlob = get_option(\WPMgr\Agent\Diagnostics\SizeProbe::OPTION_SIZES, null);
+            $computedAt = is_array($sizesBlob) ? (int) ($sizesBlob['computed_at'] ?? 0) : 0;
+            $thirtyHours = defined('HOUR_IN_SECONDS') ? 30 * HOUR_IN_SECONDS : 30 * 3600;
+            if ($computedAt === 0 || (time() - $computedAt) > $thirtyHours) {
+                wp_schedule_single_event(time() + 10, self::HOOK_SIZES);
             }
         }
     }
