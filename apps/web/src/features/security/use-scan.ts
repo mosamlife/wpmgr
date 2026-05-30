@@ -42,7 +42,9 @@ export interface ScanRun {
   wp_version: string | null;
   locale: string | null;
   error: string | null;
-  finding_counts: Record<string, number>;
+  // Nullable: a nil Go map marshals to JSON null, so this can arrive null even
+  // though the DB column defaults to '{}'. Guard before Object.values()/entries().
+  finding_counts: Record<string, number> | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

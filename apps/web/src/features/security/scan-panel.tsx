@@ -200,9 +200,11 @@ function LatestRunStatus({
 function FindingCountsSummary({
   counts,
 }: {
-  counts: Record<string, number>;
+  // The API can send this as null (a nil Go map marshals to JSON null) for a
+  // run with no findings or one still in flight; guard before Object.values.
+  counts: Record<string, number> | null | undefined;
 }) {
-  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  const total = Object.values(counts ?? {}).reduce((sum, n) => sum + n, 0);
 
   if (total === 0) {
     return (
