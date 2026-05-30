@@ -344,6 +344,77 @@ func (s *Service) CountUsers(ctx context.Context) (int64, error) {
 	return s.repo.CountUsers(ctx)
 }
 
+// UpdateProfile sets the user's display name. The name is trimmed and capped at
+// 120 characters. Email is intentionally not editable here (it is the login
+// identity). Returns the updated user + their current memberships.
+func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, name string) (User, []Membership, error) {
+	name = strings.TrimSpace(name)
+	if len(name) > 120 {
+		return User{}, nil, domain.Validation("name_too_long", "name must be 120 characters or fewer")
+	}
+	u, err := s.repo.UpdateName(ctx, userID, name)
+	if err != nil {
+		return User{}, nil, err
+	}
+	memberships, err := s.repo.ListMembershipsForUser(ctx, userID)
+	if err != nil {
+		return User{}, nil, err
+	}
+	return u, memberships, nil
+}
+
+// ChangePassword verifies current against the stored hash, then replaces it
+// with a new argon2id hash of newPwd. OIDC-only accounts (empty password_hash)
+// are rejected with a clear 400 so the caller knows to redirect to SSO settings.
+func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, currentPwd, newPwd string) error {
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u.PasswordHash == "" {
+		return domain.Validation("sso_account_no_password", "password change is not available for SSO sign-in")
+	}
+	match, verr := VerifyPassword(currentPwd, u.PasswordHash)
+	if verr != nil {
+		return domain.Internal("password_verify_failed", "failed to verify password").WithCause(verr)
+	}
+	if !match {
+		return domain.Unauthorized("invalid_current_password", "current password is incorrect")
+	}
+	if len(newPwd) < 8 {
+		return domain.Validation("new_password_too_short", "new password must be at least 8 characters")
+	}
+	if len(newPwd) > 200 {
+		return domain.Validation("new_password_too_long", "new password must be 200 characters or fewer")
+	}
+	hash, err := HashPassword(newPwd)
+	if err != nil {
+		return domain.Internal("password_hash_failed", "failed to hash new password").WithCause(err)
+	}
+	return s.repo.UpdatePasswordHash(ctx, userID, hash)
+}
+
+// ActorInfo holds the resolved identity fields for a triggered_by actor.
+type ActorInfo struct {
+	Email string
+	Name  string
+}
+
+// ResolveActors returns a map of user UUID → ActorInfo for the provided IDs.
+// Unresolvable IDs (unparseable, unknown) are silently omitted from the result.
+// This is a tenant-agnostic lookup since users is not RLS-scoped.
+func (s *Service) ResolveActors(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]ActorInfo, error) {
+	briefs, err := s.repo.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]ActorInfo, len(briefs))
+	for _, b := range briefs {
+		out[b.ID] = ActorInfo{Email: b.Email, Name: b.Name}
+	}
+	return out, nil
+}
+
 func normalizeEmail(e string) string {
 	return strings.ToLower(strings.TrimSpace(e))
 }

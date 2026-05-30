@@ -298,7 +298,7 @@ function UserMenu() {
     return null;
   }
 
-  const displayName = me.user.email;
+  const displayName = me.user.name || me.user.email;
 
   function handleSignOut() {
     logout.mutate(undefined, {
@@ -327,10 +327,8 @@ function UserMenu() {
       <DropdownMenuContent align="end" className="min-w-[14rem]">
         <DropdownMenuLabel>{displayName}</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {/* /settings/account doesn't exist yet - disabled until later
-            sprints add the account page. */}
-        <DropdownMenuItem disabled title="Coming soon">
-          Open account settings
+        <DropdownMenuItem asChild>
+          <Link to="/settings/account">Account settings</Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem

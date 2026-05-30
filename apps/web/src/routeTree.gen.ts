@@ -26,6 +26,7 @@ import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$s
 import { Route as AuthedSettingsDestinationsRouteImport } from './routes/_authed/settings/destinations'
 import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
 import { Route as AuthedSettingsAlertsRouteImport } from './routes/_authed/settings/alerts'
+import { Route as AuthedSettingsAccountRouteImport } from './routes/_authed/settings/account'
 import { Route as AuthedRestoresRestoreIdRouteImport } from './routes/_authed/restores/$restoreId'
 import { Route as AuthedBackupsSnapshotIdRouteImport } from './routes/_authed/backups/$snapshotId'
 import { Route as AuthedSitesSiteIdIndexRouteImport } from './routes/_authed/sites/$siteId.index'
@@ -122,6 +123,11 @@ const AuthedSettingsAlertsRoute = AuthedSettingsAlertsRouteImport.update({
   path: '/settings/alerts',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedSettingsAccountRoute = AuthedSettingsAccountRouteImport.update({
+  id: '/settings/account',
+  path: '/settings/account',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedRestoresRestoreIdRoute = AuthedRestoresRestoreIdRouteImport.update({
   id: '/restores/$restoreId',
   path: '/restores/$restoreId',
@@ -189,6 +195,7 @@ export interface FileRoutesByFullPath {
   '/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
   '/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
+  '/settings/account': typeof AuthedSettingsAccountRoute
   '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/settings/destinations': typeof AuthedSettingsDestinationsRoute
@@ -217,6 +224,7 @@ export interface FileRoutesByTo {
   '/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
   '/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
+  '/settings/account': typeof AuthedSettingsAccountRoute
   '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/settings/destinations': typeof AuthedSettingsDestinationsRoute
@@ -246,6 +254,7 @@ export interface FileRoutesById {
   '/_authed/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/_authed/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
   '/_authed/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
+  '/_authed/settings/account': typeof AuthedSettingsAccountRoute
   '/_authed/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/_authed/settings/destinations': typeof AuthedSettingsDestinationsRoute
@@ -276,6 +285,7 @@ export interface FileRouteTypes {
     | '/vulnerabilities'
     | '/backups/$snapshotId'
     | '/restores/$restoreId'
+    | '/settings/account'
     | '/settings/alerts'
     | '/settings/api-keys'
     | '/settings/destinations'
@@ -304,6 +314,7 @@ export interface FileRouteTypes {
     | '/vulnerabilities'
     | '/backups/$snapshotId'
     | '/restores/$restoreId'
+    | '/settings/account'
     | '/settings/alerts'
     | '/settings/api-keys'
     | '/settings/destinations'
@@ -332,6 +343,7 @@ export interface FileRouteTypes {
     | '/_authed/vulnerabilities'
     | '/_authed/backups/$snapshotId'
     | '/_authed/restores/$restoreId'
+    | '/_authed/settings/account'
     | '/_authed/settings/alerts'
     | '/_authed/settings/api-keys'
     | '/_authed/settings/destinations'
@@ -478,6 +490,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSettingsAlertsRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/settings/account': {
+      id: '/_authed/settings/account'
+      path: '/settings/account'
+      fullPath: '/settings/account'
+      preLoaderRoute: typeof AuthedSettingsAccountRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/restores/$restoreId': {
       id: '/_authed/restores/$restoreId'
       path: '/restores/$restoreId'
@@ -584,6 +603,7 @@ interface AuthedRouteChildren {
   AuthedVulnerabilitiesRoute: typeof AuthedVulnerabilitiesRoute
   AuthedBackupsSnapshotIdRoute: typeof AuthedBackupsSnapshotIdRoute
   AuthedRestoresRestoreIdRoute: typeof AuthedRestoresRestoreIdRoute
+  AuthedSettingsAccountRoute: typeof AuthedSettingsAccountRoute
   AuthedSettingsAlertsRoute: typeof AuthedSettingsAlertsRoute
   AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
   AuthedSettingsDestinationsRoute: typeof AuthedSettingsDestinationsRoute
@@ -602,6 +622,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedVulnerabilitiesRoute: AuthedVulnerabilitiesRoute,
   AuthedBackupsSnapshotIdRoute: AuthedBackupsSnapshotIdRoute,
   AuthedRestoresRestoreIdRoute: AuthedRestoresRestoreIdRoute,
+  AuthedSettingsAccountRoute: AuthedSettingsAccountRoute,
   AuthedSettingsAlertsRoute: AuthedSettingsAlertsRoute,
   AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
   AuthedSettingsDestinationsRoute: AuthedSettingsDestinationsRoute,

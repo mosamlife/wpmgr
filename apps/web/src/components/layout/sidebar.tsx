@@ -97,6 +97,7 @@ const SETTINGS_GROUP: NavGroup = {
   // page is still the "first" target — Sprint 4 may add a real /settings index
   // page later, at which point the `to` here can flip to that.
   items: [
+    { label: "Account", to: "/settings/account" },
     { label: "API keys", to: "/settings/api-keys" },
     { label: "Destinations", to: "/settings/destinations" },
     { label: "Alerts", to: "/settings/alerts" },

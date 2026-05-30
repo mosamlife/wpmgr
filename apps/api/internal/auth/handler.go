@@ -39,6 +39,8 @@ func (h *Handler) Register(r gin.IRouter) {
 	g.POST("/login", h.login)
 	g.POST("/logout", h.logout)
 	g.GET("/me", h.me)
+	g.PATCH("/me", h.updateProfile)
+	g.POST("/me/password", h.changePassword)
 	g.GET("/oidc/login", h.oidcLogin)
 	g.GET("/oidc/callback", h.oidcCallback)
 }
@@ -136,6 +138,58 @@ func (h *Handler) me(c *gin.Context) {
 	}
 	out := toMe(u, memberships, p.TenantID)
 	c.JSON(http.StatusOK, &out)
+}
+
+// updateProfileBody is the request body for PATCH /auth/me.
+type updateProfileBody struct {
+	Name string `json:"name"`
+}
+
+// updateProfile handles PATCH /auth/me — update the authenticated user's
+// display name. Email is intentionally not editable here.
+func (h *Handler) updateProfile(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok || p.Type != domain.PrincipalUser {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+	var body updateProfileBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+	u, memberships, err := h.svc.UpdateProfile(c.Request.Context(), p.UserID, body.Name)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	out := toMe(u, memberships, p.TenantID)
+	c.JSON(http.StatusOK, &out)
+}
+
+// changePasswordBody is the request body for POST /auth/me/password.
+type changePasswordBody struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// changePassword handles POST /auth/me/password — verify current, set new.
+func (h *Handler) changePassword(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok || p.Type != domain.PrincipalUser {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+	var body changePasswordBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+	if err := h.svc.ChangePassword(c.Request.Context(), p.UserID, body.CurrentPassword, body.NewPassword); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) oidcLogin(c *gin.Context) {

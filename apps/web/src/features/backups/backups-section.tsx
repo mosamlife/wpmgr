@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
@@ -318,6 +318,24 @@ function RestoreHistory({ siteId }: { siteId: string }) {
   );
 }
 
+/**
+ * Resolve a human label for who triggered a restore.
+ * Prefers name, falls back to email, then falls back to the first 8 chars of
+ * the UUID (monospaced) so we never surface a raw UUID as readable text.
+ */
+function triggeredByLabel(run: RestoreRun): ReactNode {
+  if (run.triggered_by_name) return run.triggered_by_name;
+  if (run.triggered_by_email) return run.triggered_by_email;
+  if (run.triggered_by) {
+    return (
+      <code className="font-mono text-xs text-muted-foreground">
+        {run.triggered_by.slice(0, 8)}
+      </code>
+    );
+  }
+  return "–";
+}
+
 function RestoreRow({ run }: { run: RestoreRun }) {
   const isRunning = run.status === "running";
   const timeLabel =
@@ -344,7 +362,7 @@ function RestoreRow({ run }: { run: RestoreRun }) {
         <time dateTime={run.started_at ?? run.created_at}>{timeLabel}</time>
       </TableCell>
       <TableCell className="text-sm text-muted-foreground">
-        {run.triggered_by ?? "–"}
+        {triggeredByLabel(run)}
       </TableCell>
       <TableCell className="text-right">
         <Button asChild variant="outline" size="sm">

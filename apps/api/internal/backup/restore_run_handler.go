@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -12,17 +13,34 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
+// UserDirectory resolves a triggered_by actor string (a user UUID) to a
+// human-readable identity. The id parameter is the raw triggered_by value from
+// the restore_run row (typically a user UUID string). Returns ok=false for
+// unparseable strings, API-key IDs, or unknown user IDs — in those cases the
+// caller keeps the raw triggered_by and leaves the email/name fields null.
+type UserDirectory interface {
+	ResolveActor(ctx context.Context, id string) (email string, name string, ok bool)
+}
+
 // RestoreRunHandler serves the restore-run endpoints under /api/v1. All routes
 // require an authenticated principal with an active tenant; per-route RBAC is
 // enforced by authz.RequirePermission. These are hand-rolled Gin routes
 // (NOT ogen/openapi-generated) mirroring the backup/scan handler patterns.
 type RestoreRunHandler struct {
-	svc *Service
+	svc       *Service
+	userDir   UserDirectory // optional; nil → triggered_by_email/name stay null
 }
 
 // NewRestoreRunHandler builds a RestoreRunHandler.
 func NewRestoreRunHandler(svc *Service) *RestoreRunHandler {
 	return &RestoreRunHandler{svc: svc}
+}
+
+// SetUserDirectory wires the optional UserDirectory that resolves triggered_by
+// UUIDs to human-readable email+name. Call this in main after constructing the
+// handler.
+func (h *RestoreRunHandler) SetUserDirectory(dir UserDirectory) {
+	h.userDir = dir
 }
 
 // Register mounts the restore-run routes on the /api/v1 router group.
@@ -42,18 +60,20 @@ func (h *RestoreRunHandler) Register(r *gin.RouterGroup) {
 
 // restoreRunDTO is the wire shape for a restore run.
 type restoreRunDTO struct {
-	ID           string   `json:"id"`
-	SiteID       string   `json:"site_id"`
-	SnapshotID   string   `json:"snapshot_id"`
-	Mode         string   `json:"mode"`
-	Components   []string `json:"components"`
-	Status       string   `json:"status"`
-	CurrentPhase string   `json:"current_phase,omitempty"`
-	Error        string   `json:"error,omitempty"`
-	TriggeredBy  string   `json:"triggered_by,omitempty"`
-	CreatedAt    string   `json:"created_at"`
-	StartedAt    string   `json:"started_at,omitempty"`
-	FinishedAt   string   `json:"finished_at,omitempty"`
+	ID                 string   `json:"id"`
+	SiteID             string   `json:"site_id"`
+	SnapshotID         string   `json:"snapshot_id"`
+	Mode               string   `json:"mode"`
+	Components         []string `json:"components"`
+	Status             string   `json:"status"`
+	CurrentPhase       string   `json:"current_phase,omitempty"`
+	Error              string   `json:"error,omitempty"`
+	TriggeredBy        string   `json:"triggered_by,omitempty"`
+	TriggeredByEmail   *string  `json:"triggered_by_email"`
+	TriggeredByName    *string  `json:"triggered_by_name"`
+	CreatedAt          string   `json:"created_at"`
+	StartedAt          string   `json:"started_at,omitempty"`
+	FinishedAt         string   `json:"finished_at,omitempty"`
 }
 
 type restoreRunListDTO struct {
@@ -80,6 +100,13 @@ type restoreRunEventListDTO struct {
 const rfc3339 = "2006-01-02T15:04:05Z07:00"
 
 func toRestoreRunDTO(r RestoreRun) restoreRunDTO {
+	return toRestoreRunDTOWithActor(r, "", "")
+}
+
+// toRestoreRunDTOWithActor builds the DTO and populates triggered_by_email /
+// triggered_by_name when non-empty strings are provided (from a resolved
+// UserDirectory lookup). Empty strings produce null JSON fields.
+func toRestoreRunDTOWithActor(r RestoreRun, email, name string) restoreRunDTO {
 	comps := r.Components
 	if comps == nil {
 		comps = []string{}
@@ -102,6 +129,14 @@ func toRestoreRunDTO(r RestoreRun) restoreRunDTO {
 	if r.TriggeredBy != "" {
 		d.TriggeredBy = r.TriggeredBy
 	}
+	if email != "" {
+		v := email
+		d.TriggeredByEmail = &v
+	}
+	if name != "" {
+		v := name
+		d.TriggeredByName = &v
+	}
 	if r.StartedAt != nil {
 		d.StartedAt = r.StartedAt.UTC().Format(rfc3339)
 	}
@@ -109,6 +144,19 @@ func toRestoreRunDTO(r RestoreRun) restoreRunDTO {
 		d.FinishedAt = r.FinishedAt.UTC().Format(rfc3339)
 	}
 	return d
+}
+
+// resolveActor calls the optional UserDirectory and returns (email, name).
+// Returns empty strings when no directory is wired or lookup fails.
+func (h *RestoreRunHandler) resolveActor(ctx context.Context, triggeredBy string) (email, name string) {
+	if h.userDir == nil || triggeredBy == "" {
+		return
+	}
+	e, n, ok := h.userDir.ResolveActor(ctx, triggeredBy)
+	if !ok {
+		return
+	}
+	return e, n
 }
 
 func toRestoreRunEventDTO(e RestoreRunEvent) restoreRunEventDTO {
@@ -147,7 +195,8 @@ func (h *RestoreRunHandler) listForSite(c *gin.Context) {
 	}
 	items := make([]restoreRunDTO, 0, len(runs))
 	for _, r := range runs {
-		items = append(items, toRestoreRunDTO(r))
+		email, name := h.resolveActor(c.Request.Context(), r.TriggeredBy)
+		items = append(items, toRestoreRunDTOWithActor(r, email, name))
 	}
 	c.JSON(http.StatusOK, restoreRunListDTO{Items: items})
 }
@@ -178,7 +227,8 @@ func (h *RestoreRunHandler) getByID(c *gin.Context) {
 		httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
 		return
 	}
-	c.JSON(http.StatusOK, toRestoreRunDTO(run))
+	email, name := h.resolveActor(c.Request.Context(), run.TriggeredBy)
+	c.JSON(http.StatusOK, toRestoreRunDTOWithActor(run, email, name))
 }
 
 // listEvents returns the phase log for a restore run, ordered by id ASC.

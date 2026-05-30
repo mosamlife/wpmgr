@@ -28,6 +28,8 @@ export interface RestoreRun {
   current_phase: string | null;
   error: string | null;
   triggered_by: string | null;
+  triggered_by_email: string | null;
+  triggered_by_name: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

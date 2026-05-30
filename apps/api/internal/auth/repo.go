@@ -150,6 +150,70 @@ func (r *Repo) TouchLogin(ctx context.Context, userID uuid.UUID) error {
 	return nil
 }
 
+// UpdateName sets the user's display name and bumps updated_at. Returns the
+// updated User. The users table has no RLS, so no tenant transaction is needed.
+func (r *Repo) UpdateName(ctx context.Context, userID uuid.UUID, name string) (User, error) {
+	row := r.pool.QueryRow(ctx,
+		`UPDATE users SET name = $1, updated_at = now() WHERE id = $2
+		 RETURNING id, email, password_hash, oidc_subject, oidc_issuer, name, created_at, updated_at, last_login_at`,
+		name, userID,
+	)
+	var u sqlc.User
+	if err := row.Scan(
+		&u.ID, &u.Email, &u.PasswordHash, &u.OidcSubject, &u.OidcIssuer,
+		&u.Name, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, domain.NotFound("user_not_found", "user not found")
+		}
+		return User{}, domain.Internal("user_update_failed", "failed to update user name").WithCause(err)
+	}
+	return userToModel(u), nil
+}
+
+// UpdatePasswordHash replaces the stored argon2id hash for the given user.
+// SetUserPasswordHash in sqlc already exists; we call it directly.
+func (r *Repo) UpdatePasswordHash(ctx context.Context, userID uuid.UUID, hash string) error {
+	if err := r.q.SetUserPasswordHash(ctx, sqlc.SetUserPasswordHashParams{
+		ID:           userID,
+		PasswordHash: strPtr(hash),
+	}); err != nil {
+		return domain.Internal("password_update_failed", "failed to update password").WithCause(err)
+	}
+	return nil
+}
+
+// UserBrief carries just the identity fields needed for actor resolution.
+type UserBrief struct {
+	ID    uuid.UUID
+	Email string
+	Name  string
+}
+
+// GetUsersByIDs returns brief identity records for the given IDs (batch). The
+// users table has no RLS. Unknown IDs are silently omitted from the result.
+func (r *Repo) GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]UserBrief, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, email, name FROM users WHERE id = ANY($1)`, ids,
+	)
+	if err != nil {
+		return nil, domain.Internal("user_batch_get_failed", "failed to batch-load users").WithCause(err)
+	}
+	defer rows.Close()
+	var out []UserBrief
+	for rows.Next() {
+		var b UserBrief
+		if err := rows.Scan(&b.ID, &b.Email, &b.Name); err != nil {
+			return nil, domain.Internal("user_batch_scan_failed", "failed to scan user row").WithCause(err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // CreateMembership inserts a membership inside the tenant's RLS scope.
 func (r *Repo) CreateMembership(ctx context.Context, userID, tenantID uuid.UUID, role authz.Role) (Membership, error) {
 	var out Membership

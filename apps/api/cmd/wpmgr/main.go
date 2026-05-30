@@ -296,6 +296,9 @@ func run() error {
 		backupH = backup.NewHandler(backupSvc, backupHub, auditRec)
 		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
 		restoreRunH = backup.NewRestoreRunHandler(backupSvc)
+		// Wire the auth service as the UserDirectory so restore run DTOs resolve
+		// triggered_by UUIDs to human-readable email + name.
+		restoreRunH.SetUserDirectory(authSvc)
 		// M6 / Track 4: agent-supplied inspection artifact fetcher. Streams the
 		// ordered chunks of the manifest's `sql-inspection.json` entry from the
 		// blobstore and validates the result is JSON. V0 agents ship the report

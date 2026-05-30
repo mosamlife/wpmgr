@@ -7,6 +7,7 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 import {
+  client,
   getMe,
   login,
   logout,
@@ -16,6 +17,8 @@ import {
   type RegisterRequest,
   type ApiError,
 } from "@wpmgr/api";
+
+import { toast } from "@/components/toast";
 
 // Auth/session is SERVER state, so it lives in TanStack Query (not Zustand) per
 // the ADRs. The single source of truth is `GET /auth/me`, backed by the
@@ -118,6 +121,56 @@ export function useLogout(): UseMutationResult<void, Error, void> {
     onSuccess: () => {
       // Drop ALL server state on logout (sites, members, keys, me, ...).
       queryClient.clear();
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Account mutations — hand-rolled Gin endpoints (not in the generated SDK).
+// Both call through the configured Hey API client (credentials: "include").
+// ---------------------------------------------------------------------------
+
+/** PATCH /api/v1/auth/me — update the display name. */
+export function useUpdateProfile(): UseMutationResult<
+  Me,
+  Error,
+  { name: string }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body) => {
+      const result = await client.patch({
+        url: "/api/v1/auth/me",
+        body,
+        headers: { "Content-Type": "application/json" },
+      });
+      if (result.error !== undefined) throw toError(result.error);
+      return result.data as Me;
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(authKeys.me, updated);
+      toast.success("Profile saved");
+    },
+  });
+}
+
+/** POST /api/v1/auth/me/password — change the account password. */
+export function useChangePassword(): UseMutationResult<
+  void,
+  Error,
+  { current_password: string; new_password: string }
+> {
+  return useMutation({
+    mutationFn: async (body) => {
+      const result = await client.post({
+        url: "/api/v1/auth/me/password",
+        body,
+        headers: { "Content-Type": "application/json" },
+      });
+      if (result.error !== undefined) throw toError(result.error);
+    },
+    onSuccess: () => {
+      toast.success("Password updated");
     },
   });
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 
 import {
@@ -109,6 +109,20 @@ function RestoreDetailSkeleton() {
   );
 }
 
+/** Resolve name > email > short mono id for the triggered_by field. */
+function resolveTriggeredBy(run: RestoreRun): ReactNode {
+  if (run.triggered_by_name) return run.triggered_by_name;
+  if (run.triggered_by_email) return run.triggered_by_email;
+  if (run.triggered_by) {
+    return (
+      <code className="font-mono text-xs text-muted-foreground">
+        {run.triggered_by.slice(0, 8)}
+      </code>
+    );
+  }
+  return "–";
+}
+
 function RestoreDetailView({ run }: { run: RestoreRun }) {
   const running = !isRestoreTerminal(run.status);
 
@@ -217,7 +231,7 @@ function RestoreDetailView({ run }: { run: RestoreRun }) {
                     ? run.components.join(", ")
                     : "All",
               },
-              { label: "Triggered by", value: run.triggered_by ?? "–" },
+              { label: "Triggered by", value: resolveTriggeredBy(run) },
               { label: "Started", value: relativeTime(run.started_at) ?? "–" },
               {
                 label: "Finished",
