@@ -64,6 +64,13 @@ final class SizeProbe
     private const EXEC_PROBE_KEY = 'wpmgr_agent_exec_probe';
 
     /**
+     * Freshness threshold for getOrCompute(): if last-good is younger than this
+     * many seconds, return it as-is (warm-cache fast path). 6 hours matches the
+     * Site Health screen's own re-fetch interval and the heartbeat backstop window.
+     */
+    private const FRESH_THRESHOLD_SECONDS = 6 * 3600; // 21600 s
+
+    /**
      * Return the persisted last-good sizes blob, or null when not yet computed.
      *
      * @return array<string,mixed>|null
@@ -78,6 +85,76 @@ final class SizeProbe
             return null;
         }
         return $raw;
+    }
+
+    /**
+     * Just-in-time size resolver for the diagnostics collection path.
+     *
+     * Decision tree (mirrors the WP Site Health screen's own on-demand approach):
+     *   (a) FRESH last-good exists (< FRESH_THRESHOLD_SECONDS old) — return it
+     *       immediately; no compute, no I/O beyond the option read.
+     *   (b) No fresh last-good — compute NOW: bump set_time_limit best-effort,
+     *       then run compute() (du fast path + PHP/recurse_dirsize fallback,
+     *       exactly as the cron handler does). Persist the result and return it.
+     *   (c) compute() throws / returns an empty blob — fall back to the previous
+     *       last-good (stale is better than nothing). Return it with partial=true.
+     *   (d) Nothing at all (no prior, compute failed) — return null; the caller
+     *       will emit 'pending' and schedule a HOOK_SIZES one-shot.
+     *
+     * Called inline from DiagnosticsCommand::mergeDirectorySizes() so the FIRST
+     * diagnostics push already ships real sizes — no separate cron tick required.
+     * The dedicated HOOK_SIZES cron + post-ship warm in Plugin::runDiagnostics()
+     * are kept as secondary cache-warmers so big sites stay warm without
+     * blocking subsequent pushes.
+     *
+     * @return array<string,mixed>|null Fresh/computed blob, stale fallback, or null.
+     */
+    public function getOrCompute(): ?array
+    {
+        $prior = $this->lastGood();
+
+        // (a) Fresh cache hit — return immediately.
+        if ($prior !== null) {
+            $computedAt = (int) ($prior['computed_at'] ?? 0);
+            if ($computedAt > 0 && (time() - $computedAt) < self::FRESH_THRESHOLD_SECONDS) {
+                return $prior;
+            }
+        }
+
+        // (b) Stale or missing — compute just-in-time.
+        // Raise the time limit so a cold recurse_dirsize walk does not get
+        // killed by the push request's max_execution_time (same guard the
+        // dedicated cron handler applies in Plugin::runSizeProbe).
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        try {
+            $blob = $this->compute();
+            // (c) compute() succeeded but produced an empty sizes array — treat
+            //     as partial failure and prefer prior if available.
+            $hasAnySizes = !empty($blob['sizes']) && is_array($blob['sizes'])
+                && count($blob['sizes']) > 0;
+            if ($hasAnySizes) {
+                return $blob;
+            }
+            // Empty sizes (both du and PHP recursion failed for every dir).
+            if ($prior !== null) {
+                // Return stale prior; mark it partial so the UI shows a chip.
+                $prior['partial'] = true;
+                return $prior;
+            }
+            // We got a blob with volume stats only (disk_total/free) — still
+            // useful; return it so disk_total/free appear even if dir sizes are 0.
+            return $blob;
+        } catch (\Throwable $e) {
+            // (d) compute() threw — fall back to stale prior.
+            if ($prior !== null) {
+                $prior['partial'] = true;
+                return $prior;
+            }
+            return null;
+        }
     }
 
     /**

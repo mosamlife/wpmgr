@@ -36,14 +36,16 @@
  *     are useful for the operator and our existing payload already exposes
  *     wp_content_dir.
  *
- * Directory sizes (ADR-037 reliable-diagnostics fix) — decoupled from the push.
- * A dedicated cron event (wpmgr_agent_sizes_daily, 15 min before this push) runs
- * SizeProbe::compute() with set_time_limit(0) and persists last-good to the
- * non-autoloaded wp_option wpmgr_agent_dir_sizes. mergeDirectorySizes() reads
- * that cache — it NEVER calls get_sizes() or recurse_dirsize() inline. Status
- * is 'ok'|'partial'|'stale'|'pending'; the push always ships sizes (or pending)
- * so the CP never receives a null wp-paths-sizes section. Method is annotated
- * as 'du', 'php', or 'disk' so the web UI can surface a tooltip.
+ * Directory sizes (ADR-037 reliable-diagnostics JIT fix) — computed just-in-time
+ * during the collection, exactly like the WP Site Health screen. mergeDirectorySizes()
+ * calls SizeProbe::getOrCompute(): returns a FRESH last-good (< 6 h, O(1)) when
+ * warm, otherwise computes NOW (set_time_limit(0) + du fast path + PHP/recurse_dirsize
+ * fallback) and persists to the non-autoloaded wp_option wpmgr_agent_dir_sizes.
+ * 'pending' is only emitted when both compute and any prior last-good are truly
+ * unavailable — never just because a separate cron has not yet fired. Status is
+ * 'ok'|'partial'|'stale'|'pending'; method is annotated as 'du'|'php'|'disk'|'cached'
+ * so the web UI can surface a tooltip. HOOK_SIZES cron + post-ship warm are kept
+ * as secondary cache-warmers for big sites (so subsequent pushes stay O(1)).
  *
  * @package WPMgr\Agent\Commands
  */
@@ -227,12 +229,12 @@ final class DiagnosticsCommand implements CommandInterface
         // replace those placeholders with the real recurse_dirsize() results.
         // Because we call debug_data() once server-side there is no second
         // round-trip, so without this merge every directory row reaches the CP
-        // as "Loading&hellip;" (the v0.9.14 bug). We run get_sizes() ourselves
-        // — exactly what the WP async handler does — and overwrite each field's
-        // value + debug with the computed size + raw byte count.
-        // mergeDirectorySizes reads last-good from SizeProbe (never calls
-        // get_sizes() inline). Always writes directory_size_status so the web UI
-        // can render an appropriate chip (ok / partial / stale / pending).
+        // as "Loading&hellip;". mergeDirectorySizes() calls
+        // SizeProbe::getOrCompute() which returns a fresh last-good when warm
+        // (<6 h), computes JIT when stale/missing, and only falls through to
+        // 'pending' when both compute and prior last-good are truly unavailable.
+        // Always writes directory_size_status so the web UI can render an
+        // appropriate chip (ok / partial / stale / pending).
         $dirsizeStatus = $this->mergeDirectorySizes($data);
         if (!isset($data['wp-paths-sizes']) || !is_array($data['wp-paths-sizes'])) {
             $data['wp-paths-sizes'] = [];
@@ -243,23 +245,31 @@ final class DiagnosticsCommand implements CommandInterface
     }
 
     /**
-     * Merge last-good directory sizes from the SizeProbe cache into the
-     * wp-paths-sizes section IN PLACE.
+     * Merge directory sizes from the SizeProbe into the wp-paths-sizes section
+     * IN PLACE.
      *
-     * This method NEVER calls WP_Debug_Data::get_sizes() or recurse_dirsize()
-     * inline. The walk runs in the dedicated wpmgr_agent_sizes_daily cron event
-     * (SizeProbe::compute()) with set_time_limit(0) and its result is persisted
-     * in the non-autoloaded wp_option wpmgr_agent_dir_sizes.
+     * This method now uses SizeProbe::getOrCompute() which resolves sizes
+     * just-in-time during the diagnostics collection — exactly like the WP Site
+     * Health screen does (synchronous on demand, warm cache on repeat). It NEVER
+     * ships 'pending' merely because a separate cron has not yet run.
      *
-     * Status values:
-     *   'ok'      — last-good present, computed within the last 26 hours, no
+     * Resolution order (inside getOrCompute()):
+     *   (a) FRESH last-good (< 6 h old) — returned instantly; no I/O beyond the
+     *       option read (warm-cache fast path; same as Site Health's dirsize_cache).
+     *   (b) Stale or missing — compute NOW (set_time_limit(0) + du fast path +
+     *       PHP/recurse_dirsize fallback); persist and use the result.
+     *   (c) compute() fails/empty — fall back to stale prior (better than nothing).
+     *   (d) Nothing at all — only then emit 'pending' (see below).
+     *
+     * Status values returned:
+     *   'ok'      — sizes present, computed within the last 26 hours, no
      *               per-dir misses.
-     *   'partial' — last-good present but one or more dirs had a miss (prior
-     *               value kept per-dir, see SizeProbe).
-     *   'stale'   — last-good present but older than 26 hours (cron may be
-     *               delayed or execution failed).
-     *   'pending' — no last-good at all; a one-shot HOOK_SIZES is scheduled
-     *               5 seconds out so the next push will have data.
+     *   'partial' — sizes present but one or more dirs had a miss, or the
+     *               result was a stale fallback after a failed JIT compute.
+     *   'stale'   — sizes present but older than 26 hours.
+     *   'pending' — nothing at all (compute failed AND no prior); a one-shot
+     *               HOOK_SIZES is scheduled 5 s out as backstop. Disk
+     *               total/free are still surfaced (always O(1)).
      *
      * Also writes directory_size_method (du|php|disk|cached) and
      * directory_size_computed_at (unix timestamp) into the section, plus
@@ -277,12 +287,16 @@ final class DiagnosticsCommand implements CommandInterface
         }
 
         $probe    = new SizeProbe();
-        $lastGood = $probe->lastGood();
+        // JIT resolve: fresh cache, or compute now, or fall back to stale prior.
+        // Replaces the old bare $probe->lastGood() call that returned null on
+        // first collection and immediately emitted 'pending'.
+        $lastGood = $probe->getOrCompute();
 
         if ($lastGood === null) {
-            // No persisted data at all — schedule a one-shot size refresh
-            // so the next push will have data. Return 'pending' so the UI
-            // can show "computing in the background" rather than empty.
+            // Genuinely no data: getOrCompute() tried to compute and failed AND
+            // there is no prior last-good. Schedule a one-shot backstop so the
+            // dedicated cron retries shortly. 'pending' is now the LAST resort,
+            // not the default first-collection response.
             if (function_exists('wp_schedule_single_event')) {
                 wp_schedule_single_event(time() + 5, \WPMgr\Agent\Scheduler::HOOK_SIZES);
             }
