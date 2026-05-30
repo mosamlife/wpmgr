@@ -65,26 +65,26 @@ const TOP_GROUPS: ReadonlyArray<NavGroup> = [
     items: [
       // /backups index doesn't exist yet - only /backups/$snapshotId. Mark
       // disabled until Sprint 4 adds the index.
-      { label: "Backups", to: "/backups", count: 3, todo: true },
+      { label: "Backups", to: "/backups", count: 3 },
       { label: "Updates", to: "/updates", count: 8 },
       // /migrations doesn't exist yet.
-      { label: "Migrations", to: "/migrations", todo: true },
+      { label: "Migrations", to: "/migrations" },
     ],
   },
   {
     label: "Insights",
     icon: LineChart,
     items: [
-      { label: "Uptime", to: "/uptime", todo: true },
-      { label: "Performance", to: "/performance", todo: true },
+      { label: "Uptime", to: "/uptime" },
+      { label: "Performance", to: "/performance" },
     ],
   },
   {
     label: "Security",
     icon: Shield,
     items: [
-      { label: "Vulnerabilities", to: "/vulnerabilities", count: 0, todo: true },
-      { label: "Audit", to: "/audit", todo: true },
+      { label: "Vulnerabilities", to: "/vulnerabilities", count: 0 },
+      { label: "Audit", to: "/audit" },
     ],
   },
 ];

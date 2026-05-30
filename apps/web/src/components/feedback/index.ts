@@ -8,3 +8,6 @@ export type { PageErrorProps } from "./page-error";
 
 export { OfflineBanner } from "./offline-banner";
 export type { OfflineBannerProps } from "./offline-banner";
+
+export { PlannedFeature } from "./planned-feature";
+export type { PlannedFeatureProps } from "./planned-feature";
