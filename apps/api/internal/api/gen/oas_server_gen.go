@@ -108,6 +108,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites
 	CreateSite(ctx context.Context, req *SiteCreate) (CreateSiteRes, error)
+	// CreateSiteDestination implements createSiteDestination operation.
+	//
+	// Add a backup destination to a site.
+	//
+	// POST /api/v1/sites/{siteId}/destinations
+	CreateSiteDestination(ctx context.Context, req *SiteDestinationCreate, params CreateSiteDestinationParams) (CreateSiteDestinationRes, error)
 	// CreateTenant implements createTenant operation.
 	//
 	// Create a tenant.
@@ -131,6 +137,12 @@ type Handler interface {
 	//
 	// DELETE /api/v1/sites/{siteId}
 	DeleteSite(ctx context.Context, params DeleteSiteParams) (DeleteSiteRes, error)
+	// DeleteSiteDestination implements deleteSiteDestination operation.
+	//
+	// Remove a configured destination.
+	//
+	// DELETE /api/v1/sites/{siteId}/destinations/{destinationId}
+	DeleteSiteDestination(ctx context.Context, params DeleteSiteDestinationParams) (DeleteSiteDestinationRes, error)
 	// Enroll implements enroll operation.
 	//
 	// Called by an agent (NOT an authenticated control-plane user) to enroll a
@@ -212,6 +224,21 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/updates/available
 	GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error)
+	// GetSiteDestination implements getSiteDestination operation.
+	//
+	// Read one configured destination.
+	//
+	// GET /api/v1/sites/{siteId}/destinations/{destinationId}
+	GetSiteDestination(ctx context.Context, params GetSiteDestinationParams) (GetSiteDestinationRes, error)
+	// GetSiteDiagnostics implements getSiteDiagnostics operation.
+	//
+	// Returns one card per category (14 total) carrying the latest payload
+	// the agent shipped + the collection/freshness timestamps. Categories the
+	// agent has never reported for are returned with a null payload so the UI
+	// can render an "awaiting first sync" placeholder.
+	//
+	// GET /api/v1/sites/{siteId}/diagnostics
+	GetSiteDiagnostics(ctx context.Context, params GetSiteDiagnosticsParams) (GetSiteDiagnosticsRes, error)
 	// GetSiteUptime implements getSiteUptime operation.
 	//
 	// Returns the uptime % and average latency for a site over the requested
@@ -272,6 +299,33 @@ type Handler interface {
 	//
 	// GET /api/v1/members
 	ListMembers(ctx context.Context, params ListMembersParams) (ListMembersRes, error)
+	// ListSiteActivity implements listSiteActivity operation.
+	//
+	// Returns the agent-captured WordPress activity events for the site,
+	// newest first. Each event carries the hash-chain fields (prev_hash,
+	// this_hash) and a server-verified chain_valid flag: the CP recomputes
+	// every event's hash at ingest and flags any tamper (a mutated, inserted,
+	// or deleted historical row) as chain_valid=false. Filter by event_type,
+	// object_type, actor_login, severity, and an occurred-at time range.
+	//
+	// GET /api/v1/sites/{siteId}/activity
+	ListSiteActivity(ctx context.Context, params ListSiteActivityParams) (*SiteActivityList, error)
+	// ListSiteDestinations implements listSiteDestinations operation.
+	//
+	// ADR-036 P1 storage adapter. Returns every destination configured on the
+	// site (`cp` / `local` / `s3_compat`). The encrypted S3 secret is NEVER
+	// returned; `has_secret` reports whether one is stored.
+	//
+	// GET /api/v1/sites/{siteId}/destinations
+	ListSiteDestinations(ctx context.Context, params ListSiteDestinationsParams) (ListSiteDestinationsRes, error)
+	// ListSitePHPErrors implements listSitePHPErrors operation.
+	//
+	// Returns the agent-captured PHP errors for the site, grouped by md5
+	// fingerprint. Each row carries the occurrence count, first/last seen
+	// timestamps, and the silenced flag.
+	//
+	// GET /api/v1/sites/{siteId}/errors
+	ListSitePHPErrors(ctx context.Context, params ListSitePHPErrorsParams) (*PHPErrorList, error)
 	// ListSites implements listSites operation.
 	//
 	// List sites for the current tenant.
@@ -328,6 +382,16 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/backup-schedule
 	PutBackupSchedule(ctx context.Context, req *BackupScheduleUpdate, params PutBackupScheduleParams) (PutBackupScheduleRes, error)
+	// RefreshSiteDiagnostics implements refreshSiteDiagnostics operation.
+	//
+	// Enqueues a signed `diagnostics` command to the agent. The agent runs
+	// the 14-category collector immediately and pushes the result back to
+	// POST /agent/v1/diagnostics. Returns 202 on accept. Returns 503 with
+	// code `diagnostics_refresh_unwired` when the CP->agent commander has
+	// not yet been wired (V1).
+	//
+	// POST /api/v1/sites/{siteId}/diagnostics/refresh
+	RefreshSiteDiagnostics(ctx context.Context, params RefreshSiteDiagnosticsParams) (RefreshSiteDiagnosticsRes, error)
 	// RefreshSiteUpdates implements refreshSiteUpdates operation.
 	//
 	// Enqueues a CP->agent refresh-inventory command for the site. The agent
@@ -358,12 +422,45 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/tags
 	SetSiteTags(ctx context.Context, req *SiteTags, params SetSiteTagsParams) (SetSiteTagsRes, error)
+	// SilenceSitePHPError implements silenceSitePHPError operation.
+	//
+	// Toggles the silenced flag on a (site, md5) error row. The agent
+	// continues to count silently on its side; the CP UI hides silenced
+	// rows by default.
+	//
+	// POST /api/v1/sites/{siteId}/errors/{md5}/silence
+	SilenceSitePHPError(ctx context.Context, req OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error)
+	// TestSiteDestination implements testSiteDestination operation.
+	//
+	// Returns 200 with `{ok, message}` regardless of success/failure so the
+	// UI can render the operator-readable diagnostic inline. S3-compat
+	// kinds run a HeadBucket + PutObject + DeleteObject probe against the
+	// target bucket; cp/local kinds return ok=true trivially.
+	//
+	// POST /api/v1/sites/{siteId}/destinations/test
+	TestSiteDestination(ctx context.Context, req *SiteDestinationTest, params TestSiteDestinationParams) (TestSiteDestinationRes, error)
+	// UpdateSiteDestination implements updateSiteDestination operation.
+	//
+	// Update a configured destination (omit secret_key to keep it).
+	//
+	// PATCH /api/v1/sites/{siteId}/destinations/{destinationId}
+	UpdateSiteDestination(ctx context.Context, req *SiteDestinationUpdate, params UpdateSiteDestinationParams) (UpdateSiteDestinationRes, error)
 	// VerifyAudit implements verifyAudit operation.
 	//
 	// Verify the integrity of the audit hash-chain (admin+).
 	//
 	// GET /api/v1/audit/verify
 	VerifyAudit(ctx context.Context) (VerifyAuditRes, error)
+	// VerifySiteActivity implements verifySiteActivity operation.
+	//
+	// Recomputes the entire hash chain for the site server-side from genesis
+	// and reports whether it is intact. When a break is found, break_at_seq
+	// carries the seq of the first event whose recomputed hash (or prev_hash
+	// linkage) does not match — the tamper point. This is the integrity badge
+	// feeding the activity view.
+	//
+	// GET /api/v1/sites/{siteId}/activity/verify
+	VerifySiteActivity(ctx context.Context, params VerifySiteActivityParams) (*ActivityVerifyResult, error)
 }
 
 // Server implements http server based on OpenAPI v3 specification and

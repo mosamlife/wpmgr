@@ -994,6 +994,24 @@ export type SiteDiagnosticsList = {
   items: Array<SiteDiagnosticsCard>;
 };
 
+/**
+ * One frame in a PHP error backtrace (most-recent-call-first).
+ */
+export type PhpErrorFrame = {
+  /**
+   * Absolute path to the PHP file containing the call.
+   */
+  file: string;
+  /**
+   * Line number of the call site.
+   */
+  line: number;
+  /**
+   * Function or method name at this frame (empty string for file-level code).
+   */
+  function: string;
+};
+
 export type PhpError = {
   /**
    * The CP-side row UUID (stringified).
@@ -1019,6 +1037,11 @@ export type PhpError = {
   last_seen_at: string;
   occurrence_count: number;
   silenced: boolean;
+  /**
+   * Up to 10 stack frames captured at the error site, most-recent-call-first. Always present; may be an empty array for errors captured before S1.1 or when the agent could not produce a trace.
+   *
+   */
+  backtrace: Array<PhpErrorFrame>;
 };
 
 export type PhpErrorList = {

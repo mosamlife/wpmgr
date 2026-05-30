@@ -206,6 +206,7 @@ export type {
   SiteDiagnosticsCard,
   SiteDiagnosticsList,
   PhpError,
+  PhpErrorFrame,
   PhpErrorList,
   PhpErrorSilence,
   GetSiteDiagnosticsData,

@@ -400,6 +400,11 @@ func run() error {
 	uptimeSvc := uptime.NewService(uptimeRepo, metricsStore, uptimeSiteAdapter)
 	uptimeH := uptime.NewHandler(uptimeSvc, auditRec)
 
+	// ADR-037 Sprint 2 — diagnostics + php-error monitor repo. Built here
+	// (before River) so the phpErrorsGCWorker can be registered at River start.
+	// The service, handler, and enqueuer wiring continues after River starts.
+	diagnosticsRepo := diagnostics.NewRepo(pool)
+
 	// River: connection-health worker pool plus the M3 update-task workers and the
 	// M4 backup/restore/GC/scheduler workers. The health job marks a site
 	// unreachable when its agent heartbeat goes stale (freshness-based). The M5
@@ -408,6 +413,11 @@ func run() error {
 	// stopped on shutdown.
 	siteRepo := site.NewRepo(pool)
 	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
+
+	// S1.1 (D) — PHP-error retention GC. Always wired (the table always exists);
+	// runs once per hour sweeping rows older than 30 days.
+	phpErrorsGCWorker := diagnostics.NewErrorsGCWorker(diagnosticsRepo, 30*24*time.Hour, logger)
+
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
 		healthChecker:          healthChecker,
 		healthInterval:         cfg.Agent.HealthInterval,
@@ -424,6 +434,7 @@ func run() error {
 		gcInterval:             cfg.Backup.GCInterval,
 		uptimeWorker:           uptimeWorker,
 		probeInterval:          cfg.Uptime.ProbeInterval,
+		phpErrorsGCWorker:      phpErrorsGCWorker,
 	})
 	if err != nil {
 		return err
@@ -506,7 +517,7 @@ func run() error {
 	// feeds it into the same IngestDiagnostics splitter the daily cron-push
 	// path uses — so the operator's "Re-run check" click renders fresh data
 	// on the next GET /diagnostics.
-	diagnosticsRepo := diagnostics.NewRepo(pool)
+	// diagnosticsRepo is already built above (before River start) so we reuse it.
 	diagnosticsSvc := diagnostics.NewService(diagnosticsRepo)
 	diagnosticsH := diagnostics.NewHandler(diagnosticsSvc, auditRec)
 	diagnosticsAgentH := agent.NewDiagnosticsHandler(diagnosticsSvc)
@@ -647,6 +658,8 @@ type riverDeps struct {
 	gcInterval             time.Duration
 	uptimeWorker           *uptime.ProbeWorker
 	probeInterval          time.Duration
+	// S1.1 (D) — PHP-error retention GC. Always non-nil (wired unconditionally).
+	phpErrorsGCWorker *diagnostics.ErrorsGCWorker
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -757,6 +770,18 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 				&river.PeriodicJobOpts{RunOnStart: true},
 			),
 		)
+	}
+
+	// S1.1 (D) — PHP-error retention GC: always wired, runs once per hour.
+	// Deletes agent_php_errors rows with last_seen_at older than 30 days
+	// (configured on the worker). Cross-tenant under app.agent GUC.
+	if d.phpErrorsGCWorker != nil {
+		river.AddWorker(workers, d.phpErrorsGCWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return diagnostics.ErrorsGCArgs{}, nil },
+			nil,
+		))
 	}
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{

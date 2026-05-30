@@ -140,6 +140,15 @@ func (UnimplementedHandler) CreateSite(ctx context.Context, req *SiteCreate) (r 
 	return r, ht.ErrNotImplemented
 }
 
+// CreateSiteDestination implements createSiteDestination operation.
+//
+// Add a backup destination to a site.
+//
+// POST /api/v1/sites/{siteId}/destinations
+func (UnimplementedHandler) CreateSiteDestination(ctx context.Context, req *SiteDestinationCreate, params CreateSiteDestinationParams) (r CreateSiteDestinationRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // CreateTenant implements createTenant operation.
 //
 // Create a tenant.
@@ -169,6 +178,15 @@ func (UnimplementedHandler) CreateUpdateRun(ctx context.Context, req *UpdateRunC
 //
 // DELETE /api/v1/sites/{siteId}
 func (UnimplementedHandler) DeleteSite(ctx context.Context, params DeleteSiteParams) (r DeleteSiteRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// DeleteSiteDestination implements deleteSiteDestination operation.
+//
+// Remove a configured destination.
+//
+// DELETE /api/v1/sites/{siteId}/destinations/{destinationId}
+func (UnimplementedHandler) DeleteSiteDestination(ctx context.Context, params DeleteSiteDestinationParams) (r DeleteSiteDestinationRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -283,6 +301,27 @@ func (UnimplementedHandler) GetSiteAvailableUpdates(ctx context.Context, params 
 	return r, ht.ErrNotImplemented
 }
 
+// GetSiteDestination implements getSiteDestination operation.
+//
+// Read one configured destination.
+//
+// GET /api/v1/sites/{siteId}/destinations/{destinationId}
+func (UnimplementedHandler) GetSiteDestination(ctx context.Context, params GetSiteDestinationParams) (r GetSiteDestinationRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetSiteDiagnostics implements getSiteDiagnostics operation.
+//
+// Returns one card per category (14 total) carrying the latest payload
+// the agent shipped + the collection/freshness timestamps. Categories the
+// agent has never reported for are returned with a null payload so the UI
+// can render an "awaiting first sync" placeholder.
+//
+// GET /api/v1/sites/{siteId}/diagnostics
+func (UnimplementedHandler) GetSiteDiagnostics(ctx context.Context, params GetSiteDiagnosticsParams) (r GetSiteDiagnosticsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetSiteUptime implements getSiteUptime operation.
 //
 // Returns the uptime % and average latency for a site over the requested
@@ -370,6 +409,42 @@ func (UnimplementedHandler) ListMembers(ctx context.Context, params ListMembersP
 	return r, ht.ErrNotImplemented
 }
 
+// ListSiteActivity implements listSiteActivity operation.
+//
+// Returns the agent-captured WordPress activity events for the site,
+// newest first. Each event carries the hash-chain fields (prev_hash,
+// this_hash) and a server-verified chain_valid flag: the CP recomputes
+// every event's hash at ingest and flags any tamper (a mutated, inserted,
+// or deleted historical row) as chain_valid=false. Filter by event_type,
+// object_type, actor_login, severity, and an occurred-at time range.
+//
+// GET /api/v1/sites/{siteId}/activity
+func (UnimplementedHandler) ListSiteActivity(ctx context.Context, params ListSiteActivityParams) (r *SiteActivityList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListSiteDestinations implements listSiteDestinations operation.
+//
+// ADR-036 P1 storage adapter. Returns every destination configured on the
+// site (`cp` / `local` / `s3_compat`). The encrypted S3 secret is NEVER
+// returned; `has_secret` reports whether one is stored.
+//
+// GET /api/v1/sites/{siteId}/destinations
+func (UnimplementedHandler) ListSiteDestinations(ctx context.Context, params ListSiteDestinationsParams) (r ListSiteDestinationsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListSitePHPErrors implements listSitePHPErrors operation.
+//
+// Returns the agent-captured PHP errors for the site, grouped by md5
+// fingerprint. Each row carries the occurrence count, first/last seen
+// timestamps, and the silenced flag.
+//
+// GET /api/v1/sites/{siteId}/errors
+func (UnimplementedHandler) ListSitePHPErrors(ctx context.Context, params ListSitePHPErrorsParams) (r *PHPErrorList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListSites implements listSites operation.
 //
 // List sites for the current tenant.
@@ -453,6 +528,19 @@ func (UnimplementedHandler) PutBackupSchedule(ctx context.Context, req *BackupSc
 	return r, ht.ErrNotImplemented
 }
 
+// RefreshSiteDiagnostics implements refreshSiteDiagnostics operation.
+//
+// Enqueues a signed `diagnostics` command to the agent. The agent runs
+// the 14-category collector immediately and pushes the result back to
+// POST /agent/v1/diagnostics. Returns 202 on accept. Returns 503 with
+// code `diagnostics_refresh_unwired` when the CP->agent commander has
+// not yet been wired (V1).
+//
+// POST /api/v1/sites/{siteId}/diagnostics/refresh
+func (UnimplementedHandler) RefreshSiteDiagnostics(ctx context.Context, params RefreshSiteDiagnosticsParams) (r RefreshSiteDiagnosticsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // RefreshSiteUpdates implements refreshSiteUpdates operation.
 //
 // Enqueues a CP->agent refresh-inventory command for the site. The agent
@@ -495,11 +583,56 @@ func (UnimplementedHandler) SetSiteTags(ctx context.Context, req *SiteTags, para
 	return r, ht.ErrNotImplemented
 }
 
+// SilenceSitePHPError implements silenceSitePHPError operation.
+//
+// Toggles the silenced flag on a (site, md5) error row. The agent
+// continues to count silently on its side; the CP UI hides silenced
+// rows by default.
+//
+// POST /api/v1/sites/{siteId}/errors/{md5}/silence
+func (UnimplementedHandler) SilenceSitePHPError(ctx context.Context, req OptPHPErrorSilence, params SilenceSitePHPErrorParams) (r SilenceSitePHPErrorRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// TestSiteDestination implements testSiteDestination operation.
+//
+// Returns 200 with `{ok, message}` regardless of success/failure so the
+// UI can render the operator-readable diagnostic inline. S3-compat
+// kinds run a HeadBucket + PutObject + DeleteObject probe against the
+// target bucket; cp/local kinds return ok=true trivially.
+//
+// POST /api/v1/sites/{siteId}/destinations/test
+func (UnimplementedHandler) TestSiteDestination(ctx context.Context, req *SiteDestinationTest, params TestSiteDestinationParams) (r TestSiteDestinationRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// UpdateSiteDestination implements updateSiteDestination operation.
+//
+// Update a configured destination (omit secret_key to keep it).
+//
+// PATCH /api/v1/sites/{siteId}/destinations/{destinationId}
+func (UnimplementedHandler) UpdateSiteDestination(ctx context.Context, req *SiteDestinationUpdate, params UpdateSiteDestinationParams) (r UpdateSiteDestinationRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // VerifyAudit implements verifyAudit operation.
 //
 // Verify the integrity of the audit hash-chain (admin+).
 //
 // GET /api/v1/audit/verify
 func (UnimplementedHandler) VerifyAudit(ctx context.Context) (r VerifyAuditRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// VerifySiteActivity implements verifySiteActivity operation.
+//
+// Recomputes the entire hash chain for the site server-side from genesis
+// and reports whether it is intact. When a break is found, break_at_seq
+// carries the seq of the first event whose recomputed hash (or prev_hash
+// linkage) does not match — the tamper point. This is the integrity badge
+// feeding the activity view.
+//
+// GET /api/v1/sites/{siteId}/activity/verify
+func (UnimplementedHandler) VerifySiteActivity(ctx context.Context, params VerifySiteActivityParams) (r *ActivityVerifyResult, _ error) {
 	return r, ht.ErrNotImplemented
 }

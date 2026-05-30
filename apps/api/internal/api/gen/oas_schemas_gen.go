@@ -11,6 +11,46 @@ import (
 	"github.com/google/uuid"
 )
 
+// Ref: #/components/schemas/ActivityVerifyResult
+type ActivityVerifyResult struct {
+	// True when the entire chain re-verifies intact.
+	Valid bool `json:"valid"`
+	// The seq of the first broken link, or null when the chain is intact.
+	BreakAtSeq OptNilInt64 `json:"break_at_seq"`
+	// Total number of events folded during verification.
+	Total int `json:"total"`
+}
+
+// GetValid returns the value of Valid.
+func (s *ActivityVerifyResult) GetValid() bool {
+	return s.Valid
+}
+
+// GetBreakAtSeq returns the value of BreakAtSeq.
+func (s *ActivityVerifyResult) GetBreakAtSeq() OptNilInt64 {
+	return s.BreakAtSeq
+}
+
+// GetTotal returns the value of Total.
+func (s *ActivityVerifyResult) GetTotal() int {
+	return s.Total
+}
+
+// SetValid sets the value of Valid.
+func (s *ActivityVerifyResult) SetValid(val bool) {
+	s.Valid = val
+}
+
+// SetBreakAtSeq sets the value of BreakAtSeq.
+func (s *ActivityVerifyResult) SetBreakAtSeq(val OptNilInt64) {
+	s.BreakAtSeq = val
+}
+
+// SetTotal sets the value of Total.
+func (s *ActivityVerifyResult) SetTotal(val int) {
+	s.Total = val
+}
+
 type AgentAutologinConsumeForbidden Error
 
 func (*AgentAutologinConsumeForbidden) agentAutologinConsumeRes() {}
@@ -1809,6 +1849,18 @@ type CreateSiteConflict Error
 
 func (*CreateSiteConflict) createSiteRes() {}
 
+type CreateSiteDestinationForbidden Error
+
+func (*CreateSiteDestinationForbidden) createSiteDestinationRes() {}
+
+type CreateSiteDestinationUnauthorized Error
+
+func (*CreateSiteDestinationUnauthorized) createSiteDestinationRes() {}
+
+type CreateSiteDestinationUnprocessableEntity Error
+
+func (*CreateSiteDestinationUnprocessableEntity) createSiteDestinationRes() {}
+
 type CreateSiteUnprocessableEntity Error
 
 func (*CreateSiteUnprocessableEntity) createSiteRes() {}
@@ -1820,6 +1872,19 @@ func (*CreateTenantConflict) createTenantRes() {}
 type CreateTenantUnprocessableEntity Error
 
 func (*CreateTenantUnprocessableEntity) createTenantRes() {}
+
+// DeleteSiteDestinationNoContent is response for DeleteSiteDestination operation.
+type DeleteSiteDestinationNoContent struct{}
+
+func (*DeleteSiteDestinationNoContent) deleteSiteDestinationRes() {}
+
+type DeleteSiteDestinationNotFound Error
+
+func (*DeleteSiteDestinationNotFound) deleteSiteDestinationRes() {}
+
+type DeleteSiteDestinationUnauthorized Error
+
+func (*DeleteSiteDestinationUnauthorized) deleteSiteDestinationRes() {}
 
 // DeleteSiteNoContent is response for DeleteSite operation.
 type DeleteSiteNoContent struct{}
@@ -2011,6 +2076,7 @@ func (*Error) getBackupScheduleRes()       {}
 func (*Error) getBackupSqlInspectionRes()  {}
 func (*Error) getMeRes()                   {}
 func (*Error) getSiteAvailableUpdatesRes() {}
+func (*Error) getSiteDiagnosticsRes()      {}
 func (*Error) getSiteRes()                 {}
 func (*Error) getSiteUptimeRes()           {}
 func (*Error) getTenantRes()               {}
@@ -2019,7 +2085,9 @@ func (*Error) logoutRes()                  {}
 func (*Error) oidcLoginRes()               {}
 func (*Error) putAlertConfigRes()          {}
 func (*Error) putBackupScheduleRes()       {}
+func (*Error) refreshSiteDiagnosticsRes()  {}
 func (*Error) setSiteTagsRes()             {}
+func (*Error) silenceSitePHPErrorRes()     {}
 
 type ErrorDetails map[string]jx.Raw
 
@@ -2056,6 +2124,14 @@ func (*GetReadyzOK) getReadyzRes() {}
 type GetReadyzServiceUnavailable Readiness
 
 func (*GetReadyzServiceUnavailable) getReadyzRes() {}
+
+type GetSiteDestinationNotFound Error
+
+func (*GetSiteDestinationNotFound) getSiteDestinationRes() {}
+
+type GetSiteDestinationUnauthorized Error
+
+func (*GetSiteDestinationUnauthorized) getSiteDestinationRes() {}
 
 type GetSiteUptimeWindow string
 
@@ -2252,6 +2328,103 @@ func (*ListMembersForbidden) listMembersRes() {}
 type ListMembersUnauthorized Error
 
 func (*ListMembersUnauthorized) listMembersRes() {}
+
+type ListSiteActivitySeverity string
+
+const (
+	ListSiteActivitySeverityHigh   ListSiteActivitySeverity = "high"
+	ListSiteActivitySeverityMedium ListSiteActivitySeverity = "medium"
+	ListSiteActivitySeverityLow    ListSiteActivitySeverity = "low"
+)
+
+// AllValues returns all ListSiteActivitySeverity values.
+func (ListSiteActivitySeverity) AllValues() []ListSiteActivitySeverity {
+	return []ListSiteActivitySeverity{
+		ListSiteActivitySeverityHigh,
+		ListSiteActivitySeverityMedium,
+		ListSiteActivitySeverityLow,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListSiteActivitySeverity) MarshalText() ([]byte, error) {
+	switch s {
+	case ListSiteActivitySeverityHigh:
+		return []byte(s), nil
+	case ListSiteActivitySeverityMedium:
+		return []byte(s), nil
+	case ListSiteActivitySeverityLow:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListSiteActivitySeverity) UnmarshalText(data []byte) error {
+	switch ListSiteActivitySeverity(data) {
+	case ListSiteActivitySeverityHigh:
+		*s = ListSiteActivitySeverityHigh
+		return nil
+	case ListSiteActivitySeverityMedium:
+		*s = ListSiteActivitySeverityMedium
+		return nil
+	case ListSiteActivitySeverityLow:
+		*s = ListSiteActivitySeverityLow
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ListSiteDestinationsForbidden Error
+
+func (*ListSiteDestinationsForbidden) listSiteDestinationsRes() {}
+
+type ListSiteDestinationsUnauthorized Error
+
+func (*ListSiteDestinationsUnauthorized) listSiteDestinationsRes() {}
+
+type ListSitePHPErrorsSilenced string
+
+const (
+	ListSitePHPErrorsSilencedTrue  ListSitePHPErrorsSilenced = "true"
+	ListSitePHPErrorsSilencedFalse ListSitePHPErrorsSilenced = "false"
+)
+
+// AllValues returns all ListSitePHPErrorsSilenced values.
+func (ListSitePHPErrorsSilenced) AllValues() []ListSitePHPErrorsSilenced {
+	return []ListSitePHPErrorsSilenced{
+		ListSitePHPErrorsSilencedTrue,
+		ListSitePHPErrorsSilencedFalse,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListSitePHPErrorsSilenced) MarshalText() ([]byte, error) {
+	switch s {
+	case ListSitePHPErrorsSilencedTrue:
+		return []byte(s), nil
+	case ListSitePHPErrorsSilencedFalse:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListSitePHPErrorsSilenced) UnmarshalText(data []byte) error {
+	switch ListSitePHPErrorsSilenced(data) {
+	case ListSitePHPErrorsSilencedTrue:
+		*s = ListSitePHPErrorsSilencedTrue
+		return nil
+	case ListSitePHPErrorsSilencedFalse:
+		*s = ListSitePHPErrorsSilencedFalse
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/LoginRequest
 type LoginRequest struct {
@@ -2955,6 +3128,98 @@ func (o OptInt64) Or(d int64) int64 {
 	return d
 }
 
+// NewOptListSiteActivitySeverity returns new OptListSiteActivitySeverity with value set to v.
+func NewOptListSiteActivitySeverity(v ListSiteActivitySeverity) OptListSiteActivitySeverity {
+	return OptListSiteActivitySeverity{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListSiteActivitySeverity is optional ListSiteActivitySeverity.
+type OptListSiteActivitySeverity struct {
+	Value ListSiteActivitySeverity
+	Set   bool
+}
+
+// IsSet returns true if OptListSiteActivitySeverity was set.
+func (o OptListSiteActivitySeverity) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListSiteActivitySeverity) Reset() {
+	var v ListSiteActivitySeverity
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListSiteActivitySeverity) SetTo(v ListSiteActivitySeverity) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListSiteActivitySeverity) Get() (v ListSiteActivitySeverity, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListSiteActivitySeverity) Or(d ListSiteActivitySeverity) ListSiteActivitySeverity {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptListSitePHPErrorsSilenced returns new OptListSitePHPErrorsSilenced with value set to v.
+func NewOptListSitePHPErrorsSilenced(v ListSitePHPErrorsSilenced) OptListSitePHPErrorsSilenced {
+	return OptListSitePHPErrorsSilenced{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListSitePHPErrorsSilenced is optional ListSitePHPErrorsSilenced.
+type OptListSitePHPErrorsSilenced struct {
+	Value ListSitePHPErrorsSilenced
+	Set   bool
+}
+
+// IsSet returns true if OptListSitePHPErrorsSilenced was set.
+func (o OptListSitePHPErrorsSilenced) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListSitePHPErrorsSilenced) Reset() {
+	var v ListSitePHPErrorsSilenced
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListSitePHPErrorsSilenced) SetTo(v ListSitePHPErrorsSilenced) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListSitePHPErrorsSilenced) Get() (v ListSitePHPErrorsSilenced, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListSitePHPErrorsSilenced) Or(d ListSitePHPErrorsSilenced) ListSitePHPErrorsSilenced {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilDateTime returns new OptNilDateTime with value set to v.
 func NewOptNilDateTime(v time.Time) OptNilDateTime {
 	return OptNilDateTime{
@@ -3396,6 +3661,52 @@ func (o OptNilURI) Or(d url.URL) url.URL {
 	return d
 }
 
+// NewOptPHPErrorSilence returns new OptPHPErrorSilence with value set to v.
+func NewOptPHPErrorSilence(v PHPErrorSilence) OptPHPErrorSilence {
+	return OptPHPErrorSilence{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptPHPErrorSilence is optional PHPErrorSilence.
+type OptPHPErrorSilence struct {
+	Value PHPErrorSilence
+	Set   bool
+}
+
+// IsSet returns true if OptPHPErrorSilence was set.
+func (o OptPHPErrorSilence) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptPHPErrorSilence) Reset() {
+	var v PHPErrorSilence
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptPHPErrorSilence) SetTo(v PHPErrorSilence) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptPHPErrorSilence) Get() (v PHPErrorSilence, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptPHPErrorSilence) Or(d PHPErrorSilence) PHPErrorSilence {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptPairingCodeCreate returns new OptPairingCodeCreate with value set to v.
 func NewOptPairingCodeCreate(v PairingCodeCreate) OptPairingCodeCreate {
 	return OptPairingCodeCreate{
@@ -3672,6 +3983,231 @@ func (o OptUUID) Or(d uuid.UUID) uuid.UUID {
 	return d
 }
 
+// Ref: #/components/schemas/PHPError
+type PHPError struct {
+	// The CP-side row UUID (stringified).
+	ID string `json:"id"`
+	// The agent-side dedup fingerprint (md5(code:file:line:message)).
+	MD5 string `json:"md5"`
+	// PHP error code (E_* constant value).
+	Code int `json:"code"`
+	// One of fatal, warning, notice, deprecated, bootstrap, unknown.
+	Severity        string    `json:"severity"`
+	Message         string    `json:"message"`
+	File            string    `json:"file"`
+	Line            int       `json:"line"`
+	RequestPath     string    `json:"request_path"`
+	FirstSeenAt     time.Time `json:"first_seen_at"`
+	LastSeenAt      time.Time `json:"last_seen_at"`
+	OccurrenceCount int64     `json:"occurrence_count"`
+	Silenced        bool      `json:"silenced"`
+	// Up to 10 stack frames captured at the error site, most-recent-call-first. Always present; may be
+	// an empty array for errors captured before S1.1 or when the agent could not produce a trace.
+	Backtrace []PHPErrorFrame `json:"backtrace"`
+}
+
+// GetID returns the value of ID.
+func (s *PHPError) GetID() string {
+	return s.ID
+}
+
+// GetMD5 returns the value of MD5.
+func (s *PHPError) GetMD5() string {
+	return s.MD5
+}
+
+// GetCode returns the value of Code.
+func (s *PHPError) GetCode() int {
+	return s.Code
+}
+
+// GetSeverity returns the value of Severity.
+func (s *PHPError) GetSeverity() string {
+	return s.Severity
+}
+
+// GetMessage returns the value of Message.
+func (s *PHPError) GetMessage() string {
+	return s.Message
+}
+
+// GetFile returns the value of File.
+func (s *PHPError) GetFile() string {
+	return s.File
+}
+
+// GetLine returns the value of Line.
+func (s *PHPError) GetLine() int {
+	return s.Line
+}
+
+// GetRequestPath returns the value of RequestPath.
+func (s *PHPError) GetRequestPath() string {
+	return s.RequestPath
+}
+
+// GetFirstSeenAt returns the value of FirstSeenAt.
+func (s *PHPError) GetFirstSeenAt() time.Time {
+	return s.FirstSeenAt
+}
+
+// GetLastSeenAt returns the value of LastSeenAt.
+func (s *PHPError) GetLastSeenAt() time.Time {
+	return s.LastSeenAt
+}
+
+// GetOccurrenceCount returns the value of OccurrenceCount.
+func (s *PHPError) GetOccurrenceCount() int64 {
+	return s.OccurrenceCount
+}
+
+// GetSilenced returns the value of Silenced.
+func (s *PHPError) GetSilenced() bool {
+	return s.Silenced
+}
+
+// GetBacktrace returns the value of Backtrace.
+func (s *PHPError) GetBacktrace() []PHPErrorFrame {
+	return s.Backtrace
+}
+
+// SetID sets the value of ID.
+func (s *PHPError) SetID(val string) {
+	s.ID = val
+}
+
+// SetMD5 sets the value of MD5.
+func (s *PHPError) SetMD5(val string) {
+	s.MD5 = val
+}
+
+// SetCode sets the value of Code.
+func (s *PHPError) SetCode(val int) {
+	s.Code = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *PHPError) SetSeverity(val string) {
+	s.Severity = val
+}
+
+// SetMessage sets the value of Message.
+func (s *PHPError) SetMessage(val string) {
+	s.Message = val
+}
+
+// SetFile sets the value of File.
+func (s *PHPError) SetFile(val string) {
+	s.File = val
+}
+
+// SetLine sets the value of Line.
+func (s *PHPError) SetLine(val int) {
+	s.Line = val
+}
+
+// SetRequestPath sets the value of RequestPath.
+func (s *PHPError) SetRequestPath(val string) {
+	s.RequestPath = val
+}
+
+// SetFirstSeenAt sets the value of FirstSeenAt.
+func (s *PHPError) SetFirstSeenAt(val time.Time) {
+	s.FirstSeenAt = val
+}
+
+// SetLastSeenAt sets the value of LastSeenAt.
+func (s *PHPError) SetLastSeenAt(val time.Time) {
+	s.LastSeenAt = val
+}
+
+// SetOccurrenceCount sets the value of OccurrenceCount.
+func (s *PHPError) SetOccurrenceCount(val int64) {
+	s.OccurrenceCount = val
+}
+
+// SetSilenced sets the value of Silenced.
+func (s *PHPError) SetSilenced(val bool) {
+	s.Silenced = val
+}
+
+// SetBacktrace sets the value of Backtrace.
+func (s *PHPError) SetBacktrace(val []PHPErrorFrame) {
+	s.Backtrace = val
+}
+
+// One frame in a PHP error backtrace (most-recent-call-first).
+// Ref: #/components/schemas/PHPErrorFrame
+type PHPErrorFrame struct {
+	// Absolute path to the PHP file containing the call.
+	File string `json:"file"`
+	// Line number of the call site.
+	Line int `json:"line"`
+	// Function or method name at this frame (empty string for file-level code).
+	Function string `json:"function"`
+}
+
+// GetFile returns the value of File.
+func (s *PHPErrorFrame) GetFile() string {
+	return s.File
+}
+
+// GetLine returns the value of Line.
+func (s *PHPErrorFrame) GetLine() int {
+	return s.Line
+}
+
+// GetFunction returns the value of Function.
+func (s *PHPErrorFrame) GetFunction() string {
+	return s.Function
+}
+
+// SetFile sets the value of File.
+func (s *PHPErrorFrame) SetFile(val string) {
+	s.File = val
+}
+
+// SetLine sets the value of Line.
+func (s *PHPErrorFrame) SetLine(val int) {
+	s.Line = val
+}
+
+// SetFunction sets the value of Function.
+func (s *PHPErrorFrame) SetFunction(val string) {
+	s.Function = val
+}
+
+// Ref: #/components/schemas/PHPErrorList
+type PHPErrorList struct {
+	Items []PHPError `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *PHPErrorList) GetItems() []PHPError {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *PHPErrorList) SetItems(val []PHPError) {
+	s.Items = val
+}
+
+// Ref: #/components/schemas/PHPErrorSilence
+type PHPErrorSilence struct {
+	// Whether to silence (default true).
+	Silenced OptBool `json:"silenced"`
+}
+
+// GetSilenced returns the value of Silenced.
+func (s *PHPErrorSilence) GetSilenced() OptBool {
+	return s.Silenced
+}
+
+// SetSilenced sets the value of Silenced.
+func (s *PHPErrorSilence) SetSilenced(val OptBool) {
+	s.Silenced = val
+}
+
 // Ref: #/components/schemas/PairingCode
 type PairingCode struct {
 	ID       uuid.UUID `json:"id"`
@@ -3859,6 +4395,11 @@ func (s *ReadinessStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// RefreshSiteDiagnosticsAccepted is response for RefreshSiteDiagnostics operation.
+type RefreshSiteDiagnosticsAccepted struct{}
+
+func (*RefreshSiteDiagnosticsAccepted) refreshSiteDiagnosticsRes() {}
 
 // RefreshSiteUpdatesAccepted is response for RefreshSiteUpdates operation.
 type RefreshSiteUpdatesAccepted struct{}
@@ -4185,6 +4726,11 @@ func (s *Role) UnmarshalText(data []byte) error {
 	}
 }
 
+// SilenceSitePHPErrorNoContent is response for SilenceSitePHPError operation.
+type SilenceSitePHPErrorNoContent struct{}
+
+func (*SilenceSitePHPErrorNoContent) silenceSitePHPErrorRes() {}
+
 // Ref: #/components/schemas/Site
 type Site struct {
 	ID           uuid.UUID        `json:"id"`
@@ -4392,6 +4938,282 @@ func (*Site) agentMetadataRes() {}
 func (*Site) createSiteRes()    {}
 func (*Site) getSiteRes()       {}
 func (*Site) setSiteTagsRes()   {}
+
+// Ref: #/components/schemas/SiteActivityEvent
+type SiteActivityEvent struct {
+	// The CP-side row id (stringified BIGSERIAL).
+	ID string `json:"id"`
+	// Agent-assigned monotonic sequence within the chain.
+	Seq         int64  `json:"seq"`
+	EventType   string `json:"event_type"`
+	ObjectType  string `json:"object_type"`
+	ObjectID    string `json:"object_id"`
+	ObjectLabel string `json:"object_label"`
+	// WP user id of the actor; 0 for system events.
+	ActorUserID int64 `json:"actor_user_id"`
+	// WP login of the actor; empty for system events.
+	ActorLogin string `json:"actor_login"`
+	ActorIP    string `json:"actor_ip"`
+	Summary    string `json:"summary"`
+	// Agent-supplied event metadata (severity lives here).
+	Meta     SiteActivityEventMeta     `json:"meta"`
+	Severity SiteActivityEventSeverity `json:"severity"`
+	// The prior link's hash (64 zero chars at genesis).
+	PrevHash string `json:"prev_hash"`
+	// Sha256 over the canonical event preimage.
+	ThisHash string `json:"this_hash"`
+	// Server-verified at ingest. False marks a tampered/broken link: the
+	// CP-recomputed hash did not match the shipped this_hash, or the
+	// shipped prev_hash did not match the prior stored row.
+	ChainValid bool      `json:"chain_valid"`
+	OccurredAt time.Time `json:"occurred_at"`
+	ReceivedAt time.Time `json:"received_at"`
+}
+
+// GetID returns the value of ID.
+func (s *SiteActivityEvent) GetID() string {
+	return s.ID
+}
+
+// GetSeq returns the value of Seq.
+func (s *SiteActivityEvent) GetSeq() int64 {
+	return s.Seq
+}
+
+// GetEventType returns the value of EventType.
+func (s *SiteActivityEvent) GetEventType() string {
+	return s.EventType
+}
+
+// GetObjectType returns the value of ObjectType.
+func (s *SiteActivityEvent) GetObjectType() string {
+	return s.ObjectType
+}
+
+// GetObjectID returns the value of ObjectID.
+func (s *SiteActivityEvent) GetObjectID() string {
+	return s.ObjectID
+}
+
+// GetObjectLabel returns the value of ObjectLabel.
+func (s *SiteActivityEvent) GetObjectLabel() string {
+	return s.ObjectLabel
+}
+
+// GetActorUserID returns the value of ActorUserID.
+func (s *SiteActivityEvent) GetActorUserID() int64 {
+	return s.ActorUserID
+}
+
+// GetActorLogin returns the value of ActorLogin.
+func (s *SiteActivityEvent) GetActorLogin() string {
+	return s.ActorLogin
+}
+
+// GetActorIP returns the value of ActorIP.
+func (s *SiteActivityEvent) GetActorIP() string {
+	return s.ActorIP
+}
+
+// GetSummary returns the value of Summary.
+func (s *SiteActivityEvent) GetSummary() string {
+	return s.Summary
+}
+
+// GetMeta returns the value of Meta.
+func (s *SiteActivityEvent) GetMeta() SiteActivityEventMeta {
+	return s.Meta
+}
+
+// GetSeverity returns the value of Severity.
+func (s *SiteActivityEvent) GetSeverity() SiteActivityEventSeverity {
+	return s.Severity
+}
+
+// GetPrevHash returns the value of PrevHash.
+func (s *SiteActivityEvent) GetPrevHash() string {
+	return s.PrevHash
+}
+
+// GetThisHash returns the value of ThisHash.
+func (s *SiteActivityEvent) GetThisHash() string {
+	return s.ThisHash
+}
+
+// GetChainValid returns the value of ChainValid.
+func (s *SiteActivityEvent) GetChainValid() bool {
+	return s.ChainValid
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *SiteActivityEvent) GetOccurredAt() time.Time {
+	return s.OccurredAt
+}
+
+// GetReceivedAt returns the value of ReceivedAt.
+func (s *SiteActivityEvent) GetReceivedAt() time.Time {
+	return s.ReceivedAt
+}
+
+// SetID sets the value of ID.
+func (s *SiteActivityEvent) SetID(val string) {
+	s.ID = val
+}
+
+// SetSeq sets the value of Seq.
+func (s *SiteActivityEvent) SetSeq(val int64) {
+	s.Seq = val
+}
+
+// SetEventType sets the value of EventType.
+func (s *SiteActivityEvent) SetEventType(val string) {
+	s.EventType = val
+}
+
+// SetObjectType sets the value of ObjectType.
+func (s *SiteActivityEvent) SetObjectType(val string) {
+	s.ObjectType = val
+}
+
+// SetObjectID sets the value of ObjectID.
+func (s *SiteActivityEvent) SetObjectID(val string) {
+	s.ObjectID = val
+}
+
+// SetObjectLabel sets the value of ObjectLabel.
+func (s *SiteActivityEvent) SetObjectLabel(val string) {
+	s.ObjectLabel = val
+}
+
+// SetActorUserID sets the value of ActorUserID.
+func (s *SiteActivityEvent) SetActorUserID(val int64) {
+	s.ActorUserID = val
+}
+
+// SetActorLogin sets the value of ActorLogin.
+func (s *SiteActivityEvent) SetActorLogin(val string) {
+	s.ActorLogin = val
+}
+
+// SetActorIP sets the value of ActorIP.
+func (s *SiteActivityEvent) SetActorIP(val string) {
+	s.ActorIP = val
+}
+
+// SetSummary sets the value of Summary.
+func (s *SiteActivityEvent) SetSummary(val string) {
+	s.Summary = val
+}
+
+// SetMeta sets the value of Meta.
+func (s *SiteActivityEvent) SetMeta(val SiteActivityEventMeta) {
+	s.Meta = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *SiteActivityEvent) SetSeverity(val SiteActivityEventSeverity) {
+	s.Severity = val
+}
+
+// SetPrevHash sets the value of PrevHash.
+func (s *SiteActivityEvent) SetPrevHash(val string) {
+	s.PrevHash = val
+}
+
+// SetThisHash sets the value of ThisHash.
+func (s *SiteActivityEvent) SetThisHash(val string) {
+	s.ThisHash = val
+}
+
+// SetChainValid sets the value of ChainValid.
+func (s *SiteActivityEvent) SetChainValid(val bool) {
+	s.ChainValid = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *SiteActivityEvent) SetOccurredAt(val time.Time) {
+	s.OccurredAt = val
+}
+
+// SetReceivedAt sets the value of ReceivedAt.
+func (s *SiteActivityEvent) SetReceivedAt(val time.Time) {
+	s.ReceivedAt = val
+}
+
+// Agent-supplied event metadata (severity lives here).
+type SiteActivityEventMeta map[string]jx.Raw
+
+func (s *SiteActivityEventMeta) init() SiteActivityEventMeta {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type SiteActivityEventSeverity string
+
+const (
+	SiteActivityEventSeverityHigh   SiteActivityEventSeverity = "high"
+	SiteActivityEventSeverityMedium SiteActivityEventSeverity = "medium"
+	SiteActivityEventSeverityLow    SiteActivityEventSeverity = "low"
+)
+
+// AllValues returns all SiteActivityEventSeverity values.
+func (SiteActivityEventSeverity) AllValues() []SiteActivityEventSeverity {
+	return []SiteActivityEventSeverity{
+		SiteActivityEventSeverityHigh,
+		SiteActivityEventSeverityMedium,
+		SiteActivityEventSeverityLow,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteActivityEventSeverity) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteActivityEventSeverityHigh:
+		return []byte(s), nil
+	case SiteActivityEventSeverityMedium:
+		return []byte(s), nil
+	case SiteActivityEventSeverityLow:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteActivityEventSeverity) UnmarshalText(data []byte) error {
+	switch SiteActivityEventSeverity(data) {
+	case SiteActivityEventSeverityHigh:
+		*s = SiteActivityEventSeverityHigh
+		return nil
+	case SiteActivityEventSeverityMedium:
+		*s = SiteActivityEventSeverityMedium
+		return nil
+	case SiteActivityEventSeverityLow:
+		*s = SiteActivityEventSeverityLow
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/SiteActivityList
+type SiteActivityList struct {
+	Items []SiteActivityEvent `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *SiteActivityList) GetItems() []SiteActivityEvent {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *SiteActivityList) SetItems(val []SiteActivityEvent) {
+	s.Items = val
+}
 
 // Per-site cached list of items with updates available.
 // Ref: #/components/schemas/SiteAvailableUpdates
@@ -4898,6 +5720,685 @@ func (s *SiteCreateStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// Ref: #/components/schemas/SiteDestination
+type SiteDestination struct {
+	ID          uuid.UUID           `json:"id"`
+	TenantID    uuid.UUID           `json:"tenant_id"`
+	SiteID      uuid.UUID           `json:"site_id"`
+	Kind        SiteDestinationKind `json:"kind"`
+	Label       string              `json:"label"`
+	Endpoint    string              `json:"endpoint"`
+	Region      string              `json:"region"`
+	Bucket      string              `json:"bucket"`
+	PathPrefix  string              `json:"path_prefix"`
+	AccessKeyID string              `json:"access_key_id"`
+	// True iff a secret key is stored. The encrypted bytes never cross
+	// the wire; the UI uses this to render a "Re-enter to save changes"
+	// hint on the secret_key field.
+	HasSecret      bool      `json:"has_secret"`
+	ForcePathStyle bool      `json:"force_path_style"`
+	IsDefault      bool      `json:"is_default"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// GetID returns the value of ID.
+func (s *SiteDestination) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *SiteDestination) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteDestination) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetKind returns the value of Kind.
+func (s *SiteDestination) GetKind() SiteDestinationKind {
+	return s.Kind
+}
+
+// GetLabel returns the value of Label.
+func (s *SiteDestination) GetLabel() string {
+	return s.Label
+}
+
+// GetEndpoint returns the value of Endpoint.
+func (s *SiteDestination) GetEndpoint() string {
+	return s.Endpoint
+}
+
+// GetRegion returns the value of Region.
+func (s *SiteDestination) GetRegion() string {
+	return s.Region
+}
+
+// GetBucket returns the value of Bucket.
+func (s *SiteDestination) GetBucket() string {
+	return s.Bucket
+}
+
+// GetPathPrefix returns the value of PathPrefix.
+func (s *SiteDestination) GetPathPrefix() string {
+	return s.PathPrefix
+}
+
+// GetAccessKeyID returns the value of AccessKeyID.
+func (s *SiteDestination) GetAccessKeyID() string {
+	return s.AccessKeyID
+}
+
+// GetHasSecret returns the value of HasSecret.
+func (s *SiteDestination) GetHasSecret() bool {
+	return s.HasSecret
+}
+
+// GetForcePathStyle returns the value of ForcePathStyle.
+func (s *SiteDestination) GetForcePathStyle() bool {
+	return s.ForcePathStyle
+}
+
+// GetIsDefault returns the value of IsDefault.
+func (s *SiteDestination) GetIsDefault() bool {
+	return s.IsDefault
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *SiteDestination) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SiteDestination) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetID sets the value of ID.
+func (s *SiteDestination) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *SiteDestination) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteDestination) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetKind sets the value of Kind.
+func (s *SiteDestination) SetKind(val SiteDestinationKind) {
+	s.Kind = val
+}
+
+// SetLabel sets the value of Label.
+func (s *SiteDestination) SetLabel(val string) {
+	s.Label = val
+}
+
+// SetEndpoint sets the value of Endpoint.
+func (s *SiteDestination) SetEndpoint(val string) {
+	s.Endpoint = val
+}
+
+// SetRegion sets the value of Region.
+func (s *SiteDestination) SetRegion(val string) {
+	s.Region = val
+}
+
+// SetBucket sets the value of Bucket.
+func (s *SiteDestination) SetBucket(val string) {
+	s.Bucket = val
+}
+
+// SetPathPrefix sets the value of PathPrefix.
+func (s *SiteDestination) SetPathPrefix(val string) {
+	s.PathPrefix = val
+}
+
+// SetAccessKeyID sets the value of AccessKeyID.
+func (s *SiteDestination) SetAccessKeyID(val string) {
+	s.AccessKeyID = val
+}
+
+// SetHasSecret sets the value of HasSecret.
+func (s *SiteDestination) SetHasSecret(val bool) {
+	s.HasSecret = val
+}
+
+// SetForcePathStyle sets the value of ForcePathStyle.
+func (s *SiteDestination) SetForcePathStyle(val bool) {
+	s.ForcePathStyle = val
+}
+
+// SetIsDefault sets the value of IsDefault.
+func (s *SiteDestination) SetIsDefault(val bool) {
+	s.IsDefault = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *SiteDestination) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SiteDestination) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*SiteDestination) createSiteDestinationRes() {}
+func (*SiteDestination) getSiteDestinationRes()    {}
+func (*SiteDestination) updateSiteDestinationRes() {}
+
+// Ref: #/components/schemas/SiteDestinationCreate
+type SiteDestinationCreate struct {
+	Kind        SiteDestinationKind `json:"kind"`
+	Label       string              `json:"label"`
+	Endpoint    OptString           `json:"endpoint"`
+	Region      OptString           `json:"region"`
+	Bucket      OptString           `json:"bucket"`
+	PathPrefix  OptString           `json:"path_prefix"`
+	AccessKeyID OptString           `json:"access_key_id"`
+	// PLAINTEXT secret. The CP age-encrypts it at rest before persisting;
+	// it is NEVER stored in clear nor read back over the API.
+	SecretKey      OptString `json:"secret_key"`
+	ForcePathStyle OptBool   `json:"force_path_style"`
+	IsDefault      OptBool   `json:"is_default"`
+}
+
+// GetKind returns the value of Kind.
+func (s *SiteDestinationCreate) GetKind() SiteDestinationKind {
+	return s.Kind
+}
+
+// GetLabel returns the value of Label.
+func (s *SiteDestinationCreate) GetLabel() string {
+	return s.Label
+}
+
+// GetEndpoint returns the value of Endpoint.
+func (s *SiteDestinationCreate) GetEndpoint() OptString {
+	return s.Endpoint
+}
+
+// GetRegion returns the value of Region.
+func (s *SiteDestinationCreate) GetRegion() OptString {
+	return s.Region
+}
+
+// GetBucket returns the value of Bucket.
+func (s *SiteDestinationCreate) GetBucket() OptString {
+	return s.Bucket
+}
+
+// GetPathPrefix returns the value of PathPrefix.
+func (s *SiteDestinationCreate) GetPathPrefix() OptString {
+	return s.PathPrefix
+}
+
+// GetAccessKeyID returns the value of AccessKeyID.
+func (s *SiteDestinationCreate) GetAccessKeyID() OptString {
+	return s.AccessKeyID
+}
+
+// GetSecretKey returns the value of SecretKey.
+func (s *SiteDestinationCreate) GetSecretKey() OptString {
+	return s.SecretKey
+}
+
+// GetForcePathStyle returns the value of ForcePathStyle.
+func (s *SiteDestinationCreate) GetForcePathStyle() OptBool {
+	return s.ForcePathStyle
+}
+
+// GetIsDefault returns the value of IsDefault.
+func (s *SiteDestinationCreate) GetIsDefault() OptBool {
+	return s.IsDefault
+}
+
+// SetKind sets the value of Kind.
+func (s *SiteDestinationCreate) SetKind(val SiteDestinationKind) {
+	s.Kind = val
+}
+
+// SetLabel sets the value of Label.
+func (s *SiteDestinationCreate) SetLabel(val string) {
+	s.Label = val
+}
+
+// SetEndpoint sets the value of Endpoint.
+func (s *SiteDestinationCreate) SetEndpoint(val OptString) {
+	s.Endpoint = val
+}
+
+// SetRegion sets the value of Region.
+func (s *SiteDestinationCreate) SetRegion(val OptString) {
+	s.Region = val
+}
+
+// SetBucket sets the value of Bucket.
+func (s *SiteDestinationCreate) SetBucket(val OptString) {
+	s.Bucket = val
+}
+
+// SetPathPrefix sets the value of PathPrefix.
+func (s *SiteDestinationCreate) SetPathPrefix(val OptString) {
+	s.PathPrefix = val
+}
+
+// SetAccessKeyID sets the value of AccessKeyID.
+func (s *SiteDestinationCreate) SetAccessKeyID(val OptString) {
+	s.AccessKeyID = val
+}
+
+// SetSecretKey sets the value of SecretKey.
+func (s *SiteDestinationCreate) SetSecretKey(val OptString) {
+	s.SecretKey = val
+}
+
+// SetForcePathStyle sets the value of ForcePathStyle.
+func (s *SiteDestinationCreate) SetForcePathStyle(val OptBool) {
+	s.ForcePathStyle = val
+}
+
+// SetIsDefault sets the value of IsDefault.
+func (s *SiteDestinationCreate) SetIsDefault(val OptBool) {
+	s.IsDefault = val
+}
+
+// ADR-036 P1 destination backend type. `cp` is the WPMgr-managed bucket,
+// `local` writes to wp-content/wpmgr-backups on the agent host, and
+// `s3_compat` targets a customer-owned S3-compatible bucket.
+// Ref: #/components/schemas/SiteDestinationKind
+type SiteDestinationKind string
+
+const (
+	SiteDestinationKindCp       SiteDestinationKind = "cp"
+	SiteDestinationKindLocal    SiteDestinationKind = "local"
+	SiteDestinationKindS3Compat SiteDestinationKind = "s3_compat"
+)
+
+// AllValues returns all SiteDestinationKind values.
+func (SiteDestinationKind) AllValues() []SiteDestinationKind {
+	return []SiteDestinationKind{
+		SiteDestinationKindCp,
+		SiteDestinationKindLocal,
+		SiteDestinationKindS3Compat,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteDestinationKind) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteDestinationKindCp:
+		return []byte(s), nil
+	case SiteDestinationKindLocal:
+		return []byte(s), nil
+	case SiteDestinationKindS3Compat:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteDestinationKind) UnmarshalText(data []byte) error {
+	switch SiteDestinationKind(data) {
+	case SiteDestinationKindCp:
+		*s = SiteDestinationKindCp
+		return nil
+	case SiteDestinationKindLocal:
+		*s = SiteDestinationKindLocal
+		return nil
+	case SiteDestinationKindS3Compat:
+		*s = SiteDestinationKindS3Compat
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/SiteDestinationList
+type SiteDestinationList struct {
+	Items []SiteDestination `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *SiteDestinationList) GetItems() []SiteDestination {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *SiteDestinationList) SetItems(val []SiteDestination) {
+	s.Items = val
+}
+
+func (*SiteDestinationList) listSiteDestinationsRes() {}
+
+// Ref: #/components/schemas/SiteDestinationTest
+type SiteDestinationTest struct {
+	Kind           SiteDestinationKind `json:"kind"`
+	Endpoint       OptString           `json:"endpoint"`
+	Region         OptString           `json:"region"`
+	Bucket         OptString           `json:"bucket"`
+	PathPrefix     OptString           `json:"path_prefix"`
+	AccessKeyID    OptString           `json:"access_key_id"`
+	SecretKey      OptString           `json:"secret_key"`
+	ForcePathStyle OptBool             `json:"force_path_style"`
+}
+
+// GetKind returns the value of Kind.
+func (s *SiteDestinationTest) GetKind() SiteDestinationKind {
+	return s.Kind
+}
+
+// GetEndpoint returns the value of Endpoint.
+func (s *SiteDestinationTest) GetEndpoint() OptString {
+	return s.Endpoint
+}
+
+// GetRegion returns the value of Region.
+func (s *SiteDestinationTest) GetRegion() OptString {
+	return s.Region
+}
+
+// GetBucket returns the value of Bucket.
+func (s *SiteDestinationTest) GetBucket() OptString {
+	return s.Bucket
+}
+
+// GetPathPrefix returns the value of PathPrefix.
+func (s *SiteDestinationTest) GetPathPrefix() OptString {
+	return s.PathPrefix
+}
+
+// GetAccessKeyID returns the value of AccessKeyID.
+func (s *SiteDestinationTest) GetAccessKeyID() OptString {
+	return s.AccessKeyID
+}
+
+// GetSecretKey returns the value of SecretKey.
+func (s *SiteDestinationTest) GetSecretKey() OptString {
+	return s.SecretKey
+}
+
+// GetForcePathStyle returns the value of ForcePathStyle.
+func (s *SiteDestinationTest) GetForcePathStyle() OptBool {
+	return s.ForcePathStyle
+}
+
+// SetKind sets the value of Kind.
+func (s *SiteDestinationTest) SetKind(val SiteDestinationKind) {
+	s.Kind = val
+}
+
+// SetEndpoint sets the value of Endpoint.
+func (s *SiteDestinationTest) SetEndpoint(val OptString) {
+	s.Endpoint = val
+}
+
+// SetRegion sets the value of Region.
+func (s *SiteDestinationTest) SetRegion(val OptString) {
+	s.Region = val
+}
+
+// SetBucket sets the value of Bucket.
+func (s *SiteDestinationTest) SetBucket(val OptString) {
+	s.Bucket = val
+}
+
+// SetPathPrefix sets the value of PathPrefix.
+func (s *SiteDestinationTest) SetPathPrefix(val OptString) {
+	s.PathPrefix = val
+}
+
+// SetAccessKeyID sets the value of AccessKeyID.
+func (s *SiteDestinationTest) SetAccessKeyID(val OptString) {
+	s.AccessKeyID = val
+}
+
+// SetSecretKey sets the value of SecretKey.
+func (s *SiteDestinationTest) SetSecretKey(val OptString) {
+	s.SecretKey = val
+}
+
+// SetForcePathStyle sets the value of ForcePathStyle.
+func (s *SiteDestinationTest) SetForcePathStyle(val OptBool) {
+	s.ForcePathStyle = val
+}
+
+// Ref: #/components/schemas/SiteDestinationTestResult
+type SiteDestinationTestResult struct {
+	Ok      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// GetOk returns the value of Ok.
+func (s *SiteDestinationTestResult) GetOk() bool {
+	return s.Ok
+}
+
+// GetMessage returns the value of Message.
+func (s *SiteDestinationTestResult) GetMessage() string {
+	return s.Message
+}
+
+// SetOk sets the value of Ok.
+func (s *SiteDestinationTestResult) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SiteDestinationTestResult) SetMessage(val string) {
+	s.Message = val
+}
+
+func (*SiteDestinationTestResult) testSiteDestinationRes() {}
+
+// Ref: #/components/schemas/SiteDestinationUpdate
+type SiteDestinationUpdate struct {
+	Label       OptString `json:"label"`
+	Endpoint    OptString `json:"endpoint"`
+	Region      OptString `json:"region"`
+	Bucket      OptString `json:"bucket"`
+	PathPrefix  OptString `json:"path_prefix"`
+	AccessKeyID OptString `json:"access_key_id"`
+	// Omit to keep the existing secret; non-empty replaces it.
+	SecretKey      OptString `json:"secret_key"`
+	ForcePathStyle OptBool   `json:"force_path_style"`
+	IsDefault      OptBool   `json:"is_default"`
+}
+
+// GetLabel returns the value of Label.
+func (s *SiteDestinationUpdate) GetLabel() OptString {
+	return s.Label
+}
+
+// GetEndpoint returns the value of Endpoint.
+func (s *SiteDestinationUpdate) GetEndpoint() OptString {
+	return s.Endpoint
+}
+
+// GetRegion returns the value of Region.
+func (s *SiteDestinationUpdate) GetRegion() OptString {
+	return s.Region
+}
+
+// GetBucket returns the value of Bucket.
+func (s *SiteDestinationUpdate) GetBucket() OptString {
+	return s.Bucket
+}
+
+// GetPathPrefix returns the value of PathPrefix.
+func (s *SiteDestinationUpdate) GetPathPrefix() OptString {
+	return s.PathPrefix
+}
+
+// GetAccessKeyID returns the value of AccessKeyID.
+func (s *SiteDestinationUpdate) GetAccessKeyID() OptString {
+	return s.AccessKeyID
+}
+
+// GetSecretKey returns the value of SecretKey.
+func (s *SiteDestinationUpdate) GetSecretKey() OptString {
+	return s.SecretKey
+}
+
+// GetForcePathStyle returns the value of ForcePathStyle.
+func (s *SiteDestinationUpdate) GetForcePathStyle() OptBool {
+	return s.ForcePathStyle
+}
+
+// GetIsDefault returns the value of IsDefault.
+func (s *SiteDestinationUpdate) GetIsDefault() OptBool {
+	return s.IsDefault
+}
+
+// SetLabel sets the value of Label.
+func (s *SiteDestinationUpdate) SetLabel(val OptString) {
+	s.Label = val
+}
+
+// SetEndpoint sets the value of Endpoint.
+func (s *SiteDestinationUpdate) SetEndpoint(val OptString) {
+	s.Endpoint = val
+}
+
+// SetRegion sets the value of Region.
+func (s *SiteDestinationUpdate) SetRegion(val OptString) {
+	s.Region = val
+}
+
+// SetBucket sets the value of Bucket.
+func (s *SiteDestinationUpdate) SetBucket(val OptString) {
+	s.Bucket = val
+}
+
+// SetPathPrefix sets the value of PathPrefix.
+func (s *SiteDestinationUpdate) SetPathPrefix(val OptString) {
+	s.PathPrefix = val
+}
+
+// SetAccessKeyID sets the value of AccessKeyID.
+func (s *SiteDestinationUpdate) SetAccessKeyID(val OptString) {
+	s.AccessKeyID = val
+}
+
+// SetSecretKey sets the value of SecretKey.
+func (s *SiteDestinationUpdate) SetSecretKey(val OptString) {
+	s.SecretKey = val
+}
+
+// SetForcePathStyle sets the value of ForcePathStyle.
+func (s *SiteDestinationUpdate) SetForcePathStyle(val OptBool) {
+	s.ForcePathStyle = val
+}
+
+// SetIsDefault sets the value of IsDefault.
+func (s *SiteDestinationUpdate) SetIsDefault(val OptBool) {
+	s.IsDefault = val
+}
+
+// Ref: #/components/schemas/SiteDiagnosticsCard
+type SiteDiagnosticsCard struct {
+	// One of: identity, php, mysql, filesystem, http, cron, themes,
+	// plugins, users, security, https, mail, performance, hosting,
+	// wp_native. The first 14 are the WPMgr-extra leapfrog collector
+	// (the 9-card legacy grid + the ribbon-summary entries); the 15th
+	// `wp_native` carries the verbatim WP_Debug_Data::debug_data()
+	// dump (full Site Health > Info parity) and is rendered as four
+	// additional cards: Directory Sizes, Media Handling, Filesystem
+	// Permissions, WordPress Constants.
+	Category string `json:"category"`
+	// The raw JSON sub-blob the agent shipped for this category, or
+	// null when the agent has never shipped a payload for it yet.
+	// Shape is category-specific and deliberately tolerant — the UI
+	// parses it lazily so the agent can evolve the shape without a
+	// wire schema change.
+	Payload jx.Raw `json:"payload"`
+	// Agent-side collection timestamp (UTC).
+	CollectedAt OptDateTime `json:"collected_at"`
+	// CP-side ingestion timestamp (UTC).
+	ReceivedAt OptDateTime `json:"received_at"`
+	// True when the agent's `collected_at` is within the freshness
+	// tolerance (24h + 2h slack). Card UIs render a stale warning
+	// badge when false.
+	Fresh bool `json:"fresh"`
+}
+
+// GetCategory returns the value of Category.
+func (s *SiteDiagnosticsCard) GetCategory() string {
+	return s.Category
+}
+
+// GetPayload returns the value of Payload.
+func (s *SiteDiagnosticsCard) GetPayload() jx.Raw {
+	return s.Payload
+}
+
+// GetCollectedAt returns the value of CollectedAt.
+func (s *SiteDiagnosticsCard) GetCollectedAt() OptDateTime {
+	return s.CollectedAt
+}
+
+// GetReceivedAt returns the value of ReceivedAt.
+func (s *SiteDiagnosticsCard) GetReceivedAt() OptDateTime {
+	return s.ReceivedAt
+}
+
+// GetFresh returns the value of Fresh.
+func (s *SiteDiagnosticsCard) GetFresh() bool {
+	return s.Fresh
+}
+
+// SetCategory sets the value of Category.
+func (s *SiteDiagnosticsCard) SetCategory(val string) {
+	s.Category = val
+}
+
+// SetPayload sets the value of Payload.
+func (s *SiteDiagnosticsCard) SetPayload(val jx.Raw) {
+	s.Payload = val
+}
+
+// SetCollectedAt sets the value of CollectedAt.
+func (s *SiteDiagnosticsCard) SetCollectedAt(val OptDateTime) {
+	s.CollectedAt = val
+}
+
+// SetReceivedAt sets the value of ReceivedAt.
+func (s *SiteDiagnosticsCard) SetReceivedAt(val OptDateTime) {
+	s.ReceivedAt = val
+}
+
+// SetFresh sets the value of Fresh.
+func (s *SiteDiagnosticsCard) SetFresh(val bool) {
+	s.Fresh = val
+}
+
+// Ref: #/components/schemas/SiteDiagnosticsList
+type SiteDiagnosticsList struct {
+	Items []SiteDiagnosticsCard `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *SiteDiagnosticsList) GetItems() []SiteDiagnosticsCard {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *SiteDiagnosticsList) SetItems(val []SiteDiagnosticsCard) {
+	s.Items = val
+}
+
+func (*SiteDiagnosticsList) getSiteDiagnosticsRes() {}
 
 type SiteHealthStatus string
 
@@ -5430,6 +6931,14 @@ func (s *TenantList) SetItems(val []Tenant) {
 	s.Items = val
 }
 
+type TestSiteDestinationForbidden Error
+
+func (*TestSiteDestinationForbidden) testSiteDestinationRes() {}
+
+type TestSiteDestinationUnauthorized Error
+
+func (*TestSiteDestinationUnauthorized) testSiteDestinationRes() {}
+
 // One thing to update on a site.
 // Ref: #/components/schemas/UpdateItem
 type UpdateItem struct {
@@ -5751,6 +7260,14 @@ func (s *UpdateRunStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type UpdateSiteDestinationNotFound Error
+
+func (*UpdateSiteDestinationNotFound) updateSiteDestinationRes() {}
+
+type UpdateSiteDestinationUnauthorized Error
+
+func (*UpdateSiteDestinationUnauthorized) updateSiteDestinationRes() {}
 
 // Ref: #/components/schemas/UpdateTask
 type UpdateTask struct {

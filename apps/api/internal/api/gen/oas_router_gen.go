@@ -20,7 +20,7 @@ var (
 	rn4AllowedHeaders = map[string]string{
 		"POST": "Content-Type,X-Wpmgr-Signature",
 	}
-	rn23AllowedHeaders = map[string]string{
+	rn26AllowedHeaders = map[string]string{
 		"PUT": "Content-Type",
 	}
 	rn6AllowedHeaders = map[string]string{
@@ -29,7 +29,7 @@ var (
 	rn16AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn40AllowedHeaders = map[string]string{
+	rn45AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn17AllowedHeaders = map[string]string{
@@ -41,28 +41,40 @@ var (
 	rn10AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn25AllowedHeaders = map[string]string{
+	rn28AllowedHeaders = map[string]string{
 		"PUT": "Content-Type",
 	}
 	rn12AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn54AllowedHeaders = map[string]string{
-		"PUT": "Content-Type",
-	}
 	rn18AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
+	}
+	rn67AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+	rn22AllowedHeaders = map[string]string{
+		"PATCH": "Content-Type",
+	}
+	rn66AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+	rn63AllowedHeaders = map[string]string{
+		"PUT": "Content-Type",
 	}
 	rn19AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn43AllowedHeaders = map[string]string{
+	rn20AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 	rn51AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
-	rn21AllowedHeaders = map[string]string{
+	rn60AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+	rn24AllowedHeaders = map[string]string{
 		"POST": "Content-Type",
 	}
 )
@@ -97,7 +109,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w, r)
 		return
 	}
-	args := [1]string{}
+	args := [2]string{}
 
 	// Static code generated router with unwrapped path search.
 	switch {
@@ -261,7 +273,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "GET,PUT",
-										allowedHeaders: rn23AllowedHeaders,
+										allowedHeaders: rn26AllowedHeaders,
 										acceptPost:     "",
 										acceptPatch:    "",
 									})
@@ -510,7 +522,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn40AllowedHeaders,
+									allowedHeaders: rn45AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -627,31 +639,100 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 									break
 								}
 								switch elem[0] {
-								case 'a': // Prefix: "autologin"
+								case 'a': // Prefix: "a"
 
-									if l := len("autologin"); len(elem) >= l && elem[0:l] == "autologin" {
+									if l := len("a"); len(elem) >= l && elem[0:l] == "a" {
 										elem = elem[l:]
 									} else {
 										break
 									}
 
 									if len(elem) == 0 {
-										// Leaf node.
-										switch r.Method {
-										case "POST":
-											s.handleCreateAutologinRequest([1]string{
-												args[0],
-											}, elemIsEscaped, w, r)
-										default:
-											s.notAllowed(w, r, notAllowedParams{
-												allowedMethods: "POST",
-												allowedHeaders: rn10AllowedHeaders,
-												acceptPost:     "application/json",
-												acceptPatch:    "",
-											})
+										break
+									}
+									switch elem[0] {
+									case 'c': // Prefix: "ctivity"
+
+										if l := len("ctivity"); len(elem) >= l && elem[0:l] == "ctivity" {
+											elem = elem[l:]
+										} else {
+											break
 										}
 
-										return
+										if len(elem) == 0 {
+											switch r.Method {
+											case "GET":
+												s.handleListSiteActivityRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											default:
+												s.notAllowed(w, r, notAllowedParams{
+													allowedMethods: "GET",
+													allowedHeaders: nil,
+													acceptPost:     "",
+													acceptPatch:    "",
+												})
+											}
+
+											return
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/verify"
+
+											if l := len("/verify"); len(elem) >= l && elem[0:l] == "/verify" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch r.Method {
+												case "GET":
+													s.handleVerifySiteActivityRequest([1]string{
+														args[0],
+													}, elemIsEscaped, w, r)
+												default:
+													s.notAllowed(w, r, notAllowedParams{
+														allowedMethods: "GET",
+														allowedHeaders: nil,
+														acceptPost:     "",
+														acceptPatch:    "",
+													})
+												}
+
+												return
+											}
+
+										}
+
+									case 'u': // Prefix: "utologin"
+
+										if l := len("utologin"); len(elem) >= l && elem[0:l] == "utologin" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch r.Method {
+											case "POST":
+												s.handleCreateAutologinRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											default:
+												s.notAllowed(w, r, notAllowedParams{
+													allowedMethods: "POST",
+													allowedHeaders: rn10AllowedHeaders,
+													acceptPost:     "application/json",
+													acceptPatch:    "",
+												})
+											}
+
+											return
+										}
+
 									}
 
 								case 'b': // Prefix: "backup"
@@ -688,7 +769,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 											default:
 												s.notAllowed(w, r, notAllowedParams{
 													allowedMethods: "GET,PUT",
-													allowedHeaders: rn25AllowedHeaders,
+													allowedHeaders: rn28AllowedHeaders,
 													acceptPost:     "",
 													acceptPatch:    "",
 												})
@@ -730,6 +811,266 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 									}
 
+								case 'd': // Prefix: "d"
+
+									if l := len("d"); len(elem) >= l && elem[0:l] == "d" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										break
+									}
+									switch elem[0] {
+									case 'e': // Prefix: "estinations"
+
+										if l := len("estinations"); len(elem) >= l && elem[0:l] == "estinations" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											switch r.Method {
+											case "GET":
+												s.handleListSiteDestinationsRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											case "POST":
+												s.handleCreateSiteDestinationRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											default:
+												s.notAllowed(w, r, notAllowedParams{
+													allowedMethods: "GET,POST",
+													allowedHeaders: rn18AllowedHeaders,
+													acceptPost:     "application/json",
+													acceptPatch:    "",
+												})
+											}
+
+											return
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/"
+
+											if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												break
+											}
+											switch elem[0] {
+											case 't': // Prefix: "test"
+												origElem := elem
+												if l := len("test"); len(elem) >= l && elem[0:l] == "test" {
+													elem = elem[l:]
+												} else {
+													break
+												}
+
+												if len(elem) == 0 {
+													// Leaf node.
+													switch r.Method {
+													case "POST":
+														s.handleTestSiteDestinationRequest([1]string{
+															args[0],
+														}, elemIsEscaped, w, r)
+													default:
+														s.notAllowed(w, r, notAllowedParams{
+															allowedMethods: "POST",
+															allowedHeaders: rn67AllowedHeaders,
+															acceptPost:     "application/json",
+															acceptPatch:    "",
+														})
+													}
+
+													return
+												}
+
+												elem = origElem
+											}
+											// Param: "destinationId"
+											// Leaf parameter, slashes are prohibited
+											idx := strings.IndexByte(elem, '/')
+											if idx >= 0 {
+												break
+											}
+											args[1] = elem
+											elem = ""
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch r.Method {
+												case "DELETE":
+													s.handleDeleteSiteDestinationRequest([2]string{
+														args[0],
+														args[1],
+													}, elemIsEscaped, w, r)
+												case "GET":
+													s.handleGetSiteDestinationRequest([2]string{
+														args[0],
+														args[1],
+													}, elemIsEscaped, w, r)
+												case "PATCH":
+													s.handleUpdateSiteDestinationRequest([2]string{
+														args[0],
+														args[1],
+													}, elemIsEscaped, w, r)
+												default:
+													s.notAllowed(w, r, notAllowedParams{
+														allowedMethods: "DELETE,GET,PATCH",
+														allowedHeaders: rn22AllowedHeaders,
+														acceptPost:     "",
+														acceptPatch:    "application/json",
+													})
+												}
+
+												return
+											}
+
+										}
+
+									case 'i': // Prefix: "iagnostics"
+
+										if l := len("iagnostics"); len(elem) >= l && elem[0:l] == "iagnostics" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											switch r.Method {
+											case "GET":
+												s.handleGetSiteDiagnosticsRequest([1]string{
+													args[0],
+												}, elemIsEscaped, w, r)
+											default:
+												s.notAllowed(w, r, notAllowedParams{
+													allowedMethods: "GET",
+													allowedHeaders: nil,
+													acceptPost:     "",
+													acceptPatch:    "",
+												})
+											}
+
+											return
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/refresh"
+
+											if l := len("/refresh"); len(elem) >= l && elem[0:l] == "/refresh" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch r.Method {
+												case "POST":
+													s.handleRefreshSiteDiagnosticsRequest([1]string{
+														args[0],
+													}, elemIsEscaped, w, r)
+												default:
+													s.notAllowed(w, r, notAllowedParams{
+														allowedMethods: "POST",
+														allowedHeaders: nil,
+														acceptPost:     "",
+														acceptPatch:    "",
+													})
+												}
+
+												return
+											}
+
+										}
+
+									}
+
+								case 'e': // Prefix: "errors"
+
+									if l := len("errors"); len(elem) >= l && elem[0:l] == "errors" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										switch r.Method {
+										case "GET":
+											s.handleListSitePHPErrorsRequest([1]string{
+												args[0],
+											}, elemIsEscaped, w, r)
+										default:
+											s.notAllowed(w, r, notAllowedParams{
+												allowedMethods: "GET",
+												allowedHeaders: nil,
+												acceptPost:     "",
+												acceptPatch:    "",
+											})
+										}
+
+										return
+									}
+									switch elem[0] {
+									case '/': // Prefix: "/"
+
+										if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										// Param: "md5"
+										// Match until "/"
+										idx := strings.IndexByte(elem, '/')
+										if idx < 0 {
+											idx = len(elem)
+										}
+										args[1] = elem[:idx]
+										elem = elem[idx:]
+
+										if len(elem) == 0 {
+											break
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/silence"
+
+											if l := len("/silence"); len(elem) >= l && elem[0:l] == "/silence" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch r.Method {
+												case "POST":
+													s.handleSilenceSitePHPErrorRequest([2]string{
+														args[0],
+														args[1],
+													}, elemIsEscaped, w, r)
+												default:
+													s.notAllowed(w, r, notAllowedParams{
+														allowedMethods: "POST",
+														allowedHeaders: rn66AllowedHeaders,
+														acceptPost:     "application/json",
+														acceptPatch:    "",
+													})
+												}
+
+												return
+											}
+
+										}
+
+									}
+
 								case 't': // Prefix: "tags"
 
 									if l := len("tags"); len(elem) >= l && elem[0:l] == "tags" {
@@ -748,7 +1089,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 										default:
 											s.notAllowed(w, r, notAllowedParams{
 												allowedMethods: "PUT",
-												allowedHeaders: rn54AllowedHeaders,
+												allowedHeaders: rn63AllowedHeaders,
 												acceptPost:     "",
 												acceptPatch:    "",
 											})
@@ -889,7 +1230,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "GET,POST",
-									allowedHeaders: rn18AllowedHeaders,
+									allowedHeaders: rn19AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -965,7 +1306,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "GET,POST",
-										allowedHeaders: rn19AllowedHeaders,
+										allowedHeaders: rn20AllowedHeaders,
 										acceptPost:     "application/json",
 										acceptPatch:    "",
 									})
@@ -1081,7 +1422,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 								default:
 									s.notAllowed(w, r, notAllowedParams{
 										allowedMethods: "POST",
-										allowedHeaders: rn43AllowedHeaders,
+										allowedHeaders: rn51AllowedHeaders,
 										acceptPost:     "application/json",
 										acceptPatch:    "",
 									})
@@ -1222,7 +1563,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							default:
 								s.notAllowed(w, r, notAllowedParams{
 									allowedMethods: "POST",
-									allowedHeaders: rn51AllowedHeaders,
+									allowedHeaders: rn60AllowedHeaders,
 									acceptPost:     "application/json",
 									acceptPatch:    "",
 								})
@@ -1251,7 +1592,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					default:
 						s.notAllowed(w, r, notAllowedParams{
 							allowedMethods: "POST",
-							allowedHeaders: rn21AllowedHeaders,
+							allowedHeaders: rn24AllowedHeaders,
 							acceptPost:     "application/json",
 							acceptPatch:    "",
 						})
@@ -1325,7 +1666,7 @@ type Route struct {
 	operationGroup string
 	pathPattern    string
 	count          int
-	args           [1]string
+	args           [2]string
 }
 
 // Name returns ogen operation name.
@@ -1942,29 +2283,94 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 									break
 								}
 								switch elem[0] {
-								case 'a': // Prefix: "autologin"
+								case 'a': // Prefix: "a"
 
-									if l := len("autologin"); len(elem) >= l && elem[0:l] == "autologin" {
+									if l := len("a"); len(elem) >= l && elem[0:l] == "a" {
 										elem = elem[l:]
 									} else {
 										break
 									}
 
 									if len(elem) == 0 {
-										// Leaf node.
-										switch method {
-										case "POST":
-											r.name = CreateAutologinOperation
-											r.summary = "Mint a one-click login URL into a managed WordPress site"
-											r.operationID = "createAutologin"
-											r.operationGroup = ""
-											r.pathPattern = "/api/v1/sites/{siteId}/autologin"
-											r.args = args
-											r.count = 1
-											return r, true
-										default:
-											return
+										break
+									}
+									switch elem[0] {
+									case 'c': // Prefix: "ctivity"
+
+										if l := len("ctivity"); len(elem) >= l && elem[0:l] == "ctivity" {
+											elem = elem[l:]
+										} else {
+											break
 										}
+
+										if len(elem) == 0 {
+											switch method {
+											case "GET":
+												r.name = ListSiteActivityOperation
+												r.summary = "List WordPress activity-log events for a site"
+												r.operationID = "listSiteActivity"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/activity"
+												r.args = args
+												r.count = 1
+												return r, true
+											default:
+												return
+											}
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/verify"
+
+											if l := len("/verify"); len(elem) >= l && elem[0:l] == "/verify" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch method {
+												case "GET":
+													r.name = VerifySiteActivityOperation
+													r.summary = "Re-verify the activity-log hash chain for a site"
+													r.operationID = "verifySiteActivity"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/activity/verify"
+													r.args = args
+													r.count = 1
+													return r, true
+												default:
+													return
+												}
+											}
+
+										}
+
+									case 'u': // Prefix: "utologin"
+
+										if l := len("utologin"); len(elem) >= l && elem[0:l] == "utologin" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											// Leaf node.
+											switch method {
+											case "POST":
+												r.name = CreateAutologinOperation
+												r.summary = "Mint a one-click login URL into a managed WordPress site"
+												r.operationID = "createAutologin"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/autologin"
+												r.args = args
+												r.count = 1
+												return r, true
+											default:
+												return
+											}
+										}
+
 									}
 
 								case 'b': // Prefix: "backup"
@@ -2045,6 +2451,263 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 											default:
 												return
 											}
+										}
+
+									}
+
+								case 'd': // Prefix: "d"
+
+									if l := len("d"); len(elem) >= l && elem[0:l] == "d" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										break
+									}
+									switch elem[0] {
+									case 'e': // Prefix: "estinations"
+
+										if l := len("estinations"); len(elem) >= l && elem[0:l] == "estinations" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											switch method {
+											case "GET":
+												r.name = ListSiteDestinationsOperation
+												r.summary = "List configured backup destinations for a site"
+												r.operationID = "listSiteDestinations"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/destinations"
+												r.args = args
+												r.count = 1
+												return r, true
+											case "POST":
+												r.name = CreateSiteDestinationOperation
+												r.summary = "Add a backup destination to a site"
+												r.operationID = "createSiteDestination"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/destinations"
+												r.args = args
+												r.count = 1
+												return r, true
+											default:
+												return
+											}
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/"
+
+											if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												break
+											}
+											switch elem[0] {
+											case 't': // Prefix: "test"
+												origElem := elem
+												if l := len("test"); len(elem) >= l && elem[0:l] == "test" {
+													elem = elem[l:]
+												} else {
+													break
+												}
+
+												if len(elem) == 0 {
+													// Leaf node.
+													switch method {
+													case "POST":
+														r.name = TestSiteDestinationOperation
+														r.summary = "Verify credentials for a destination without persisting them"
+														r.operationID = "testSiteDestination"
+														r.operationGroup = ""
+														r.pathPattern = "/api/v1/sites/{siteId}/destinations/test"
+														r.args = args
+														r.count = 1
+														return r, true
+													default:
+														return
+													}
+												}
+
+												elem = origElem
+											}
+											// Param: "destinationId"
+											// Leaf parameter, slashes are prohibited
+											idx := strings.IndexByte(elem, '/')
+											if idx >= 0 {
+												break
+											}
+											args[1] = elem
+											elem = ""
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch method {
+												case "DELETE":
+													r.name = DeleteSiteDestinationOperation
+													r.summary = "Remove a configured destination"
+													r.operationID = "deleteSiteDestination"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/destinations/{destinationId}"
+													r.args = args
+													r.count = 2
+													return r, true
+												case "GET":
+													r.name = GetSiteDestinationOperation
+													r.summary = "Read one configured destination"
+													r.operationID = "getSiteDestination"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/destinations/{destinationId}"
+													r.args = args
+													r.count = 2
+													return r, true
+												case "PATCH":
+													r.name = UpdateSiteDestinationOperation
+													r.summary = "Update a configured destination (omit secret_key to keep it)"
+													r.operationID = "updateSiteDestination"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/destinations/{destinationId}"
+													r.args = args
+													r.count = 2
+													return r, true
+												default:
+													return
+												}
+											}
+
+										}
+
+									case 'i': // Prefix: "iagnostics"
+
+										if l := len("iagnostics"); len(elem) >= l && elem[0:l] == "iagnostics" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										if len(elem) == 0 {
+											switch method {
+											case "GET":
+												r.name = GetSiteDiagnosticsOperation
+												r.summary = "Latest site diagnostics by category"
+												r.operationID = "getSiteDiagnostics"
+												r.operationGroup = ""
+												r.pathPattern = "/api/v1/sites/{siteId}/diagnostics"
+												r.args = args
+												r.count = 1
+												return r, true
+											default:
+												return
+											}
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/refresh"
+
+											if l := len("/refresh"); len(elem) >= l && elem[0:l] == "/refresh" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch method {
+												case "POST":
+													r.name = RefreshSiteDiagnosticsOperation
+													r.summary = "Enqueue an on-demand diagnostics command to the agent"
+													r.operationID = "refreshSiteDiagnostics"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/diagnostics/refresh"
+													r.args = args
+													r.count = 1
+													return r, true
+												default:
+													return
+												}
+											}
+
+										}
+
+									}
+
+								case 'e': // Prefix: "errors"
+
+									if l := len("errors"); len(elem) >= l && elem[0:l] == "errors" {
+										elem = elem[l:]
+									} else {
+										break
+									}
+
+									if len(elem) == 0 {
+										switch method {
+										case "GET":
+											r.name = ListSitePHPErrorsOperation
+											r.summary = "List fingerprint-grouped PHP errors for a site"
+											r.operationID = "listSitePHPErrors"
+											r.operationGroup = ""
+											r.pathPattern = "/api/v1/sites/{siteId}/errors"
+											r.args = args
+											r.count = 1
+											return r, true
+										default:
+											return
+										}
+									}
+									switch elem[0] {
+									case '/': // Prefix: "/"
+
+										if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+											elem = elem[l:]
+										} else {
+											break
+										}
+
+										// Param: "md5"
+										// Match until "/"
+										idx := strings.IndexByte(elem, '/')
+										if idx < 0 {
+											idx = len(elem)
+										}
+										args[1] = elem[:idx]
+										elem = elem[idx:]
+
+										if len(elem) == 0 {
+											break
+										}
+										switch elem[0] {
+										case '/': // Prefix: "/silence"
+
+											if l := len("/silence"); len(elem) >= l && elem[0:l] == "/silence" {
+												elem = elem[l:]
+											} else {
+												break
+											}
+
+											if len(elem) == 0 {
+												// Leaf node.
+												switch method {
+												case "POST":
+													r.name = SilenceSitePHPErrorOperation
+													r.summary = "Silence (or unsilence) a fingerprint-grouped PHP error"
+													r.operationID = "silenceSitePHPError"
+													r.operationGroup = ""
+													r.pathPattern = "/api/v1/sites/{siteId}/errors/{md5}/silence"
+													r.args = args
+													r.count = 2
+													return r, true
+												default:
+													return
+												}
+											}
+
 										}
 
 									}

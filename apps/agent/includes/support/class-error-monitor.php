@@ -58,6 +58,14 @@ final class ErrorMonitor
     /** wp-options key for the ship-cursor (highest id confirmed by CP). */
     public const OPTION_SHIP_CURSOR = 'wpmgr_agent_errors_ship_cursor';
 
+    /**
+     * wp-options key for the ship timestamp cursor (max last_seen confirmed by
+     * CP). Used by the occurrence-count drift fix: rows whose last_seen is
+     * greater than this value are re-included in the next ship batch even if
+     * their id is below OPTION_SHIP_CURSOR.
+     */
+    public const OPTION_SHIP_TS = 'wpmgr_agent_errors_ship_ts';
+
     /** Global flag the mu-plugin sets to indicate it has trapped errors. */
     public const GLOBAL_PENDING = 'wpmgr_agent_pending_errors';
 
@@ -129,7 +137,8 @@ final class ErrorMonitor
      */
     public function handleError(int $code, string $message, string $file = '', int $line = 0): bool
     {
-        $this->record($code, $message, $file, $line, $this->severityForCode($code));
+        $bt = $this->captureBacktrace();
+        $this->record($code, $message, $file, $line, $this->severityForCode($code), $bt);
         return false;
     }
 
@@ -168,9 +177,12 @@ final class ErrorMonitor
      * @param string $file Source file path.
      * @param int $line Line number.
      * @param string $severity 'fatal'|'warning'|'notice'|'deprecated'|'bootstrap'
+     * @param string|null $backtraceCompressed gzcompress(json_encode($frames)) from
+     *     captureBacktrace(), or null when no backtrace is available (shutdown
+     *     fatals, bootstrap-queue drains).
      * @return void
      */
-    public function record(int $code, string $message, string $file, int $line, string $severity): void
+    public function record(int $code, string $message, string $file, int $line, string $severity, ?string $backtraceCompressed = null): void
     {
         global $wpdb;
         if (!is_object($wpdb)) {
@@ -204,19 +216,19 @@ final class ErrorMonitor
             $wpdb->insert(
                 $table,
                 [
-                    'md5'              => $md5,
-                    'code'             => $code,
-                    'message'          => substr($message, 0, 4096),
-                    'file'             => substr($file, 0, 1024),
-                    'line'             => $line,
-                    'request_path'     => $requestPath,
-                    'request_id'       => $this->requestId(),
-                    'backtrace_compressed' => null,
-                    'first_seen'       => $now,
-                    'last_seen'        => $now,
-                    'occurrence_count' => 1,
-                    'severity'         => $severity,
-                    'silenced'         => 0,
+                    'md5'                  => $md5,
+                    'code'                 => $code,
+                    'message'              => substr($message, 0, 4096),
+                    'file'                 => substr($file, 0, 1024),
+                    'line'                 => $line,
+                    'request_path'         => $requestPath,
+                    'request_id'           => $this->requestId(),
+                    'backtrace_compressed' => $backtraceCompressed,
+                    'first_seen'           => $now,
+                    'last_seen'            => $now,
+                    'occurrence_count'     => 1,
+                    'severity'             => $severity,
+                    'silenced'             => 0,
                 ],
                 ['%s', '%d', '%s', '%s', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%s', '%d']
             );
@@ -309,7 +321,14 @@ final class ErrorMonitor
 
     /**
      * Build the batch the heartbeat ships to /agent/v1/errors. Returns up to
-     * SHIP_BATCH NEWEST unsilenced rows above the stored `since_id` cursor.
+     * SHIP_BATCH NEWEST unsilenced rows whose id is above the stored
+     * `since_id` cursor OR whose last_seen is above the stored `since_ts`
+     * cursor (occurrence-count drift fix: re-ships recently-active rows so
+     * the CP count does not freeze at the value seen on first-ship).
+     *
+     * Each returned row includes a `backtrace` key holding the decompressed
+     * JSON array of frame objects ([] when no backtrace was recorded). The raw
+     * `backtrace_compressed` column is NOT present in the returned array.
      *
      * @return array<int,array<string,mixed>>
      */
@@ -319,17 +338,20 @@ final class ErrorMonitor
         if (!is_object($wpdb)) {
             return [];
         }
-        $table = $wpdb->prefix . self::TABLE;
-        $since = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_CURSOR, 0) : 0);
+        $table    = $wpdb->prefix . self::TABLE;
+        $sinceId  = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_CURSOR, 0) : 0);
+        $sinceTs  = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_TS, 0) : 0);
         $rows = $wpdb->get_results(
             $wpdb->prepare(
                 "SELECT id, md5, code, message, file, line, request_path, request_id,
-                        first_seen, last_seen, occurrence_count, severity
+                        first_seen, last_seen, occurrence_count, severity,
+                        backtrace_compressed
                  FROM {$table}
-                 WHERE id > %d AND silenced = 0
-                 ORDER BY id DESC
+                 WHERE (id > %d OR last_seen > %d) AND silenced = 0
+                 ORDER BY last_seen DESC
                  LIMIT %d",
-                $since,
+                $sinceId,
+                $sinceTs,
                 self::SHIP_BATCH
             ),
             ARRAY_A
@@ -337,6 +359,30 @@ final class ErrorMonitor
         if (!is_array($rows)) {
             return [];
         }
+
+        // Decompress the backtrace into wire form and strip the raw column.
+        foreach ($rows as &$row) {
+            $compressed = isset($row['backtrace_compressed']) ? (string) $row['backtrace_compressed'] : '';
+            unset($row['backtrace_compressed']);
+
+            $backtrace = [];
+            if ($compressed !== '') {
+                try {
+                    $json = @gzuncompress($compressed);
+                    if (is_string($json) && $json !== '') {
+                        $decoded = json_decode($json, true);
+                        if (is_array($decoded)) {
+                            $backtrace = $decoded;
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    // Corrupt or empty blob — ship an empty array.
+                }
+            }
+            $row['backtrace'] = $backtrace;
+        }
+        unset($row);
+
         return $rows;
     }
 
@@ -354,6 +400,73 @@ final class ErrorMonitor
         $current = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_CURSOR, 0) : 0);
         if ($highestId > $current) {
             update_option(self::OPTION_SHIP_CURSOR, $highestId, false);
+        }
+    }
+
+    /**
+     * Advance the ship-timestamp cursor after the CP confirms the batch. Mirrors
+     * advanceCursor() but tracks max last_seen rather than max id, enabling the
+     * occurrence-count drift fix in shipBatch() to re-include rows whose count
+     * has ticked up since they were last shipped.
+     *
+     * @param int $maxLastSeen The highest last_seen timestamp across the shipped batch.
+     * @return void
+     */
+    public function advanceShipTs(int $maxLastSeen): void
+    {
+        if (!function_exists('update_option')) {
+            return;
+        }
+        $current = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_TS, 0) : 0);
+        if ($maxLastSeen > $current) {
+            update_option(self::OPTION_SHIP_TS, $maxLastSeen, false);
+        }
+    }
+
+    /**
+     * Capture a meaningful backtrace for live set_error_handler calls. Drops
+     * frames originating in this class (captureBacktrace / handleError /
+     * record internals), keeps the outermost 10 application frames, and
+     * returns gzcompress(json_encode($frames)) for compact DB storage.
+     *
+     * Returns null when: no application frames remain, json_encode fails,
+     * gzcompress fails, or any exception is thrown — never propagates.
+     *
+     * @return string|null gzcompress'd JSON, or null.
+     */
+    private function captureBacktrace(): ?string
+    {
+        try {
+            // 12 raw frames gives headroom to drop the 2 internal ones
+            // (captureBacktrace + handleError) and still have up to 10.
+            $raw = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 12);
+            $frames = [];
+            foreach ($raw as $frame) {
+                // Drop frames that originate inside this class file.
+                $frameFile = isset($frame['file']) ? (string) $frame['file'] : '';
+                if ($frameFile === __FILE__) {
+                    continue;
+                }
+                $frames[] = [
+                    'file'     => $frameFile,
+                    'line'     => isset($frame['line']) ? (int) $frame['line'] : 0,
+                    'function' => isset($frame['function']) ? (string) $frame['function'] : '',
+                ];
+                if (count($frames) >= 10) {
+                    break;
+                }
+            }
+            if ($frames === []) {
+                return null;
+            }
+            $json = json_encode($frames);
+            if (!is_string($json) || $json === '') {
+                return null;
+            }
+            $compressed = gzcompress($json);
+            return is_string($compressed) ? $compressed : null;
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 }

@@ -222,3 +222,12 @@ Nothing — entirely greenfield (no TOTP, no secret storage, no login intercepti
 7. **PHP-error server-side counts:** the `occurrence_count` drift fix matters only if you want accurate server-side counts for long-lived errors (likely yes for alerting) — confirm priority.
 8. **AUDIT-first default:** confirm both the firewall and login protection default to AUDIT (log-only) until the operator explicitly enables PROTECT, to avoid locking admins out — especially given the global all-blocked threshold.
 9. **Captcha/unblock UX:** WP Remote's unblock loop depends on its hosted `/captcha/solve`. WPMgr will replace it with a **dashboard "Unblock IP" button → signed command** (no hosted captcha). Acceptable, or do you want a self-serve email-link unblock?
+
+---
+
+## 6. Decisions (user, 2026-05-30)
+
+1. **Malware architecture → STREAM HASHES TO CP (WP Remote model).** The agent walks the filesystem and streams `{path,size,md5,...}` tuples to the CP; the CP holds the known-good hash DB (wp.org core checksums + a signature catalog) and does the diff server-side. Implies new CP-side infra: a `known_good_hashes` store and a server-side diff worker. (Overrides the agent-side-findings-only recommendation in §2.3(d).)
+2. **Firewall + Login Protection → PROTECT BY DEFAULT.** Blocking is active from install (not AUDIT-first). MANDATORY safety rails to build alongside: (a) the global all-blocked threshold must never permanently lock every admin out — add an admin-IP self-preservation / always-allow-current-operator-IP escape and a bounded lockout; (b) a one-click dashboard "Unblock IP" + "Disable firewall" kill-switch over signed command; (c) test against caching/login plugins before enforcing `die()`.
+3. **WAF interception → mu-plugin first, `auto_prepend_file` as opt-in hardening.**
+4. **First sprint → S1 (PHP-error tightening):** backtrace capture + occurrence_count drift fix + ignore-list/error-level config + retention. Then S2 (Login Protection + IP store), per §4.

@@ -110,21 +110,31 @@ type UpsertPHPErrorInput struct {
 	FirstSeenAt     time.Time
 	LastSeenAt      time.Time
 	OccurrenceCount int64
-	AgentRowID      int64 // the agent's local id for the row (cursor tracking)
+	AgentRowID      int64        // the agent's local id for the row (cursor tracking)
+	Backtrace       []ErrorFrame // up to 10 frames, most-recent-call-first
 }
 
 func (r *Repo) UpsertPHPError(ctx context.Context, tenantID, siteID uuid.UUID, in UpsertPHPErrorInput) error {
 	if in.MD5 == "" {
 		return domain.Validation("invalid_md5", "php error md5 fingerprint is required")
 	}
+	// Marshal backtrace to JSON for the jsonb column; tolerate nil → [].
+	frames := in.Backtrace
+	if frames == nil {
+		frames = []ErrorFrame{}
+	}
+	backtraceJSON, err := json.Marshal(frames)
+	if err != nil {
+		return domain.Internal("php_error_backtrace_marshal_failed", "failed to marshal backtrace").WithCause(err)
+	}
 	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO agent_php_errors
 				(id, tenant_id, site_id, md5, code, severity, message, file, line,
 				 request_path, first_seen_at, last_seen_at, occurrence_count,
-				 silenced, created_at, updated_at)
+				 silenced, backtrace, created_at, updated_at)
 			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8,
-			         $9, $10, $11, $12, false, now(), now())
+			         $9, $10, $11, $12, false, $13, now(), now())
 			 ON CONFLICT (tenant_id, site_id, md5) DO UPDATE
 			   SET last_seen_at = GREATEST(agent_php_errors.last_seen_at, EXCLUDED.last_seen_at),
 			       occurrence_count = GREATEST(agent_php_errors.occurrence_count, EXCLUDED.occurrence_count),
@@ -133,10 +143,12 @@ func (r *Repo) UpsertPHPError(ctx context.Context, tenantID, siteID uuid.UUID, i
 			       file = EXCLUDED.file,
 			       line = EXCLUDED.line,
 			       request_path = EXCLUDED.request_path,
+			       backtrace = EXCLUDED.backtrace,
 			       updated_at = now()`,
 			tenantID, siteID, in.MD5, in.Code, in.Severity, in.Message,
 			in.File, in.Line, in.RequestPath, in.FirstSeenAt, in.LastSeenAt,
 			in.OccurrenceCount,
+			backtraceJSON,
 		); err != nil {
 			return domain.Internal("php_error_upsert_failed", "failed to upsert php error").WithCause(err)
 		}
@@ -165,7 +177,7 @@ func (r *Repo) ListPHPErrorsBySite(ctx context.Context, tenantID, siteID uuid.UU
 		args := []any{tenantID, siteID, f.Limit}
 		sqlText := `SELECT id, tenant_id, site_id, md5, code, severity, message,
 				file, line, request_path, first_seen_at, last_seen_at,
-				occurrence_count, silenced, created_at, updated_at
+				occurrence_count, silenced, backtrace, created_at, updated_at
 			 FROM agent_php_errors
 			 WHERE tenant_id = $1 AND site_id = $2`
 		if !f.Since.IsZero() {
@@ -184,12 +196,21 @@ func (r *Repo) ListPHPErrorsBySite(ctx context.Context, tenantID, siteID uuid.UU
 		defer rows.Close()
 		for rows.Next() {
 			var e PHPError
+			// backtrace is stored as jsonb; pgx scans jsonb as []byte.
+			var backtraceRaw []byte
 			if err := rows.Scan(&e.ID, &e.TenantID, &e.SiteID, &e.MD5, &e.Code,
 				&e.Severity, &e.Message, &e.File, &e.Line, &e.RequestPath,
 				&e.FirstSeenAt, &e.LastSeenAt, &e.OccurrenceCount, &e.Silenced,
+				&backtraceRaw,
 				&e.CreatedAt, &e.UpdatedAt,
 			); err != nil {
 				return domain.Internal("php_errors_list_failed", "failed to read php errors").WithCause(err)
+			}
+			if len(backtraceRaw) > 0 {
+				_ = json.Unmarshal(backtraceRaw, &e.Backtrace)
+			}
+			if e.Backtrace == nil {
+				e.Backtrace = []ErrorFrame{}
 			}
 			out = append(out, e)
 		}
@@ -219,6 +240,34 @@ func (r *Repo) SetSilenced(ctx context.Context, tenantID, siteID uuid.UUID, md5 
 		}
 		return nil
 	})
+}
+
+// DeleteStaleErrors removes agent_php_errors rows whose last_seen_at is
+// older than the given retention window. It runs cross-tenant under
+// app.agent = 'on' (the same GUC the backup retention GC uses) so a single
+// pass sweeps the whole table without needing to enumerate tenant IDs.
+// LIMIT 5000 per pass caps the blast radius and keeps each transaction short.
+// Returns the number of rows deleted.
+func (r *Repo) DeleteStaleErrors(ctx context.Context, retention time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-retention)
+	var deleted int64
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx,
+			`DELETE FROM agent_php_errors
+			 WHERE id IN (
+			   SELECT id FROM agent_php_errors
+			   WHERE last_seen_at < $1
+			   LIMIT 5000
+			 )`,
+			cutoff,
+		)
+		if err != nil {
+			return domain.Internal("php_errors_gc_failed", "failed to delete stale php errors").WithCause(err)
+		}
+		deleted = ct.RowsAffected()
+		return nil
+	})
+	return deleted, err
 }
 
 // strFromInt is a tiny helper for building $-arg numbers in the dynamic

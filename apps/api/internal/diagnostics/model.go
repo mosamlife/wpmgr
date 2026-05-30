@@ -82,6 +82,14 @@ type Diagnostic struct {
 	ReceivedAt  time.Time       // CP-side ingestion time
 }
 
+// ErrorFrame is one frame in a PHP backtrace. Frame order is most-recent-call-
+// first (the agent ships them that way; we store and expose them in that order).
+type ErrorFrame struct {
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Function string `json:"function"`
+}
+
 // PHPError is one stored fingerprint-deduped error.
 type PHPError struct {
 	ID              uuid.UUID
@@ -98,6 +106,7 @@ type PHPError struct {
 	LastSeenAt      time.Time
 	OccurrenceCount int64
 	Silenced        bool
+	Backtrace       []ErrorFrame
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

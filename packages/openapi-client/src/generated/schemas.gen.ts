@@ -2139,6 +2139,27 @@ export const SiteDiagnosticsListSchema = {
   },
 } as const;
 
+export const PHPErrorFrameSchema = {
+  type: "object",
+  description: "One frame in a PHP error backtrace (most-recent-call-first).",
+  required: ["file", "line", "function"],
+  properties: {
+    file: {
+      type: "string",
+      description: "Absolute path to the PHP file containing the call.",
+    },
+    line: {
+      type: "integer",
+      description: "Line number of the call site.",
+    },
+    function: {
+      type: "string",
+      description:
+        "Function or method name at this frame (empty string for file-level code).",
+    },
+  },
+} as const;
+
 export const PHPErrorSchema = {
   type: "object",
   required: [
@@ -2154,6 +2175,7 @@ export const PHPErrorSchema = {
     "last_seen_at",
     "occurrence_count",
     "silenced",
+    "backtrace",
   ],
   properties: {
     id: {
@@ -2200,6 +2222,14 @@ export const PHPErrorSchema = {
     },
     silenced: {
       type: "boolean",
+    },
+    backtrace: {
+      type: "array",
+      description:
+        "Up to 10 stack frames captured at the error site, most-recent-call-first. Always present; may be an empty array for errors captured before S1.1 or when the agent could not produce a trace.\n",
+      items: {
+        $ref: "#/components/schemas/PHPErrorFrame",
+      },
     },
   },
 } as const;

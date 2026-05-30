@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,18 +85,32 @@ func (s *Service) LatestBySite(ctx context.Context, tenantID, siteID uuid.UUID) 
 // IngestErrorBatch takes the agent-shipped batch of newest unsilenced rows
 // and upserts each. Returns the highest agent-side row id we processed (the
 // agent uses this to advance its local ship cursor on a 2xx).
+//
+// Wire shape: wpdb ARRAY_A delivers every column as a string, so the numeric
+// scalars (id, code, line, first_seen, last_seen, occurrence_count) arrive
+// as either a Go number (when the caller is a test) or a quoted numeric string
+// (when the agent serialises its ARRAY_A result with json_encode). We decode
+// them via flexInt64 / flexInt so both paths work without panicking.
+//
+// backtrace is a JSON array of {file,line,function} objects (max 10 frames,
+// most-recent-call-first). Missing or null → treated as empty slice.
 type ErrorBatchEntry struct {
-	ID              int64  `json:"id"`
-	MD5             string `json:"md5"`
-	Code            int    `json:"code"`
-	Severity        string `json:"severity"`
-	Message         string `json:"message"`
-	File            string `json:"file"`
-	Line            int    `json:"line"`
-	RequestPath     string `json:"request_path"`
-	FirstSeen       int64  `json:"first_seen"`
-	LastSeen        int64  `json:"last_seen"`
-	OccurrenceCount int64  `json:"occurrence_count"`
+	ID              flexInt64 `json:"id"`
+	MD5             string    `json:"md5"`
+	Code            flexInt   `json:"code"`
+	Severity        string    `json:"severity"`
+	Message         string    `json:"message"`
+	File            string    `json:"file"`
+	Line            flexInt   `json:"line"`
+	RequestPath     string    `json:"request_path"`
+	FirstSeen       flexInt64 `json:"first_seen"`
+	LastSeen        flexInt64 `json:"last_seen"`
+	OccurrenceCount flexInt64 `json:"occurrence_count"`
+	Backtrace       []struct {
+		File     string   `json:"file"`
+		Line     flexInt  `json:"line"`
+		Function string   `json:"function"`
+	} `json:"backtrace"`
 }
 
 type ErrorBatch struct {
@@ -108,26 +123,94 @@ func (s *Service) IngestErrorBatch(ctx context.Context, tenantID, siteID uuid.UU
 		if e.MD5 == "" {
 			continue
 		}
+		frames := make([]ErrorFrame, 0, len(e.Backtrace))
+		for _, f := range e.Backtrace {
+			frames = append(frames, ErrorFrame{
+				File:     f.File,
+				Line:     int(f.Line),
+				Function: f.Function,
+			})
+		}
 		if err := s.repo.UpsertPHPError(ctx, tenantID, siteID, UpsertPHPErrorInput{
 			MD5:             e.MD5,
-			Code:            e.Code,
+			Code:            int(e.Code),
 			Severity:        coalesce(e.Severity, "warning"),
 			Message:         e.Message,
 			File:            e.File,
-			Line:            e.Line,
+			Line:            int(e.Line),
 			RequestPath:     e.RequestPath,
-			FirstSeenAt:     time.Unix(e.FirstSeen, 0).UTC(),
-			LastSeenAt:      time.Unix(e.LastSeen, 0).UTC(),
-			OccurrenceCount: e.OccurrenceCount,
-			AgentRowID:      e.ID,
+			FirstSeenAt:     time.Unix(int64(e.FirstSeen), 0).UTC(),
+			LastSeenAt:      time.Unix(int64(e.LastSeen), 0).UTC(),
+			OccurrenceCount: int64(e.OccurrenceCount),
+			AgentRowID:      int64(e.ID),
+			Backtrace:       frames,
 		}); err != nil {
 			return highest, err
 		}
-		if e.ID > highest {
-			highest = e.ID
+		if id := int64(e.ID); id > highest {
+			highest = id
 		}
 	}
 	return highest, nil
+}
+
+// flexInt64 unmarshals a JSON value that may arrive as a number or a quoted
+// numeric string (wpdb ARRAY_A always encodes numeric columns as strings).
+type flexInt64 int64
+
+func (f *flexInt64) UnmarshalJSON(b []byte) error {
+	// Fast path: plain JSON number.
+	if len(b) > 0 && b[0] != '"' {
+		var n int64
+		if err := json.Unmarshal(b, &n); err != nil {
+			return err
+		}
+		*f = flexInt64(n)
+		return nil
+	}
+	// Quoted string path.
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	*f = flexInt64(n)
+	return nil
+}
+
+// flexInt is like flexInt64 but for int-sized fields (code, line).
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] != '"' {
+		var n int
+		if err := json.Unmarshal(b, &n); err != nil {
+			return err
+		}
+		*f = flexInt(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return err
+	}
+	*f = flexInt(n)
+	return nil
 }
 
 // ListErrors passes through to the repo.

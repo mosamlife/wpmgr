@@ -120,19 +120,27 @@ func (h *Handler) refresh(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
+// errorFrameDTO is the per-frame shape in the backtrace array.
+type errorFrameDTO struct {
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Function string `json:"function"`
+}
+
 type phpErrorDTO struct {
-	ID              string `json:"id"`
-	MD5             string `json:"md5"`
-	Code            int    `json:"code"`
-	Severity        string `json:"severity"`
-	Message         string `json:"message"`
-	File            string `json:"file"`
-	Line            int    `json:"line"`
-	RequestPath     string `json:"request_path"`
-	FirstSeenAt     string `json:"first_seen_at"`
-	LastSeenAt      string `json:"last_seen_at"`
-	OccurrenceCount int64  `json:"occurrence_count"`
-	Silenced        bool   `json:"silenced"`
+	ID              string          `json:"id"`
+	MD5             string          `json:"md5"`
+	Code            int             `json:"code"`
+	Severity        string          `json:"severity"`
+	Message         string          `json:"message"`
+	File            string          `json:"file"`
+	Line            int             `json:"line"`
+	RequestPath     string          `json:"request_path"`
+	FirstSeenAt     string          `json:"first_seen_at"`
+	LastSeenAt      string          `json:"last_seen_at"`
+	OccurrenceCount int64           `json:"occurrence_count"`
+	Silenced        bool            `json:"silenced"`
+	Backtrace       []errorFrameDTO `json:"backtrace"`
 }
 
 type phpErrorListDTO struct {
@@ -140,6 +148,14 @@ type phpErrorListDTO struct {
 }
 
 func toErrorDTO(e PHPError) phpErrorDTO {
+	frames := make([]errorFrameDTO, 0, len(e.Backtrace))
+	for _, f := range e.Backtrace {
+		frames = append(frames, errorFrameDTO{
+			File:     f.File,
+			Line:     f.Line,
+			Function: f.Function,
+		})
+	}
 	return phpErrorDTO{
 		ID:              e.ID.String(),
 		MD5:             e.MD5,
@@ -153,6 +169,7 @@ func toErrorDTO(e PHPError) phpErrorDTO {
 		LastSeenAt:      e.LastSeenAt.UTC().Format(time.RFC3339),
 		OccurrenceCount: e.OccurrenceCount,
 		Silenced:        e.Silenced,
+		Backtrace:       frames,
 	}
 }
 

@@ -35,6 +35,14 @@ func (s *BackupScheduleUpdate) setDefaults() {
 }
 
 // setDefaults set default value of fields.
+func (s *PHPErrorSilence) setDefaults() {
+	{
+		val := bool(true)
+		s.Silenced.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
 func (s *RestoreCreate) setDefaults() {
 	{
 		val := bool(false)

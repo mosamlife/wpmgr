@@ -539,16 +539,22 @@ final class Plugin
         // highest id we sent on a 2xx.
         $errors = $this->errorMonitor->shipBatch();
         if ($errors !== []) {
-            $highest = 0;
+            $highest     = 0;
+            $maxLastSeen = 0;
             foreach ($errors as $row) {
                 $id = (int) ($row['id'] ?? 0);
                 if ($id > $highest) {
                     $highest = $id;
                 }
+                $ls = (int) ($row['last_seen'] ?? 0);
+                if ($ls > $maxLastSeen) {
+                    $maxLastSeen = $ls;
+                }
             }
             $result = $this->shipPayload('/agent/v1/errors', ['errors' => $errors]);
             if (is_array($result) && ($result['ok'] ?? false)) {
                 $this->errorMonitor->advanceCursor($highest);
+                $this->errorMonitor->advanceShipTs($maxLastSeen);
             }
         }
     }

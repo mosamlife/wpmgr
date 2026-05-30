@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { DefinitionList, KvRow } from "@/components/shared/definition-list";
 import { relativeTime } from "@/lib/utils";
-import type { PhpError } from "@wpmgr/api";
+import type { PhpError, PhpErrorFrame } from "@wpmgr/api";
 
 import { PHPSeverityChip } from "./php-severity-chip";
 
@@ -142,6 +142,11 @@ export function ErrorDetailDrawer({
               {error.message}
             </pre>
           </div>
+
+          {/* Backtrace — only rendered when frames are present (S1.1+) */}
+          {error.backtrace.length > 0 && (
+            <BacktraceSection frames={error.backtrace} />
+          )}
         </DialogBody>
 
         <DialogFooter>
@@ -172,4 +177,38 @@ export function ErrorDetailDrawer({
 function shortMessage(m: string): string {
   if (m.length <= 80) return m;
   return m.slice(0, 80) + "…";
+}
+
+// Renders the S1.1 per-error backtrace frames. Each frame is a mono row
+// showing the function name followed by the file path and line number.
+// Most-recent-call-first order is preserved from the API response.
+function BacktraceSection({ frames }: { frames: PhpErrorFrame[] }) {
+  return (
+    <div className="space-y-2">
+      <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Stack trace
+      </h3>
+      <div className="max-h-64 overflow-auto rounded-md border border-border bg-muted/50 p-3 space-y-1">
+        {frames.map((frame, idx) => (
+          <div
+            key={idx}
+            className="font-mono text-xs flex gap-2 items-baseline"
+          >
+            <span className="text-muted-foreground tabular-nums shrink-0">
+              {idx}
+            </span>
+            <span className="text-foreground shrink-0">
+              {frame.function !== "" ? frame.function : "(file scope)"}
+            </span>
+            <span className="text-muted-foreground truncate">
+              {frame.file}
+              <span className="text-foreground tabular-nums">
+                :{frame.line}
+              </span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

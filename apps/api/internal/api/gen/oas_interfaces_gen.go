@@ -33,6 +33,10 @@ type CreateRestoreRes interface {
 	createRestoreRes()
 }
 
+type CreateSiteDestinationRes interface {
+	createSiteDestinationRes()
+}
+
 type CreateSiteRes interface {
 	createSiteRes()
 }
@@ -43,6 +47,10 @@ type CreateTenantRes interface {
 
 type CreateUpdateRunRes interface {
 	createUpdateRunRes()
+}
+
+type DeleteSiteDestinationRes interface {
+	deleteSiteDestinationRes()
 }
 
 type DeleteSiteRes interface {
@@ -77,6 +85,14 @@ type GetSiteAvailableUpdatesRes interface {
 	getSiteAvailableUpdatesRes()
 }
 
+type GetSiteDestinationRes interface {
+	getSiteDestinationRes()
+}
+
+type GetSiteDiagnosticsRes interface {
+	getSiteDiagnosticsRes()
+}
+
 type GetSiteRes interface {
 	getSiteRes()
 }
@@ -109,6 +125,10 @@ type ListMembersRes interface {
 	listMembersRes()
 }
 
+type ListSiteDestinationsRes interface {
+	listSiteDestinationsRes()
+}
+
 type LoginRes interface {
 	loginRes()
 }
@@ -133,6 +153,10 @@ type PutBackupScheduleRes interface {
 	putBackupScheduleRes()
 }
 
+type RefreshSiteDiagnosticsRes interface {
+	refreshSiteDiagnosticsRes()
+}
+
 type RefreshSiteUpdatesRes interface {
 	refreshSiteUpdatesRes()
 }
@@ -147,6 +171,18 @@ type RevokeApiKeyRes interface {
 
 type SetSiteTagsRes interface {
 	setSiteTagsRes()
+}
+
+type SilenceSitePHPErrorRes interface {
+	silenceSitePHPErrorRes()
+}
+
+type TestSiteDestinationRes interface {
+	testSiteDestinationRes()
+}
+
+type UpdateSiteDestinationRes interface {
+	updateSiteDestinationRes()
 }
 
 type VerifyAuditRes interface {

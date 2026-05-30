@@ -309,6 +309,7 @@ export {
   type PairingCode,
   type PairingCodeCreate,
   type PhpError,
+  type PhpErrorFrame,
   type PhpErrorList,
   type PhpErrorSilence,
   type PutAlertConfigData,
