@@ -2,6 +2,7 @@ import { createFileRoute, redirect, useNavigate, Link } from "@tanstack/react-ro
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { AlertCircle, AlertTriangle, Globe } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,9 +79,17 @@ function RegisterPage() {
     : null;
 
   return (
-    <main className="flex min-h-dvh items-center justify-center p-4">
+    <main className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-[var(--color-background)] p-4">
+      {/* WPMgr wordmark — same Globe + text treatment as the sidebar BrandStrip */}
+      <div className="flex items-center gap-2">
+        <Globe aria-hidden="true" className="size-5 text-[var(--color-primary)]" />
+        <span className="text-sm font-semibold tracking-tight text-[var(--color-foreground)]">
+          WPMgr
+        </span>
+      </div>
+
       <Card className="w-full max-w-md">
-        <CardHeader>
+        <CardHeader className="space-y-1">
           <CardTitle asChild>
             <h1>Set up WPMgr</h1>
           </CardTitle>
@@ -96,19 +105,54 @@ function RegisterPage() {
             className="space-y-4"
           >
             {serverError ? (
-              <p
+              <div
                 role="alert"
-                className="rounded-md border border-[var(--color-destructive)] px-3 py-2 text-sm text-[var(--color-destructive)]"
+                className="flex items-start gap-2.5 rounded-md border border-[var(--color-destructive)]/30 bg-[var(--color-card)] px-3 py-2.5"
               >
-                {serverError}
-              </p>
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 text-[var(--color-destructive)]"
+                />
+                <p className="text-sm text-[var(--color-destructive)]">
+                  {serverError}
+                </p>
+              </div>
             ) : null}
 
-            <Field id="email" label="Email" type="email" autoComplete="email" register={register} error={errors.email?.message} />
-            <Field id="password" label="Password" type="password" autoComplete="new-password" register={register} error={errors.password?.message} />
-            <Field id="name" label="Your name (optional)" register={register} error={errors.name?.message} />
-            <Field id="tenant_name" label="Tenant name (optional)" register={register} error={errors.tenant_name?.message} />
-            <Field id="tenant_slug" label="Tenant slug (optional)" register={register} error={errors.tenant_slug?.message} />
+            <Field
+              id="email"
+              label="Email"
+              type="email"
+              autoComplete="email"
+              register={register}
+              error={errors.email?.message}
+            />
+            <Field
+              id="password"
+              label="Password"
+              type="password"
+              autoComplete="new-password"
+              register={register}
+              error={errors.password?.message}
+            />
+            <Field
+              id="name"
+              label="Your name (optional)"
+              register={register}
+              error={errors.name?.message}
+            />
+            <Field
+              id="tenant_name"
+              label="Tenant name (optional)"
+              register={register}
+              error={errors.tenant_name?.message}
+            />
+            <Field
+              id="tenant_slug"
+              label="Tenant slug (optional)"
+              register={register}
+              error={errors.tenant_slug?.message}
+            />
 
             <Button
               type="submit"
@@ -121,7 +165,10 @@ function RegisterPage() {
 
           <p className="mt-4 text-center text-xs text-[var(--color-muted-foreground)]">
             Already have an account?{" "}
-            <Link to="/login" className="underline underline-offset-4">
+            <Link
+              to="/login"
+              className="text-[var(--color-foreground)] underline underline-offset-4"
+            >
               Sign in
             </Link>
           </p>
@@ -158,7 +205,12 @@ function Field({
         {...register(id)}
       />
       {error ? (
-        <p id={`${id}-error`} role="alert" className="text-sm text-[var(--color-destructive)]">
+        <p
+          id={`${id}-error`}
+          role="alert"
+          className="flex items-center gap-1.5 text-sm text-[var(--color-destructive)]"
+        >
+          <AlertCircle aria-hidden="true" className="size-3.5 shrink-0" />
           {error}
         </p>
       ) : null}

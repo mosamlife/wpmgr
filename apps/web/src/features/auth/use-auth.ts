@@ -92,7 +92,7 @@ export function useRegister(): UseMutationResult<Me, Error, RegisterRequest> {
     mutationFn: async (body: RegisterRequest) => {
       const { data, error, response } = await register({ body });
       if (response?.status === 403) {
-        throw new Error("Open registration is closed — ask an admin to invite you.");
+        throw new Error("Open registration is closed: ask an admin to invite you.");
       }
       if (response?.status === 409) {
         throw new Error("An account with that email already exists.");

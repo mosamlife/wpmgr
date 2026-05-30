@@ -2,6 +2,7 @@ import { createFileRoute, redirect, useNavigate, Link } from "@tanstack/react-ro
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { AlertCircle, AlertTriangle, Globe } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,11 +75,19 @@ function LoginPage() {
   const serverError = loginMutation.isError ? loginMutation.error.message : null;
 
   return (
-    <main className="flex min-h-dvh items-center justify-center p-4">
+    <main className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-[var(--color-background)] p-4">
+      {/* WPMgr wordmark — same Globe + text treatment as the sidebar BrandStrip */}
+      <div className="flex items-center gap-2">
+        <Globe aria-hidden="true" className="size-5 text-[var(--color-primary)]" />
+        <span className="text-sm font-semibold tracking-tight text-[var(--color-foreground)]">
+          WPMgr
+        </span>
+      </div>
+
       <Card className="w-full max-w-sm">
-        <CardHeader>
+        <CardHeader className="space-y-1">
           <CardTitle asChild>
-            <h1>Sign in to WPMgr</h1>
+            <h1>Sign in</h1>
           </CardTitle>
           <CardDescription>
             Use your email and password, or single sign-on.
@@ -91,12 +100,18 @@ function LoginPage() {
             className="space-y-4"
           >
             {serverError ? (
-              <p
+              <div
                 role="alert"
-                className="rounded-md border border-[var(--color-destructive)] px-3 py-2 text-sm text-[var(--color-destructive)]"
+                className="flex items-start gap-2.5 rounded-md border border-[var(--color-destructive)]/30 bg-[var(--color-card)] px-3 py-2.5"
               >
-                {serverError}
-              </p>
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 text-[var(--color-destructive)]"
+                />
+                <p className="text-sm text-[var(--color-destructive)]">
+                  {serverError}
+                </p>
+              </div>
             ) : null}
 
             <div className="space-y-2">
@@ -110,7 +125,12 @@ function LoginPage() {
                 {...register("email")}
               />
               {errors.email ? (
-                <p id="email-error" role="alert" className="text-sm text-[var(--color-destructive)]">
+                <p
+                  id="email-error"
+                  role="alert"
+                  className="flex items-center gap-1.5 text-sm text-[var(--color-destructive)]"
+                >
+                  <AlertCircle aria-hidden="true" className="size-3.5 shrink-0" />
                   {errors.email.message}
                 </p>
               ) : null}
@@ -129,7 +149,12 @@ function LoginPage() {
                 {...register("password")}
               />
               {errors.password ? (
-                <p id="password-error" role="alert" className="text-sm text-[var(--color-destructive)]">
+                <p
+                  id="password-error"
+                  role="alert"
+                  className="flex items-center gap-1.5 text-sm text-[var(--color-destructive)]"
+                >
+                  <AlertCircle aria-hidden="true" className="size-3.5 shrink-0" />
                   {errors.password.message}
                 </p>
               ) : null}
@@ -161,7 +186,10 @@ function LoginPage() {
 
           <p className="mt-4 text-center text-xs text-[var(--color-muted-foreground)]">
             First time here?{" "}
-            <Link to="/register" className="underline underline-offset-4">
+            <Link
+              to="/register"
+              className="text-[var(--color-foreground)] underline underline-offset-4"
+            >
               Set up the first account
             </Link>
           </p>

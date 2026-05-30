@@ -415,7 +415,7 @@ function CollapsedGroup({
         role="menu"
         aria-label={group.label}
         className={cn(
-          "absolute left-full top-0 z-50 ml-1 min-w-[180px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md transition-opacity duration-150",
+          "absolute left-full top-0 z-50 ml-1 min-w-[180px] rounded-md border border-border bg-popover p-1 text-popover-foreground transition-opacity duration-150",
           open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
       >
