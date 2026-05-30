@@ -17,7 +17,6 @@ import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { FieldError } from "@/components/forms/field-error";
 import { FormSection } from "@/components/forms/form-section";
-import { StickySaveBar } from "@/components/forms/sticky-save-bar";
 import {
   useBackupSchedule,
   usePutBackupSchedule,
@@ -309,7 +308,7 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
             <form
               onSubmit={(e) => void handleSubmit(onSubmit)(e)}
               noValidate
-              className="space-y-0 pb-24"
+              className="space-y-0"
             >
               {/* Enable toggle */}
               <FormSection
@@ -587,15 +586,36 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
                 </fieldset>
               </FormSection>
 
-              <StickySaveBar
-                isDirty={isDirty}
-                isPending={save.isPending}
-                errorMessage={save.isError ? save.error.message : null}
-                onSave={() => handleSubmit(onSubmit)()}
-                onDiscard={() => reset()}
-                saveLabel="Update schedule"
-                discardLabel="Discard changes"
-              />
+              {/* Always-visible action row pinned inside the card so the Save
+                  control is never hidden behind a floating bar. */}
+              <div className="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-border pt-4">
+                {save.isError ? (
+                  <span role="alert" className="mr-auto text-sm text-destructive">
+                    {save.error.message}
+                  </span>
+                ) : isDirty ? (
+                  <span className="mr-auto text-sm text-muted-foreground">
+                    You have unsaved changes.
+                  </span>
+                ) : save.isSuccess ? (
+                  <span role="status" className="mr-auto text-sm text-muted-foreground">
+                    Schedule saved.
+                  </span>
+                ) : null}
+                {isDirty ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => reset()}
+                    disabled={save.isPending}
+                  >
+                    Discard changes
+                  </Button>
+                ) : null}
+                <Button type="submit" disabled={save.isPending}>
+                  {save.isPending ? "Saving…" : "Update schedule"}
+                </Button>
+              </div>
             </form>
           </>
         )}
