@@ -139,18 +139,19 @@ export function LoginEventsTable({ siteId }: { siteId: string }) {
         <EmptyEvents />
       ) : (
         <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[160px]">IP</TableHead>
-                <TableHead className="w-[110px]">Status</TableHead>
-                <TableHead className="w-[140px]">Category</TableHead>
-                <TableHead>Username</TableHead>
-                <TableHead className="w-[140px] text-right">When</TableHead>
-                <TableHead className="w-[100px] text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
+          <div className="w-full overflow-x-auto">
+            <Table className="min-w-[640px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[160px]">IP</TableHead>
+                  <TableHead className="w-[110px]">Status</TableHead>
+                  <TableHead className="w-[140px]">Category</TableHead>
+                  <TableHead>Username</TableHead>
+                  <TableHead className="w-[140px] text-right">When</TableHead>
+                  <TableHead className="w-[100px] text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
               {(data ?? []).map((event) => {
                 const statusMeta = STATUS_META[event.status];
                 const rel = relativeTime(event.occurred_at);
@@ -226,6 +227,7 @@ export function LoginEventsTable({ siteId }: { siteId: string }) {
               })}
             </TableBody>
           </Table>
+          </div>
         </div>
       )}
     </section>

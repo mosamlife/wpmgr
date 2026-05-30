@@ -692,7 +692,7 @@ function LoginProtectionSkeleton() {
       {/* Thresholds skeleton */}
       <div>
         <Skeleton className="h-3 w-36 mb-4" />
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="space-y-1.5">
               <Skeleton className="h-3 w-24" />

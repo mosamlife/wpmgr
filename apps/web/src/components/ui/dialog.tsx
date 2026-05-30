@@ -179,7 +179,7 @@ export function DialogContent({
       // sharper deceleration helps it read as "placed", not "drifted in".
       transition={{ duration: dur.fast, ease: ease.outExpo }}
       className={cn(
-        "relative z-10 w-full max-w-[480px] rounded-xl border border-[var(--color-border)]",
+        "relative z-10 w-full max-w-[min(480px,calc(100vw-2rem))] rounded-xl border border-[var(--color-border)]",
         "bg-[var(--color-popover)] text-[var(--color-popover-foreground)] shadow-lg",
         "p-6",
         className,

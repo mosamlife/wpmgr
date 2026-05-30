@@ -58,18 +58,19 @@ export function SiteComponentsTable({
   }
 
   return (
-    <div className="rounded-xl border border-border">
-      <Table>
-        <caption className="sr-only">Installed plugins and themes</caption>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Name</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead>Version</TableHead>
-            <TableHead>Status</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+    <div className="overflow-hidden rounded-xl border border-border">
+      <div className="w-full overflow-x-auto">
+        <Table className="min-w-[400px]">
+          <caption className="sr-only">Installed plugins and themes</caption>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Version</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
           {rows.map((row) => (
             <TableRow key={`${row.type}:${row.slug}`}>
               {/* Name + slug: name as the visual lead, slug in mono beneath */}
@@ -115,6 +116,7 @@ export function SiteComponentsTable({
           ))}
         </TableBody>
       </Table>
+      </div>
     </div>
   );
 }

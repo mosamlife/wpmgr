@@ -68,7 +68,7 @@ export function FindingFileModal({
       <DialogContent
         ariaLabelledBy="file-modal-title"
         ariaDescribedBy="file-modal-desc"
-        className="max-w-[720px] flex flex-col max-h-[80vh]"
+        className="flex max-h-[80vh] max-w-[min(720px,calc(100vw-2rem))] flex-col"
       >
         <DialogHeader>
           <DialogTitle id="file-modal-title">

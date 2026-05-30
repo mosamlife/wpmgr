@@ -30,7 +30,7 @@ function SettingsTab() {
 
   if (isPending || !site) {
     return (
-      <div className="px-6 pt-6 pb-8">
+      <div className="px-4 pb-8 pt-6 sm:px-6">
         <p role="status" className="text-sm text-muted-foreground">
           Loading settings…
         </p>
@@ -41,7 +41,7 @@ function SettingsTab() {
   return (
     <section
       aria-labelledby="settings-heading"
-      className="px-6 pt-6 pb-8"
+      className="px-4 pb-8 pt-6 sm:px-6"
     >
       <h2
         id="settings-heading"

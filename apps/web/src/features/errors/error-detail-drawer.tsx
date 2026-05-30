@@ -91,7 +91,7 @@ export function ErrorDetailDrawer({
     <Dialog open={true} onClose={onClose}>
       <DialogContent
         ariaLabelledBy="error-detail-title"
-        className="max-w-[720px]"
+        className="max-w-[min(720px,calc(100vw-2rem))]"
       >
         <DialogHeader>
           <DialogTitle id="error-detail-title">

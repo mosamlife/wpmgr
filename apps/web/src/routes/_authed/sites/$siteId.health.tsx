@@ -29,7 +29,7 @@ function HealthTab() {
   const { siteId } = Route.useParams();
 
   return (
-    <section className="space-y-6 px-6 pb-8 pt-6">
+    <section className="space-y-6 px-4 pb-8 pt-6 sm:px-6">
       <div className="rounded-lg border border-border bg-card">
         <div
           className={cn(

@@ -28,7 +28,7 @@ function SecurityTab() {
       {/* ── Section 1: Login protection ── */}
       <section
         aria-labelledby="login-protection-heading"
-        className="px-6 pt-6 pb-8 space-y-6"
+        className="space-y-6 px-4 pb-8 pt-6 sm:px-6"
       >
         <h2
           id="login-protection-heading"
@@ -48,7 +48,7 @@ function SecurityTab() {
       {/* ── Section 2: Vulnerabilities (future-sprint stub) ── */}
       <section
         aria-labelledby="vulnerabilities-heading"
-        className="px-6 pt-6 pb-8"
+        className="px-4 pb-8 pt-6 sm:px-6"
       >
         <h2
           id="vulnerabilities-heading"
@@ -73,7 +73,7 @@ function SecurityTab() {
       {/* ── Section 3: Integrity scan (S3) ── */}
       <section
         aria-labelledby="integrity-scan-heading"
-        className="px-6 pt-6 pb-8 space-y-4"
+        className="space-y-4 px-4 pb-8 pt-6 sm:px-6"
       >
         <h2
           id="integrity-scan-heading"

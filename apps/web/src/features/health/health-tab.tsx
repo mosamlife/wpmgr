@@ -61,7 +61,7 @@ export function HealthTab({ siteId }: { siteId: string }) {
   }
   if (isError) {
     return (
-      <section className="px-6 pb-8 pt-6">
+      <section className="px-4 pb-8 pt-6 sm:px-6">
         <PageError
           what="Could not load site diagnostics."
           why={error instanceof Error ? error.message : "Unknown error"}

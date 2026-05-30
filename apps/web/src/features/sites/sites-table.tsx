@@ -514,7 +514,7 @@ function VirtuosoTable({
   return (
     <table
       {...rest}
-      style={{ ...style, width: "100%", tableLayout: "fixed" }}
+      style={{ ...style, width: "100%", minWidth: "860px", tableLayout: "fixed" }}
       className="border-collapse"
     />
   );
@@ -627,7 +627,7 @@ export function SitesTable({
 
   return (
     <motion.div
-      className="flex w-full flex-col bg-background"
+      className="flex min-w-0 w-full flex-col bg-background"
       // Only the very first render gets the enter. After that, `initial=false`
       // means motion just renders at the "animate" target without easing.
       variants={fadeUp}
@@ -638,7 +638,7 @@ export function SitesTable({
         role="region"
         aria-label="Sites table"
         aria-busy={isLoading ? "true" : undefined}
-        className="relative h-[calc(100vh-12rem)] min-h-[400px] w-full"
+        className="relative h-[calc(100vh-12rem)] min-h-[400px] w-full overflow-x-auto"
       >
         <TableVirtuoso<Row<SiteRow>, unknown>
           data={sortedRows}

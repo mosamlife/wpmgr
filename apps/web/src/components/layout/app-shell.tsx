@@ -89,13 +89,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     <ShellContext.Provider value={shellState}>
       <CommandPaletteProvider>
         <div
-          className={`grid h-dvh grid-cols-[1fr] grid-rows-[48px_1fr] bg-background text-foreground ${desktopColsClass}`}
+          className={`grid h-dvh min-w-0 grid-cols-[1fr] grid-rows-[48px_1fr] bg-background text-foreground ${desktopColsClass}`}
         >
           <Sidebar />
           <TopBar />
           <main
             id="main-content"
-            className="col-start-1 row-start-2 overflow-y-auto bg-background px-8 py-6 md:col-start-2"
+            className="col-start-1 row-start-2 min-w-0 overflow-x-hidden overflow-y-auto bg-background px-4 py-4 sm:px-6 sm:py-5 lg:px-8 lg:py-6 md:col-start-2"
           >
             {children}
           </main>

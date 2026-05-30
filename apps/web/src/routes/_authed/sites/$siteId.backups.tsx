@@ -15,7 +15,7 @@ function BackupsTab() {
   const operate = canOperate(me);
 
   return (
-    <section aria-label="Backups" className="px-6 pt-6 pb-8">
+    <section aria-label="Backups" className="px-4 pb-8 pt-6 sm:px-6">
       <BackupsSection siteId={siteId} canOperate={operate} />
     </section>
   );

@@ -42,10 +42,10 @@ export function ErrorsTable({ siteId }: { siteId: string }) {
   return (
     <section
       aria-labelledby="errors-heading"
-      className="px-6 pt-6 pb-8 space-y-4"
+      className="space-y-4 px-4 pb-8 pt-6 sm:px-6"
     >
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2
           id="errors-heading"
           className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
@@ -88,30 +88,32 @@ export function ErrorsTable({ siteId }: { siteId: string }) {
         <EmptyErrors />
       ) : (
         <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[110px]">Severity</TableHead>
-                <TableHead className="w-[240px]">File:line</TableHead>
-                <TableHead>Message</TableHead>
-                <TableHead className="w-[80px] text-right">Count</TableHead>
-                <TableHead className="w-[120px] text-right">Last seen</TableHead>
-                <TableHead className="w-[100px] text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(data ?? []).map((e) => (
-                <ErrorRow
-                  key={e.id}
-                  error={e}
-                  onOpen={() => setActive(e)}
-                  onSilence={(silenced) =>
-                    silence.mutate({ md5: e.md5, silenced })
-                  }
-                />
-              ))}
-            </TableBody>
-          </Table>
+          <div className="w-full overflow-x-auto">
+            <Table className="min-w-[700px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[110px]">Severity</TableHead>
+                  <TableHead className="w-[240px]">File:line</TableHead>
+                  <TableHead>Message</TableHead>
+                  <TableHead className="w-[80px] text-right">Count</TableHead>
+                  <TableHead className="w-[120px] text-right">Last seen</TableHead>
+                  <TableHead className="w-[100px] text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(data ?? []).map((e) => (
+                  <ErrorRow
+                    key={e.id}
+                    error={e}
+                    onOpen={() => setActive(e)}
+                    onSilence={(silenced) =>
+                      silence.mutate({ md5: e.md5, silenced })
+                    }
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </div>
       )}
 

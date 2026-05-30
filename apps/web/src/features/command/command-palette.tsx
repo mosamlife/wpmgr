@@ -118,8 +118,9 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       )}
       contentClassName={cn(
         // Outer positioner. Centred horizontally, 8rem from the top — feels
-        // like an omnibar rather than a modal.
-        "wpmgr-cmdk-panel fixed left-1/2 top-32 z-50 w-full max-w-2xl -translate-x-1/2 px-4",
+        // like an omnibar rather than a modal. The px-4 on this wrapper plus
+        // the panel itself filling w-full keeps it inside 100vw on mobile.
+        "wpmgr-cmdk-panel fixed left-1/2 top-32 z-50 w-[calc(100vw-2rem)] max-w-2xl -translate-x-1/2",
         "focus-visible:outline-none",
       )}
     >

@@ -122,7 +122,7 @@ export function SitesToolbar(props: SitesToolbarProps) {
         role="toolbar"
         aria-label={inAction ? "Bulk actions" : "Filter sites"}
         className={cn(
-          "flex items-center justify-between gap-3 border-b border-border bg-background px-1 py-2",
+          "flex flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-1 py-2",
           // Min-height keeps the row stable so the surrounding layout doesn't
           // jitter when the mode flips (transform/opacity-only — see DESIGN).
           "min-h-11",
@@ -161,9 +161,9 @@ function IdleMode({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={TOOLBAR_MOTION.fade}
-      className="flex w-full items-center justify-between gap-2"
+      className="flex w-full flex-wrap items-center justify-between gap-2"
     >
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <SearchInput value={search} onChange={onSearchChange} />
         <FilterDropdown
           label="All clients"
@@ -212,7 +212,7 @@ const SearchInput = forwardRef<
         onChange={(e) => onChange(e.target.value)}
         aria-label="Search sites"
         placeholder="Search sites"
-        className="h-9 w-64 rounded-md pl-8 pr-12"
+        className="h-9 w-40 rounded-md pl-8 pr-12 sm:w-64"
       />
       <kbd
         aria-hidden="true"
@@ -386,12 +386,12 @@ function ActionMode({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={TOOLBAR_MOTION.fade}
-      className="flex w-full items-center justify-between gap-2"
+      className="flex w-full flex-wrap items-center justify-between gap-2"
     >
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span
           aria-live="polite"
-          className="flex items-center gap-2 text-sm text-foreground"
+          className="flex flex-wrap items-center gap-2 text-sm text-foreground"
         >
           <span className="font-mono font-medium tabular-nums">{count}</span>
           <span className="text-muted-foreground">{sitesNoun} selected</span>
@@ -410,7 +410,7 @@ function ActionMode({
         </span>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {canOperate ? (
           <>
             <UpdateSplitButton count={count} onSelect={onBulkUpdate} />

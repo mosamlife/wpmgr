@@ -177,29 +177,30 @@ export function ScanFindingsTable({ siteId, runId }: ScanFindingsTableProps) {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[110px]">Severity</TableHead>
-                <TableHead className="w-[130px]">Type</TableHead>
-                <TableHead>Path</TableHead>
-                <TableHead className="w-[110px]">Expected MD5</TableHead>
-                <TableHead className="w-[110px]">Actual MD5</TableHead>
-                <TableHead className="w-[160px] text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sorted.map((finding) => (
-                <FindingRow
-                  key={finding.id}
-                  finding={finding}
-                  siteId={siteId}
-                  runId={runId}
-                  isIgnoring={
-                    ignore.isPending &&
-                    ignore.variables?.findingId === finding.id
-                  }
-                  onIgnore={() => {
+          <div className="w-full overflow-x-auto">
+            <Table className="min-w-[700px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[110px]">Severity</TableHead>
+                  <TableHead className="w-[130px]">Type</TableHead>
+                  <TableHead>Path</TableHead>
+                  <TableHead className="w-[110px]">Expected MD5</TableHead>
+                  <TableHead className="w-[110px]">Actual MD5</TableHead>
+                  <TableHead className="w-[160px] text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sorted.map((finding) => (
+                  <FindingRow
+                    key={finding.id}
+                    finding={finding}
+                    siteId={siteId}
+                    runId={runId}
+                    isIgnoring={
+                      ignore.isPending &&
+                      ignore.variables?.findingId === finding.id
+                    }
+                    onIgnore={() => {
                     ignore.mutate(
                       { findingId: finding.id, siteId, runId },
                       {
@@ -223,6 +224,7 @@ export function ScanFindingsTable({ siteId, runId }: ScanFindingsTableProps) {
               ))}
             </TableBody>
           </Table>
+          </div>
         </div>
       )}
 

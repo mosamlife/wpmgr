@@ -14,7 +14,7 @@ function UpdatesTab() {
   const { siteId } = Route.useParams();
 
   return (
-    <section aria-label="Available updates" className="px-6 pb-8 pt-6">
+    <section aria-label="Available updates" className="px-4 pb-8 pt-6 sm:px-6">
       <AvailableUpdatesCard siteId={siteId} />
     </section>
   );

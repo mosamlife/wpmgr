@@ -120,7 +120,7 @@ function MetadataGrid({ report }: { report: SqlInspection }) {
   ];
 
   return (
-    <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
+    <dl className="grid min-w-0 grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
       {rows.map((row) => (
         <Row key={row.label} label={row.label} value={row.value} />
       ))}
@@ -132,7 +132,7 @@ function Row({ label, value }: { label: string; value: string | undefined }) {
   return (
     <>
       <dt className="text-[var(--color-muted-foreground)]">{label}</dt>
-      <dd className="truncate font-mono text-[var(--color-foreground)]">
+      <dd className="min-w-0 truncate font-mono text-[var(--color-foreground)]">
         {value && value.length > 0 ? value : "–"}
       </dd>
     </>

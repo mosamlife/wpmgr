@@ -45,7 +45,7 @@ export function DefinitionList({
   return (
     <dl
       className={cn(
-        "grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm",
+        "grid min-w-0 grid-cols-[minmax(6rem,auto)_1fr] gap-x-4 gap-y-2 text-sm",
         className,
       )}
     >

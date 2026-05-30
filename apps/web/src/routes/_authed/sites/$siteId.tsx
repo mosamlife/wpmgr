@@ -65,7 +65,7 @@ function SiteDetailLayout() {
       {isPending ? (
         <SiteShellSkeleton />
       ) : isError ? (
-        <div className="px-6 py-8">
+        <div className="px-4 py-6 sm:px-6 sm:py-8">
           {error instanceof NotFoundError ? (
             <div role="alert" className="space-y-2">
               <h1 className="text-2xl font-semibold">Site not found</h1>
@@ -99,7 +99,7 @@ function SiteShellSkeleton() {
   return (
     <>
       {/* Header strip skeleton */}
-      <div className="-mx-6 flex h-12 items-center gap-3 border-b border-border bg-background px-6">
+      <div className="-mx-4 flex h-12 items-center gap-3 border-b border-border bg-background px-4 sm:-mx-6 sm:px-6">
         <div className="flex min-w-0 flex-col gap-1">
           <Skeleton className="h-3.5 w-32" />
           <Skeleton className="h-2.5 w-48" />
@@ -110,7 +110,7 @@ function SiteShellSkeleton() {
         </div>
       </div>
       {/* Tab bar skeleton */}
-      <div className="-mx-6 flex h-12 items-center gap-6 border-b border-border bg-background px-6">
+      <div className="-mx-4 flex h-12 items-center gap-4 overflow-x-auto border-b border-border bg-background px-4 sm:-mx-6 sm:gap-6 sm:px-6">
         {TABS.map((t) => (
           <Skeleton key={t.to} className="h-3 w-14" />
         ))}
@@ -143,8 +143,8 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
           stays pinned. Shows site name + font-mono URL subtext + status chip. */}
       <header
         className={cn(
-          "-mx-6 flex h-12 items-center gap-3 border-b border-border bg-background px-6",
-          "min-w-0",
+          "-mx-4 flex h-12 min-w-0 items-center gap-3 border-b border-border bg-background px-4",
+          "sm:-mx-6 sm:px-6",
         )}
       >
         {/* Name + URL: name as the visual primary, hostname in mono as the URL */}
@@ -214,7 +214,7 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
           `activeProps`. */}
       <nav
         aria-label="Site sections"
-        className="-mx-6 flex h-12 items-center gap-6 border-b border-border bg-background px-6"
+        className="-mx-4 flex h-12 items-center gap-4 overflow-x-auto border-b border-border bg-background px-4 sm:-mx-6 sm:gap-6 sm:px-6"
       >
         {TABS.map((t) => (
           <Link
