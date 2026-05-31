@@ -72,7 +72,7 @@ function SitesPage() {
   const tagOptions = useMemo(() => {
     const set = new Set<string>();
     for (const s of sites ?? []) {
-      for (const t of s.tags) set.add(t);
+      for (const t of s.tags ?? []) set.add(t);
     }
     return Array.from(set).sort();
   }, [sites]);
@@ -84,7 +84,7 @@ function SitesPage() {
     const q = search.trim().toLowerCase();
     if (!q) return sites;
     return sites.filter((s) =>
-      [s.name, s.url, ...s.tags]
+      [s.name, s.url, ...(s.tags ?? [])]
         .join(" ")
         .toLowerCase()
         .includes(q),

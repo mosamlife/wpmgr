@@ -62,11 +62,17 @@ export function useSitesLiveSync(): void {
         case "site.state_changed": {
           const changed = parseStateChanged(ev);
           if (!changed) return;
-          const full = changed.site;
-          // Patch the detail cache outright with the full site.
-          queryClient.setQueryData<Site>(sitesKeys.detail(ev.site_id), full);
-          // Patch every cached list query in place.
-          patchListsWith(queryClient, ev.site_id, () => full);
+          // The SSE `site` payload is a PARTIAL summary (no tags/components/
+          // versions), so MERGE it into the cached row — replacing outright would
+          // drop fields like `tags` and crash consumers that iterate them.
+          const summary = changed.site;
+          queryClient.setQueryData<Site>(sitesKeys.detail(ev.site_id), (prev) =>
+            prev ? { ...prev, ...summary } : summary,
+          );
+          patchListsWith(queryClient, ev.site_id, (prev) => ({
+            ...prev,
+            ...summary,
+          }));
           // If the transition moved the site into/out of the archived bucket,
           // the default list's membership changed → invalidate to reconcile.
           if (changed.to === "archived" || changed.from === "archived") {
