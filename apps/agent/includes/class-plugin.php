@@ -202,6 +202,18 @@ final class Plugin
         // get_option() lookup when the schema is already current.
         add_action('plugins_loaded', [$this, 'maybeRunSchemaMigrations']);
 
+        // Cron self-heal (mirrors maybeRunSchemaMigrations). register_activation_hook
+        // does NOT fire on a plugin UPDATE / same-version re-upload, but the
+        // update's deactivate step DOES fire register_deactivation_hook →
+        // Scheduler::clearEvents() wipes EVERY reporting cron. Net effect: after
+        // an in-place agent update the heartbeat/metadata/diagnostics/activity/
+        // error crons silently vanish and never return, so the agent stops
+        // calling home and the CP heartbeat-timeout sweeper marks the site
+        // disconnected (even though CP→agent pushes like backups still succeed
+        // and briefly bump last_seen). This rebinds the recurring schedule on
+        // any boot once the heartbeat event is found missing.
+        add_action('plugins_loaded', [$this, 'maybeRescheduleCron']);
+
         add_action('rest_api_init', [$this->router, 'registerRoutes']);
         add_action('rest_api_init', [$this, 'registerAutologinRoute']);
 
@@ -558,6 +570,52 @@ final class Plugin
     public function maybeRunSchemaMigrations(): void
     {
         Schema::ensureCurrent();
+    }
+
+    /**
+     * Cron self-heal: re-arm the recurring reporting crons when they have gone
+     * missing (the canonical case being an in-place plugin update — see the
+     * plugins_loaded binding in registerHooks for the full failure mode).
+     *
+     * Gated on isEnrolled(): every recurring job no-ops before enrollment, and
+     * skipping the not-enrolled case keeps us from perturbing the one-shot
+     * auto-deactivate safety window (which only matters WHILE not enrolled).
+     *
+     * Cheap on the hot path: one in-memory wp_next_scheduled() read of the
+     * already-loaded `cron` option. The heartbeat event is the canary — if it
+     * is scheduled, the rest were installed in the same scheduleEvents() pass
+     * and are present too, so we short-circuit. When it is missing we re-run
+     * the idempotent scheduleEvents() (each event is guarded by its own
+     * wp_next_scheduled check, so only the truly-absent ones get re-created)
+     * and restore the hourly autologin-replay prune, which lives in activate()
+     * rather than scheduleEvents() and is likewise wiped by clearEvents().
+     *
+     * @return void
+     */
+    public function maybeRescheduleCron(): void
+    {
+        if (!function_exists('wp_next_scheduled')) {
+            return;
+        }
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        // Canary: heartbeat present ⇒ the whole recurring set is present.
+        if (wp_next_scheduled(Scheduler::HOOK_HEARTBEAT) !== false) {
+            return;
+        }
+
+        $now = time();
+        $this->scheduler->scheduleEvents($now);
+
+        // Hourly autologin-replay prune is scheduled in activate(), not in
+        // scheduleEvents(), so re-arm it here too (clearEvents()/deactivate()
+        // wipes it alongside the rest).
+        if (function_exists('wp_schedule_event')
+            && wp_next_scheduled(ReplayCache::HOOK_PRUNE) === false
+        ) {
+            wp_schedule_event($now + 60, 'hourly', ReplayCache::HOOK_PRUNE);
+        }
     }
 
     /**
