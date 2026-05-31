@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { Check, Copy, MoreHorizontal, Zap } from "lucide-react";
+import { Check, Copy, MoreHorizontal, Share2, Zap } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,8 +13,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusChip, type StatusTone } from "@/components/status";
+import { ShareSiteDialog } from "@/features/sharing/share-site-dialog";
 import { useSite, NotFoundError } from "@/features/sites/use-sites";
 import { useRecordRecentSite } from "@/features/command/use-recent-sites";
+import { useMe, canManage } from "@/features/auth/use-auth";
 import { relativeTime, cn } from "@/lib/utils";
 import type { Site } from "@wpmgr/api";
 
@@ -123,6 +125,9 @@ function SiteShellSkeleton() {
 
 function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
   const [copied, setCopied] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const { data: me } = useMe();
+  const manage = canManage(me);
 
   const hostname = hostnameOf(site.url);
   const adminUrl = `${stripTrailingSlash(site.url)}/wp-admin/`;
@@ -166,6 +171,19 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
         <StatusChip tone={tone} label={toneLabel} time={lastSeen} />
 
         <div className="ml-auto flex items-center gap-2">
+          {manage ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="Share this site with collaborators"
+              onClick={() => setShareOpen(true)}
+              className="gap-1.5"
+            >
+              <Share2 aria-hidden="true" className="size-4" />
+              Share
+            </Button>
+          ) : null}
           <Button asChild size="sm" aria-label="Open in wp-admin">
             <a href={adminUrl} target="_blank" rel="noopener noreferrer">
               <Zap aria-hidden="true" className="size-4" />
@@ -207,6 +225,14 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+
+        {/* Share site dialog — only rendered when opened to keep DOM clean. */}
+        <ShareSiteDialog
+          siteId={siteId}
+          siteName={site.name}
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+        />
       </header>
 
       {/* Tab bar — scrolls with the page, not pinned. Each tab is a real

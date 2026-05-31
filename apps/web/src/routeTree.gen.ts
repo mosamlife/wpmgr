@@ -11,10 +11,12 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AcceptRouteImport } from './routes/accept'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthedVulnerabilitiesRouteImport } from './routes/_authed/vulnerabilities'
 import { Route as AuthedUptimeRouteImport } from './routes/_authed/uptime'
+import { Route as AuthedSharedWithMeRouteImport } from './routes/_authed/shared-with-me'
 import { Route as AuthedPerformanceRouteImport } from './routes/_authed/performance'
 import { Route as AuthedMigrationsRouteImport } from './routes/_authed/migrations'
 import { Route as AuthedAuditRouteImport } from './routes/_authed/audit'
@@ -24,6 +26,7 @@ import { Route as AuthedBackupsIndexRouteImport } from './routes/_authed/backups
 import { Route as AuthedUpdatesRunIdRouteImport } from './routes/_authed/updates/$runId'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
 import { Route as AuthedSettingsDestinationsRouteImport } from './routes/_authed/settings/destinations'
+import { Route as AuthedSettingsMembersRouteImport } from './routes/_authed/settings/members'
 import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
 import { Route as AuthedSettingsAlertsRouteImport } from './routes/_authed/settings/alerts'
 import { Route as AuthedSettingsAccountRouteImport } from './routes/_authed/settings/account'
@@ -49,6 +52,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AcceptRoute = AcceptRouteImport.update({
+  id: '/accept',
+  path: '/accept',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
   getParentRoute: () => rootRouteImport,
@@ -66,6 +74,11 @@ const AuthedVulnerabilitiesRoute = AuthedVulnerabilitiesRouteImport.update({
 const AuthedUptimeRoute = AuthedUptimeRouteImport.update({
   id: '/uptime',
   path: '/uptime',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedSharedWithMeRoute = AuthedSharedWithMeRouteImport.update({
+  id: '/shared-with-me',
+  path: '/shared-with-me',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedPerformanceRoute = AuthedPerformanceRouteImport.update({
@@ -114,6 +127,11 @@ const AuthedSettingsDestinationsRoute =
     path: '/settings/destinations',
     getParentRoute: () => AuthedRoute,
   } as any)
+const AuthedSettingsMembersRoute = AuthedSettingsMembersRouteImport.update({
+  id: '/settings/members',
+  path: '/settings/members',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedSettingsApiKeysRoute = AuthedSettingsApiKeysRouteImport.update({
   id: '/settings/api-keys',
   path: '/settings/api-keys',
@@ -194,9 +212,11 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/accept': typeof AcceptRoute
   '/audit': typeof AuthedAuditRoute
   '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
+  '/shared-with-me': typeof AuthedSharedWithMeRoute
   '/uptime': typeof AuthedUptimeRoute
   '/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
@@ -206,6 +226,7 @@ export interface FileRoutesByFullPath {
   '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/settings/destinations': typeof AuthedSettingsDestinationsRoute
+  '/settings/members': typeof AuthedSettingsMembersRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/backups/': typeof AuthedBackupsIndexRoute
@@ -224,9 +245,11 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/accept': typeof AcceptRoute
   '/audit': typeof AuthedAuditRoute
   '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
+  '/shared-with-me': typeof AuthedSharedWithMeRoute
   '/uptime': typeof AuthedUptimeRoute
   '/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
@@ -236,6 +259,7 @@ export interface FileRoutesByTo {
   '/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/settings/destinations': typeof AuthedSettingsDestinationsRoute
+  '/settings/members': typeof AuthedSettingsMembersRoute
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/backups': typeof AuthedBackupsIndexRoute
   '/sites': typeof AuthedSitesIndexRoute
@@ -255,9 +279,11 @@ export interface FileRoutesById {
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/accept': typeof AcceptRoute
   '/_authed/audit': typeof AuthedAuditRoute
   '/_authed/migrations': typeof AuthedMigrationsRoute
   '/_authed/performance': typeof AuthedPerformanceRoute
+  '/_authed/shared-with-me': typeof AuthedSharedWithMeRoute
   '/_authed/uptime': typeof AuthedUptimeRoute
   '/_authed/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/_authed/backups/$snapshotId': typeof AuthedBackupsSnapshotIdRoute
@@ -267,6 +293,7 @@ export interface FileRoutesById {
   '/_authed/settings/alerts': typeof AuthedSettingsAlertsRoute
   '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/_authed/settings/destinations': typeof AuthedSettingsDestinationsRoute
+  '/_authed/settings/members': typeof AuthedSettingsMembersRoute
   '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/_authed/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/_authed/backups/': typeof AuthedBackupsIndexRoute
@@ -287,9 +314,11 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/register'
+    | '/accept'
     | '/audit'
     | '/migrations'
     | '/performance'
+    | '/shared-with-me'
     | '/uptime'
     | '/vulnerabilities'
     | '/backups/$snapshotId'
@@ -299,6 +328,7 @@ export interface FileRouteTypes {
     | '/settings/alerts'
     | '/settings/api-keys'
     | '/settings/destinations'
+    | '/settings/members'
     | '/sites/$siteId'
     | '/updates/$runId'
     | '/backups/'
@@ -317,9 +347,11 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/register'
+    | '/accept'
     | '/audit'
     | '/migrations'
     | '/performance'
+    | '/shared-with-me'
     | '/uptime'
     | '/vulnerabilities'
     | '/backups/$snapshotId'
@@ -329,6 +361,7 @@ export interface FileRouteTypes {
     | '/settings/alerts'
     | '/settings/api-keys'
     | '/settings/destinations'
+    | '/settings/members'
     | '/updates/$runId'
     | '/backups'
     | '/sites'
@@ -347,9 +380,11 @@ export interface FileRouteTypes {
     | '/_authed'
     | '/login'
     | '/register'
+    | '/accept'
     | '/_authed/audit'
     | '/_authed/migrations'
     | '/_authed/performance'
+    | '/_authed/shared-with-me'
     | '/_authed/uptime'
     | '/_authed/vulnerabilities'
     | '/_authed/backups/$snapshotId'
@@ -359,6 +394,7 @@ export interface FileRouteTypes {
     | '/_authed/settings/alerts'
     | '/_authed/settings/api-keys'
     | '/_authed/settings/destinations'
+    | '/_authed/settings/members'
     | '/_authed/sites/$siteId'
     | '/_authed/updates/$runId'
     | '/_authed/backups/'
@@ -379,6 +415,7 @@ export interface RootRouteChildren {
   AuthedRoute: typeof AuthedRouteWithChildren
   LoginRoute: typeof LoginRoute
   RegisterRoute: typeof RegisterRoute
+  AcceptRoute: typeof AcceptRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -395,6 +432,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/accept': {
+      id: '/accept'
+      path: '/accept'
+      fullPath: '/accept'
+      preLoaderRoute: typeof AcceptRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authed': {
@@ -423,6 +467,13 @@ declare module '@tanstack/react-router' {
       path: '/uptime'
       fullPath: '/uptime'
       preLoaderRoute: typeof AuthedUptimeRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/shared-with-me': {
+      id: '/_authed/shared-with-me'
+      path: '/shared-with-me'
+      fullPath: '/shared-with-me'
+      preLoaderRoute: typeof AuthedSharedWithMeRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/performance': {
@@ -486,6 +537,13 @@ declare module '@tanstack/react-router' {
       path: '/settings/destinations'
       fullPath: '/settings/destinations'
       preLoaderRoute: typeof AuthedSettingsDestinationsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/settings/members': {
+      id: '/_authed/settings/members'
+      path: '/settings/members'
+      fullPath: '/settings/members'
+      preLoaderRoute: typeof AuthedSettingsMembersRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/settings/api-keys': {
@@ -618,6 +676,7 @@ interface AuthedRouteChildren {
   AuthedAuditRoute: typeof AuthedAuditRoute
   AuthedMigrationsRoute: typeof AuthedMigrationsRoute
   AuthedPerformanceRoute: typeof AuthedPerformanceRoute
+  AuthedSharedWithMeRoute: typeof AuthedSharedWithMeRoute
   AuthedUptimeRoute: typeof AuthedUptimeRoute
   AuthedVulnerabilitiesRoute: typeof AuthedVulnerabilitiesRoute
   AuthedBackupsSnapshotIdRoute: typeof AuthedBackupsSnapshotIdRoute
@@ -627,6 +686,7 @@ interface AuthedRouteChildren {
   AuthedSettingsAlertsRoute: typeof AuthedSettingsAlertsRoute
   AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
   AuthedSettingsDestinationsRoute: typeof AuthedSettingsDestinationsRoute
+  AuthedSettingsMembersRoute: typeof AuthedSettingsMembersRoute
   AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRouteWithChildren
   AuthedUpdatesRunIdRoute: typeof AuthedUpdatesRunIdRoute
   AuthedBackupsIndexRoute: typeof AuthedBackupsIndexRoute
@@ -638,6 +698,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedAuditRoute: AuthedAuditRoute,
   AuthedMigrationsRoute: AuthedMigrationsRoute,
   AuthedPerformanceRoute: AuthedPerformanceRoute,
+  AuthedSharedWithMeRoute: AuthedSharedWithMeRoute,
   AuthedUptimeRoute: AuthedUptimeRoute,
   AuthedVulnerabilitiesRoute: AuthedVulnerabilitiesRoute,
   AuthedBackupsSnapshotIdRoute: AuthedBackupsSnapshotIdRoute,
@@ -647,6 +708,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSettingsAlertsRoute: AuthedSettingsAlertsRoute,
   AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
   AuthedSettingsDestinationsRoute: AuthedSettingsDestinationsRoute,
+  AuthedSettingsMembersRoute: AuthedSettingsMembersRoute,
   AuthedSitesSiteIdRoute: AuthedSitesSiteIdRouteWithChildren,
   AuthedUpdatesRunIdRoute: AuthedUpdatesRunIdRoute,
   AuthedBackupsIndexRoute: AuthedBackupsIndexRoute,
@@ -662,6 +724,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthedRoute: AuthedRouteWithChildren,
   LoginRoute: LoginRoute,
   RegisterRoute: RegisterRoute,
+  AcceptRoute: AcceptRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -26,6 +26,7 @@ import { useShellState } from "@/components/layout/app-shell-context";
 import { useCommandPalette } from "@/features/command/use-command-palette";
 import { useLogout, useMe } from "@/features/auth/use-auth";
 import { useBulkAction } from "@/features/sites/use-bulk-action";
+import { OrgSwitcher } from "@/features/orgs/org-switcher";
 import { BUILD_VERSION } from "@/lib/build";
 import { cn } from "@/lib/utils";
 
@@ -51,7 +52,7 @@ export function TopBar() {
       // separates it from the main pane (DESIGN.md "Borders over shadows").
       className="col-start-1 row-start-1 grid h-12 grid-cols-[1fr_auto_auto] items-center gap-3 border-b border-border bg-background px-6 md:col-start-2"
     >
-      {/* LEFT: mobile menu toggle + breadcrumb + desktop collapse toggle. */}
+      {/* LEFT: mobile menu toggle + org switcher + breadcrumb + desktop collapse toggle. */}
       <div className="flex min-w-0 items-center gap-2">
         {/* Mobile drawer toggle (visible <md). */}
         <Button
@@ -83,6 +84,9 @@ export function TopBar() {
             <PanelLeftClose aria-hidden="true" />
           )}
         </Button>
+
+        {/* Org switcher — allows switching the active organisation. */}
+        <OrgSwitcher />
 
         <Breadcrumb crumbs={breadcrumb} />
       </div>

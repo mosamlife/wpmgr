@@ -5,11 +5,13 @@ import {
   Globe,
   LineChart,
   Settings,
+  Share2,
   Shield,
   type LucideIcon,
 } from "lucide-react";
 
 import { useShellState } from "@/components/layout/app-shell-context";
+import { useMe, isOrgScoped } from "@/features/auth/use-auth";
 import { cn } from "@/lib/utils";
 
 // Phase 4 / Sprint 1 surface 4.2 - primary navigation.
@@ -101,13 +103,32 @@ const SETTINGS_GROUP: NavGroup = {
     { label: "API keys", to: "/settings/api-keys" },
     { label: "Destinations", to: "/settings/destinations" },
     { label: "Alerts", to: "/settings/alerts" },
+    { label: "Members", to: "/settings/members" },
   ],
+};
+
+const SHARED_WITH_ME_GROUP: NavGroup = {
+  label: "Shared with me",
+  icon: Share2,
+  to: "/shared-with-me",
 };
 
 export function Sidebar() {
   const { collapsed, mobileOpen, setMobileOpen } = useShellState();
   const location = useLocation();
   const pathname = location.pathname;
+  const { data: me } = useMe();
+  const orgScoped = isOrgScoped(me);
+
+  // Site-scoped collaborators only see a filtered settings group (Account only).
+  const settingsGroup: NavGroup = orgScoped
+    ? SETTINGS_GROUP
+    : {
+        ...SETTINGS_GROUP,
+        items: SETTINGS_GROUP.items?.filter((item) =>
+          item.to === "/settings/account",
+        ),
+      };
 
   // Close the mobile drawer on route change so navigation always feels
   // resolved. Effect, not in the click handler, so back/forward also close.
@@ -150,11 +171,19 @@ export function Sidebar() {
                 <NavGroupItem group={group} pathname={pathname} collapsed={collapsed} />
               </li>
             ))}
+            {/* Shared with me — visible to all users. */}
+            <li>
+              <NavGroupItem
+                group={SHARED_WITH_ME_GROUP}
+                pathname={pathname}
+                collapsed={collapsed}
+              />
+            </li>
           </ul>
           <ul className="mt-auto flex flex-col gap-0.5 pt-3">
             <li>
               <NavGroupItem
-                group={SETTINGS_GROUP}
+                group={settingsGroup}
                 pathname={pathname}
                 collapsed={collapsed}
               />

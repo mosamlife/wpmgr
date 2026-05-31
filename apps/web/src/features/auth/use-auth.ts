@@ -191,17 +191,43 @@ function isApiError(value: unknown): value is ApiError {
   );
 }
 
-/** Active role of the user in their active tenant, if any. */
-export function activeRole(me: Me | null | undefined): Me["memberships"][number]["role"] | null {
+/**
+ * Active role of the user in their active tenant.
+ *
+ * FIXED (M5.7): no longer falls back to memberships[0] — that was unsafe
+ * because the first membership may belong to a different org than the one the
+ * session has active. We now require `active_tenant_id` to be set and match
+ * a membership; if there is no matching membership (site-scoped collaborator)
+ * we return null so `canManage`/`canOperate` correctly gate org-level controls.
+ */
+export function activeRole(
+  me: Me | null | undefined,
+): Me["memberships"][number]["role"] | null {
   if (!me) return null;
-  const membership =
-    me.memberships.find((m) => m.tenant_id === me.active_tenant_id) ??
-    me.memberships[0];
+  if (!me.active_tenant_id) return null;
+  const membership = me.memberships.find(
+    (m) => m.tenant_id === me.active_tenant_id,
+  );
   return membership?.role ?? null;
+}
+
+/**
+ * Whether the active principal has a full org membership (as opposed to a
+ * site-scoped collaborator who accessed the org via a share).
+ *
+ * An org-scoped member has their active_tenant_id present in me.memberships.
+ * A site-scoped collaborator does not — their active org came from a share,
+ * not a membership.
+ */
+export function isOrgScoped(me: Me | null | undefined): boolean {
+  if (!me?.active_tenant_id) return false;
+  return me.memberships.some((m) => m.tenant_id === me.active_tenant_id);
 }
 
 /** Whether the user may manage API keys / members (owner or admin). */
 export function canManage(me: Me | null | undefined): boolean {
+  // Site-scoped collaborators never have org management permissions.
+  if (!isOrgScoped(me)) return false;
   const role = activeRole(me);
   return role === "owner" || role === "admin";
 }
@@ -212,5 +238,7 @@ export function canManage(me: Me | null | undefined): boolean {
  */
 export function canOperate(me: Me | null | undefined): boolean {
   const role = activeRole(me);
+  // Org-scoped: any of owner/admin/operator. Site-scoped: any share role
+  // except viewer is operator-capable (server enforces per-site).
   return role === "owner" || role === "admin" || role === "operator";
 }
