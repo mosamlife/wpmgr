@@ -55,10 +55,12 @@ Thumbs.db
 # ---- Third-party plugin sources (vendored for gap analysis only; not ours) ----
 /wpremote/
 /wpvivid-backuprestore/
+/flying-press/
 
 # ---- Skills (installed via npx skills add; lockfile is tracked separately) ----
 .agents/
 .claude/skills/
+.claude/scheduled_tasks.lock
 
 # ---- pnpm content-addressed store (local cache; not source) ----
 .pnpm-store/
