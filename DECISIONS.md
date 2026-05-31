@@ -989,3 +989,38 @@ before/within Phase 4:
   terminal soft-delete; restore = un-archive. Every transition writes
   `site_connection_history` + a hash-chained audit action, enforced in a single
   Go service (`internal/site/service/connection.go`).
+
+## ADR-042: CP-driven WordPress agent self-update (Phase: self-update)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-042-cp-agent-self-update.md`
+- **Decision:** The agent appears in the WP dashboard with a normal "Update
+  available" + one-click update. `GET /agent/v1/update/manifest` reads
+  `agent-releases/latest.json` from object storage, mints a short-lived presigned
+  package URL, and returns an **Ed25519-signed** manifest (key-pinned to the exact
+  version object). The agent verifies signature → aud/cmd/slug → exp/iat/jti →
+  monotonic-iat → downgrade guard (normalised semver, read on-disk) → https +
+  configurable host allowlist → size → streaming sha256 before WP installs.
+  Releases decoupled via `make agent-release` (no API redeploy). NB: read
+  `latest.json` via a **presigned GET** — a live SDK `GetObject` 403s on GCS
+  S3-compat.
+
+## ADR-043: Media Optimizer — architecture, encode topology & transport (Phase 5.8)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-043-media-optimizer-architecture.md`
+- **Decision:** Cloud-encode JPEG/PNG → WebP/AVIF using **Discord `lilliput`
+  v1.5.0 (MIT)**, run in a **SEPARATE, OPTIONAL `media-encoder` container**
+  (CGO + glibc base) so the lean `CGO_ENABLED=0`/`distroless/static` API is
+  untouched and self-hosters opt in via a `docker compose --profile media`
+  service (on our SaaS it's a 2nd Cloud Run service — nothing GCP-specific).
+  Transport = **presigned object storage** (agent↔storage↔encoder), **no image
+  bytes through the CP and none persisted on the CP**; thumbnails load from the
+  site's own URLs. ≤10 variants/job; AVIF q50/s6 · WebP q80 · mozjpeg q82 · PNG
+  lossless (lossless mode per-request); magic-byte source detection; 50 MB/100 MP
+  guards; per-variant 2× retry. RBAC: `PermSiteWrite` for sync/optimize/restore,
+  new `PermMediaDeleteOriginals` (admin+) for the irreversible delete-originals.
+  Orchestration mirrors FlyingPress *patterns* (postmeta blob, `.wpmgr-original.*`
+  rename, Accept-header `.htaccess` fallback, serialized-safe URL rewriter,
+  media-modal injection) under WPMgr naming — **no FlyingPress code copied**.
+  **Fallback:** govips/libvips (LGPL) swaps into the same encoder image.
