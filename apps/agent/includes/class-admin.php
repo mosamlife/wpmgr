@@ -527,10 +527,13 @@ final class Admin
      * any encrypted backups that still need to be restorable; advanced operators
      * can wipe it manually by deleting the wpmgr_agent_age_identity option.
      *
-     * Idempotent and no-network: this is purely local cleanup. The CP-side
-     * site record (and its row in the sites table) is not touched — that has
-     * to be cleaned up separately on the CP if the operator wants the old
-     * site row removed.
+     * Sends a best-effort SIGNED last-will to the control plane FIRST (so the
+     * dashboard flips the site to disconnected immediately instead of waiting for
+     * the ~6-min heartbeat timeout), THEN wipes the local identity. Ordering is
+     * load-bearing: the notify must happen while the Ed25519 keypair still exists,
+     * because signing the last-will requires it.
+     *
+     * Intentionally does NOT clear the age identity (see above).
      *
      * @return void
      */
@@ -538,11 +541,24 @@ final class Admin
     {
         $this->guard(self::ACTION_DISCONNECT);
 
+        // Notify the CP BEFORE wiping keys (the signed last-will needs the key).
+        // Advisory/best-effort: a failure must not block the local cleanup.
+        $notified = false;
+        try {
+            $this->enrollment->disconnect('user_initiated');
+            $notified = true;
+        } catch (\Throwable $e) {
+            // swallow — the CP also learns via the heartbeat-timeout sweeper.
+        }
+
         $this->settings->clearEnrollment();
         $this->keystore->clearSiteIdentity();
         $this->settings->clearLastSyncTimestamps();
 
-        $this->notice('success', 'Disconnected from the control plane. Paste a fresh pairing code to re-enroll.');
+        $msg = $notified
+            ? 'Disconnected and notified the control plane. Paste a fresh pairing code to re-enroll.'
+            : 'Disconnected locally (the control plane will catch up shortly). Paste a fresh pairing code to re-enroll.';
+        $this->notice('success', $msg);
         $this->redirectBack();
     }
 
