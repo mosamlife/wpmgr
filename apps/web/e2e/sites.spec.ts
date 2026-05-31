@@ -144,14 +144,15 @@ test("logging in lands on the sites list with health badges", async ({ page }) =
     page.getByRole("heading", { name: "Sites", level: 1 }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: "Example Site" })).toBeVisible();
-  await expect(page.getByText("https://example.com")).toBeVisible();
 
-  // Health + enrollment badges render in the row.
-  await expect(page.getByText("Healthy")).toBeVisible();
-  await expect(page.getByText("Enrolled")).toBeVisible();
+  // Phase 5 — the connection-state badge renders in the row. A site that is
+  // enrolled + healthy reads as "Connected".
+  await expect(page.getByText("Connected").first()).toBeVisible();
 });
 
-test("Add site generates and shows a one-time pairing code", async ({ page }) => {
+test("Add site opens the live enrollment modal at the URL step", async ({
+  page,
+}) => {
   await mockApi(page, { authed: true });
 
   await page.goto("/sites");
@@ -159,24 +160,15 @@ test("Add site generates and shows a one-time pairing code", async ({ page }) =>
     page.getByRole("heading", { name: "Sites", level: 1 }),
   ).toBeVisible();
 
-  // Open the Add site form (header action).
+  // Open the Add site modal (header action). Phase 5 replaced the
+  // pairing-code modal with the live, site-first enrollment flow — step A
+  // collects the URL.
   await page.getByRole("button", { name: "Add site" }).first().click();
   await expect(
     page.getByRole("heading", { name: "Add site", exact: true }),
   ).toBeVisible();
-
-  await page.getByRole("button", { name: "Generate pairing code" }).click();
-
-  // Pairing dialog surfaces the one-time code + "shown once" warning.
-  await expect(
-    page.getByRole("heading", { name: "Pairing code created" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("pairing-code")).toHaveText(
-    PAIRING_CODE.code,
-  );
-  await expect(page.getByText(/shown/i)).toBeVisible();
-  await expect(page.getByText(/Install the WPMgr Agent plugin/)).toBeVisible();
-  await expect(page.getByText(/Expires in/)).toBeVisible();
+  await expect(page.getByLabel("Site URL")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
 });
 
 test("site detail renders metadata and components", async ({ page }) => {

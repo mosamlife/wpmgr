@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { Archive } from "lucide-react";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
@@ -11,6 +12,13 @@ import { SitesToolbar } from "@/features/sites/sites-toolbar";
 import { useSitesSelection } from "@/features/sites/use-sites-selection";
 import { useSitesDensity } from "@/features/sites/use-sites-density";
 import { AddSiteDialog } from "@/features/sites/add-site-dialog";
+import { useSitesLiveSync } from "@/features/sites/use-sites-live";
+import {
+  useRevokeSite,
+  useRestoreSite,
+  useCreateEnrollmentCode,
+} from "@/features/sites/use-site-connection";
+import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { useAutoLogin, canAutoLogin } from "@/features/sites/use-autologin";
 import {
   UpdateWizard,
@@ -18,6 +26,7 @@ import {
 } from "@/features/updates/update-wizard";
 import { useMe, canOperate } from "@/features/auth/use-auth";
 import { toast } from "@/components/toast";
+import { cn } from "@/lib/utils";
 import type { Site } from "@wpmgr/api";
 
 export const Route = createFileRoute("/_authed/sites/")({
@@ -38,8 +47,16 @@ function SitesPage() {
   // every filter change so the wiring path stays observable.
   const appliedTag = "";
 
+  // Phase 5 — the "Archived" filter chip flips the list to the archived bucket
+  // (the default list hides archived sites).
+  const [showArchived, setShowArchived] = useState(false);
+
   const { data: sites, isPending, isError, error, refetch, isFetching } =
-    useSites(appliedTag);
+    useSites(appliedTag, { view: showArchived ? "archived" : "active" });
+
+  // Phase 5 — keep the list + detail caches live over SSE (no polling).
+  // Cardinality events invalidate the list; in-place events patch the cache.
+  useSitesLiveSync();
 
   // Selection and density lifted to the route so the toolbar and table share
   // the same instances — selecting in the table flips the toolbar to action
@@ -117,6 +134,95 @@ function SitesPage() {
   useEffect(() => {
     openAutoLoginRef.current = handleOpenAutoLogin;
   }, [handleOpenAutoLogin]);
+
+  // -------------------------------------------------------------------------
+  // Phase 5 — Disconnect / Undo / Reconnect
+  // -------------------------------------------------------------------------
+
+  const revoke = useRevokeSite();
+  const restore = useRestoreSite();
+  const enrollmentCode = useCreateEnrollmentCode();
+
+  // Disconnect confirm target (DestructiveConfirm — type the hostname).
+  const [disconnectTarget, setDisconnectTarget] = useState<Site | null>(null);
+
+  // Reconnect: when set, the AddSiteDialog opens directly at step B with a
+  // freshly-minted enrollment code bound to the existing site.
+  const [reconnectTarget, setReconnectTarget] = useState<{
+    siteId: string;
+    url: string;
+    enrollmentCode: string;
+    expiresAt: string;
+  } | null>(null);
+
+  const handleDisconnect = useCallback((site: Site) => {
+    setDisconnectTarget(site);
+  }, []);
+
+  const confirmDisconnect = useCallback(() => {
+    const site = disconnectTarget;
+    if (!site) return;
+    revoke.mutate(
+      { siteId: site.id, reason: "operator disconnect" },
+      {
+        onSuccess: () => {
+          setDisconnectTarget(null);
+          const host = hostOf(site.url);
+          // 60s Undo → POST /:id/restore. The row also updates live via SSE.
+          toast.success(`${host} disconnected.`, {
+            description: "Backups and monitoring are paused. History is kept.",
+            action: {
+              label: "Undo",
+              onClick: () => {
+                restore.mutate(
+                  { siteId: site.id },
+                  {
+                    onSuccess: () =>
+                      toast.success(`${host} reconnecting…`),
+                    onError: (err) =>
+                      toast.error(`Could not undo`, {
+                        description: err.message,
+                      }),
+                  },
+                );
+              },
+            },
+          });
+        },
+        onError: (err) => {
+          toast.error(`Could not disconnect ${hostOf(site.url)}`, {
+            description: err.message,
+          });
+        },
+      },
+    );
+  }, [disconnectTarget, revoke, restore]);
+
+  const handleReconnect = useCallback(
+    (site: Site) => {
+      // Mint a fresh code, then open the modal at step B pre-bound to this site.
+      toast.info(`Generating an enrollment code for ${hostOf(site.url)}…`);
+      enrollmentCode.mutate(
+        { siteId: site.id },
+        {
+          onSuccess: (result) => {
+            setReconnectTarget({
+              siteId: site.id,
+              url: site.url,
+              enrollmentCode: result.enrollment_code,
+              expiresAt: result.expires_at,
+            });
+          },
+          onError: (err) => {
+            toast.error(`Could not start reconnecting ${hostOf(site.url)}`, {
+              description: err.message,
+            });
+          },
+        },
+      );
+    },
+    [enrollmentCode],
+  );
 
   // -------------------------------------------------------------------------
   // Bulk action handlers (Sprint 3 wires the obvious ones, stubs the rest)
@@ -280,6 +386,27 @@ function SitesPage() {
             onBulkDelete={handleBulkDelete}
             addSiteSlot={operate ? <AddSiteDialog /> : <AddSitePlaceholder />}
           />
+          {/* Phase 5 — archived filter chip. Toggles the list between the
+              default (active) bucket and the archived bucket. */}
+          {operate ? (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                aria-pressed={showArchived}
+                onClick={() => setShowArchived((v) => !v)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  showArchived
+                    ? "border-primary bg-primary/10 text-foreground"
+                    : "border-border text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Archive aria-hidden="true" className="size-3.5" />
+                {showArchived ? "Showing archived" : "Show archived"}
+              </button>
+            </div>
+          ) : null}
+
           {showFilterEmpty ? (
             <FilterEmpty
               description={filterDescription}
@@ -292,6 +419,8 @@ function SitesPage() {
               selection={operate ? selection : undefined}
               densityState={densityState}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
+              onDisconnect={operate ? handleDisconnect : undefined}
+              onReconnect={operate ? handleReconnect : undefined}
             />
           )}
         </>
@@ -307,6 +436,44 @@ function SitesPage() {
               ? selectedSites
               : (sites ?? [])
           }
+        />
+      ) : null}
+
+      {/* Phase 5 — Disconnect confirm (type the hostname to confirm). */}
+      {operate ? (
+        <DestructiveConfirm
+          open={disconnectTarget !== null}
+          onClose={() => setDisconnectTarget(null)}
+          onConfirm={confirmDisconnect}
+          title={`Disconnect ${disconnectTarget ? hostOf(disconnectTarget.url) : "site"}`}
+          resourceName={disconnectTarget ? hostOf(disconnectTarget.url) : ""}
+          confirmLabel="Disconnect site"
+          cancelLabel="Keep connected"
+          isPending={revoke.isPending}
+          errorMessage={revoke.isError ? revoke.error.message : null}
+          consequencesBody={
+            <div className="space-y-2">
+              <p>
+                We'll send a revoke to the agent on its next heartbeat
+                (within ~60 seconds). The agent stops accepting commands and
+                clears its credentials.
+              </p>
+              <p>
+                Backups and monitoring stop. The site is archived with its full
+                history kept — you can reconnect later.
+              </p>
+            </div>
+          }
+        />
+      ) : null}
+
+      {/* Phase 5 — Reconnect: open the Add-site modal at step B with a fresh,
+          pre-bound enrollment code for the existing site. */}
+      {operate ? (
+        <AddSiteDialog
+          open={reconnectTarget !== null}
+          onClose={() => setReconnectTarget(null)}
+          initialSite={reconnectTarget ?? undefined}
         />
       ) : null}
     </section>
@@ -358,4 +525,12 @@ function SitesTableSkeleton() {
 // an inert placeholder so the row layout stays stable across roles.
 function AddSitePlaceholder() {
   return null;
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  }
 }

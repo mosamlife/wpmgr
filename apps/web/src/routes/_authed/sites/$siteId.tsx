@@ -1,6 +1,15 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { Check, Copy, MoreHorizontal, Share2, Zap } from "lucide-react";
+import {
+  Archive,
+  Check,
+  Copy,
+  MoreHorizontal,
+  RotateCw,
+  Share2,
+  Unplug,
+  Zap,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,12 +21,26 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { StatusChip, type StatusTone } from "@/components/status";
+import { ConnectionStateBadge } from "@/components/status";
+import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { ShareSiteDialog } from "@/features/sharing/share-site-dialog";
+import { AddSiteDialog } from "@/features/sites/add-site-dialog";
 import { useSite, NotFoundError } from "@/features/sites/use-sites";
+import { useSitesLiveSync } from "@/features/sites/use-sites-live";
+import {
+  connectionStateOf,
+  isReconnectable,
+} from "@/features/sites/connection-state";
+import {
+  useRevokeSite,
+  useArchiveSite,
+  useRestoreSite,
+  useCreateEnrollmentCode,
+} from "@/features/sites/use-site-connection";
 import { useRecordRecentSite } from "@/features/command/use-recent-sites";
 import { useMe, canManage } from "@/features/auth/use-auth";
-import { relativeTime, cn } from "@/lib/utils";
+import { toast } from "@/components/toast";
+import { cn } from "@/lib/utils";
 import type { Site } from "@wpmgr/api";
 
 // Site detail page (Sprint 3 → Sprint 5 → restored).
@@ -56,6 +79,10 @@ const TABS = [
 function SiteDetailLayout() {
   const { siteId } = Route.useParams();
   const { data: site, isPending, isError, error, refetch } = useSite(siteId);
+
+  // Phase 5 — keep the connection badge + detail cache live over SSE while the
+  // detail page is open (no polling). The shared singleton stream is reused.
+  useSitesLiveSync();
 
   // Sprint 3 surface 4.4: feed the command palette's "recently viewed" list.
   // Fires once per site (the hook keys on site.id internally), not per tab
@@ -126,14 +153,30 @@ function SiteShellSkeleton() {
 function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [reconnect, setReconnect] = useState<{
+    siteId: string;
+    url: string;
+    enrollmentCode: string;
+    expiresAt: string;
+  } | null>(null);
   const { data: me } = useMe();
   const manage = canManage(me);
 
+  const revoke = useRevokeSite();
+  const archive = useArchiveSite();
+  const restore = useRestoreSite();
+  const enrollmentCode = useCreateEnrollmentCode();
+
   const hostname = hostnameOf(site.url);
   const adminUrl = `${stripTrailingSlash(site.url)}/wp-admin/`;
-  const tone = toneForHealth(site.health_status);
-  const toneLabel = labelForHealth(site.health_status);
-  const lastSeen = relativeTime(site.last_seen_at) ?? undefined;
+  const connectionState = connectionStateOf(site);
+  const canReconnect = isReconnectable(connectionState);
+  const canDisconnect =
+    connectionState === "connected" || connectionState === "degraded";
+  const canArchive =
+    connectionState === "disconnected" || connectionState === "revoked";
 
   const copySiteId = () => {
     void navigator.clipboard.writeText(site.id).then(() => {
@@ -141,6 +184,75 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
       window.setTimeout(() => setCopied(false), 1500);
     });
   };
+
+  const confirmDisconnect = useCallback(() => {
+    revoke.mutate(
+      { siteId: site.id, reason: "operator disconnect" },
+      {
+        onSuccess: () => {
+          setDisconnectOpen(false);
+          toast.success(`${hostname} disconnected.`, {
+            description: "Backups and monitoring are paused. History is kept.",
+            action: {
+              label: "Undo",
+              onClick: () => {
+                restore.mutate(
+                  { siteId: site.id },
+                  {
+                    onSuccess: () => toast.success(`${hostname} reconnecting…`),
+                    onError: (err) =>
+                      toast.error("Could not undo", {
+                        description: err.message,
+                      }),
+                  },
+                );
+              },
+            },
+          });
+        },
+        onError: (err) =>
+          toast.error(`Could not disconnect ${hostname}`, {
+            description: err.message,
+          }),
+      },
+    );
+  }, [revoke, restore, site.id, hostname]);
+
+  const confirmArchive = useCallback(() => {
+    archive.mutate(
+      { siteId: site.id, reason: "operator archive" },
+      {
+        onSuccess: () => {
+          setArchiveOpen(false);
+          toast.success(`${hostname} archived.`);
+        },
+        onError: (err) =>
+          toast.error(`Could not archive ${hostname}`, {
+            description: err.message,
+          }),
+      },
+    );
+  }, [archive, site.id, hostname]);
+
+  const startReconnect = useCallback(() => {
+    toast.info(`Generating an enrollment code for ${hostname}…`);
+    enrollmentCode.mutate(
+      { siteId: site.id },
+      {
+        onSuccess: (result) =>
+          setReconnect({
+            siteId: site.id,
+            url: site.url,
+            enrollmentCode: result.enrollment_code,
+            expiresAt: result.expires_at,
+          }),
+        onError: (err) =>
+          toast.error(`Could not start reconnecting ${hostname}`, {
+            description: err.message,
+          }),
+      },
+    );
+  }, [enrollmentCode, site.id, site.url, hostname]);
 
   return (
     <>
@@ -168,7 +280,10 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
           </span>
         </div>
 
-        <StatusChip tone={tone} label={toneLabel} time={lastSeen} />
+        <ConnectionStateBadge
+          state={connectionState}
+          lastSeenAt={site.last_seen_at ?? null}
+        />
 
         <div className="ml-auto flex items-center gap-2">
           {manage ? (
@@ -218,10 +333,33 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
                   </>
                 )}
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled title="Coming soon">
-                Disconnect site
-              </DropdownMenuItem>
+              {manage && canReconnect ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={startReconnect}>
+                    <RotateCw aria-hidden="true" className="size-4" />
+                    Reconnect
+                  </DropdownMenuItem>
+                </>
+              ) : null}
+              {manage && canArchive ? (
+                <DropdownMenuItem onSelect={() => setArchiveOpen(true)}>
+                  <Archive aria-hidden="true" className="size-4" />
+                  Archive
+                </DropdownMenuItem>
+              ) : null}
+              {manage && canDisconnect ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onSelect={() => setDisconnectOpen(true)}
+                  >
+                    <Unplug aria-hidden="true" className="size-4" />
+                    Disconnect site
+                  </DropdownMenuItem>
+                </>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -232,6 +370,58 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
           siteName={site.name}
           open={shareOpen}
           onClose={() => setShareOpen(false)}
+        />
+
+        {/* Phase 5 — Disconnect (type the hostname). */}
+        <DestructiveConfirm
+          open={disconnectOpen}
+          onClose={() => setDisconnectOpen(false)}
+          onConfirm={confirmDisconnect}
+          title={`Disconnect ${hostname}`}
+          resourceName={hostname}
+          confirmLabel="Disconnect site"
+          cancelLabel="Keep connected"
+          isPending={revoke.isPending}
+          errorMessage={revoke.isError ? revoke.error.message : null}
+          consequencesBody={
+            <div className="space-y-2">
+              <p>
+                We'll send a revoke to the agent on its next heartbeat
+                (within ~60 seconds). The agent stops accepting commands and
+                clears its credentials.
+              </p>
+              <p>
+                Backups and monitoring stop. The site is archived with its full
+                history kept — you can reconnect later.
+              </p>
+            </div>
+          }
+        />
+
+        {/* Phase 5 — Archive a disconnected/revoked site. */}
+        <DestructiveConfirm
+          open={archiveOpen}
+          onClose={() => setArchiveOpen(false)}
+          onConfirm={confirmArchive}
+          title={`Archive ${hostname}`}
+          resourceName={hostname}
+          confirmLabel="Archive site"
+          cancelLabel="Keep in list"
+          isPending={archive.isPending}
+          errorMessage={archive.isError ? archive.error.message : null}
+          consequencesBody={
+            <p>
+              The site is hidden from the default sites list. Its history is
+              kept and you can restore it from the Archived filter at any time.
+            </p>
+          }
+        />
+
+        {/* Phase 5 — Reconnect: open the Add-site modal at step B. */}
+        <AddSiteDialog
+          open={reconnect !== null}
+          onClose={() => setReconnect(null)}
+          initialSite={reconnect ?? undefined}
         />
       </header>
 
@@ -286,28 +476,4 @@ function hostnameOf(url: string): string {
 
 function stripTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
-}
-
-function toneForHealth(status: Site["health_status"]): StatusTone {
-  switch (status) {
-    case "healthy":
-      return "success";
-    case "unreachable":
-      return "destructive";
-    case "unknown":
-    default:
-      return "muted";
-  }
-}
-
-function labelForHealth(status: Site["health_status"]): string {
-  switch (status) {
-    case "healthy":
-      return "Up";
-    case "unreachable":
-      return "Down";
-    case "unknown":
-    default:
-      return "Unknown";
-  }
 }

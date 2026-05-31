@@ -26,6 +26,8 @@ import {
   ChevronUp,
   ChevronsUpDown,
   MoreHorizontal,
+  RotateCw,
+  Unplug,
   Zap,
 } from "lucide-react";
 import { motion } from "motion/react";
@@ -43,12 +45,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   BackupChip,
-  StatusChip,
+  ConnectionStateBadge,
   UpdateChip,
   type BackupChipStatus,
-  type StatusTone,
 } from "@/components/status";
-import { cn, relativeTime } from "@/lib/utils";
+import {
+  connectionStateOf,
+  isReconnectable,
+  type ConnectionState,
+} from "@/features/sites/connection-state";
+import { cn } from "@/lib/utils";
 import {
   rowHeightFor,
   useSitesDensity,
@@ -109,17 +115,19 @@ export interface SitesTableProps {
   onOpenAutoLogin?: (site: Site) => void;
   /** Optional click handler for the three-dot "More" item entries. */
   onOpenDetail?: (site: Site) => void;
+  /** Phase 5 — open the Disconnect (revoke) confirm for a connected site. */
+  onDisconnect?: (site: Site) => void;
+  /** Phase 5 — start the Reconnect flow for a revoked/disconnected/archived site. */
+  onReconnect?: (site: Site) => void;
 }
 
 interface SiteRow {
   readonly site: Site;
   readonly hostname: string;
-  readonly statusTone: StatusTone;
-  readonly statusLabel: string;
+  /** Phase 5 connection lifecycle state — drives the ConnectionStateBadge. */
+  readonly connectionState: ConnectionState;
   /** ISO-8601 string for the <time datetime> attribute; null when unknown. */
   readonly lastSeenAt: string | null;
-  /** Human-readable relative time ("4m", "2h") for display. */
-  readonly lastSeenAgo: string | null;
   readonly updatesCount: number;
   readonly updatesSeverity: "minor" | "major";
   readonly backupStatus: BackupChipStatus | null;
@@ -142,30 +150,15 @@ function hostnameFromUrl(url: string): string {
   }
 }
 
-function statusToTone(site: Site): { tone: StatusTone; label: string } {
-  // Combine the enrollment status with the agent's last health probe so the
-  // chip reads true to operator intuition (Down beats Pending, etc.).
-  if (site.status === "error" || site.health_status === "unreachable") {
-    return { tone: "destructive", label: "Down" };
-  }
-  if (site.status === "pending") return { tone: "muted", label: "Pending" };
-  if (site.status === "disabled") return { tone: "muted", label: "Disabled" };
-  if (site.health_status === "healthy") return { tone: "success", label: "Up" };
-  return { tone: "muted", label: "Unknown" };
-}
-
 // TODO(sprint-4): updates_count + backup_status come from CP endpoints not yet
 // wired. Defaults keep the table type-safe; the charts/backups subagent will
 // thread real data through here in Sprint 4.
 function rowOf(site: Site): SiteRow {
-  const { tone, label } = statusToTone(site);
   return {
     site,
     hostname: hostnameFromUrl(site.url),
-    statusTone: tone,
-    statusLabel: label,
+    connectionState: connectionStateOf(site),
     lastSeenAt: site.last_seen_at ?? null,
-    lastSeenAgo: shortRelativeTime(site.last_seen_at),
     updatesCount: 0,
     updatesSeverity: "minor",
     backupStatus: null,
@@ -173,16 +166,6 @@ function rowOf(site: Site): SiteRow {
     wpVersionEol: false,
     phpVersionEol: false,
   };
-}
-
-/** Short relative time ("4m", "2h", "5d") — the chip-time format. */
-function shortRelativeTime(iso: string | null | undefined): string | null {
-  const full = relativeTime(iso);
-  if (!full) return null;
-  if (full === "just now") return "now";
-  if (full === "in the future") return full;
-  // Strip the trailing " ago" so the chip reads tight.
-  return full.replace(/ ago$/, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +191,8 @@ function buildColumns(
   visibleIds: readonly string[],
   onOpenAutoLogin: ((site: Site) => void) | undefined,
   onOpenDetail: ((site: Site) => void) | undefined,
+  onDisconnect: ((site: Site) => void) | undefined,
+  onReconnect: ((site: Site) => void) | undefined,
 ): ColumnDef<SiteRow>[] {
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selection.selected.has(id));
@@ -247,8 +232,7 @@ function buildColumns(
       enableSorting: true,
       size: COL_URL_MIN_PX,
       cell: ({ row }) => {
-        const { hostname, statusTone, statusLabel, lastSeenAgo, lastSeenAt, site } =
-          row.original;
+        const { hostname, connectionState, lastSeenAt, site } = row.original;
         return (
           <div className="flex min-w-0 flex-col gap-0.5">
             {/* Site name — primary link; falls back to hostname when name is absent */}
@@ -266,26 +250,12 @@ function buildColumns(
                 {hostname}
               </span>
             ) : null}
-            {/* Status chip + last-seen in a semantic <time> for accessibility */}
-            <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-              <StatusChip
-                tone={statusTone}
-                label={statusLabel}
-                pulse={statusTone === "success"}
-              />
-              {lastSeenAgo && lastSeenAt ? (
-                <>
-                  <span aria-hidden="true" className="text-muted-foreground">·</span>
-                  <time
-                    dateTime={lastSeenAt}
-                    title={new Date(lastSeenAt).toLocaleString()}
-                    className="font-mono tabular-nums text-muted-foreground"
-                  >
-                    {lastSeenAgo}
-                  </time>
-                </>
-              ) : null}
-            </span>
+            {/* Phase 5 connection lifecycle badge — dot + label + relative time,
+                auto-updating, with a one-shot pulse on state change. */}
+            <ConnectionStateBadge
+              state={connectionState}
+              lastSeenAt={lastSeenAt}
+            />
           </div>
         );
       },
@@ -409,8 +379,11 @@ function buildColumns(
       cell: ({ row }) => (
         <RowActions
           site={row.original.site}
+          connectionState={row.original.connectionState}
           onOpenAutoLogin={onOpenAutoLogin}
           onOpenDetail={onOpenDetail}
+          onDisconnect={onDisconnect}
+          onReconnect={onReconnect}
         />
       ),
     },
@@ -419,13 +392,22 @@ function buildColumns(
 
 function RowActions({
   site,
+  connectionState,
   onOpenAutoLogin,
   onOpenDetail,
+  onDisconnect,
+  onReconnect,
 }: {
   site: Site;
+  connectionState: ConnectionState;
   onOpenAutoLogin: ((site: Site) => void) | undefined;
   onOpenDetail: ((site: Site) => void) | undefined;
+  onDisconnect: ((site: Site) => void) | undefined;
+  onReconnect: ((site: Site) => void) | undefined;
 }) {
+  const canReconnect = isReconnectable(connectionState);
+  const canDisconnect =
+    connectionState === "connected" || connectionState === "degraded";
   return (
     <div className="flex items-center justify-end gap-1">
       <button
@@ -479,6 +461,35 @@ function RowActions({
           >
             Open site URL
           </DropdownMenuItem>
+          {canReconnect && onReconnect ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  onReconnect(site);
+                }}
+              >
+                <RotateCw aria-hidden="true" className="size-4" />
+                Reconnect
+              </DropdownMenuItem>
+            </>
+          ) : null}
+          {canDisconnect && onDisconnect ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  onDisconnect(site);
+                }}
+              >
+                <Unplug aria-hidden="true" className="size-4" />
+                Disconnect
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -545,6 +556,8 @@ export function SitesTable({
   densityState: externalDensityState,
   onOpenAutoLogin,
   onOpenDetail,
+  onDisconnect,
+  onReconnect,
 }: SitesTableProps) {
   const internalSelection = useSitesSelection();
   const selection = externalSelection ?? internalSelection;
@@ -558,8 +571,23 @@ export function SitesTable({
   const [sorting, setSorting] = useState<SortingState>([]);
 
   const columns = useMemo(
-    () => buildColumns(selection, visibleIds, onOpenAutoLogin, onOpenDetail),
-    [selection, visibleIds, onOpenAutoLogin, onOpenDetail],
+    () =>
+      buildColumns(
+        selection,
+        visibleIds,
+        onOpenAutoLogin,
+        onOpenDetail,
+        onDisconnect,
+        onReconnect,
+      ),
+    [
+      selection,
+      visibleIds,
+      onOpenAutoLogin,
+      onOpenDetail,
+      onDisconnect,
+      onReconnect,
+    ],
   );
 
   const table = useReactTable({

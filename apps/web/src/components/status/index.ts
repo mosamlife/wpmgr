@@ -23,3 +23,6 @@ export type {
   VulnSeverityChipProps,
   VulnSeverity,
 } from "./vuln-severity-chip";
+
+export { ConnectionStateBadge } from "./connection-state-badge";
+export type { ConnectionStateBadgeProps } from "./connection-state-badge";

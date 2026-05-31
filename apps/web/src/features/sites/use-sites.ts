@@ -6,12 +6,14 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 import {
+  client,
   listSites,
   getSite,
   deleteSite,
   createPairingCode,
   setSiteTags,
   type Site,
+  type SiteList,
   type PairingCode,
   type PairingCodeCreate,
   type ApiError,
@@ -22,10 +24,14 @@ import {
 // `data` (throwing on transport/HTTP errors) so TanStack Query manages the
 // loading/error/success states.
 
+/** Which connection-state bucket the list should surface. */
+export type SitesView = "active" | "archived";
+
 export const sitesKeys = {
   all: ["sites"] as const,
   lists: () => [...sitesKeys.all, "list"] as const,
-  list: (tag?: string) => [...sitesKeys.lists(), { tag: tag ?? null }] as const,
+  list: (tag?: string, view: SitesView = "active") =>
+    [...sitesKeys.lists(), { tag: tag ?? null, view }] as const,
   detail: (id: string) => [...sitesKeys.all, "detail", id] as const,
 };
 
@@ -40,12 +46,38 @@ export class NotFoundError extends Error {
 /**
  * List sites, optionally filtered by a single tag (?tag=). Passing an empty or
  * undefined tag lists all sites.
+ *
+ * The default ("active") view hides archived sites (the CP omits them unless
+ * asked). Pass `view: "archived"` to fetch the archived bucket via
+ * `?state=archived` — the Phase 5 "Archived" filter chip drives this.
  */
-export function useSites(tag?: string): UseQueryResult<Site[], Error> {
+export function useSites(
+  tag?: string,
+  options?: { view?: SitesView },
+): UseQueryResult<Site[], Error> {
   const trimmed = tag?.trim() ? tag.trim() : undefined;
+  const view: SitesView = options?.view ?? "active";
   return useQuery({
-    queryKey: sitesKeys.list(trimmed),
+    queryKey: sitesKeys.list(trimmed, view),
     queryFn: async () => {
+      // The archived view passes `?state=archived`, a query param the generated
+      // ListSitesData type does not declare yet (Phase 5 backend addition). For
+      // that view we call the shared `client` directly so we can attach the
+      // param without churning the generated client; the active view stays on
+      // the typed `listSites` wrapper.
+      if (view === "archived") {
+        const query: Record<string, string> = { state: "archived" };
+        if (trimmed) query.tag = trimmed;
+        // The client's response-style generics unwrap a responses-map (the
+        // generated SDK passes `{ <status>: Body }`). We mirror that so `data`
+        // types as SiteList rather than being collapsed to its value union.
+        const { data, error } = await client.get<{ 200: SiteList }>({
+          url: "/api/v1/sites",
+          query,
+        });
+        if (error) throw toError(error);
+        return data?.items ?? [];
+      }
       const { data, error } = await listSites(
         trimmed ? { query: { tag: trimmed } } : {},
       );
