@@ -28,7 +28,7 @@ type fakeManifestStore struct {
 	gotPresignKey string
 }
 
-func (f *fakeManifestStore) Get(_ context.Context, _ string) (io.ReadCloser, error) {
+func (f *fakeManifestStore) GetViaPresign(_ context.Context, _ string) (io.ReadCloser, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}

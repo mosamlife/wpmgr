@@ -744,16 +744,11 @@ func run() error {
 		ms := manifestStore
 		go func() {
 			pctx := context.Background()
-			if rc, gerr := ms.Get(pctx, "agent-releases/latest.json"); gerr != nil {
-				logger.Error("ADR-042 self-update boot probe: GET latest.json failed", "err", gerr.Error())
+			if rc, gerr := ms.GetViaPresign(pctx, "agent-releases/latest.json"); gerr != nil {
+				logger.Error("ADR-042 self-update boot probe: fetch latest.json failed", "err", gerr.Error())
 			} else {
 				_ = rc.Close()
-				logger.Info("ADR-042 self-update boot probe: GET latest.json OK")
-			}
-			if _, perr := ms.PresignGet(pctx, "agent-releases/latest.json", time.Minute); perr != nil {
-				logger.Error("ADR-042 self-update boot probe: PresignGet failed", "err", perr.Error())
-			} else {
-				logger.Info("ADR-042 self-update boot probe: PresignGet OK")
+				logger.Info("ADR-042 self-update boot probe: fetch latest.json OK")
 			}
 		}()
 	} else {

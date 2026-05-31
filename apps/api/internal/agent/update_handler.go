@@ -89,10 +89,12 @@ type signedManifestClaims struct {
 }
 
 // ManifestStore is the object-storage subset the handler needs (satisfied by
-// *blobstore.Store). Get returns blobstore.ErrNotFound when latest.json is
-// absent; PresignGet mints a short-lived GET URL for the package object.
+// *blobstore.Store). GetViaPresign reads latest.json through a presigned URL
+// (a live SDK GetObject 403s against GCS — see blobstore.GetViaPresign) and
+// returns blobstore.ErrNotFound when it is absent; PresignGet mints a
+// short-lived GET URL for the package object the agent downloads.
 type ManifestStore interface {
-	Get(ctx context.Context, key string) (io.ReadCloser, error)
+	GetViaPresign(ctx context.Context, key string) (io.ReadCloser, error)
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
@@ -205,7 +207,7 @@ var errInvalidManifest = errors.New("agent: invalid release manifest")
 
 // readLatest loads + validates agent-releases/latest.json.
 func (h *UpdateHandler) readLatest(ctx context.Context) (releaseManifest, error) {
-	rc, err := h.store.Get(ctx, updateManifestKey)
+	rc, err := h.store.GetViaPresign(ctx, updateManifestKey)
 	if err != nil {
 		return releaseManifest{}, err
 	}

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -153,6 +154,43 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("blobstore: get %q: %w", key, err)
 	}
 	return out.Body, nil
+}
+
+// presignFetchClient bounds CP-side fetches of small objects via presigned URLs.
+var presignFetchClient = &http.Client{Timeout: 15 * time.Second}
+
+// GetViaPresign downloads a (small) object by minting a short-lived presigned
+// GET URL and fetching it over plain HTTP, instead of a live SDK GetObject.
+//
+// aws-sdk-go-v2 signs a live GetObject in a way GCS's S3-compatible API rejects
+// with "SignatureDoesNotMatch: Access denied", whereas presigned query-param
+// SigV4 is accepted — which is exactly why the agent's presigned chunk
+// downloads work but a CP-side GetObject 403s. For the rare CP-side read of a
+// small control object (e.g. agent-releases/latest.json) this routes through the
+// proven presigned path. Returns ErrNotFound on a 404. The caller MUST close the
+// returned ReadCloser. The presigned URL is a bearer credential — never logged.
+func (s *Store) GetViaPresign(ctx context.Context, key string) (io.ReadCloser, error) {
+	url, err := s.PresignGet(ctx, key, 60*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("blobstore: presign get %q: %w", key, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := presignFetchClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("blobstore: fetch %q: %w", key, err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		_ = resp.Body.Close()
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("blobstore: fetch %q: unexpected status %d", key, resp.StatusCode)
+	}
+	return resp.Body, nil
 }
 
 // Head reports an object's size and whether it exists. exists is false (with a
