@@ -10673,11 +10673,14 @@ func (s *Server) handleRevokeApiKeyRequest(args [1]string, argsEscaped bool, w h
 
 // handleRevokeSiteRequest handles revokeSite operation.
 //
-// M21 / ADR-041 — operator action. Transitions the site to `revoked`, nulls
-// the agent_public_key (so a later re-enroll cannot collide on the unique
-// index), and queues a `revoke` instruction returned on the agent's next
-// heartbeat (the agent then wipes its keys + self-deactivates). Requires
-// operator+.
+// M21 / ADR-041 — operator action. Transitions the site to `revoked` and
+// queues a `revoke` instruction returned on the agent's next heartbeat,
+// accompanied by a short-lived signed token (`revoke_token`) the agent
+// verifies before it wipes its keys + self-deactivates (ADR-040 addendum).
+// The agent_public_key is KEPT (not nulled) so the agent can still
+// authenticate the heartbeat that delivers the revoke; a later re-enroll
+// overwrites the key on the same row (partial unique index). Requires
+// operator+ and org scope (a site-scoped collaborator cannot revoke).
 //
 // POST /api/v1/sites/{siteId}/revoke
 func (s *Server) handleRevokeSiteRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {

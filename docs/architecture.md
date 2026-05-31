@@ -116,6 +116,71 @@ sequenceDiagram
 See [agent.md](./agent.md) for install and the security model, and
 [security.md](./security.md) for the full threat model.
 
+## Connection-state machine
+
+Each site carries a `connection_state` — the single source of truth for its
+agent connection (Phase 5.7 /
+[ADR-041](./adr/ADR-041-reenrollment-identity-connection-state.md)). The
+`internal/site` connection service is the **only** writer: every transition
+validates its source state against the table below, writes the new state + a
+`site_connection_history` row + a hash-chained audit entry in one transaction,
+then publishes the SSE event after commit.
+
+```mermaid
+stateDiagram-v2
+  [*] --> pending_enrollment
+
+  pending_enrollment --> connected
+  pending_enrollment --> archived
+
+  connected --> degraded
+  connected --> disconnected
+  connected --> revoked
+  connected --> archived
+
+  degraded --> connected
+  degraded --> disconnected
+  degraded --> revoked
+  degraded --> archived
+
+  disconnected --> connected
+  disconnected --> pending_enrollment
+  disconnected --> revoked
+  disconnected --> archived
+
+  revoked --> pending_enrollment
+  revoked --> archived
+
+  archived --> disconnected
+  archived --> pending_enrollment
+```
+
+`connected ⇄ degraded ⇄ disconnected` are driven by heartbeat freshness;
+`revoked` and `archived` are operator actions; `disconnected`/`revoked`/`archived
+→ pending_enrollment` is re-enrollment (same `site_id`, bumped
+`connection_generation`); `archived → disconnected` is restore. See
+[features/site-lifecycle.md](./features/site-lifecycle.md) and
+[api/sites.md](./api/sites.md).
+
+### Event bus + heartbeat timeouts
+
+Lifecycle events fan out over a shared bus backed by **Postgres `LISTEN/NOTIFY`**
+(ADR-038): a transition persists a `site_events` row, then `NOTIFY`s with ids
+only (the 8 KB payload cap means bodies never ride the wire). Every API instance
+holds one `LISTEN` connection and re-loads the row to deliver it to its locally
+connected SSE subscribers — so an event produced on one Cloud Run instance
+reaches an `EventSource` pinned to another. Clients open one tenant-scoped
+`GET /api/v1/sites/events` stream, filter by `site_id` in the browser, and
+replay missed events via `?since=<ULID>` (~5 min journal retention) on
+reconnect.
+
+Heartbeat freshness drives the down transitions (ADR-039): the agent beats every
+**60s**; a River sweeper runs every 15s and marks `connected → degraded` after
+**180s** missed (3× cadence) and `degraded → disconnected` after **360s**
+(6× cadence). The generous 3×/6× margins absorb traffic-gated WP-Cron without
+flapping; a heartbeat is the only thing that recovers a site back to
+`connected`.
+
 ## Repository layout
 
 ```
@@ -123,7 +188,7 @@ apps/      api (Go) · web (React) · agent (PHP) · tracker (JS) · cli (Go, Ro
 packages/  openapi · openapi-client · tsconfig · eslint-config · ui
 infra/     docker-compose · Dockerfiles · nginx · grafana · prometheus
            helm (Roadmap V1) · terraform-provider (Roadmap V2)
-docs/      install · agent · architecture · api · contributing · security · adr
+docs/      install · agent · architecture · api · contributing · security · adr · features
 ```
 
 Backend domains live under `apps/api/internal/<domain>/` with

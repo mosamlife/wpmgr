@@ -1340,11 +1340,18 @@ func (s *AgentHeartbeatResult) encodeFields(e *jx.Encoder) {
 			e.ArrEnd()
 		}
 	}
+	{
+		if s.RevokeToken.Set {
+			e.FieldStart("revoke_token")
+			s.RevokeToken.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAgentHeartbeatResult = [2]string{
+var jsonFieldsNameOfAgentHeartbeatResult = [3]string{
 	0: "ok",
 	1: "instructions",
+	2: "revoke_token",
 }
 
 // Decode decodes AgentHeartbeatResult from json.
@@ -1386,6 +1393,16 @@ func (s *AgentHeartbeatResult) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"instructions\"")
+			}
+		case "revoke_token":
+			if err := func() error {
+				s.RevokeToken.Reset()
+				if err := s.RevokeToken.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"revoke_token\"")
 			}
 		default:
 			return d.Skip()

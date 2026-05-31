@@ -419,6 +419,11 @@ type AgentHeartbeatResult struct {
 	Ok bool `json:"ok"`
 	// Pending agent instructions, e.g. ["revoke"].
 	Instructions []string `json:"instructions"`
+	// Present with a `["revoke"]` instruction: a short-lived signed Ed25519
+	// JWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP
+	// public key before any self-teardown (ADR-040 addendum). Fail-closed —
+	// an absent/invalid token must be a no-op.
+	RevokeToken OptString `json:"revoke_token"`
 }
 
 // GetOk returns the value of Ok.
@@ -431,6 +436,11 @@ func (s *AgentHeartbeatResult) GetInstructions() []string {
 	return s.Instructions
 }
 
+// GetRevokeToken returns the value of RevokeToken.
+func (s *AgentHeartbeatResult) GetRevokeToken() OptString {
+	return s.RevokeToken
+}
+
 // SetOk sets the value of Ok.
 func (s *AgentHeartbeatResult) SetOk(val bool) {
 	s.Ok = val
@@ -439,6 +449,11 @@ func (s *AgentHeartbeatResult) SetOk(val bool) {
 // SetInstructions sets the value of Instructions.
 func (s *AgentHeartbeatResult) SetInstructions(val []string) {
 	s.Instructions = val
+}
+
+// SetRevokeToken sets the value of RevokeToken.
+func (s *AgentHeartbeatResult) SetRevokeToken(val OptString) {
+	s.RevokeToken = val
 }
 
 func (*AgentHeartbeatResult) agentHeartbeatRes() {}

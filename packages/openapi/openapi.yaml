@@ -1154,11 +1154,14 @@ paths:
       operationId: revokeSite
       summary: Revoke a site's agent connection
       description: |
-        M21 / ADR-041 — operator action. Transitions the site to `revoked`, nulls
-        the agent_public_key (so a later re-enroll cannot collide on the unique
-        index), and queues a `revoke` instruction returned on the agent's next
-        heartbeat (the agent then wipes its keys + self-deactivates). Requires
-        operator+.
+        M21 / ADR-041 — operator action. Transitions the site to `revoked` and
+        queues a `revoke` instruction returned on the agent's next heartbeat,
+        accompanied by a short-lived signed token (`revoke_token`) the agent
+        verifies before it wipes its keys + self-deactivates (ADR-040 addendum).
+        The agent_public_key is KEPT (not nulled) so the agent can still
+        authenticate the heartbeat that delivers the revoke; a later re-enroll
+        overwrites the key on the same row (partial unique index). Requires
+        operator+ and org scope (a site-scoped collaborator cannot revoke).
       tags: [sites]
       parameters:
         - $ref: "#/components/parameters/SiteId"
@@ -2962,6 +2965,13 @@ components:
           description: Pending agent instructions, e.g. ["revoke"].
           items:
             type: string
+        revoke_token:
+          type: string
+          description: |
+            Present with a `["revoke"]` instruction: a short-lived signed Ed25519
+            JWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP
+            public key before any self-teardown (ADR-040 addendum). Fail-closed —
+            an absent/invalid token must be a no-op.
     AgentDisconnect:
       type: object
       description: M21 — the signed last-will body.

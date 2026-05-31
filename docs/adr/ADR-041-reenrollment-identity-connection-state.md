@@ -46,9 +46,13 @@ from history.
 
 ### 3. Revoke / archive / restore semantics
 - **Revoke** (operator action): transition → `revoked`; queue a `revoke`
-  instruction returned on the agent's next heartbeat (agent wipes keys +
-  self-deactivates per ADR-040); **null out `agent_public_key`** so a later
-  re-enroll cannot collide with the unique index.
+  instruction returned on the agent's next heartbeat (agent verifies a signed
+  revoke token, then wipes keys + self-deactivates per ADR-040). **NOTE
+  (superseded by ADR-040 addendum / Phase 6 finding C):** revoke does NOT null
+  `agent_public_key` — the agent must keep a valid key to authenticate the very
+  heartbeat that delivers the revoke. Re-enroll overwrites the key on the same
+  row (the unique index is partial, `WHERE agent_public_key <> ''`), so there is
+  no collision.
 - **Archive**: terminal soft-delete (`archived_at` set); hidden from the default
   sites list (default filter `connection_state != 'archived'`); reachable via a
   `state:archived` filter chip.
