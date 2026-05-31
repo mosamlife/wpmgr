@@ -449,7 +449,15 @@ func run() error {
 	// transitions. The Listener goroutine is started below (after the pool is up).
 	siteEventsHub := siteevents.NewHub()
 	siteEventsPub := siteevents.NewPublisher(pool, clock)
-	connSvc := site.NewConnectionService(siteRepo, validator, auditRec, siteEventsPub, clock)
+	// Revoke-token minter (Phase 6 finding B): reuse the agentcmd Ed25519 signer
+	// to sign the "revoke" instruction. Keep it a true nil interface when the CP
+	// has no signing key, so connService falls back to an unsigned instruction
+	// rather than calling Mint on a typed-nil *Signer.
+	var revokeMinter site.RevokeTokenMinter
+	if cmdSigner, serr := agentcmd.NewSigner(cfg.Agent.SigningPrivateKey); serr == nil {
+		revokeMinter = cmdSigner
+	}
+	connSvc := site.NewConnectionService(siteRepo, validator, auditRec, siteEventsPub, clock, revokeMinter)
 	// Inject the lifecycle service into the enroll branch (site-bound consume)
 	// and the agent heartbeat/disconnect handler.
 	siteSvc.SetConnectionService(connSvc)

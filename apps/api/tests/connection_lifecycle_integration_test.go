@@ -22,7 +22,7 @@ func TestSiteFirstEnrollHappyPath(t *testing.T) {
 
 	repo := site.NewRepo(pool)
 	rec := audit.NewRecorder(pool, domain.SystemClock{})
-	conn := site.NewConnectionService(repo, domain.NewValidator(), rec, nil, domain.SystemClock{})
+	conn := site.NewConnectionService(repo, domain.NewValidator(), rec, nil, domain.SystemClock{}, nil)
 
 	svc := site.NewService(repo, domain.NewValidator(), domain.SystemClock{})
 	svc.SetConnectionService(conn)
@@ -96,7 +96,7 @@ func TestConsumeSiteBoundCode_ExactlyOneWinner(t *testing.T) {
 
 	repo := site.NewRepo(pool)
 	conn := site.NewConnectionService(repo, domain.NewValidator(),
-		audit.NewRecorder(pool, domain.SystemClock{}), nil, domain.SystemClock{})
+		audit.NewRecorder(pool, domain.SystemClock{}), nil, domain.SystemClock{}, nil)
 
 	code, err := conn.MintEnrollmentCode(ctx, site.MintEnrollmentInput{
 		TenantID: tenant,

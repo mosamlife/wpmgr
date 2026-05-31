@@ -20,12 +20,12 @@ func NewAgentLifecycleAdapter(cs ConnectionService) *AgentLifecycleAdapter {
 
 // RecordHeartbeat satisfies agent.LifecycleSink: it refreshes liveness, recovers
 // degraded/disconnected→connected, and returns pending instructions.
-func (a *AgentLifecycleAdapter) RecordHeartbeat(ctx context.Context, tenantID, siteID uuid.UUID, payload map[string]any) ([]string, error) {
+func (a *AgentLifecycleAdapter) RecordHeartbeat(ctx context.Context, tenantID, siteID uuid.UUID, payload map[string]any) ([]string, string, error) {
 	res, err := a.cs.RecordHeartbeat(ctx, HeartbeatInput{TenantID: tenantID, SiteID: siteID, Payload: payload})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return res.Instructions, nil
+	return res.Instructions, res.RevokeToken, nil
 }
 
 // RecordLastWill satisfies agent.LifecycleSink: a signed disconnect transitions

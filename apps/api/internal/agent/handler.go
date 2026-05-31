@@ -344,8 +344,10 @@ type MetadataSink interface {
 // liveness-only Heartbeat and /disconnect returns 501.
 type LifecycleSink interface {
 	// RecordHeartbeat refreshes liveness, recovers degraded/disconnected→
-	// connected, and returns any pending agent instructions.
-	RecordHeartbeat(ctx context.Context, tenantID, siteID uuid.UUID, payload map[string]any) ([]string, error)
+	// connected, and returns any pending agent instructions plus, for a "revoke"
+	// instruction, a signed token (aud=site_id, cmd="revoke") the agent must
+	// verify before acting (Phase 6 finding B).
+	RecordHeartbeat(ctx context.Context, tenantID, siteID uuid.UUID, payload map[string]any) (instructions []string, revokeToken string, err error)
 	// RecordLastWill transitions connected/degraded→disconnected on a signed
 	// agent disconnect (ADR-040).
 	RecordLastWill(ctx context.Context, tenantID, siteID uuid.UUID, reason string) error
@@ -449,7 +451,7 @@ func (h *Handler) heartbeat(c *gin.Context) {
 		}
 	}
 
-	instructions, err := h.lifecycle.RecordHeartbeat(c.Request.Context(), id.TenantID, id.SiteID, payload)
+	instructions, revokeToken, err := h.lifecycle.RecordHeartbeat(c.Request.Context(), id.TenantID, id.SiteID, payload)
 	if err != nil {
 		httpx.Error(c, err)
 		return
@@ -457,6 +459,11 @@ func (h *Handler) heartbeat(c *gin.Context) {
 	resp := gin.H{"ok": true}
 	if len(instructions) > 0 {
 		resp["instructions"] = instructions
+	}
+	if revokeToken != "" {
+		// Signed proof for the revoke instruction — the agent verifies this
+		// (CP pubkey + aud=site_id + cmd=revoke + exp) before self-teardown.
+		resp["revoke_token"] = revokeToken
 	}
 	c.JSON(http.StatusOK, resp)
 }

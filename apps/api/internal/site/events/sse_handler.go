@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,11 @@ const (
 	sseMaxLifetime = 30 * time.Minute
 	// replayLimit caps how many missed events a single ?since replay returns.
 	replayLimit = 500
+	// maxStreamsPerPrincipal bounds concurrent SSE streams a single principal may
+	// hold open, so an authenticated caller can't exhaust goroutines/connections
+	// (Phase 6 security review, finding D). Each stream is a held connection +
+	// goroutine + buffered channel for up to sseMaxLifetime.
+	maxStreamsPerPrincipal = 8
 )
 
 // Handler serves the tenant-scoped connection-events SSE stream (ADR-038). It is
@@ -34,11 +40,38 @@ const (
 type Handler struct {
 	pool *db.Pool
 	hub  *Hub
+
+	mu      sync.Mutex
+	streams map[uuid.UUID]int // concurrent stream count per principal (finding D)
 }
 
 // NewHandler builds the SSE Handler.
 func NewHandler(pool *db.Pool, hub *Hub) *Handler {
-	return &Handler{pool: pool, hub: hub}
+	return &Handler{pool: pool, hub: hub, streams: make(map[uuid.UUID]int)}
+}
+
+// acquire reserves a stream slot for a principal, returning false if it already
+// holds maxStreamsPerPrincipal concurrent streams.
+func (h *Handler) acquire(key uuid.UUID) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.streams[key] >= maxStreamsPerPrincipal {
+		return false
+	}
+	h.streams[key]++
+	return true
+}
+
+// release frees a stream slot.
+func (h *Handler) release(key uuid.UUID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.streams[key] > 0 {
+		h.streams[key]--
+		if h.streams[key] == 0 {
+			delete(h.streams, key)
+		}
+	}
 }
 
 // Register mounts GET /sites/events on the v1 group.
@@ -65,6 +98,19 @@ func (h *Handler) stream(c *gin.Context) {
 	// for them too). CanAccessSite encodes exactly this.
 	p, _ := domain.PrincipalFromContext(c.Request.Context())
 	allowed := func(ev site.ConnectionEvent) bool { return p.CanAccessSite(ev.SiteID) }
+
+	// Per-principal concurrent-stream cap (finding D). Key on the user id, or the
+	// tenant id for keyless (API-key) callers.
+	limitKey := p.UserID
+	if limitKey == uuid.Nil {
+		limitKey = tenantID
+	}
+	if !h.acquire(limitKey) {
+		httpx.Error(c, domain.RateLimited("too_many_streams", "too many concurrent event streams; close one and retry"))
+		return
+	}
+	defer h.release(limitKey)
+
 	if h.hub == nil {
 		httpx.Error(c, domain.Internal("sse_unsupported", "streaming is not enabled"))
 		return

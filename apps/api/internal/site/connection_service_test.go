@@ -95,7 +95,7 @@ func (p *capturePub) types() []string {
 
 func newTestConnService(repo Repo) (*connService, *capturePub) {
 	pub := &capturePub{}
-	cs := NewConnectionService(repo, domain.NewValidator(), nil, pub, domain.SystemClock{}).(*connService)
+	cs := NewConnectionService(repo, domain.NewValidator(), nil, pub, domain.SystemClock{}, nil).(*connService)
 	return cs, pub
 }
 

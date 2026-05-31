@@ -23,14 +23,17 @@ type connService struct {
 	audit     *audit.Recorder
 	pub       EventPublisher
 	clock     domain.Clock
+	minter    RevokeTokenMinter // may be nil (no CP signing key)
 }
 
 // NewConnectionService builds the concrete ConnectionService. Mirrors the
 // existing site.Service dependency shape (repo + validator + clock) plus the
-// audit recorder and the SSE EventPublisher (ADR-038). pub may be a no-op in
-// environments without the SSE bus; a nil pub disables publishing.
-func NewConnectionService(repo Repo, v *domain.Validator, rec *audit.Recorder, pub EventPublisher, clock domain.Clock) ConnectionService {
-	return &connService{repo: repo, validator: v, audit: rec, pub: pub, clock: clock}
+// audit recorder, the SSE EventPublisher (ADR-038), and the revoke-token minter
+// (ADR-031 reuse). pub may be a no-op in environments without the SSE bus (nil
+// disables publishing); minter may be nil when the CP has no signing key (in
+// which case revoke falls back to an unsigned instruction — legacy behaviour).
+func NewConnectionService(repo Repo, v *domain.Validator, rec *audit.Recorder, pub EventPublisher, clock domain.Clock, minter RevokeTokenMinter) ConnectionService {
+	return &connService{repo: repo, validator: v, audit: rec, pub: pub, clock: clock, minter: minter}
 }
 
 // publishStateChange is the standard post-commit SSE emit for a transition. It
@@ -167,10 +170,20 @@ func (s *connService) RecordHeartbeat(ctx context.Context, in HeartbeatInput) (H
 
 	// A revoked site that is still heartbeating gets the revoke instruction
 	// (derived-from-state; see the package doc on the instruction model). The
-	// agent wipes its keys + self-deactivates on receiving it (ADR-040/041).
+	// instruction is accompanied by a short-lived SIGNED token (aud=site_id,
+	// cmd="revoke") which the agent MUST verify before wiping its keys +
+	// self-deactivating (ADR-040 addendum / Phase 6 finding B) — so a MITM on the
+	// TLS-only heartbeat response cannot forge a destructive teardown. The agent
+	// can still authenticate this heartbeat to RECEIVE the token because revoke
+	// no longer nulls agent_public_key (Phase 6 finding C).
 	var result HeartbeatResult
 	if st.ConnectionState == StateRevoked {
 		result.Instructions = []string{"revoke"}
+		if s.minter != nil {
+			if token, _, merr := s.minter.Mint(s.clock.Now().UTC(), in.SiteID.String(), "revoke"); merr == nil {
+				result.RevokeToken = token
+			}
+		}
 		return result, nil
 	}
 

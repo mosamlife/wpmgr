@@ -722,7 +722,6 @@ UPDATE sites
 SET connection_state    = 'revoked',
     status              = 'disabled',
     health_status       = 'unreachable',
-    agent_public_key    = '',
     disconnected_at     = now(),
     disconnected_reason = $3,
     updated_at          = now()
@@ -736,10 +735,12 @@ type MarkSiteRevokedParams struct {
 	DisconnectedReason *string   `json:"disconnected_reason"`
 }
 
-// connected/degraded/disconnected → revoked (operator). Nulls agent_public_key
-// so a later re-enroll cannot collide on the unique index, and records the
-// reason. The agent learns of the revoke on its next heartbeat (derived
-// instruction from connection_state='revoked').
+// connected/degraded/disconnected → revoked (operator). The agent key is KEPT
+// (NOT nulled) so the agent can still authenticate its next heartbeat and
+// RECEIVE the signed revoke token to tear itself down (Phase 6 finding C). A
+// later re-enroll overwrites agent_public_key on the same row (no unique-index
+// collision), so keeping it is safe. The agent learns of the revoke on its next
+// heartbeat (derived instruction from connection_state='revoked').
 func (q *Queries) MarkSiteRevoked(ctx context.Context, arg MarkSiteRevokedParams) (Site, error) {
 	row := q.db.QueryRow(ctx, markSiteRevoked, arg.ID, arg.TenantID, arg.DisconnectedReason)
 	var i Site

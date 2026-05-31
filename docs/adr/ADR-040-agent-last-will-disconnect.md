@@ -63,3 +63,35 @@ the (old, 5-min) health sweep eventually marks the site unreachable.
   take up to 6 minutes to reflect, which feels broken.
 - **WP `shutdown`/`wp_loaded` hooks** — rejected: unreliable timing, fire on every
   request, would generate spurious disconnects.
+
+## Addendum (2026-05-31) — Signed revoke instruction (Phase 6 security review)
+
+The Phase-6 security review found that **dashboard-initiated revoke** (the
+CP→agent direction) had two coupled problems:
+
+- **Finding C — the revoke instruction was unreachable.** `MarkSiteRevoked` nulled
+  `agent_public_key`, but agent auth resolves the site *by* that key, so the
+  agent's next heartbeat 401'd and never received the `["revoke"]` instruction —
+  the agent kept running locally and never tore down. **Fix:** revoke no longer
+  nulls the key (a re-enroll overwrites it on the same row, so there's no
+  unique-index collision); the agent can authenticate its heartbeat and receive
+  the instruction.
+- **Finding B — the instruction was unauthenticated (TLS-only).** Acting on a
+  `revoke` from the plain heartbeat *response body* let a MITM with a trusted
+  root CA on the WP host force destructive self-deactivation. **Fix:** the CP now
+  returns a **signed revoke token** alongside the instruction — a short-lived
+  Ed25519 JWT minted by the **existing agentcmd signer** (ADR-031; `cmd="revoke"`,
+  `aud=<site_id>`, `exp` = the standard command TTL, single-use `jti`). The agent
+  MUST verify it with the stored control-plane public key (signature + `exp` +
+  `aud == own site_id` + `cmd == "revoke"` + `jti` freshness, via the existing
+  `Connector::verify`) **before** wiping keys + self-deactivating. An absent or
+  invalid token → the agent ignores the instruction (no teardown). This reuses an
+  ADR-backed mechanism — no new crypto primitive.
+
+**Residual (accepted):** between revoke and the agent acting on the next beat
+(≤60s) the agent's key is still valid, so the agent could still make other signed
+calls in that window. Bounded + small; the agent self-deactivates on the next
+heartbeat. A future tightening could reject non-heartbeat agent calls for a
+`revoked` site. **Follow-up:** finding D (per-principal SSE stream cap) is
+implemented; the best-effort post-commit audit write (finding #9 nit) should log
+failures loudly so a chain gap is detectable.

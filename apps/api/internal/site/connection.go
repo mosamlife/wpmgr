@@ -142,8 +142,21 @@ type HeartbeatInput struct {
 }
 
 // HeartbeatResult carries any pending instructions for the agent (e.g. revoke).
+// RevokeToken, when set, is a short-lived Ed25519 JWT (aud=site_id, cmd="revoke")
+// the agent MUST verify with the CP public key before acting on the revoke
+// instruction — so a MITM cannot forge a destructive self-teardown over the
+// (otherwise TLS-only) heartbeat response. (Phase 6 security review, finding B.)
 type HeartbeatResult struct {
 	Instructions []string // e.g. ["revoke"]
+	RevokeToken  string   // signed proof for a "revoke" instruction; "" otherwise
+}
+
+// RevokeTokenMinter mints a short-lived signed command token authorizing a
+// destructive agent instruction. Reuses the existing agentcmd Ed25519 JWT
+// mechanism (ADR-031): Mint(now, aud=site_id, cmd="revoke"). nil = the CP has no
+// signing key configured, in which case no signed revoke is issued.
+type RevokeTokenMinter interface {
+	Mint(now time.Time, aud, cmd string) (token string, jti string, err error)
 }
 
 // ActorSiteInput is a tenant-scoped, operator-initiated action on one site.
