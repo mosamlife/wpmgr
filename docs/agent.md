@@ -109,6 +109,93 @@ TLS trust alone cannot force a destructive self-deactivation. See the
 Locked crypto: Ed25519 (signing), AES-256-GCM (at-rest secrets), blake3
 (integrity), age (backup encryption). Details in [security.md](./security.md).
 
+## Media Optimizer
+
+> **M23 / Phase 7.** Encoding runs off-host on WPMgr's optional `media-encoder`
+> service; the agent uploads sources, applies the optimized outputs on disk, and
+> installs the Accept-header fallback. User guide:
+> [features/media-optimizer.md](./features/media-optimizer.md). Architecture:
+> [architecture/media-optimizer.md](./architecture/media-optimizer.md).
+
+**No Imagick/GD required.** The agent does **no** image encoding. It reads source
+bytes from disk, presigned-PUTs them to object storage, and later downloads the
+optimized variants and writes them back — all encoding happens in the
+control-plane `media-encoder` service (`lilliput`). A host without the Imagick or
+GD PHP extensions optimizes images perfectly fine; the agent only does file I/O,
+the DB URL rewrite, and the `.htaccess` install.
+
+### The `.htaccess` Accept-header block (Apache)
+
+When you optimize **JPEG → AVIF/WebP**, the new file is written next to the
+untouched original and the DB references the modern URL. The agent installs an
+idempotent block between `# BEGIN WPMgr Media` / `# END WPMgr Media` markers (WP
+managed-block convention — writing twice yields exactly one block) that serves
+the legacy twin only when the browser did not advertise the modern format **and**
+the twin exists on disk:
+
+```apache
+# BEGIN WPMgr Media
+<IfModule mod_rewrite.c>
+	RewriteEngine On
+
+	# AVIF fallback: no AVIF support -> serve png/jpg/jpeg twin if it exists.
+	RewriteCond %{HTTP_ACCEPT} !image/avif [NC]
+	RewriteCond %{DOCUMENT_ROOT}/$1.png -f
+	RewriteRule ^(.+)\.avif$ $1.png [L]
+	# (same pair of rules for .jpg and .jpeg)
+
+	# WebP fallback: no WebP support -> serve png/jpg/jpeg twin if it exists.
+	RewriteCond %{HTTP_ACCEPT} !image/webp [NC]
+	RewriteCond %{DOCUMENT_ROOT}/$1.png -f
+	RewriteRule ^(.+)\.webp$ $1.png [L]
+	# (same pair of rules for .jpg and .jpeg)
+</IfModule>
+
+<IfModule mod_headers.c>
+	<FilesMatch "\.(avif|webp)$">
+		Header merge Vary Accept
+	</FilesMatch>
+</IfModule>
+# END WPMgr Media
+```
+
+The `-f` guard means a missing twin never 404s; `Vary: Accept` stops shared
+caches/CDNs from serving an AVIF response to a no-AVIF client (and vice-versa).
+The block is prepended so it runs ahead of WP's front-controller rewrites.
+
+### nginx equivalent (manual — the agent never edits nginx config)
+
+nginx has no `.htaccess`. The agent detects nginx via `SERVER_SOFTWARE`, **skips
+the file edit**, and surfaces an admin notice with the equivalent snippet to add
+to your server block:
+
+```nginx
+# WPMgr Media: serve AVIF/WebP when the client advertises support, else the legacy twin.
+location ~* ^(?<wpmgr_base>.+)\.(?<wpmgr_ext>avif|webp)$ {
+    add_header Vary Accept;
+    set $wpmgr_modern "";
+    if ($http_accept ~* "image/$wpmgr_ext") { set $wpmgr_modern "A"; }
+    if (-f $request_filename) { set $wpmgr_modern "${wpmgr_modern}B"; }
+    if ($wpmgr_modern = "AB") { break; }
+    # Fall back to a legacy twin if one exists (try jpg, then png).
+    try_files $wpmgr_base.jpg $wpmgr_base.png $uri =404;
+}
+```
+
+### Troubleshooting
+
+**Modern images aren't downgrading on an old browser.** On Apache, confirm the
+`# BEGIN WPMgr Media` block is present in the site-root `.htaccess` and that
+`mod_rewrite` + `mod_headers` are enabled. The downgrade only fires when the
+legacy twin still exists on disk — after **Delete originals** there is no twin,
+so old browsers can no longer be served the legacy format. On nginx, confirm you
+pasted the snippet above (the agent cannot install it for you).
+
+**"Could not write `.htaccess`" notice.** The site-root directory (or the file)
+is not writable by the web user. Fix the permissions or paste the block manually
+between the markers — the install is idempotent and will leave a hand-placed
+block alone if it matches.
+
 ## Build the zip
 
 ```bash
