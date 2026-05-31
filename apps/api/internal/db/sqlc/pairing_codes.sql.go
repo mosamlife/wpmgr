@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,47 @@ func (q *Queries) ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const consumeSiteBoundPairingCode = `-- name: ConsumeSiteBoundPairingCode :one
+UPDATE pairing_codes
+SET consumed_at      = now(),
+    consumed_from_ip = $2
+WHERE code_hash = $1
+  AND consumed_at IS NULL
+  AND expires_at > now()
+RETURNING id, tenant_id, site_id, site_name, tags
+`
+
+type ConsumeSiteBoundPairingCodeParams struct {
+	CodeHash       string      `json:"code_hash"`
+	ConsumedFromIp *netip.Addr `json:"consumed_from_ip"`
+}
+
+type ConsumeSiteBoundPairingCodeRow struct {
+	ID       uuid.UUID   `json:"id"`
+	TenantID uuid.UUID   `json:"tenant_id"`
+	SiteID   pgtype.UUID `json:"site_id"`
+	SiteName string      `json:"site_name"`
+	Tags     []string    `json:"tags"`
+}
+
+// Enroll path (app.enroll GUC): the ATOMIC single-use consume. Marks the code
+// consumed only if it is still unconsumed AND unexpired, recording the source
+// IP. Exactly one concurrent caller wins (the conditional UPDATE is the lock);
+// a loser gets pgx.ErrNoRows. Returns the resolved tenant_id + site_id so the
+// caller can transition the bound site. NULL site_id ⇒ legacy create-at-enroll.
+func (q *Queries) ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error) {
+	row := q.db.QueryRow(ctx, consumeSiteBoundPairingCode, arg.CodeHash, arg.ConsumedFromIp)
+	var i ConsumeSiteBoundPairingCodeRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.SiteID,
+		&i.SiteName,
+		&i.Tags,
+	)
+	return i, err
 }
 
 const createPairingCode = `-- name: CreatePairingCode :one
@@ -52,6 +94,57 @@ func (q *Queries) CreatePairingCode(ctx context.Context, arg CreatePairingCodePa
 		arg.SiteName,
 		arg.Tags,
 		arg.ExpiresAt,
+	)
+	var i PairingCode
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CodeHash,
+		&i.CreatedBy,
+		&i.SiteName,
+		&i.Tags,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.Attempts,
+		&i.SiteID,
+		&i.ConsumedFromIp,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createSiteBoundPairingCode = `-- name: CreateSiteBoundPairingCode :one
+
+INSERT INTO pairing_codes (tenant_id, code_hash, created_by, site_name, tags, expires_at, site_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, tenant_id, code_hash, created_by, site_name, tags, expires_at, consumed_at, attempts, site_id, consumed_from_ip, created_at
+`
+
+type CreateSiteBoundPairingCodeParams struct {
+	TenantID  uuid.UUID   `json:"tenant_id"`
+	CodeHash  string      `json:"code_hash"`
+	CreatedBy pgtype.UUID `json:"created_by"`
+	SiteName  string      `json:"site_name"`
+	Tags      []string    `json:"tags"`
+	ExpiresAt time.Time   `json:"expires_at"`
+	SiteID    pgtype.UUID `json:"site_id"`
+}
+
+// ---------------------------------------------------------------------------
+// M21 — site-bound pairing codes (live enrollment + re-enroll, ADR-041).
+// ---------------------------------------------------------------------------
+// Tenant-scoped (app.tenant_id): mint a code bound to an existing site_id (the
+// site already exists in pending_enrollment). Consuming this code transitions
+// THAT site to connected rather than creating a new row.
+func (q *Queries) CreateSiteBoundPairingCode(ctx context.Context, arg CreateSiteBoundPairingCodeParams) (PairingCode, error) {
+	row := q.db.QueryRow(ctx, createSiteBoundPairingCode,
+		arg.TenantID,
+		arg.CodeHash,
+		arg.CreatedBy,
+		arg.SiteName,
+		arg.Tags,
+		arg.ExpiresAt,
+		arg.SiteID,
 	)
 	var i PairingCode
 	err := row.Scan(
@@ -111,4 +204,20 @@ func (q *Queries) IncrementPairingCodeAttempts(ctx context.Context, id uuid.UUID
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const peekPairingCodeSiteID = `-- name: PeekPairingCodeSiteID :one
+SELECT site_id FROM pairing_codes
+WHERE code_hash = $1
+`
+
+// Enroll path (app.enroll GUC): resolve whether a presented code is site-bound
+// (returns its site_id) WITHOUT consuming it, so /enroll can route between the
+// site-first consume and the legacy create-at-enroll flow. Does not leak: only
+// the site_id (nullable) is returned, and the caller already holds the code.
+func (q *Queries) PeekPairingCodeSiteID(ctx context.Context, codeHash string) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, peekPairingCodeSiteID, codeHash)
+	var site_id pgtype.UUID
+	err := row.Scan(&site_id)
+	return site_id, err
 }

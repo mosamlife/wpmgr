@@ -46,6 +46,19 @@ const (
 	ActionPairingCodeCreated = "pairing_code.created"
 	ActionSiteTagsSet        = "site.tags.set"
 
+	// Phase 5.7 connection lifecycle (ADR-041). Every connection-state
+	// transition records one of these hash-chained actions alongside the
+	// site_connection_history row. The system-driven transitions
+	// (connected/degraded/disconnected) are recorded with ActorSystem; the
+	// operator actions (revoked/archived/restored/reenrolled) with ActorUser.
+	ActionSiteConnected    = "site.connected"
+	ActionSiteDegraded     = "site.degraded"
+	ActionSiteDisconnected = "site.disconnected"
+	ActionSiteRevoked      = "site.revoked"
+	ActionSiteArchived     = "site.archived"
+	ActionSiteRestored     = "site.restored"
+	ActionSiteReEnrolled   = "site.reenrolled"
+
 	// Updates feature: an operator requested an immediate inventory refresh, or
 	// the post-update worker autonomously enqueued one for a site. Metadata
 	// fields: site_id, source ("api"|"post_update"|"unknown").

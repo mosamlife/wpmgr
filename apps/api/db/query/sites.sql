@@ -10,9 +10,16 @@ SELECT * FROM sites
 WHERE id = $1 AND tenant_id = $2;
 
 -- name: ListSites :many
+-- Defaults to hiding archived sites (ADR-041). When sqlc.narg('state') is set
+-- the list is filtered to exactly that connection_state (e.g. 'archived' for
+-- the archived chip); when it is NULL every non-archived site is returned.
 SELECT * FROM sites
 WHERE tenant_id = $1
   AND (sqlc.narg('tag')::text IS NULL OR sqlc.narg('tag')::text = ANY (tags))
+  AND (
+        (sqlc.narg('state')::text IS NULL AND connection_state <> 'archived')
+        OR sqlc.narg('state')::text = connection_state
+      )
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 

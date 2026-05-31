@@ -84,6 +84,48 @@ func (f *fakeRepo) MarkUnreachable(_ context.Context, _ uuid.UUID) (bool, error)
 
 func (f *fakeRepo) PruneNonces(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
 
+// ---- M21 connection-lifecycle Repo methods (in-memory no-ops) ----
+
+func (f *fakeRepo) CreatePending(_ context.Context, tenantID uuid.UUID, url, name string, tags []string) (Site, error) {
+	return Site{ID: uuid.New(), TenantID: tenantID, URL: url, Name: name, Tags: tags, ConnectionState: StatePendingEnrollment}, nil
+}
+
+func (f *fakeRepo) MintSiteBoundCode(_ context.Context, in CreatePairingCodeInput, siteID uuid.UUID, codeHash string, expiresAt time.Time) (PairingCode, error) {
+	return PairingCode{ID: uuid.New(), TenantID: in.TenantID, ExpiresAt: expiresAt}, nil
+}
+
+func (f *fakeRepo) Transition(_ context.Context, in TransitionInput) (TransitionResult, error) {
+	return TransitionResult{
+		Site: Site{ID: in.SiteID, TenantID: in.TenantID, ConnectionState: in.To},
+		From: StateConnected,
+	}, nil
+}
+
+func (f *fakeRepo) ConsumeSiteBoundCode(_ context.Context, codeHash, consumedFromIP string, in EnrollInput) (ConsumeResult, error) {
+	return ConsumeResult{
+		Site:      Site{ID: uuid.New(), AgentPublicKey: in.AgentPublicKey, ConnectionState: StateConnected},
+		SiteBound: true,
+	}, nil
+}
+
+func (f *fakeRepo) Heartbeat(_ context.Context, tenantID, siteID uuid.UUID) (Site, error) {
+	return Site{ID: siteID, TenantID: tenantID, ConnectionState: StateConnected}, nil
+}
+
+func (f *fakeRepo) ListToDegrade(_ context.Context, _ time.Time) ([]SiteRef, error) { return nil, nil }
+
+func (f *fakeRepo) ListToDisconnect(_ context.Context, _ time.Time) ([]SiteRef, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) ResolveTenant(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
+	return uuid.New(), nil
+}
+
+func (f *fakeRepo) PairingCodeSiteID(_ context.Context, _ string) (uuid.UUID, bool, error) {
+	return uuid.Nil, false, nil
+}
+
 func orDefault(s string) string {
 	if s == "" {
 		return "pending"

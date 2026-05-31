@@ -70,3 +70,8 @@ func hashPairingCode(plaintext string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(plaintext)))
 	return hex.EncodeToString(sum[:])
 }
+
+// HashPairingCodeForTest exposes the code-hash function to the external
+// integration tests (which need to drive the by-hash consume directly). It is
+// the SAME function the production enroll path uses.
+func HashPairingCodeForTest(plaintext string) string { return hashPairingCode(plaintext) }

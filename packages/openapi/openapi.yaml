@@ -961,8 +961,20 @@ paths:
   /api/v1/sites:
     post:
       operationId: createSite
-      summary: Create a site
-      description: Creates a site belonging to the tenant in the request context.
+      summary: Create a site (site-first enrollment)
+      description: |
+        M21 / Phase 5.7 (ADR-041) — the site-first "Add site" flow. Creates a
+        site row in `pending_enrollment` AND mints a single-use, site-bound
+        enrollment code in one call. The response carries the new `site_id` plus
+        the once-shown `enrollment_code` and its `expires_at` so the dashboard
+        can immediately show the install modal and subscribe to the
+        `/api/v1/sites/events` SSE stream for this site_id.
+
+        BREAKING CHANGE vs. pre-M21: the 201 body is now
+        `SiteEnrollmentCode` ({site_id, enrollment_code, expires_at}) instead of
+        a bare `Site`. When the connection-lifecycle service is disabled (dev
+        builds with no SSE bus) the control plane falls back to the legacy
+        create that returns a bare `Site`. Requires operator+.
       tags: [sites]
       requestBody:
         required: true
@@ -972,11 +984,11 @@ paths:
               $ref: "#/components/schemas/SiteCreate"
       responses:
         "201":
-          description: Site created
+          description: Site created (pending_enrollment) with a once-shown enrollment code
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Site"
+                $ref: "#/components/schemas/SiteEnrollmentCode"
         "409":
           description: Site URL already exists for this tenant
           content:
@@ -992,6 +1004,11 @@ paths:
     get:
       operationId: listSites
       summary: List sites for the current tenant
+      description: |
+        Lists the tenant's sites. By default (ADR-041) archived sites are hidden.
+        Pass `?state=<connection_state>` to filter to exactly one state (e.g.
+        `?state=archived` for the archived chip), or `?include_archived=true` as
+        a convenience alias that returns only the archived sites.
       tags: [sites]
       parameters:
         - $ref: "#/components/parameters/Limit"
@@ -1003,6 +1020,21 @@ paths:
           schema:
             type: string
             maxLength: 64
+        - name: state
+          in: query
+          required: false
+          description: |
+            Filter to a single connection_state. When omitted, archived sites are
+            hidden.
+          schema:
+            type: string
+            enum: [pending_enrollment, connected, degraded, disconnected, revoked, archived]
+        - name: include_archived
+          in: query
+          required: false
+          description: Convenience alias for state=archived.
+          schema:
+            type: boolean
       responses:
         "200":
           description: A page of sites
@@ -1061,6 +1093,139 @@ paths:
                 $ref: "#/components/schemas/Site"
         "404":
           description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/events:
+    get:
+      operationId: streamSiteEvents
+      summary: Connection-lifecycle SSE stream (tenant-scoped)
+      description: |
+        M21 / ADR-038 — a single tenant-scoped Server-Sent Events stream of
+        connection-lifecycle events (site.created, site.state_changed,
+        site.revoked, site.disconnected, site.archived, site.restored). The
+        client filters by site_id in the browser. Supports `?since=<event_id>`
+        (or the `Last-Event-ID` header) to replay missed events from the durable
+        journal (~5 min retention) on reconnect; each frame carries an `id:`
+        (ULID) line. 15s keepalive comments; session-auth, requires site:read.
+      tags: [sites]
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: Replay events strictly after this event_id (ULID cursor).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: An event stream (text/event-stream)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /api/v1/sites/{siteId}/enrollment-codes:
+    post:
+      operationId: beginReEnrollment
+      summary: Begin re-enrollment (fresh enrollment code)
+      description: |
+        M21 / ADR-041 — moves an existing revoked/disconnected/archived site back
+        to `pending_enrollment` (bumping connection_generation) and mints a fresh
+        site-bound enrollment code under the SAME site_id (preserving backup/scan
+        history). Returns the once-shown code. Requires operator+.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "201":
+          description: Re-enrollment code minted (plaintext shown once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteEnrollmentCode"
+        "409":
+          description: Site is in a state from which re-enrollment is not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/revoke:
+    post:
+      operationId: revokeSite
+      summary: Revoke a site's agent connection
+      description: |
+        M21 / ADR-041 — operator action. Transitions the site to `revoked`, nulls
+        the agent_public_key (so a later re-enroll cannot collide on the unique
+        index), and queues a `revoke` instruction returned on the agent's next
+        heartbeat (the agent then wipes its keys + self-deactivates). Requires
+        operator+.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteLifecycleReason"
+      responses:
+        "200":
+          description: The updated site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "409":
+          description: Illegal transition from the site's current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/archive:
+    post:
+      operationId: archiveSite
+      summary: Archive a site (terminal soft-delete)
+      description: |
+        M21 / ADR-041 — operator action. Transitions the site to `archived`
+        (terminal soft-delete); hidden from the default sites list. History is
+        preserved. Requires operator+.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteLifecycleReason"
+      responses:
+        "204":
+          description: Site archived
+        "409":
+          description: Illegal transition from the site's current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/restore:
+    post:
+      operationId: restoreSite
+      summary: Restore (un-archive) a site
+      description: |
+        M21 / ADR-041 — operator action. Un-archives a site back to
+        `disconnected`. Only valid from `archived`. Requires operator+.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: The updated site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "409":
+          description: Site is not archived
           content:
             application/json:
               schema:
@@ -1291,14 +1456,62 @@ paths:
       operationId: agentHeartbeat
       summary: Liveness heartbeat (agent-authenticated)
       description: |
-        Lightweight liveness ping. Authenticated via the Ed25519 signed-request
-        scheme; updates last_seen_at for the resolved site.
+        The 60s agent heartbeat (ADR-039). Authenticated via the Ed25519
+        signed-request scheme; refreshes last_seen_at for the resolved site,
+        recovers a degraded/disconnected site to `connected`, and returns any
+        pending agent instructions (e.g. `["revoke"]` for a revoked site). The
+        body may carry light metadata (status, versions, pending-update count);
+        it is accepted best-effort. Pre-M21 control planes return 204 with no
+        body.
       tags: [agent]
       security:
         - AgentSignature: []
       responses:
+        "200":
+          description: Heartbeat recorded; optional pending instructions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentHeartbeatResult"
         "204":
-          description: Heartbeat recorded
+          description: Heartbeat recorded (legacy liveness-only path)
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/disconnect:
+    post:
+      operationId: agentDisconnect
+      summary: Signed last-will disconnect (agent-authenticated)
+      description: |
+        M21 / ADR-040 — the agent's signed last-will. Fired by the WordPress
+        deactivation/uninstall hooks (best-effort, 3s timeout). Authenticated via
+        the SAME Ed25519 signed-request scheme as every agent route: the
+        signature is verified and bound to the calling site BEFORE any write, so
+        possession of a site_id alone cannot disconnect a site. Transitions the
+        site connected/degraded → `disconnected` with the supplied reason. Does
+        NOT archive (archive stays an explicit operator action).
+      tags: [agent]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentDisconnect"
+      responses:
+        "200":
+          description: Disconnect recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
         "401":
           description: Agent authentication failed
           content:
@@ -2439,6 +2652,21 @@ components:
         health_status:
           type: string
           enum: [unknown, healthy, unreachable]
+        connection_state:
+          type: string
+          description: |
+            M21 / ADR-041 — the single source of truth for the agent connection
+            lifecycle. Surfaced live on the /api/v1/sites/events SSE `site`
+            payload; surfacing it on this strict REST Site shape is a Phase 4
+            follow-up (the legacy status/health_status remain in sync meanwhile).
+          enum: [pending_enrollment, connected, degraded, disconnected, revoked, archived]
+        connection_generation:
+          type: integer
+          format: int32
+          description: M21 — bumps on each re-enrollment under the same site_id.
+        disconnected_reason:
+          type: string
+          description: M21 — reason recorded on the last down transition.
         server_info:
           type: string
         multisite:
@@ -2657,6 +2885,50 @@ components:
           description: |
             The control plane's Ed25519 PUBLIC signing key (base64 std). The agent
             uses it to verify control-plane->agent commands.
+    SiteEnrollmentCode:
+      type: object
+      description: |
+        M21 — the once-shown enrollment code returned by the site-first create
+        and the begin-re-enrollment endpoints. The plaintext code is never
+        retrievable again.
+      required: [site_id, enrollment_code, expires_at]
+      properties:
+        site_id:
+          type: string
+          format: uuid
+        enrollment_code:
+          type: string
+          description: The single-use, site-bound pairing code (shown once).
+        expires_at:
+          type: string
+          format: date-time
+    SiteLifecycleReason:
+      type: object
+      description: Optional reason recorded in connection history + audit.
+      properties:
+        reason:
+          type: string
+          maxLength: 200
+    AgentHeartbeatResult:
+      type: object
+      description: M21 — heartbeat acknowledgement with optional pending instructions.
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        instructions:
+          type: array
+          description: Pending agent instructions, e.g. ["revoke"].
+          items:
+            type: string
+    AgentDisconnect:
+      type: object
+      description: M21 — the signed last-will body.
+      properties:
+        reason:
+          type: string
+          maxLength: 64
+          description: deactivated | uninstalled | user_initiated
     AgentMetadata:
       type: object
       properties:
@@ -2705,6 +2977,12 @@ components:
         php_version:
           type: string
           maxLength: 32
+        tags:
+          type: array
+          description: M21 — optional tags applied to the pending site.
+          items:
+            type: string
+            maxLength: 64
     SiteList:
       type: object
       required: [items]

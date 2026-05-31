@@ -17,8 +17,21 @@ type Querier interface {
 	// scheduler resolves the tenant from the due-row first, then advances within
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
 	AdvanceBackupScheduleRun(ctx context.Context, arg AdvanceBackupScheduleRunParams) (BackupSchedule, error)
+	// any-non-archived → archived (operator terminal soft-delete). Sets archived_at;
+	// hidden from the default list (connection_state <> 'archived').
+	ArchiveSite(ctx context.Context, arg ArchiveSiteParams) (Site, error)
+	// Enroll path (app.enroll GUC): the site-first consume transition. Stores the
+	// agent key on the pre-existing pending_enrollment site and moves it to
+	// connected in one statement. The generation was already advanced at re-enroll
+	// mint time (BeginSiteReEnrollment), so we do not bump it here. Mirrors the
+	// legacy AttachAgentToSite but driving connection_state.
+	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// revoked/disconnected/archived → pending_enrollment (operator). Bumps the
+	// generation counter and clears archived_at so the row leaves the archived list.
+	// The next consume increments nothing further — generation already advanced.
+	BeginSiteReEnrollment(ctx context.Context, arg BeginSiteReEnrollmentParams) (Site, error)
 	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (BackupSnapshot, error)
 	// Consume path (app.agent). Atomic single-shot UPDATE that wins exactly once
 	// across concurrent agent callbacks: the (consumed_at IS NULL) predicate makes
@@ -28,6 +41,12 @@ type Querier interface {
 	ConsumeAutologinToken(ctx context.Context, arg ConsumeAutologinTokenParams) (ConsumeAutologinTokenRow, error)
 	// Enroll path (app.enroll GUC): mark consumed only if still unconsumed.
 	ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, error)
+	// Enroll path (app.enroll GUC): the ATOMIC single-use consume. Marks the code
+	// consumed only if it is still unconsumed AND unexpired, recording the source
+	// IP. Exactly one concurrent caller wins (the conditional UPDATE is the lock);
+	// a loser gets pgx.ErrNoRows. Returns the resolved tenant_id + site_id so the
+	// caller can transition the bound site. NULL site_id ⇒ legacy create-at-enroll.
+	ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error)
 	// Best-effort per-tenant in-flight task count, used by the parallelism guard so
 	// one tenant cannot saturate the worker pool. Runs in the tenant's RLS scope.
 	CountRunningTasksForTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
@@ -49,12 +68,23 @@ type Querier interface {
 	CreateMembership(ctx context.Context, arg CreateMembershipParams) (Membership, error)
 	// Tenant-scoped (app.tenant_id) — operator generates a code for the tenant.
 	CreatePairingCode(ctx context.Context, arg CreatePairingCodeParams) (PairingCode, error)
+	// Site-first "Add site" flow (ADR-041): create the sites row in
+	// pending_enrollment BEFORE the agent enrolls, so the enrollment code can be
+	// bound to a real site_id and the dashboard can subscribe to it immediately.
+	CreatePendingSite(ctx context.Context, arg CreatePendingSiteParams) (Site, error)
 	// Upsert on (site_id, user_id): if a share already exists for this (site, user)
 	// pair, update the role, granted_by and expires_at in place.
 	CreateShare(ctx context.Context, arg CreateShareParams) (SiteShare, error)
 	// tenant_id is supplied explicitly for defense-in-depth; RLS additionally
 	// enforces that it matches the current app.tenant_id setting.
 	CreateSite(ctx context.Context, arg CreateSiteParams) (Site, error)
+	// ---------------------------------------------------------------------------
+	// M21 — site-bound pairing codes (live enrollment + re-enroll, ADR-041).
+	// ---------------------------------------------------------------------------
+	// Tenant-scoped (app.tenant_id): mint a code bound to an existing site_id (the
+	// site already exists in pending_enrollment). Consuming this code transitions
+	// THAT site to connected rather than creating a new row.
+	CreateSiteBoundPairingCode(ctx context.Context, arg CreateSiteBoundPairingCodeParams) (PairingCode, error)
 	CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnrollParams) (Site, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
 	// M3 bulk-update queries. Every statement is tenant-scoped both explicitly
@@ -136,6 +166,29 @@ type Querier interface {
 	// Enrollment path (app.enroll GUC). These run before any tenant scope exists.
 	// ---------------------------------------------------------------------------
 	GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLForEnrollParams) (Site, error)
+	// Loads one event under the tenant scope (the LISTEN listener uses this after a
+	// NOTIFY to fetch the body it must fan out).
+	GetSiteEvent(ctx context.Context, arg GetSiteEventParams) (SiteEvent, error)
+	// M21 — Connection lifecycle (Phase 5.7, ADR-038/039/040/041).
+	//
+	// These queries drive the ConnectionService state machine, the SSE event
+	// journal, and the timeout sweeper. The state machine is enforced in Go
+	// (site.CanTransition); the SQL here performs the load + the single-state
+	// write inside one InTenantTx (or InEnrollTx for the pre-tenant consume path).
+	// ---------------------------------------------------------------------------
+	// Site load for a read-modify-write transition (tenant-scoped, FOR UPDATE).
+	// ---------------------------------------------------------------------------
+	// Loads a site under the tenant scope with a row lock so the load → validate →
+	// write sequence is serialized against concurrent transitions on the same row.
+	GetSiteForTransition(ctx context.Context, arg GetSiteForTransitionParams) (Site, error)
+	// ---------------------------------------------------------------------------
+	// Timeout-sweeper selects (cross-tenant, app.agent GUC). Both scan the partial
+	// idx_sites_last_seen index (connected/degraded only).
+	// ---------------------------------------------------------------------------
+	// Resolves a site's tenant by id (cross-tenant, app.agent GUC). Used by the
+	// tenant-less ConnectionService entry points (MarkDegraded/MarkDisconnected/
+	// RecordLastWill) to recover the tenant scope before the tenant-scoped write.
+	GetSiteTenant(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
 	// GetTenantForUser returns a tenant by id only when the given user is a member.
 	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
@@ -166,6 +219,15 @@ type Querier interface {
 	// ============================================================================
 	// Mint path (app.tenant_id). The id is the JWT jti (base64url 32B random).
 	InsertAutologinToken(ctx context.Context, arg InsertAutologinTokenParams) (AutologinToken, error)
+	// ---------------------------------------------------------------------------
+	// site_connection_history — append-only transition log (tenant-scoped).
+	// ---------------------------------------------------------------------------
+	InsertConnectionHistory(ctx context.Context, arg InsertConnectionHistoryParams) (SiteConnectionHistory, error)
+	// ---------------------------------------------------------------------------
+	// site_events — durable SSE journal (tenant-scoped insert/replay, cross-tenant
+	// prune). The app mints the ULID event_id; NOTIFY carries only the id.
+	// ---------------------------------------------------------------------------
+	InsertSiteEvent(ctx context.Context, arg InsertSiteEventParams) (SiteEvent, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
 	// Cross-tenant enumeration for the evaluator (app.agent GUC). Only enabled
@@ -183,6 +245,8 @@ type Querier interface {
 	// Completed snapshots for a site, newest first, used to compute the retention
 	// archive set (newest per calendar month).
 	ListCompletedSnapshotsForSite(ctx context.Context, arg ListCompletedSnapshotsForSiteParams) ([]ListCompletedSnapshotsForSiteRow, error)
+	// Newest first; used by the per-site lifecycle timeline.
+	ListConnectionHistory(ctx context.Context, arg ListConnectionHistoryParams) ([]SiteConnectionHistory, error)
 	// Cross-tenant enumeration of enabled schedules whose next_run_at has passed,
 	// for the periodic scheduler. Runs under the app.agent GUC (scheduler policy).
 	ListDueBackupSchedules(ctx context.Context, arg ListDueBackupSchedulesParams) ([]BackupSchedule, error)
@@ -225,7 +289,14 @@ type Querier interface {
 	// Self-read: returns the caller's own non-expired shares across all tenants.
 	// Must be run under a tx that sets app.user_id (site_shares_self_read policy).
 	ListSharesForUser(ctx context.Context, userID uuid.UUID) ([]SiteShare, error)
+	// Defaults to hiding archived sites (ADR-041). When sqlc.narg('state') is set
+	// the list is filtered to exactly that connection_state (e.g. 'archived' for
+	// the archived chip); when it is NULL every non-archived site is returned.
 	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
+	// connected sites whose last heartbeat is older than the degrade cutoff.
+	ListSitesToDegrade(ctx context.Context, lastSeenAt pgtype.Timestamptz) ([]ListSitesToDegradeRow, error)
+	// degraded sites whose last heartbeat is older than the disconnect cutoff.
+	ListSitesToDisconnect(ctx context.Context, lastSeenAt pgtype.Timestamptz) ([]ListSitesToDisconnectRow, error)
 	// Watchdog feeder: a running snapshot whose latest progress is older than the
 	// stall threshold (or whose runner never reported any progress despite being
 	// running for longer than the threshold). The new index
@@ -253,16 +324,48 @@ type Querier interface {
 	MarkAutologinTokenConsumed(ctx context.Context, arg MarkAutologinTokenConsumedParams) (int64, error)
 	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (BackupSnapshot, error)
 	MarkInvitationAccepted(ctx context.Context, arg MarkInvitationAcceptedParams) (Invitation, error)
+	// ---------------------------------------------------------------------------
+	// Connection-state transitions. Each writes connection_state plus the derived
+	// legacy status/health_status (ADR-041 keeps the legacy columns in sync), and
+	// the relevant timestamp/reason/generation fields.
+	// ---------------------------------------------------------------------------
+	// pending_enrollment/degraded/disconnected → connected. Refreshes liveness and
+	// clears the disconnected_at/reason set by a prior down transition. The legacy
+	// status='active'/health_status='healthy' mirror the new connection_state.
+	MarkSiteConnected(ctx context.Context, arg MarkSiteConnectedParams) (Site, error)
+	// connected → degraded (timeout sweeper only). Legacy health_status mirrors it.
+	MarkSiteDegraded(ctx context.Context, arg MarkSiteDegradedParams) (Site, error)
+	// degraded → disconnected (timeout sweeper) OR connected/degraded → disconnected
+	// (signed agent last-will). Records disconnected_at + the reason.
+	MarkSiteDisconnected(ctx context.Context, arg MarkSiteDisconnectedParams) (Site, error)
+	// connected/degraded/disconnected → revoked (operator). Nulls agent_public_key
+	// so a later re-enroll cannot collide on the unique index, and records the
+	// reason. The agent learns of the revoke on its next heartbeat (derived
+	// instruction from connection_state='revoked').
+	MarkSiteRevoked(ctx context.Context, arg MarkSiteRevokedParams) (Site, error)
 	// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
 	MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error)
 	MarkUpdateTaskRunning(ctx context.Context, arg MarkUpdateTaskRunningParams) (UpdateTask, error)
+	// Enroll path (app.enroll GUC): resolve whether a presented code is site-bound
+	// (returns its site_id) WITHOUT consuming it, so /enroll can route between the
+	// site-first consume and the legacy create-at-enroll flow. Does not leak: only
+	// the site_id (nullable) is returned, and the caller already holds the code.
+	PeekPairingCodeSiteID(ctx context.Context, codeHash string) (pgtype.UUID, error)
 	// Drops nonces older than the freshness window; called opportunistically.
 	PruneAgentNonces(ctx context.Context, createdAt time.Time) (int64, error)
+	// Ring-buffer prune: drop events older than the replay window (cross-tenant,
+	// app.agent GUC). Bounds table growth.
+	PruneSiteEvents(ctx context.Context, createdAt time.Time) (int64, error)
 	// Rotate the token of a still-pending invitation: overwrite token_hash (kills
 	// the old link), reset expiry + attempts, and clear any prior soft-revoke.
 	// Only an un-accepted row is touched (RETURNING -> ErrNoRows if already
 	// accepted). The new raw token is generated by the caller.
 	RegenerateInvitationToken(ctx context.Context, arg RegenerateInvitationTokenParams) (Invitation, error)
+	// Replays events after a client cursor (?since / Last-Event-ID). ULIDs sort
+	// lexicographically, so event_id > $2 is monotonic-after.
+	ReplaySiteEvents(ctx context.Context, arg ReplaySiteEventsParams) ([]SiteEvent, error)
+	// archived → disconnected (operator un-archive). Clears archived_at.
+	RestoreSite(ctx context.Context, arg RestoreSiteParams) (Site, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
 	// Soft-revoke a still-pending invitation. Idempotent / race-safe: only an
 	// un-accepted, un-revoked row is touched (RETURNING -> ErrNoRows if it was
@@ -289,6 +392,15 @@ type Querier interface {
 	SetUpdateRunStatus(ctx context.Context, arg SetUpdateRunStatusParams) (UpdateRun, error)
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
+	// ---------------------------------------------------------------------------
+	// Heartbeat liveness (tenant-scoped). Returns the current connection_state so
+	// the service can decide whether a recovery transition is needed and whether
+	// to hand the agent a pending instruction.
+	// ---------------------------------------------------------------------------
+	// Bumps last_seen_at and returns the post-update row. Does NOT change
+	// connection_state (a recovery from degraded/disconnected is a separate,
+	// audited transition the service performs explicitly).
+	TouchSiteHeartbeat(ctx context.Context, arg TouchSiteHeartbeatParams) (Site, error)
 	TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (Site, error)
 	TouchUserLogin(ctx context.Context, id uuid.UUID) error
 	// M5.6 / ADR-032: agent runner posts a JSONB progress payload at every phpbu

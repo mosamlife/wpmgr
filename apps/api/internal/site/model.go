@@ -44,8 +44,16 @@ type Site struct {
 	// WpGmtOffset is the site's GMT offset in fractional hours (e.g. 5.5 for
 	// +05:30). Used as a fallback when WpTimezone is empty.
 	WpGmtOffset float64
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// M21 connection lifecycle (ADR-041). ConnectionState is the single source of
+	// truth for the agent connection; the legacy Status/HealthStatus columns are
+	// kept in sync but only ConnectionState drives the lifecycle UI.
+	ConnectionState      ConnectionState
+	ConnectionGeneration int32
+	DisconnectedAt       *time.Time
+	DisconnectedReason   string
+	ArchivedAt           *time.Time
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // CreateInput is the validated input for creating a site under a tenant.
@@ -76,8 +84,12 @@ type ScopedPrincipal interface {
 // site-scoped) so the RESTRICTIVE RLS policy filters the result to only
 // the sites the principal is allowed to see.
 type ListInput struct {
-	TenantID  uuid.UUID
-	Tag       string
+	TenantID uuid.UUID
+	Tag      string
+	// State, when non-empty, filters to exactly that connection_state (e.g.
+	// "archived" for the archived chip). When empty the list hides archived
+	// sites (the ADR-041 default).
+	State     string
 	Limit     int32
 	Offset    int32
 	Principal ScopedPrincipal // optional; nil → plain InTenantTx (org-scoped)

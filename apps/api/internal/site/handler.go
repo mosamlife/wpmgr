@@ -32,6 +32,9 @@ type RefreshEnqueuer interface {
 type Handler struct {
 	svc   *Service
 	audit *audit.Recorder
+	// conn is the M21 connection-lifecycle service (ADR-041). nil ⇒ the
+	// lifecycle routes + the site-first create return 501 / fall back to legacy.
+	conn ConnectionService
 	// cpPublicKey is the control-plane's base64 Ed25519 PUBLIC signing key,
 	// returned to agents at enrollment so they can verify CP->agent commands.
 	cpPublicKey string
@@ -92,6 +95,8 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/sites", authz.RequirePermission(authz.PermSiteWrite), h.create)
 	r.GET("/sites", authz.RequirePermission(authz.PermSiteRead), h.list)
 	r.POST("/sites/pairing-codes", authz.RequirePermission(authz.PermSiteWrite), h.createPairingCode)
+	// M21 connection-lifecycle mutations (revoke/archive/restore/re-enroll).
+	h.RegisterConnection(r)
 	// Per-siteId routes: RequireSiteAccess enforces the site allowlist for
 	// site-scoped principals (belt-and-braces in front of the RLS policy).
 	r.GET("/sites/:siteId", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.get)
@@ -121,6 +126,15 @@ type createSiteRequest struct {
 }
 
 func (h *Handler) create(c *gin.Context) {
+	// M21 site-first flow: when the connection-lifecycle service is wired, POST
+	// /sites provisions a pending_enrollment site + a site-bound enrollment code
+	// and returns {site_id, enrollment_code, expires_at} (BREAKING shape change
+	// vs the legacy bare-Site response). Falls back to the legacy create when the
+	// lifecycle service is disabled (no SSE bus / dev builds).
+	if h.conn != nil {
+		h.createWithEnrollment(c)
+		return
+	}
 	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
 	if !ok {
 		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
@@ -181,6 +195,14 @@ func (h *Handler) list(c *gin.Context) {
 		Tag:      c.Query("tag"),
 		Limit:    parseInt32(c.Query("limit"), 50),
 		Offset:   parseInt32(c.Query("offset"), 0),
+	}
+	// M21: default hides archived sites; ?state=<connection_state> filters to a
+	// single state (e.g. archived chip). ?include_archived=true is a convenience
+	// alias that surfaces only the archived list.
+	if st := c.Query("state"); st != "" {
+		in.State = st
+	} else if c.Query("include_archived") == "true" {
+		in.State = string(StateArchived)
 	}
 	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
 		in.Principal = p
@@ -321,6 +343,7 @@ func (h *Handler) enroll(c *gin.Context) {
 		WPVersion:      req.WPVersion,
 		PHPVersion:     req.PHPVersion,
 		Tags:           req.Tags,
+		ConsumedFromIP: c.ClientIP(),
 	})
 	if err != nil {
 		httpx.Error(c, err)

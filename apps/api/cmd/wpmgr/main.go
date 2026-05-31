@@ -43,6 +43,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sharing"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
+	siteevents "github.com/mosamlife/wpmgr/apps/api/internal/site/events"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
 	"github.com/mosamlife/wpmgr/apps/api/internal/telemetry"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
@@ -441,6 +442,27 @@ func run() error {
 	siteRepo := site.NewRepo(pool)
 	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
 
+	// M21 — Live enrollment + connection lifecycle (ADR-038/039/040/041).
+	// Event bus: tenant-keyed SSE Hub + durable site_events journal + LISTEN
+	// fan-out. The connection service is the single owner of every state
+	// transition; the sweeper is the only caller of the degraded/disconnected
+	// transitions. The Listener goroutine is started below (after the pool is up).
+	siteEventsHub := siteevents.NewHub()
+	siteEventsPub := siteevents.NewPublisher(pool, clock)
+	connSvc := site.NewConnectionService(siteRepo, validator, auditRec, siteEventsPub, clock)
+	// Inject the lifecycle service into the enroll branch (site-bound consume)
+	// and the agent heartbeat/disconnect handler.
+	siteSvc.SetConnectionService(connSvc)
+	agentH.SetLifecycleSink(site.NewAgentLifecycleAdapter(connSvc))
+	// Timeout sweeper (every 15s) + site_events prune (every minute).
+	siteSweeper := site.NewSweeper(siteRepo, connSvc.(site.SweeperTransitioner), siteEventsPub)
+	siteSweepWorker := site.NewSweepWorker(siteSweeper)
+	siteEventPruneWorker := site.NewEventPruneWorker(siteSweeper)
+	// SSE endpoint + the dedicated LISTEN listener.
+	siteEventsH := siteevents.NewHandler(pool, siteEventsHub)
+	siteEventsListener := siteevents.NewListener(pool, siteEventsHub, logger)
+	go siteEventsListener.Run(ctx)
+
 	// S1.1 (D) — PHP-error retention GC. Always wired (the table always exists);
 	// runs once per hour sweeping rows older than 30 days.
 	phpErrorsGCWorker := diagnostics.NewErrorsGCWorker(diagnosticsRepo, 30*24*time.Hour, logger)
@@ -467,6 +489,8 @@ func run() error {
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
 		healthChecker:          healthChecker,
 		healthInterval:         cfg.Agent.HealthInterval,
+		siteSweepWorker:        siteSweepWorker,
+		siteEventPruneWorker:   siteEventPruneWorker,
 		updateWorker:           updateWorker,
 		refreshWorker:          refreshWorker,
 		perTenantParallelism:   cfg.Update.PerTenantParallelism,
@@ -499,6 +523,8 @@ func run() error {
 	updateWorker.SetRefreshEnqueuer(updateEnqueuer, refreshDebouncer)
 	siteH := site.NewHandler(siteSvc, auditRec, cpPublicKey)
 	siteH.SetRefreshEnqueuer(newSiteRefreshAdapter(updateEnqueuer), cfg.Agent.StaleAfter)
+	// M21: enable the site-first create + revoke/archive/restore/re-enroll routes.
+	siteH.SetConnectionService(connSvc)
 	if backupSvc != nil {
 		backupSvc.SetEnqueuer(backup.NewRiverEnqueuer(riverClient))
 	}
@@ -685,6 +711,7 @@ func run() error {
 		AuditH:          audit.NewHandler(auditRec),
 		TenantH:         tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:           siteH,
+		SiteEventsH:     siteEventsH,
 		UpdateH:         updateH,
 		BackupH:         backupH,
 		BackupAgentH:    backupAgentH,
@@ -800,6 +827,9 @@ func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
 type riverDeps struct {
 	healthChecker          *site.HealthChecker
 	healthInterval         time.Duration
+	// M21 connection lifecycle: the timeout sweeper (15s) + site_events prune (1m).
+	siteSweepWorker      *site.SweepWorker
+	siteEventPruneWorker *site.EventPruneWorker
 	updateWorker           *update.Worker
 	refreshWorker          *update.RefreshInventoryWorker
 	perTenantParallelism   int
@@ -862,6 +892,26 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
+	}
+
+	// M21 connection-lifecycle timeout sweeper (every 15s, ADR-039) + the
+	// site_events ring-buffer prune (every minute, ADR-038). The sweeper is the
+	// ONLY caller of the degraded/disconnected transitions.
+	if d.siteSweepWorker != nil {
+		river.AddWorker(workers, d.siteSweepWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(15*time.Second),
+			func() (river.JobArgs, *river.InsertOpts) { return site.SweepArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+	if d.siteEventPruneWorker != nil {
+		river.AddWorker(workers, d.siteEventPruneWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return site.EventPruneArgs{}, nil },
+			nil,
+		))
 	}
 
 	backupsEnabled := d.backupWorker != nil

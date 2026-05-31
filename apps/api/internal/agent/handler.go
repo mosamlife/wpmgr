@@ -337,11 +337,26 @@ type MetadataSink interface {
 	Heartbeat(ctx context.Context, tenantID, siteID uuid.UUID) error
 }
 
+// LifecycleSink handles the M21 connection-lifecycle agent calls: the 60s
+// heartbeat (returns pending instructions, e.g. a queued revoke) and the signed
+// last-will disconnect. Implemented by the site connection service (wired in
+// main). Optional on the Handler: when nil, /heartbeat falls back to the legacy
+// liveness-only Heartbeat and /disconnect returns 501.
+type LifecycleSink interface {
+	// RecordHeartbeat refreshes liveness, recovers degraded/disconnected→
+	// connected, and returns any pending agent instructions.
+	RecordHeartbeat(ctx context.Context, tenantID, siteID uuid.UUID, payload map[string]any) ([]string, error)
+	// RecordLastWill transitions connected/degraded→disconnected on a signed
+	// agent disconnect (ADR-040).
+	RecordLastWill(ctx context.Context, tenantID, siteID uuid.UUID, reason string) error
+}
+
 // Handler serves the agent-authenticated endpoints under /agent/v1. Every route
 // runs behind the agent Authenticator; the site/tenant come from the verified
 // identity on the context.
 type Handler struct {
-	sink MetadataSink
+	sink      MetadataSink
+	lifecycle LifecycleSink
 }
 
 // NewHandler builds an agent Handler.
@@ -349,11 +364,21 @@ func NewHandler(sink MetadataSink) *Handler {
 	return &Handler{sink: sink}
 }
 
+// SetLifecycleSink wires the M21 connection-lifecycle sink (heartbeat
+// instructions + signed disconnect). Call once at boot; nil disables the
+// lifecycle behaviour (legacy liveness-only heartbeat; /disconnect → 501).
+func (h *Handler) SetLifecycleSink(l LifecycleSink) { h.lifecycle = l }
+
 // Register mounts the agent routes on the given group (already wrapped with the
 // agent Authenticator middleware).
 func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/metadata", h.metadata)
 	r.POST("/heartbeat", h.heartbeat)
+	// M21 signed last-will (ADR-040). Same Ed25519 signed-request middleware as
+	// every other agent route — the signature is verified and bound to the site
+	// BEFORE this handler runs, so possession of a site_id alone cannot
+	// disconnect a site.
+	r.POST("/disconnect", h.disconnect)
 }
 
 func (h *Handler) metadata(c *gin.Context) {
@@ -390,15 +415,88 @@ func (h *Handler) metadata(c *gin.Context) {
 	c.JSON(http.StatusOK, &out)
 }
 
+// heartbeat records the 60s agent beat (ADR-039). With the M21 lifecycle sink
+// wired it refreshes liveness, recovers a degraded/disconnected site to
+// connected, and returns {ok, instructions?} (e.g. ["revoke"] for a revoked
+// site). Without the lifecycle sink it falls back to the legacy liveness-only
+// Heartbeat (204). The light metadata body is accepted and decoded best-effort;
+// it is currently not persisted (the M21 migration added no column for it) —
+// see the note in the brief; the heartbeat never fails over the payload.
 func (h *Handler) heartbeat(c *gin.Context) {
 	id, ok := IdentityFromContext(c.Request.Context())
 	if !ok {
 		httpx.Error(c, domain.Unauthorized("agent_unauthenticated", "agent identity required"))
 		return
 	}
-	if err := h.sink.Heartbeat(c.Request.Context(), id.TenantID, id.SiteID); err != nil {
+
+	if h.lifecycle == nil {
+		// Legacy path: liveness only.
+		if err := h.sink.Heartbeat(c.Request.Context(), id.TenantID, id.SiteID); err != nil {
+			httpx.Error(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	// Best-effort decode of the light heartbeat metadata. A malformed/empty body
+	// is fine — the beat is about liveness, not the payload.
+	var payload map[string]any
+	if c.Request.ContentLength != 0 {
+		body, _ := io.ReadAll(io.LimitReader(c.Request.Body, maxMetadataBytes))
+		if len(body) > 0 {
+			_ = json.Unmarshal(body, &payload)
+		}
+	}
+
+	instructions, err := h.lifecycle.RecordHeartbeat(c.Request.Context(), id.TenantID, id.SiteID, payload)
+	if err != nil {
 		httpx.Error(c, err)
 		return
 	}
-	c.Status(http.StatusNoContent)
+	resp := gin.H{"ok": true}
+	if len(instructions) > 0 {
+		resp["instructions"] = instructions
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// disconnectRequest is the signed last-will body.
+type disconnectRequest struct {
+	Reason string `json:"reason"`
+}
+
+// disconnect handles a signed agent last-will (ADR-040): connected/degraded→
+// disconnected with the supplied reason. The agent's signature was already
+// verified and bound to id.SiteID by the agent Authenticator middleware, so the
+// disconnect is provably from the holder of that site's private key.
+func (h *Handler) disconnect(c *gin.Context) {
+	id, ok := IdentityFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("agent_unauthenticated", "agent identity required"))
+		return
+	}
+	if h.lifecycle == nil {
+		httpx.Error(c, domain.Unavailable("lifecycle_disabled", "connection lifecycle is not enabled on this control plane"))
+		return
+	}
+	var req disconnectRequest
+	if c.Request.ContentLength != 0 {
+		body, _ := io.ReadAll(io.LimitReader(c.Request.Body, maxMetadataBytes))
+		if len(body) > 0 {
+			_ = json.Unmarshal(body, &req)
+		}
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "user_initiated"
+	}
+	if len(reason) > 64 {
+		reason = reason[:64]
+	}
+	if err := h.lifecycle.RecordLastWill(c.Request.Context(), id.TenantID, id.SiteID, reason); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

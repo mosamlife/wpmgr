@@ -951,6 +951,11 @@ ALTER TABLE site_connection_history FORCE ROW LEVEL SECURITY;
 CREATE POLICY conn_history_tenant_isolation ON site_connection_history
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- M21 follow-up: the site-first enroll consume appends a history row inside the
+-- public enroll tx (app.enroll='on') before any tenant scope is set.
+CREATE POLICY conn_history_enroll ON site_connection_history
+    USING (current_setting('app.enroll', true) = 'on')
+    WITH CHECK (current_setting('app.enroll', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- site_events  (M21 — durable SSE journal for LISTEN/NOTIFY fan-out + replay)
@@ -976,3 +981,7 @@ ALTER TABLE site_events FORCE ROW LEVEL SECURITY;
 CREATE POLICY site_events_tenant_isolation ON site_events
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- M21 follow-up: the cross-tenant ring-buffer prune runs under app.agent='on'.
+CREATE POLICY site_events_agent ON site_events
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');

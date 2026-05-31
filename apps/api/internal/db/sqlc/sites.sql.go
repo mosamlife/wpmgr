@@ -432,6 +432,10 @@ const listSites = `-- name: ListSites :many
 SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, created_at, updated_at FROM sites
 WHERE tenant_id = $1
   AND ($4::text IS NULL OR $4::text = ANY (tags))
+  AND (
+        ($5::text IS NULL AND connection_state <> 'archived')
+        OR $5::text = connection_state
+      )
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
 `
@@ -441,14 +445,19 @@ type ListSitesParams struct {
 	Limit    int32     `json:"limit"`
 	Offset   int32     `json:"offset"`
 	Tag      *string   `json:"tag"`
+	State    *string   `json:"state"`
 }
 
+// Defaults to hiding archived sites (ADR-041). When sqlc.narg('state') is set
+// the list is filtered to exactly that connection_state (e.g. 'archived' for
+// the archived chip); when it is NULL every non-archived site is returned.
 func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error) {
 	rows, err := q.db.Query(ctx, listSites,
 		arg.TenantID,
 		arg.Limit,
 		arg.Offset,
 		arg.Tag,
+		arg.State,
 	)
 	if err != nil {
 		return nil, err

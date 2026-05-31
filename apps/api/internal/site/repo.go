@@ -48,6 +48,83 @@ type Repo interface {
 	// deleted. Nonces older than the signature-skew window can never replay, so
 	// deleting them is safe and bounds table growth.
 	PruneNonces(ctx context.Context, before time.Time) (int64, error)
+
+	// ---- M21 connection lifecycle (ADR-041) ----
+
+	// CreatePending creates a sites row in pending_enrollment (the site-first
+	// "Add site" flow) and returns it.
+	CreatePending(ctx context.Context, tenantID uuid.UUID, url, name string, tags []string) (Site, error)
+
+	// MintSiteBoundCode binds a fresh pairing code to an existing site_id.
+	MintSiteBoundCode(ctx context.Context, in CreatePairingCodeInput, siteID uuid.UUID, codeHash string, expiresAt time.Time) (PairingCode, error)
+
+	// Transition loads the site (FOR UPDATE), validates from→to via
+	// CanTransition, then writes the new state + a site_connection_history row in
+	// one tenant-scoped tx. It returns the updated site and the from-state. The
+	// applyFn selects which state-write query to run for `to`.
+	Transition(ctx context.Context, in TransitionInput) (TransitionResult, error)
+
+	// ConsumeSiteBoundCode atomically consumes a code by hash (single-use) and,
+	// when the code is site-bound, transitions that site pending_enrollment→
+	// connected (storing the agent key, bumping nothing — the generation was
+	// already advanced at re-enroll mint time). Runs pre-tenant-scope under the
+	// enroll GUC. Returns the resulting site + whether the code was site-bound.
+	ConsumeSiteBoundCode(ctx context.Context, codeHash, consumedFromIP string, in EnrollInput) (ConsumeResult, error)
+
+	// Heartbeat bumps last_seen_at and returns the post-update site (so the
+	// service can decide on a recovery transition + pending instructions).
+	Heartbeat(ctx context.Context, tenantID, siteID uuid.UUID) (Site, error)
+
+	// ListToDegrade / ListToDisconnect are the timeout-sweeper selects
+	// (cross-tenant, app.agent GUC).
+	ListToDegrade(ctx context.Context, cutoff time.Time) ([]SiteRef, error)
+	ListToDisconnect(ctx context.Context, cutoff time.Time) ([]SiteRef, error)
+
+	// ResolveTenant resolves a site's tenant by id (cross-tenant, app.agent GUC).
+	ResolveTenant(ctx context.Context, siteID uuid.UUID) (uuid.UUID, error)
+
+	// PairingCodeSiteID peeks a code's bound site_id (enroll GUC) so /enroll can
+	// route between the site-first consume and the legacy create-at-enroll flow.
+	PairingCodeSiteID(ctx context.Context, codeHash string) (uuid.UUID, bool, error)
+}
+
+// SiteRef is the slim (site, tenant) projection the timeout sweeper iterates.
+type SiteRef struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+}
+
+// TransitionInput drives a single state-machine write. ApplyFn runs the chosen
+// state-write query inside the locked tx and returns the updated row.
+type TransitionInput struct {
+	TenantID uuid.UUID
+	SiteID   uuid.UUID
+	To       ConnectionState
+	Reason   string
+	ActorID  uuid.UUID
+	Metadata map[string]any
+	// RequireFrom, when non-empty, additionally requires the site's current
+	// state to be exactly this value (beyond CanTransition). Used where a
+	// transition target is reachable from several states but the action is only
+	// meaningful from one — e.g. Restore (archived→disconnected) must NOT fire on
+	// a connected site even though connected→disconnected is otherwise legal.
+	RequireFrom ConnectionState
+	// Apply performs the concrete state write (sqlc query) under the same tx as
+	// the FOR UPDATE load + the history insert. It receives the tx context, the
+	// loaded sqlc tx query handle, and the locked site.
+	Apply func(ctx context.Context, q *sqlc.Queries, loaded sqlc.Site) (sqlc.Site, error)
+}
+
+// TransitionResult is the outcome of a state transition.
+type TransitionResult struct {
+	Site Site
+	From ConnectionState
+}
+
+// ConsumeResult is the outcome of consuming an enrollment code.
+type ConsumeResult struct {
+	Site      Site
+	SiteBound bool // true when a pre-existing site was transitioned (site-first flow)
 }
 
 // EnrollInput carries the validated enroll request fields used to create or
@@ -127,6 +204,11 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 		t := in.Tag
 		tag = &t
 	}
+	var state *string
+	if in.State != "" {
+		st := in.State
+		state = &st
+	}
 	var out []Site
 	// FIX 3 (CRITICAL): site-scoped principals must see ONLY their granted sites.
 	// Use RunTenantTx (which dispatches to InScopedTenantTx for Scope=="site")
@@ -143,6 +225,7 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 		rows, err := sqlc.New(tx).ListSites(ctx, sqlc.ListSitesParams{
 			TenantID: in.TenantID,
 			Tag:      tag,
+			State:    state,
 			Limit:    in.Limit,
 			Offset:   in.Offset,
 		})
@@ -486,8 +569,11 @@ func toModel(s sqlc.Site) Site {
 		AgeRecipient:   s.AgeRecipient,
 		WpTimezone:     s.WpTimezone,
 		WpGmtOffset:    float64(s.WpGmtOffset),
-		CreatedAt:      s.CreatedAt,
-		UpdatedAt:      s.UpdatedAt,
+		// M21 connection lifecycle.
+		ConnectionState:      ConnectionState(s.ConnectionState),
+		ConnectionGeneration: s.ConnectionGeneration,
+		CreatedAt:            s.CreatedAt,
+		UpdatedAt:            s.UpdatedAt,
 	}
 	if s.EnrolledAt.Valid {
 		t := s.EnrolledAt.Time
@@ -496,6 +582,17 @@ func toModel(s sqlc.Site) Site {
 	if s.LastSeenAt.Valid {
 		t := s.LastSeenAt.Time
 		m.LastSeenAt = &t
+	}
+	if s.DisconnectedAt.Valid {
+		t := s.DisconnectedAt.Time
+		m.DisconnectedAt = &t
+	}
+	if s.DisconnectedReason != nil {
+		m.DisconnectedReason = *s.DisconnectedReason
+	}
+	if s.ArchivedAt.Valid {
+		t := s.ArchivedAt.Time
+		m.ArchivedAt = &t
 	}
 	if m.Tags == nil {
 		m.Tags = []string{}

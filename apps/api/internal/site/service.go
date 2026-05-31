@@ -21,12 +21,22 @@ type Service struct {
 	repo      Repo
 	validator *domain.Validator
 	clock     domain.Clock
+	// conn is the M21 connection-lifecycle service. Optional: when wired, a
+	// site-bound enrollment code transitions the bound site (the live-enroll
+	// flow); a legacy NULL-site_id code keeps the create-at-enroll path. nil ⇒
+	// every code uses the legacy path (back-compat).
+	conn ConnectionService
 }
 
 // NewService builds a site Service.
 func NewService(repo Repo, v *domain.Validator, clock domain.Clock) *Service {
 	return &Service{repo: repo, validator: v, clock: clock}
 }
+
+// SetConnectionService wires the M21 lifecycle service into the enroll branch.
+// Call once at boot (the lifecycle service depends on this Service's repo, so
+// it is constructed after and injected here).
+func (s *Service) SetConnectionService(cs ConnectionService) { s.conn = cs }
 
 // Create validates and persists a new site under the given tenant.
 func (s *Service) Create(ctx context.Context, in CreateInput) (Site, error) {
@@ -117,6 +127,9 @@ type EnrollRequest struct {
 	WPVersion      string `validate:"max=32"`
 	PHPVersion     string `validate:"max=32"`
 	Tags           []string
+	// ConsumedFromIP is the agent's source IP (best-effort, from the request).
+	// Recorded on a site-bound consume for audit; ignored on the legacy path.
+	ConsumedFromIP string `validate:"-"`
 }
 
 // Enroll validates an enroll request, verifies the agent public key is a
@@ -137,7 +150,28 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (Site, error) {
 	if _, err := agentpkg.DecodePublicKey(req.AgentPublicKey); err != nil {
 		return Site{}, domain.Validation("agent_public_key_invalid", "agent_public_key is not a valid Ed25519 public key")
 	}
-	return s.repo.Enroll(ctx, hashPairingCode(req.PairingCode), EnrollInput{
+	codeHash := hashPairingCode(req.PairingCode)
+
+	// M21: route between the site-first consume (code bound to an existing
+	// pending_enrollment site) and the legacy create-at-enroll flow. The peek
+	// does not consume; an unknown code surfaces the same invalid-code error the
+	// legacy path returns. When the lifecycle service is not wired, every code
+	// takes the legacy path (full back-compat).
+	if s.conn != nil {
+		if _, bound, perr := s.repo.PairingCodeSiteID(ctx, codeHash); perr != nil {
+			return Site{}, perr
+		} else if bound {
+			return s.conn.ConsumeEnrollmentCode(ctx, ConsumeEnrollmentInput{
+				CodeHash:       codeHash,
+				AgentPublicKey: req.AgentPublicKey,
+				SiteURL:        req.SiteURL,
+				ConsumedFromIP: req.ConsumedFromIP,
+				Meta:           Metadata{WPVersion: req.WPVersion, PHPVersion: req.PHPVersion},
+			})
+		}
+	}
+
+	return s.repo.Enroll(ctx, codeHash, EnrollInput{
 		URL:            req.SiteURL,
 		Name:           req.Name,
 		AgentPublicKey: req.AgentPublicKey,
