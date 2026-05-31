@@ -64,7 +64,10 @@ export default tseslint.config(
   // TanStack Table's useReactTable returns a stable instance; the react-hooks
   // v7 "incompatible-library" heuristic flags it as a false positive.
   {
-    files: ["src/features/sites/sites-table.tsx"],
+    files: [
+      "src/features/sites/sites-table.tsx",
+      "src/features/media/AssetsTable.tsx",
+    ],
     rules: {
       "react-hooks/incompatible-library": "off",
     },

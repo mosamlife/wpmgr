@@ -38,6 +38,7 @@ import { Route as AuthedSitesSiteIdIndexRouteImport } from './routes/_authed/sit
 import { Route as AuthedSitesSiteIdUpdatesRouteImport } from './routes/_authed/sites/$siteId.updates'
 import { Route as AuthedSitesSiteIdSettingsRouteImport } from './routes/_authed/sites/$siteId.settings'
 import { Route as AuthedSitesSiteIdSecurityRouteImport } from './routes/_authed/sites/$siteId.security'
+import { Route as AuthedSitesSiteIdMediaRouteImport } from './routes/_authed/sites/$siteId.media'
 import { Route as AuthedSitesSiteIdHealthRouteImport } from './routes/_authed/sites/$siteId.health'
 import { Route as AuthedSitesSiteIdErrorsRouteImport } from './routes/_authed/sites/$siteId.errors'
 import { Route as AuthedSitesSiteIdBackupsRouteImport } from './routes/_authed/sites/$siteId.backups'
@@ -192,6 +193,11 @@ const AuthedSitesSiteIdSecurityRoute =
     path: '/security',
     getParentRoute: () => AuthedSitesSiteIdRoute,
   } as any)
+const AuthedSitesSiteIdMediaRoute = AuthedSitesSiteIdMediaRouteImport.update({
+  id: '/media',
+  path: '/media',
+  getParentRoute: () => AuthedSitesSiteIdRoute,
+} as any)
 const AuthedSitesSiteIdHealthRoute = AuthedSitesSiteIdHealthRouteImport.update({
   id: '/health',
   path: '/health',
@@ -244,6 +250,7 @@ export interface FileRoutesByFullPath {
   '/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRoute
   '/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
   '/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
+  '/sites/$siteId/media': typeof AuthedSitesSiteIdMediaRoute
   '/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
   '/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
   '/sites/$siteId/updates': typeof AuthedSitesSiteIdUpdatesRoute
@@ -277,6 +284,7 @@ export interface FileRoutesByTo {
   '/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRoute
   '/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
   '/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
+  '/sites/$siteId/media': typeof AuthedSitesSiteIdMediaRoute
   '/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
   '/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
   '/sites/$siteId/updates': typeof AuthedSitesSiteIdUpdatesRoute
@@ -313,6 +321,7 @@ export interface FileRoutesById {
   '/_authed/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRoute
   '/_authed/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
   '/_authed/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
+  '/_authed/sites/$siteId/media': typeof AuthedSitesSiteIdMediaRoute
   '/_authed/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
   '/_authed/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
   '/_authed/sites/$siteId/updates': typeof AuthedSitesSiteIdUpdatesRoute
@@ -349,6 +358,7 @@ export interface FileRouteTypes {
     | '/sites/$siteId/backups'
     | '/sites/$siteId/errors'
     | '/sites/$siteId/health'
+    | '/sites/$siteId/media'
     | '/sites/$siteId/security'
     | '/sites/$siteId/settings'
     | '/sites/$siteId/updates'
@@ -382,6 +392,7 @@ export interface FileRouteTypes {
     | '/sites/$siteId/backups'
     | '/sites/$siteId/errors'
     | '/sites/$siteId/health'
+    | '/sites/$siteId/media'
     | '/sites/$siteId/security'
     | '/sites/$siteId/settings'
     | '/sites/$siteId/updates'
@@ -417,6 +428,7 @@ export interface FileRouteTypes {
     | '/_authed/sites/$siteId/backups'
     | '/_authed/sites/$siteId/errors'
     | '/_authed/sites/$siteId/health'
+    | '/_authed/sites/$siteId/media'
     | '/_authed/sites/$siteId/security'
     | '/_authed/sites/$siteId/settings'
     | '/_authed/sites/$siteId/updates'
@@ -636,6 +648,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSitesSiteIdSecurityRouteImport
       parentRoute: typeof AuthedSitesSiteIdRoute
     }
+    '/_authed/sites/$siteId/media': {
+      id: '/_authed/sites/$siteId/media'
+      path: '/media'
+      fullPath: '/sites/$siteId/media'
+      preLoaderRoute: typeof AuthedSitesSiteIdMediaRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
     '/_authed/sites/$siteId/health': {
       id: '/_authed/sites/$siteId/health'
       path: '/health'
@@ -672,6 +691,7 @@ interface AuthedSitesSiteIdRouteChildren {
   AuthedSitesSiteIdBackupsRoute: typeof AuthedSitesSiteIdBackupsRoute
   AuthedSitesSiteIdErrorsRoute: typeof AuthedSitesSiteIdErrorsRoute
   AuthedSitesSiteIdHealthRoute: typeof AuthedSitesSiteIdHealthRoute
+  AuthedSitesSiteIdMediaRoute: typeof AuthedSitesSiteIdMediaRoute
   AuthedSitesSiteIdSecurityRoute: typeof AuthedSitesSiteIdSecurityRoute
   AuthedSitesSiteIdSettingsRoute: typeof AuthedSitesSiteIdSettingsRoute
   AuthedSitesSiteIdUpdatesRoute: typeof AuthedSitesSiteIdUpdatesRoute
@@ -683,6 +703,7 @@ const AuthedSitesSiteIdRouteChildren: AuthedSitesSiteIdRouteChildren = {
   AuthedSitesSiteIdBackupsRoute: AuthedSitesSiteIdBackupsRoute,
   AuthedSitesSiteIdErrorsRoute: AuthedSitesSiteIdErrorsRoute,
   AuthedSitesSiteIdHealthRoute: AuthedSitesSiteIdHealthRoute,
+  AuthedSitesSiteIdMediaRoute: AuthedSitesSiteIdMediaRoute,
   AuthedSitesSiteIdSecurityRoute: AuthedSitesSiteIdSecurityRoute,
   AuthedSitesSiteIdSettingsRoute: AuthedSitesSiteIdSettingsRoute,
   AuthedSitesSiteIdUpdatesRoute: AuthedSitesSiteIdUpdatesRoute,

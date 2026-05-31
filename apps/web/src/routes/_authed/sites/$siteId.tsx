@@ -68,6 +68,9 @@ const TABS = [
   { to: "/sites/$siteId/health", label: "Health" },
   { to: "/sites/$siteId/updates", label: "Updates" },
   { to: "/sites/$siteId/backups", label: "Backups" },
+  // ADR-043 — Media Optimizer tab. Route file:
+  // apps/web/src/routes/_authed/sites/$siteId.media.tsx
+  { to: "/sites/$siteId/media", label: "Media" },
   { to: "/sites/$siteId/security", label: "Security" },
   { to: "/sites/$siteId/activity", label: "Activity" },
   // ADR-037 Sprint 2 — PHP-error monitor tab. Route file:

@@ -39,6 +39,23 @@ const SITE_EVENT_TYPES = [
   "site.disconnected",
   "site.archived",
   "site.restored",
+  // Media Optimizer (ADR-043 §7). These are published on this SAME shared
+  // tenant bus (filtered by site_id), NOT on a per-job stream. The names mirror
+  // the Go constants in apps/api/internal/site/connection.go. Because the SSE
+  // frame is validated with `z.enum(SITE_EVENT_TYPES)` below AND only the types
+  // in this array get an `addEventListener` (see openSource), a media.* type
+  // MISSING here would be silently dropped — every media event must be listed.
+  "media.sync.started",
+  "media.sync.completed",
+  "media.optimize.started",
+  "media.optimize.progress",
+  "media.optimize.asset_done",
+  "media.optimize.completed",
+  "media.restore.started",
+  "media.restore.asset_done",
+  "media.restore.completed",
+  "media.delete_originals.completed",
+  "media.job.failed",
 ] as const;
 
 export type SiteEventType = (typeof SITE_EVENT_TYPES)[number];
