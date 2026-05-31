@@ -1663,6 +1663,167 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /agent/v1/media/sync-batch:
+    post:
+      operationId: agentMediaSyncBatch
+      summary: Push a page of enumerated media attachments (agent-authenticated)
+      description: |
+        Media Optimizer (ADR-043) — the agent's `media_sync` command pushes pages
+        of ≤200 attachments here. Authenticated via the Ed25519 signed-request
+        scheme; the tenant+site come from the verified identity, never a header.
+      tags: [agent, media]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentMediaSyncBatch"
+      responses:
+        "200":
+          description: Batch upserted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upserted_count: { type: integer }
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/media/presign:
+    post:
+      operationId: agentMediaPresign
+      summary: Request presigned PUT URLs for source variants (agent-authenticated)
+      description: |
+        Media Optimizer (ADR-043) — the agent's `media_optimize` command requests
+        presigned PUT URLs (one per variant, ≤10) so it can upload source bytes to
+        media/<tenant>/<site>/<job>/src/<name>. No image bytes pass through the CP.
+      tags: [agent, media]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentMediaPresign"
+      responses:
+        "200":
+          description: Presigned upload URLs keyed by variant name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uploads:
+                    type: object
+                    additionalProperties: { type: string }
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/media/encode-ready:
+    post:
+      operationId: agentMediaEncodeReady
+      summary: Signal that source variants are uploaded (agent-authenticated)
+      description: |
+        Media Optimizer (ADR-043) — the agent calls this after presigned-PUTting
+        the source variants so the CP enqueues the encode jobs.
+      tags: [agent, media]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentMediaPresign"
+      responses:
+        "200":
+          description: Encode-ready acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/media/job-status:
+    post:
+      operationId: agentMediaJobStatus
+      summary: Report an apply (or delete-originals) result (agent-authenticated)
+      description: |
+        Media Optimizer (ADR-043) — after `media_apply` or `media_delete_originals`,
+        the agent reports the applied variants, byte sizes, compression level,
+        target format, and DB-rewrite row counts so the CP can upsert the mirror
+        row (site_media_assets).
+      tags: [agent, media]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentMediaJobStatus"
+      responses:
+        "200":
+          description: Status recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/media/restore-status:
+    post:
+      operationId: agentMediaRestoreStatus
+      summary: Report a restore result (agent-authenticated)
+      description: |
+        Media Optimizer (ADR-043) — after `media_restore`, the agent reports
+        whether the attachment was reverted to its pre-optimization state.
+      tags: [agent, media]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentMediaRestoreStatus"
+      responses:
+        "200":
+          description: Restore status recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}:
     get:
       operationId: getSite
@@ -3119,6 +3280,70 @@ components:
           type: string
           maxLength: 64
           description: deactivated | uninstalled | user_initiated
+    AgentMediaSyncBatch:
+      type: object
+      description: ADR-043 — one page (≤200) of enumerated media attachments.
+      required: [attachments]
+      properties:
+        attachments:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            properties:
+              wp_attachment_id: { type: integer, format: int64 }
+              title: { type: string }
+              original_path: { type: string }
+              original_url: { type: string }
+              original_mime: { type: string }
+              original_width: { type: integer, nullable: true }
+              original_height: { type: integer, nullable: true }
+              original_size_bytes: { type: integer, format: int64 }
+    AgentMediaPresign:
+      type: object
+      description: ADR-043 — request presigned PUT URLs (presign) or signal sources uploaded (encode-ready).
+      required: [job_id, variants]
+      properties:
+        job_id: { type: string }
+        variants:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              source_size: { type: integer, format: int64 }
+              source_mime: { type: string }
+    AgentMediaJobStatus:
+      type: object
+      description: ADR-043 — apply / delete-originals result reported to the CP.
+      required: [job_id]
+      properties:
+        job_id: { type: string }
+        applied_variants:
+          type: array
+          items: { type: string }
+        sizes_unoptimized:
+          type: object
+          additionalProperties: { type: string }
+        current_format: { type: string }
+        current_size_bytes: { type: integer, format: int64 }
+        bytes_before: { type: integer, format: int64, nullable: true }
+        bytes_after: { type: integer, format: int64, nullable: true }
+        compression_level: { type: string }
+        target_format: { type: string }
+        rewrite_stats:
+          type: object
+          additionalProperties: true
+        error: { type: string }
+    AgentMediaRestoreStatus:
+      type: object
+      description: ADR-043 — restore result reported to the CP.
+      required: [job_id, restored]
+      properties:
+        job_id: { type: string }
+        restored: { type: boolean }
+        error: { type: string }
     AgentMetadata:
       type: object
       properties:

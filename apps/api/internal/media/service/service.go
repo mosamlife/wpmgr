@@ -224,6 +224,7 @@ func (s *Service) StartOptimize(ctx context.Context, tenantID, siteID uuid.UUID,
 	batchID := siteevents.NewULID(s.clock.Now())
 	initiator := userPtr(p)
 	jobIDs := make([]string, 0, len(assets))
+	jobs := make([]agentcmd.MediaJobRef, 0, len(assets))
 	for _, a := range assets {
 		jobID := siteevents.NewULID(s.clock.Now())
 		assetID := a.ID
@@ -241,6 +242,7 @@ func (s *Service) StartOptimize(ctx context.Context, tenantID, siteID uuid.UUID,
 		}
 		_ = s.repo.SetAssetStatus(ctx, tenantID, a.ID, model.AssetOptimizing)
 		jobIDs = append(jobIDs, jobID)
+		jobs = append(jobs, agentcmd.MediaJobRef{JobID: jobID, WPAttachmentID: a.WPAttachmentID})
 	}
 
 	s.publish(ctx, tenantID, siteID, site.EventMediaOptimizeStarted, map[string]any{
@@ -258,7 +260,7 @@ func (s *Service) StartOptimize(ctx context.Context, tenantID, siteID uuid.UUID,
 		return BatchResult{}, domain.ServiceUnavailable("media_agent_unwired", "media agent client is not wired")
 	}
 	if _, err := s.cmd.MediaOptimize(ctx, siteID, si.URL, agentcmd.MediaOptimizeRequest{
-		JobIDs:          jobIDs,
+		Jobs:            jobs,
 		TargetFormat:    targetFormat,
 		TargetQuality:   targetQuality,
 		PresignEndpoint: s.callbackURL("/agent/v1/media/presign"),
@@ -290,6 +292,7 @@ func (s *Service) StartRestore(ctx context.Context, tenantID, siteID uuid.UUID, 
 	batchID := siteevents.NewULID(s.clock.Now())
 	initiator := userPtr(p)
 	jobIDs := make([]string, 0, len(assets))
+	jobs := make([]agentcmd.MediaJobRef, 0, len(assets))
 	for _, a := range assets {
 		if a.Status == model.AssetOriginalsDeleted {
 			return BatchResult{}, domain.Conflict("originals_deleted_cannot_restore",
@@ -309,6 +312,7 @@ func (s *Service) StartRestore(ctx context.Context, tenantID, siteID uuid.UUID, 
 		}
 		_ = s.repo.SetAssetStatus(ctx, tenantID, a.ID, model.AssetRestoring)
 		jobIDs = append(jobIDs, jobID)
+		jobs = append(jobs, agentcmd.MediaJobRef{JobID: jobID, WPAttachmentID: a.WPAttachmentID})
 	}
 
 	s.publish(ctx, tenantID, siteID, site.EventMediaRestoreStarted, map[string]any{
@@ -324,7 +328,7 @@ func (s *Service) StartRestore(ctx context.Context, tenantID, siteID uuid.UUID, 
 		return BatchResult{}, domain.ServiceUnavailable("media_agent_unwired", "media agent client is not wired")
 	}
 	if _, err := s.cmd.MediaRestore(ctx, siteID, si.URL, agentcmd.MediaRestoreRequest{
-		JobIDs:         jobIDs,
+		Jobs:           jobs,
 		StatusEndpoint: s.callbackURL("/agent/v1/media/restore-status"),
 	}); err != nil {
 		for _, jid := range jobIDs {
@@ -355,6 +359,7 @@ func (s *Service) StartDeleteOriginals(ctx context.Context, tenantID, siteID uui
 	batchID := siteevents.NewULID(s.clock.Now())
 	initiator := userPtr(p)
 	jobIDs := make([]string, 0, len(assets))
+	jobs := make([]agentcmd.MediaJobRef, 0, len(assets))
 	for _, a := range assets {
 		if a.Status != model.AssetOptimized {
 			return BatchResult{}, domain.Conflict("asset_not_optimized",
@@ -373,6 +378,7 @@ func (s *Service) StartDeleteOriginals(ctx context.Context, tenantID, siteID uui
 			return BatchResult{}, err
 		}
 		jobIDs = append(jobIDs, jobID)
+		jobs = append(jobs, agentcmd.MediaJobRef{JobID: jobID, WPAttachmentID: a.WPAttachmentID})
 	}
 
 	// Destructive consent: ActorUser so the hash chain attributes it.
@@ -386,7 +392,7 @@ func (s *Service) StartDeleteOriginals(ctx context.Context, tenantID, siteID uui
 		return BatchResult{}, domain.ServiceUnavailable("media_agent_unwired", "media agent client is not wired")
 	}
 	if _, err := s.cmd.MediaDeleteOriginals(ctx, siteID, si.URL, agentcmd.MediaDeleteOriginalsRequest{
-		JobIDs:         jobIDs,
+		Jobs:           jobs,
 		StatusEndpoint: s.callbackURL("/agent/v1/media/job-status"),
 	}); err != nil {
 		for _, jid := range jobIDs {

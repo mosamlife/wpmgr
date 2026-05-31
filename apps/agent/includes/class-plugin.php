@@ -20,6 +20,12 @@ use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
 use WPMgr\Agent\Commands\DiagnosticsCommand;
 use WPMgr\Agent\Commands\InfoCommand;
+use WPMgr\Agent\Commands\MediaApplyCommand;
+use WPMgr\Agent\Commands\MediaDeleteOriginalsCommand;
+use WPMgr\Agent\Commands\MediaOptimizeCommand;
+use WPMgr\Agent\Commands\MediaRestoreCommand;
+use WPMgr\Agent\Commands\MediaStatsCommand;
+use WPMgr\Agent\Commands\MediaSyncCommand;
 use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Commands\RefreshInventoryCommand;
 use WPMgr\Agent\Commands\RestoreCommand;
@@ -32,6 +38,8 @@ use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
 use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 use WPMgr\Agent\Diagnostics\SizeProbe;
+use WPMgr\Agent\Media\HtaccessInstaller;
+use WPMgr\Agent\Media\MediaUploader;
 use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ErrorMonitor;
@@ -39,6 +47,7 @@ use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\MuPluginInstaller;
 use WPMgr\Agent\Support\UpdateChecker;
+use WPMgr\Agent\Webhooks\MediaModalInjector;
 
 /**
  * Top-level plugin orchestrator.
@@ -367,6 +376,14 @@ final class Plugin
 
         if (function_exists('is_admin') && is_admin()) {
             $this->admin->registerHooks();
+
+            // Media Optimizer (Phase 4) — surface per-attachment optimization
+            // stats in the Media Library modal + the attachment edit meta box.
+            // Read-only, admin-only; the injected HTML is escaped by
+            // StatsRenderer (XSS-safe). The htaccess Accept-fallback block is
+            // installed lazily on the first different-ext apply (MediaApplyCommand),
+            // NOT here — an inert site touches no server config.
+            (new MediaModalInjector())->registerHooks();
             // Lazily retry keystore setup and surface a fix-it notice if it
             // could not be established during activation.
             add_action('admin_init', [$this, 'ensureKeystoreReady']);
@@ -657,6 +674,18 @@ final class Plugin
         // the cron worker so the REST entry point stays minimal.
         $ageIdentity = new AgeIdentity($this->keystore);
 
+        // Media Optimizer (Phase 4). The MediaUploader is the single signed
+        // agent->CP + presigned-S3 transport seam (mirrors BackupTransport),
+        // built from the same Signer every other agent->CP call uses. The six
+        // commands map 1:1 to the CP contract:
+        //   media_sync             -> /agent/v1/media/sync-batch
+        //   media_optimize         -> /agent/v1/media/presign + /encode-ready
+        //   media_apply            -> /agent/v1/media/job-status
+        //   media_restore          -> /agent/v1/media/restore-status
+        //   media_delete_originals -> /agent/v1/media/job-status
+        //   media_stats            -> local read (no CP callback)
+        $mediaUploader = new MediaUploader($this->signer);
+
         return [
             new InfoCommand(),
             // M5.6 / ADR-033: BackupCommand validates the signed CP request,
@@ -713,6 +742,16 @@ final class Plugin
             // logo_link, and message; LoginBrand::applyConfig validates and writes
             // wpmgr_login_brand; the login-page hooks pick it up on next request.
             new SyncLoginBrandCommand($this->loginBrand),
+            // Media Optimizer (Phase 4) — the six CP->agent commands. Each shares
+            // the MediaUploader transport; the apply/restore/delete commands build
+            // their own AttachmentMeta/DbRewriter/Rename/DiskWriter seams (default
+            // ctor args), so the REST entry point stays minimal.
+            new MediaSyncCommand($mediaUploader),
+            new MediaOptimizeCommand($mediaUploader),
+            new MediaApplyCommand($mediaUploader, null, null, null, new HtaccessInstaller()),
+            new MediaRestoreCommand($mediaUploader),
+            new MediaDeleteOriginalsCommand($mediaUploader),
+            new MediaStatsCommand(),
         ];
     }
 

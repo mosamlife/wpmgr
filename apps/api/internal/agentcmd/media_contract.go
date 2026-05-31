@@ -41,11 +41,19 @@ package agentcmd
 //	presign_endpoint the agent->CP endpoint to request presigned PUT URLs.
 //	ready_endpoint   the agent->CP endpoint to signal sources are uploaded.
 type MediaOptimizeRequest struct {
-	JobIDs          []string `json:"job_ids"`
-	TargetFormat    string   `json:"target_format"`
-	TargetQuality   string   `json:"target_quality"`
-	PresignEndpoint string   `json:"presign_endpoint"`
-	ReadyEndpoint   string   `json:"ready_endpoint"`
+	Jobs            []MediaJobRef `json:"jobs"`
+	TargetFormat    string        `json:"target_format"`
+	TargetQuality   string        `json:"target_quality"`
+	PresignEndpoint string        `json:"presign_endpoint"`
+	ReadyEndpoint   string        `json:"ready_endpoint"`
+}
+
+// MediaJobRef binds a CP job (ULID) to the WP attachment it targets. The agent
+// needs the attachment id to resolve files on disk; the CP holds it at job-mint
+// time, so it threads it through the command rather than making the agent guess.
+type MediaJobRef struct {
+	JobID          string `json:"job_id"`
+	WPAttachmentID int64  `json:"wp_attachment_id"`
 }
 
 // MediaOptimizeResponse is the agent's ack of the `media_optimize` command.
@@ -110,8 +118,8 @@ type MediaSyncResponse struct {
 // the attachments behind job_ids to their pre-optimization state, then call back
 // POST /agent/v1/media/restore-status.
 type MediaRestoreRequest struct {
-	JobIDs         []string `json:"job_ids"`
-	StatusEndpoint string   `json:"status_endpoint"`
+	Jobs           []MediaJobRef `json:"jobs"`
+	StatusEndpoint string        `json:"status_endpoint"`
 }
 
 // MediaRestoreResponse is the agent's ack of the `media_restore` command.
@@ -124,8 +132,8 @@ type MediaRestoreResponse struct {
 // command: IRREVERSIBLY delete the archived originals behind job_ids, then call
 // back POST /agent/v1/media/job-status.
 type MediaDeleteOriginalsRequest struct {
-	JobIDs         []string `json:"job_ids"`
-	StatusEndpoint string   `json:"status_endpoint"`
+	Jobs           []MediaJobRef `json:"jobs"`
+	StatusEndpoint string        `json:"status_endpoint"`
 }
 
 // MediaDeleteOriginalsResponse is the agent's ack of the command.
