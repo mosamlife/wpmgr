@@ -37,7 +37,6 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	"github.com/mosamlife/wpmgr/apps/api/internal/media"
 	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
-	mediamodel "github.com/mosamlife/wpmgr/apps/api/internal/media/model"
 	mediarepo "github.com/mosamlife/wpmgr/apps/api/internal/media/repo"
 	mediaservice "github.com/mosamlife/wpmgr/apps/api/internal/media/service"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
@@ -987,11 +986,13 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 
 	queues := map[string]river.QueueConfig{
 		river.QueueDefault: {MaxWorkers: 5},
-		// M23 Media Optimizer (ADR-043): the API registers the media_encode queue
-		// with ZERO workers — it only client.Inserts model.EncodeArgs. The actual
-		// EncodeWorker (which imports the CGO lilliput encoder) runs ONLY in the
-		// separate cmd/media-encoder process. This keeps the API CGO_ENABLED=0.
-		mediamodel.MediaEncodeQueue: {MaxWorkers: 0},
+		// M23 Media Optimizer (ADR-043): the API does NOT register the
+		// media_encode queue — it only client.Inserts model.EncodeArgs, and Insert
+		// works for any queue name without registering it. River REJECTS a
+		// MaxWorkers=0 queue (client.go: MaxWorkers must be >= 1), so registering
+		// it here would crash API boot. The EncodeWorker (CGO lilliput) registers
+		// + works media_encode ONLY in the separate cmd/media-encoder process,
+		// which keeps the API CGO_ENABLED=0 / distroless-static.
 	}
 	// One bounded queue per tenant shard: MaxWorkers caps a single tenant's
 	// concurrency to the per-tenant parallelism limit.
