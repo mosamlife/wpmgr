@@ -185,6 +185,20 @@
     - Keep the 4-role vocab (`viewer<operator<admin<owner`); add a DB CHECK.
     - RLS = **RESTRICTIVE** `<t>_site_scope` policy gated by `app.site_scope` GUC on ALL 21 site_id tables + 2 indirect children; allowlist passed via `app.allowed_site_ids` GUC (no policy subquery → no recursion); new `InScopedTenantTx` + central scope-dispatch.
   - Docs: `docs/features/organisations.md` (org + sharing how-to) + `docs/security.md` threat-model update (per-site grant)
+- [ ] **Phase 5.7 — Live enrollment + connection lifecycle** ⚠️ fixes "Add site needs a manual refresh"
+  - **Why**: after the user clicks Enroll in the WP agent, the dashboard does not update live — the Add-site modal + sites list require a manual refresh. Recon (`analysis/live-enrollment-recon.md`) showed the SSE bus is in-process only (no cross-instance fan-out, no replay), enrollment has no completion signal, and there is no CP-side connection-state machine / revoke / archive. Heartbeat already exists (5-min wp-cron) so it's an extension.
+  - [x] Recon complete (`analysis/live-enrollment-recon.md`)
+  - [x] ADRs locked — ADR-038 (SSE scoping = Postgres LISTEN/NOTIFY, tenant channel, `?since` replay) · ADR-039 (heartbeat 60s; degraded 180s / disconnected 360s; immediate post-enroll beat) · ADR-040 (signed best-effort last-will + timeout fallback) · ADR-041 (additive `connection_state` enum + `connection_generation`; re-enroll reuses `site_id`; revoke/archive/restore)
+  - [ ] User approval of ADRs + PLAN (this gate)
+  - [ ] Backend: connection-state machine (`internal/site/service/connection.go`) — single owner of transitions (validate source → write state + history + audit in one tx → publish SSE after commit); migration adds `connection_state`/`connection_generation`/`disconnected_at`/`disconnected_reason`/`archived_at` + `site_enrollment_codes` + `site_connection_history` + `site_events`
+  - [ ] Backend: shared SSE bus via Postgres LISTEN/NOTIFY (`tenant:<id>` channel, ULID event ids, `site_events` 5-min replay) + `GET /api/v1/sites/events`
+  - [ ] Backend: heartbeat extension + River timeout sweeper (15s tick; 180s→degraded, 360s→disconnected) + revoke/archive/restore/re-enroll endpoints + signed agent disconnect endpoint
+  - [ ] Agent: 60s heartbeat (extend scheduler) + immediate post-enroll beat + last-will on deactivate/uninstall (signed, 3s, best-effort) + revoke-instruction handling (wipe keystore + self-deactivate) + explicit Re-enroll button
+  - [ ] Frontend: live AddSiteDialog (3-state: URL → awaiting-agent w/ SSE wait + code countdown → success) ; sites list SSE-driven cache patch (no polling) ; disconnect/archive/reconnect flows ; `ConnectionStateBadge` ; Activity tab from `site_connection_history`
+  - [ ] Tests: Go unit (transitions, sweeper fake-clock, atomic single-use code) + integration (testcontainers full lifecycle) + Playwright E2E (enroll→success w/o refresh; disconnect+undo) + real-WP container E2E
+  - [ ] Security review (10-item checklist) — MANDATORY before merge
+  - [ ] `impeccable detect` clean on new modal + badge
+  - [ ] Docs: `docs/features/site-lifecycle.md`, `docs/agent.md` (heartbeat + last-will + no-cron note), `docs/api/sites.md`, `docs/architecture.md` (state-machine mermaid)
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports
 - [ ] M8 — Polish & launch (audit log, V0 release)

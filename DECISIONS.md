@@ -935,3 +935,57 @@ before/within Phase 4:
   - `docs/research/wpvivid-db-backup.md`
   - `docs/research/wpvivid-file-backup.md`
   - `docs/research/wpvivid-async-progress-restore.md`
+
+## ADR-038: SSE channel scoping + cross-instance fan-out (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-038-sse-channel-scoping.md`
+- **Recon:** `analysis/live-enrollment-recon.md`
+- **Decision:** The existing SSE bus is in-process per-resource Hubs (no
+  cross-instance fan-out, no replay) — broken for multi-instance Cloud Run.
+  Add a shared bus over **Postgres LISTEN/NOTIFY** (`NOTIFY` carries
+  `<tenant>:<event_id>` only; bodies live in a new `site_events` table). Clients
+  open ONE **tenant-scoped** stream `GET /api/v1/sites/events` and filter by
+  `site_id` client-side (the enroll modal subscribes before a site_id exists).
+  ULID event ids + `?since=` give a ~5-min replay window; reconcile-on-connect
+  (list invalidate) is the backstop. **Postgres over Redis** because Memorystore
+  is currently disabled (see follow-up #79) and the volume is tiny.
+
+## ADR-039: Heartbeat cadence + connection-timeout thresholds (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-039-heartbeat-cadence-timeouts.md`
+- **Decision:** Heartbeat already exists (5-min wp-cron) → extend, don't rebuild.
+  Shorten the agent beat to **60s**; CP River sweeper (15s tick) marks
+  `degraded` at **180s** missed (3×) and `disconnected` at **360s** (6×). The
+  generous multiples avoid false-flagging low-traffic wp-cron sites (the spec's
+  30/90/180 would false-positive). Agent fires **one immediate beat on enroll**
+  so the dashboard shows `connected` in ~1s. Recovery only via heartbeat;
+  degraded/disconnected only via the sweeper.
+
+## ADR-040: Agent-side last-will (disconnect) mechanism (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-040-agent-last-will-disconnect.md`
+- **Decision:** `register_deactivation_hook` / `register_uninstall_hook` POST a
+  **signed** (Ed25519 — anti-spoof) `/agent/v1/disconnect` with a 3s best-effort
+  timeout, then clear cron / wipe keystore. The endpoint requires the agent's
+  signature, so a `site_id` alone can't disconnect a site. Hard delete / dead
+  host falls back to the ADR-039 timeout sweeper (≤360s). Last-will is a latency
+  optimisation, never the sole path.
+
+## ADR-041: Re-enrollment identity + connection-state model (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-041-reenrollment-identity-connection-state.md`
+- **Decision:** Add `connection_state` (TEXT + CHECK enum: pending_enrollment /
+  connected / degraded / disconnected / revoked / archived) as the **new single
+  source of truth**, plus `connection_generation`, `disconnected_at/reason`,
+  `archived_at` — **additive migration, no rewrite of the free-text
+  `status`/`health_status`** (kept written for compat; UI reads only
+  connection_state). Re-enroll **reuses `site_id`**, `connection_generation += 1`,
+  history threads back. Revoke → queue agent revoke-instruction + null
+  `agent_public_key` (avoids unique-index collision on re-enroll); archive =
+  terminal soft-delete; restore = un-archive. Every transition writes
+  `site_connection_history` + a hash-chained audit action, enforced in a single
+  Go service (`internal/site/service/connection.go`).
