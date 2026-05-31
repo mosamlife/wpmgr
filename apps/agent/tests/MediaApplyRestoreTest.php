@@ -148,6 +148,8 @@ final class MediaApplyRestoreTest extends TestCase
             /** @var array<string,mixed>|null */
             public ?array $lastJobStatus = null;
             public bool $restoreReported = false;
+            /** Mime the fake optimized bytes are magic-valid for (set per test). */
+            public string $mime = 'image/avif';
 
             public function __construct()
             {
@@ -155,15 +157,18 @@ final class MediaApplyRestoreTest extends TestCase
 
             public function getBytes(string $presignedUrl): ?string
             {
-                // The apply command passes get_url; we key fake bytes off the
-                // variant name embedded in the fake URL.
-                if (strpos($presignedUrl, 'full') !== false) {
-                    return str_repeat('A', 1000); // optimized full (smaller).
-                }
-                if (strpos($presignedUrl, 'medium') !== false) {
-                    return str_repeat('a', 200);
-                }
-                return str_repeat('?', 100);
+                // The apply command verifies optimized_size + magic-byte mime
+                // (ADR-043 §14), so the fakes must be the right length AND carry a
+                // valid header for $this->mime.
+                $len = strpos($presignedUrl, 'full') !== false ? 1000
+                    : (strpos($presignedUrl, 'medium') !== false ? 200 : 100);
+                $magic = [
+                    'image/jpeg' => "\xFF\xD8\xFF\xE0",
+                    'image/png'  => "\x89PNG\r\n\x1A\n",
+                    'image/webp' => "RIFF\x00\x00\x00\x00WEBP",
+                    'image/avif' => "\x00\x00\x00\x18ftypavif",
+                ][$this->mime] ?? '';
+                return $magic . str_repeat('A', max(0, $len - strlen($magic)));
             }
 
             public function jobStatus(string $endpoint, array $payload): array
@@ -293,6 +298,7 @@ final class MediaApplyRestoreTest extends TestCase
         $this->seedOriginal();
         $originalBytes = file_get_contents($this->baseDir . '/banner.jpg');
         $uploader      = $this->fakeUploader();
+        $uploader->mime = 'image/jpeg'; // same-ext: fakes must be valid JPEG
 
         // target_format='original' => same-ext: optimized mime == source jpeg.
         (new MediaApplyCommand($uploader, new AttachmentMeta(), new DbRewriter(), new MediaKeystore(), null))
@@ -322,6 +328,7 @@ final class MediaApplyRestoreTest extends TestCase
         $this->seedOriginal();
         $originalFull = file_get_contents($this->baseDir . '/banner.jpg');
         $uploader     = $this->fakeUploader();
+        $uploader->mime = 'image/jpeg'; // same-ext: fakes must be valid JPEG
 
         (new MediaApplyCommand($uploader, new AttachmentMeta(), new DbRewriter(), new MediaKeystore(), null))
             ->execute([], [

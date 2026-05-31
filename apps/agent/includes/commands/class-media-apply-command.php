@@ -136,6 +136,21 @@ final class MediaApplyCommand implements CommandInterface
                 continue;
             }
 
+            // Verify the downloaded output matches the CP's contracted size +
+            // format BEFORE trusting it on disk (ADR-043 §14). The bytes come from
+            // a CP-minted presigned GET, but a truncated transfer or a format/size
+            // mismatch must never be written over (or beside) the original. On
+            // mismatch, record the size as unoptimized and skip it.
+            $expectSize = isset($variant['optimized_size']) ? (int) $variant['optimized_size'] : 0;
+            if ($expectSize > 0 && strlen($bytes) !== $expectSize) {
+                $sizesUnoptimized[$name] = 'Optimized output size mismatch';
+                continue;
+            }
+            if (!self::bytesMatchMime($bytes, (string) ($variant['optimized_mime'] ?? ''))) {
+                $sizesUnoptimized[$name] = 'Optimized output format mismatch';
+                continue;
+            }
+
             $applied = $this->meta->applyVariant($sourceUrl, $sourcePath, $bytes, $variant['optimized_mime']);
             if (!$applied['ok']) {
                 $sizesUnoptimized[$name] = 'Disk write failed';
@@ -348,5 +363,36 @@ final class MediaApplyCommand implements CommandInterface
     private function str(array $params, string $key): string
     {
         return isset($params[$key]) && is_string($params[$key]) ? $params[$key] : '';
+    }
+
+    /**
+     * Magic-byte check that $bytes match the claimed $mime. Defends against a
+     * truncated/garbage optimized output being written to disk before we trust
+     * the CP-supplied mime (ADR-043 §14). An unknown/empty mime passes (no
+     * assertion); too-short input fails.
+     *
+     * @param string $bytes Downloaded optimized bytes.
+     * @param string $mime  The contracted optimized mime.
+     * @return bool
+     */
+    private static function bytesMatchMime(string $bytes, string $mime): bool
+    {
+        if (strlen($bytes) < 12) {
+            return false;
+        }
+        switch ($mime) {
+            case 'image/jpeg':
+                return substr($bytes, 0, 3) === "\xFF\xD8\xFF";
+            case 'image/png':
+                return substr($bytes, 0, 8) === "\x89PNG\r\n\x1A\n";
+            case 'image/webp':
+                return substr($bytes, 0, 4) === 'RIFF' && substr($bytes, 8, 4) === 'WEBP';
+            case 'image/avif':
+                // ISO-BMFF: a 'ftyp' box at offset 4 with an 'avif'/'avis' brand.
+                return substr($bytes, 4, 4) === 'ftyp'
+                    && strpos(substr($bytes, 8, 16), 'avif') !== false;
+            default:
+                return true; // unknown/empty mime — nothing to assert
+        }
     }
 }

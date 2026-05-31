@@ -28,13 +28,16 @@ type EncodeJobRepo interface {
 	GetJobAgent(ctx context.Context, jobID string) (model.Job, error)
 	UpsertVariantAgent(ctx context.Context, tenantID uuid.UUID, in repo.UpsertVariantInput) error
 	CountVariantStatesAgent(ctx context.Context, jobID string) (succeeded, failed int, err error)
+	FinalizeJobAgent(ctx context.Context, jobID string, in repo.FinalizeJobInput) (model.Job, error)
 }
 
-// Presigner mints presigned GET/PUT URLs. *blobstore.Store satisfies it. The
-// worker NEVER calls a live GetObject (GCS 403s) — presigned URLs only.
+// Presigner mints presigned GET/PUT URLs + deletes temp objects. *blobstore.Store
+// satisfies it. The worker NEVER calls a live GetObject (GCS 403s) — presigned
+// URLs only; Delete is the live S3 DeleteObject (allowed; only GET/PUT 403 on GCS).
 type Presigner interface {
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // EventPublisher publishes media.* SSE envelopes.
@@ -181,10 +184,20 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[model.EncodeArgs
 	//    job-status callback finalizes the job + asset rows + deletes the temp
 	//    objects (so cleanup is owned by the apply callback, not here).
 	if len(applyVariants) == 0 {
-		// Every variant failed → no apply; the apply path won't run, so finalize
-		// the job here via the job-status semantics by signalling the agent with an
-		// empty apply. We instead rely on the service-side failJob through the
-		// agent callback; to keep the worker self-contained we publish a failure.
+		// Every variant failed → no apply phase runs, so the agent's job-status
+		// callback (which finalizes the job + sweeps temp objects) never fires.
+		// Finalize the job as failed HERE so it doesn't hang in_progress, and
+		// best-effort delete the orphaned src/* objects the agent already uploaded.
+		if _, ferr := w.repo.FinalizeJobAgent(ctx, a.JobID, repo.FinalizeJobInput{
+			State:          model.JobFailed,
+			VariantsFailed: len(a.Variants),
+			ErrorReason:    "all variants failed to encode",
+		}); ferr != nil {
+			w.logger.WarnContext(ctx, "media encode: finalize all-failed job", "job_id", a.JobID, "err", ferr.Error())
+		}
+		for _, v := range a.Variants {
+			_ = w.store.Delete(ctx, media.SrcKey(a.TenantID, a.SiteID, a.JobID, v.Name))
+		}
 		w.publish(ctx, a, site.EventMediaJobFailed, map[string]any{
 			"job_id": a.JobID,
 			"reason": "all variants failed to encode",

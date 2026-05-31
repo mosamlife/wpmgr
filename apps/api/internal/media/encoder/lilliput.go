@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/discord/lilliput"
 )
@@ -67,7 +66,15 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 	if err != nil {
 		return EncodeResult{}, fmt.Errorf("%w: %v", ErrUnsupportedSource, err)
 	}
-	defer decoder.Close()
+	// The decoder is handed to the transform goroutine on the happy path (it
+	// closes it AFTER Transform returns). Until ownership transfers, an early
+	// return closes it here.
+	closeDecoder := true
+	defer func() {
+		if closeDecoder {
+			decoder.Close()
+		}
+	}()
 
 	header, err := decoder.Header()
 	if err != nil {
@@ -99,10 +106,17 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 	case <-ctx.Done():
 		return EncodeResult{}, ctx.Err()
 	}
+	// ops is handed to the transform goroutine on the happy path (it recycles it
+	// to the pool AFTER Transform returns). Until ownership transfers, an early
+	// return recycles it here. ImageOps is NOT goroutine-safe, so it must never
+	// be returned to the pool while Transform may still be using it.
+	recycleOps := true
 	defer func() {
-		// Best-effort return to the pool; a closed pool drops it.
-		defer func() { _ = recover() }()
-		e.pool <- ops
+		if recycleOps {
+			// Best-effort return to the pool; a closed pool drops it.
+			defer func() { _ = recover() }()
+			e.pool <- ops
+		}
 	}()
 
 	opts := &lilliput.ImageOptions{
@@ -126,17 +140,30 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 	}
 	resCh := make(chan out, 1)
 	dst := make([]byte, outBufCap)
+	// Transfer ownership of the decoder + ops to the goroutine: it closes the
+	// decoder and recycles ops to the pool ONLY AFTER Transform returns. On a
+	// timeout we abandon the result and return immediately, but we must NOT close
+	// the decoder or recycle ops here — Transform may still be reading them
+	// (use-after-free) and the recycled ops could be pulled by a concurrent encode
+	// (ImageOps is not goroutine-safe). The goroutine performs cleanup once the
+	// native call finishes, which lilliput bounds via EncodeTimeout. resCh is
+	// buffered (cap 1) so the goroutine never blocks sending after we've left.
+	closeDecoder = false
+	recycleOps = false
 	go func() {
 		b, terr := ops.Transform(decoder, opts, dst)
 		resCh <- out{buf: b, err: terr}
+		decoder.Close()
+		func() {
+			defer func() { _ = recover() }()
+			e.pool <- ops
+		}()
 	}()
 
 	encCtx, cancel := context.WithTimeout(ctx, EncodeTimeout)
 	defer cancel()
-	start := time.Now()
 	select {
 	case r := <-resCh:
-		_ = start
 		if r.err != nil {
 			return EncodeResult{}, fmt.Errorf("encoder: transform: %w", r.err)
 		}

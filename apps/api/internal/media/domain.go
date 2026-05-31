@@ -67,6 +67,25 @@ func ValidTargetQuality(q string) bool {
 	return false
 }
 
+// ValidVariantName reports whether v is a safe WP image-size token to embed in an
+// object key. Rejects empty, >64 chars, and anything outside [A-Za-z0-9_-] —
+// notably '.' and '/' which a hostile agent could use to escape the job prefix
+// (storage-key path traversal). WP registered size names are a small token set,
+// so a strict allowlist is safe; callers MUST validate before SrcKey/OutKey.
+func ValidVariantName(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ---------------------------------------------------------------------------
 // Object-key helpers — media/<tenant>/<site>/<job>/src|out/<variant>
 //

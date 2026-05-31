@@ -53,6 +53,11 @@ func (s *Service) HandlePresign(ctx context.Context, tenantID, siteID uuid.UUID,
 	}
 	out := make(map[string]string, len(variants))
 	for _, v := range variants {
+		// Reject hostile variant names before they reach the object key — a '.'
+		// or '/' could escape the job prefix (storage-key path traversal).
+		if !media.ValidVariantName(v.Name) {
+			return nil, domain.Validation("invalid_variant_name", "variant name must be [A-Za-z0-9_-]{1,64}")
+		}
 		key := media.SrcKey(tenantID, siteID, jobID, v.Name)
 		url, err := s.store.PresignPut(ctx, key, s.cfg.PresignTTL)
 		if err != nil {
@@ -90,6 +95,9 @@ func (s *Service) HandleEncodeReady(ctx context.Context, tenantID, siteID uuid.U
 
 	encVariants := make([]model.EncodeVariant, 0, len(variants))
 	for _, v := range variants {
+		if !media.ValidVariantName(v.Name) {
+			return domain.Validation("invalid_variant_name", "variant name must be [A-Za-z0-9_-]{1,64}")
+		}
 		encVariants = append(encVariants, model.EncodeVariant{
 			Name:       v.Name,
 			SourceSize: v.SourceSize,
