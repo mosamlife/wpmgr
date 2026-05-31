@@ -177,8 +177,14 @@
   - [ ] RLS strategy for SITE-scoped access without weakening tenant isolation: additive grant policy / scoped principal constraining to allowed site IDs (a row is visible when tenant matches OR the site ∈ the caller's granted-site set). **Security review MANDATORY** — no cross-org leakage via a single shared site.
   - [ ] Object storage → `tenant_id/site_id/…` for chunks/manifests/snapshots; decide existing-object handling (new-prefix + dual-read fallback vs one-time migration); preserve per-tenant chunk dedup semantics; update presign key generation; agent unchanged (CP signs keys)
   - [ ] Frontend: org switcher, org/members management, share-site dialog, shared-with-me view, role/scope gating (canManage/canOperate aware of shared-site role)
-  - [ ] **Open decisions (to confirm before build)**: share role/scope (viewer vs operator on a shared site); invite-by-email vs share-link; time-limited support access (default expiry?); storage migration vs dual-read; whether a sharee can be a brand-new non-member user
-  - [ ] Docs: `docs/features/organisations.md` (org + sharing how-to) + `docs/security.md` threat-model update (per-site grant)
+  - **Confirmed decisions** (2026-05-31; full spec: `docs/design/m5.7-orgs-sharing.md`):
+    - Storage: KEEP `chunks/<tenant>/<blake3>` dedup; ADD a browseable per-snapshot index object `tenant/<t>/site/<s>/backup/<id>/manifest.json`. No chunk migration, no agent change. (User's "site-first" premise was inverted — chunks are already tenant-first content-addressed.)
+    - Sharing = **outside collaborators**: invite ANY email; accept creates/links a `users` row but NO membership — site-scoped restrictive RLS is their only access.
+    - Invites = **tokenized email accept links** (hash-stored, 7d, single-use, email-bound; reuse M5 go-mail SMTP).
+    - Per-share **optional `expires_at`** for time-limited support access (RLS filters expiry; zero cleanup).
+    - Keep the 4-role vocab (`viewer<operator<admin<owner`); add a DB CHECK.
+    - RLS = **RESTRICTIVE** `<t>_site_scope` policy gated by `app.site_scope` GUC on ALL 21 site_id tables + 2 indirect children; allowlist passed via `app.allowed_site_ids` GUC (no policy subquery → no recursion); new `InScopedTenantTx` + central scope-dispatch.
+  - Docs: `docs/features/organisations.md` (org + sharing how-to) + `docs/security.md` threat-model update (per-site grant)
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports
 - [ ] M8 — Polish & launch (audit log, V0 release)
