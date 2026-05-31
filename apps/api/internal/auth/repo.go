@@ -271,6 +271,33 @@ func (r *Repo) ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]
 	return out, err
 }
 
+// FirstActiveShareTenant returns the tenant of the user's earliest non-expired
+// site_share, used at login to pick an active tenant for a site-scoped
+// collaborator who has NO org membership. Without this the session would carry
+// no active tenant and the auth middleware's site-scope branch (gated on
+// activeTenant != Nil) would never run, 403ing every request after re-login.
+// Runs under InUserTx so the site_shares_self_read RLS policy (user_id =
+// app.user_id) permits the SELECT. Returns ok=false on no shares or error.
+func (r *Repo) FirstActiveShareTenant(ctx context.Context, userID uuid.UUID) (uuid.UUID, bool) {
+	var tenantID uuid.UUID
+	var found bool
+	err := r.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
+		shares, err := sqlc.New(tx).ListSharesForUser(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if len(shares) > 0 {
+			tenantID = shares[0].TenantID // ordered by created_at ASC
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return tenantID, found
+}
+
 // ListMembershipsForTenant returns a tenant's members (RLS-scoped).
 func (r *Repo) ListMembershipsForTenant(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Membership, error) {
 	var out []Membership

@@ -74,10 +74,24 @@ func (s *Service) Login(ctx context.Context, email, password string) (LoginResul
 	s.recordLogin(ctx, memberships, u.ID, audit.ActionLoginSuccess)
 
 	res := LoginResult{User: u, Memberships: memberships}
-	if len(memberships) > 0 {
-		res.ActiveTenant = memberships[0].TenantID
-	}
+	res.ActiveTenant = s.resolveActiveTenant(ctx, u.ID, memberships)
 	return res, nil
+}
+
+// resolveActiveTenant picks the session's active tenant after authentication.
+// Org members use their first membership; a user with NO membership but an
+// active site_share (an outside collaborator) falls back to that share's
+// tenant, so site-scoped access survives logout/login. Without the fallback the
+// session would carry no tenant and every tenant-scoped request would 403 — even
+// though accept-time access worked, because Accept() set the tenant directly.
+func (s *Service) resolveActiveTenant(ctx context.Context, userID uuid.UUID, memberships []Membership) uuid.UUID {
+	if len(memberships) > 0 {
+		return memberships[0].TenantID
+	}
+	if tid, ok := s.repo.FirstActiveShareTenant(ctx, userID); ok {
+		return tid
+	}
+	return uuid.Nil
 }
 
 func (s *Service) recordLogin(ctx context.Context, memberships []Membership, userID uuid.UUID, action string) {
@@ -324,9 +338,7 @@ func (s *Service) UpsertOIDCUser(
 	}
 
 	res := LoginResult{User: u, Memberships: memberships}
-	if len(memberships) > 0 {
-		res.ActiveTenant = memberships[0].TenantID
-	}
+	res.ActiveTenant = s.resolveActiveTenant(ctx, u.ID, memberships)
 	return res, nil
 }
 
