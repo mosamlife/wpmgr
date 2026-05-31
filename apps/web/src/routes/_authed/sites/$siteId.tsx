@@ -172,7 +172,15 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
   const hostname = hostnameOf(site.url);
   const adminUrl = `${stripTrailingSlash(site.url)}/wp-admin/`;
   const connectionState = connectionStateOf(site);
-  const canReconnect = isReconnectable(connectionState);
+  // pending_enrollment ("Awaiting agent") also gets the code action — the raw
+  // enrollment code is shown once, so a stuck-pending site needs a way back to it.
+  const canReconnect =
+    isReconnectable(connectionState) ||
+    connectionState === "pending_enrollment";
+  const reconnectLabel =
+    connectionState === "pending_enrollment"
+      ? "Get enrollment code"
+      : "Reconnect";
   const canDisconnect =
     connectionState === "connected" || connectionState === "degraded";
   const canArchive =
@@ -338,7 +346,7 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={startReconnect}>
                     <RotateCw aria-hidden="true" className="size-4" />
-                    Reconnect
+                    {reconnectLabel}
                   </DropdownMenuItem>
                 </>
               ) : null}

@@ -405,7 +405,15 @@ function RowActions({
   onDisconnect: ((site: Site) => void) | undefined;
   onReconnect: ((site: Site) => void) | undefined;
 }) {
-  const canReconnect = isReconnectable(connectionState);
+  // pending_enrollment ("Awaiting agent") also needs the code action — the raw
+  // code is shown once, so a stuck-pending site has no other way back to it.
+  const canReconnect =
+    isReconnectable(connectionState) ||
+    connectionState === "pending_enrollment";
+  const reconnectLabel =
+    connectionState === "pending_enrollment"
+      ? "Get enrollment code"
+      : "Reconnect";
   const canDisconnect =
     connectionState === "connected" || connectionState === "degraded";
   return (
@@ -471,7 +479,7 @@ function RowActions({
                 }}
               >
                 <RotateCw aria-hidden="true" className="size-4" />
-                Reconnect
+                {reconnectLabel}
               </DropdownMenuItem>
             </>
           ) : null}
