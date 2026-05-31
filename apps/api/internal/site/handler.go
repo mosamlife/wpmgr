@@ -544,6 +544,16 @@ func toAPI(s Site) gen.Site {
 	if s.LastSeenAt != nil {
 		out.LastSeenAt = gen.NewOptDateTime(*s.LastSeenAt)
 	}
+	// M21 connection lifecycle (ADR-041): surface connection_state to the REST
+	// API so the dashboard's ConnectionStateBadge + sites list render the live
+	// lifecycle on first load (the SSE stream patches it thereafter).
+	if s.ConnectionState != "" {
+		out.ConnectionState = gen.NewOptSiteConnectionState(gen.SiteConnectionState(s.ConnectionState))
+	}
+	out.ConnectionGeneration = gen.NewOptInt32(s.ConnectionGeneration)
+	if s.DisconnectedReason != "" {
+		out.DisconnectedReason = gen.NewOptString(s.DisconnectedReason)
+	}
 	if len(s.Components) > 0 {
 		var comp struct {
 			Plugins    []Component `json:"plugins"`

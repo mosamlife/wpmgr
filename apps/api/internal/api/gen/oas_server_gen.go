@@ -8,6 +8,21 @@ import (
 
 // Handler handles operations described by OpenAPI v3 specification.
 type Handler interface {
+	// AcceptInvitation implements acceptInvitation operation.
+	//
+	// Accept an invitation by token (public; creates/links user and session).
+	// Accepts both org-scope invitations (creates a membership) and site-scope
+	// invitations (creates a site_shares row). Validates token hash, email
+	// binding, expiry, single-use, and rate-limit.
+	//
+	// POST /api/v1/invitations/accept
+	AcceptInvitation(ctx context.Context, req *AcceptInvitationRequest) (AcceptInvitationRes, error)
+	// ActivateOrg implements activateOrg operation.
+	//
+	// Switch the session's active organisation (must be a member).
+	//
+	// POST /api/v1/orgs/{orgId}/activate
+	ActivateOrg(ctx context.Context, params ActivateOrgParams) (ActivateOrgRes, error)
 	// AgentAutologinConsume implements agentAutologinConsume operation.
 	//
 	// Called by the WordPress agent after it has verified the operator's
@@ -25,13 +40,30 @@ type Handler interface {
 	//
 	// POST /agent/v1/autologin/consume
 	AgentAutologinConsume(ctx context.Context, req *AutologinConsumeRequest) (AgentAutologinConsumeRes, error)
+	// AgentDisconnect implements agentDisconnect operation.
+	//
+	// M21 / ADR-040 — the agent's signed last-will. Fired by the WordPress
+	// deactivation/uninstall hooks (best-effort, 3s timeout). Authenticated via
+	// the SAME Ed25519 signed-request scheme as every agent route: the
+	// signature is verified and bound to the calling site BEFORE any write, so
+	// possession of a site_id alone cannot disconnect a site. Transitions the
+	// site connected/degraded → `disconnected` with the supplied reason. Does
+	// NOT archive (archive stays an explicit operator action).
+	//
+	// POST /agent/v1/disconnect
+	AgentDisconnect(ctx context.Context, req OptAgentDisconnect) (AgentDisconnectRes, error)
 	// AgentHeartbeat implements agentHeartbeat operation.
 	//
-	// Lightweight liveness ping. Authenticated via the Ed25519 signed-request
-	// scheme; updates last_seen_at for the resolved site.
+	// The 60s agent heartbeat (ADR-039). Authenticated via the Ed25519
+	// signed-request scheme; refreshes last_seen_at for the resolved site,
+	// recovers a degraded/disconnected site to `connected`, and returns any
+	// pending agent instructions (e.g. `["revoke"]` for a revoked site). The
+	// body may carry light metadata (status, versions, pending-update count);
+	// it is accepted best-effort. Pre-M21 control planes return 204 with no
+	// body.
 	//
 	// POST /agent/v1/heartbeat
-	AgentHeartbeat(ctx context.Context) (AgentHeartbeatRes, error)
+	AgentHeartbeat(ctx context.Context, req OptAgentHeartbeat) (AgentHeartbeatRes, error)
 	// AgentMetadata implements agentMetadata operation.
 	//
 	// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
@@ -41,6 +73,23 @@ type Handler interface {
 	//
 	// POST /agent/v1/metadata
 	AgentMetadata(ctx context.Context, req *AgentMetadata) (AgentMetadataRes, error)
+	// ArchiveSite implements archiveSite operation.
+	//
+	// M21 / ADR-041 — operator action. Transitions the site to `archived`
+	// (terminal soft-delete); hidden from the default sites list. History is
+	// preserved. Requires operator+.
+	//
+	// POST /api/v1/sites/{siteId}/archive
+	ArchiveSite(ctx context.Context, req OptSiteLifecycleReason, params ArchiveSiteParams) (ArchiveSiteRes, error)
+	// BeginReEnrollment implements beginReEnrollment operation.
+	//
+	// M21 / ADR-041 — moves an existing revoked/disconnected/archived site back
+	// to `pending_enrollment` (bumping connection_generation) and mints a fresh
+	// site-bound enrollment code under the SAME site_id (preserving backup/scan
+	// history). Returns the once-shown code. Requires operator+.
+	//
+	// POST /api/v1/sites/{siteId}/enrollment-codes
+	BeginReEnrollment(ctx context.Context, params BeginReEnrollmentParams) (BeginReEnrollmentRes, error)
 	// CreateApiKey implements createApiKey operation.
 	//
 	// Create an API key (admin+); the secret is shown once.
@@ -82,6 +131,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/backups
 	CreateBackup(ctx context.Context, req *BackupCreate, params CreateBackupParams) (CreateBackupRes, error)
+	// CreateOrg implements createOrg operation.
+	//
+	// Create a new organisation; the caller becomes the owner.
+	//
+	// POST /api/v1/orgs
+	CreateOrg(ctx context.Context, req *CreateOrgRequest) (CreateOrgRes, error)
 	// CreatePairingCode implements createPairingCode operation.
 	//
 	// Generates a short-lived, single-use, high-entropy pairing code for the
@@ -104,7 +159,17 @@ type Handler interface {
 	CreateRestore(ctx context.Context, req *RestoreCreate, params CreateRestoreParams) (CreateRestoreRes, error)
 	// CreateSite implements createSite operation.
 	//
-	// Creates a site belonging to the tenant in the request context.
+	// M21 / Phase 5.7 (ADR-041) — the site-first "Add site" flow. Creates a
+	// site row in `pending_enrollment` AND mints a single-use, site-bound
+	// enrollment code in one call. The response carries the new `site_id` plus
+	// the once-shown `enrollment_code` and its `expires_at` so the dashboard
+	// can immediately show the install modal and subscribe to the
+	// `/api/v1/sites/events` SSE stream for this site_id.
+	// BREAKING CHANGE vs. pre-M21: the 201 body is now
+	// `SiteEnrollmentCode` ({site_id, enrollment_code, expires_at}) instead of
+	// a bare `Site`. When the connection-lifecycle service is disabled (dev
+	// builds with no SSE bus) the control plane falls back to the legacy
+	// create that returns a bare `Site`. Requires operator+.
 	//
 	// POST /api/v1/sites
 	CreateSite(ctx context.Context, req *SiteCreate) (CreateSiteRes, error)
@@ -114,6 +179,14 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/destinations
 	CreateSiteDestination(ctx context.Context, req *SiteDestinationCreate, params CreateSiteDestinationParams) (CreateSiteDestinationRes, error)
+	// CreateSiteShare implements createSiteShare operation.
+	//
+	// Grant site access to an email (admin+; org-scope only). If the email
+	// matches a known user the share is immediate (201); otherwise an invitation
+	// is created and the accept link is returned (202).
+	//
+	// POST /api/v1/sites/{siteId}/shares
+	CreateSiteShare(ctx context.Context, req *CreateSiteShareRequest, params CreateSiteShareParams) (CreateSiteShareRes, error)
 	// CreateTenant implements createTenant operation.
 	//
 	// Create a tenant.
@@ -131,6 +204,12 @@ type Handler interface {
 	//
 	// POST /api/v1/updates
 	CreateUpdateRun(ctx context.Context, req *UpdateRunCreate) (CreateUpdateRunRes, error)
+	// DeleteMember implements deleteMember operation.
+	//
+	// Remove a member from the active tenant (admin+; last-owner protected).
+	//
+	// DELETE /api/v1/members/{userId}
+	DeleteMember(ctx context.Context, params DeleteMemberParams) (DeleteMemberRes, error)
 	// DeleteSite implements deleteSite operation.
 	//
 	// Delete a site.
@@ -143,6 +222,12 @@ type Handler interface {
 	//
 	// DELETE /api/v1/sites/{siteId}/destinations/{destinationId}
 	DeleteSiteDestination(ctx context.Context, params DeleteSiteDestinationParams) (DeleteSiteDestinationRes, error)
+	// DeleteSiteShare implements deleteSiteShare operation.
+	//
+	// Revoke a collaborator's site access (admin+; org-scope only).
+	//
+	// DELETE /api/v1/sites/{siteId}/shares/{userId}
+	DeleteSiteShare(ctx context.Context, params DeleteSiteShareParams) (DeleteSiteShareRes, error)
 	// Enroll implements enroll operation.
 	//
 	// Called by an agent (NOT an authenticated control-plane user) to enroll a
@@ -327,6 +412,12 @@ type Handler interface {
 	//
 	// GET /api/v1/members
 	ListMembers(ctx context.Context, params ListMembersParams) (ListMembersRes, error)
+	// ListSharedWithMe implements listSharedWithMe operation.
+	//
+	// List sites shared to the authenticated user (any logged-in user).
+	//
+	// GET /api/v1/shared-with-me
+	ListSharedWithMe(ctx context.Context) (ListSharedWithMeRes, error)
 	// ListSiteActivity implements listSiteActivity operation.
 	//
 	// Returns the agent-captured WordPress activity events for the site,
@@ -362,9 +453,18 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/errors
 	ListSitePHPErrors(ctx context.Context, params ListSitePHPErrorsParams) (*PHPErrorList, error)
+	// ListSiteShares implements listSiteShares operation.
+	//
+	// List collaborators for a site (admin+).
+	//
+	// GET /api/v1/sites/{siteId}/shares
+	ListSiteShares(ctx context.Context, params ListSiteSharesParams) (ListSiteSharesRes, error)
 	// ListSites implements listSites operation.
 	//
-	// List sites for the current tenant.
+	// Lists the tenant's sites. By default (ADR-041) archived sites are hidden.
+	// Pass `?state=<connection_state>` to filter to exactly one state (e.g.
+	// `?state=archived` for the archived chip), or `?include_archived=true` as
+	// a convenience alias that returns only the archived sites.
 	//
 	// GET /api/v1/sites
 	ListSites(ctx context.Context, params ListSitesParams) (*SiteList, error)
@@ -404,6 +504,12 @@ type Handler interface {
 	//
 	// GET /auth/oidc/login
 	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	// PatchMember implements patchMember operation.
+	//
+	// Change a member's role (admin+; privilege-ceiling enforced).
+	//
+	// PATCH /api/v1/members/{userId}
+	PatchMember(ctx context.Context, req *PatchMemberRequest, params PatchMemberParams) (PatchMemberRes, error)
 	// PatchSiteErrorConfig implements patchSiteErrorConfig operation.
 	//
 	// Stores the PHP error-level mask and md5 ignore-list for the site, then
@@ -495,12 +601,29 @@ type Handler interface {
 	//
 	// POST /auth/register
 	Register(ctx context.Context, req *RegisterRequest) (RegisterRes, error)
+	// RestoreSite implements restoreSite operation.
+	//
+	// M21 / ADR-041 — operator action. Un-archives a site back to
+	// `disconnected`. Only valid from `archived`. Requires operator+.
+	//
+	// POST /api/v1/sites/{siteId}/restore
+	RestoreSite(ctx context.Context, params RestoreSiteParams) (RestoreSiteRes, error)
 	// RevokeApiKey implements revokeApiKey operation.
 	//
 	// Revoke an API key (admin+).
 	//
 	// DELETE /api/v1/api-keys/{apiKeyId}
 	RevokeApiKey(ctx context.Context, params RevokeApiKeyParams) (RevokeApiKeyRes, error)
+	// RevokeSite implements revokeSite operation.
+	//
+	// M21 / ADR-041 — operator action. Transitions the site to `revoked`, nulls
+	// the agent_public_key (so a later re-enroll cannot collide on the unique
+	// index), and queues a `revoke` instruction returned on the agent's next
+	// heartbeat (the agent then wipes its keys + self-deactivates). Requires
+	// operator+.
+	//
+	// POST /api/v1/sites/{siteId}/revoke
+	RevokeSite(ctx context.Context, req OptSiteLifecycleReason, params RevokeSiteParams) (RevokeSiteRes, error)
 	// SetSiteTags implements setSiteTags operation.
 	//
 	// Replace the tag set on a site.
@@ -515,6 +638,18 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/errors/{md5}/silence
 	SilenceSitePHPError(ctx context.Context, req OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error)
+	// StreamSiteEvents implements streamSiteEvents operation.
+	//
+	// M21 / ADR-038 — a single tenant-scoped Server-Sent Events stream of
+	// connection-lifecycle events (site.created, site.state_changed,
+	// site.revoked, site.disconnected, site.archived, site.restored). The
+	// client filters by site_id in the browser. Supports `?since=<event_id>`
+	// (or the `Last-Event-ID` header) to replay missed events from the durable
+	// journal (~5 min retention) on reconnect; each frame carries an `id:`
+	// (ULID) line. 15s keepalive comments; session-auth, requires site:read.
+	//
+	// GET /api/v1/sites/events
+	StreamSiteEvents(ctx context.Context, params StreamSiteEventsParams) (StreamSiteEventsOK, error)
 	// TestSiteDestination implements testSiteDestination operation.
 	//
 	// Returns 200 with `{ok, message}` regardless of success/failure so the

@@ -3,6 +3,7 @@
 package gen
 
 import (
+	"io"
 	"net/url"
 	"time"
 
@@ -10,6 +11,187 @@ import (
 	"github.com/go-faster/jx"
 	"github.com/google/uuid"
 )
+
+type AcceptInvitationBadRequest Error
+
+func (*AcceptInvitationBadRequest) acceptInvitationRes() {}
+
+// Ref: #/components/schemas/AcceptInvitationRequest
+type AcceptInvitationRequest struct {
+	// The raw token from the accept link (?token=…).
+	Token string `json:"token"`
+	// Must match the email the invitation was addressed to (prevents
+	// identity swap and enumeration).
+	Email string `json:"email"`
+	// Display name to set when a new user account is created.
+	Name OptString `json:"name"`
+	// Password to set when a new user account is created. Required only
+	// when the invited email has no existing account.
+	Password OptString `json:"password"`
+}
+
+// GetToken returns the value of Token.
+func (s *AcceptInvitationRequest) GetToken() string {
+	return s.Token
+}
+
+// GetEmail returns the value of Email.
+func (s *AcceptInvitationRequest) GetEmail() string {
+	return s.Email
+}
+
+// GetName returns the value of Name.
+func (s *AcceptInvitationRequest) GetName() OptString {
+	return s.Name
+}
+
+// GetPassword returns the value of Password.
+func (s *AcceptInvitationRequest) GetPassword() OptString {
+	return s.Password
+}
+
+// SetToken sets the value of Token.
+func (s *AcceptInvitationRequest) SetToken(val string) {
+	s.Token = val
+}
+
+// SetEmail sets the value of Email.
+func (s *AcceptInvitationRequest) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetName sets the value of Name.
+func (s *AcceptInvitationRequest) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetPassword sets the value of Password.
+func (s *AcceptInvitationRequest) SetPassword(val OptString) {
+	s.Password = val
+}
+
+// Ref: #/components/schemas/AcceptInvitationResponse
+type AcceptInvitationResponse struct {
+	// The organisation the invitation belonged to.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// "org" when a full membership was granted; "site" when a site-scoped
+	// share was created.
+	Scope AcceptInvitationResponseScope `json:"scope"`
+	// Set when scope="site"; the specific site the user now has access to.
+	SiteID OptUUID `json:"site_id"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AcceptInvitationResponse) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetScope returns the value of Scope.
+func (s *AcceptInvitationResponse) GetScope() AcceptInvitationResponseScope {
+	return s.Scope
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AcceptInvitationResponse) GetSiteID() OptUUID {
+	return s.SiteID
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AcceptInvitationResponse) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetScope sets the value of Scope.
+func (s *AcceptInvitationResponse) SetScope(val AcceptInvitationResponseScope) {
+	s.Scope = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AcceptInvitationResponse) SetSiteID(val OptUUID) {
+	s.SiteID = val
+}
+
+func (*AcceptInvitationResponse) acceptInvitationRes() {}
+
+// "org" when a full membership was granted; "site" when a site-scoped
+// share was created.
+type AcceptInvitationResponseScope string
+
+const (
+	AcceptInvitationResponseScopeOrg  AcceptInvitationResponseScope = "org"
+	AcceptInvitationResponseScopeSite AcceptInvitationResponseScope = "site"
+)
+
+// AllValues returns all AcceptInvitationResponseScope values.
+func (AcceptInvitationResponseScope) AllValues() []AcceptInvitationResponseScope {
+	return []AcceptInvitationResponseScope{
+		AcceptInvitationResponseScopeOrg,
+		AcceptInvitationResponseScopeSite,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AcceptInvitationResponseScope) MarshalText() ([]byte, error) {
+	switch s {
+	case AcceptInvitationResponseScopeOrg:
+		return []byte(s), nil
+	case AcceptInvitationResponseScopeSite:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AcceptInvitationResponseScope) UnmarshalText(data []byte) error {
+	switch AcceptInvitationResponseScope(data) {
+	case AcceptInvitationResponseScopeOrg:
+		*s = AcceptInvitationResponseScopeOrg
+		return nil
+	case AcceptInvitationResponseScopeSite:
+		*s = AcceptInvitationResponseScopeSite
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AcceptInvitationTooManyRequests Error
+
+func (*AcceptInvitationTooManyRequests) acceptInvitationRes() {}
+
+type AcceptInvitationUnprocessableEntity Error
+
+func (*AcceptInvitationUnprocessableEntity) acceptInvitationRes() {}
+
+type ActivateOrgForbidden Error
+
+func (*ActivateOrgForbidden) activateOrgRes() {}
+
+type ActivateOrgNotFound Error
+
+func (*ActivateOrgNotFound) activateOrgRes() {}
+
+// Ref: #/components/schemas/ActivateOrgResponse
+type ActivateOrgResponse struct {
+	ActiveTenantID uuid.UUID `json:"active_tenant_id"`
+}
+
+// GetActiveTenantID returns the value of ActiveTenantID.
+func (s *ActivateOrgResponse) GetActiveTenantID() uuid.UUID {
+	return s.ActiveTenantID
+}
+
+// SetActiveTenantID sets the value of ActiveTenantID.
+func (s *ActivateOrgResponse) SetActiveTenantID(val uuid.UUID) {
+	s.ActiveTenantID = val
+}
+
+func (*ActivateOrgResponse) activateOrgRes() {}
+
+type ActivateOrgUnauthorized Error
+
+func (*ActivateOrgUnauthorized) activateOrgRes() {}
 
 // Ref: #/components/schemas/ActivityVerifyResult
 type ActivityVerifyResult struct {
@@ -67,10 +249,199 @@ type AgentAutologinConsumeUnprocessableEntity Error
 
 func (*AgentAutologinConsumeUnprocessableEntity) agentAutologinConsumeRes() {}
 
+// M21 — the signed last-will body.
+// Ref: #/components/schemas/AgentDisconnect
+type AgentDisconnect struct {
+	// The enrolled site UUID (echoed for convenience; auth binds the real identity).
+	SiteID OptString `json:"site_id"`
+	// Deactivated | uninstalled | user_initiated.
+	Reason OptString `json:"reason"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AgentDisconnect) GetSiteID() OptString {
+	return s.SiteID
+}
+
+// GetReason returns the value of Reason.
+func (s *AgentDisconnect) GetReason() OptString {
+	return s.Reason
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AgentDisconnect) SetSiteID(val OptString) {
+	s.SiteID = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AgentDisconnect) SetReason(val OptString) {
+	s.Reason = val
+}
+
+type AgentDisconnectOK struct {
+	Ok OptBool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentDisconnectOK) GetOk() OptBool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentDisconnectOK) SetOk(val OptBool) {
+	s.Ok = val
+}
+
+func (*AgentDisconnectOK) agentDisconnectRes() {}
+
+// M21 / ADR-039 — the light 60s heartbeat body the WordPress agent sends.
+// All fields are optional and accepted best-effort: the beat is about
+// liveness, not the payload. Forward-compatible (additive) so a future CP
+// can render drift without a separate metadata pull.
+// Ref: #/components/schemas/AgentHeartbeat
+type AgentHeartbeat struct {
+	// The enrolled site UUID (echoed for convenience; auth binds the real identity).
+	SiteID OptString `json:"site_id"`
+	// Unix seconds at send time.
+	Ts OptInt64 `json:"ts"`
+	// Agent self-reported status, currently always "ok".
+	Status    OptString `json:"status"`
+	WpVersion OptString `json:"wp_version"`
+	// PHP memory_limit (ini_get).
+	PhpMemory OptString `json:"php_memory"`
+	// Compact plugin-file => version map.
+	PluginVersions OptAgentHeartbeatPluginVersions `json:"plugin_versions"`
+	// Count of available plugin + theme + core updates (from cached transients).
+	InstalledUpdatesCount OptInt  `json:"installed_updates_count"`
+	Multisite             OptBool `json:"multisite"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AgentHeartbeat) GetSiteID() OptString {
+	return s.SiteID
+}
+
+// GetTs returns the value of Ts.
+func (s *AgentHeartbeat) GetTs() OptInt64 {
+	return s.Ts
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentHeartbeat) GetStatus() OptString {
+	return s.Status
+}
+
+// GetWpVersion returns the value of WpVersion.
+func (s *AgentHeartbeat) GetWpVersion() OptString {
+	return s.WpVersion
+}
+
+// GetPhpMemory returns the value of PhpMemory.
+func (s *AgentHeartbeat) GetPhpMemory() OptString {
+	return s.PhpMemory
+}
+
+// GetPluginVersions returns the value of PluginVersions.
+func (s *AgentHeartbeat) GetPluginVersions() OptAgentHeartbeatPluginVersions {
+	return s.PluginVersions
+}
+
+// GetInstalledUpdatesCount returns the value of InstalledUpdatesCount.
+func (s *AgentHeartbeat) GetInstalledUpdatesCount() OptInt {
+	return s.InstalledUpdatesCount
+}
+
+// GetMultisite returns the value of Multisite.
+func (s *AgentHeartbeat) GetMultisite() OptBool {
+	return s.Multisite
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AgentHeartbeat) SetSiteID(val OptString) {
+	s.SiteID = val
+}
+
+// SetTs sets the value of Ts.
+func (s *AgentHeartbeat) SetTs(val OptInt64) {
+	s.Ts = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentHeartbeat) SetStatus(val OptString) {
+	s.Status = val
+}
+
+// SetWpVersion sets the value of WpVersion.
+func (s *AgentHeartbeat) SetWpVersion(val OptString) {
+	s.WpVersion = val
+}
+
+// SetPhpMemory sets the value of PhpMemory.
+func (s *AgentHeartbeat) SetPhpMemory(val OptString) {
+	s.PhpMemory = val
+}
+
+// SetPluginVersions sets the value of PluginVersions.
+func (s *AgentHeartbeat) SetPluginVersions(val OptAgentHeartbeatPluginVersions) {
+	s.PluginVersions = val
+}
+
+// SetInstalledUpdatesCount sets the value of InstalledUpdatesCount.
+func (s *AgentHeartbeat) SetInstalledUpdatesCount(val OptInt) {
+	s.InstalledUpdatesCount = val
+}
+
+// SetMultisite sets the value of Multisite.
+func (s *AgentHeartbeat) SetMultisite(val OptBool) {
+	s.Multisite = val
+}
+
 // AgentHeartbeatNoContent is response for AgentHeartbeat operation.
 type AgentHeartbeatNoContent struct{}
 
 func (*AgentHeartbeatNoContent) agentHeartbeatRes() {}
+
+// Compact plugin-file => version map.
+type AgentHeartbeatPluginVersions map[string]string
+
+func (s *AgentHeartbeatPluginVersions) init() AgentHeartbeatPluginVersions {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
+}
+
+// M21 — heartbeat acknowledgement with optional pending instructions.
+// Ref: #/components/schemas/AgentHeartbeatResult
+type AgentHeartbeatResult struct {
+	Ok bool `json:"ok"`
+	// Pending agent instructions, e.g. ["revoke"].
+	Instructions []string `json:"instructions"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentHeartbeatResult) GetOk() bool {
+	return s.Ok
+}
+
+// GetInstructions returns the value of Instructions.
+func (s *AgentHeartbeatResult) GetInstructions() []string {
+	return s.Instructions
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentHeartbeatResult) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetInstructions sets the value of Instructions.
+func (s *AgentHeartbeatResult) SetInstructions(val []string) {
+	s.Instructions = val
+}
+
+func (*AgentHeartbeatResult) agentHeartbeatRes() {}
 
 // Ref: #/components/schemas/AgentMetadata
 type AgentMetadata struct {
@@ -451,6 +822,11 @@ func (s *ApiKeyList) SetItems(val []ApiKey) {
 }
 
 func (*ApiKeyList) listApiKeysRes() {}
+
+// ArchiveSiteNoContent is response for ArchiveSite operation.
+type ArchiveSiteNoContent struct{}
+
+func (*ArchiveSiteNoContent) archiveSiteRes() {}
 
 // Ref: #/components/schemas/AuditEntry
 type AuditEntry struct {
@@ -2055,6 +2431,46 @@ type CreateAutologinUnprocessableEntity Error
 
 func (*CreateAutologinUnprocessableEntity) createAutologinRes() {}
 
+type CreateOrgConflict Error
+
+func (*CreateOrgConflict) createOrgRes() {}
+
+// Ref: #/components/schemas/CreateOrgRequest
+type CreateOrgRequest struct {
+	// Display name of the new organisation.
+	Name string `json:"name"`
+	// URL-safe slug. Auto-derived from name when omitted.
+	Slug OptString `json:"slug"`
+}
+
+// GetName returns the value of Name.
+func (s *CreateOrgRequest) GetName() string {
+	return s.Name
+}
+
+// GetSlug returns the value of Slug.
+func (s *CreateOrgRequest) GetSlug() OptString {
+	return s.Slug
+}
+
+// SetName sets the value of Name.
+func (s *CreateOrgRequest) SetName(val string) {
+	s.Name = val
+}
+
+// SetSlug sets the value of Slug.
+func (s *CreateOrgRequest) SetSlug(val OptString) {
+	s.Slug = val
+}
+
+type CreateOrgUnauthorized Error
+
+func (*CreateOrgUnauthorized) createOrgRes() {}
+
+type CreateOrgUnprocessableEntity Error
+
+func (*CreateOrgUnprocessableEntity) createOrgRes() {}
+
 type CreateSiteConflict Error
 
 func (*CreateSiteConflict) createSiteRes() {}
@@ -2071,6 +2487,67 @@ type CreateSiteDestinationUnprocessableEntity Error
 
 func (*CreateSiteDestinationUnprocessableEntity) createSiteDestinationRes() {}
 
+type CreateSiteShareAccepted SiteShareGrantResponse
+
+func (*CreateSiteShareAccepted) createSiteShareRes() {}
+
+type CreateSiteShareCreated SiteShareGrantResponse
+
+func (*CreateSiteShareCreated) createSiteShareRes() {}
+
+type CreateSiteShareForbidden Error
+
+func (*CreateSiteShareForbidden) createSiteShareRes() {}
+
+// Ref: #/components/schemas/CreateSiteShareRequest
+type CreateSiteShareRequest struct {
+	// Email of the collaborator to invite. If a user with this email exists
+	// the share is created immediately; otherwise an invitation is emailed/linked.
+	Email string        `json:"email"`
+	Role  SiteShareRole `json:"role"`
+	// Optional expiry (RFC3339). Null / omitted = durable grant. Use for
+	// time-limited support access.
+	ExpiresAt OptDateTime `json:"expires_at"`
+}
+
+// GetEmail returns the value of Email.
+func (s *CreateSiteShareRequest) GetEmail() string {
+	return s.Email
+}
+
+// GetRole returns the value of Role.
+func (s *CreateSiteShareRequest) GetRole() SiteShareRole {
+	return s.Role
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *CreateSiteShareRequest) GetExpiresAt() OptDateTime {
+	return s.ExpiresAt
+}
+
+// SetEmail sets the value of Email.
+func (s *CreateSiteShareRequest) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetRole sets the value of Role.
+func (s *CreateSiteShareRequest) SetRole(val SiteShareRole) {
+	s.Role = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *CreateSiteShareRequest) SetExpiresAt(val OptDateTime) {
+	s.ExpiresAt = val
+}
+
+type CreateSiteShareUnauthorized Error
+
+func (*CreateSiteShareUnauthorized) createSiteShareRes() {}
+
+type CreateSiteShareUnprocessableEntity Error
+
+func (*CreateSiteShareUnprocessableEntity) createSiteShareRes() {}
+
 type CreateSiteUnprocessableEntity Error
 
 func (*CreateSiteUnprocessableEntity) createSiteRes() {}
@@ -2082,6 +2559,23 @@ func (*CreateTenantConflict) createTenantRes() {}
 type CreateTenantUnprocessableEntity Error
 
 func (*CreateTenantUnprocessableEntity) createTenantRes() {}
+
+type DeleteMemberForbidden Error
+
+func (*DeleteMemberForbidden) deleteMemberRes() {}
+
+// DeleteMemberNoContent is response for DeleteMember operation.
+type DeleteMemberNoContent struct{}
+
+func (*DeleteMemberNoContent) deleteMemberRes() {}
+
+type DeleteMemberNotFound Error
+
+func (*DeleteMemberNotFound) deleteMemberRes() {}
+
+type DeleteMemberUnauthorized Error
+
+func (*DeleteMemberUnauthorized) deleteMemberRes() {}
 
 // DeleteSiteDestinationNoContent is response for DeleteSiteDestination operation.
 type DeleteSiteDestinationNoContent struct{}
@@ -2100,6 +2594,23 @@ func (*DeleteSiteDestinationUnauthorized) deleteSiteDestinationRes() {}
 type DeleteSiteNoContent struct{}
 
 func (*DeleteSiteNoContent) deleteSiteRes() {}
+
+type DeleteSiteShareForbidden Error
+
+func (*DeleteSiteShareForbidden) deleteSiteShareRes() {}
+
+// DeleteSiteShareNoContent is response for DeleteSiteShare operation.
+type DeleteSiteShareNoContent struct{}
+
+func (*DeleteSiteShareNoContent) deleteSiteShareRes() {}
+
+type DeleteSiteShareNotFound Error
+
+func (*DeleteSiteShareNotFound) deleteSiteShareRes() {}
+
+type DeleteSiteShareUnauthorized Error
+
+func (*DeleteSiteShareUnauthorized) deleteSiteShareRes() {}
 
 type EnrollConflict Error
 
@@ -2275,7 +2786,10 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 	s.Details = val
 }
 
+func (*Error) agentDisconnectRes()         {}
 func (*Error) agentHeartbeatRes()          {}
+func (*Error) archiveSiteRes()             {}
+func (*Error) beginReEnrollmentRes()       {}
 func (*Error) createBackupRes()            {}
 func (*Error) createPairingCodeRes()       {}
 func (*Error) createRestoreRes()           {}
@@ -2292,6 +2806,7 @@ func (*Error) getSiteRes()                 {}
 func (*Error) getSiteUptimeRes()           {}
 func (*Error) getTenantRes()               {}
 func (*Error) getUpdateRunRes()            {}
+func (*Error) listSharedWithMeRes()        {}
 func (*Error) logoutRes()                  {}
 func (*Error) oidcLoginRes()               {}
 func (*Error) putAlertConfigRes()          {}
@@ -2299,6 +2814,8 @@ func (*Error) putBackupScheduleRes()       {}
 func (*Error) putSiteLoginBrandRes()       {}
 func (*Error) putSiteLoginProtectionRes()  {}
 func (*Error) refreshSiteDiagnosticsRes()  {}
+func (*Error) restoreSiteRes()             {}
+func (*Error) revokeSiteRes()              {}
 func (*Error) setSiteTagsRes()             {}
 func (*Error) silenceSitePHPErrorRes()     {}
 
@@ -2656,6 +3173,87 @@ func (s *ListSitePHPErrorsSilenced) UnmarshalText(data []byte) error {
 	}
 }
 
+type ListSiteSharesForbidden Error
+
+func (*ListSiteSharesForbidden) listSiteSharesRes() {}
+
+type ListSiteSharesNotFound Error
+
+func (*ListSiteSharesNotFound) listSiteSharesRes() {}
+
+type ListSiteSharesUnauthorized Error
+
+func (*ListSiteSharesUnauthorized) listSiteSharesRes() {}
+
+type ListSitesState string
+
+const (
+	ListSitesStatePendingEnrollment ListSitesState = "pending_enrollment"
+	ListSitesStateConnected         ListSitesState = "connected"
+	ListSitesStateDegraded          ListSitesState = "degraded"
+	ListSitesStateDisconnected      ListSitesState = "disconnected"
+	ListSitesStateRevoked           ListSitesState = "revoked"
+	ListSitesStateArchived          ListSitesState = "archived"
+)
+
+// AllValues returns all ListSitesState values.
+func (ListSitesState) AllValues() []ListSitesState {
+	return []ListSitesState{
+		ListSitesStatePendingEnrollment,
+		ListSitesStateConnected,
+		ListSitesStateDegraded,
+		ListSitesStateDisconnected,
+		ListSitesStateRevoked,
+		ListSitesStateArchived,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListSitesState) MarshalText() ([]byte, error) {
+	switch s {
+	case ListSitesStatePendingEnrollment:
+		return []byte(s), nil
+	case ListSitesStateConnected:
+		return []byte(s), nil
+	case ListSitesStateDegraded:
+		return []byte(s), nil
+	case ListSitesStateDisconnected:
+		return []byte(s), nil
+	case ListSitesStateRevoked:
+		return []byte(s), nil
+	case ListSitesStateArchived:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListSitesState) UnmarshalText(data []byte) error {
+	switch ListSitesState(data) {
+	case ListSitesStatePendingEnrollment:
+		*s = ListSitesStatePendingEnrollment
+		return nil
+	case ListSitesStateConnected:
+		*s = ListSitesStateConnected
+		return nil
+	case ListSitesStateDegraded:
+		*s = ListSitesStateDegraded
+		return nil
+	case ListSitesStateDisconnected:
+		*s = ListSitesStateDisconnected
+		return nil
+	case ListSitesStateRevoked:
+		*s = ListSitesStateRevoked
+		return nil
+	case ListSitesStateArchived:
+		*s = ListSitesStateArchived
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Ref: #/components/schemas/LoginRequest
 type LoginRequest struct {
 	Email    string `json:"email"`
@@ -2775,6 +3373,7 @@ func (s *Membership) SetRole(val Role) {
 }
 
 func (*Membership) inviteMemberRes() {}
+func (*Membership) patchMemberRes()  {}
 
 // Ref: #/components/schemas/MembershipList
 type MembershipList struct {
@@ -2805,6 +3404,144 @@ func (*OidcCallbackUnauthorized) oidcCallbackRes() {}
 type OidcLoginFound struct{}
 
 func (*OidcLoginFound) oidcLoginRes() {}
+
+// NewOptAgentDisconnect returns new OptAgentDisconnect with value set to v.
+func NewOptAgentDisconnect(v AgentDisconnect) OptAgentDisconnect {
+	return OptAgentDisconnect{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentDisconnect is optional AgentDisconnect.
+type OptAgentDisconnect struct {
+	Value AgentDisconnect
+	Set   bool
+}
+
+// IsSet returns true if OptAgentDisconnect was set.
+func (o OptAgentDisconnect) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentDisconnect) Reset() {
+	var v AgentDisconnect
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentDisconnect) SetTo(v AgentDisconnect) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentDisconnect) Get() (v AgentDisconnect, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentDisconnect) Or(d AgentDisconnect) AgentDisconnect {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAgentHeartbeat returns new OptAgentHeartbeat with value set to v.
+func NewOptAgentHeartbeat(v AgentHeartbeat) OptAgentHeartbeat {
+	return OptAgentHeartbeat{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentHeartbeat is optional AgentHeartbeat.
+type OptAgentHeartbeat struct {
+	Value AgentHeartbeat
+	Set   bool
+}
+
+// IsSet returns true if OptAgentHeartbeat was set.
+func (o OptAgentHeartbeat) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentHeartbeat) Reset() {
+	var v AgentHeartbeat
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentHeartbeat) SetTo(v AgentHeartbeat) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentHeartbeat) Get() (v AgentHeartbeat, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentHeartbeat) Or(d AgentHeartbeat) AgentHeartbeat {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAgentHeartbeatPluginVersions returns new OptAgentHeartbeatPluginVersions with value set to v.
+func NewOptAgentHeartbeatPluginVersions(v AgentHeartbeatPluginVersions) OptAgentHeartbeatPluginVersions {
+	return OptAgentHeartbeatPluginVersions{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentHeartbeatPluginVersions is optional AgentHeartbeatPluginVersions.
+type OptAgentHeartbeatPluginVersions struct {
+	Value AgentHeartbeatPluginVersions
+	Set   bool
+}
+
+// IsSet returns true if OptAgentHeartbeatPluginVersions was set.
+func (o OptAgentHeartbeatPluginVersions) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentHeartbeatPluginVersions) Reset() {
+	var v AgentHeartbeatPluginVersions
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentHeartbeatPluginVersions) SetTo(v AgentHeartbeatPluginVersions) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentHeartbeatPluginVersions) Get() (v AgentHeartbeatPluginVersions, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentHeartbeatPluginVersions) Or(d AgentHeartbeatPluginVersions) AgentHeartbeatPluginVersions {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
 
 // NewOptAuditEntryMetadata returns new OptAuditEntryMetadata with value set to v.
 func NewOptAuditEntryMetadata(v AuditEntryMetadata) OptAuditEntryMetadata {
@@ -3266,6 +4003,52 @@ func (o OptGetSiteUptimeWindow) Or(d GetSiteUptimeWindow) GetSiteUptimeWindow {
 	return d
 }
 
+// NewOptInt returns new OptInt with value set to v.
+func NewOptInt(v int) OptInt {
+	return OptInt{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptInt is optional int.
+type OptInt struct {
+	Value int
+	Set   bool
+}
+
+// IsSet returns true if OptInt was set.
+func (o OptInt) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptInt) Reset() {
+	var v int
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptInt) SetTo(v int) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptInt) Get() (v int, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptInt) Or(d int) int {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptInt32 returns new OptInt32 with value set to v.
 func NewOptInt32(v int32) OptInt32 {
 	return OptInt32{
@@ -3490,6 +4273,52 @@ func (o OptListSitePHPErrorsSilenced) Get() (v ListSitePHPErrorsSilenced, ok boo
 
 // Or returns value if set, or given parameter if does not.
 func (o OptListSitePHPErrorsSilenced) Or(d ListSitePHPErrorsSilenced) ListSitePHPErrorsSilenced {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptListSitesState returns new OptListSitesState with value set to v.
+func NewOptListSitesState(v ListSitesState) OptListSitesState {
+	return OptListSitesState{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListSitesState is optional ListSitesState.
+type OptListSitesState struct {
+	Value ListSitesState
+	Set   bool
+}
+
+// IsSet returns true if OptListSitesState was set.
+func (o OptListSitesState) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListSitesState) Reset() {
+	var v ListSitesState
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListSitesState) SetTo(v ListSitesState) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListSitesState) Get() (v ListSitesState, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListSitesState) Or(d ListSitesState) ListSitesState {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -4184,6 +5013,52 @@ func (o OptSiteComponents) Or(d SiteComponents) SiteComponents {
 	return d
 }
 
+// NewOptSiteConnectionState returns new OptSiteConnectionState with value set to v.
+func NewOptSiteConnectionState(v SiteConnectionState) OptSiteConnectionState {
+	return OptSiteConnectionState{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteConnectionState is optional SiteConnectionState.
+type OptSiteConnectionState struct {
+	Value SiteConnectionState
+	Set   bool
+}
+
+// IsSet returns true if OptSiteConnectionState was set.
+func (o OptSiteConnectionState) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteConnectionState) Reset() {
+	var v SiteConnectionState
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteConnectionState) SetTo(v SiteConnectionState) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteConnectionState) Get() (v SiteConnectionState, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteConnectionState) Or(d SiteConnectionState) SiteConnectionState {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptSiteCreateStatus returns new OptSiteCreateStatus with value set to v.
 func NewOptSiteCreateStatus(v SiteCreateStatus) OptSiteCreateStatus {
 	return OptSiteCreateStatus{
@@ -4224,6 +5099,98 @@ func (o OptSiteCreateStatus) Get() (v SiteCreateStatus, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptSiteCreateStatus) Or(d SiteCreateStatus) SiteCreateStatus {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSiteLifecycleReason returns new OptSiteLifecycleReason with value set to v.
+func NewOptSiteLifecycleReason(v SiteLifecycleReason) OptSiteLifecycleReason {
+	return OptSiteLifecycleReason{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteLifecycleReason is optional SiteLifecycleReason.
+type OptSiteLifecycleReason struct {
+	Value SiteLifecycleReason
+	Set   bool
+}
+
+// IsSet returns true if OptSiteLifecycleReason was set.
+func (o OptSiteLifecycleReason) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteLifecycleReason) Reset() {
+	var v SiteLifecycleReason
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteLifecycleReason) SetTo(v SiteLifecycleReason) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteLifecycleReason) Get() (v SiteLifecycleReason, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteLifecycleReason) Or(d SiteLifecycleReason) SiteLifecycleReason {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSiteShare returns new OptSiteShare with value set to v.
+func NewOptSiteShare(v SiteShare) OptSiteShare {
+	return OptSiteShare{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteShare is optional SiteShare.
+type OptSiteShare struct {
+	Value SiteShare
+	Set   bool
+}
+
+// IsSet returns true if OptSiteShare was set.
+func (o OptSiteShare) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteShare) Reset() {
+	var v SiteShare
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteShare) SetTo(v SiteShare) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteShare) Get() (v SiteShare, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteShare) Or(d SiteShare) SiteShare {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -4321,6 +5288,45 @@ func (o OptUUID) Or(d uuid.UUID) uuid.UUID {
 	}
 	return d
 }
+
+// Ref: #/components/schemas/Org
+type Org struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	Slug string    `json:"slug"`
+}
+
+// GetID returns the value of ID.
+func (s *Org) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetName returns the value of Name.
+func (s *Org) GetName() string {
+	return s.Name
+}
+
+// GetSlug returns the value of Slug.
+func (s *Org) GetSlug() string {
+	return s.Slug
+}
+
+// SetID sets the value of ID.
+func (s *Org) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetName sets the value of Name.
+func (s *Org) SetName(val string) {
+	s.Name = val
+}
+
+// SetSlug sets the value of Slug.
+func (s *Org) SetSlug(val string) {
+	s.Slug = val
+}
+
+func (*Org) createOrgRes() {}
 
 // Ref: #/components/schemas/PHPError
 type PHPError struct {
@@ -4656,6 +5662,37 @@ func (s *PairingCodeCreate) SetSiteName(val OptString) {
 func (s *PairingCodeCreate) SetTags(val []string) {
 	s.Tags = val
 }
+
+type PatchMemberForbidden Error
+
+func (*PatchMemberForbidden) patchMemberRes() {}
+
+type PatchMemberNotFound Error
+
+func (*PatchMemberNotFound) patchMemberRes() {}
+
+// Ref: #/components/schemas/PatchMemberRequest
+type PatchMemberRequest struct {
+	Role Role `json:"role"`
+}
+
+// GetRole returns the value of Role.
+func (s *PatchMemberRequest) GetRole() Role {
+	return s.Role
+}
+
+// SetRole sets the value of Role.
+func (s *PatchMemberRequest) SetRole(val Role) {
+	s.Role = val
+}
+
+type PatchMemberUnauthorized Error
+
+func (*PatchMemberUnauthorized) patchMemberRes() {}
+
+type PatchMemberUnprocessableEntity Error
+
+func (*PatchMemberUnprocessableEntity) patchMemberRes() {}
 
 type PatchSiteErrorConfigBadRequest Error
 
@@ -5164,10 +6201,19 @@ type Site struct {
 	WpVersion    string           `json:"wp_version"`
 	PhpVersion   string           `json:"php_version"`
 	HealthStatus SiteHealthStatus `json:"health_status"`
-	ServerInfo   OptString        `json:"server_info"`
-	Multisite    bool             `json:"multisite"`
-	ActiveTheme  OptString        `json:"active_theme"`
-	Tags         []string         `json:"tags"`
+	// M21 / ADR-041 — the single source of truth for the agent connection
+	// lifecycle. Surfaced live on the /api/v1/sites/events SSE `site`
+	// payload; surfacing it on this strict REST Site shape is a Phase 4
+	// follow-up (the legacy status/health_status remain in sync meanwhile).
+	ConnectionState OptSiteConnectionState `json:"connection_state"`
+	// M21 — bumps on each re-enrollment under the same site_id.
+	ConnectionGeneration OptInt32 `json:"connection_generation"`
+	// M21 — reason recorded on the last down transition.
+	DisconnectedReason OptString `json:"disconnected_reason"`
+	ServerInfo         OptString `json:"server_info"`
+	Multisite          bool      `json:"multisite"`
+	ActiveTheme        OptString `json:"active_theme"`
+	Tags               []string  `json:"tags"`
 	// Whether an agent has enrolled this site.
 	Enrolled   OptBool           `json:"enrolled"`
 	EnrolledAt OptDateTime       `json:"enrolled_at"`
@@ -5215,6 +6261,21 @@ func (s *Site) GetPhpVersion() string {
 // GetHealthStatus returns the value of HealthStatus.
 func (s *Site) GetHealthStatus() SiteHealthStatus {
 	return s.HealthStatus
+}
+
+// GetConnectionState returns the value of ConnectionState.
+func (s *Site) GetConnectionState() OptSiteConnectionState {
+	return s.ConnectionState
+}
+
+// GetConnectionGeneration returns the value of ConnectionGeneration.
+func (s *Site) GetConnectionGeneration() OptInt32 {
+	return s.ConnectionGeneration
+}
+
+// GetDisconnectedReason returns the value of DisconnectedReason.
+func (s *Site) GetDisconnectedReason() OptString {
+	return s.DisconnectedReason
 }
 
 // GetServerInfo returns the value of ServerInfo.
@@ -5307,6 +6368,21 @@ func (s *Site) SetHealthStatus(val SiteHealthStatus) {
 	s.HealthStatus = val
 }
 
+// SetConnectionState sets the value of ConnectionState.
+func (s *Site) SetConnectionState(val OptSiteConnectionState) {
+	s.ConnectionState = val
+}
+
+// SetConnectionGeneration sets the value of ConnectionGeneration.
+func (s *Site) SetConnectionGeneration(val OptInt32) {
+	s.ConnectionGeneration = val
+}
+
+// SetDisconnectedReason sets the value of DisconnectedReason.
+func (s *Site) SetDisconnectedReason(val OptString) {
+	s.DisconnectedReason = val
+}
+
 // SetServerInfo sets the value of ServerInfo.
 func (s *Site) SetServerInfo(val OptString) {
 	s.ServerInfo = val
@@ -5358,8 +6434,9 @@ func (s *Site) SetUpdatedAt(val time.Time) {
 }
 
 func (*Site) agentMetadataRes() {}
-func (*Site) createSiteRes()    {}
 func (*Site) getSiteRes()       {}
+func (*Site) restoreSiteRes()   {}
+func (*Site) revokeSiteRes()    {}
 func (*Site) setSiteTagsRes()   {}
 
 // Ref: #/components/schemas/SiteActivityEvent
@@ -6030,6 +7107,79 @@ func (s *SiteComponentsCoreUpdate) SetCurrentVersion(val string) {
 	s.CurrentVersion = val
 }
 
+// M21 / ADR-041 — the single source of truth for the agent connection
+// lifecycle. Surfaced live on the /api/v1/sites/events SSE `site`
+// payload; surfacing it on this strict REST Site shape is a Phase 4
+// follow-up (the legacy status/health_status remain in sync meanwhile).
+type SiteConnectionState string
+
+const (
+	SiteConnectionStatePendingEnrollment SiteConnectionState = "pending_enrollment"
+	SiteConnectionStateConnected         SiteConnectionState = "connected"
+	SiteConnectionStateDegraded          SiteConnectionState = "degraded"
+	SiteConnectionStateDisconnected      SiteConnectionState = "disconnected"
+	SiteConnectionStateRevoked           SiteConnectionState = "revoked"
+	SiteConnectionStateArchived          SiteConnectionState = "archived"
+)
+
+// AllValues returns all SiteConnectionState values.
+func (SiteConnectionState) AllValues() []SiteConnectionState {
+	return []SiteConnectionState{
+		SiteConnectionStatePendingEnrollment,
+		SiteConnectionStateConnected,
+		SiteConnectionStateDegraded,
+		SiteConnectionStateDisconnected,
+		SiteConnectionStateRevoked,
+		SiteConnectionStateArchived,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteConnectionState) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteConnectionStatePendingEnrollment:
+		return []byte(s), nil
+	case SiteConnectionStateConnected:
+		return []byte(s), nil
+	case SiteConnectionStateDegraded:
+		return []byte(s), nil
+	case SiteConnectionStateDisconnected:
+		return []byte(s), nil
+	case SiteConnectionStateRevoked:
+		return []byte(s), nil
+	case SiteConnectionStateArchived:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteConnectionState) UnmarshalText(data []byte) error {
+	switch SiteConnectionState(data) {
+	case SiteConnectionStatePendingEnrollment:
+		*s = SiteConnectionStatePendingEnrollment
+		return nil
+	case SiteConnectionStateConnected:
+		*s = SiteConnectionStateConnected
+		return nil
+	case SiteConnectionStateDegraded:
+		*s = SiteConnectionStateDegraded
+		return nil
+	case SiteConnectionStateDisconnected:
+		*s = SiteConnectionStateDisconnected
+		return nil
+	case SiteConnectionStateRevoked:
+		*s = SiteConnectionStateRevoked
+		return nil
+	case SiteConnectionStateArchived:
+		*s = SiteConnectionStateArchived
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Ref: #/components/schemas/SiteCreate
 type SiteCreate struct {
 	URL        url.URL             `json:"url"`
@@ -6037,6 +7187,8 @@ type SiteCreate struct {
 	Status     OptSiteCreateStatus `json:"status"`
 	WpVersion  OptString           `json:"wp_version"`
 	PhpVersion OptString           `json:"php_version"`
+	// M21 — optional tags applied to the pending site.
+	Tags []string `json:"tags"`
 }
 
 // GetURL returns the value of URL.
@@ -6064,6 +7216,11 @@ func (s *SiteCreate) GetPhpVersion() OptString {
 	return s.PhpVersion
 }
 
+// GetTags returns the value of Tags.
+func (s *SiteCreate) GetTags() []string {
+	return s.Tags
+}
+
 // SetURL sets the value of URL.
 func (s *SiteCreate) SetURL(val url.URL) {
 	s.URL = val
@@ -6087,6 +7244,11 @@ func (s *SiteCreate) SetWpVersion(val OptString) {
 // SetPhpVersion sets the value of PhpVersion.
 func (s *SiteCreate) SetPhpVersion(val OptString) {
 	s.PhpVersion = val
+}
+
+// SetTags sets the value of Tags.
+func (s *SiteCreate) SetTags(val []string) {
+	s.Tags = val
 }
 
 type SiteCreateStatus string
@@ -6823,6 +7985,50 @@ func (s *SiteDiagnosticsList) SetItems(val []SiteDiagnosticsCard) {
 
 func (*SiteDiagnosticsList) getSiteDiagnosticsRes() {}
 
+// M21 — the once-shown enrollment code returned by the site-first create
+// and the begin-re-enrollment endpoints. The plaintext code is never
+// retrievable again.
+// Ref: #/components/schemas/SiteEnrollmentCode
+type SiteEnrollmentCode struct {
+	SiteID uuid.UUID `json:"site_id"`
+	// The single-use, site-bound pairing code (shown once).
+	EnrollmentCode string    `json:"enrollment_code"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteEnrollmentCode) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetEnrollmentCode returns the value of EnrollmentCode.
+func (s *SiteEnrollmentCode) GetEnrollmentCode() string {
+	return s.EnrollmentCode
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *SiteEnrollmentCode) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteEnrollmentCode) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetEnrollmentCode sets the value of EnrollmentCode.
+func (s *SiteEnrollmentCode) SetEnrollmentCode(val string) {
+	s.EnrollmentCode = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *SiteEnrollmentCode) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+func (*SiteEnrollmentCode) beginReEnrollmentRes() {}
+func (*SiteEnrollmentCode) createSiteRes()        {}
+
 // Ref: #/components/schemas/SiteErrorConfig
 type SiteErrorConfig struct {
 	// PHP E_* bitmask the agent applies to wp_debug_log collection.
@@ -6932,6 +8138,22 @@ func (s *SiteHealthStatus) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// Optional reason recorded in connection history + audit.
+// Ref: #/components/schemas/SiteLifecycleReason
+type SiteLifecycleReason struct {
+	Reason OptString `json:"reason"`
+}
+
+// GetReason returns the value of Reason.
+func (s *SiteLifecycleReason) GetReason() OptString {
+	return s.Reason
+}
+
+// SetReason sets the value of Reason.
+func (s *SiteLifecycleReason) SetReason(val OptString) {
+	s.Reason = val
 }
 
 // Ref: #/components/schemas/SiteList
@@ -7435,6 +8657,202 @@ func (s *SiteLoginProtectionConfigUpdateMode) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/SiteShare
+type SiteShare struct {
+	ID     uuid.UUID     `json:"id"`
+	SiteID uuid.UUID     `json:"site_id"`
+	UserID uuid.UUID     `json:"user_id"`
+	Role   SiteShareRole `json:"role"`
+	// UUID of the org member who created the share.
+	GrantedBy OptUUID `json:"granted_by"`
+	// When the share expires (null = durable). After this time the
+	// RESTRICTIVE RLS policy treats the grant as absent.
+	ExpiresAt OptDateTime `json:"expires_at"`
+	CreatedAt time.Time   `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *SiteShare) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteShare) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetUserID returns the value of UserID.
+func (s *SiteShare) GetUserID() uuid.UUID {
+	return s.UserID
+}
+
+// GetRole returns the value of Role.
+func (s *SiteShare) GetRole() SiteShareRole {
+	return s.Role
+}
+
+// GetGrantedBy returns the value of GrantedBy.
+func (s *SiteShare) GetGrantedBy() OptUUID {
+	return s.GrantedBy
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *SiteShare) GetExpiresAt() OptDateTime {
+	return s.ExpiresAt
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *SiteShare) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *SiteShare) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteShare) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetUserID sets the value of UserID.
+func (s *SiteShare) SetUserID(val uuid.UUID) {
+	s.UserID = val
+}
+
+// SetRole sets the value of Role.
+func (s *SiteShare) SetRole(val SiteShareRole) {
+	s.Role = val
+}
+
+// SetGrantedBy sets the value of GrantedBy.
+func (s *SiteShare) SetGrantedBy(val OptUUID) {
+	s.GrantedBy = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *SiteShare) SetExpiresAt(val OptDateTime) {
+	s.ExpiresAt = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *SiteShare) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// Ref: #/components/schemas/SiteShareGrantResponse
+type SiteShareGrantResponse struct {
+	// Present when the user already existed and the share is immediate.
+	Share OptSiteShare `json:"share"`
+	// True when an invitation was created because the email is not a known
+	// user; false when the share was applied directly.
+	Invited bool `json:"invited"`
+	// The raw invitation accept URL (shown once, like an API key). Present
+	// when invited=true AND the notification SMTP is not configured — the
+	// inviter must copy and share this link manually.
+	AcceptLink OptString `json:"accept_link"`
+}
+
+// GetShare returns the value of Share.
+func (s *SiteShareGrantResponse) GetShare() OptSiteShare {
+	return s.Share
+}
+
+// GetInvited returns the value of Invited.
+func (s *SiteShareGrantResponse) GetInvited() bool {
+	return s.Invited
+}
+
+// GetAcceptLink returns the value of AcceptLink.
+func (s *SiteShareGrantResponse) GetAcceptLink() OptString {
+	return s.AcceptLink
+}
+
+// SetShare sets the value of Share.
+func (s *SiteShareGrantResponse) SetShare(val OptSiteShare) {
+	s.Share = val
+}
+
+// SetInvited sets the value of Invited.
+func (s *SiteShareGrantResponse) SetInvited(val bool) {
+	s.Invited = val
+}
+
+// SetAcceptLink sets the value of AcceptLink.
+func (s *SiteShareGrantResponse) SetAcceptLink(val OptString) {
+	s.AcceptLink = val
+}
+
+// Ref: #/components/schemas/SiteShareList
+type SiteShareList struct {
+	Items []SiteShare `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *SiteShareList) GetItems() []SiteShare {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *SiteShareList) SetItems(val []SiteShare) {
+	s.Items = val
+}
+
+func (*SiteShareList) listSharedWithMeRes() {}
+func (*SiteShareList) listSiteSharesRes()   {}
+
+// Role a site collaborator holds. Subset of the full org Role enum —
+// site shares cannot be owner.
+// Ref: #/components/schemas/SiteShareRole
+type SiteShareRole string
+
+const (
+	SiteShareRoleViewer   SiteShareRole = "viewer"
+	SiteShareRoleOperator SiteShareRole = "operator"
+	SiteShareRoleAdmin    SiteShareRole = "admin"
+)
+
+// AllValues returns all SiteShareRole values.
+func (SiteShareRole) AllValues() []SiteShareRole {
+	return []SiteShareRole{
+		SiteShareRoleViewer,
+		SiteShareRoleOperator,
+		SiteShareRoleAdmin,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteShareRole) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteShareRoleViewer:
+		return []byte(s), nil
+	case SiteShareRoleOperator:
+		return []byte(s), nil
+	case SiteShareRoleAdmin:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteShareRole) UnmarshalText(data []byte) error {
+	switch SiteShareRole(data) {
+	case SiteShareRoleViewer:
+		*s = SiteShareRoleViewer
+		return nil
+	case SiteShareRoleOperator:
+		*s = SiteShareRoleOperator
+		return nil
+	case SiteShareRoleAdmin:
+		*s = SiteShareRoleAdmin
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type SiteStatus string
 
 const (
@@ -7798,6 +9216,20 @@ func (s *SqlInspectionTablesItem) SetCharset(val OptString) {
 // SetHasFk sets the value of HasFk.
 func (s *SqlInspectionTablesItem) SetHasFk(val OptBool) {
 	s.HasFk = val
+}
+
+type StreamSiteEventsOK struct {
+	Data io.Reader
+}
+
+// Read reads data from the Data reader.
+//
+// Kept to satisfy the io.Reader interface.
+func (s StreamSiteEventsOK) Read(p []byte) (n int, err error) {
+	if s.Data == nil {
+		return 0, io.EOF
+	}
+	return s.Data.Read(p)
 }
 
 // Ref: #/components/schemas/Tenant
