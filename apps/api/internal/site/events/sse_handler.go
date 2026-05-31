@@ -1,8 +1,10 @@
 package events
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -29,9 +31,16 @@ const (
 	replayLimit = 500
 	// maxStreamsPerPrincipal bounds concurrent SSE streams a single principal may
 	// hold open, so an authenticated caller can't exhaust goroutines/connections
-	// (Phase 6 security review, finding D). Each stream is a held connection +
-	// goroutine + buffered channel for up to sseMaxLifetime.
-	maxStreamsPerPrincipal = 8
+	// (Phase 6 security review, finding D). Raised from 8 to absorb reload churn:
+	// behind a proxy a reloaded tab's stale stream can briefly co-exist with the
+	// new one until the next keepalive write fails (see sseWriteTimeout) and frees
+	// its slot.
+	maxStreamsPerPrincipal = 24
+	// sseWriteTimeout bounds each keepalive/event write so a dead-but-lingering
+	// client connection (Cloud Run / proxy that doesn't promptly cancel ctx)
+	// surfaces as a write error within this window, ending the stream and freeing
+	// its slot — instead of pinning it for the full sseMaxLifetime.
+	sseWriteTimeout = 10 * time.Second
 )
 
 // Handler serves the tenant-scoped connection-events SSE stream (ADR-038). It is
@@ -106,6 +115,8 @@ func (h *Handler) stream(c *gin.Context) {
 		limitKey = tenantID
 	}
 	if !h.acquire(limitKey) {
+		slog.WarnContext(c.Request.Context(), "sse stream cap reached",
+			"principal", limitKey.String(), "tenant", tenantID.String(), "cap", maxStreamsPerPrincipal)
 		httpx.Error(c, domain.RateLimited("too_many_streams", "too many concurrent event streams; close one and retry"))
 		return
 	}
@@ -145,7 +156,7 @@ func (h *Handler) stream(c *gin.Context) {
 		if err == nil {
 			for _, ev := range replayed {
 				if allowed(ev) {
-					writeEvent(c.Writer, ev)
+					_, _ = c.Writer.Write(eventFrame(ev))
 				}
 				lastSent = ev.ID // advance the cursor even past filtered events
 			}
@@ -160,6 +171,21 @@ func (h *Handler) stream(c *gin.Context) {
 	lifetime := time.NewTimer(sseMaxLifetime)
 	defer lifetime.Stop()
 
+	// writeFrame writes p with a bounded deadline and returns false when the
+	// client connection is gone — the caller then ends the stream so the deferred
+	// release() frees the slot promptly (finding D / 429 fix). The write deadline
+	// turns a wedged write (dead-but-lingering connection behind a proxy) into a
+	// prompt error instead of an indefinite block.
+	rc := http.NewResponseController(c.Writer)
+	writeFrame := func(p []byte) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)) // best-effort
+		if _, err := c.Writer.Write(p); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -167,8 +193,9 @@ func (h *Handler) stream(c *gin.Context) {
 		case <-lifetime.C:
 			return
 		case <-ticker.C:
-			_, _ = c.Writer.Write([]byte(":\n\n"))
-			flusher.Flush()
+			if !writeFrame([]byte(":\n\n")) {
+				return // client gone — free the slot now, don't wait 30 min
+			}
 		case ev, open := <-ch:
 			if !open {
 				return
@@ -182,9 +209,10 @@ func (h *Handler) stream(c *gin.Context) {
 			if !allowed(ev) {
 				continue
 			}
-			writeEvent(c.Writer, ev)
+			if !writeFrame(eventFrame(ev)) {
+				return // client gone
+			}
 			lastSent = ev.ID
-			flusher.Flush()
 		}
 	}
 }
@@ -213,16 +241,18 @@ func (h *Handler) replay(ctx context.Context, tenantID uuid.UUID, since string) 
 // writeEvent serializes a ConnectionEvent as a single SSE frame. The `id:` line
 // is the ULID so the browser's EventSource sets Last-Event-ID for reconnect
 // replay (ADR-038); `event:` is the event type so the client can addEventListener.
-func writeEvent(w gin.ResponseWriter, ev site.ConnectionEvent) {
+func eventFrame(ev site.ConnectionEvent) []byte {
 	payload, err := json.Marshal(ev)
 	if err != nil {
-		return
+		return nil
 	}
-	_, _ = w.Write([]byte("id: "))
-	_, _ = w.Write([]byte(ev.ID))
-	_, _ = w.Write([]byte("\nevent: "))
-	_, _ = w.Write([]byte(ev.Type))
-	_, _ = w.Write([]byte("\ndata: "))
-	_, _ = w.Write(payload)
-	_, _ = w.Write([]byte("\n\n"))
+	var b bytes.Buffer
+	b.WriteString("id: ")
+	b.WriteString(ev.ID)
+	b.WriteString("\nevent: ")
+	b.WriteString(ev.Type)
+	b.WriteString("\ndata: ")
+	b.Write(payload)
+	b.WriteString("\n\n")
+	return b.Bytes()
 }
