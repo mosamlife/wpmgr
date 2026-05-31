@@ -178,9 +178,9 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 		if !ok || de.Kind != domain.KindNotFound {
 			return AcceptResult{}, err
 		}
-		// New user: requires a password.
+		// New user: requires a password to create the account.
 		if in.Password == "" {
-			return AcceptResult{}, domain.Validation("password_required", "password is required for new users")
+			return AcceptResult{}, domain.Validation("password_required", "choose a password to create your account")
 		}
 		hash, herr := auth.HashPassword(in.Password)
 		if herr != nil {
@@ -189,6 +189,23 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 		u, err = s.authRepo.CreateUser(ctx, in.Email, hash, in.Name, "", "")
 		if err != nil {
 			return AcceptResult{}, err
+		}
+	} else {
+		// EXISTING user: authenticate before granting access + starting a
+		// session, otherwise possession of the invite link alone would log the
+		// caller in as an existing account (the token is email-bound but the
+		// link can still leak). A logged-in user simply re-enters their password.
+		if u.PasswordHash == "" {
+			return AcceptResult{}, domain.Validation("password_login_unavailable",
+				"this account uses single sign-on — sign in first, then open the invite link again")
+		}
+		if in.Password == "" {
+			return AcceptResult{}, domain.Validation("password_required", "enter your password to accept")
+		}
+		okPw, verr := auth.VerifyPassword(in.Password, u.PasswordHash)
+		if verr != nil || !okPw {
+			_ = s.incrementAttempts(ctx, inv.TenantID, inv.ID)
+			return AcceptResult{}, domain.Unauthorized("invalid_credentials", "incorrect password")
 		}
 	}
 

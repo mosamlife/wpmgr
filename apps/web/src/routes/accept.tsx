@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { AlertCircle, AlertTriangle, Globe, Loader2 } from "lucide-react";
+import { AlertTriangle, Globe, Loader2 } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
@@ -63,8 +63,6 @@ function AcceptPage() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [needsAccount, setNeedsAccount] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
@@ -122,26 +120,23 @@ function AcceptPage() {
       setServerError("Email is required");
       return;
     }
-    if (needsAccount) {
-      if (!password) {
-        setServerError("Password is required to create your account");
-        return;
-      }
-      if (password !== confirmPassword) {
-        setServerError("Passwords do not match");
-        return;
-      }
+    if (!password) {
+      setServerError(
+        "Enter your password — or choose one to create a new account.",
+      );
+      return;
     }
 
     setIsSubmitting(true);
     setServerError(null);
 
     try {
-      const body: Record<string, string> = { token: token!, email: trimmedEmail };
-      if (needsAccount) {
-        if (name.trim()) body["name"] = name.trim();
-        body["password"] = password;
-      }
+      const body: Record<string, string> = {
+        token: token!,
+        email: trimmedEmail,
+        password,
+      };
+      if (name.trim()) body["name"] = name.trim();
 
       const raw = await fetch("/api/v1/invitations/accept", {
         method: "POST",
@@ -156,25 +151,16 @@ function AcceptPage() {
       >;
 
       if (!raw.ok) {
+        // NOTE: error bodies are currently empty over the wire (a known session-
+        // middleware issue), so branch on STATUS codes, not the body. The
+        // optional code/message reads are a no-op today and a bonus once the
+        // body is restored.
         const msg =
           typeof json["message"] === "string" ? json["message"] : "";
+        const code = typeof json["code"] === "string" ? json["code"] : "";
 
-        // If the server says the user doesn't exist / needs a password, upgrade
-        // the form to collect name + password for account creation.
-        if (
-          raw.status === 422 &&
-          typeof msg === "string" &&
-          /password|account|sign.?up|register/i.test(msg)
-        ) {
-          setNeedsAccount(true);
-          setServerError(
-            "This invitation is for a new account. Please create a password to continue.",
-          );
-          return;
-        }
-
-        // Token errors — map to clear copy.
-        if (raw.status === 404 || raw.status === 410) {
+        // Token gone — not found / expired / already used.
+        if (raw.status === 404 || raw.status === 410 || raw.status === 409) {
           setTokenError(
             "This invitation link has expired or has already been used. Ask the sender to create a new one.",
           );
@@ -186,16 +172,29 @@ function AcceptPage() {
           );
           return;
         }
-        if (raw.status === 422 && /email/i.test(msg)) {
+        if (raw.status === 401 || code === "invalid_credentials") {
           setServerError(
-            "The email address does not match this invitation. Make sure you're signing in with the correct email.",
+            "Incorrect password for this email. If you already have a WPMgr account, enter its password; otherwise choose any password to create one.",
           );
           return;
         }
-
-        throw new Error(
-          msg || `Invitation accept failed (${raw.status})`,
+        if (code === "password_login_unavailable") {
+          setServerError(
+            "This account uses single sign-on. Sign in first, then open this invite link again.",
+          );
+          return;
+        }
+        if (raw.status === 403) {
+          setServerError(
+            "This email doesn't match the invitation (or the invite has expired). Use the exact address it was sent to.",
+          );
+          return;
+        }
+        setServerError(
+          msg ||
+            "We couldn't accept this invitation. Check your email and password, then try again.",
         );
+        return;
       }
 
       const result = json as unknown as AcceptResult;
@@ -224,9 +223,8 @@ function AcceptPage() {
             <h1>Accept invitation</h1>
           </CardTitle>
           <CardDescription>
-            {needsAccount
-              ? "Create a password to set up your account and accept this invitation."
-              : "Enter the email address this invitation was sent to."}
+            Enter the email this invitation was sent to and your password. If you
+            don't have a WPMgr account yet, the password you choose creates one.
           </CardDescription>
         </CardHeader>
 
@@ -256,77 +254,48 @@ function AcceptPage() {
               placeholder="you@example.com"
               autoComplete="email"
               disabled={isSubmitting}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !needsAccount) void handleSubmit();
-              }}
             />
           </div>
 
-          {needsAccount ? (
-            <>
-              <div className="space-y-2">
-                <Label htmlFor="accept-name">
-                  Display name{" "}
-                  <span className="text-xs text-muted-foreground">(optional)</span>
-                </Label>
-                <Input
-                  id="accept-name"
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Your name"
-                  autoComplete="name"
-                  disabled={isSubmitting}
-                />
-              </div>
+          <div className="space-y-2">
+            <Label htmlFor="accept-name">
+              Display name{" "}
+              <span className="text-xs text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="accept-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+              autoComplete="name"
+              disabled={isSubmitting}
+            />
+          </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="accept-password">Password</Label>
-                <Input
-                  id="accept-password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="new-password"
-                  disabled={isSubmitting}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="accept-confirm">Confirm password</Label>
-                <Input
-                  id="accept-confirm"
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  autoComplete="new-password"
-                  disabled={isSubmitting}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void handleSubmit();
-                  }}
-                  aria-invalid={
-                    confirmPassword.length > 0 && confirmPassword !== password
-                      ? true
-                      : undefined
-                  }
-                />
-                {confirmPassword.length > 0 && confirmPassword !== password ? (
-                  <p
-                    role="alert"
-                    className="flex items-center gap-1 text-xs text-[var(--color-destructive)]"
-                  >
-                    <AlertCircle aria-hidden="true" className="size-3 shrink-0" />
-                    Passwords do not match
-                  </p>
-                ) : null}
-              </div>
-            </>
-          ) : null}
+          <div className="space-y-2">
+            <Label htmlFor="accept-password">Password</Label>
+            <Input
+              id="accept-password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              disabled={isSubmitting}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleSubmit();
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              If you already have a WPMgr account, enter its password. Otherwise
+              this sets the password for your new account.
+            </p>
+          </div>
 
           <Button
             type="button"
             className="w-full"
-            disabled={isSubmitting || !email.trim()}
+            disabled={isSubmitting || !email.trim() || !password}
             onClick={() => void handleSubmit()}
           >
             {isSubmitting ? (
@@ -334,8 +303,6 @@ function AcceptPage() {
                 <Loader2 aria-hidden="true" className="animate-spin" />
                 <span>Accepting…</span>
               </>
-            ) : needsAccount ? (
-              "Create account and accept"
             ) : (
               "Accept invitation"
             )}
