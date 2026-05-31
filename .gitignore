@@ -55,7 +55,7 @@ Thumbs.db
 # ---- Third-party plugin sources (vendored for gap analysis only; not ours) ----
 /wpremote/
 /wpvivid-backuprestore/
-/flying-press/
+/reference/flying-press/
 
 # ---- Skills (installed via npx skills add; lockfile is tracked separately) ----
 .agents/
