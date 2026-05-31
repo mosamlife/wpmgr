@@ -1466,6 +1466,12 @@ paths:
       tags: [agent]
       security:
         - AgentSignature: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentHeartbeat"
       responses:
         "200":
           description: Heartbeat recorded; optional pending instructions
@@ -2909,6 +2915,41 @@ components:
         reason:
           type: string
           maxLength: 200
+    AgentHeartbeat:
+      type: object
+      description: |
+        M21 / ADR-039 — the light 60s heartbeat body the WordPress agent sends.
+        All fields are optional and accepted best-effort: the beat is about
+        liveness, not the payload. Forward-compatible (additive) so a future CP
+        can render drift without a separate metadata pull.
+      properties:
+        site_id:
+          type: string
+          description: The enrolled site UUID (echoed for convenience; auth binds the real identity).
+        ts:
+          type: integer
+          format: int64
+          description: Unix seconds at send time.
+        status:
+          type: string
+          description: Agent self-reported status, currently always "ok".
+        wp_version:
+          type: string
+          maxLength: 32
+        php_memory:
+          type: string
+          maxLength: 32
+          description: PHP memory_limit (ini_get).
+        plugin_versions:
+          type: object
+          additionalProperties:
+            type: string
+          description: Compact plugin-file => version map.
+        installed_updates_count:
+          type: integer
+          description: Count of available plugin + theme + core updates (from cached transients).
+        multisite:
+          type: boolean
     AgentHeartbeatResult:
       type: object
       description: M21 — heartbeat acknowledgement with optional pending instructions.
@@ -2925,6 +2966,9 @@ components:
       type: object
       description: M21 — the signed last-will body.
       properties:
+        site_id:
+          type: string
+          description: The enrolled site UUID (echoed for convenience; auth binds the real identity).
         reason:
           type: string
           maxLength: 64

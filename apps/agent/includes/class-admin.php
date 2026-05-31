@@ -36,6 +36,14 @@ final class Admin
     public const ACTION_SYNC = 'wpmgr_agent_sync';
 
     /**
+     * admin-post action: explicit Re-enroll (ADR-041). A single deliberate,
+     * confirmed action that wipes the existing keys + enrollment FIRST, then
+     * runs the normal enroll flow against a freshly pasted pairing code. This
+     * is NOT a hidden side effect of pasting a new code — it is its own button.
+     */
+    public const ACTION_REENROLL = 'wpmgr_agent_reenroll';
+
+    /**
      * admin-post action: disconnect from the current control plane. Wipes
      * site_id, tenant_id, CP public key, and this site's Ed25519 keypair so a
      * fresh enrollment (potentially against a different CP) generates a clean
@@ -76,16 +84,21 @@ final class Admin
 
     private Keystore $keystore;
 
+    private Lifecycle $lifecycle;
+
     /**
      * @param Settings   $settings   Config/enrollment state.
      * @param Enrollment $enrollment Reporting/enrollment client.
-     * @param Keystore   $keystore   Key store (cleared on Disconnect).
+     * @param Keystore   $keystore   Key store (cleared on Disconnect/Re-enroll).
+     * @param Lifecycle  $lifecycle  Connection lifecycle (immediate post-enroll
+     *                               heartbeat + revoked-marker accessors).
      */
-    public function __construct(Settings $settings, Enrollment $enrollment, Keystore $keystore)
+    public function __construct(Settings $settings, Enrollment $enrollment, Keystore $keystore, Lifecycle $lifecycle)
     {
         $this->settings   = $settings;
         $this->enrollment = $enrollment;
         $this->keystore   = $keystore;
+        $this->lifecycle  = $lifecycle;
     }
 
     /**
@@ -100,6 +113,7 @@ final class Admin
         add_action('admin_post_' . self::ACTION_ENROLL, [$this, 'handleEnroll']);
         add_action('admin_post_' . self::ACTION_SYNC, [$this, 'handleSync']);
         add_action('admin_post_' . self::ACTION_DISCONNECT, [$this, 'handleDisconnect']);
+        add_action('admin_post_' . self::ACTION_REENROLL, [$this, 'handleReenroll']);
         add_action('admin_post_' . self::ACTION_MINT_CONNECTION_KEY, [$this, 'handleMintConnectionKey']);
         add_action('admin_post_' . self::ACTION_REVOKE_CONNECTION_KEY, [$this, 'handleRevokeConnectionKey']);
         add_action('admin_notices', [$this, 'renderNotice']);
@@ -143,6 +157,13 @@ final class Admin
 
         echo '<div class="wrap">';
         echo '<h1>' . esc_html('WPMgr Agent') . '</h1>';
+
+        // --- Revoked notice (ADR-039) ---
+        // If the control plane disconnected this site from the dashboard, the
+        // Lifecycle revoke_self() flow left a marker. Surface it prominently so
+        // the operator understands why the agent went quiet, and offer a path
+        // back (paste a fresh code into the Enroll/Re-enroll form below).
+        $this->renderRevokedNotice();
 
         // --- Status panel ---
         echo '<h2>' . esc_html('Status') . '</h2>';
@@ -194,16 +215,37 @@ final class Admin
             submit_button('Sync now', 'secondary');
             echo '</form>';
 
-            // --- Disconnect (re-pair against a different CP / pairing code) ---
-            // Renders only when enrolled. Clears site_id, tenant_id, the CP
-            // public key, and this site's Ed25519 keypair. The age identity
-            // (chunk-encryption secret) is preserved so prior ciphertext stays
-            // decryptable; the user can wipe it manually if they want a true
-            // clean slate. JS confirm() ensures an accidental click does not
-            // strand the site mid-engagement.
+            // --- Re-enroll (ADR-041) ---
+            // An explicit, deliberate action: wipes the current keys + pairing
+            // and enrolls fresh against a newly pasted pairing code. The
+            // dashboard mints the fresh code via its re-enroll endpoint; the
+            // agent just needs the wipe-then-enroll. Distinct from Disconnect
+            // (which only clears, leaving the site unenrolled) and never a
+            // hidden side effect of editing the code field. JS confirm() guards
+            // an accidental click.
             echo '<h2>' . esc_html('Re-enroll') . '</h2>';
             echo '<p class="description">'
-                . esc_html('Clears this site\'s pairing with the current control plane so you can paste a fresh pairing code (e.g. when migrating to a new CP URL). Prior backups remain decryptable.')
+                . esc_html('Wipes this site\'s current pairing and re-enrolls with a fresh identity using a new pairing code (mint one from your dashboard). Prior backups remain decryptable.')
+                . '</p>';
+            echo '<form method="post" action="' . $actionUrl . '" onsubmit="return confirm(\''
+                . esc_js('Re-enroll this site? The current pairing and keys will be wiped, then re-enrolled with the new code.')
+                . '\');">';
+            wp_nonce_field(self::ACTION_REENROLL);
+            echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_REENROLL) . '" />';
+            echo '<table class="form-table"><tbody><tr><th><label for="wpmgr_reenroll_code">'
+                . esc_html('New pairing code') . '</label></th><td>';
+            echo '<input type="text" id="wpmgr_reenroll_code" name="wpmgr_pairing_code" class="regular-text" autocomplete="off" />';
+            echo '</td></tr></tbody></table>';
+            submit_button('Re-enroll', 'primary');
+            echo '</form>';
+
+            // --- Disconnect (clear pairing without re-pairing) ---
+            // Clears site_id, tenant_id, the CP public key, and this site's
+            // Ed25519 keypair. The age identity (chunk-encryption secret) is
+            // preserved so prior ciphertext stays decryptable.
+            echo '<h2>' . esc_html('Disconnect') . '</h2>';
+            echo '<p class="description">'
+                . esc_html('Clears this site\'s pairing with the current control plane without re-enrolling. Prior backups remain decryptable.')
                 . '</p>';
             echo '<form method="post" action="' . $actionUrl . '" onsubmit="return confirm(\''
                 . esc_js('Disconnect from the current control plane? You will need to paste a new pairing code to re-enroll.')
@@ -370,9 +412,11 @@ final class Admin
     {
         $this->guard(self::ACTION_ENROLL);
 
-        // Pairing code: sanitize lightly, consume in-request, never store/log.
+        // Pairing code: sanitize lightly, trim whitespace, consume in-request,
+        // never store/log. Trimming guards the common paste-with-trailing-space
+        // case the CP would otherwise reject with a 403/invalid-signature.
         $code = isset($_POST['wpmgr_pairing_code'])
-            ? sanitize_text_field((string) wp_unslash($_POST['wpmgr_pairing_code']))
+            ? trim(sanitize_text_field((string) wp_unslash($_POST['wpmgr_pairing_code'])))
             : '';
 
         if ($code === '') {
@@ -381,18 +425,50 @@ final class Admin
             return;
         }
 
-        $result = $this->enrollment->enroll($code);
+        $result = $this->enroll($code);
         unset($code);
 
         if ($result['ok']) {
-            // Push metadata immediately on successful enrollment.
-            $this->enrollment->pushMetadata();
             $this->notice('success', $result['message']);
         } else {
             $this->notice('error', $result['message']);
         }
 
         $this->redirectBack();
+    }
+
+    /**
+     * Shared enroll routine for both the first-time Enroll form and the
+     * explicit Re-enroll button. On success it:
+     *   - clears any stale "revoked" marker (the operator is re-connecting),
+     *   - pushes metadata immediately (so inventory is fresh on the CP), and
+     *   - fires ONE synchronous heartbeat so the dashboard flips
+     *     pending_enrollment→connected within ~1s instead of waiting out the
+     *     first 60s cron tick. Both follow-ups are best-effort: a failure does
+     *     not undo a successful enroll (the 60s cron is the backstop).
+     *
+     * @param string $code Trimmed pairing code.
+     * @return array{ok:bool,status:int,code:string,message:string}
+     */
+    private function enroll(string $code): array
+    {
+        $result = $this->enrollment->enroll($code);
+
+        if ($result['ok']) {
+            Lifecycle::clearRevokedMarker();
+
+            // Push metadata immediately on successful enrollment.
+            $this->enrollment->pushMetadata();
+
+            // ADR-039 — immediate post-enroll heartbeat. Wrapped so a failed
+            // beat never turns a successful enroll into a failure.
+            $instructions = $this->lifecycle->heartbeatNow();
+            if ($instructions !== []) {
+                $this->lifecycle->handleInstructions($instructions);
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -457,6 +533,58 @@ final class Admin
         $this->settings->clearLastSyncTimestamps();
 
         $this->notice('success', 'Disconnected from the control plane. Paste a fresh pairing code to re-enroll.');
+        $this->redirectBack();
+    }
+
+    /**
+     * Handle the explicit "Re-enroll" post (ADR-041).
+     *
+     * A single deliberate, confirmed action: wipe the existing site identity
+     * (CP public key + this site's Ed25519 keypair) and enrollment state FIRST,
+     * then run the normal enroll flow against the freshly pasted pairing code.
+     * Re-enrolling is therefore NEVER a hidden side effect of pasting a new code
+     * into the first-time form — it is its own button with its own confirm.
+     *
+     * The age identity is preserved (Keystore::clearSiteIdentity contract) so
+     * prior backups stay decryptable. A fresh site keypair is generated by the
+     * enroll flow (Signer::agentPublicKey regenerates on demand when absent).
+     *
+     * @return void
+     */
+    public function handleReenroll(): void
+    {
+        $this->guard(self::ACTION_REENROLL);
+
+        $code = isset($_POST['wpmgr_pairing_code'])
+            ? trim(sanitize_text_field((string) wp_unslash($_POST['wpmgr_pairing_code'])))
+            : '';
+
+        if ($code === '') {
+            $this->notice('error', 'Enter a fresh pairing code to re-enroll.');
+            $this->redirectBack();
+            return;
+        }
+
+        // ADR-041: wipe keys FIRST, then enroll fresh. clearSiteIdentity drops
+        // the CP key + site keypair; clearEnrollment drops site_id/tenant_id;
+        // clearLastSyncTimestamps clears the stale status panel. The new
+        // keypair is regenerated lazily inside the enroll flow.
+        $this->keystore->clearSiteIdentity();
+        $this->settings->clearEnrollment();
+        $this->settings->clearLastSyncTimestamps();
+
+        $result = $this->enroll($code);
+        unset($code);
+
+        if ($result['ok']) {
+            $this->notice('success', 'Re-enrolled with a fresh identity. ' . $result['message']);
+        } else {
+            $this->notice(
+                'error',
+                'Re-enroll failed (previous pairing was already cleared): ' . $result['message']
+            );
+        }
+
         $this->redirectBack();
     }
 
@@ -576,6 +704,29 @@ final class Admin
     {
         wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
         exit;
+    }
+
+    /**
+     * Render the "this site was disconnected from the dashboard" notice when a
+     * revoked marker is present (set by Lifecycle::revokeSelf). Explains the
+     * disconnect and points the operator at the Enroll/Re-enroll form. Output
+     * is fully escaped; no secrets are involved.
+     *
+     * @return void
+     */
+    private function renderRevokedNotice(): void
+    {
+        $marker = Lifecycle::revokedMarker();
+        if ($marker === null) {
+            return;
+        }
+
+        $when = $marker['at'] > 0 ? ' on ' . $this->formatTime($marker['at']) : '';
+
+        echo '<div class="notice notice-warning"><p><strong>'
+            . esc_html('This site was disconnected from your WPMgr dashboard') . esc_html($when) . '.</strong> '
+            . esc_html('The agent stopped reporting and was deactivated. To reconnect, paste a fresh pairing code into the Enroll form below.')
+            . '</p></div>';
     }
 
     /**

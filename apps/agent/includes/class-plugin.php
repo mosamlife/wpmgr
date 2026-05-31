@@ -78,6 +78,8 @@ final class Plugin
 
     private Scheduler $scheduler;
 
+    private Lifecycle $lifecycle;
+
     private Admin $admin;
 
     private ReplayCache $autologinReplay;
@@ -136,7 +138,12 @@ final class Plugin
         // Metadata pushes include the agent's age PUBLIC recipient so the CP can
         // register it on sites.age_recipient — M4 backups refuse otherwise.
         $this->enrollment       = new Enrollment($this->keystore, $this->settings, $this->signer, new MetadataCommand(new AgeIdentity($this->keystore)));
-        $this->scheduler        = new Scheduler($this->settings, $this->enrollment);
+        // Connection lifecycle (ADR-039/040/041): owns revoke-self, the
+        // immediate post-enroll heartbeat, and the deactivate/uninstall
+        // last-wills. The Scheduler delegates heartbeat-instruction handling
+        // here; the Admin uses heartbeatNow() after a successful re-enroll.
+        $this->lifecycle        = new Lifecycle($this->keystore, $this->settings, $this->enrollment);
+        $this->scheduler        = new Scheduler($this->settings, $this->enrollment, $this->lifecycle);
 
         // Monitors/recorders/engines that COMMAND HANDLERS hold references to must
         // be constructed BEFORE commands() runs. commands() executes inside the
@@ -159,7 +166,7 @@ final class Plugin
         $this->loginBrand = new LoginBrand();
 
         $this->router           = new Router($this->connector, $this->commands());
-        $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore);
+        $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore, $this->lifecycle);
         $this->autologinReplay  = new ReplayCache();
         $this->autologin        = new AutologinCommand($this->connector, $this->autologinReplay, $this->signer, $this->settings);
     }
@@ -332,6 +339,14 @@ final class Plugin
         if (defined('WPMGR_AGENT_FILE')) {
             register_activation_hook(WPMGR_AGENT_FILE, [$this, 'activate']);
             register_deactivation_hook(WPMGR_AGENT_FILE, [$this, 'deactivate']);
+            // ADR-040 — signed last-will on uninstall. The uninstall callback
+            // MUST be a static method (no plugin instance / $this exists when
+            // WordPress runs the uninstall hook); Lifecycle::on_uninstall builds
+            // its own object graph, posts the signed disconnect, then wipes
+            // keys + drops the agent's options/transients.
+            if (function_exists('register_uninstall_hook')) {
+                register_uninstall_hook(WPMGR_AGENT_FILE, [Lifecycle::class, 'on_uninstall']);
+            }
         }
     }
 
@@ -472,12 +487,23 @@ final class Plugin
     }
 
     /**
-     * Deactivation hook: clear all scheduled cron events.
+     * Deactivation hook (ADR-040): send a SIGNED best-effort last-will
+     * disconnect (reason=deactivated, 3s budget) so the CP flips the site to
+     * `disconnected` immediately, THEN clear all scheduled cron events.
+     *
+     * Deliberately does NOT wipe keys — a deactivate may be temporary, and a
+     * later re-activation should resume against the same enrollment. (Key
+     * wiping happens on revoke and on uninstall, not here.) The last-will is
+     * best-effort: deactivation must complete even if the CP is unreachable.
      *
      * @return void
      */
     public function deactivate(): void
     {
+        // Best-effort signed last-will FIRST (while keys still exist), bounded
+        // to 3s so an unreachable CP cannot hang the deactivation request.
+        $this->lifecycle->onDeactivate();
+
         $this->scheduler->clearEvents();
 
         if (function_exists('wp_clear_scheduled_hook')) {

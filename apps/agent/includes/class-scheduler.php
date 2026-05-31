@@ -76,6 +76,16 @@ final class Scheduler
     public const SCHEDULE_5MIN = 'wpmgr_agent_5min';
 
     /**
+     * ADR-039 — custom cron schedule key for the 60-second heartbeat interval.
+     * The heartbeat cadence dropped from 5 min to 60 s so the dashboard sees
+     * liveness (and acts on queued instructions such as a dashboard-issued
+     * revoke) within ~1 min. WP-Cron only fires on traffic, so the effective
+     * cadence is "at most once per 60 s, when the site is being hit" — ADR-039
+     * accounts for that with generous CP-side miss windows.
+     */
+    public const SCHEDULE_60SEC = 'wpmgr_60sec';
+
+    /**
      * Custom cron schedule key for the 30-minute interval used by the metadata
      * push. v0.9.0: was `daily`; bumped to 30 min so dashboards refresh
      * available-update counts within an operational SLA without thrashing the
@@ -99,14 +109,18 @@ final class Scheduler
 
     private Enrollment $enrollment;
 
+    private Lifecycle $lifecycle;
+
     /**
      * @param Settings   $settings   Enrollment/config state.
      * @param Enrollment $enrollment Reporting client.
+     * @param Lifecycle  $lifecycle  Connection-lifecycle actor (revoke handling).
      */
-    public function __construct(Settings $settings, Enrollment $enrollment)
+    public function __construct(Settings $settings, Enrollment $enrollment, Lifecycle $lifecycle)
     {
         $this->settings   = $settings;
         $this->enrollment = $enrollment;
+        $this->lifecycle  = $lifecycle;
     }
 
     /**
@@ -141,6 +155,11 @@ final class Scheduler
             $schedules = [];
         }
 
+        $schedules[self::SCHEDULE_60SEC] = [
+            'interval' => 60,
+            'display'  => 'Every 60 seconds (WPMgr Agent)',
+        ];
+
         $schedules[self::SCHEDULE_5MIN] = [
             'interval' => 300,
             'display'  => 'Every 5 minutes (WPMgr Agent)',
@@ -164,8 +183,23 @@ final class Scheduler
     public function scheduleEvents(int $now): void
     {
         if (function_exists('wp_next_scheduled') && function_exists('wp_schedule_event')) {
+            // ADR-039 — heartbeat cadence migrated 5 min -> 60 s. If a pre-ADR-039
+            // heartbeat event is already scheduled on the old SCHEDULE_5MIN
+            // interval (re-upload / upgrade path), clear it FIRST so we never
+            // leave a duplicate event ticking on the wrong cadence, then
+            // re-register on the 60 s schedule below.
+            if (function_exists('wp_get_scheduled_event')) {
+                $existingBeat = wp_get_scheduled_event(self::HOOK_HEARTBEAT);
+                if (is_object($existingBeat) && isset($existingBeat->schedule)
+                    && (string) $existingBeat->schedule !== self::SCHEDULE_60SEC
+                ) {
+                    if (function_exists('wp_clear_scheduled_hook')) {
+                        wp_clear_scheduled_hook(self::HOOK_HEARTBEAT);
+                    }
+                }
+            }
             if (wp_next_scheduled(self::HOOK_HEARTBEAT) === false) {
-                wp_schedule_event($now + 60, self::SCHEDULE_5MIN, self::HOOK_HEARTBEAT);
+                wp_schedule_event($now + 60, self::SCHEDULE_60SEC, self::HOOK_HEARTBEAT);
             }
             // v0.9.0: metadata cadence dropped from daily to 30 min so the CP
             // sees available-update counts refresh on an operator-friendly
@@ -290,7 +324,23 @@ final class Scheduler
             return;
         }
 
-        $this->enrollment->sendHeartbeat();
+        // ADR-039 — read the heartbeat response and act on any control-plane
+        // instructions (e.g. a dashboard-issued "revoke"). The CP returns
+        // either 200 {ok,instructions?} or a legacy 204/empty body; sendHeartbeat
+        // normalises both to a (possibly empty) instructions list.
+        $beat = $this->enrollment->sendHeartbeat();
+        $instructions = isset($beat['instructions']) && is_array($beat['instructions'])
+            ? $beat['instructions']
+            : [];
+        if ($instructions !== []) {
+            $this->lifecycle->handleInstructions($instructions);
+            // A revoke deactivates the plugin + wipes keys; bail out of the
+            // backstop scheduling below — the site is being disconnected and
+            // arming diagnostics/size one-shots would be pointless.
+            if (in_array(Lifecycle::INSTRUCTION_REVOKE, $instructions, true)) {
+                return;
+            }
+        }
 
         // v0.9.13 diagnostics backstop. Cheap (one get_option + one
         // function_exists). wp_schedule_single_event self-dedupes any

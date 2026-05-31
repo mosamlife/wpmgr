@@ -36,8 +36,24 @@ final class Enrollment
     /** Agent-authenticated heartbeat path. */
     public const PATH_HEARTBEAT = '/agent/v1/heartbeat';
 
+    /**
+     * Agent-authenticated last-will path (ADR-040). The agent posts a SIGNED
+     * disconnect here on deactivate/uninstall so the CP can flip the site to
+     * `disconnected` immediately instead of waiting out the heartbeat-miss
+     * window. Best-effort: a failure here never blocks deactivation/uninstall.
+     */
+    public const PATH_DISCONNECT = '/agent/v1/disconnect';
+
     /** Default outbound request timeout, in seconds. */
     private const TIMEOUT = 15;
+
+    /**
+     * Last-will request timeout, in seconds (ADR-040). Deliberately tiny: the
+     * disconnect runs INSIDE the WP deactivate/uninstall request, which must
+     * complete even if the control plane is unreachable. Three seconds bounds
+     * the worst-case admin-page stall.
+     */
+    public const DISCONNECT_TIMEOUT = 3;
 
     private Keystore $keystore;
 
@@ -176,9 +192,16 @@ final class Enrollment
     {
         switch ($status) {
             case 401:
-                return 'Pairing code is invalid or expired.';
+                return 'Pairing code is invalid or expired. Re-paste the code; ensure there\'s no extra whitespace.';
+            case 403:
+                // Signature/auth rejection at enroll time almost always means a
+                // mangled (whitespace-padded) code. Steer the operator to re-paste.
+                return 'Enrollment was rejected. Re-paste the code; ensure there\'s no extra whitespace.';
             case 409:
                 return 'Pairing code already used, or this site is owned elsewhere.';
+            case 410:
+                // Live-enrollment (Phase 3): a consumed or expired site-bound code.
+                return 'This code expired or was already used. Request a new code from your dashboard.';
             case 422:
                 return 'Enrollment was rejected (validation error). Check the site URL.';
             default:
@@ -209,38 +232,227 @@ final class Enrollment
     }
 
     /**
-     * Send a heartbeat (signed, tiny body).
+     * Build the light heartbeat payload (ADR-039). The CP currently uses only
+     * liveness, but we send a forward-compatible status blob so a future CP can
+     * surface drift without a separate metadata pull. Kept cheap: no WP.org
+     * polling, no directory walks — this fires every 60s.
      *
-     * @return array{ok:bool,status:int,code:string,message:string}
+     * @return array{
+     *     site_id:string,
+     *     ts:int,
+     *     status:string,
+     *     wp_version:string,
+     *     php_memory:string,
+     *     plugin_versions:array<string,string>,
+     *     installed_updates_count:int,
+     *     multisite:bool
+     * }
+     */
+    public function buildHeartbeatPayload(): array
+    {
+        return [
+            'site_id'                 => $this->settings->siteId(),
+            'ts'                      => time(),
+            'status'                  => 'ok',
+            'wp_version'              => $this->wpVersion(),
+            'php_memory'              => (string) ini_get('memory_limit'),
+            'plugin_versions'         => $this->pluginVersions(),
+            'installed_updates_count' => $this->installedUpdatesCount(),
+            'multisite'               => function_exists('is_multisite') ? (bool) is_multisite() : false,
+        ];
+    }
+
+    /**
+     * Send a heartbeat (signed). Reads the response for control-plane
+     * instructions (ADR-039) and reports any back to the caller so the
+     * scheduler can act on a queued "revoke".
+     *
+     * The CP response is EITHER:
+     *   - 200 with JSON `{"ok":true,"instructions":[...]}` (lifecycle wired), or
+     *   - 204 / empty (legacy liveness-only) — handled gracefully, no error.
+     *
+     * @return array{ok:bool,status:int,code:string,message:string,instructions:array<int,string>}
      */
     public function sendHeartbeat(): array
     {
         if (!$this->settings->isEnrolled()) {
-            return $this->result(false, 0, 'not_enrolled', 'Not enrolled.');
+            $notEnrolled = $this->result(false, 0, 'not_enrolled', 'Not enrolled.');
+            return [
+                'ok'           => $notEnrolled['ok'],
+                'status'       => $notEnrolled['status'],
+                'code'         => $notEnrolled['code'],
+                'message'      => $notEnrolled['message'],
+                'instructions' => [],
+            ];
         }
 
-        $body = (string) wp_json_encode([
-            'site_id' => $this->settings->siteId(),
-            'ts'      => time(),
-        ]);
+        $body = (string) wp_json_encode($this->buildHeartbeatPayload());
 
         $result = $this->signedPost(self::PATH_HEARTBEAT, $body);
         if ($result['ok']) {
             $this->settings->setLastHeartbeat(time());
         }
 
-        return $result;
+        return [
+            'ok'           => $result['ok'],
+            'status'       => $result['status'],
+            'code'         => $result['code'],
+            'message'      => $result['message'],
+            'instructions' => $this->parseInstructions($result['raw_body']),
+        ];
+    }
+
+    /**
+     * Send a SIGNED best-effort last-will disconnect (ADR-040). Posted by the
+     * deactivate/uninstall lifecycle hooks so the CP can flip the site to
+     * `disconnected` immediately. Runs through the SAME signed-request path as
+     * every other agent→CP call (the CP verifies the Ed25519 signature before
+     * acting), with a 3-second timeout so it can never hang the WP request.
+     *
+     * Any failure (unreachable CP, 503 lifecycle_disabled on an un-wired CP,
+     * timeout) is swallowed — the disconnect is advisory, not load-bearing.
+     *
+     * @param string $reason One of 'deactivated' | 'uninstalled' | 'user_initiated'.
+     * @return array{ok:bool,status:int,code:string,message:string}
+     */
+    public function disconnect(string $reason): array
+    {
+        if (!$this->settings->isEnrolled()) {
+            return $this->result(false, 0, 'not_enrolled', 'Not enrolled.');
+        }
+
+        $allowed = ['deactivated', 'uninstalled', 'user_initiated'];
+        if (!in_array($reason, $allowed, true)) {
+            $reason = 'user_initiated';
+        }
+
+        $body = (string) wp_json_encode([
+            'site_id' => $this->settings->siteId(),
+            'reason'  => $reason,
+        ]);
+
+        return $this->signedPost(self::PATH_DISCONNECT, $body, self::DISCONNECT_TIMEOUT);
+    }
+
+    /**
+     * Parse the heartbeat response body into a list of instruction strings.
+     * Tolerates an empty body (legacy 204), a non-JSON body, and a body whose
+     * `instructions` is absent or not a list — all yield an empty array.
+     *
+     * @param string $rawBody Raw HTTP response body.
+     * @return array<int,string> Instruction tokens (e.g. ['revoke']).
+     */
+    private function parseInstructions(string $rawBody): array
+    {
+        $rawBody = trim($rawBody);
+        if ($rawBody === '') {
+            return [];
+        }
+        $decoded = json_decode($rawBody, true);
+        if (!is_array($decoded) || !isset($decoded['instructions']) || !is_array($decoded['instructions'])) {
+            return [];
+        }
+        $out = [];
+        foreach ($decoded['instructions'] as $instruction) {
+            if (is_string($instruction) && $instruction !== '') {
+                $out[] = $instruction;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * This site's reported WordPress version (best-effort).
+     *
+     * @return string
+     */
+    private function wpVersion(): string
+    {
+        if (isset($GLOBALS['wp_version']) && is_scalar($GLOBALS['wp_version'])) {
+            return (string) $GLOBALS['wp_version'];
+        }
+        if (function_exists('get_bloginfo')) {
+            $v = get_bloginfo('version');
+            if (is_string($v)) {
+                return $v;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * A compact slug=>version map of installed plugins for the heartbeat. Cheap
+     * (reads the already-loaded plugin headers; no WP.org polling). Returns an
+     * empty map when get_plugins() is unavailable (e.g. front-end-only request).
+     *
+     * @return array<string,string>
+     */
+    private function pluginVersions(): array
+    {
+        if (!function_exists('get_plugins')) {
+            $adminInc = defined('ABSPATH') ? ABSPATH . 'wp-admin/includes/plugin.php' : '';
+            if ($adminInc !== '' && is_readable($adminInc)) {
+                require_once $adminInc;
+            }
+        }
+        if (!function_exists('get_plugins')) {
+            return [];
+        }
+        $map = [];
+        /** @var array<string,array<string,mixed>> $plugins */
+        $plugins = get_plugins();
+        foreach ($plugins as $file => $data) {
+            $version = isset($data['Version']) && is_scalar($data['Version']) ? (string) $data['Version'] : '';
+            $map[(string) $file] = $version;
+        }
+        return $map;
+    }
+
+    /**
+     * Count of currently-available updates (plugins + themes + core). Reads the
+     * update transients WordPress already maintains; does NOT force a refresh
+     * (that is the 30-min metadata cron's job) so the 60s heartbeat stays light.
+     *
+     * @return int
+     */
+    private function installedUpdatesCount(): int
+    {
+        $count = 0;
+
+        if (function_exists('get_site_transient')) {
+            $plugins = get_site_transient('update_plugins');
+            if (is_object($plugins) && isset($plugins->response) && is_array($plugins->response)) {
+                $count += count($plugins->response);
+            }
+            $themes = get_site_transient('update_themes');
+            if (is_object($themes) && isset($themes->response) && is_array($themes->response)) {
+                $count += count($themes->response);
+            }
+            $core = get_site_transient('update_core');
+            if (is_object($core) && isset($core->updates) && is_array($core->updates)) {
+                foreach ($core->updates as $update) {
+                    if (is_object($update) && isset($update->response) && $update->response === 'upgrade') {
+                        $count++;
+                    }
+                }
+            }
+        }
+
+        return $count;
     }
 
     /**
      * Perform an agent-authenticated POST: sign the canonical message and send
      * the four X-WPMgr-* headers.
      *
-     * @param string $path Request path only (no host/query).
-     * @param string $body Raw JSON body.
-     * @return array{ok:bool,status:int,code:string,message:string}
+     * @param string   $path    Request path only (no host/query).
+     * @param string   $body    Raw JSON body.
+     * @param int|null $timeout Per-request timeout override (seconds); defaults
+     *                          to self::TIMEOUT. The last-will path passes a
+     *                          short 3s budget so it never hangs deactivation.
+     * @return array{ok:bool,status:int,code:string,message:string,raw_body:string}
      */
-    private function signedPost(string $path, string $body): array
+    private function signedPost(string $path, string $body, ?int $timeout = null): array
     {
         $base = $this->settings->controlPlaneUrl();
         if ($base === '') {
@@ -261,7 +473,7 @@ final class Enrollment
         $response = wp_remote_post(
             $base . $path,
             [
-                'timeout' => self::TIMEOUT,
+                'timeout' => $timeout ?? self::TIMEOUT,
                 'headers' => $headers,
                 'body'    => $body,
             ]
@@ -271,19 +483,23 @@ final class Enrollment
             return $this->result(false, 0, 'unreachable', 'Control plane is unreachable.');
         }
 
-        $status = (int) wp_remote_retrieve_response_code($response);
+        $status  = (int) wp_remote_retrieve_response_code($response);
+        $rawBody = (string) wp_remote_retrieve_body($response);
         if ($status >= 200 && $status < 300) {
-            return $this->result(true, $status, 'ok', 'OK.');
+            $ok = $this->result(true, $status, 'ok', 'OK.');
+            $ok['raw_body'] = $rawBody;
+            return $ok;
         }
 
-        $rawBody = (string) wp_remote_retrieve_body($response);
         $message = 'Request failed (HTTP ' . $status . ').';
         $detail  = $this->summarizeBody($rawBody);
         if ($detail !== '') {
             $message .= ' ' . $detail;
         }
 
-        return $this->result(false, $status, 'http_' . $status, $message);
+        $err = $this->result(false, $status, 'http_' . $status, $message);
+        $err['raw_body'] = $rawBody;
+        return $err;
     }
 
     /**
@@ -394,10 +610,10 @@ final class Enrollment
      * @param int    $status  HTTP status (0 when no response).
      * @param string $code    Machine code.
      * @param string $message Human message (safe to surface to admins).
-     * @return array{ok:bool,status:int,code:string,message:string}
+     * @return array{ok:bool,status:int,code:string,message:string,raw_body:string}
      */
     private function result(bool $ok, int $status, string $code, string $message): array
     {
-        return ['ok' => $ok, 'status' => $status, 'code' => $code, 'message' => $message];
+        return ['ok' => $ok, 'status' => $status, 'code' => $code, 'message' => $message, 'raw_body' => ''];
     }
 }
