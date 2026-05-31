@@ -707,6 +707,54 @@ func run() error {
 	invitationSvc := invitation.NewService(pool, authRepo, auditRec, sessions, invitationMailer, publicBaseURL)
 	invitationH := invitation.NewHandler(invitationSvc)
 
+	// ADR-042 — CP-driven agent self-update manifest handler. Needs object
+	// storage (to read agent-releases/latest.json + presign the package) AND the
+	// CP signing key (to sign the manifest). When either is absent the handler
+	// stays nil and the /agent/v1/update/manifest route is simply not mounted.
+	// The store is built fresh from cfg.S3 because the earlier defStore is scoped
+	// inside the backup block.
+	var updateAgentH *agent.UpdateHandler
+	if cfg.S3.Enabled() && cfg.Agent.SigningPrivateKey != "" {
+		manifestStore, merr := blobstore.New(blobstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			Region:         cfg.S3.Region,
+			Bucket:         cfg.S3.Bucket,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			ForcePathStyle: cfg.S3.ForcePathStyle,
+		})
+		if merr != nil {
+			return fmt.Errorf("update manifest store: %w", merr)
+		}
+		manifestSigner, serr := agentcmd.NewSigner(cfg.Agent.SigningPrivateKey)
+		if serr != nil {
+			return fmt.Errorf("update manifest signer: %w", serr)
+		}
+		// Clamp the package presign + manifest exp window to <=5min (ADR-042 §1).
+		manifestTTL := cfg.Backup.PresignTTL
+		if manifestTTL <= 0 || manifestTTL > 5*time.Minute {
+			manifestTTL = 5 * time.Minute
+		}
+		updateAgentH = agent.NewUpdateHandler(manifestStore, manifestSigner, manifestTTL)
+
+		// Boot probe: exercise the exact storage ops the manifest handler relies
+		// on (read agent-releases/latest.json + mint a presigned GET) so a
+		// misconfiguration surfaces in the startup log instead of as an opaque
+		// 500 on the agent's first poll. Runs once, off the hot path.
+		ms := manifestStore
+		go func() {
+			pctx := context.Background()
+			if rc, gerr := ms.GetViaPresign(pctx, "agent-releases/latest.json"); gerr != nil {
+				logger.Error("ADR-042 self-update boot probe: fetch latest.json failed", "err", gerr.Error())
+			} else {
+				_ = rc.Close()
+				logger.Info("ADR-042 self-update boot probe: fetch latest.json OK")
+			}
+		}()
+	} else {
+		logger.Warn("ADR-042 self-update disabled: object storage or WPMGR_AGENT_SIGNING_PRIVATE_KEY not configured")
+	}
+
 	srv := server.New(server.Deps{
 		Config:          cfg,
 		Logger:          logger,
@@ -729,6 +777,7 @@ func run() error {
 		AutologinAgentH: autologinAgentH,
 		AgentAuth:       agentAuthn,
 		AgentH:          agentH,
+		UpdateAgentH:    updateAgentH,
 		SiteDestH:       siteDestH,
 		// ADR-037 Sprint 2 wiring.
 		DiagnosticsH:      diagnosticsH,

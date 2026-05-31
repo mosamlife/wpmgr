@@ -18,6 +18,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent;
 
+use WPMgr\Agent\Support\UpdateChecker;
+
 /**
  * WordPress admin UI for configuration + enrollment.
  */
@@ -69,6 +71,13 @@ final class Admin
      */
     public const ACTION_REVOKE_CONNECTION_KEY = 'wpmgr_agent_revoke_connection_key';
 
+    /**
+     * admin-post action: force an immediate update check (ADR-042 Phase 2).
+     * Flushes the 12h manifest transient and re-fetches from the CP so the
+     * operator can see the current update status without waiting for cache expiry.
+     */
+    public const ACTION_CHECK_UPDATE = 'wpmgr_agent_check_update';
+
     /** Option key for the minted connection-key record. */
     public const OPTION_CONNECTION_KEY = 'wpmgr_agent_connection_key';
 
@@ -86,19 +95,23 @@ final class Admin
 
     private Lifecycle $lifecycle;
 
+    private UpdateChecker $updateChecker;
+
     /**
-     * @param Settings   $settings   Config/enrollment state.
-     * @param Enrollment $enrollment Reporting/enrollment client.
-     * @param Keystore   $keystore   Key store (cleared on Disconnect/Re-enroll).
-     * @param Lifecycle  $lifecycle  Connection lifecycle (immediate post-enroll
-     *                               heartbeat + revoked-marker accessors).
+     * @param Settings      $settings      Config/enrollment state.
+     * @param Enrollment    $enrollment    Reporting/enrollment client.
+     * @param Keystore      $keystore      Key store (cleared on Disconnect/Re-enroll).
+     * @param Lifecycle     $lifecycle     Connection lifecycle (immediate post-enroll
+     *                                     heartbeat + revoked-marker accessors).
+     * @param UpdateChecker $updateChecker CP self-update checker (ADR-042).
      */
-    public function __construct(Settings $settings, Enrollment $enrollment, Keystore $keystore, Lifecycle $lifecycle)
+    public function __construct(Settings $settings, Enrollment $enrollment, Keystore $keystore, Lifecycle $lifecycle, UpdateChecker $updateChecker)
     {
-        $this->settings   = $settings;
-        $this->enrollment = $enrollment;
-        $this->keystore   = $keystore;
-        $this->lifecycle  = $lifecycle;
+        $this->settings       = $settings;
+        $this->enrollment     = $enrollment;
+        $this->keystore       = $keystore;
+        $this->lifecycle      = $lifecycle;
+        $this->updateChecker  = $updateChecker;
     }
 
     /**
@@ -116,6 +129,7 @@ final class Admin
         add_action('admin_post_' . self::ACTION_REENROLL, [$this, 'handleReenroll']);
         add_action('admin_post_' . self::ACTION_MINT_CONNECTION_KEY, [$this, 'handleMintConnectionKey']);
         add_action('admin_post_' . self::ACTION_REVOKE_CONNECTION_KEY, [$this, 'handleRevokeConnectionKey']);
+        add_action('admin_post_' . self::ACTION_CHECK_UPDATE, [$this, 'handleCheckUpdate']);
         add_action('admin_notices', [$this, 'renderNotice']);
     }
 
@@ -213,6 +227,17 @@ final class Admin
             wp_nonce_field(self::ACTION_SYNC);
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_SYNC) . '" />';
             submit_button('Sync now', 'secondary');
+            echo '</form>';
+
+            // --- Check for updates (ADR-042) ---
+            echo '<h2>' . esc_html('Agent update') . '</h2>';
+            echo '<p class="description">'
+                . esc_html('Force an immediate check for a new WPMgr agent version. The result appears in Plugins > Updates.')
+                . '</p>';
+            echo '<form method="post" action="' . $actionUrl . '">';
+            wp_nonce_field(self::ACTION_CHECK_UPDATE);
+            echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_CHECK_UPDATE) . '" />';
+            submit_button('Check for updates', 'secondary');
             echo '</form>';
 
             // --- Re-enroll (ADR-041) ---
@@ -674,6 +699,30 @@ final class Admin
 
         delete_option(self::OPTION_CONNECTION_KEY);
         $this->notice('success', 'Connection key revoked.');
+        $this->redirectBack();
+    }
+
+    /**
+     * Handle the "Check for updates" post (ADR-042 Phase 2).
+     *
+     * Capability + nonce gated (guard()). Delegates to UpdateChecker::checkNow()
+     * which flushes both transients and re-fetches a fresh manifest from the CP.
+     * The operator can then see the update status in Plugins > Updates.
+     *
+     * @return void
+     */
+    public function handleCheckUpdate(): void
+    {
+        $this->guard(self::ACTION_CHECK_UPDATE);
+
+        if (!$this->settings->isEnrolled()) {
+            $this->notice('error', 'Enroll before checking for updates.');
+            $this->redirectBack();
+            return;
+        }
+
+        $this->updateChecker->checkNow();
+        $this->notice('success', 'Checked for updates.');
         $this->redirectBack();
     }
 

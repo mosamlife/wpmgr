@@ -68,6 +68,11 @@ type Deps struct {
 	AutologinAgentH *autologin.AgentHandler
 	AgentAuth       *agent.Authenticator
 	AgentH          *agent.Handler
+	// UpdateAgentH serves the ADR-042 CP-driven self-update manifest at
+	// GET /agent/v1/update/manifest. nil ⇒ the route is not mounted (object
+	// storage or the signing key is unconfigured). Distinct from UpdateH, the
+	// unrelated operator-facing /api/v1 plugin-update handler.
+	UpdateAgentH *agent.UpdateHandler
 	// SiteDestH serves the ADR-036 P1 per-site destinations CRUD under
 	// /api/v1/sites/{siteId}/destinations.
 	SiteDestH *sitedestination.Handler
@@ -197,6 +202,12 @@ func New(deps Deps) *Server {
 		// Ed25519 signed-request middleware as all other agent routes.
 		if deps.SecurityAgentH != nil {
 			deps.SecurityAgentH.Register(agentGroup)
+		}
+		// ADR-042 — CP-driven self-update manifest. Same Ed25519 signed-request
+		// auth; the agent's site is resolved from the verified identity and
+		// pinned into the manifest's aud claim.
+		if deps.UpdateAgentH != nil {
+			deps.UpdateAgentH.Register(agentGroup)
 		}
 	}
 

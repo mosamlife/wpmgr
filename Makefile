@@ -90,13 +90,40 @@ agent-zip: agent-vendor ## Package the WordPress agent plugin as a zip (with ifs
 	# old phpbu/ vendor tree, deleted files). Removing the target file forces
 	# a clean rebuild every run.
 	rm -f release/wpmgr-agent.zip
+	rm -rf release/wpmgr-agent
 	# Sweep dev-only files (tests, caches, macOS resource forks, nested
 	# archives someone may have unzipped here for debugging) before packaging.
 	cd apps/agent && rm -f Archive.zip .DS_Store .phpunit.result.cache && find . -name ".DS_Store" -delete
-	cd apps/agent && zip -r ../../release/wpmgr-agent.zip . \
-		-x 'tests/*' '*.dist' '.phpunit.cache/*' '.phpunit.result.cache' \
-		   'composer.lock' '.DS_Store' '*/.DS_Store' '*.zip'
+	# Stage the plugin under a STABLE top-level folder (wpmgr-agent/) before
+	# zipping. WordPress derives a plugin's install folder (its slug) from the
+	# archive's top-level directory — or, when files sit at the archive root,
+	# from the .zip FILENAME. Packaging the bare contents (the old `zip -r . `)
+	# meant a versioned filename like wpmgr-agent-0.10.5.zip extracted to
+	# plugins/wpmgr-agent-0.10.5/ — a DIFFERENT slug from plugins/wpmgr-agent/,
+	# so WordPress saw each release as a brand-new plugin instead of an update
+	# (forcing a deactivate/delete that wipes the agent's wp-cron events).
+	# Staging under wpmgr-agent/ pins the slug regardless of the .zip filename,
+	# so every upload is recognised as an in-place update of the same plugin.
+	rsync -a --delete \
+		--exclude 'tests/' --exclude '*.dist' --exclude '.phpunit.cache/' \
+		--exclude '.phpunit.result.cache' --exclude 'composer.lock' \
+		--exclude '.DS_Store' --exclude '*.zip' \
+		apps/agent/ release/wpmgr-agent/
+	cd release && zip -r wpmgr-agent.zip wpmgr-agent
+	rm -rf release/wpmgr-agent
 	@echo "agent zip: $$(du -sh release/wpmgr-agent.zip | cut -f1)"
+
+.PHONY: agent-release
+agent-release: agent-zip ## Publish the agent release (zip + latest.json) to object storage for CP-driven self-update (ADR-042)
+	# Uploads the versioned package FIRST, then latest.json LAST, so the CP
+	# manifest never points at a package that is not yet in place. Override the
+	# bucket/prefix via WPMGR_RELEASE_BUCKET / WPMGR_RELEASE_PREFIX. Use
+	# `make agent-release-dry-run` to preview latest.json without uploading.
+	./scripts/release-agent.sh
+
+.PHONY: agent-release-dry-run
+agent-release-dry-run: agent-zip ## Preview the agent release (build zip + print latest.json) without uploading
+	./scripts/release-agent.sh --dry-run
 
 .PHONY: gen
 gen: ## Regenerate OpenAPI clients (Go + TS)

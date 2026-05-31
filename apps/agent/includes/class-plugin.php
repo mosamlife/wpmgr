@@ -38,6 +38,7 @@ use WPMgr\Agent\Support\ErrorMonitor;
 use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\MuPluginInstaller;
+use WPMgr\Agent\Support\UpdateChecker;
 
 /**
  * Top-level plugin orchestrator.
@@ -124,6 +125,14 @@ final class Plugin
     private LoginBrand $loginBrand;
 
     /**
+     * ADR-042 Phase 2 — CP-driven agent self-update. Hooks into the WordPress
+     * plugin-update machinery (site_transient_update_plugins, plugins_api,
+     * upgrader_pre_download, upgrader_source_selection) and enforces the full
+     * security verification chain before any bytes are swapped to disk.
+     */
+    private UpdateChecker $updateChecker;
+
+    /**
      * Private constructor wires the object graph.
      */
     private function __construct()
@@ -165,8 +174,20 @@ final class Plugin
         // dependencies; constructed here so sync_login_brand can hold a reference.
         $this->loginBrand = new LoginBrand();
 
+        // ADR-042 Phase 2 — self-update checker. Shares the Signer, Settings,
+        // Keystore, and a fresh ReplayCache (the autologin replay table — the
+        // same jti table is used for manifest replay prevention, which is safe
+        // because both use the same single-use semantics and non-overlapping jti
+        // namespaces via different issuers).
+        $this->updateChecker = new UpdateChecker(
+            $this->signer,
+            $this->settings,
+            $this->keystore,
+            new ReplayCache()
+        );
+
         $this->router           = new Router($this->connector, $this->commands());
-        $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore, $this->lifecycle);
+        $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore, $this->lifecycle, $this->updateChecker);
         $this->autologinReplay  = new ReplayCache();
         $this->autologin        = new AutologinCommand($this->connector, $this->autologinReplay, $this->signer, $this->settings);
     }
@@ -201,6 +222,18 @@ final class Plugin
         // missing tables. The helper itself short-circuits with a single
         // get_option() lookup when the schema is already current.
         add_action('plugins_loaded', [$this, 'maybeRunSchemaMigrations']);
+
+        // Cron self-heal (mirrors maybeRunSchemaMigrations). register_activation_hook
+        // does NOT fire on a plugin UPDATE / same-version re-upload, but the
+        // update's deactivate step DOES fire register_deactivation_hook →
+        // Scheduler::clearEvents() wipes EVERY reporting cron. Net effect: after
+        // an in-place agent update the heartbeat/metadata/diagnostics/activity/
+        // error crons silently vanish and never return, so the agent stops
+        // calling home and the CP heartbeat-timeout sweeper marks the site
+        // disconnected (even though CP→agent pushes like backups still succeed
+        // and briefly bump last_seen). This rebinds the recurring schedule on
+        // any boot once the heartbeat event is found missing.
+        add_action('plugins_loaded', [$this, 'maybeRescheduleCron']);
 
         add_action('rest_api_init', [$this->router, 'registerRoutes']);
         add_action('rest_api_init', [$this, 'registerAutologinRoute']);
@@ -327,6 +360,10 @@ final class Plugin
         // only when at least one brand field is non-empty (self-gating). The
         // call is idempotent (static guard inside LoginBrand::install).
         $this->loginBrand->install();
+
+        // ADR-042 Phase 2 — bind the CP self-update hooks. Self-gates on
+        // isEnrolled() inside UpdateChecker::install(); idempotent (static guard).
+        $this->updateChecker->install();
 
         if (function_exists('is_admin') && is_admin()) {
             $this->admin->registerHooks();
@@ -558,6 +595,52 @@ final class Plugin
     public function maybeRunSchemaMigrations(): void
     {
         Schema::ensureCurrent();
+    }
+
+    /**
+     * Cron self-heal: re-arm the recurring reporting crons when they have gone
+     * missing (the canonical case being an in-place plugin update — see the
+     * plugins_loaded binding in registerHooks for the full failure mode).
+     *
+     * Gated on isEnrolled(): every recurring job no-ops before enrollment, and
+     * skipping the not-enrolled case keeps us from perturbing the one-shot
+     * auto-deactivate safety window (which only matters WHILE not enrolled).
+     *
+     * Cheap on the hot path: one in-memory wp_next_scheduled() read of the
+     * already-loaded `cron` option. The heartbeat event is the canary — if it
+     * is scheduled, the rest were installed in the same scheduleEvents() pass
+     * and are present too, so we short-circuit. When it is missing we re-run
+     * the idempotent scheduleEvents() (each event is guarded by its own
+     * wp_next_scheduled check, so only the truly-absent ones get re-created)
+     * and restore the hourly autologin-replay prune, which lives in activate()
+     * rather than scheduleEvents() and is likewise wiped by clearEvents().
+     *
+     * @return void
+     */
+    public function maybeRescheduleCron(): void
+    {
+        if (!function_exists('wp_next_scheduled')) {
+            return;
+        }
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        // Canary: heartbeat present ⇒ the whole recurring set is present.
+        if (wp_next_scheduled(Scheduler::HOOK_HEARTBEAT) !== false) {
+            return;
+        }
+
+        $now = time();
+        $this->scheduler->scheduleEvents($now);
+
+        // Hourly autologin-replay prune is scheduled in activate(), not in
+        // scheduleEvents(), so re-arm it here too (clearEvents()/deactivate()
+        // wipes it alongside the rest).
+        if (function_exists('wp_schedule_event')
+            && wp_next_scheduled(ReplayCache::HOOK_PRUNE) === false
+        ) {
+            wp_schedule_event($now + 60, 'hourly', ReplayCache::HOOK_PRUNE);
+        }
     }
 
     /**
@@ -902,5 +985,15 @@ final class Plugin
     public function keystore(): Keystore
     {
         return $this->keystore;
+    }
+
+    /**
+     * Expose the UpdateChecker so Admin can call checkNow().
+     *
+     * @return UpdateChecker
+     */
+    public function updateChecker(): UpdateChecker
+    {
+        return $this->updateChecker;
     }
 }
