@@ -191,40 +191,47 @@ type Membership struct {
 }
 
 type PairingCode struct {
-	ID         uuid.UUID          `json:"id"`
-	TenantID   uuid.UUID          `json:"tenant_id"`
-	CodeHash   string             `json:"code_hash"`
-	CreatedBy  pgtype.UUID        `json:"created_by"`
-	SiteName   string             `json:"site_name"`
-	Tags       []string           `json:"tags"`
-	ExpiresAt  time.Time          `json:"expires_at"`
-	ConsumedAt pgtype.Timestamptz `json:"consumed_at"`
-	Attempts   int32              `json:"attempts"`
-	CreatedAt  time.Time          `json:"created_at"`
+	ID             uuid.UUID          `json:"id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	CodeHash       string             `json:"code_hash"`
+	CreatedBy      pgtype.UUID        `json:"created_by"`
+	SiteName       string             `json:"site_name"`
+	Tags           []string           `json:"tags"`
+	ExpiresAt      time.Time          `json:"expires_at"`
+	ConsumedAt     pgtype.Timestamptz `json:"consumed_at"`
+	Attempts       int32              `json:"attempts"`
+	SiteID         pgtype.UUID        `json:"site_id"`
+	ConsumedFromIp *netip.Addr        `json:"consumed_from_ip"`
+	CreatedAt      time.Time          `json:"created_at"`
 }
 
 type Site struct {
-	ID             uuid.UUID          `json:"id"`
-	TenantID       uuid.UUID          `json:"tenant_id"`
-	Url            string             `json:"url"`
-	Name           string             `json:"name"`
-	Status         string             `json:"status"`
-	WpVersion      string             `json:"wp_version"`
-	PhpVersion     string             `json:"php_version"`
-	AgentPublicKey string             `json:"agent_public_key"`
-	EnrolledAt     pgtype.Timestamptz `json:"enrolled_at"`
-	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
-	HealthStatus   string             `json:"health_status"`
-	ServerInfo     string             `json:"server_info"`
-	Multisite      bool               `json:"multisite"`
-	ActiveTheme    string             `json:"active_theme"`
-	Components     []byte             `json:"components"`
-	Tags           []string           `json:"tags"`
-	AgeRecipient   string             `json:"age_recipient"`
-	WpTimezone     string             `json:"wp_timezone"`
-	WpGmtOffset    float32            `json:"wp_gmt_offset"`
-	CreatedAt      time.Time          `json:"created_at"`
-	UpdatedAt      time.Time          `json:"updated_at"`
+	ID                   uuid.UUID          `json:"id"`
+	TenantID             uuid.UUID          `json:"tenant_id"`
+	Url                  string             `json:"url"`
+	Name                 string             `json:"name"`
+	Status               string             `json:"status"`
+	WpVersion            string             `json:"wp_version"`
+	PhpVersion           string             `json:"php_version"`
+	AgentPublicKey       string             `json:"agent_public_key"`
+	EnrolledAt           pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt           pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus         string             `json:"health_status"`
+	ServerInfo           string             `json:"server_info"`
+	Multisite            bool               `json:"multisite"`
+	ActiveTheme          string             `json:"active_theme"`
+	Components           []byte             `json:"components"`
+	Tags                 []string           `json:"tags"`
+	AgeRecipient         string             `json:"age_recipient"`
+	WpTimezone           string             `json:"wp_timezone"`
+	WpGmtOffset          float32            `json:"wp_gmt_offset"`
+	ConnectionState      string             `json:"connection_state"`
+	ConnectionGeneration int32              `json:"connection_generation"`
+	DisconnectedAt       pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason   *string            `json:"disconnected_reason"`
+	ArchivedAt           pgtype.Timestamptz `json:"archived_at"`
+	CreatedAt            time.Time          `json:"created_at"`
+	UpdatedAt            time.Time          `json:"updated_at"`
 }
 
 type SiteAlertState struct {
@@ -235,6 +242,28 @@ type SiteAlertState struct {
 	InIncident      bool               `json:"in_incident"`
 	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+type SiteConnectionHistory struct {
+	ID          uuid.UUID   `json:"id"`
+	TenantID    uuid.UUID   `json:"tenant_id"`
+	SiteID      uuid.UUID   `json:"site_id"`
+	FromState   string      `json:"from_state"`
+	ToState     string      `json:"to_state"`
+	Reason      *string     `json:"reason"`
+	ActorUserID pgtype.UUID `json:"actor_user_id"`
+	Generation  int32       `json:"generation"`
+	OccurredAt  time.Time   `json:"occurred_at"`
+	Metadata    []byte      `json:"metadata"`
+}
+
+type SiteEvent struct {
+	EventID   string      `json:"event_id"`
+	TenantID  uuid.UUID   `json:"tenant_id"`
+	SiteID    pgtype.UUID `json:"site_id"`
+	Type      string      `json:"type"`
+	Data      []byte      `json:"data"`
+	CreatedAt time.Time   `json:"created_at"`
 }
 
 type SiteShare struct {

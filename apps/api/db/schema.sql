@@ -68,9 +68,22 @@ CREATE TABLE sites (
     -- compute the next run instant in the site's own WordPress timezone.
     wp_timezone   text      NOT NULL DEFAULT '',
     wp_gmt_offset real      NOT NULL DEFAULT 0,
+    -- M21 connection lifecycle: connection_state is the single source of truth
+    -- (legacy status/health_status kept for compat). See ADR-041.
+    connection_state      text    NOT NULL DEFAULT 'pending_enrollment'
+        CHECK (connection_state IN
+            ('pending_enrollment','connected','degraded','disconnected','revoked','archived')),
+    connection_generation integer NOT NULL DEFAULT 0,
+    disconnected_at       timestamptz,
+    disconnected_reason   text,
+    archived_at           timestamptz,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_sites_connection_state ON sites (tenant_id, connection_state);
+CREATE INDEX idx_sites_last_seen ON sites (last_seen_at)
+    WHERE connection_state IN ('connected','degraded');
 
 CREATE INDEX sites_tenant_id_idx ON sites (tenant_id);
 CREATE UNIQUE INDEX sites_tenant_id_url_key ON sites (tenant_id, url);
@@ -262,12 +275,17 @@ CREATE TABLE pairing_codes (
     expires_at   timestamptz NOT NULL,
     consumed_at  timestamptz,
     attempts     integer     NOT NULL DEFAULT 0,
+    -- M21: NULL = legacy tenant-scoped create-at-enroll flow; set = code bound to
+    -- an existing pending_enrollment site (live-enroll + re-enrollment). ADR-041.
+    site_id          uuid REFERENCES sites (id) ON DELETE CASCADE,
+    consumed_from_ip inet,
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
 -- code_hash is globally unique so /enroll can resolve a presented code to its
 -- tenant before any tenant scope exists (mirrors api_keys prefix lookup).
 CREATE UNIQUE INDEX pairing_codes_code_hash_key ON pairing_codes (code_hash);
+CREATE INDEX idx_pairing_codes_site ON pairing_codes (site_id) WHERE site_id IS NOT NULL;
 CREATE INDEX pairing_codes_tenant_id_idx ON pairing_codes (tenant_id);
 
 ALTER TABLE pairing_codes ENABLE ROW LEVEL SECURITY;
@@ -907,3 +925,54 @@ CREATE POLICY invitations_tenant_isolation ON invitations
 CREATE POLICY invitations_token_lookup ON invitations
     FOR SELECT
     USING (current_setting('app.invite_lookup', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- site_connection_history  (M21 — connection lifecycle transition log)
+-- ---------------------------------------------------------------------------
+-- Append-only record of every connection-state transition (ADR-041). Powers the
+-- Activity tab's connection timeline across re-enrollment generations.
+CREATE TABLE site_connection_history (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    from_state    text        NOT NULL,
+    to_state      text        NOT NULL,
+    reason        text,
+    actor_user_id uuid        REFERENCES users (id) ON DELETE SET NULL,
+    generation    integer     NOT NULL DEFAULT 0,
+    occurred_at   timestamptz NOT NULL DEFAULT now(),
+    metadata      jsonb       NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_conn_history_site ON site_connection_history (site_id, occurred_at DESC);
+
+ALTER TABLE site_connection_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_connection_history FORCE ROW LEVEL SECURITY;
+CREATE POLICY conn_history_tenant_isolation ON site_connection_history
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- site_events  (M21 — durable SSE journal for LISTEN/NOTIFY fan-out + replay)
+-- ---------------------------------------------------------------------------
+-- event_id is an app-minted ULID (lexicographically sortable, monotonic per
+-- tenant). NOTIFY carries only '<tenant_id>:<event_id>'; API instances read the
+-- body here to fan out to local SSE subscribers and to replay on ?since=
+-- reconnect (~5-minute retention; periodically pruned). See ADR-038.
+CREATE TABLE site_events (
+    event_id   text        PRIMARY KEY,
+    tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id    uuid,
+    type       text        NOT NULL,
+    data       jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_site_events_tenant ON site_events (tenant_id, event_id);
+CREATE INDEX idx_site_events_created ON site_events (created_at);
+
+ALTER TABLE site_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_events FORCE ROW LEVEL SECURITY;
+CREATE POLICY site_events_tenant_isolation ON site_events
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);

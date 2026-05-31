@@ -31,7 +31,7 @@ func (q *Queries) ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, 
 const createPairingCode = `-- name: CreatePairingCode :one
 INSERT INTO pairing_codes (tenant_id, code_hash, created_by, site_name, tags, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, code_hash, created_by, site_name, tags, expires_at, consumed_at, attempts, created_at
+RETURNING id, tenant_id, code_hash, created_by, site_name, tags, expires_at, consumed_at, attempts, site_id, consumed_from_ip, created_at
 `
 
 type CreatePairingCodeParams struct {
@@ -64,13 +64,15 @@ func (q *Queries) CreatePairingCode(ctx context.Context, arg CreatePairingCodePa
 		&i.ExpiresAt,
 		&i.ConsumedAt,
 		&i.Attempts,
+		&i.SiteID,
+		&i.ConsumedFromIp,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getPairingCodeByHash = `-- name: GetPairingCodeByHash :one
-SELECT id, tenant_id, code_hash, created_by, site_name, tags, expires_at, consumed_at, attempts, created_at FROM pairing_codes
+SELECT id, tenant_id, code_hash, created_by, site_name, tags, expires_at, consumed_at, attempts, site_id, consumed_from_ip, created_at FROM pairing_codes
 WHERE code_hash = $1
 `
 
@@ -89,6 +91,8 @@ func (q *Queries) GetPairingCodeByHash(ctx context.Context, codeHash string) (Pa
 		&i.ExpiresAt,
 		&i.ConsumedAt,
 		&i.Attempts,
+		&i.SiteID,
+		&i.ConsumedFromIp,
 		&i.CreatedAt,
 	)
 	return i, err
