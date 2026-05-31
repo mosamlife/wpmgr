@@ -56,6 +56,15 @@ func (h *Handler) stream(c *gin.Context) {
 		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
 		return
 	}
+	// Per-site authorization (Phase 6 security review, finding A): the stream is
+	// tenant-keyed, so a site-scoped collaborator (shared exactly one site) would
+	// otherwise receive live events for EVERY site in the tenant. Filter both the
+	// replay and the live fan-out to the principal's allowed sites. Org-scoped
+	// principals pass everything; a site-scoped principal sees only events for
+	// sites in their allowlist (tenant-level events with a nil site_id are dropped
+	// for them too). CanAccessSite encodes exactly this.
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	allowed := func(ev site.ConnectionEvent) bool { return p.CanAccessSite(ev.SiteID) }
 	if h.hub == nil {
 		httpx.Error(c, domain.Internal("sse_unsupported", "streaming is not enabled"))
 		return
@@ -89,8 +98,10 @@ func (h *Handler) stream(c *gin.Context) {
 		replayed, err := h.replay(ctx, tenantID, since)
 		if err == nil {
 			for _, ev := range replayed {
-				writeEvent(c.Writer, ev)
-				lastSent = ev.ID
+				if allowed(ev) {
+					writeEvent(c.Writer, ev)
+				}
+				lastSent = ev.ID // advance the cursor even past filtered events
 			}
 			flusher.Flush()
 		}
@@ -119,6 +130,10 @@ func (h *Handler) stream(c *gin.Context) {
 			// Skip anything the replay already delivered (the live event may
 			// race the replay query around the cursor boundary).
 			if lastSent != "" && ev.ID <= lastSent {
+				continue
+			}
+			// Drop events the principal isn't authorized for (finding A).
+			if !allowed(ev) {
 				continue
 			}
 			writeEvent(c.Writer, ev)

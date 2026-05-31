@@ -128,7 +128,12 @@ SET agent_public_key = $3,
     wp_version       = $4,
     php_version      = $5,
     updated_at       = now()
-WHERE id = $1 AND tenant_id = $2
+-- Defense-in-depth (Phase 6 review, finding E): consume only from
+-- 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
+-- to pending_enrollment, so this holds on the happy path; the guard stops a
+-- stale-but-valid code from forcing a connected/degraded/revoked/archived site
+-- back to 'connected' out of sequence (a loser yields ErrNoRows like an expired code).
+WHERE id = $1 AND tenant_id = $2 AND connection_state = 'pending_enrollment'
 RETURNING *;
 
 -- name: CreatePendingSite :one

@@ -100,7 +100,10 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// Per-siteId routes: RequireSiteAccess enforces the site allowlist for
 	// site-scoped principals (belt-and-braces in front of the RLS policy).
 	r.GET("/sites/:siteId", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.get)
-	r.DELETE("/sites/:siteId", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.delete)
+	// Deleting a site is a severing action like revoke/archive — require org
+	// scope so a site-scoped collaborator can't delete a site merely shared with
+	// them (Phase 6 security review, finding #5 — same class as the lifecycle routes).
+	r.DELETE("/sites/:siteId", authz.RequirePermission(authz.PermSiteWrite), authz.RequireOrgScope(), authz.RequireSiteAccess("siteId"), h.delete)
 	r.PUT("/sites/:siteId/tags", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.setTags)
 	// Updates feature (Track B): an operator triggers an immediate inventory
 	// refresh, or reads the cached per-item available-updates list. Both are

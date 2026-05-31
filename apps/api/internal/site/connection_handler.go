@@ -21,18 +21,21 @@ const rfc3339 = time.RFC3339
 func (h *Handler) SetConnectionService(cs ConnectionService) { h.conn = cs }
 
 // RegisterConnection mounts the M21 connection-lifecycle routes on the /api/v1
-// group. All are gated with site:write (the site-management permission) so only
-// operator+ can mutate a site's lifecycle. The per-:siteId routes additionally
-// run RequireSiteAccess for site-scoped principals.
+// group. These are DESTRUCTIVE / severing actions (rotate the agent identity,
+// soft-delete, re-enroll), so they require ORG scope (RequireOrgScope) on top of
+// site:write — a site-scoped *collaborator* (an outside operator shared exactly
+// one site) may OPERATE the site but must NOT revoke/archive/re-enroll it out
+// from under the owner. (Phase 6 security review, finding #5.) RequireSiteAccess
+// stays as defense-in-depth for the :siteId binding.
 func (h *Handler) RegisterConnection(r *gin.RouterGroup) {
 	r.POST("/sites/:siteId/enrollment-codes",
-		authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.beginReEnrollment)
+		authz.RequirePermission(authz.PermSiteWrite), authz.RequireOrgScope(), authz.RequireSiteAccess("siteId"), h.beginReEnrollment)
 	r.POST("/sites/:siteId/revoke",
-		authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.revoke)
+		authz.RequirePermission(authz.PermSiteWrite), authz.RequireOrgScope(), authz.RequireSiteAccess("siteId"), h.revoke)
 	r.POST("/sites/:siteId/archive",
-		authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.archive)
+		authz.RequirePermission(authz.PermSiteWrite), authz.RequireOrgScope(), authz.RequireSiteAccess("siteId"), h.archive)
 	r.POST("/sites/:siteId/restore",
-		authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.restore)
+		authz.RequirePermission(authz.PermSiteWrite), authz.RequireOrgScope(), authz.RequireSiteAccess("siteId"), h.restore)
 }
 
 // enrollmentCodeResponse is the once-shown enrollment code returned by the

@@ -77,7 +77,7 @@ SET agent_public_key = $3,
     wp_version       = $4,
     php_version      = $5,
     updated_at       = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = $1 AND tenant_id = $2 AND connection_state = 'pending_enrollment'
 RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, created_at, updated_at
 `
 
@@ -94,6 +94,11 @@ type AttachAgentAndConnectParams struct {
 // connected in one statement. The generation was already advanced at re-enroll
 // mint time (BeginSiteReEnrollment), so we do not bump it here. Mirrors the
 // legacy AttachAgentToSite but driving connection_state.
+// Defense-in-depth (Phase 6 review, finding E): consume only from
+// 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
+// to pending_enrollment, so this holds on the happy path; the guard stops a
+// stale-but-valid code from forcing a connected/degraded/revoked/archived site
+// back to 'connected' out of sequence (a loser yields ErrNoRows like an expired code).
 func (q *Queries) AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error) {
 	row := q.db.QueryRow(ctx, attachAgentAndConnect,
 		arg.ID,
