@@ -25,6 +25,11 @@ type Querier interface {
 	// connected in one statement. The generation was already advanced at re-enroll
 	// mint time (BeginSiteReEnrollment), so we do not bump it here. Mirrors the
 	// legacy AttachAgentToSite but driving connection_state.
+	// Defense-in-depth (Phase 6 review, finding E): consume only from
+	// 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
+	// to pending_enrollment, so this holds on the happy path; the guard stops a
+	// stale-but-valid code from forcing a connected/degraded/revoked/archived site
+	// back to 'connected' out of sequence (a loser yields ErrNoRows like an expired code).
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
@@ -285,6 +290,12 @@ type Querier interface {
 	ListPendingInvitations(ctx context.Context, tenantID uuid.UUID) ([]Invitation, error)
 	// All runs for a site (upcoming + past), newest scheduled_for first.
 	ListScheduleRunsBySite(ctx context.Context, arg ListScheduleRunsBySiteParams) ([]BackupScheduleRun, error)
+	// Shared-with-me, ENRICHED with each site's url + name and the owning org's name.
+	// Runs under InUserTx: site_shares_self_read exposes the share rows, the M22
+	// sites_shared_read policy exposes the (cross-tenant) site rows, and tenants has
+	// no RLS. So the operator sees url/name/org_name for sites shared with them
+	// without any membership in the owning org.
+	ListSharedSitesForUser(ctx context.Context, userID uuid.UUID) ([]ListSharedSitesForUserRow, error)
 	ListSharesForSite(ctx context.Context, siteID uuid.UUID) ([]SiteShare, error)
 	// Self-read: returns the caller's own non-expired shares across all tenants.
 	// Must be run under a tx that sets app.user_id (site_shares_self_read policy).
@@ -338,10 +349,12 @@ type Querier interface {
 	// degraded → disconnected (timeout sweeper) OR connected/degraded → disconnected
 	// (signed agent last-will). Records disconnected_at + the reason.
 	MarkSiteDisconnected(ctx context.Context, arg MarkSiteDisconnectedParams) (Site, error)
-	// connected/degraded/disconnected → revoked (operator). Nulls agent_public_key
-	// so a later re-enroll cannot collide on the unique index, and records the
-	// reason. The agent learns of the revoke on its next heartbeat (derived
-	// instruction from connection_state='revoked').
+	// connected/degraded/disconnected → revoked (operator). The agent key is KEPT
+	// (NOT nulled) so the agent can still authenticate its next heartbeat and
+	// RECEIVE the signed revoke token to tear itself down (Phase 6 finding C). A
+	// later re-enroll overwrites agent_public_key on the same row (no unique-index
+	// collision), so keeping it is safe. The agent learns of the revoke on its next
+	// heartbeat (derived instruction from connection_state='revoked').
 	MarkSiteRevoked(ctx context.Context, arg MarkSiteRevokedParams) (Site, error)
 	// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
 	MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error)
