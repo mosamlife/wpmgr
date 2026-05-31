@@ -6,10 +6,11 @@
 -- self-read-style policy keyed on app.user_id (set by InUserTx): a user may read
 -- a site row iff a non-expired site_shares row grants it to them.
 --
--- Permissive (OR-combined with sites_tenant_isolation), SELECT-only, and inert
--- outside InUserTx (app.user_id is empty in InTenantTx/InScopedTenantTx, so the
--- subquery's user_id = NULL never matches) — it cannot widen a tenant-scoped
--- read. Idempotent.
+-- PERMISSIVE + SELECT-only. It is OR-combined with the other permissive policies
+-- but still AND-gated by the RESTRICTIVE sites_site_scope policy (M19), so it
+-- cannot widen a site-scoped read. On bare-tenant/agent/enroll paths app.user_id
+-- is unset so the subquery matches nothing; it only adds visibility under the
+-- self-read (InUserTx) context. Idempotent.
 
 DROP POLICY IF EXISTS sites_shared_read ON sites;
 CREATE POLICY sites_shared_read ON sites

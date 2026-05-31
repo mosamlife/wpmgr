@@ -131,10 +131,12 @@ CREATE POLICY sites_agent ON sites
 
 -- M22 shared-read: a site-scoped collaborator (no membership in the owning org)
 -- may READ the metadata of sites shared with them, for the "Shared with me"
--- surface. Self-read style, keyed on app.user_id (set by InUserTx) via a
--- non-expired site_shares grant. SELECT-only, permissive (OR-combined), and inert
--- outside InUserTx (app.user_id empty → no match), so it never widens a
--- tenant-scoped read.
+-- surface. Self-read style, keyed on app.user_id via a non-expired site_shares
+-- grant. SELECT-only and PERMISSIVE — therefore OR-combined with the other
+-- permissive policies but still AND-gated by the RESTRICTIVE sites_site_scope
+-- policy (M19), so it CANNOT widen a site-scoped read. On bare-tenant/agent/
+-- enroll paths app.user_id is unset → the subquery matches nothing. It only adds
+-- visibility under InUserTx (the self-read context with no site_scope gate).
 CREATE POLICY sites_shared_read ON sites
     FOR SELECT
     USING (EXISTS (
