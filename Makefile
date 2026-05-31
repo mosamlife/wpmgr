@@ -113,6 +113,18 @@ agent-zip: agent-vendor ## Package the WordPress agent plugin as a zip (with ifs
 	rm -rf release/wpmgr-agent
 	@echo "agent zip: $$(du -sh release/wpmgr-agent.zip | cut -f1)"
 
+.PHONY: agent-release
+agent-release: agent-zip ## Publish the agent release (zip + latest.json) to object storage for CP-driven self-update (ADR-042)
+	# Uploads the versioned package FIRST, then latest.json LAST, so the CP
+	# manifest never points at a package that is not yet in place. Override the
+	# bucket/prefix via WPMGR_RELEASE_BUCKET / WPMGR_RELEASE_PREFIX. Use
+	# `make agent-release-dry-run` to preview latest.json without uploading.
+	./scripts/release-agent.sh
+
+.PHONY: agent-release-dry-run
+agent-release-dry-run: agent-zip ## Preview the agent release (build zip + print latest.json) without uploading
+	./scripts/release-agent.sh --dry-run
+
 .PHONY: gen
 gen: ## Regenerate OpenAPI clients (Go + TS)
 	./scripts/gen-openapi.sh

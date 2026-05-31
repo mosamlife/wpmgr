@@ -38,6 +38,7 @@ use WPMgr\Agent\Support\ErrorMonitor;
 use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\MuPluginInstaller;
+use WPMgr\Agent\Support\UpdateChecker;
 
 /**
  * Top-level plugin orchestrator.
@@ -124,6 +125,14 @@ final class Plugin
     private LoginBrand $loginBrand;
 
     /**
+     * ADR-042 Phase 2 — CP-driven agent self-update. Hooks into the WordPress
+     * plugin-update machinery (site_transient_update_plugins, plugins_api,
+     * upgrader_pre_download, upgrader_source_selection) and enforces the full
+     * security verification chain before any bytes are swapped to disk.
+     */
+    private UpdateChecker $updateChecker;
+
+    /**
      * Private constructor wires the object graph.
      */
     private function __construct()
@@ -165,8 +174,20 @@ final class Plugin
         // dependencies; constructed here so sync_login_brand can hold a reference.
         $this->loginBrand = new LoginBrand();
 
+        // ADR-042 Phase 2 — self-update checker. Shares the Signer, Settings,
+        // Keystore, and a fresh ReplayCache (the autologin replay table — the
+        // same jti table is used for manifest replay prevention, which is safe
+        // because both use the same single-use semantics and non-overlapping jti
+        // namespaces via different issuers).
+        $this->updateChecker = new UpdateChecker(
+            $this->signer,
+            $this->settings,
+            $this->keystore,
+            new ReplayCache()
+        );
+
         $this->router           = new Router($this->connector, $this->commands());
-        $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore, $this->lifecycle);
+        $this->admin            = new Admin($this->settings, $this->enrollment, $this->keystore, $this->lifecycle, $this->updateChecker);
         $this->autologinReplay  = new ReplayCache();
         $this->autologin        = new AutologinCommand($this->connector, $this->autologinReplay, $this->signer, $this->settings);
     }
@@ -339,6 +360,10 @@ final class Plugin
         // only when at least one brand field is non-empty (self-gating). The
         // call is idempotent (static guard inside LoginBrand::install).
         $this->loginBrand->install();
+
+        // ADR-042 Phase 2 — bind the CP self-update hooks. Self-gates on
+        // isEnrolled() inside UpdateChecker::install(); idempotent (static guard).
+        $this->updateChecker->install();
 
         if (function_exists('is_admin') && is_admin()) {
             $this->admin->registerHooks();
@@ -960,5 +985,15 @@ final class Plugin
     public function keystore(): Keystore
     {
         return $this->keystore;
+    }
+
+    /**
+     * Expose the UpdateChecker so Admin can call checkNow().
+     *
+     * @return UpdateChecker
+     */
+    public function updateChecker(): UpdateChecker
+    {
+        return $this->updateChecker;
     }
 }

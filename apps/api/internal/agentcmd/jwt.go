@@ -167,6 +167,26 @@ func (s *Signer) mintWithJTI(now time.Time, aud, cmd, jti, tgt string) (string, 
 // exactly this string when serving the autologin REST route.
 const CmdAutologin = "autologin"
 
+// CmdUpdateManifest is the cmd claim value carried inside a CP-driven agent
+// self-update manifest (ADR-042). The agent's UpdateChecker MUST reject any
+// manifest whose cmd is not exactly this string.
+const CmdUpdateManifest = "update_manifest"
+
+// SignManifest returns a DETACHED Ed25519 signature (base64url, no padding) over
+// the exact payload bytes — the CP-driven self-update manifest (ADR-042).
+//
+// Unlike Mint this is NOT a JWT and deliberately carries no 60s exp clamp: the
+// agent caches a verified manifest for hours and verifies the detached signature
+// over the canonical JSON the CP returns (base64url-encoded alongside this
+// signature), so it must not be bound by Connector::MAX_FUTURE_EXP. Freshness +
+// anti-replay are enforced by the manifest's OWN iat/exp/jti claims, which the
+// agent re-checks in code (it cannot route this through verifyCommand). The
+// agent verifies with sodium_crypto_sign_verify_detached against the stored CP
+// public key — the same primitive Connector::verify already uses.
+func (s *Signer) SignManifest(payload []byte) string {
+	return b64url(ed25519.Sign(s.priv, payload))
+}
+
 // b64url base64url-encodes without padding (the JWS compact-serialization form
 // the agent's base64UrlDecode tolerates — it re-pads on decode).
 func b64url(b []byte) string {
