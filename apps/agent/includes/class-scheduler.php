@@ -332,12 +332,24 @@ final class Scheduler
         $instructions = isset($beat['instructions']) && is_array($beat['instructions'])
             ? $beat['instructions']
             : [];
+        // Signed revoke proof minted by the CP alongside an "revoke" instruction
+        // (Phase-6 finding B). Threaded through to handleInstructions, which
+        // verifies it (via the existing Connector) BEFORE any teardown. An
+        // absent/forged/stale token makes the revoke a no-op.
+        $revokeToken = isset($beat['revoke_token']) && is_string($beat['revoke_token'])
+            ? $beat['revoke_token']
+            : '';
         if ($instructions !== []) {
-            $this->lifecycle->handleInstructions($instructions);
+            $this->lifecycle->handleInstructions($instructions, $revokeToken);
             // A revoke deactivates the plugin + wipes keys; bail out of the
             // backstop scheduling below — the site is being disconnected and
-            // arming diagnostics/size one-shots would be pointless.
-            if (in_array(Lifecycle::INSTRUCTION_REVOKE, $instructions, true)) {
+            // arming diagnostics/size one-shots would be pointless. Only bail
+            // when the revoke was actually ACTED ON (i.e. the proof verified and
+            // enrollment is now cleared); an unverified revoke leaves the site
+            // enrolled, so the backstops should still run.
+            if (in_array(Lifecycle::INSTRUCTION_REVOKE, $instructions, true)
+                && !$this->settings->isEnrolled()
+            ) {
                 return;
             }
         }

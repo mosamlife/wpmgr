@@ -51,6 +51,9 @@ final class Lifecycle
     /** Reason recorded when a revoke arrives via a dashboard instruction. */
     public const REASON_REVOKED = 'user_initiated_from_dashboard';
 
+    /** Command name carried by the signed revoke proof (`cmd` claim). */
+    public const REVOKE_CMD = 'revoke';
+
     private Keystore $keystore;
 
     private Settings $settings;
@@ -58,33 +61,142 @@ final class Lifecycle
     private Enrollment $enrollment;
 
     /**
-     * @param Keystore   $keystore   Key material store (wiped on revoke/uninstall).
-     * @param Settings   $settings   Enrollment/config state.
-     * @param Enrollment $enrollment Signed outbound client (heartbeat + last-will).
+     * Verifier seam for the signed revoke token. Signature:
+     *   fn(string $jwt): array<string,mixed>  — returns the validated claims,
+     *   or THROWS on any failure (bad signature / aud / cmd / exp / replay).
+     *
+     * Null in production: {@see verifyRevokeToken()} lazily builds a real
+     * {@see Connector} and calls Connector::verifyCommand($jwt, 'revoke'),
+     * which runs the full Ed25519 signature + exp + jti-replay gate AND binds
+     * `aud` to this site's enrolled UUID + `cmd` to "revoke" (hash_equals).
+     * Tests inject a stub here so they can exercise the gate without minting a
+     * full JWT — but a real signed token also flows through unchanged.
+     *
+     * @var (\Closure(string):array<string,mixed>)|null
      */
-    public function __construct(Keystore $keystore, Settings $settings, Enrollment $enrollment)
-    {
-        $this->keystore   = $keystore;
-        $this->settings   = $settings;
-        $this->enrollment = $enrollment;
+    private ?\Closure $revokeVerifier;
+
+    /**
+     * @param Keystore   $keystore       Key material store (wiped on revoke/uninstall).
+     * @param Settings   $settings       Enrollment/config state.
+     * @param Enrollment $enrollment     Signed outbound client (heartbeat + last-will).
+     * @param (\Closure(string):array<string,mixed>)|null $revokeVerifier
+     *        Optional test seam over the signed-revoke-token verifier. When null
+     *        (production) a real Connector::verifyCommand is used — see the
+     *        $revokeVerifier property docblock. MUST throw on ANY failure.
+     */
+    public function __construct(
+        Keystore $keystore,
+        Settings $settings,
+        Enrollment $enrollment,
+        ?\Closure $revokeVerifier = null
+    ) {
+        $this->keystore       = $keystore;
+        $this->settings       = $settings;
+        $this->enrollment     = $enrollment;
+        $this->revokeVerifier = $revokeVerifier;
     }
 
     /**
      * Act on the instructions carried by a heartbeat response. Currently the
      * only instruction is "revoke"; unknown tokens are ignored (forward-compat).
      *
+     * SECURITY (Phase-6 finding B / ADR-040 addendum): a "revoke" is destructive
+     * (wipes keys + self-deactivates), so it is acted on ONLY when accompanied by
+     * a valid signed proof. The CP returns a short-lived Ed25519 JWT
+     * (`revoke_token`) minted by the SAME signer the agent already verifies for
+     * inbound CP→agent commands. We verify it (signature + exp + jti-replay +
+     * aud==own-site + cmd=="revoke") via the existing Connector BEFORE tearing
+     * down. The token is REQUIRED: a missing, forged, stale, replayed, or
+     * wrong-aud/cmd token is a NO-OP — never destructive (fail closed).
+     *
      * @param array<int,string> $instructions Tokens from the heartbeat response.
+     * @param string            $revokeToken  Signed revoke proof from the same
+     *                                         heartbeat response ('' when absent).
      * @return void
      */
-    public function handleInstructions(array $instructions): void
+    public function handleInstructions(array $instructions, string $revokeToken = ''): void
     {
         foreach ($instructions as $instruction) {
             if ($instruction === self::INSTRUCTION_REVOKE) {
+                // Fail closed: only proceed when the signed proof verifies.
+                if (!$this->revokeTokenIsValid($revokeToken)) {
+                    // Forged / missing / invalid / replayed token → ignore the
+                    // instruction entirely. No teardown, ever.
+                    return;
+                }
                 $this->revokeSelf(self::REASON_REVOKED);
                 // A revoke is terminal — the plugin is deactivating; stop here.
                 return;
             }
         }
+    }
+
+    /**
+     * Verify the signed revoke proof, fail-closed. Returns true ONLY when the
+     * token is non-empty AND the verifier accepts it (valid Ed25519 signature
+     * against the stored control-plane public key, unexpired, unreplayed,
+     * aud == this site's enrolled UUID, cmd == "revoke"). ANY failure — absent
+     * token, bad signature, wrong aud/cmd, expired, replayed, verifier throwing
+     * for any reason — returns false so the caller does NOT tear down.
+     *
+     * The actual cryptographic check is delegated to the existing
+     * Connector::verifyCommand (no hand-rolled JWT/Ed25519 here).
+     *
+     * @param string $revokeToken Compact JWT from the heartbeat response.
+     * @return bool True iff the proof fully verifies.
+     */
+    private function revokeTokenIsValid(string $revokeToken): bool
+    {
+        $revokeToken = trim($revokeToken);
+        if ($revokeToken === '') {
+            return false;
+        }
+
+        try {
+            $claims = $this->verifyRevokeToken($revokeToken);
+        } catch (\Throwable $e) {
+            // Swallow: a verification failure must be silent + non-destructive.
+            return false;
+        }
+
+        // Defense-in-depth. Connector::verifyCommand already enforces both
+        // aud == Settings::siteId() and cmd == "revoke" (hash_equals) and would
+        // have thrown above otherwise; re-assert here so the gate is correct even
+        // if an injected test verifier skips those binds. Both must hold.
+        $cmd = isset($claims['cmd']) && is_string($claims['cmd']) ? $claims['cmd'] : '';
+        if (!hash_equals(self::REVOKE_CMD, $cmd)) {
+            return false;
+        }
+
+        $siteId = $this->settings->siteId();
+        $aud     = isset($claims['aud']) && is_string($claims['aud']) ? $claims['aud'] : '';
+        if ($siteId === '' || !hash_equals($siteId, $aud)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Run the signed revoke token through the verifier. In production this builds
+     * a real Connector (over the same Keystore/Settings the agent already uses for
+     * inbound command verification) and calls verifyCommand($jwt, 'revoke'); tests
+     * may inject a closure seam via the constructor.
+     *
+     * @param string $revokeToken Compact JWT.
+     * @return array<string,mixed> Validated claims.
+     * @throws \Throwable On ANY verification failure.
+     */
+    private function verifyRevokeToken(string $revokeToken): array
+    {
+        if ($this->revokeVerifier !== null) {
+            return ($this->revokeVerifier)($revokeToken);
+        }
+
+        $connector = new Connector($this->keystore, $this->settings);
+
+        return $connector->verifyCommand($revokeToken, self::REVOKE_CMD);
     }
 
     /**
@@ -125,10 +237,13 @@ final class Lifecycle
      * Fire exactly one synchronous heartbeat. Called right after a successful
      * enroll so the dashboard flips pending_enrollment→connected immediately.
      * Wrapped so a failed beat never bubbles into the enroll flow — the 60s
-     * cron is the backstop. Returns the parsed instructions so the caller can,
-     * in the unlikely event the CP revokes on the very first beat, act on them.
+     * cron is the backstop. Returns the parsed instructions AND the signed
+     * revoke proof so the caller can, in the unlikely event the CP revokes on
+     * the very first beat, act on them through the verified gate.
      *
-     * @return array<int,string> Instructions returned by the heartbeat (usually []).
+     * @return array{instructions:array<int,string>,revoke_token:string}
+     *         The heartbeat's instruction list and signed revoke proof (both
+     *         empty on failure or when nothing is queued).
      */
     public function heartbeatNow(): array
     {
@@ -137,9 +252,12 @@ final class Lifecycle
             $instructions = isset($result['instructions']) && is_array($result['instructions'])
                 ? $result['instructions']
                 : [];
-            return $instructions;
+            $revokeToken = isset($result['revoke_token']) && is_string($result['revoke_token'])
+                ? $result['revoke_token']
+                : '';
+            return ['instructions' => $instructions, 'revoke_token' => $revokeToken];
         } catch (\Throwable $e) {
-            return [];
+            return ['instructions' => [], 'revoke_token' => ''];
         }
     }
 

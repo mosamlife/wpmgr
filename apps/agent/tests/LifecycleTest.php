@@ -178,7 +178,16 @@ final class LifecycleTest extends TestCase
         $this->assertSame([], $result['instructions']);
     }
 
-    public function test_revoke_instruction_wipes_keys_and_deactivates_plugin(): void
+    /**
+     * Wire the teardown-observing WP stubs (deactivate_plugins, plugin_basename,
+     * do_action) and the constants the revoke path needs, returning the captured
+     * &$deactivated / &$revokeHook sinks by reference.
+     *
+     * @param array<int,string> $deactivated Out: deactivated plugin basenames.
+     * @param array<int,mixed>  $revokeHook  Out: wpmgr_revoking_self reasons.
+     * @return void
+     */
+    private function armRevokeObservers(array &$deactivated, array &$revokeHook): void
     {
         if (!defined('WPMGR_AGENT_FILE')) {
             define('WPMGR_AGENT_FILE', __FILE__);
@@ -188,25 +197,54 @@ final class LifecycleTest extends TestCase
             define('ABSPATH', '/nonexistent-wpmgr-' . bin2hex(random_bytes(6)) . '/');
         }
 
-        $deactivated = [];
         Functions\when('plugin_basename')->alias(static fn ($f) => basename((string) $f));
         Functions\when('deactivate_plugins')->alias(function ($plugin) use (&$deactivated) {
             $deactivated[] = $plugin;
             return null;
         });
-        $revokeHook = [];
         Functions\when('do_action')->alias(function ($hook, $reason = null) use (&$revokeHook) {
             if ($hook === 'wpmgr_revoking_self') {
                 $revokeHook[] = $reason;
             }
             return null;
         });
+    }
+
+    /**
+     * Build a Lifecycle whose signed-revoke-token verifier is the supplied
+     * closure (the test seam added for Phase-6 finding B). The closure stands in
+     * for Connector::verifyCommand: it returns the validated claims or throws.
+     *
+     * @param \Closure(string):array<string,mixed> $verifier Verifier seam.
+     * @return Lifecycle
+     */
+    private function lifecycleWithVerifier(\Closure $verifier): Lifecycle
+    {
+        return new Lifecycle($this->keystore, $this->settings, $this->enrollment, $verifier);
+    }
+
+    public function test_revoke_instruction_wipes_keys_and_deactivates_plugin(): void
+    {
+        $deactivated = [];
+        $revokeHook  = [];
+        $this->armRevokeObservers($deactivated, $revokeHook);
+
+        // A VALID signed revoke proof: the verifier accepts it and returns claims
+        // bound to this site (aud) and to the revoke command (cmd).
+        $seen      = [];
+        $lifecycle = $this->lifecycleWithVerifier(function (string $jwt) use (&$seen) {
+            $seen[] = $jwt;
+            return ['cmd' => Lifecycle::REVOKE_CMD, 'aud' => $this->settings->siteId(), 'jti' => 'j1'];
+        });
 
         // Pre-conditions: enrolled + keypair present.
         $this->assertTrue($this->settings->isEnrolled());
         $this->assertNotNull($this->keystore->getSiteKeypair());
 
-        $this->lifecycle->handleInstructions(['revoke']);
+        $lifecycle->handleInstructions(['revoke'], 'signed.revoke.jwt');
+
+        // The verifier WAS consulted with the supplied token.
+        $this->assertSame(['signed.revoke.jwt'], $seen);
 
         // The revoke hook fired with the dashboard reason.
         $this->assertSame([Lifecycle::REASON_REVOKED], $revokeHook);
@@ -226,6 +264,137 @@ final class LifecycleTest extends TestCase
         $this->assertIsArray($marker);
         $this->assertSame(Lifecycle::REASON_REVOKED, $marker['reason']);
         $this->assertGreaterThan(0, $marker['at']);
+    }
+
+    public function test_revoke_without_token_does_not_tear_down(): void
+    {
+        $deactivated = [];
+        $revokeHook  = [];
+        $this->armRevokeObservers($deactivated, $revokeHook);
+
+        // The verifier must NOT even be consulted when the token is absent.
+        $verifierCalled = false;
+        $lifecycle = $this->lifecycleWithVerifier(function () use (&$verifierCalled) {
+            $verifierCalled = true;
+            return ['cmd' => Lifecycle::REVOKE_CMD, 'aud' => $this->settings->siteId()];
+        });
+
+        // Missing token (empty string) → revoke is a NO-OP.
+        $lifecycle->handleInstructions(['revoke'], '');
+
+        $this->assertFalse($verifierCalled, 'an absent token short-circuits before the verifier');
+        $this->assertSame([], $revokeHook, 'no revoke hook fired');
+        $this->assertSame([], $deactivated, 'plugin was NOT deactivated');
+        $this->assertTrue($this->settings->isEnrolled(), 'enrollment preserved');
+        $this->assertNotNull($this->keystore->getSiteKeypair(), 'keystore NOT wiped');
+        $this->assertNull(Lifecycle::revokedMarker(), 'no revoked marker written');
+    }
+
+    public function test_revoke_with_invalid_token_does_not_tear_down(): void
+    {
+        $deactivated = [];
+        $revokeHook  = [];
+        $this->armRevokeObservers($deactivated, $revokeHook);
+
+        // The verifier THROWS — mirrors Connector::verifyCommand rejecting a
+        // bad signature / expired / replayed / wrong-aud token.
+        $lifecycle = $this->lifecycleWithVerifier(function (): array {
+            throw new \RuntimeException('WPMgr Agent: signature verification failed.');
+        });
+
+        $lifecycle->handleInstructions(['revoke'], 'forged.revoke.jwt');
+
+        $this->assertSame([], $revokeHook);
+        $this->assertSame([], $deactivated, 'a forged token must never deactivate');
+        $this->assertTrue($this->settings->isEnrolled());
+        $this->assertNotNull($this->keystore->getSiteKeypair());
+        $this->assertNull(Lifecycle::revokedMarker());
+    }
+
+    public function test_revoke_with_wrong_cmd_claim_does_not_tear_down(): void
+    {
+        $deactivated = [];
+        $revokeHook  = [];
+        $this->armRevokeObservers($deactivated, $revokeHook);
+
+        // Verifier returns claims for the WRONG command — the defense-in-depth
+        // cmd re-assertion in the gate must reject it even though it "verified".
+        $lifecycle = $this->lifecycleWithVerifier(function (): array {
+            return ['cmd' => 'backup', 'aud' => $this->settings->siteId(), 'jti' => 'j2'];
+        });
+
+        $lifecycle->handleInstructions(['revoke'], 'wrong.cmd.jwt');
+
+        $this->assertSame([], $revokeHook);
+        $this->assertSame([], $deactivated, 'a non-revoke cmd must never deactivate');
+        $this->assertTrue($this->settings->isEnrolled());
+        $this->assertNotNull($this->keystore->getSiteKeypair());
+        $this->assertNull(Lifecycle::revokedMarker());
+    }
+
+    public function test_revoke_with_aud_for_another_site_does_not_tear_down(): void
+    {
+        $deactivated = [];
+        $revokeHook  = [];
+        $this->armRevokeObservers($deactivated, $revokeHook);
+
+        // Verifier returns claims whose aud is a DIFFERENT site — the gate's aud
+        // re-assertion must reject it (a token captured for another tenant's site
+        // must never tear THIS site down).
+        $lifecycle = $this->lifecycleWithVerifier(function (): array {
+            return ['cmd' => Lifecycle::REVOKE_CMD, 'aud' => 'some-other-site', 'jti' => 'j3'];
+        });
+
+        $lifecycle->handleInstructions(['revoke'], 'wrong.aud.jwt');
+
+        $this->assertSame([], $revokeHook);
+        $this->assertSame([], $deactivated, 'a wrong-aud token must never deactivate');
+        $this->assertTrue($this->settings->isEnrolled());
+        $this->assertNotNull($this->keystore->getSiteKeypair());
+        $this->assertNull(Lifecycle::revokedMarker());
+    }
+
+    public function test_revoke_verified_through_real_connector_end_to_end(): void
+    {
+        // No injected seam: this exercises the PRODUCTION path through a real
+        // Connector::verifyCommand against the stored CP public key. We mint a
+        // genuine Ed25519 JWT with the CP secret to prove the wiring end-to-end.
+        $deactivated = [];
+        $revokeHook  = [];
+        $this->armRevokeObservers($deactivated, $revokeHook);
+
+        // Connector::verifyCommand records the jti in $wpdb; supply a fake one.
+        $GLOBALS['wpdb'] = new FakeWpdb();
+        \WPMgr\Agent\Connector::resetRequestCacheForTesting();
+
+        // Re-key the keystore to a CP keypair whose SECRET we hold so we can sign.
+        $cpKeypair = sodium_crypto_sign_keypair();
+        $cpSecret  = sodium_crypto_sign_secretkey($cpKeypair);
+        $this->keystore->storeControlPlanePublicKey(sodium_crypto_sign_publickey($cpKeypair));
+
+        $now    = time();
+        $claims = [
+            'aud' => $this->settings->siteId(),
+            'cmd' => 'revoke',
+            'iat' => $now,
+            'exp' => $now + 30,
+            'jti' => 'real-revoke-' . bin2hex(random_bytes(4)),
+            'iss' => 'wpmgr-cp',
+        ];
+        $b64 = static fn (string $d): string => rtrim(strtr(base64_encode($d), '+/', '-_'), '=');
+        $signingInput = $b64((string) json_encode(['alg' => 'EdDSA', 'typ' => 'JWT']))
+            . '.' . $b64((string) json_encode($claims));
+        $jwt = $signingInput . '.' . $b64(sodium_crypto_sign_detached($signingInput, $cpSecret));
+
+        // Production graph: Lifecycle with NO verifier seam (null) → real Connector.
+        $lifecycle = new Lifecycle($this->keystore, $this->settings, $this->enrollment);
+        $lifecycle->handleInstructions(['revoke'], $jwt);
+
+        $this->assertSame([basename(__FILE__)], $deactivated, 'a genuine signed revoke tears down');
+        $this->assertFalse($this->settings->isEnrolled());
+        $this->assertNull($this->keystore->getSiteKeypair());
+
+        unset($GLOBALS['wpdb']);
     }
 
     public function test_deactivate_posts_signed_disconnect_with_3s_timeout(): void
@@ -302,9 +471,38 @@ final class LifecycleTest extends TestCase
         // Force the outbound call to look like a hard failure (WP_Error).
         Functions\when('is_wp_error')->justReturn(true);
 
-        $instructions = $this->lifecycle->heartbeatNow();
+        $beat = $this->lifecycle->heartbeatNow();
 
-        $this->assertSame([], $instructions, 'a failed immediate beat returns no instructions and does not throw');
+        $this->assertSame(
+            ['instructions' => [], 'revoke_token' => ''],
+            $beat,
+            'a failed immediate beat returns no instructions/token and does not throw'
+        );
+    }
+
+    public function test_heartbeat_parses_revoke_token_alongside_instruction(): void
+    {
+        Functions\when('wp_remote_retrieve_body')->justReturn(json_encode([
+            'ok'           => true,
+            'instructions' => ['revoke'],
+            'revoke_token' => 'header.payload.sig',
+        ]));
+
+        $result = $this->enrollment->sendHeartbeat();
+
+        $this->assertSame(['revoke'], $result['instructions']);
+        $this->assertSame('header.payload.sig', $result['revoke_token']);
+    }
+
+    public function test_heartbeat_revoke_token_absent_yields_empty_string(): void
+    {
+        Functions\when('wp_remote_retrieve_body')
+            ->justReturn(json_encode(['ok' => true, 'instructions' => ['revoke']]));
+
+        $result = $this->enrollment->sendHeartbeat();
+
+        $this->assertSame(['revoke'], $result['instructions']);
+        $this->assertSame('', $result['revoke_token'], 'no token field → empty string, gate fails closed');
     }
 
     public function test_heartbeat_now_fires_one_signed_beat(): void

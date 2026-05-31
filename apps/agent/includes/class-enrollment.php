@@ -268,10 +268,24 @@ final class Enrollment
      * scheduler can act on a queued "revoke".
      *
      * The CP response is EITHER:
-     *   - 200 with JSON `{"ok":true,"instructions":[...]}` (lifecycle wired), or
+     *   - 200 with JSON `{"ok":true,"instructions":[...],"revoke_token":"<jwt>"}`
+     *     (lifecycle wired), or
      *   - 204 / empty (legacy liveness-only) — handled gracefully, no error.
      *
-     * @return array{ok:bool,status:int,code:string,message:string,instructions:array<int,string>}
+     * For a revoked site the CP returns BOTH `instructions:["revoke"]` and a
+     * signed `revoke_token` (a compact Ed25519 JWT; cmd="revoke", aud=site_id).
+     * The token is carried back UNVERIFIED here — the caller (Lifecycle) verifies
+     * it through the existing Connector before acting (Phase-6 finding B). We
+     * never act on the revoke from this body alone.
+     *
+     * @return array{
+     *     ok:bool,
+     *     status:int,
+     *     code:string,
+     *     message:string,
+     *     instructions:array<int,string>,
+     *     revoke_token:string
+     * }
      */
     public function sendHeartbeat(): array
     {
@@ -283,6 +297,7 @@ final class Enrollment
                 'code'         => $notEnrolled['code'],
                 'message'      => $notEnrolled['message'],
                 'instructions' => [],
+                'revoke_token' => '',
             ];
         }
 
@@ -299,6 +314,7 @@ final class Enrollment
             'code'         => $result['code'],
             'message'      => $result['message'],
             'instructions' => $this->parseInstructions($result['raw_body']),
+            'revoke_token' => $this->parseRevokeToken($result['raw_body']),
         ];
     }
 
@@ -359,6 +375,30 @@ final class Enrollment
             }
         }
         return $out;
+    }
+
+    /**
+     * Extract the signed `revoke_token` (a compact Ed25519 JWT) from the
+     * heartbeat response body, if present. Returns '' for an empty/non-JSON
+     * body or when the field is absent or not a non-empty string. The token is
+     * NOT verified here — that is the Lifecycle gate's job (it runs the token
+     * through the existing Connector before any teardown). Carrying it back
+     * raw keeps verification in one place and this parser dumb + side-effect-free.
+     *
+     * @param string $rawBody Raw HTTP response body.
+     * @return string The compact JWT, or '' when absent.
+     */
+    private function parseRevokeToken(string $rawBody): string
+    {
+        $rawBody = trim($rawBody);
+        if ($rawBody === '') {
+            return '';
+        }
+        $decoded = json_decode($rawBody, true);
+        if (!is_array($decoded) || !isset($decoded['revoke_token']) || !is_string($decoded['revoke_token'])) {
+            return '';
+        }
+        return trim($decoded['revoke_token']);
     }
 
     /**

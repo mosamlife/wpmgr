@@ -461,10 +461,20 @@ final class Admin
             $this->enrollment->pushMetadata();
 
             // ADR-039 — immediate post-enroll heartbeat. Wrapped so a failed
-            // beat never turns a successful enroll into a failure.
-            $instructions = $this->lifecycle->heartbeatNow();
+            // beat never turns a successful enroll into a failure. heartbeatNow()
+            // returns both the instruction list and the signed revoke proof; the
+            // proof is threaded into handleInstructions so a first-beat revoke is
+            // gated by signature verification (Phase-6 finding B), never acted on
+            // from the response body alone.
+            $beat = $this->lifecycle->heartbeatNow();
+            $instructions = isset($beat['instructions']) && is_array($beat['instructions'])
+                ? $beat['instructions']
+                : [];
+            $revokeToken = isset($beat['revoke_token']) && is_string($beat['revoke_token'])
+                ? $beat['revoke_token']
+                : '';
             if ($instructions !== []) {
-                $this->lifecycle->handleInstructions($instructions);
+                $this->lifecycle->handleInstructions($instructions, $revokeToken);
             }
         }
 
