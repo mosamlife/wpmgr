@@ -1,0 +1,655 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Cannot call method fetch_array\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 2
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Cannot call method fetch_assoc\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 2
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Cannot call method free\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 4
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Found usage of constant WP_CONTENT_URL\. Use content_url\(\) instead\.$#'
+			identifier: phpstanWP.wpConstant.fetch
+			count: 1
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\DbDumper\:\:safeProgress\(\) has parameter \$detail with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Parameter \#2 \$row of method WPMgr\\Agent\\Backup\\DbDumper\:\:formatRowValues\(\) expects array\<string, string\|null\>, array\<string, float\|int\|string\|null\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Parameter \#3 \$length of function substr expects int\|null, int\|false given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Backup\\DbDumper\:\:\$opts is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: includes/backup/class-db-dumper.php
+
+		-
+			message: '#^Argument of an invalid type list\<string\>\|false supplied for foreach, only iterables are supported\.$#'
+			identifier: foreach.nonIterable
+			count: 1
+			path: includes/backup/class-db-restorer.php
+
+		-
+			message: '#^Cannot call method close\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/backup/class-db-restorer.php
+
+		-
+			message: '#^Cannot call method fetch_assoc\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 4
+			path: includes/backup/class-db-restorer.php
+
+		-
+			message: '#^Cannot call method fetch_row\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 2
+			path: includes/backup/class-db-restorer.php
+
+		-
+			message: '#^Cannot call method free\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 5
+			path: includes/backup/class-db-restorer.php
+
+		-
+			message: '#^Expression on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.expr
+			count: 1
+			path: includes/backup/class-db-restorer.php
+
+		-
+			message: '#^If condition is always false\.$#'
+			identifier: if.alwaysFalse
+			count: 1
+			path: includes/backup/class-encrypt-and-upload.php
+
+		-
+			message: '#^Parameter \#2 \$length of function fread expects int\<1, max\>, int given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-encrypt-and-upload.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Backup\\EncryptAndUpload\:\:\$manifestEndpoint is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: includes/backup/class-encrypt-and-upload.php
+
+		-
+			message: '#^Ternary operator condition is always false\.$#'
+			identifier: ternary.alwaysFalse
+			count: 1
+			path: includes/backup/class-encrypt-and-upload.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<\(int\|string\)\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: includes/backup/class-files-archiver.php
+
+		-
+			message: '#^Left side of && is always true\.$#'
+			identifier: booleanAnd.leftAlwaysTrue
+			count: 1
+			path: includes/backup/class-files-restorer.php
+
+		-
+			message: '#^Call to function is_array\(\) with array will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Call to function is_array\(\) with array\<mixed\> will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 3
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Constant WPMgr\\Agent\\Backup\\RestoreRunner\:\:PREFLIGHT_DISK_MULTIPLIER is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Found usage of constant WP_CONTENT_URL\. Use content_url\(\) instead\.$#'
+			identifier: phpstanWP.wpConstant.fetch
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:chunkDownloads\(\) should return list\<array\{logical_path\: string, chunks\: list\<array\<string, mixed\>\>\}\> but returns list\<array\{logical_path\: non\-empty\-string, chunks\: non\-empty\-array\<mixed\>\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:extractDumpUrlsFromSubState\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:onPhaseProgress\(\) has parameter \$detail with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runCleanup\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runCleanup\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runMaintenanceOff\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runMaintenanceOff\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runMaintenanceOn\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runMaintenanceOn\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runPostHooks\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runPostHooks\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runRestoreDb\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runRestoreDb\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runStageFiles\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runStageFiles\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runSwapDb\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runSwapDb\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runSwapFiles\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runSwapFiles\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runUrlRewrite\(\) has parameter \$subState with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\RestoreRunner\:\:runUrlRewrite\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Ternary operator condition is always false\.$#'
+			identifier: ternary.alwaysFalse
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 2
+			path: includes/backup/class-restore-watchdog.php
+
+		-
+			message: '#^Parameter \#1 \$tableNames of method WPMgr\\Agent\\Backup\\SqlInspector\:\:detectPrefix\(\) expects list\<string\>, array\<string\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-sql-inspector.php
+
+		-
+			message: '#^Parameter \#1 \$entries of method WPMgr\\Agent\\Backup\\EncryptAndUpload\:\:submitManifest\(\) expects list\<array\<string, mixed\>\>, non\-empty\-array\<mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-task-runner.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 2
+			path: includes/backup/class-watchdog.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\Watchdog\:\:decodeSubState\(\) has parameter \$raw with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: includes/backup/class-watchdog.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Backup\\Watchdog\:\:decodeSubState\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/backup/class-watchdog.php
+
+		-
+			message: '#^Parameter \#1 \$params of class WPMgr\\Agent\\Backup\\TaskRunner constructor expects array\{snapshot_id\: string, kind\: string, age_recipient\: string, presign_endpoint\: string, manifest_endpoint\: string, progress_endpoint\: string, chunk_bytes\: int, scratch_dir\: string, \.\.\.\}, array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/backup/class-watchdog.php
+
+		-
+			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/backup/destinations/class-local-destination.php
+
+		-
+			message: '#^Call to function is_string\(\) with ''/var/keys/wpmgr…'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/class-keystore.php
+
+		-
+			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 3
+			path: includes/class-keystore.php
+
+		-
+			message: '#^Call to function is_array\(\) with array will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 3
+			path: includes/class-plugin.php
+
+		-
+			message: '#^Call to function property_exists\(\) with WP_User and ''roles'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/commands/class-autologin-command.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 4
+			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$started_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''ZipArchive'' and ''addFile'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\BackupCommand\:\:execute\(\) should return array\{ok\: bool, detail\: string\} but returns array\.$#'
+			identifier: return.type
+			count: 8
+			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\BackupCommand\:\:refuse\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\BackupCommand\:\:seedTaskRow\(\) has parameter \$runnerParams with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_row\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/commands/class-diagnostics-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/commands/class-diagnostics-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/commands/class-diagnostics-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\DiagnosticsCommand\:\:collectWpNative\(\) should return array\<string, mixed\> but returns array\<int\|string, mixed\>\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/commands/class-diagnostics-command.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 4
+			path: includes/commands/class-restore-command.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$started_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: includes/commands/class-restore-command.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''ZipArchive'' and ''addFile'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/commands/class-restore-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/diagnostics/class-size-probe.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between non\-empty\-string and '''' will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: includes/diagnostics/class-size-probe.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Phpbu\\ProgressClient\:\:\$snapshotId is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: includes/phpbu/class-progress-client.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$options\.$#'
+			identifier: property.notFound
+			count: 1
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 5
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_results\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 3
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Call to an undefined method object\:\:insert\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 6
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
+			identifier: method.notFound
+			count: 4
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Call to function is_array\(\) with \*NEVER\* will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Offset ''status'' on \*NEVER\* on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Parameter \#4 \$autoload of function add_option expects bool\|null, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/support/class-backup-source.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Support\\Blake3\:\:compress\(\) should return list\<int\> but returns non\-empty\-array\<int\<0, max\>, int\>\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/support/class-blake3.php
+
+		-
+			message: '#^Parameter &\$s by\-ref type of method WPMgr\\Agent\\Support\\Blake3\:\:g\(\) expects list\<int\>, non\-empty\-array\<int, int\> given\.$#'
+			identifier: parameterByRef.type
+			count: 8
+			path: includes/support/class-blake3.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 5
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_results\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Call to an undefined method object\:\:insert\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 4
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
+			identifier: method.notFound
+			count: 3
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Call to an undefined method object\:\:update\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Offset ''file'' on array\{type\: int, message\: string, file\: string, line\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Offset ''function'' on array\{function\: string, line\?\: int, file\?\: string, class\?\: class\-string, type\?\: ''\-\>''\|''\:\:'', args\?\: list\<mixed\>, object\?\: object\} in isset\(\) always exists and is not nullable\.$#'
+			identifier: isset.offset
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Offset ''line'' on array\{type\: int, message\: string, file\: string, line\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Offset ''message'' on array\{type\: int, message\: string, file\: string, line\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Offset ''type'' on array\{type\: int, message\: string, file\: string, line\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between non\-empty\-string and '''' will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Constant WPMgr\\Agent\\Support\\FileScanner\:\:EXCLUDE_DIRS is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: includes/support/class-file-scanner.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 5
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_results\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 3
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Call to an undefined method object\:\:insert\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 5
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
+			identifier: method.notFound
+			count: 2
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<non\-falsy\-string\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Support\\LoginProtection\:\:\$configCache \(array\{mode\: string, thresholds\: array\{captcha_limit\: int, temp_block_limit\: int, block_all_limit\: int, failed_login_gap\: int, success_login_gap\: int, all_blocked_gap\: int\}, ip_header\: string, allow_cidrs\: array\<int, string\>, deny_cidrs\: array\<int, string\>\}\|null\) does not accept array\{mode\: string, thresholds\: array\<string, int\>, ip_header\: string, allow_cidrs\: array\<int, string\>, deny_cidrs\: array\<int, string\>\}\.$#'
+			identifier: assign.propertyType
+			count: 1
+			path: includes/support/class-login-protection.php

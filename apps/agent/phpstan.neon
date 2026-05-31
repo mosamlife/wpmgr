@@ -1,5 +1,16 @@
 includes:
     - vendor/szepeviktor/phpstan-wordpress/extension.neon
+    # Pre-existing-noise baseline (PHPStan 2.x upgrade). Captures the WordPress
+    # $wpdb / mysqli_result runtime seams, missing iterable-value docblock types
+    # in legacy backup/restore code, and the defensive is_string()/is_array()
+    # narrowing checks that PHPStan 2.x newly reports as "always true". None of
+    # these are in the Phase-5.7 lifecycle code. The three GENUINE findings the
+    # 2.x upgrade surfaced were fixed in source rather than baselined:
+    #   - ActivityLog::record() called with 9 args (mis-bound $meta) in
+    #     LoginProtection::emitBlockEvent — corrected to the 5-arg shape.
+    #   - a stale @phpstan-ignore-next-line in EncryptAndUpload::submitManifest
+    #     (2.x infers the manifest-entry type cleanly) — removed.
+    - phpstan-baseline.neon
 
 parameters:
     level: 8
@@ -9,6 +20,10 @@ parameters:
         - wpmgr-agent.php
     bootstrapFiles:
         - tests/phpstan-bootstrap.php
+    # Kept false (the PHPStan 2.x default flipped this to true). We rely on
+    # defensive is_*/instanceof runtime checks against WordPress-derived values
+    # whose declared types are looser at runtime than the stubs claim; treating
+    # phpdoc types as certain would force us to delete those guards.
     treatPhpDocTypesAsCertain: false
     # The crypto/auth core (class-connector.php, class-keystore.php) is held to
     # the strictest standard available at level 8; no per-file relaxations are

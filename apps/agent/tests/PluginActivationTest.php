@@ -2,10 +2,24 @@
 /**
  * Tests that plugin activation never fatals when the keystore master key cannot
  * be established: activation must succeed, set a persistent admin-notice option,
- * and retry lazily on later admin loads.
+ * and (separately) run schema migrations.
  *
- * Runs in a separate process because it drives the Plugin singleton and depends
- * on process-global constants used by master-key resolution.
+ * In-process design (no separate-process isolation):
+ * This test used to run under #[RunTestsInSeparateProcesses] because it drives
+ * the Plugin singleton and the keystore's master-key resolution reads
+ * process-global constants (ABSPATH / WPMGR_AGENT_KEY_FILE / WP salts) that
+ * other tests in the suite also define. Under PHPUnit 10.5 + PHP 8.5 the
+ * isolated-test bootstrap fatals (a `rewind()` deprecation fires inside
+ * `__phpunit_run_isolated_test()`, where PHPUnit's error handler can't locate
+ * the TestCase on the call stack -> NoTestCaseObjectOnCallStackException).
+ *
+ * The fix runs in-process and forces the master-key failure DETERMINISTICALLY,
+ * independent of whatever constants earlier tests defined: we pin the keystore's
+ * master-key source to 'salts' (via the wpmgr_agent_master_key_source option)
+ * and leave the WP secret salts unusable. With a pinned-but-unavailable salt
+ * source, Keystore::resolveMasterKey() throws rather than falling back to the
+ * constant/file paths — so setupKeystore() fails regardless of a leaked
+ * WPMGR_AGENT_KEY_FILE constant. The asserted activation behaviour is unchanged.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -16,8 +30,7 @@ namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
-use PHPUnit\Framework\Attributes\PreserveGlobalState;
-use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
+use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Plugin;
 use WPMgr\Agent\Schema;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -25,8 +38,6 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 /**
  * @covers \WPMgr\Agent\Plugin
  */
-#[RunTestsInSeparateProcesses]
-#[PreserveGlobalState(false)]
 final class PluginActivationTest extends TestCase
 {
     /** @var array<string,mixed> In-memory wp-option store. */
@@ -37,7 +48,14 @@ final class PluginActivationTest extends TestCase
         parent::set_up();
         Monkey\setUp();
 
-        $this->options = [];
+        // Pin the master-key source to 'salts'. With the salts unusable (no
+        // valid AUTH_KEY/... constants in the test runtime), resolveMasterKey()
+        // throws on the pinned source -> the keystore fails deterministically,
+        // regardless of any WPMGR_AGENT_KEY_FILE / ABSPATH leaked from sibling
+        // tests in the same process.
+        $this->options = [
+            Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'salts'],
+        ];
 
         // Hook/registration no-ops used during boot().
         foreach (['add_action', 'add_filter', 'register_activation_hook',
@@ -45,6 +63,7 @@ final class PluginActivationTest extends TestCase
             Functions\when($fn)->justReturn(true);
         }
         Functions\when('is_admin')->justReturn(false);
+        Functions\when('is_multisite')->justReturn(false);
 
         Functions\when('update_option')->alias(function ($name, $value) {
             $this->options[$name] = $value;
@@ -57,16 +76,16 @@ final class PluginActivationTest extends TestCase
             unset($this->options[$name]);
             return true;
         });
-
-        // Force every master-key source to fail:
-        //  - no WPMGR_AGENT_KEY_FILE constant,
-        //  - no usable salts,
-        //  - ABSPATH parent is a non-existent, non-creatable path.
-        if (!defined('ABSPATH')) {
-            // A path under /proc cannot be created or written on Linux/macOS.
-            define('ABSPATH', '/nonexistent-wpmgr-' . bin2hex(random_bytes(6)) . '/x/y/z/site/');
-        }
-        // No WP_CONTENT_DIR, no wp_upload_dir stub -> those candidates are skipped.
+        // Settings::get() prefers get_site_option() when it exists (multisite
+        // network options). Back it with the same in-memory store so activation's
+        // markActivated() read/write round-trips deterministically in-process.
+        Functions\when('get_site_option')->alias(function ($name, $default = false) {
+            return $this->options[$name] ?? $default;
+        });
+        Functions\when('update_site_option')->alias(function ($name, $value) {
+            $this->options[$name] = $value;
+            return true;
+        });
     }
 
     protected function tear_down(): void
@@ -118,8 +137,15 @@ final class PluginActivationTest extends TestCase
                 return '';
             }
         };
+        // Use the shared dbDelta() capture bridge (declared by SchemaTest's
+        // TestDbDeltaCapture). The dbDelta() shim is a single process-global
+        // function across the whole suite; routing through the bridge — rather
+        // than eval'ing a divergent no-op — keeps SchemaTest's per-test capture
+        // working regardless of test ordering. We don't assert on the captured
+        // SQL here (only that the db-version option gets stamped), so we leave
+        // the bridge's onRecord untouched.
         if (!function_exists('dbDelta')) {
-            eval('function dbDelta(string $sql): array { return []; }');
+            eval('function dbDelta(string $sql): array { \WPMgr\Agent\Tests\TestDbDeltaCapture::record($sql); return []; }');
         }
 
         $plugin = Plugin::boot();

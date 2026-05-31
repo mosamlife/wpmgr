@@ -54,20 +54,43 @@ final class Blake3Test extends TestCase
     }
 
     /**
+     * One-shot BLAKE3 over the streaming primitive (update()/finalize()).
+     *
+     * NOTE: the official vectors are asserted against the pure-PHP BLAKE3
+     * implementation (the update()/finalize() streaming path), NOT against the
+     * static Blake3::hashHex() convenience. Per ADR-033 (M5.6, v0.8.1)
+     * hashHex() was deliberately switched to libsodium's blake2b-256 for a
+     * ~100x speedup; the CP treats the chunk id as an opaque content-key, so
+     * the algorithm behind hashHex() is a perf detail, not a wire contract.
+     * The BLAKE3 construction itself still lives in update()/finalize() and is
+     * what these official vectors exercise.
+     *
+     * @param string $data Input bytes.
+     * @return string 64-char lowercase hex digest (BLAKE3, hash mode).
+     */
+    private function blake3Hex(string $data): string
+    {
+        $h = new Blake3();
+        $h->update($data);
+
+        return bin2hex($h->finalize());
+    }
+
+    /**
      * @dataProvider vectors
      * @param int    $n        Input length.
      * @param string $expected Expected hex digest.
      */
     public function test_official_vectors(int $n, string $expected): void
     {
-        $this->assertSame($expected, Blake3::hashHex($this->input($n)));
+        $this->assertSame($expected, $this->blake3Hex($this->input($n)));
     }
 
     public function test_streaming_equals_one_shot(): void
     {
         foreach ([0, 1, 63, 64, 65, 1023, 1024, 1025, 4096, 5000, 100000] as $n) {
-            $data   = $this->input($n);
-            $oneShot = Blake3::hashHex($data);
+            $data    = $this->input($n);
+            $oneShot = $this->blake3Hex($data);
 
             $h      = new Blake3();
             $offset = 0;
@@ -80,11 +103,34 @@ final class Blake3Test extends TestCase
         }
     }
 
+    /**
+     * Distinct inputs hash to distinct 32-byte digests via the production
+     * content-addressing primitive (Blake3::hashHex(), blake2b-256 per ADR-033).
+     */
     public function test_distinct_inputs_distinct_hashes(): void
     {
         $a = Blake3::hashHex('alpha');
         $b = Blake3::hashHex('beta');
         $this->assertNotSame($a, $b);
         $this->assertSame(64, strlen($a));
+    }
+
+    /**
+     * Guard the production content-addressing primitive: Blake3::hashHex() is
+     * intentionally blake2b-256 (ADR-033), deterministic, and 32 bytes wide.
+     */
+    public function test_hash_hex_is_deterministic_blake2b(): void
+    {
+        $data = $this->input(4096);
+        $this->assertSame(Blake3::hashHex($data), Blake3::hashHex($data));
+        $this->assertSame(64, strlen(Blake3::hashHex($data)));
+
+        if (function_exists('sodium_crypto_generichash')) {
+            $this->assertSame(
+                bin2hex(sodium_crypto_generichash($data, '', 32)),
+                Blake3::hashHex($data),
+                'hashHex() must match libsodium blake2b-256 (ADR-033 content-key).'
+            );
+        }
     }
 }

@@ -615,7 +615,8 @@ final class EncryptAndUpload
             // 'local' can also drop a manifest.json next to the chunks while
             // still ACKing the CP. 'cp' / 's3_compat' fall straight through to
             // BackupTransport::submitManifest, preserving legacy behaviour.
-            /** @phpstan-ignore-next-line — entries shape is enforced by encryptChunks. */
+            // (entries shape is enforced by encryptChunks; no ignore needed —
+            // PHPStan 2.x infers the destination's manifest-entry type cleanly.)
             $result = $this->destination->submitManifest($entries, [
                 'snapshot_id'   => $this->snapshotId,
                 'age_recipient' => $this->ageRecipient,

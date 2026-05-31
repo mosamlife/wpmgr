@@ -645,16 +645,22 @@ final class LoginProtection
             return;
         }
         try {
+            // ActivityLog::record(eventType, objectType, objectId, objectLabel,
+            // meta). Actor user/login/IP are resolved INSIDE record() from the
+            // request context, so the block IP + category + human summary ride
+            // along in $meta rather than as extra positional args. (The previous
+            // 9-arg call silently mis-bound them: `0` reached the $meta param and
+            // the real context array fell off the end of the 5-param signature.)
             $this->activityLog->record(
                 'login.blocked',
                 'auth',
-                '',
-                $username,
-                0,
-                $username,
                 $ip,
-                sprintf('Login blocked (%s) for %s from %s', $category, $username, $ip),
-                ['category' => $category, 'ip' => $ip]
+                $username,
+                [
+                    'category' => $category,
+                    'ip'       => $ip,
+                    'summary'  => sprintf('Login blocked (%s) for %s from %s', $category, $username, $ip),
+                ]
             );
         } catch (\Throwable $e) {
             // Activity logging must never fatal a login.

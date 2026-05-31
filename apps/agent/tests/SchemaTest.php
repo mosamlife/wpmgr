@@ -140,26 +140,3 @@ final class FakeSchemaWpdb
         return '';
     }
 }
-
-/**
- * Bridge between the globally-declared dbDelta() shim and per-test capture
- * arrays. The shim is declared exactly once per process (eval'd if missing)
- * and forwards calls into the currently-installed closure here.
- */
-final class TestDbDeltaCapture
-{
-    /** @var (callable(string):void)|null */
-    public static $onRecord = null;
-
-    public static function reset(): void
-    {
-        self::$onRecord = null;
-    }
-
-    public static function record(string $sql): void
-    {
-        if (self::$onRecord !== null) {
-            (self::$onRecord)($sql);
-        }
-    }
-}

@@ -98,11 +98,18 @@ final class MetadataCommandTest extends TestCase
         $this->assertSame('twentytwentyfour', $data['active_theme']);
 
         // Plugins: both installed, with the active flag set correctly.
-        // v0.9.0 contract shape: {slug,name,version,active,available_update}.
+        // Contract shape since ADR-037 Sprint 1, 1C (sparse-metadata expansion):
+        // {slug,name,version,active,available_update,plugin_uri,update_uri,
+        //  author_uri,network}. The four 1C fields are sourced from the plugin
+        // header (empty-string / false defaults when the header omits them) and
+        // the CP tolerantly decodes them.
         $this->assertCount(2, $data['plugins']);
         $byFile = [];
         foreach ($data['plugins'] as $p) {
-            $this->assertSame(['slug', 'name', 'version', 'active', 'available_update'], array_keys($p));
+            $this->assertSame(
+                ['slug', 'name', 'version', 'active', 'available_update', 'plugin_uri', 'update_uri', 'author_uri', 'network'],
+                array_keys($p)
+            );
             $byFile[$p['slug']] = $p;
         }
         $this->assertSame('akismet/akismet.php', $byFile['akismet/akismet.php']['slug']);
@@ -113,6 +120,13 @@ final class MetadataCommandTest extends TestCase
         $this->assertSame('hello/hello.php', $byFile['hello/hello.php']['slug']);
         $this->assertFalse($byFile['hello/hello.php']['active']);
         $this->assertNull($byFile['hello/hello.php']['available_update']);
+
+        // 1C sparse fields default to '' / false when the header omits them
+        // (the test plugin metadata carries only Name + Version).
+        $this->assertSame('', $byFile['akismet/akismet.php']['plugin_uri']);
+        $this->assertSame('', $byFile['akismet/akismet.php']['update_uri']);
+        $this->assertSame('', $byFile['akismet/akismet.php']['author_uri']);
+        $this->assertFalse($byFile['akismet/akismet.php']['network']);
 
         // Themes inventory: v0.9.0 contract shape
         // {slug,name,version,active,available_update}.
