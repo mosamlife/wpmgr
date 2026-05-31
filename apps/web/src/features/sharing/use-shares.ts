@@ -53,13 +53,53 @@ export interface CreateShareResult {
 }
 
 // ---------------------------------------------------------------------------
-// Cache key family
+// Invitation (link-history) types
+// ---------------------------------------------------------------------------
+
+export type InvitationStatus = "pending" | "accepted" | "expired" | "revoked";
+
+export interface SiteInvitation {
+  id: string;
+  site_id?: string;
+  email: string;
+  role: ShareRole;
+  status: InvitationStatus;
+  expires_at: string;
+  created_at: string;
+  accepted_at?: string | null;
+  revoked_at?: string | null;
+  attempts: number;
+  invited_by?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Cache key families
 // ---------------------------------------------------------------------------
 
 export const shareKeys = {
   all: ["shares"] as const,
   forSite: (siteId: string) => ["shares", "site", siteId] as const,
 };
+
+export const inviteKeys = {
+  all: ["invitations"] as const,
+  forSite: (siteId: string) => ["invitations", "site", siteId] as const,
+};
+
+// statusError maps an empty-bodied error response to human copy. API error
+// bodies are empty over the wire (a known session-middleware issue), so we
+// branch on the HTTP status; the `message` read is a no-op today and a bonus
+// once the body is restored.
+function statusError(
+  raw: Response,
+  json: Record<string, unknown>,
+  fallbackByStatus: Record<number, string>,
+): Error {
+  const msg = typeof json["message"] === "string" ? json["message"] : "";
+  return new Error(
+    msg || fallbackByStatus[raw.status] || `Request failed: ${raw.status}`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // useSiteShares — GET /api/v1/sites/{siteId}/shares
@@ -153,6 +193,106 @@ export function useRevokeShare(
         queryKey: shareKeys.forSite(siteId),
       });
       toast.success("Access revoked");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useSiteInvitations — GET /api/v1/sites/{siteId}/invitations  (link history)
+// ---------------------------------------------------------------------------
+
+export function useSiteInvitations(
+  siteId: string,
+): UseQueryResult<SiteInvitation[], Error> {
+  return useQuery({
+    queryKey: inviteKeys.forSite(siteId),
+    queryFn: async () => {
+      const result = await client.get({
+        url: `/api/v1/sites/${encodeURIComponent(siteId)}/invitations`,
+      });
+      if (result.error !== undefined) throw toError(result.error);
+      const data = result.data as { items: SiteInvitation[] };
+      return data.items ?? [];
+    },
+    enabled: Boolean(siteId),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useRevokeInvitation — DELETE /api/v1/sites/{siteId}/invitations/{invitationId}
+// ---------------------------------------------------------------------------
+
+export function useRevokeInvitation(
+  siteId: string,
+): UseMutationResult<void, Error, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (invitationId: string) => {
+      const raw = await fetch(
+        `/api/v1/sites/${encodeURIComponent(siteId)}/invitations/${encodeURIComponent(invitationId)}`,
+        { method: "DELETE", credentials: "include" },
+      );
+      if (!raw.ok) {
+        const json = (await raw.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
+        throw statusError(raw, json, {
+          404: "This invite no longer exists.",
+          409: "This invite was already accepted, expired, or revoked.",
+        });
+      }
+    },
+    onSuccess: () => {
+      // Invalidate BOTH families: an invite accepted in a race becomes a share.
+      void queryClient.invalidateQueries({
+        queryKey: inviteKeys.forSite(siteId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: shareKeys.forSite(siteId),
+      });
+      toast.success("Invite cancelled");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useRegenerateInvite — POST .../invitations/{invitationId}/regenerate
+// Rotates the token; returns the fresh one-time accept link.
+// ---------------------------------------------------------------------------
+
+export function useRegenerateInvite(
+  siteId: string,
+): UseMutationResult<string, Error, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (invitationId: string): Promise<string> => {
+      const raw = await fetch(
+        `/api/v1/sites/${encodeURIComponent(siteId)}/invitations/${encodeURIComponent(invitationId)}/regenerate`,
+        { method: "POST", credentials: "include" },
+      );
+      const json = (await raw.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      if (!raw.ok) {
+        throw statusError(raw, json, {
+          404: "This invite no longer exists.",
+          409: "This invite was already accepted — create a new one instead.",
+        });
+      }
+      return (json["accept_link"] as string | undefined) ?? "";
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: inviteKeys.forSite(siteId),
+      });
     },
     onError: (err) => {
       toast.error(err.message);

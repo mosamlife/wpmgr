@@ -21,3 +21,36 @@ type Share struct {
 	ExpiresAt *time.Time
 	CreatedAt time.Time
 }
+
+// Invitation is the domain model for a site-scoped invitations row, used by the
+// "link history" surface (pending + accepted + expired + revoked). The display
+// status is DERIVED from the timestamps (see DeriveStatus), never stored.
+type Invitation struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	SiteID     *uuid.UUID
+	Email      string
+	Role       string
+	InvitedBy  *uuid.UUID
+	ExpiresAt  time.Time
+	Attempts   int
+	AcceptedAt *time.Time
+	RevokedAt  *time.Time
+	RevokedBy  *uuid.UUID
+	CreatedAt  time.Time
+}
+
+// DeriveStatus computes the lifecycle status from the row's timestamps.
+// Precedence: revoked > accepted > expired > pending.
+func (inv Invitation) DeriveStatus(now time.Time) string {
+	switch {
+	case inv.RevokedAt != nil:
+		return "revoked"
+	case inv.AcceptedAt != nil:
+		return "accepted"
+	case inv.ExpiresAt.Before(now):
+		return "expired"
+	default:
+		return "pending"
+	}
+}

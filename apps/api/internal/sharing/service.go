@@ -2,6 +2,7 @@ package sharing
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -242,6 +243,171 @@ func (s *Service) SharedWithMe(ctx context.Context, userID uuid.UUID) ([]Share, 
 		return nil
 	})
 	return out, err
+}
+
+// ListInvitationsForSite returns the full invitation history (pending +
+// accepted + expired + revoked) for a site, newest first. Tenant-scoped by RLS.
+func (s *Service) ListInvitationsForSite(ctx context.Context, tenantID, siteID uuid.UUID) ([]Invitation, error) {
+	var out []Invitation
+	err := s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListInvitationsForSite(ctx, sqlc.ListInvitationsForSiteParams{
+			TenantID: tenantID,
+			SiteID:   pgtype.UUID{Bytes: siteID, Valid: true},
+		})
+		if err != nil {
+			return domain.Internal("invitation_list_failed", "failed to list invitations").WithCause(err)
+		}
+		out = make([]Invitation, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, rowToInvitation(r))
+		}
+		return nil
+	})
+	return out, err
+}
+
+// loadSiteInvitationTx loads an invitation by id inside an open tenant tx and
+// verifies it is a site-scoped invite bound to the expected site. Tenant
+// isolation is enforced by RLS (a cross-tenant id yields ErrNoRows -> NotFound);
+// the scope + site_id checks block managing an org invite or another site's
+// invite through this site's route. Returns NotFound (never Forbidden) on
+// mismatch to avoid leaking invitation existence across sites.
+func loadSiteInvitationTx(ctx context.Context, tx pgx.Tx, invID, siteID uuid.UUID) (sqlc.Invitation, error) {
+	row, err := sqlc.New(tx).GetInvitationByID(ctx, invID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return sqlc.Invitation{}, domain.NotFound("invitation_not_found", "invitation not found")
+		}
+		return sqlc.Invitation{}, domain.Internal("invitation_load_failed", "failed to load invitation").WithCause(err)
+	}
+	if row.Scope != "site" || !row.SiteID.Valid || uuid.UUID(row.SiteID.Bytes) != siteID {
+		return sqlc.Invitation{}, domain.NotFound("invitation_not_found", "invitation not found")
+	}
+	return row, nil
+}
+
+// RevokeInvitation soft-revokes a still-pending invitation for a site. Race-safe:
+// an invite accepted between load and update is left untouched (returns Conflict).
+func (s *Service) RevokeInvitation(ctx context.Context, tenantID, siteID, invID, actorID uuid.UUID) error {
+	err := s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		if _, err := loadSiteInvitationTx(ctx, tx, invID, siteID); err != nil {
+			return err
+		}
+		if _, err := sqlc.New(tx).RevokeInvitation(ctx, sqlc.RevokeInvitationParams{
+			ID:        invID,
+			RevokedBy: pgtype.UUID{Bytes: actorID, Valid: actorID != uuid.Nil},
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Accepted or already revoked between load and update.
+				return domain.Conflict("invitation_not_pending", "this invite was already accepted, expired, or revoked")
+			}
+			return domain.Internal("invitation_revoke_failed", "failed to revoke invitation").WithCause(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	_, _ = s.audit.Record(ctx, audit.Event{
+		TenantID:   tenantID,
+		ActorType:  audit.ActorUser,
+		ActorID:    actorID.String(),
+		Action:     "share.invitation_revoked",
+		TargetType: "site",
+		TargetID:   siteID.String(),
+		Metadata:   map[string]any{"invitation_id": invID.String()},
+	})
+	return nil
+}
+
+// RegenerateInvite rotates the token of a still-pending invitation: it mints a
+// fresh token (invalidating the old link), resets expiry + attempts, and clears
+// any prior soft-revoke. Returns the new one-time accept link (and re-sends the
+// invite email best-effort, mirroring the create path). Race-safe: an accepted
+// invite is left untouched (returns Conflict).
+func (s *Service) RegenerateInvite(ctx context.Context, tenantID, siteID, invID, actorID uuid.UUID) (string, error) {
+	rawToken, tokenHash, err := generateToken()
+	if err != nil {
+		return "", domain.Internal("token_gen_failed", "failed to generate invitation token").WithCause(err)
+	}
+
+	var email string
+	err = s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		existing, lerr := loadSiteInvitationTx(ctx, tx, invID, siteID)
+		if lerr != nil {
+			return lerr
+		}
+		email = existing.Email
+		if _, uerr := sqlc.New(tx).RegenerateInvitationToken(ctx, sqlc.RegenerateInvitationTokenParams{
+			ID:        invID,
+			TokenHash: tokenHash,
+			ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour),
+		}); uerr != nil {
+			if errors.Is(uerr, pgx.ErrNoRows) {
+				return domain.Conflict("invitation_not_pending", "this invite was already accepted")
+			}
+			return domain.Internal("invitation_regenerate_failed", "failed to regenerate invitation").WithCause(uerr)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	acceptLink := s.baseURL + "/accept?token=" + rawToken
+
+	_, _ = s.audit.Record(ctx, audit.Event{
+		TenantID:   tenantID,
+		ActorType:  audit.ActorUser,
+		ActorID:    actorID.String(),
+		Action:     "share.invitation_regenerated",
+		TargetType: "site",
+		TargetID:   siteID.String(),
+		Metadata:   map[string]any{"invitation_id": invID.String(), "email": email},
+	})
+
+	// Best-effort re-send (mirrors createSiteInvitation). The link is always
+	// returned to the caller for the copy-link flow.
+	if s.mailer != nil && email != "" {
+		body := "Your invitation link was refreshed.\n\nAccept your invitation here:\n" + acceptLink + "\n\nThe previous link no longer works. This link expires in 7 days and is single-use."
+		_ = s.mailer.Send(ctx, []string{email}, "Your site invitation link was refreshed", body)
+	}
+
+	return acceptLink, nil
+}
+
+func rowToInvitation(r sqlc.Invitation) Invitation {
+	inv := Invitation{
+		ID:        r.ID,
+		TenantID:  r.TenantID,
+		Email:     r.Email,
+		Role:      r.Role,
+		ExpiresAt: r.ExpiresAt,
+		Attempts:  int(r.Attempts),
+		CreatedAt: r.CreatedAt,
+	}
+	if r.SiteID.Valid {
+		id := uuid.UUID(r.SiteID.Bytes)
+		inv.SiteID = &id
+	}
+	if r.InvitedBy.Valid {
+		id := uuid.UUID(r.InvitedBy.Bytes)
+		inv.InvitedBy = &id
+	}
+	if r.AcceptedAt.Valid {
+		t := r.AcceptedAt.Time
+		inv.AcceptedAt = &t
+	}
+	if r.RevokedAt.Valid {
+		t := r.RevokedAt.Time
+		inv.RevokedAt = &t
+	}
+	if r.RevokedBy.Valid {
+		id := uuid.UUID(r.RevokedBy.Bytes)
+		inv.RevokedBy = &id
+	}
+	return inv
 }
 
 // CountOwners returns the number of owners in a tenant (for last-owner protection).

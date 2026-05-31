@@ -39,6 +39,17 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// POST and DELETE require org membership — a site-scoped principal cannot manage shares.
 	r.POST("/sites/:siteId/shares", authz.RequirePermission(authz.PermMemberManage), requireOrgScope(), h.grant)
 	r.DELETE("/sites/:siteId/shares/:userId", authz.RequirePermission(authz.PermMemberManage), requireOrgScope(), h.revoke)
+
+	// Invite-link history + management (org-scoped, same permission as shares).
+	// Namespaced under /invitations to avoid a Gin wildcard conflict with the
+	// /shares/:userId revoke route.
+	//   GET    /sites/:siteId/invitations                       — link history
+	//   DELETE /sites/:siteId/invitations/:invitationId         — soft-revoke
+	//   POST   /sites/:siteId/invitations/:invitationId/regenerate — rotate token
+	r.GET("/sites/:siteId/invitations", authz.RequirePermission(authz.PermMemberManage), requireOrgScope(), h.listInvitations)
+	r.DELETE("/sites/:siteId/invitations/:invitationId", authz.RequirePermission(authz.PermMemberManage), requireOrgScope(), h.revokeInvitation)
+	r.POST("/sites/:siteId/invitations/:invitationId/regenerate", authz.RequirePermission(authz.PermMemberManage), requireOrgScope(), h.regenerateInvitation)
+
 	r.GET("/shared-with-me", h.sharedWithMe)
 }
 
@@ -105,6 +116,28 @@ type grantResponseDTO struct {
 	Share      *shareDTO `json:"share,omitempty"`
 	Invited    bool      `json:"invited"`
 	AcceptLink string    `json:"accept_link,omitempty"`
+}
+
+type invitationDTO struct {
+	ID         string  `json:"id"`
+	SiteID     *string `json:"site_id,omitempty"`
+	Email      string  `json:"email"`
+	Role       string  `json:"role"`
+	Status     string  `json:"status"` // pending | accepted | expired | revoked (derived)
+	ExpiresAt  string  `json:"expires_at"`
+	CreatedAt  string  `json:"created_at"`
+	AcceptedAt *string `json:"accepted_at,omitempty"`
+	RevokedAt  *string `json:"revoked_at,omitempty"`
+	Attempts   int     `json:"attempts"`
+	InvitedBy  *string `json:"invited_by,omitempty"`
+}
+
+type invitationListDTO struct {
+	Items []invitationDTO `json:"items"`
+}
+
+type regenerateResponseDTO struct {
+	AcceptLink string `json:"accept_link"`
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +255,79 @@ func (h *Handler) revoke(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (h *Handler) listInvitations(c *gin.Context) {
+	tenantID, ok := tenantOf(c)
+	if !ok {
+		return
+	}
+	siteID, ok := uuidParam(c, "siteId", "invalid_site_id")
+	if !ok {
+		return
+	}
+	invites, err := h.svc.ListInvitationsForSite(c.Request.Context(), tenantID, siteID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	now := time.Now()
+	items := make([]invitationDTO, 0, len(invites))
+	for _, inv := range invites {
+		items = append(items, toInvitationDTO(inv, now))
+	}
+	c.JSON(http.StatusOK, invitationListDTO{Items: items})
+}
+
+func (h *Handler) revokeInvitation(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+	tenantID, ok := tenantOf(c)
+	if !ok {
+		return
+	}
+	siteID, ok := uuidParam(c, "siteId", "invalid_site_id")
+	if !ok {
+		return
+	}
+	invID, ok := uuidParam(c, "invitationId", "invalid_invitation_id")
+	if !ok {
+		return
+	}
+	if err := h.svc.RevokeInvitation(c.Request.Context(), tenantID, siteID, invID, p.UserID); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) regenerateInvitation(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+	tenantID, ok := tenantOf(c)
+	if !ok {
+		return
+	}
+	siteID, ok := uuidParam(c, "siteId", "invalid_site_id")
+	if !ok {
+		return
+	}
+	invID, ok := uuidParam(c, "invitationId", "invalid_invitation_id")
+	if !ok {
+		return
+	}
+	link, err := h.svc.RegenerateInvite(c.Request.Context(), tenantID, siteID, invID, p.UserID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, regenerateResponseDTO{AcceptLink: link})
+}
+
 func (h *Handler) sharedWithMe(c *gin.Context) {
 	p, ok := domain.PrincipalFromContext(c.Request.Context())
 	if !ok {
@@ -259,6 +365,35 @@ func toShareDTO(s Share) shareDTO {
 	if s.ExpiresAt != nil {
 		v := s.ExpiresAt.UTC().Format(time.RFC3339)
 		d.ExpiresAt = &v
+	}
+	return d
+}
+
+func toInvitationDTO(inv Invitation, now time.Time) invitationDTO {
+	d := invitationDTO{
+		ID:        inv.ID.String(),
+		Email:     inv.Email,
+		Role:      inv.Role,
+		Status:    inv.DeriveStatus(now),
+		ExpiresAt: inv.ExpiresAt.UTC().Format(time.RFC3339),
+		CreatedAt: inv.CreatedAt.UTC().Format(time.RFC3339),
+		Attempts:  inv.Attempts,
+	}
+	if inv.SiteID != nil {
+		v := inv.SiteID.String()
+		d.SiteID = &v
+	}
+	if inv.AcceptedAt != nil {
+		v := inv.AcceptedAt.UTC().Format(time.RFC3339)
+		d.AcceptedAt = &v
+	}
+	if inv.RevokedAt != nil {
+		v := inv.RevokedAt.UTC().Format(time.RFC3339)
+		d.RevokedAt = &v
+	}
+	if inv.InvitedBy != nil {
+		v := inv.InvitedBy.String()
+		d.InvitedBy = &v
 	}
 	return d
 }

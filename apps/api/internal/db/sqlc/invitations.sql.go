@@ -19,7 +19,7 @@ INSERT INTO invitations (
     token_hash, invited_by, expires_at
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, created_at
+RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at
 `
 
 type CreateInvitationParams struct {
@@ -58,13 +58,46 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 		&i.Attempts,
 		&i.AcceptedAt,
 		&i.AcceptedUserID,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getInvitationByID = `-- name: GetInvitationByID :one
+SELECT id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at FROM invitations
+WHERE id = $1
+`
+
+// By-id load for the per-site invitation management routes (revoke/regenerate).
+// Tenant isolation is enforced by RLS; the handler additionally verifies
+// site_id + scope against the path before mutating.
+func (q *Queries) GetInvitationByID(ctx context.Context, id uuid.UUID) (Invitation, error) {
+	row := q.db.QueryRow(ctx, getInvitationByID, id)
+	var i Invitation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.Scope,
+		&i.SiteID,
+		&i.Role,
+		&i.TokenHash,
+		&i.InvitedBy,
+		&i.ExpiresAt,
+		&i.Attempts,
+		&i.AcceptedAt,
+		&i.AcceptedUserID,
+		&i.RevokedAt,
+		&i.RevokedBy,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getInvitationByTokenHash = `-- name: GetInvitationByTokenHash :one
-SELECT id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, created_at FROM invitations
+SELECT id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at FROM invitations
 WHERE token_hash = $1
 `
 
@@ -85,6 +118,8 @@ func (q *Queries) GetInvitationByTokenHash(ctx context.Context, tokenHash string
 		&i.Attempts,
 		&i.AcceptedAt,
 		&i.AcceptedUserID,
+		&i.RevokedAt,
+		&i.RevokedBy,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -94,7 +129,7 @@ const incrementInviteAttempts = `-- name: IncrementInviteAttempts :one
 UPDATE invitations
 SET attempts = attempts + 1
 WHERE id = $1
-RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, created_at
+RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at
 `
 
 func (q *Queries) IncrementInviteAttempts(ctx context.Context, id uuid.UUID) (Invitation, error) {
@@ -113,20 +148,76 @@ func (q *Queries) IncrementInviteAttempts(ctx context.Context, id uuid.UUID) (In
 		&i.Attempts,
 		&i.AcceptedAt,
 		&i.AcceptedUserID,
+		&i.RevokedAt,
+		&i.RevokedBy,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
+const listInvitationsForSite = `-- name: ListInvitationsForSite :many
+SELECT id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at FROM invitations
+WHERE tenant_id = $1
+  AND scope     = 'site'
+  AND site_id   = $2
+ORDER BY created_at DESC
+`
+
+type ListInvitationsForSiteParams struct {
+	TenantID uuid.UUID   `json:"tenant_id"`
+	SiteID   pgtype.UUID `json:"site_id"`
+}
+
+// Link history for one site: pending + accepted + expired + revoked, newest
+// first. Tenant-scoped by RLS; site-bound + scope-bound here. The caller derives
+// the display status (pending/accepted/expired/revoked) from the columns.
+func (q *Queries) ListInvitationsForSite(ctx context.Context, arg ListInvitationsForSiteParams) ([]Invitation, error) {
+	rows, err := q.db.Query(ctx, listInvitationsForSite, arg.TenantID, arg.SiteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Invitation
+	for rows.Next() {
+		var i Invitation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Email,
+			&i.Scope,
+			&i.SiteID,
+			&i.Role,
+			&i.TokenHash,
+			&i.InvitedBy,
+			&i.ExpiresAt,
+			&i.Attempts,
+			&i.AcceptedAt,
+			&i.AcceptedUserID,
+			&i.RevokedAt,
+			&i.RevokedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingInvitations = `-- name: ListPendingInvitations :many
-SELECT id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, created_at FROM invitations
+SELECT id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at FROM invitations
 WHERE tenant_id  = $1
   AND accepted_at IS NULL
+  AND revoked_at  IS NULL
   AND expires_at > now()
 ORDER BY created_at DESC
 `
 
-// List pending (not yet accepted, not expired) invitations for the current tenant.
+// List pending (not yet accepted, not expired, not revoked) invitations for the
+// current tenant.
 func (q *Queries) ListPendingInvitations(ctx context.Context, tenantID uuid.UUID) ([]Invitation, error) {
 	rows, err := q.db.Query(ctx, listPendingInvitations, tenantID)
 	if err != nil {
@@ -149,6 +240,8 @@ func (q *Queries) ListPendingInvitations(ctx context.Context, tenantID uuid.UUID
 			&i.Attempts,
 			&i.AcceptedAt,
 			&i.AcceptedUserID,
+			&i.RevokedAt,
+			&i.RevokedBy,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -167,7 +260,7 @@ SET accepted_at      = now(),
     accepted_user_id = $2
 WHERE id = $1
   AND accepted_at IS NULL
-RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, created_at
+RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at
 `
 
 type MarkInvitationAcceptedParams struct {
@@ -191,6 +284,94 @@ func (q *Queries) MarkInvitationAccepted(ctx context.Context, arg MarkInvitation
 		&i.Attempts,
 		&i.AcceptedAt,
 		&i.AcceptedUserID,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const regenerateInvitationToken = `-- name: RegenerateInvitationToken :one
+UPDATE invitations
+SET token_hash = $2,
+    expires_at = $3,
+    attempts   = 0,
+    revoked_at = NULL,
+    revoked_by = NULL
+WHERE id = $1
+  AND accepted_at IS NULL
+RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at
+`
+
+type RegenerateInvitationTokenParams struct {
+	ID        uuid.UUID `json:"id"`
+	TokenHash string    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Rotate the token of a still-pending invitation: overwrite token_hash (kills
+// the old link), reset expiry + attempts, and clear any prior soft-revoke.
+// Only an un-accepted row is touched (RETURNING -> ErrNoRows if already
+// accepted). The new raw token is generated by the caller.
+func (q *Queries) RegenerateInvitationToken(ctx context.Context, arg RegenerateInvitationTokenParams) (Invitation, error) {
+	row := q.db.QueryRow(ctx, regenerateInvitationToken, arg.ID, arg.TokenHash, arg.ExpiresAt)
+	var i Invitation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.Scope,
+		&i.SiteID,
+		&i.Role,
+		&i.TokenHash,
+		&i.InvitedBy,
+		&i.ExpiresAt,
+		&i.Attempts,
+		&i.AcceptedAt,
+		&i.AcceptedUserID,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const revokeInvitation = `-- name: RevokeInvitation :one
+UPDATE invitations
+SET revoked_at = now(),
+    revoked_by = $2
+WHERE id = $1
+  AND accepted_at IS NULL
+  AND revoked_at  IS NULL
+RETURNING id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at
+`
+
+type RevokeInvitationParams struct {
+	ID        uuid.UUID   `json:"id"`
+	RevokedBy pgtype.UUID `json:"revoked_by"`
+}
+
+// Soft-revoke a still-pending invitation. Idempotent / race-safe: only an
+// un-accepted, un-revoked row is touched (RETURNING -> ErrNoRows if it was
+// accepted or already revoked between load and update).
+func (q *Queries) RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (Invitation, error) {
+	row := q.db.QueryRow(ctx, revokeInvitation, arg.ID, arg.RevokedBy)
+	var i Invitation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Email,
+		&i.Scope,
+		&i.SiteID,
+		&i.Role,
+		&i.TokenHash,
+		&i.InvitedBy,
+		&i.ExpiresAt,
+		&i.Attempts,
+		&i.AcceptedAt,
+		&i.AcceptedUserID,
+		&i.RevokedAt,
+		&i.RevokedBy,
 		&i.CreatedAt,
 	)
 	return i, err

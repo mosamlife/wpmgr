@@ -176,6 +176,8 @@ type Invitation struct {
 	Attempts       int32              `json:"attempts"`
 	AcceptedAt     pgtype.Timestamptz `json:"accepted_at"`
 	AcceptedUserID pgtype.UUID        `json:"accepted_user_id"`
+	RevokedAt      pgtype.Timestamptz `json:"revoked_at"`
+	RevokedBy      pgtype.UUID        `json:"revoked_by"`
 	CreatedAt      time.Time          `json:"created_at"`
 }
 

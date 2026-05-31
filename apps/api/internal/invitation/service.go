@@ -153,9 +153,17 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 		return AcceptResult{}, err
 	}
 
-	// Validate: single-use, expiry, email binding, rate-limit.
+	// Validate: single-use, revoked, expiry, email binding, rate-limit.
 	if inv.AcceptedAt.Valid {
 		return AcceptResult{}, domain.Conflict("invitation_already_used", "this invitation has already been accepted")
+	}
+	// A revoked invite is dead even to a holder of the original (un-rotated)
+	// link — the sharing UI's "Revoke" action must be enforced here, not just at
+	// list time. Return the same opaque not-found as an unknown token (no oracle
+	// distinguishing "revoked" from "never existed"). Regenerate clears
+	// revoked_at, so a re-issued invite is intentionally acceptable again.
+	if inv.RevokedAt.Valid {
+		return AcceptResult{}, domain.NotFound("invitation_not_found", "invitation not found or already used")
 	}
 	if time.Now().UTC().After(inv.ExpiresAt) {
 		return AcceptResult{}, domain.Forbidden("invitation_expired", "this invitation has expired")

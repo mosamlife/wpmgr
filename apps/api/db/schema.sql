@@ -886,11 +886,14 @@ CREATE TABLE invitations (
     attempts         integer     NOT NULL DEFAULT 0,
     accepted_at      timestamptz,
     accepted_user_id uuid        REFERENCES users (id) ON DELETE SET NULL,
+    revoked_at       timestamptz,
+    revoked_by       uuid        REFERENCES users (id) ON DELETE SET NULL,
     created_at       timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX invitations_tenant_id_idx ON invitations (tenant_id);
 CREATE INDEX invitations_email_idx ON invitations (email);
+CREATE INDEX invitations_site_id_idx ON invitations (site_id, created_at DESC) WHERE scope = 'site';
 
 ALTER TABLE invitations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invitations FORCE ROW LEVEL SECURITY;
