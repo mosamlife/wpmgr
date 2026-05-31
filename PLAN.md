@@ -199,17 +199,17 @@
   - [x] Security review (10-item checklist) — MANDATORY before merge
   - [x] `impeccable detect` clean on new modal + badge
   - [x] Docs: `docs/features/site-lifecycle.md`, `docs/agent.md` (heartbeat + last-will + no-cron note), `docs/api/sites.md`, `docs/architecture.md` (state-machine mermaid)
-- [ ] **Phase 5.8 — Media Optimizer** (cloud-encode JPEG/PNG → WebP/AVIF; mirrors FlyingPress orchestration *patterns*, our own code + lilliput)
+- [x] **Phase 5.8 — Media Optimizer** (cloud-encode JPEG/PNG → WebP/AVIF; mirrors FlyingPress orchestration *patterns*, our own code + lilliput)
   - **Why**: a high-value parity feature (image optimization). Encode runs on WPMgr's own software (Discord `lilliput`, MIT), not a third-party SaaS. Open-source & self-hostable throughout.
   - [x] Recon complete (`analysis/media-optimizer-recon.md`, `reference/flying-press-patterns.md`)
   - [x] ADR locked — **ADR-043** (image lib = lilliput v1.5.0 MIT; encode in a SEPARATE OPTIONAL `media-encoder` container [CGO+glibc] so the lean static API is untouched and self-hosters opt in via a compose profile; transport = presigned object-storage like backups, no bytes through the CP; ≤10 variants/job; AVIF q50/s6 + WebP q80 + mozjpeg q82 + PNG lossless; per-variant 2× retry; no media bytes persisted on CP; govips/libvips fallback)
-  - [ ] User approval of ADR + PLAN
-  - [ ] **Phase 2** — Data model: migration `20260531110000_m23_media_optimizer.sql` (`site_media_assets`/`media_optimization_jobs`/`media_variant_results`, FORCE RLS + `app.agent` policy, no triggers) + the agent `wpmgr_image_optimization` postmeta blob spec
-  - [ ] **Phase 3** — Backend: `cmd/media-encoder` + `infra/Dockerfile.media-encoder` (CGO+lilliput, `distroless/base-nonroot`) + `internal/media/{model,repo,encoder,service,handler,worker}` + River `media_encode` queue + dashboard/agent endpoints (hand-rolled DTOs) + `media.*` SSE + compose `--profile media`
-  - [ ] **Phase 4** — Agent: media-sync/optimize/restore/delete-originals commands + `.wpmgr-original.*` rename + serialized-safe DB URL rewriter + Accept-header `.htaccess` installer (+ nginx notice) + WP media-modal stats injection + attachment meta box
-  - [ ] **Phase 5** — Frontend: site-detail **Media** tab + assets table (virtualized) + bulk optimize/restore + JobsDrawer (live SSE) + delete-originals (type-hostname, `PermMediaDeleteOriginals` admin+) ; `impeccable detect` clean
-  - [ ] **Phase 6** — Security review (16-item checklist: multipart/size limits N/A→presigned bounds, magic-byte MIME, 100MP guard, RLS, RBAC split, signed transport, serialized-rewrite safety, encoder OOM caps, idempotent `.htaccess`, modal XSS, audit on delete-originals, temp-object cleanup, per-tenant rate limit)
-  - [ ] **Phase 7** — Tests (agent PHPUnit + CP Go testcontainers Postgres/MinIO/River; live-WP-container E2E **deferred** — net-new infra) + docs (`docs/features/media-optimizer.md`, `docs/architecture/media-optimizer.md`, `docs/api/media.md`, agent .htaccess/nginx note, security threat-model) + `apps/agent/NOTICE.md` FlyingPress-credit
+  - [x] User approval of ADR + PLAN
+  - [x] **Phase 2** — Data model: migration `20260531110000_m23_media_optimizer.sql` (`site_media_assets`/`media_optimization_jobs`/`media_variant_results`, FORCE RLS + `app.agent` policy, no triggers) + the agent `wpmgr_image_optimization` postmeta blob spec
+  - [x] **Phase 3** — Backend: `cmd/media-encoder` + `infra/Dockerfile.media-encoder` (CGO+lilliput, `distroless/base-nonroot`) + `internal/media/{model,repo,encoder,service,handler,worker}` + River `media_encode` queue + dashboard/agent endpoints (hand-rolled DTOs) + `media.*` SSE + compose `--profile media`
+  - [x] **Phase 4** — Agent: media-sync/optimize/restore/delete-originals commands + `.wpmgr-original.*` rename + serialized-safe DB URL rewriter + Accept-header `.htaccess` installer (+ nginx notice) + WP media-modal stats injection + attachment meta box
+  - [x] **Phase 5** — Frontend: site-detail **Media** tab + assets table (virtualized) + bulk optimize/restore + JobsDrawer (live SSE) + delete-originals (type-hostname, `PermMediaDeleteOriginals` admin+) ; `impeccable detect` clean
+  - [x] **Phase 6** — Security review (16-item checklist: multipart/size limits N/A→presigned bounds, magic-byte MIME, 100MP guard, RLS, RBAC split, signed transport, serialized-rewrite safety, encoder OOM caps, idempotent `.htaccess`, modal XSS, audit on delete-originals, temp-object cleanup, per-tenant rate limit)
+  - [x] **Phase 7** — Tests (agent PHPUnit + CP Go testcontainers Postgres/MinIO/River; live-WP-container E2E **deferred** — net-new infra) + docs (`docs/features/media-optimizer.md`, `docs/architecture/media-optimizer.md`, `docs/api/media.md`, agent .htaccess/nginx note, security threat-model) + `apps/agent/NOTICE.md` FlyingPress-credit
 - [ ] M6 — Vuln scan (Wordfence Intelligence)
 - [ ] M7 — Reports
 - [ ] M8 — Polish & launch (audit log, V0 release)
