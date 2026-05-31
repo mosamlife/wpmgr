@@ -288,10 +288,13 @@ func (h *RestoreRunHandler) listEvents(c *gin.Context) {
 // For org-scoped principals: RLS already tenant-scopes the query; any member
 // can read any site in their tenant (PermSiteRead is a tenant-wide grant).
 //
-// For site-scoped principals: the RESTRICTIVE RLS policy (backup_snapshots /
-// restore_runs site_scope) will deny rows not in AllowedSiteIDs, returning 404
-// from the service layer. We add an explicit allowlist check here as belt-and-
-// braces so the 404 is consistent even if the scoped tx is somehow absent.
+// For site-scoped principals (outside collaborators): this is the SOLE site
+// gate for by-id resource routes. These resolvers (GetSnapshot, GetRestoreRun,
+// GetScheduleRun, GetFinding) run under plain InTenantTx — they do NOT set
+// app.site_scope — so the RESTRICTIVE *_site_scope RLS policy is inert on them
+// (it only fires under InScopedTenantTx). The explicit AllowedSiteIDs check
+// here is therefore the actual enforcement, not a redundant second layer; call
+// it after resolving the resource's site_id and 403/404 when it returns false.
 func canReadSite(c *gin.Context, siteID uuid.UUID) bool {
 	p, ok := domain.PrincipalFromContext(c.Request.Context())
 	if !ok {
