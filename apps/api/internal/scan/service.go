@@ -13,11 +13,11 @@ import (
 
 // Service orchestrates the scan domain: repo + River enqueuer + agentcmd client.
 type Service struct {
-	repo      *Repo
-	enqueuer  Reenqueuer
-	cmd       AgentScanClient
+	repo       *Repo
+	enqueuer   Reenqueuer
+	cmd        AgentScanClient
 	siteLookup SiteLookup
-	audit     *audit.Recorder
+	audit      *audit.Recorder
 }
 
 // NewService builds a Service.
@@ -105,6 +105,16 @@ func (s *Service) ListFindingsForRun(ctx context.Context, tenantID, siteID, runI
 // IgnoreFinding sets the ignored flag on a finding and records an audit event.
 // ignoredBy is the actor's ID (email or API key ID) for the audit trail.
 func (s *Service) IgnoreFinding(ctx context.Context, tenantID, findingID uuid.UUID, ignored bool, ignoredBy string, p domain.Principal) (Finding, error) {
+	// This route has no :siteId for RequireSiteAccess to guard, so resolve the
+	// finding's site and gate on the caller's site access BEFORE mutating —
+	// otherwise a site-scoped collaborator could ignore findings on any site.
+	existing, err := s.repo.GetFinding(ctx, tenantID, findingID)
+	if err != nil {
+		return Finding{}, err
+	}
+	if !p.CanAccessSite(existing.SiteID) {
+		return Finding{}, domain.Forbidden("forbidden", "you do not have access to this site")
+	}
 	f, err := s.repo.SetFindingIgnored(ctx, tenantID, findingID, ignored, ignoredBy)
 	if err != nil {
 		return Finding{}, err
@@ -145,6 +155,13 @@ func (s *Service) FetchFile(ctx context.Context, tenantID, findingID uuid.UUID, 
 	finding, err := s.repo.GetFinding(ctx, tenantID, findingID)
 	if err != nil {
 		return agentcmd.GetFileResponse{}, err
+	}
+	// The finding is resolved by id; gate on the caller's site access so a
+	// site-scoped collaborator cannot exfiltrate file contents from a finding
+	// on a site outside their allowlist (the :siteId in the path is not bound
+	// to the finding's actual site).
+	if !p.CanAccessSite(finding.SiteID) {
+		return agentcmd.GetFileResponse{}, domain.Forbidden("forbidden", "you do not have access to this site")
 	}
 
 	siteInfo, err := s.siteLookup.GetScanSiteInfo(ctx, tenantID, finding.SiteID)

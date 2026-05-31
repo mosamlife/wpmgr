@@ -305,6 +305,23 @@ func (r *Repo) UpdateMembershipRole(ctx context.Context, userID, tenantID uuid.U
 	return out, err
 }
 
+// CountOwners returns the number of owner-role members in a tenant (RLS-scoped).
+func (r *Repo) CountOwners(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	var count int
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		var n int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM memberships WHERE tenant_id = $1 AND role = 'owner'`,
+			tenantID,
+		).Scan(&n); err != nil {
+			return domain.Internal("owner_count_failed", "failed to count owners").WithCause(err)
+		}
+		count = int(n)
+		return nil
+	})
+	return count, err
+}
+
 // DeleteMembership removes a member from a tenant (RLS-scoped).
 func (r *Repo) DeleteMembership(ctx context.Context, userID, tenantID uuid.UUID) error {
 	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {

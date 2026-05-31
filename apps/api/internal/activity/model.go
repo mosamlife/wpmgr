@@ -37,15 +37,15 @@ const (
 // IngestEvent is one event as shipped by the agent in the POST /agent/v1/activity
 // body. Field names and JSON tags match the SHARED WIRE CONTRACT exactly.
 type IngestEvent struct {
-	Seq         int64          `json:"seq"`
-	EventType   string         `json:"event_type"`
-	ObjectType  string         `json:"object_type"`
-	ObjectID    string         `json:"object_id"`
-	ObjectLabel string         `json:"object_label"`
-	ActorUserID int64          `json:"actor_user_id"`
-	ActorLogin  string         `json:"actor_login"`
-	ActorIP     string         `json:"actor_ip"`
-	Summary     string          `json:"summary"`
+	Seq         int64  `json:"seq"`
+	EventType   string `json:"event_type"`
+	ObjectType  string `json:"object_type"`
+	ObjectID    string `json:"object_id"`
+	ObjectLabel string `json:"object_label"`
+	ActorUserID int64  `json:"actor_user_id"`
+	ActorLogin  string `json:"actor_login"`
+	ActorIP     string `json:"actor_ip"`
+	Summary     string `json:"summary"`
 	// Meta is captured as RAW JSON bytes — NOT a map — so the hash preimage
 	// uses the EXACT bytes the agent serialized. The agent computes this_hash
 	// over wp_json_encode($meta), which (a) preserves insertion order and

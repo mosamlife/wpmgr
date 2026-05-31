@@ -37,7 +37,12 @@ func (h *ScheduleRunHandler) SetUserDirectory(dir UserDirectory) {
 //	GET /sites/:siteId/schedule-runs            — list runs for site (PermSiteRead)
 //	GET /schedule-runs/:runId                   — get run by id      (PermSiteRead)
 func (h *ScheduleRunHandler) Register(r *gin.RouterGroup) {
-	r.GET("/sites/:siteId/schedule-runs", authz.RequirePermission(authz.PermSiteRead), h.listForSite)
+	// Per-siteId route: RequireSiteAccess enforces the site allowlist for
+	// site-scoped principals (belt-and-braces in front of the RLS policy).
+	r.GET("/sites/:siteId/schedule-runs", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.listForSite)
+	// By-runId route: site isolation is enforced via scoped RLS (the
+	// RESTRICTIVE policy on backup_schedule_runs denies rows whose site_id is
+	// outside AllowedSiteIDs). No :siteId param to check here.
 	r.GET("/schedule-runs/:runId", authz.RequirePermission(authz.PermSiteRead), h.getByID)
 }
 
@@ -228,8 +233,13 @@ func (h *ScheduleRunHandler) getByID(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	// canReadSite: RLS already tenant-scopes the query; same-tenant members
-	// always have PermSiteRead. Mirror the restore run handler's pattern.
+	// This route has no :siteId for RequireSiteAccess to guard, so enforce the
+	// run's owning site here — mirror restore_run_handler. A site-scoped
+	// collaborator must not read a schedule run for a non-granted site.
+	if !canReadSite(c, run.SiteID) {
+		httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
+		return
+	}
 	email, name := h.resolveScheduleRunActor(c.Request.Context(), run)
 	c.JSON(http.StatusOK, toScheduleRunDTOWithActor(run, email, name))
 }

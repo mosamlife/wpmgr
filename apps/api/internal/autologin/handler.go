@@ -23,9 +23,10 @@ func NewMintHandler(svc *Service) *MintHandler { return &MintHandler{svc: svc} }
 
 // Register mounts POST /sites/:siteId/autologin under the /api/v1 group. The
 // group is expected to already carry RequireAuth + RequireTenant; this handler
-// adds RequirePermission(PermSiteAutologin).
+// adds RequirePermission(PermSiteAutologin) and RequireSiteAccess (site allowlist
+// guard for site-scoped principals).
 func (h *MintHandler) Register(r *gin.RouterGroup) {
-	r.POST("/sites/:siteId/autologin", authz.RequirePermission(authz.PermSiteAutologin), h.mint)
+	r.POST("/sites/:siteId/autologin", authz.RequirePermission(authz.PermSiteAutologin), authz.RequireSiteAccess("siteId"), h.mint)
 }
 
 // mintRequest is the API body for the mint endpoint.

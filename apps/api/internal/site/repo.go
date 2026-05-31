@@ -128,7 +128,18 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 		tag = &t
 	}
 	var out []Site
-	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+	// FIX 3 (CRITICAL): site-scoped principals must see ONLY their granted sites.
+	// Use RunTenantTx (which dispatches to InScopedTenantTx for Scope=="site")
+	// when a principal is provided so the RESTRICTIVE RLS policy filters the rows.
+	// Fall back to plain InTenantTx (org-scoped, full list) when no principal is
+	// provided (backward compat: health-job, agent, test paths).
+	runTx := func(fn func(tx pgx.Tx) error) error {
+		if in.Principal != nil {
+			return r.pool.RunTenantTx(ctx, in.Principal, fn)
+		}
+		return r.pool.InTenantTx(ctx, in.TenantID, fn)
+	}
+	err := runTx(func(tx pgx.Tx) error {
 		rows, err := sqlc.New(tx).ListSites(ctx, sqlc.ListSitesParams{
 			TenantID: in.TenantID,
 			Tag:      tag,

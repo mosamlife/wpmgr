@@ -33,15 +33,22 @@ func NewHandler(svc *Service) *Handler {
 
 // Register mounts the scan routes on the authenticated /api/v1 group.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	// Per-site scan run routes.
-	sites := r.Group("/sites/:siteId")
+	// Per-site scan run routes. RequireSiteAccess("siteId") is applied on the
+	// group so every sub-route inherits it. This enforces the site allowlist for
+	// site-scoped principals (belt-and-braces in front of the RLS policy on
+	// scan_runs / scan_findings / scan_run_hashes).
+	sites := r.Group("/sites/:siteId", authz.RequireSiteAccess("siteId"))
 	sites.POST("/scans", authz.RequirePermission(authz.PermSiteWrite), h.startRun)
 	sites.GET("/scans", authz.RequirePermission(authz.PermSiteRead), h.listRuns)
 	sites.GET("/scans/:runId", authz.RequirePermission(authz.PermSiteRead), h.getRun)
 	sites.GET("/scans/:runId/findings", authz.RequirePermission(authz.PermSiteRead), h.listFindingsForRun)
 	sites.POST("/scans/:runId/findings/:fid/file", authz.RequirePermission(authz.PermSiteWrite), h.fetchFile)
 
-	// Global finding route (no site prefix — finding ID is globally unique per tenant).
+	// Global finding route (no site prefix — finding ID is globally unique per
+	// tenant). RequireSiteAccess cannot guard it (no :siteId in the path), so
+	// IgnoreFinding resolves the finding's site and calls Principal.CanAccessSite
+	// before mutating — a site-scoped collaborator is denied findings outside
+	// their allowlist.
 	r.POST("/findings/:id/ignore", authz.RequirePermission(authz.PermSiteWrite), h.ignoreFinding)
 }
 
@@ -212,6 +219,13 @@ func (h *Handler) getRun(c *gin.Context) {
 	run, err := h.svc.GetRun(c.Request.Context(), p.TenantID, runID)
 	if err != nil {
 		httpx.Error(c, err)
+		return
+	}
+	// The run is resolved by id only (tenant-scoped); bind it to a site the
+	// caller may access so a site-scoped collaborator cannot read another
+	// site's scan run by passing its runId under their own :siteId.
+	if !p.CanAccessSite(run.SiteID) {
+		httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
 		return
 	}
 	c.JSON(http.StatusOK, toRunDTO(run))

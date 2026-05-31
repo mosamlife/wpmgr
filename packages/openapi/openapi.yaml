@@ -264,6 +264,310 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/members/{userId}:
+    patch:
+      operationId: patchMember
+      summary: Change a member's role (admin+; privilege-ceiling enforced)
+      tags: [members]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchMemberRequest"
+      responses:
+        "200":
+          description: Role updated; returns the updated membership
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Membership"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission or last-owner protection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Member not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteMember
+      summary: Remove a member from the active tenant (admin+; last-owner protected)
+      tags: [members]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "204":
+          description: Member removed
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission or last-owner protection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Member not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/orgs:
+    post:
+      operationId: createOrg
+      summary: Create a new organisation; the caller becomes the owner
+      tags: [orgs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrgRequest"
+      responses:
+        "201":
+          description: Organisation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Org"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Slug already taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/orgs/{orgId}/activate:
+    post:
+      operationId: activateOrg
+      summary: Switch the session's active organisation (must be a member)
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Active organisation switched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivateOrgResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Not a member of the requested organisation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Organisation not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/shares:
+    get:
+      operationId: listSiteShares
+      summary: List collaborators for a site (admin+)
+      tags: [shares]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: List of site shares
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteShareList"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: createSiteShare
+      summary: |
+        Grant site access to an email (admin+; org-scope only). If the email
+        matches a known user the share is immediate (201); otherwise an invitation
+        is created and the accept link is returned (202).
+      tags: [shares]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSiteShareRequest"
+      responses:
+        "201":
+          description: Share created immediately (known user)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteShareGrantResponse"
+        "202":
+          description: Invitation created (unknown user); accept_link returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteShareGrantResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission or site-scoped principal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/shares/{userId}:
+    delete:
+      operationId: deleteSiteShare
+      summary: Revoke a collaborator's site access (admin+; org-scope only)
+      tags: [shares]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "204":
+          description: Share revoked
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission or site-scoped principal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Share not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/shared-with-me:
+    get:
+      operationId: listSharedWithMe
+      summary: List sites shared to the authenticated user (any logged-in user)
+      tags: [shares]
+      responses:
+        "200":
+          description: Shares granted to this user across all orgs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteShareList"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/invitations/accept:
+    post:
+      operationId: acceptInvitation
+      summary: |
+        Accept an invitation by token (public; creates/links user and session).
+        Accepts both org-scope invitations (creates a membership) and site-scope
+        invitations (creates a site_shares row). Validates token hash, email
+        binding, expiry, single-use, and rate-limit.
+      tags: [invitations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptInvitationRequest"
+      responses:
+        "200":
+          description: Invitation accepted; session established
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptInvitationResponse"
+        "400":
+          description: Invalid token, expired, already used, or email mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/api-keys:
     get:
       operationId: listApiKeys
@@ -2004,6 +2308,20 @@ components:
         format: uuid
     DestinationId:
       name: destinationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    OrgId:
+      name: orgId
       in: path
       required: true
       schema:
@@ -4061,3 +4379,163 @@ components:
           type: string
           description: |
             Text shown below the login logo (max 2000 chars), or `""` to clear.
+    # ── M5.7 — Orgs + per-site sharing + invitations ────────────────────────
+    PatchMemberRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/Role"
+    CreateOrgRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Display name of the new organisation.
+        slug:
+          type: string
+          maxLength: 64
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          description: |
+            URL-safe slug. Auto-derived from name when omitted.
+    Org:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+    ActivateOrgResponse:
+      type: object
+      required: [active_tenant_id]
+      properties:
+        active_tenant_id:
+          type: string
+          format: uuid
+    SiteShareRole:
+      type: string
+      enum: [viewer, operator, admin]
+      description: |
+        Role a site collaborator holds. Subset of the full org Role enum —
+        site shares cannot be owner.
+    SiteShare:
+      type: object
+      required: [id, site_id, user_id, role, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/SiteShareRole"
+        granted_by:
+          type: string
+          format: uuid
+          description: UUID of the org member who created the share.
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            When the share expires (null = durable). After this time the
+            RESTRICTIVE RLS policy treats the grant as absent.
+        created_at:
+          type: string
+          format: date-time
+    SiteShareList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteShare"
+    CreateSiteShareRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+          description: |
+            Email of the collaborator to invite. If a user with this email exists
+            the share is created immediately; otherwise an invitation is emailed/linked.
+        role:
+          $ref: "#/components/schemas/SiteShareRole"
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            Optional expiry (RFC3339). Null / omitted = durable grant. Use for
+            time-limited support access.
+    SiteShareGrantResponse:
+      type: object
+      required: [invited]
+      properties:
+        share:
+          $ref: "#/components/schemas/SiteShare"
+          description: Present when the user already existed and the share is immediate.
+        invited:
+          type: boolean
+          description: |
+            true when an invitation was created because the email is not a known
+            user; false when the share was applied directly.
+        accept_link:
+          type: string
+          description: |
+            The raw invitation accept URL (shown once, like an API key). Present
+            when invited=true AND the notification SMTP is not configured — the
+            inviter must copy and share this link manually.
+    AcceptInvitationRequest:
+      type: object
+      required: [token, email]
+      properties:
+        token:
+          type: string
+          description: The raw token from the accept link (?token=…).
+        email:
+          type: string
+          format: email
+          description: |
+            Must match the email the invitation was addressed to (prevents
+            identity swap and enumeration).
+        name:
+          type: string
+          maxLength: 200
+          description: Display name to set when a new user account is created.
+        password:
+          type: string
+          minLength: 8
+          maxLength: 200
+          description: |
+            Password to set when a new user account is created. Required only
+            when the invited email has no existing account.
+    AcceptInvitationResponse:
+      type: object
+      required: [tenant_id, scope]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: The organisation the invitation belonged to.
+        scope:
+          type: string
+          enum: [org, site]
+          description: |
+            "org" when a full membership was granted; "site" when a site-scoped
+            share was created.
+        site_id:
+          type: string
+          format: uuid
+          description: Set when scope="site"; the specific site the user now has access to.

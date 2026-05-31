@@ -27,9 +27,9 @@ package agentcmd
 //	traversal_stack     — encoded DFS stack: each element is [name, offset].
 //	folder_offset       — offset within the current directory listing.
 type ScanCursor struct {
-	Dir              string          `json:"dir"`
-	TraversalStack   [][]interface{} `json:"traversal_stack"` // [[name, offset], ...]
-	FolderOffset     int             `json:"folder_offset"`
+	Dir            string          `json:"dir"`
+	TraversalStack [][]interface{} `json:"traversal_stack"` // [[name, offset], ...]
+	FolderOffset   int             `json:"folder_offset"`
 }
 
 // ScanRequest is the POST body for the `scan` command.
@@ -83,7 +83,7 @@ type ScanResponse struct {
 	OK           bool            `json:"ok"`
 	RunID        string          `json:"run_id"`
 	Kind         string          `json:"kind"`
-	Status       string          `json:"status"`       // "partial"|"done"
+	Status       string          `json:"status"` // "partial"|"done"
 	FilesScanned int64           `json:"files_scanned"`
 	NextCursor   *ScanCursor     `json:"next_cursor"`
 	Links        []string        `json:"links"`

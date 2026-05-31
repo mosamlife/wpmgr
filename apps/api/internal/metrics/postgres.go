@@ -196,9 +196,9 @@ ORDER BY bucket ASC`, bucketSecs, bucketSecs),
 		defer rows.Close()
 		for rows.Next() {
 			var (
-				bucket            time.Time
-				checks, upChecks  int64
-				avgLatency        float64
+				bucket           time.Time
+				checks, upChecks int64
+				avgLatency       float64
 			)
 			if err := rows.Scan(&bucket, &checks, &upChecks, &avgLatency); err != nil {
 				return fmt.Errorf("postgres series scan: %w", err)

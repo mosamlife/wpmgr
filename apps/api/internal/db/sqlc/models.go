@@ -163,6 +163,22 @@ type BackupSnapshot struct {
 	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
+type Invitation struct {
+	ID             uuid.UUID          `json:"id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	Email          string             `json:"email"`
+	Scope          string             `json:"scope"`
+	SiteID         pgtype.UUID        `json:"site_id"`
+	Role           string             `json:"role"`
+	TokenHash      string             `json:"token_hash"`
+	InvitedBy      pgtype.UUID        `json:"invited_by"`
+	ExpiresAt      time.Time          `json:"expires_at"`
+	Attempts       int32              `json:"attempts"`
+	AcceptedAt     pgtype.Timestamptz `json:"accepted_at"`
+	AcceptedUserID pgtype.UUID        `json:"accepted_user_id"`
+	CreatedAt      time.Time          `json:"created_at"`
+}
+
 type Membership struct {
 	ID        uuid.UUID `json:"id"`
 	UserID    uuid.UUID `json:"user_id"`
@@ -217,6 +233,17 @@ type SiteAlertState struct {
 	InIncident      bool               `json:"in_incident"`
 	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+type SiteShare struct {
+	ID        uuid.UUID          `json:"id"`
+	TenantID  uuid.UUID          `json:"tenant_id"`
+	SiteID    uuid.UUID          `json:"site_id"`
+	UserID    uuid.UUID          `json:"user_id"`
+	Role      string             `json:"role"`
+	GrantedBy pgtype.UUID        `json:"granted_by"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt time.Time          `json:"created_at"`
 }
 
 type SiteUptimeProbe struct {

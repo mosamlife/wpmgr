@@ -245,8 +245,8 @@ func TestDiffCore_WPAdminAndWPIncludes(t *testing.T) {
 		{RunID: runID, Path: "wp-includes/class-wp.php", MD5: "2222"},
 	}
 	checksums := map[string]string{
-		"wp-admin/includes/foo.php":  "aaaa", // different → modified
-		"wp-includes/class-wp.php":   "2222", // same → no finding
+		"wp-admin/includes/foo.php": "aaaa", // different → modified
+		"wp-includes/class-wp.php":  "2222", // same → no finding
 	}
 
 	findings := diffCore(runID, tenantID, siteID, hashes, checksums)
@@ -299,12 +299,12 @@ func (f *fakeScanClient) GetFile(_ context.Context, _ uuid.UUID, _ string, _ age
 
 // fakeRepo implements just the worker-facing subset of *Repo for unit testing.
 type fakeRepo struct {
-	run           *Run
-	hashes        []HashRow
-	findings      []Finding
-	cursorUpdates []json.RawMessage
-	markDoneCalls int
-	markFailCalls int
+	run            *Run
+	hashes         []HashRow
+	findings       []Finding
+	cursorUpdates  []json.RawMessage
+	markDoneCalls  int
+	markFailCalls  int
 	purgeHashCalls int
 }
 

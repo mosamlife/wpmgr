@@ -1395,6 +1395,148 @@ export type SiteLoginBrandUpdate = {
   message: string;
 };
 
+export type PatchMemberRequest = {
+  role: Role;
+};
+
+export type CreateOrgRequest = {
+  /**
+   * Display name of the new organisation.
+   */
+  name: string;
+  /**
+   * URL-safe slug. Auto-derived from name when omitted.
+   *
+   */
+  slug?: string;
+};
+
+export type Org = {
+  id: string;
+  name: string;
+  slug: string;
+};
+
+export type ActivateOrgResponse = {
+  active_tenant_id: string;
+};
+
+/**
+ * Role a site collaborator holds. Subset of the full org Role enum —
+ * site shares cannot be owner.
+ *
+ */
+export const SiteShareRole = {
+  VIEWER: "viewer",
+  OPERATOR: "operator",
+  ADMIN: "admin",
+} as const;
+
+/**
+ * Role a site collaborator holds. Subset of the full org Role enum —
+ * site shares cannot be owner.
+ *
+ */
+export type SiteShareRole = (typeof SiteShareRole)[keyof typeof SiteShareRole];
+
+export type SiteShare = {
+  id: string;
+  site_id: string;
+  user_id: string;
+  role: SiteShareRole;
+  /**
+   * UUID of the org member who created the share.
+   */
+  granted_by?: string;
+  /**
+   * When the share expires (null = durable). After this time the
+   * RESTRICTIVE RLS policy treats the grant as absent.
+   *
+   */
+  expires_at?: string;
+  created_at: string;
+};
+
+export type SiteShareList = {
+  items: Array<SiteShare>;
+};
+
+export type CreateSiteShareRequest = {
+  /**
+   * Email of the collaborator to invite. If a user with this email exists
+   * the share is created immediately; otherwise an invitation is emailed/linked.
+   *
+   */
+  email: string;
+  role: SiteShareRole;
+  /**
+   * Optional expiry (RFC3339). Null / omitted = durable grant. Use for
+   * time-limited support access.
+   *
+   */
+  expires_at?: string;
+};
+
+export type SiteShareGrantResponse = {
+  /**
+   * Present when the user already existed and the share is immediate.
+   */
+  share?: SiteShare;
+  /**
+   * true when an invitation was created because the email is not a known
+   * user; false when the share was applied directly.
+   *
+   */
+  invited: boolean;
+  /**
+   * The raw invitation accept URL (shown once, like an API key). Present
+   * when invited=true AND the notification SMTP is not configured — the
+   * inviter must copy and share this link manually.
+   *
+   */
+  accept_link?: string;
+};
+
+export type AcceptInvitationRequest = {
+  /**
+   * The raw token from the accept link (?token=…).
+   */
+  token: string;
+  /**
+   * Must match the email the invitation was addressed to (prevents
+   * identity swap and enumeration).
+   *
+   */
+  email: string;
+  /**
+   * Display name to set when a new user account is created.
+   */
+  name?: string;
+  /**
+   * Password to set when a new user account is created. Required only
+   * when the invited email has no existing account.
+   *
+   */
+  password?: string;
+};
+
+export type AcceptInvitationResponse = {
+  /**
+   * The organisation the invitation belonged to.
+   */
+  tenant_id: string;
+  /**
+   * "org" when a full membership was granted; "site" when a site-scoped
+   * share was created.
+   *
+   */
+  scope: "org" | "site";
+  /**
+   * Set when scope="site"; the specific site the user now has access to.
+   */
+  site_id?: string;
+};
+
 export type Limit = number;
 
 export type Offset = number;
@@ -1410,6 +1552,10 @@ export type RunId = string;
 export type SnapshotId = string;
 
 export type DestinationId = string;
+
+export type UserId = string;
+
+export type OrgId = string;
 
 export type GetHealthzData = {
   body?: never;
@@ -1683,6 +1829,329 @@ export type InviteMemberResponses = {
 
 export type InviteMemberResponse =
   InviteMemberResponses[keyof InviteMemberResponses];
+
+export type DeleteMemberData = {
+  body?: never;
+  path: {
+    userId: string;
+  };
+  query?: never;
+  url: "/api/v1/members/{userId}";
+};
+
+export type DeleteMemberErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission or last-owner protection
+   */
+  403: Error;
+  /**
+   * Member not found
+   */
+  404: Error;
+};
+
+export type DeleteMemberError = DeleteMemberErrors[keyof DeleteMemberErrors];
+
+export type DeleteMemberResponses = {
+  /**
+   * Member removed
+   */
+  204: void;
+};
+
+export type DeleteMemberResponse =
+  DeleteMemberResponses[keyof DeleteMemberResponses];
+
+export type PatchMemberData = {
+  body: PatchMemberRequest;
+  path: {
+    userId: string;
+  };
+  query?: never;
+  url: "/api/v1/members/{userId}";
+};
+
+export type PatchMemberErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission or last-owner protection
+   */
+  403: Error;
+  /**
+   * Member not found
+   */
+  404: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type PatchMemberError = PatchMemberErrors[keyof PatchMemberErrors];
+
+export type PatchMemberResponses = {
+  /**
+   * Role updated; returns the updated membership
+   */
+  200: Membership;
+};
+
+export type PatchMemberResponse =
+  PatchMemberResponses[keyof PatchMemberResponses];
+
+export type CreateOrgData = {
+  body: CreateOrgRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/orgs";
+};
+
+export type CreateOrgErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Slug already taken
+   */
+  409: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateOrgError = CreateOrgErrors[keyof CreateOrgErrors];
+
+export type CreateOrgResponses = {
+  /**
+   * Organisation created
+   */
+  201: Org;
+};
+
+export type CreateOrgResponse = CreateOrgResponses[keyof CreateOrgResponses];
+
+export type ActivateOrgData = {
+  body?: never;
+  path: {
+    orgId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}/activate";
+};
+
+export type ActivateOrgErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Not a member of the requested organisation
+   */
+  403: Error;
+  /**
+   * Organisation not found
+   */
+  404: Error;
+};
+
+export type ActivateOrgError = ActivateOrgErrors[keyof ActivateOrgErrors];
+
+export type ActivateOrgResponses = {
+  /**
+   * Active organisation switched
+   */
+  200: ActivateOrgResponse;
+};
+
+export type ActivateOrgResponse2 =
+  ActivateOrgResponses[keyof ActivateOrgResponses];
+
+export type ListSiteSharesData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/shares";
+};
+
+export type ListSiteSharesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Site not found
+   */
+  404: Error;
+};
+
+export type ListSiteSharesError =
+  ListSiteSharesErrors[keyof ListSiteSharesErrors];
+
+export type ListSiteSharesResponses = {
+  /**
+   * List of site shares
+   */
+  200: SiteShareList;
+};
+
+export type ListSiteSharesResponse =
+  ListSiteSharesResponses[keyof ListSiteSharesResponses];
+
+export type CreateSiteShareData = {
+  body: CreateSiteShareRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/shares";
+};
+
+export type CreateSiteShareErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission or site-scoped principal
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateSiteShareError =
+  CreateSiteShareErrors[keyof CreateSiteShareErrors];
+
+export type CreateSiteShareResponses = {
+  /**
+   * Share created immediately (known user)
+   */
+  201: SiteShareGrantResponse;
+  /**
+   * Invitation created (unknown user); accept_link returned
+   */
+  202: SiteShareGrantResponse;
+};
+
+export type CreateSiteShareResponse =
+  CreateSiteShareResponses[keyof CreateSiteShareResponses];
+
+export type DeleteSiteShareData = {
+  body?: never;
+  path: {
+    siteId: string;
+    userId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/shares/{userId}";
+};
+
+export type DeleteSiteShareErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission or site-scoped principal
+   */
+  403: Error;
+  /**
+   * Share not found
+   */
+  404: Error;
+};
+
+export type DeleteSiteShareError =
+  DeleteSiteShareErrors[keyof DeleteSiteShareErrors];
+
+export type DeleteSiteShareResponses = {
+  /**
+   * Share revoked
+   */
+  204: void;
+};
+
+export type DeleteSiteShareResponse =
+  DeleteSiteShareResponses[keyof DeleteSiteShareResponses];
+
+export type ListSharedWithMeData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/shared-with-me";
+};
+
+export type ListSharedWithMeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type ListSharedWithMeError =
+  ListSharedWithMeErrors[keyof ListSharedWithMeErrors];
+
+export type ListSharedWithMeResponses = {
+  /**
+   * Shares granted to this user across all orgs
+   */
+  200: SiteShareList;
+};
+
+export type ListSharedWithMeResponse =
+  ListSharedWithMeResponses[keyof ListSharedWithMeResponses];
+
+export type AcceptInvitationData = {
+  body: AcceptInvitationRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/invitations/accept";
+};
+
+export type AcceptInvitationErrors = {
+  /**
+   * Invalid token, expired, already used, or email mismatch
+   */
+  400: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+  /**
+   * Too many attempts
+   */
+  429: Error;
+};
+
+export type AcceptInvitationError =
+  AcceptInvitationErrors[keyof AcceptInvitationErrors];
+
+export type AcceptInvitationResponses = {
+  /**
+   * Invitation accepted; session established
+   */
+  200: AcceptInvitationResponse;
+};
+
+export type AcceptInvitationResponse2 =
+  AcceptInvitationResponses[keyof AcceptInvitationResponses];
 
 export type ListApiKeysData = {
   body?: never;

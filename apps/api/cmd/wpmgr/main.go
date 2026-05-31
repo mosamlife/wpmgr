@@ -33,12 +33,15 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
+	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
+	"github.com/mosamlife/wpmgr/apps/api/internal/org"
 	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
 	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server"
+	"github.com/mosamlife/wpmgr/apps/api/internal/sharing"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
 	"github.com/mosamlife/wpmgr/apps/api/internal/telemetry"
@@ -154,7 +157,7 @@ func run() error {
 	redisPool := auth.NewRedisPool(cfg.Redis.Addr, cfg.Redis.Password)
 	sessions := auth.NewRedisSessionManager(redisPool, cfg.Auth.IdleTimeout, cfg.Auth.AbsoluteExpiry, cfg.IsProduction())
 
-	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc)
+	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc, pool)
 
 	// Agent protocol: the control plane's PUBLIC signing key is handed to agents
 	// at enrollment so they can verify CP->agent commands. Validate the keypair
@@ -368,6 +371,12 @@ func run() error {
 		}
 		registry = blobstore.NewRegistry(defStore, siteDestSvc)
 		backupSvc.SetRegistry(&registryAdapter{r: registry})
+		// M5.7 P4: wire the manifest index writer so SubmitManifest writes
+		// tenant/<tenantID>/site/<siteID>/backup/<snapshotID>/manifest.json
+		// via the same CP-global store used for presigning. Best-effort:
+		// failures are logged and never fail the backup. Uses defStore (the
+		// rebuilt CP-global *blobstore.Store) which satisfies IndexPutter.
+		backupSvc.SetIndexPutter(defStore)
 	}
 
 	// M5/M6 uptime monitoring: the uptime metrics store, the SSRF-hardened
@@ -641,6 +650,29 @@ func run() error {
 		logger.Warn("login brand agent client not wired: CP->agent commander unavailable (signing key empty?)")
 	}
 
+	// M5.7 — Orgs + Sharing + Invitations.
+	publicBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+
+	// Build the sharing mailer (reuse SMTP config; may be nil/noop).
+	var sharingMailer sharing.Mailer
+	if cfg.SMTP.Enabled() {
+		sharingMailer = uptime.NewSMTPMailer(cfg.SMTP, logger)
+	}
+	sharingSvc := sharing.NewService(pool, authRepo, auditRec, sharingMailer, publicBaseURL)
+	sharingH := sharing.NewHandler(sharingSvc)
+
+	// Org handler: create org + activate.
+	orgTenantCreator := &orgTenantAdapter{svc: tenantSvc}
+	orgH := org.NewHandler(pool, orgTenantCreator, sessions, authSvc, auditRec)
+
+	// Invitation service + handler.
+	var invitationMailer invitation.Mailer
+	if cfg.SMTP.Enabled() {
+		invitationMailer = uptime.NewSMTPMailer(cfg.SMTP, logger)
+	}
+	invitationSvc := invitation.NewService(pool, authRepo, auditRec, sessions, invitationMailer, publicBaseURL)
+	invitationH := invitation.NewHandler(invitationSvc)
+
 	srv := server.New(server.Deps{
 		Config:          cfg,
 		Logger:          logger,
@@ -681,11 +713,29 @@ func run() error {
 		RestoreRunH: restoreRunH,
 		// M17 — Schedule Run queue.
 		ScheduleRunH: scheduleRunH,
-		ServiceName:  cfg.OTel.ServiceName,
+		// M5.7 — Orgs + Sharing + Invitations.
+		OrgH:        orgH,
+		SharingH:    sharingH,
+		InvitationH: invitationH,
+		ServiceName: cfg.OTel.ServiceName,
 		Version:     version,
 	})
 
 	return srv.Run(ctx)
+}
+
+// orgTenantAdapter adapts tenant.Service to the org.TenantCreator interface
+// (which takes (name, slug) directly instead of tenant.CreateInput).
+type orgTenantAdapter struct {
+	svc *tenant.Service
+}
+
+func (a *orgTenantAdapter) Create(ctx context.Context, name, slug string) (uuid.UUID, error) {
+	t, err := a.svc.Create(ctx, tenant.CreateInput{Name: name, Slug: slug})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return t.ID, nil
 }
 
 // registryAdapter bridges the blobstore.Registry (which knows about Stores in

@@ -35,7 +35,11 @@ func NewHandler(svc *Service, rec *audit.Recorder) *Handler {
 
 // Register mounts the routes on the authenticated /api/v1 group.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group("/sites/:siteId")
+	// RequireSiteAccess("siteId") is applied on the group so every sub-route
+	// inherits it. This enforces the site allowlist for site-scoped principals
+	// (belt-and-braces in front of the RLS policy on agent_diagnostics /
+	// agent_php_errors / site_error_config).
+	g := r.Group("/sites/:siteId", authz.RequireSiteAccess("siteId"))
 	g.GET("/diagnostics", authz.RequirePermission(authz.PermSiteRead), h.list)
 	g.POST("/diagnostics/refresh", authz.RequirePermission(authz.PermSiteWrite), h.refresh)
 	g.GET("/errors", authz.RequirePermission(authz.PermSiteRead), h.listErrors)

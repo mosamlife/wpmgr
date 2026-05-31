@@ -51,9 +51,81 @@ func TestRequirePermissionRBAC(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &domain.Principal{Type: domain.PrincipalUser, UserID: user, TenantID: tenant, Role: string(tt.role)}
+			// org-scoped principals (existing behaviour unchanged)
+			p := &domain.Principal{Type: domain.PrincipalUser, UserID: user, TenantID: tenant, Role: string(tt.role), Scope: domain.ScopeOrg}
 			if code := runWithPrincipal(p, RequirePermission(tt.perm)); code != tt.wantCode {
 				t.Fatalf("code = %d, want %d", code, tt.wantCode)
+			}
+		})
+	}
+}
+
+// TestRequirePermissionOrgScopeGuard verifies FIX 1: site-scoped principals get
+// 403 "org_scope_required" for org-level permissions regardless of their role.
+func TestRequirePermissionOrgScopeGuard(t *testing.T) {
+	tenant := uuid.New()
+	user := uuid.New()
+	site := uuid.New()
+
+	orgLevelTests := []struct {
+		perm Permission
+		role Role
+	}{
+		{PermMemberManage, RoleAdmin},
+		{PermMemberManage, RoleOwner},
+		{PermMemberRead, RoleViewer},
+		{PermAPIKeyRead, RoleAdmin},
+		{PermAPIKeyManage, RoleAdmin},
+		{PermAuditRead, RoleAdmin},
+		{PermTenantManage, RoleOwner},
+	}
+	for _, tt := range orgLevelTests {
+		t.Run("site_scope/"+string(tt.perm)+"/"+string(tt.role), func(t *testing.T) {
+			p := &domain.Principal{
+				Type:           domain.PrincipalUser,
+				UserID:         user,
+				TenantID:       tenant,
+				Role:           string(tt.role),
+				Scope:          domain.ScopeSite,
+				AllowedSiteIDs: []uuid.UUID{site},
+			}
+			code := runWithPrincipal(p, RequirePermission(tt.perm))
+			if code != http.StatusForbidden {
+				t.Fatalf("site-scoped %s with role %s: got %d, want 403", tt.perm, tt.role, code)
+			}
+		})
+	}
+}
+
+// TestRequirePermissionSitePermsForSiteScope verifies that site-level permissions
+// are NOT blocked for site-scoped principals (they need these to do their work).
+func TestRequirePermissionSitePermsForSiteScope(t *testing.T) {
+	tenant := uuid.New()
+	user := uuid.New()
+	site := uuid.New()
+
+	tests := []struct {
+		perm Permission
+		role Role
+		want int
+	}{
+		{PermSiteRead, RoleViewer, http.StatusOK},
+		{PermSiteWrite, RoleOperator, http.StatusOK},
+		{PermSiteWrite, RoleViewer, http.StatusForbidden}, // viewer cannot write
+	}
+	for _, tt := range tests {
+		t.Run("site_scope/"+string(tt.perm)+"/"+string(tt.role), func(t *testing.T) {
+			p := &domain.Principal{
+				Type:           domain.PrincipalUser,
+				UserID:         user,
+				TenantID:       tenant,
+				Role:           string(tt.role),
+				Scope:          domain.ScopeSite,
+				AllowedSiteIDs: []uuid.UUID{site},
+			}
+			code := runWithPrincipal(p, RequirePermission(tt.perm))
+			if code != tt.want {
+				t.Fatalf("site-scoped %s with role %s: got %d, want %d", tt.perm, tt.role, code, tt.want)
 			}
 		})
 	}

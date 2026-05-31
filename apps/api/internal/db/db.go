@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -237,4 +238,123 @@ func (p *Pool) InAPIKeyLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) e
 		return fmt.Errorf("commit tx: %w", err)
 	}
 	return nil
+}
+
+// InScopedTenantTx runs fn inside a transaction with four GUCs set:
+//   - app.tenant_id  — the active org (same as InTenantTx)
+//   - app.user_id    — the acting user (same as InTenantTxAsUser)
+//   - app.allowed_site_ids — comma-joined UUIDs from the caller's site_shares
+//   - app.site_scope = 'on' — activates the RESTRICTIVE <t>_site_scope policies
+//
+// This is the correct tx wrapper for site-scoped principals (Scope == "site").
+// The restrictive RLS policies on all 21 direct tables (and the 2 indirect
+// children) evaluate:
+//
+//	coalesce(current_setting('app.site_scope',true),'') <> 'on'
+//	OR site_id = ANY(string_to_array(current_setting('app.allowed_site_ids',true),',')::uuid[])
+//
+// When site_scope is 'on' that clause becomes a real filter; when it is ” or
+// unset (normal member paths) it is a tautology. ALL GUCs are set with
+// set_config(name, val, true) — the third arg is the "is_local" flag, which
+// restricts the setting to the current transaction (equivalent to SET LOCAL)
+// and is safe with pgBouncer transaction-mode pooling.
+func (p *Pool) InScopedTenantTx(ctx context.Context, tenantID, userID uuid.UUID, allowedSiteIDs []uuid.UUID, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// app.tenant_id
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID.String()); err != nil {
+		return fmt.Errorf("set app.tenant_id: %w", err)
+	}
+	// app.user_id
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.user_id', $1, true)", userID.String()); err != nil {
+		return fmt.Errorf("set app.user_id: %w", err)
+	}
+	// app.allowed_site_ids — comma-joined UUID strings; empty string is safe
+	// (string_to_array('', ',') returns {''} which matches nothing)
+	siteIDStrs := make([]string, len(allowedSiteIDs))
+	for i, id := range allowedSiteIDs {
+		siteIDStrs[i] = id.String()
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.allowed_site_ids', $1, true)", strings.Join(siteIDStrs, ",")); err != nil {
+		return fmt.Errorf("set app.allowed_site_ids: %w", err)
+	}
+	// app.site_scope — activates the RESTRICTIVE policies
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.site_scope', 'on', true)"); err != nil {
+		return fmt.Errorf("set app.site_scope: %w", err)
+	}
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// InInviteLookupTx runs fn inside a transaction with app.invite_lookup set to
+// 'on', enabling the invitations_token_lookup SELECT-only policy. This mirrors
+// InAPIKeyLookupTx: it is the one place an invitation may be read before any
+// authenticated session or tenant scope is established (the public accept
+// endpoint). fn must do nothing but resolve an invitation by its token hash.
+func (p *Pool) InInviteLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.invite_lookup', 'on', true)"); err != nil {
+		return fmt.Errorf("set app.invite_lookup: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// ScopedPrincipal is the interface RunTenantTx requires from a principal. It
+// is implemented by domain.Principal and any test double that carries the four
+// scope fields. Using an interface here avoids a circular import between db and
+// domain (domain cannot import db; db cannot import domain).
+type ScopedPrincipal interface {
+	GetScope() string
+	GetUserID() uuid.UUID
+	GetTenantID() uuid.UUID
+	GetAllowedSiteIDs() []uuid.UUID
+}
+
+// RunTenantTx is the central dispatch helper that chooses the correct
+// transaction wrapper based on the principal's Scope. Repos and services
+// MUST use this instead of calling InTenantTx / InTenantTxAsUser /
+// InScopedTenantTx directly, so that a forgotten call-site cannot silently
+// bypass the site-scope RLS.
+//
+// Dispatch rules:
+//   - Scope == "site": InScopedTenantTx with p.AllowedSiteIDs
+//   - Scope == "org" (or empty, for backward compat): InTenantTxAsUser when
+//     UserID is non-nil, InTenantTx otherwise (API-key principals have no
+//     UserID; they don't need the memberships_self_read policy)
+//
+// The fn receives the raw pgx.Tx. Callers wrap it with sqlc.New(tx) as usual.
+func (p *Pool) RunTenantTx(ctx context.Context, principal ScopedPrincipal, fn func(tx pgx.Tx) error) error {
+	scope := principal.GetScope()
+	tenantID := principal.GetTenantID()
+	userID := principal.GetUserID()
+
+	if scope == "site" {
+		return p.InScopedTenantTx(ctx, tenantID, userID, principal.GetAllowedSiteIDs(), fn)
+	}
+	// "org" or "" (backward compat for existing flows that never set Scope)
+	if userID != uuid.Nil {
+		return p.InTenantTxAsUser(ctx, tenantID, userID, fn)
+	}
+	return p.InTenantTx(ctx, tenantID, fn)
 }

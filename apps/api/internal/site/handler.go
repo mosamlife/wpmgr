@@ -87,18 +87,22 @@ func (h *Handler) record(c *gin.Context, tenantID uuid.UUID, action, siteID stri
 
 // Register mounts the authed site routes on the /api/v1 router group.
 func (h *Handler) Register(r *gin.RouterGroup) {
+	// Tenant-wide collection routes: no :siteId, site-scoped filtering is done
+	// by RLS (InScopedTenantTx activated by RunTenantTx in the repo.List path).
 	r.POST("/sites", authz.RequirePermission(authz.PermSiteWrite), h.create)
 	r.GET("/sites", authz.RequirePermission(authz.PermSiteRead), h.list)
 	r.POST("/sites/pairing-codes", authz.RequirePermission(authz.PermSiteWrite), h.createPairingCode)
-	r.GET("/sites/:siteId", authz.RequirePermission(authz.PermSiteRead), h.get)
-	r.DELETE("/sites/:siteId", authz.RequirePermission(authz.PermSiteWrite), h.delete)
-	r.PUT("/sites/:siteId/tags", authz.RequirePermission(authz.PermSiteWrite), h.setTags)
+	// Per-siteId routes: RequireSiteAccess enforces the site allowlist for
+	// site-scoped principals (belt-and-braces in front of the RLS policy).
+	r.GET("/sites/:siteId", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.get)
+	r.DELETE("/sites/:siteId", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.delete)
+	r.PUT("/sites/:siteId/tags", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.setTags)
 	// Updates feature (Track B): an operator triggers an immediate inventory
 	// refresh, or reads the cached per-item available-updates list. Both are
 	// view-permission routes: refresh is a side-effecting POST but it does not
 	// mutate persisted state (it asks the agent to push fresh metadata back).
-	r.POST("/sites/:siteId/updates/refresh", authz.RequirePermission(authz.PermSiteRead), h.refreshUpdates)
-	r.GET("/sites/:siteId/updates/available", authz.RequirePermission(authz.PermSiteRead), h.getAvailableUpdates)
+	r.POST("/sites/:siteId/updates/refresh", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.refreshUpdates)
+	r.GET("/sites/:siteId/updates/available", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.getAvailableUpdates)
 }
 
 // RegisterPublic mounts the public, unauthenticated /enroll endpoint on the
@@ -170,12 +174,18 @@ func (h *Handler) list(c *gin.Context) {
 		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
 		return
 	}
-	ss, err := h.svc.List(c.Request.Context(), ListInput{
+	// FIX 3: thread the principal so repo.List can activate scoped RLS for
+	// site-scoped principals (they should see ONLY their granted sites).
+	in := ListInput{
 		TenantID: tenantID,
 		Tag:      c.Query("tag"),
 		Limit:    parseInt32(c.Query("limit"), 50),
 		Offset:   parseInt32(c.Query("offset"), 0),
-	})
+	}
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
+		in.Principal = p
+	}
+	ss, err := h.svc.List(c.Request.Context(), in)
 	if err != nil {
 		httpx.Error(c, err)
 		return

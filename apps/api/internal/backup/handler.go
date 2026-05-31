@@ -62,13 +62,20 @@ func (h *Handler) SetEnvironmentFetcher(f ManifestInspectionFetcher) {
 
 // Register mounts the backup routes on the /api/v1 router group.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	r.POST("/sites/:siteId/backups", authz.RequirePermission(authz.PermSiteWrite), h.createBackup)
-	r.GET("/sites/:siteId/backups", authz.RequirePermission(authz.PermSiteRead), h.listBackups)
+	// Per-siteId routes: RequireSiteAccess enforces the site allowlist for
+	// site-scoped principals (belt-and-braces in front of the RLS policy).
+	r.POST("/sites/:siteId/backups", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.createBackup)
+	r.GET("/sites/:siteId/backups", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.listBackups)
+	r.GET("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.getSchedule)
+	r.PUT("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.putSchedule)
+	// Routes by snapshotId (no :siteId param): site isolation is enforced by
+	// running the repo queries through pool.RunTenantTx (which activates scoped
+	// RLS for site-scoped principals). The RESTRICTIVE RLS policy on
+	// backup_snapshots denies rows whose site_id is not in AllowedSiteIDs, so
+	// a non-granted site's snapshot returns 404 naturally.
 	r.GET("/backups/:snapshotId", authz.RequirePermission(authz.PermSiteRead), h.getBackup)
 	r.GET("/backups/:snapshotId/events", authz.RequirePermission(authz.PermSiteRead), h.events)
 	r.POST("/backups/:snapshotId/restore", authz.RequirePermission(authz.PermSiteWrite), h.createRestore)
-	r.GET("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteRead), h.getSchedule)
-	r.PUT("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteWrite), h.putSchedule)
 	// ADR-037 Sprint 1, 1D — environment fingerprint. Returns the JSON the
 	// agent shipped as the synthetic `environment.json` manifest entry, or 404
 	// when the snapshot pre-dates the env-fingerprint feature. Reads use the

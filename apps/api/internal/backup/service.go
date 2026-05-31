@@ -1,9 +1,12 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +54,16 @@ type Presigner interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// IndexPutter writes raw bytes to object storage at an arbitrary key. Used for
+// the per-snapshot manifest index object written at SubmitManifest time. It is
+// a narrower interface than the full blobstore.Store so tests can wire a simple
+// stub without providing a real S3 client.
+//
+// Implementations: *blobstore.Store satisfies this interface via its Put method.
+type IndexPutter interface {
+	Put(ctx context.Context, key string, body io.Reader, size int64) error
+}
+
 // PresignerForSnapshot is the ADR-036 P1 storage adapter routing interface:
 // given a snapshot it returns the Presigner that should service its
 // chunk-upload/download for the snapshot's destination. The blobstore.Registry
@@ -84,6 +97,9 @@ type Service struct {
 	// scheduleRuns persists backup_schedule_runs (M17 queue materialization).
 	// Optional: when nil, schedule run rows are skipped (graceful degradation).
 	scheduleRuns ScheduleRunStore
+	// indexPutter writes the per-snapshot manifest index object (M5.7 P4).
+	// Optional: when nil the index write is skipped (best-effort by design).
+	indexPutter IndexPutter
 }
 
 // SetRegistry wires the ADR-036 P1 storage-adapter router. Calling this AFTER
@@ -91,6 +107,13 @@ type Service struct {
 // that haven't migrated keep the legacy single-store path. Safe to call once
 // at startup before serving traffic.
 func (s *Service) SetRegistry(r PresignerForSnapshot) { s.registry = r }
+
+// SetIndexPutter wires the M5.7 P4 manifest-index writer. When set, every
+// successful SubmitManifest writes a per-snapshot JSON index object at
+// tenant/<tenantID>/site/<siteID>/backup/<snapshotID>/manifest.json via p.
+// A write failure is best-effort: it is logged but never fails the backup.
+// Call once at startup before serving traffic; safe to omit in tests.
+func (s *Service) SetIndexPutter(p IndexPutter) { s.indexPutter = p }
 
 // Config tunes the service.
 type Config struct {
@@ -318,7 +341,9 @@ func (s *Service) CreateRestore(ctx context.Context, tenantID, snapshotID uuid.U
 // `restoreID` is the CP-generated dedup key the worker minted for this attempt;
 // it is echoed back in every agent /progress POST so the SSE event carries it.
 func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUID, sel RestoreSelection, restoreID, progressEndpoint string) (agentcmd.RestoreRequest, Snapshot, SiteInfo, error) {
-	snap, err := s.repo.GetSnapshot(ctx, tenantID, snapshotID)
+	// M5.7 P4: use scoped snapshot lookup so RLS denies non-granted sites for
+	// site-scoped principals before any presigned GET URL is minted.
+	snap, err := s.getSnapshotForPresign(ctx, tenantID, snapshotID)
 	if err != nil {
 		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, err
 	}
@@ -421,9 +446,15 @@ func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUI
 // hashes for an in-flight snapshot, it returns presigned PUT URLs for ONLY the
 // hashes NOT already stored for the tenant. The s3 key is content-addressed and
 // tenant-namespaced so a presign can never target another tenant's prefix.
+//
+// M5.7 P4: the gating snapshot lookup runs inside GetSnapshotScoped so a
+// site-scoped principal (Scope=="site") activates InScopedTenantTx and RLS
+// denies access to non-granted sites before any presigned URL is minted.
+// Worker and agent callers (no principal on ctx) fall back to InTenantTx.
 func (s *Service) PresignChunks(ctx context.Context, tenantID, snapshotID uuid.UUID, hashes []string) (map[string]string, error) {
-	// The snapshot must exist in this tenant and be in progress.
-	snap, err := s.repo.GetSnapshot(ctx, tenantID, snapshotID)
+	// The snapshot must exist in this tenant and be in progress. Use the
+	// scoped lookup so RLS enforces site-scope for outside collaborators.
+	snap, err := s.getSnapshotForPresign(ctx, tenantID, snapshotID)
 	if err != nil {
 		return nil, err
 	}
@@ -513,6 +544,13 @@ func (s *Service) SubmitManifest(ctx context.Context, tenantID, snapshotID uuid.
 	// final state without waiting for a poll. Best-effort: a fetch error
 	// here only loses live smoothness (the handler re-reads from DB).
 	if completed, gerr := s.repo.GetSnapshot(ctx, tenantID, snapshotID); gerr == nil {
+		// M5.7 P4: write the per-snapshot manifest index object. Best-effort:
+		// a failure here MUST NOT fail the backup (the snapshot is already
+		// completed in the DB). We use the freshly-read snapshot for the
+		// site_id so the key is accurate even for scheduled backups.
+		if s.indexPutter != nil {
+			s.writeManifestIndex(ctx, completed, in)
+		}
 		s.publish(BackupEvent{
 			SnapshotID:  snapshotID,
 			Phase:       "completed",
@@ -530,6 +568,98 @@ func (s *Service) SubmitManifest(ctx context.Context, tenantID, snapshotID uuid.
 		})
 	}
 	return chunkRefs, stored, nil
+}
+
+// manifestIndexKey returns the per-snapshot index object key:
+// tenant/<tenantID>/site/<siteID>/backup/<snapshotID>/manifest.json
+// This is the M5.7 P4 browseable layout — entirely separate from the
+// chunk keys (chunks/<tenantID>/<blake3>) which are content-addressed.
+func manifestIndexKey(tenantID, siteID, snapshotID uuid.UUID) string {
+	return fmt.Sprintf("tenant/%s/site/%s/backup/%s/manifest.json",
+		tenantID, siteID, snapshotID)
+}
+
+// manifestIndexPayload is the JSON shape written to the index object.
+// It mirrors the structure of the assembled manifest so downstream tooling
+// (lifecycle rules, auditors, the future sharing UI) can read it without
+// querying the DB.
+type manifestIndexPayload struct {
+	SnapshotID string                   `json:"snapshot_id"`
+	TenantID   string                   `json:"tenant_id"`
+	SiteID     string                   `json:"site_id"`
+	Kind       string                   `json:"kind"`
+	Entries    []agentcmd.ManifestEntry `json:"entries"`
+}
+
+// writeManifestIndex writes the per-snapshot manifest.json index object.
+// BEST-EFFORT: any error is logged and silently swallowed so a storage
+// failure never propagates back to the agent and never fails the backup.
+func (s *Service) writeManifestIndex(ctx context.Context, snap Snapshot, in RecordManifestInput) {
+	payload := manifestIndexPayload{
+		SnapshotID: snap.ID.String(),
+		TenantID:   snap.TenantID.String(),
+		SiteID:     snap.SiteID.String(),
+		Kind:       snap.Kind,
+		Entries:    make([]agentcmd.ManifestEntry, 0, len(in.Entries)),
+	}
+	// Reconstruct the ManifestEntry slice from the validated input so the
+	// index carries the same shape the agent originally submitted.
+	for _, e := range in.Entries {
+		chunks := make([]agentcmd.ChunkRef, 0, len(e.ChunkHashes))
+		for _, h := range e.ChunkHashes {
+			up, ok := in.Chunks[h]
+			if !ok {
+				continue
+			}
+			chunks = append(chunks, agentcmd.ChunkRef{Blake3: h, Size: up.Size})
+		}
+		payload.Entries = append(payload.Entries, agentcmd.ManifestEntry{
+			Path:      e.Path,
+			EntryKind: e.EntryKind,
+			TableName: e.TableName,
+			Size:      e.Size,
+			Mode:      uint32(e.Mode),
+			Chunks:    chunks,
+		})
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		slog.WarnContext(ctx, "backup: manifest index marshal failed (best-effort, backup not affected)",
+			slog.String("snapshot_id", snap.ID.String()),
+			slog.String("tenant_id", snap.TenantID.String()),
+			slog.Any("error", err))
+		return
+	}
+	key := manifestIndexKey(snap.TenantID, snap.SiteID, snap.ID)
+	if err := s.indexPutter.Put(ctx, key, bytes.NewReader(raw), int64(len(raw))); err != nil {
+		slog.WarnContext(ctx, "backup: manifest index write failed (best-effort, backup not affected)",
+			slog.String("snapshot_id", snap.ID.String()),
+			slog.String("key", key),
+			slog.Any("error", err))
+	}
+}
+
+// getSnapshotForPresign is the M5.7 P4 helper used by PresignChunks and
+// PlanRestore. It runs the gating snapshot lookup inside the correct scoped
+// transaction based on the principal found (or not) on the request context:
+//
+//   - Principal with Scope=="site" on ctx → repo.GetSnapshotScoped (routes
+//     through InScopedTenantTx; RLS enforces the site allowlist).
+//   - Principal with Scope=="org" or "" on ctx → repo.GetSnapshotScoped
+//     (routes through InTenantTxAsUser; same RLS as GetSnapshot but with
+//     user GUC set, which is the correct behaviour for org members).
+//   - No principal on ctx (workers, agent callbacks) → repo.GetSnapshot
+//     (InTenantTx; service GUC is already set by the worker context).
+func (s *Service) getSnapshotForPresign(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok {
+		// Worker / agent path: no user principal. Fall back to the existing
+		// InTenantTx path; RLS still applies via the connecting role.
+		return s.repo.GetSnapshot(ctx, tenantID, snapshotID)
+	}
+	// Principal available: use the scoped-tx variant so RunTenantTx picks
+	// the right tx helper (InScopedTenantTx for site-scoped principals).
+	return s.repo.GetSnapshotScoped(ctx, p, tenantID, snapshotID)
 }
 
 // MarkRunning transitions a snapshot to running (called by the backup worker).

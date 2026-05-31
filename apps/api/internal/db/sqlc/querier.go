@@ -41,6 +41,7 @@ type Querier interface {
 	// backup_snapshots
 	// ---------------------------------------------------------------------------
 	CreateBackupSnapshot(ctx context.Context, arg CreateBackupSnapshotParams) (BackupSnapshot, error)
+	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (Invitation, error)
 	// ---------------------------------------------------------------------------
 	// backup_manifest_entries
 	// ---------------------------------------------------------------------------
@@ -48,6 +49,9 @@ type Querier interface {
 	CreateMembership(ctx context.Context, arg CreateMembershipParams) (Membership, error)
 	// Tenant-scoped (app.tenant_id) — operator generates a code for the tenant.
 	CreatePairingCode(ctx context.Context, arg CreatePairingCodeParams) (PairingCode, error)
+	// Upsert on (site_id, user_id): if a share already exists for this (site, user)
+	// pair, update the role, granted_by and expires_at in place.
+	CreateShare(ctx context.Context, arg CreateShareParams) (SiteShare, error)
 	// tenant_id is supplied explicitly for defense-in-depth; RLS additionally
 	// enforces that it matches the current app.tenant_id setting.
 	CreateSite(ctx context.Context, arg CreateSiteParams) (Site, error)
@@ -68,6 +72,7 @@ type Querier interface {
 	// Deletes a chunk row only if its refcount is zero (the object was already
 	// removed from storage by the GC job). Tenant-scoped.
 	DeleteOrphanChunk(ctx context.Context, arg DeleteOrphanChunkParams) (int64, error)
+	DeleteShare(ctx context.Context, arg DeleteShareParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
 	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (BackupSnapshot, error)
 	// Records a terminal task state (succeeded|failed|rolled_back|skipped) with the
@@ -80,6 +85,11 @@ type Querier interface {
 	// impossible chicken/egg — instead this query is run with RLS disabled scope by
 	// using the prefix-unique lookup helper that sets the GUC after. See repo.
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	// Auth-time allowlist resolver: returns all non-expired site shares for a given
+	// (user, tenant) pair. The result is used to build the AllowedSiteIDs list for a
+	// site-scoped principal. Run under InUserTx (app.user_id set) or directly with
+	// explicit params.
+	GetActiveSharesForUserTenant(ctx context.Context, arg GetActiveSharesForUserTenantParams) ([]SiteShare, error)
 	// M5 uptime alerting: per-tenant alert config + per-site alert state.
 	// Tenant-scoped read of the tenant's default alert channel.
 	GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (AlertConfig, error)
@@ -103,6 +113,8 @@ type Querier interface {
 	// Runs tenant-scoped (the caller sets app.tenant_id before this query).
 	GetBackupSiteInfo(ctx context.Context, arg GetBackupSiteInfoParams) (GetBackupSiteInfoRow, error)
 	GetBackupSnapshot(ctx context.Context, arg GetBackupSnapshotParams) (BackupSnapshot, error)
+	// Pre-auth lookup: must be run under InInviteLookupTx (app.invite_lookup='on').
+	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (Invitation, error)
 	GetLastAuditHash(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
@@ -131,6 +143,7 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
 	IncrementChunkRefcount(ctx context.Context, arg IncrementChunkRefcountParams) (BackupChunk, error)
+	IncrementInviteAttempts(ctx context.Context, id uuid.UUID) (Invitation, error)
 	// Enroll path (app.enroll GUC): record a failed validation attempt.
 	IncrementPairingCodeAttempts(ctx context.Context, id uuid.UUID) (int64, error)
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
@@ -191,8 +204,14 @@ type Querier interface {
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
 	// Terminal runs (completed/failed/skipped/canceled) for a site, newest first.
 	ListPastScheduleRuns(ctx context.Context, arg ListPastScheduleRunsParams) ([]BackupScheduleRun, error)
+	// List pending (not yet accepted, not expired) invitations for the current tenant.
+	ListPendingInvitations(ctx context.Context, tenantID uuid.UUID) ([]Invitation, error)
 	// All runs for a site (upcoming + past), newest scheduled_for first.
 	ListScheduleRunsBySite(ctx context.Context, arg ListScheduleRunsBySiteParams) ([]BackupScheduleRun, error)
+	ListSharesForSite(ctx context.Context, siteID uuid.UUID) ([]SiteShare, error)
+	// Self-read: returns the caller's own non-expired shares across all tenants.
+	// Must be run under a tx that sets app.user_id (site_shares_self_read policy).
+	ListSharesForUser(ctx context.Context, userID uuid.UUID) ([]SiteShare, error)
 	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
 	// Watchdog feeder: a running snapshot whose latest progress is older than the
 	// stall threshold (or whose runner never reported any progress despite being
@@ -220,6 +239,7 @@ type Querier interface {
 	// Idempotent: returns 0 if another path already marked it (safe).
 	MarkAutologinTokenConsumed(ctx context.Context, arg MarkAutologinTokenConsumedParams) (int64, error)
 	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (BackupSnapshot, error)
+	MarkInvitationAccepted(ctx context.Context, arg MarkInvitationAcceptedParams) (Invitation, error)
 	// Marks a site unreachable. Runs under app.agent GUC (cross-tenant job).
 	MarkSiteUnreachable(ctx context.Context, id uuid.UUID) (int64, error)
 	MarkUpdateTaskRunning(ctx context.Context, arg MarkUpdateTaskRunningParams) (UpdateTask, error)
@@ -276,6 +296,9 @@ type Querier interface {
 	// recompute it (only when timing fields actually change). This prevents a
 	// non-timing edit (e.g. retention_days change) from resetting the next run.
 	UpsertBackupSchedule(ctx context.Context, arg UpsertBackupScheduleParams) (BackupSchedule, error)
+	// Tenant-create helper: insert an owner membership for the creator; on conflict
+	// (e.g. migration replay or second create attempt) update role to 'owner'.
+	UpsertOwnerMembership(ctx context.Context, arg UpsertOwnerMembershipParams) (Membership, error)
 	// M17 backup_schedule_runs queries. Mirrors the restore_runs query style.
 	// Every tenant-scoped method is called with app.tenant_id already set.
 	// The scheduler's cross-tenant materializer writes run under the agent context

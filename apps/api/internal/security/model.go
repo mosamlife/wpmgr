@@ -20,7 +20,7 @@ import (
 type SecurityConfig struct {
 	TenantID   uuid.UUID
 	SiteID     uuid.UUID
-	Mode       string                     // "disabled" | "audit" | "protect"
+	Mode       string                      // "disabled" | "audit" | "protect"
 	Thresholds agentcmd.SecurityThresholds // inline struct so the wire contract is shared
 	IPHeader   string
 	AllowCIDRs []string

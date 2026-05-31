@@ -58,12 +58,29 @@ type CreateInput struct {
 	PHPVersion string    `validate:"max=32"`
 }
 
+// ScopedPrincipal is satisfied by domain.Principal (and test doubles). It is
+// defined here to avoid a circular import: site cannot import domain directly
+// for an interface that db also uses, but the interface is small enough to
+// repeat here. The values are used by repo.List to choose between InTenantTx
+// (org-scoped) and RunTenantTx (site-scoped, activates restrictive RLS).
+type ScopedPrincipal interface {
+	GetScope() string
+	GetUserID() uuid.UUID
+	GetTenantID() uuid.UUID
+	GetAllowedSiteIDs() []uuid.UUID
+}
+
 // ListInput is tenant-scoped pagination input, optionally filtered by tag.
+// Principal, when non-nil, is used by the repo to choose the correct
+// transaction wrapper (InTenantTx for org-scoped, InScopedTenantTx for
+// site-scoped) so the RESTRICTIVE RLS policy filters the result to only
+// the sites the principal is allowed to see.
 type ListInput struct {
-	TenantID uuid.UUID
-	Tag      string
-	Limit    int32
-	Offset   int32
+	TenantID  uuid.UUID
+	Tag       string
+	Limit     int32
+	Offset    int32
+	Principal ScopedPrincipal // optional; nil → plain InTenantTx (org-scoped)
 }
 
 // SetTagsInput sets the full tag set on a tenant-scoped site.

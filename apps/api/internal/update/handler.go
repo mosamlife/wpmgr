@@ -34,10 +34,15 @@ func NewHandler(svc *Service, hub *Hub, rec *audit.Recorder) *Handler {
 // Register mounts the update routes on /api/v1. Mutations require operator+;
 // reads (including the SSE stream) require viewer+.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	r.POST("/updates", authz.RequirePermission(authz.PermSiteWrite), h.create)
-	r.GET("/updates", authz.RequirePermission(authz.PermSiteRead), h.list)
-	r.GET("/updates/:runId", authz.RequirePermission(authz.PermSiteRead), h.get)
-	r.GET("/updates/:runId/events", authz.RequirePermission(authz.PermSiteRead), h.events)
+	// The bulk update-run orchestrator is org-level: a run can span multiple
+	// sites, and the run/tasks are resolved by runId (not bound to a single
+	// :siteId), so a per-site allowlist check is insufficient. Restrict the
+	// whole group to org-scoped principals — site-scoped collaborators view
+	// their site's available updates via /sites/:siteId/updates/* instead.
+	r.POST("/updates", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteWrite), h.create)
+	r.GET("/updates", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.list)
+	r.GET("/updates/:runId", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.get)
+	r.GET("/updates/:runId/events", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.events)
 }
 
 func (h *Handler) create(c *gin.Context) {

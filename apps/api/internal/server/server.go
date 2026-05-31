@@ -24,10 +24,13 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
+	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
+	"github.com/mosamlife/wpmgr/apps/api/internal/org"
 	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
 	"github.com/mosamlife/wpmgr/apps/api/internal/security"
+	"github.com/mosamlife/wpmgr/apps/api/internal/sharing"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
@@ -37,20 +40,20 @@ import (
 
 // Deps are the server's wired dependencies.
 type Deps struct {
-	Config          config.Config
-	Logger          *slog.Logger
-	Pool            *db.Pool
-	Sessions        *auth.SessionManager
-	Auth            *middleware.Authenticator
-	AuthH           *auth.Handler
-	MembersH        *auth.MembersHandler
-	APIKeyH         *apikey.Handler
-	AuditH          *audit.Handler
-	TenantH         *tenant.Handler
-	SiteH           *site.Handler
-	UpdateH         *update.Handler
-	BackupH         *backup.Handler
-	BackupAgentH    *backup.AgentHandler
+	Config       config.Config
+	Logger       *slog.Logger
+	Pool         *db.Pool
+	Sessions     *auth.SessionManager
+	Auth         *middleware.Authenticator
+	AuthH        *auth.Handler
+	MembersH     *auth.MembersHandler
+	APIKeyH      *apikey.Handler
+	AuditH       *audit.Handler
+	TenantH      *tenant.Handler
+	SiteH        *site.Handler
+	UpdateH      *update.Handler
+	BackupH      *backup.Handler
+	BackupAgentH *backup.AgentHandler
 	// InspectionDeps wires the optional collaborators for the M6 SQL inspection
 	// endpoint (manifest fetcher / CP-side legacy cache / River enqueuer). Any
 	// field may be nil — the handler degrades to a 503 pointing at the missing
@@ -63,17 +66,17 @@ type Deps struct {
 	AgentH          *agent.Handler
 	// SiteDestH serves the ADR-036 P1 per-site destinations CRUD under
 	// /api/v1/sites/{siteId}/destinations.
-	SiteDestH       *sitedestination.Handler
+	SiteDestH *sitedestination.Handler
 	// ADR-037 Sprint 2 — diagnostics + php-error monitor.
 	// DiagnosticsH serves the operator-facing GETs + silence/refresh under
 	// /api/v1/sites/{siteId}/(diagnostics|errors).
-	DiagnosticsH    *diagnostics.Handler
+	DiagnosticsH *diagnostics.Handler
 	// DiagnosticsAgentH ingests the agent's daily 14-category push at
 	// POST /agent/v1/diagnostics.
 	DiagnosticsAgentH *agent.DiagnosticsHandler
 	// ErrorsAgentH ingests the heartbeat-driven php-error batches at
 	// POST /agent/v1/errors.
-	ErrorsAgentH    *agent.ErrorsHandler
+	ErrorsAgentH *agent.ErrorsHandler
 	// ADR-037 Sprint 3 — WordPress activity log.
 	// ActivityH serves the operator-facing list + chain-verify under
 	// /api/v1/sites/{siteId}/activity[/verify].
@@ -95,15 +98,19 @@ type Deps struct {
 	// S3 — Malware / File-Integrity Scan. ScanH serves operator-facing scan
 	// run management + findings under /api/v1/sites/{siteId}/scans and
 	// /api/v1/findings/{id}/ignore.
-	ScanH       *scan.Handler
+	ScanH *scan.Handler
 	// m16 — Restore Runs + Logs. RestoreRunH serves the per-site restore
 	// history and the by-id detail + phase-log endpoints.
 	RestoreRunH *backup.RestoreRunHandler
 	// M17 — Schedule Runs. ScheduleRunH serves the per-site schedule run
 	// queue (upcoming + past) and the by-id detail endpoint.
 	ScheduleRunH *backup.ScheduleRunHandler
-	ServiceName  string
-	Version      string
+	// M5.7 — Orgs + Sharing + Invitations.
+	OrgH        *org.Handler        // POST /orgs, POST /orgs/:orgId/activate
+	SharingH    *sharing.Handler    // site shares CRUD + shared-with-me
+	InvitationH *invitation.Handler // public POST /invitations/accept
+	ServiceName string
+	Version     string
 }
 
 // Server bundles the HTTP server and its dependencies.
@@ -143,6 +150,11 @@ func New(deps Deps) *Server {
 
 	// Public auth endpoints (login/register/logout/me + OIDC).
 	deps.AuthH.Register(engine)
+
+	// Public invitation-accept endpoint (creates the session itself; no RequireAuth).
+	if deps.InvitationH != nil {
+		deps.InvitationH.RegisterPublic(engine)
+	}
 
 	// Public agent enrollment (no session/tenant; the pairing code authorizes).
 	deps.SiteH.RegisterPublic(engine)
@@ -240,6 +252,13 @@ func New(deps Deps) *Server {
 	// M17 — schedule run queue (upcoming + past history).
 	if deps.ScheduleRunH != nil {
 		deps.ScheduleRunH.Register(v1)
+	}
+	// M5.7 — Orgs + Sharing.
+	if deps.OrgH != nil {
+		deps.OrgH.Register(v1)
+	}
+	if deps.SharingH != nil {
+		deps.SharingH.Register(v1)
 	}
 
 	return s

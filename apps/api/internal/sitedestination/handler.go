@@ -31,7 +31,10 @@ func NewHandler(svc *Service, rec *audit.Recorder) *Handler {
 // captured at the per-route level so the resource hierarchy reads naturally
 // (sites > destinations).
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group("/sites/:siteId/destinations")
+	// RequireSiteAccess("siteId") is applied on the group so every sub-route
+	// inherits it. This enforces the site allowlist for site-scoped principals
+	// (belt-and-braces in front of the RLS policy on site_destinations).
+	g := r.Group("/sites/:siteId/destinations", authz.RequireSiteAccess("siteId"))
 	g.GET("", authz.RequirePermission(authz.PermSiteRead), h.list)
 	g.POST("", authz.RequirePermission(authz.PermSiteWrite), h.create)
 	g.POST("/test", authz.RequirePermission(authz.PermSiteWrite), h.test)
@@ -156,7 +159,25 @@ func (h *Handler) get(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	if !destBelongsToPathSite(c, d.SiteID) {
+		return
+	}
 	c.JSON(http.StatusOK, toDTO(d))
+}
+
+// destBelongsToPathSite verifies the resolved destination belongs to the
+// :siteId in the path (which RequireSiteAccess already authorized for the
+// caller). Destinations are fetched by their own id, so without this a caller
+// — especially a site-scoped collaborator — could read/mutate a destination on
+// another site by passing its destinationId under their own allowed :siteId.
+// Writes a 404 and returns false on mismatch (mirrors RLS hiding rows).
+func destBelongsToPathSite(c *gin.Context, destSiteID uuid.UUID) bool {
+	siteID, err := uuid.Parse(c.Param("siteId"))
+	if err != nil || destSiteID != siteID {
+		httpx.Error(c, domain.NotFound("destination_not_found", "destination not found"))
+		return false
+	}
+	return true
 }
 
 func (h *Handler) create(c *gin.Context) {
@@ -212,6 +233,13 @@ func (h *Handler) update(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	// Verify the destination belongs to the path :siteId BEFORE mutating.
+	if existing, gerr := h.svc.GetByID(c.Request.Context(), p.TenantID, id); gerr != nil {
+		httpx.Error(c, gerr)
+		return
+	} else if !destBelongsToPathSite(c, existing.SiteID) {
+		return
+	}
 	d, err := h.svc.Update(c.Request.Context(), p.TenantID, id, UpdateServiceInput{
 		Label:          body.Label,
 		Endpoint:       body.Endpoint,
@@ -242,6 +270,13 @@ func (h *Handler) delete(c *gin.Context) {
 	p, _ := domain.PrincipalFromContext(c.Request.Context())
 	id, ok := h.parseDestID(c)
 	if !ok {
+		return
+	}
+	// Verify the destination belongs to the path :siteId BEFORE deleting.
+	if existing, gerr := h.svc.GetByID(c.Request.Context(), p.TenantID, id); gerr != nil {
+		httpx.Error(c, gerr)
+		return
+	} else if !destBelongsToPathSite(c, existing.SiteID) {
 		return
 	}
 	if err := h.svc.Delete(c.Request.Context(), p.TenantID, id); err != nil {

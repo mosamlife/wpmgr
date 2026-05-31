@@ -339,6 +339,18 @@ func (s *Service) createOIDCUser(ctx context.Context, issuer, subject, email, na
 	return s.repo.CreateUser(ctx, email, "", name, issuer, subject)
 }
 
+// CountOwners returns how many owner-role memberships exist for the tenant.
+// Used for last-owner protection in the members handler.
+func (s *Service) CountOwners(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return s.repo.CountOwners(ctx, tenantID)
+}
+
+// RecordAudit delegates to the underlying audit Recorder. Exposed so handlers
+// can record events without importing the audit package's internal Recorder.
+func (s *Service) RecordAudit(ctx context.Context, e audit.Event) {
+	_, _ = s.audit.Record(ctx, e)
+}
+
 // CountUsers exposes the user count (used to gate registration in handlers).
 func (s *Service) CountUsers(ctx context.Context) (int64, error) {
 	return s.repo.CountUsers(ctx)

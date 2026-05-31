@@ -3,6 +3,12 @@
 import type { Client, Options as Options2, TDataShape } from "./client";
 import { client } from "./client.gen";
 import type {
+  AcceptInvitationData,
+  AcceptInvitationErrors,
+  AcceptInvitationResponses,
+  ActivateOrgData,
+  ActivateOrgErrors,
+  ActivateOrgResponses,
   AgentAutologinConsumeData,
   AgentAutologinConsumeErrors,
   AgentAutologinConsumeResponses,
@@ -21,6 +27,9 @@ import type {
   CreateBackupData,
   CreateBackupErrors,
   CreateBackupResponses,
+  CreateOrgData,
+  CreateOrgErrors,
+  CreateOrgResponses,
   CreatePairingCodeData,
   CreatePairingCodeErrors,
   CreatePairingCodeResponses,
@@ -33,18 +42,27 @@ import type {
   CreateSiteDestinationResponses,
   CreateSiteErrors,
   CreateSiteResponses,
+  CreateSiteShareData,
+  CreateSiteShareErrors,
+  CreateSiteShareResponses,
   CreateTenantData,
   CreateTenantErrors,
   CreateTenantResponses,
   CreateUpdateRunData,
   CreateUpdateRunErrors,
   CreateUpdateRunResponses,
+  DeleteMemberData,
+  DeleteMemberErrors,
+  DeleteMemberResponses,
   DeleteSiteData,
   DeleteSiteDestinationData,
   DeleteSiteDestinationErrors,
   DeleteSiteDestinationResponses,
   DeleteSiteErrors,
   DeleteSiteResponses,
+  DeleteSiteShareData,
+  DeleteSiteShareErrors,
+  DeleteSiteShareResponses,
   EnrollData,
   EnrollErrors,
   EnrollResponses,
@@ -111,6 +129,9 @@ import type {
   ListMembersData,
   ListMembersErrors,
   ListMembersResponses,
+  ListSharedWithMeData,
+  ListSharedWithMeErrors,
+  ListSharedWithMeResponses,
   ListSiteActivityData,
   ListSiteActivityResponses,
   ListSiteDestinationsData,
@@ -121,6 +142,9 @@ import type {
   ListSitePhpErrorsData,
   ListSitePhpErrorsResponses,
   ListSitesData,
+  ListSiteSharesData,
+  ListSiteSharesErrors,
+  ListSiteSharesResponses,
   ListSitesResponses,
   ListTenantsData,
   ListTenantsResponses,
@@ -137,6 +161,9 @@ import type {
   OidcCallbackResponses,
   OidcLoginData,
   OidcLoginErrors,
+  PatchMemberData,
+  PatchMemberErrors,
+  PatchMemberResponses,
   PatchSiteErrorConfigData,
   PatchSiteErrorConfigErrors,
   PatchSiteErrorConfigResponses,
@@ -346,6 +373,149 @@ export const inviteMember = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/members",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Remove a member from the active tenant (admin+; last-owner protected)
+ */
+export const deleteMember = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteMemberData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    DeleteMemberResponses,
+    DeleteMemberErrors,
+    ThrowOnError
+  >({ url: "/api/v1/members/{userId}", ...options });
+
+/**
+ * Change a member's role (admin+; privilege-ceiling enforced)
+ */
+export const patchMember = <ThrowOnError extends boolean = false>(
+  options: Options<PatchMemberData, ThrowOnError>,
+) =>
+  (options.client ?? client).patch<
+    PatchMemberResponses,
+    PatchMemberErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/members/{userId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Create a new organisation; the caller becomes the owner
+ */
+export const createOrg = <ThrowOnError extends boolean = false>(
+  options: Options<CreateOrgData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateOrgResponses,
+    CreateOrgErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/orgs",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Switch the session's active organisation (must be a member)
+ */
+export const activateOrg = <ThrowOnError extends boolean = false>(
+  options: Options<ActivateOrgData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ActivateOrgResponses,
+    ActivateOrgErrors,
+    ThrowOnError
+  >({ url: "/api/v1/orgs/{orgId}/activate", ...options });
+
+/**
+ * List collaborators for a site (admin+)
+ */
+export const listSiteShares = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteSharesData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteSharesResponses,
+    ListSiteSharesErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/shares", ...options });
+
+/**
+ * Grant site access to an email (admin+; org-scope only). If the email
+ * matches a known user the share is immediate (201); otherwise an invitation
+ * is created and the accept link is returned (202).
+ *
+ */
+export const createSiteShare = <ThrowOnError extends boolean = false>(
+  options: Options<CreateSiteShareData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateSiteShareResponses,
+    CreateSiteShareErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/shares",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Revoke a collaborator's site access (admin+; org-scope only)
+ */
+export const deleteSiteShare = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteSiteShareData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    DeleteSiteShareResponses,
+    DeleteSiteShareErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/shares/{userId}", ...options });
+
+/**
+ * List sites shared to the authenticated user (any logged-in user)
+ */
+export const listSharedWithMe = <ThrowOnError extends boolean = false>(
+  options?: Options<ListSharedWithMeData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListSharedWithMeResponses,
+    ListSharedWithMeErrors,
+    ThrowOnError
+  >({ url: "/api/v1/shared-with-me", ...options });
+
+/**
+ * Accept an invitation by token (public; creates/links user and session).
+ * Accepts both org-scope invitations (creates a membership) and site-scope
+ * invitations (creates a site_shares row). Validates token hash, email
+ * binding, expiry, single-use, and rate-limit.
+ *
+ */
+export const acceptInvitation = <ThrowOnError extends boolean = false>(
+  options: Options<AcceptInvitationData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    AcceptInvitationResponses,
+    AcceptInvitationErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/invitations/accept",
     ...options,
     headers: {
       "Content-Type": "application/json",

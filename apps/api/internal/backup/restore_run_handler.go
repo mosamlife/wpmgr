@@ -49,7 +49,12 @@ func (h *RestoreRunHandler) SetUserDirectory(dir UserDirectory) {
 //	GET /restores/:restoreId                   — get run by id      (PermSiteRead)
 //	GET /restores/:restoreId/events?after=<id> — list phase log     (PermSiteRead)
 func (h *RestoreRunHandler) Register(r *gin.RouterGroup) {
-	r.GET("/sites/:siteId/restores", authz.RequirePermission(authz.PermSiteRead), h.listForSite)
+	// Per-siteId route: RequireSiteAccess enforces the site allowlist for
+	// site-scoped principals (belt-and-braces in front of the RLS policy).
+	r.GET("/sites/:siteId/restores", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.listForSite)
+	// By-restoreId routes: site isolation is enforced via scoped RLS (the
+	// RESTRICTIVE policy on restore_runs denies rows whose site_id is outside
+	// AllowedSiteIDs). The handler also enforces canReadSite (see below).
 	r.GET("/restores/:restoreId", authz.RequirePermission(authz.PermSiteRead), h.getByID)
 	r.GET("/restores/:restoreId/events", authz.RequirePermission(authz.PermSiteRead), h.listEvents)
 }
@@ -276,21 +281,33 @@ func (h *RestoreRunHandler) listEvents(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 // canReadSite checks that the authenticated principal can read the given
-// siteID. It mirrors the per-site route guard but for the by-id case where
-// the site is resolved from the run rather than from the URL parameter. The
-// authz package's RequirePermission middleware cannot be reused here (it
-// operates on :siteId param), so we call the underlying check directly.
+// siteID. It is used for by-id routes where the site is resolved from the
+// resource row (not the URL parameter), so RequireSiteAccess cannot be applied
+// as middleware.
+//
+// For org-scoped principals: RLS already tenant-scopes the query; any member
+// can read any site in their tenant (PermSiteRead is a tenant-wide grant).
+//
+// For site-scoped principals: the RESTRICTIVE RLS policy (backup_snapshots /
+// restore_runs site_scope) will deny rows not in AllowedSiteIDs, returning 404
+// from the service layer. We add an explicit allowlist check here as belt-and-
+// braces so the 404 is consistent even if the scoped tx is somehow absent.
 func canReadSite(c *gin.Context, siteID uuid.UUID) bool {
-	// The authz.PermSiteRead middleware allows any tenant-member with viewer+
-	// role. Since we are already past RequireAuth + RequireTenant we only need
-	// to check that the resolved site's tenant matches the principal's active
-	// tenant — which RLS already ensures (the GetRestoreRun query runs under
-	// the tenant GUC). A non-member who somehow has a valid session for a
-	// different tenant would be blocked by RLS returning 404. For same-tenant
-	// members, PermSiteRead is always granted (WPMgr's RBAC: any member can
-	// read any site in their tenant). We return true here; callers that need
-	// finer-grained site-level isolation should extend this check.
-	return true
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		return false
+	}
+	if p.Scope != domain.ScopeSite {
+		// Org-scoped (or API-key): RLS + tenant filter is sufficient.
+		return true
+	}
+	// Site-scoped: check explicit allowlist.
+	for _, allowed := range p.AllowedSiteIDs {
+		if allowed == siteID {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

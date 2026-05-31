@@ -4,11 +4,11 @@
 //
 //   - Kind=cp        — WPMgr-managed bucket (default; legacy behaviour).
 //   - Kind=local     — agent writes chunks straight to wp-content/wpmgr-backups
-//                      on the same webserver. The CP only sees the manifest.
+//     on the same webserver. The CP only sees the manifest.
 //   - Kind=s3_compat — customer-owned S3 bucket (AWS S3, Wasabi, B2, DO Spaces,
-//                      MinIO, …). CP holds the AWS credentials age-encrypted at
-//                      rest and mints presigned PUT URLs against the bucket on
-//                      the agent's behalf, so the agent never sees the keys.
+//     MinIO, …). CP holds the AWS credentials age-encrypted at
+//     rest and mints presigned PUT URLs against the bucket on
+//     the agent's behalf, so the agent never sees the keys.
 //
 // The Snapshot row carries a `destination_id` FK back to this table so the
 // presign service can route to the right Store (see blobstore.Registry).

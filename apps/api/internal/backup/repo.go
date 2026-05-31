@@ -22,6 +22,15 @@ type Repo interface {
 	// Snapshots.
 	CreateSnapshot(ctx context.Context, in CreateSnapshotInput) (Snapshot, error)
 	GetSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error)
+	// GetSnapshotScoped performs the same lookup as GetSnapshot but routes the
+	// database transaction through pool.RunTenantTx keyed on the supplied
+	// principal. For a site-scoped principal (Scope=="site") this activates
+	// InScopedTenantTx so the RESTRICTIVE backup_snapshots_site_scope RLS
+	// policy denies access to non-granted sites BEFORE any presigned URL is
+	// minted. For org-scoped and legacy (Scope=="") principals it is
+	// behaviourally identical to GetSnapshot. Used by PresignChunks and
+	// PlanRestore as the gate lookup.
+	GetSnapshotScoped(ctx context.Context, p db.ScopedPrincipal, tenantID, snapshotID uuid.UUID) (Snapshot, error)
 	ListSnapshotsForSite(ctx context.Context, tenantID, siteID uuid.UUID, limit, offset int32) ([]Snapshot, error)
 	MarkSnapshotRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error)
 	CompleteSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (Snapshot, error)
@@ -188,6 +197,26 @@ func (r *pgRepo) CreateSnapshot(ctx context.Context, in CreateSnapshotInput) (Sn
 func (r *pgRepo) GetSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
 	var out Snapshot
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).GetBackupSnapshot(ctx, sqlc.GetBackupSnapshotParams{ID: snapshotID, TenantID: tenantID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("backup_snapshot_not_found", "backup snapshot not found")
+			}
+			return domain.Internal("backup_snapshot_get_failed", "failed to load snapshot").WithCause(err)
+		}
+		out = toSnapshot(row)
+		return nil
+	})
+	return out, err
+}
+
+// GetSnapshotScoped performs the same lookup as GetSnapshot but routes the
+// transaction through pool.RunTenantTx so a site-scoped principal activates
+// InScopedTenantTx. For org-scoped/legacy principals behaviour is identical
+// to GetSnapshot. See the Repo interface for the full contract.
+func (r *pgRepo) GetSnapshotScoped(ctx context.Context, p db.ScopedPrincipal, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
+	var out Snapshot
+	err := r.pool.RunTenantTx(ctx, p, func(tx pgx.Tx) error {
 		row, err := sqlc.New(tx).GetBackupSnapshot(ctx, sqlc.GetBackupSnapshotParams{ID: snapshotID, TenantID: tenantID})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

@@ -97,10 +97,10 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (SiteDestination, err
 			in.AccessKeyID, in.SecretKeyEnc, in.ForcePathStyle, in.IsDefault,
 		)
 		var (
-			d        SiteDestination
-			kindStr  string
-			siteCol  pgtype.UUID
-			secret   sql.RawBytes
+			d       SiteDestination
+			kindStr string
+			siteCol pgtype.UUID
+			secret  sql.RawBytes
 		)
 		if err := row.Scan(
 			&d.ID, &d.TenantID, &siteCol, &kindStr, &d.Label,

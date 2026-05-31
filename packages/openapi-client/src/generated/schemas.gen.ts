@@ -2812,3 +2812,214 @@ export const SiteLoginBrandUpdateSchema = {
     },
   },
 } as const;
+
+export const PatchMemberRequestSchema = {
+  type: "object",
+  required: ["role"],
+  properties: {
+    role: {
+      $ref: "#/components/schemas/Role",
+    },
+  },
+} as const;
+
+export const CreateOrgRequestSchema = {
+  type: "object",
+  required: ["name"],
+  properties: {
+    name: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+      description: "Display name of the new organisation.",
+    },
+    slug: {
+      type: "string",
+      maxLength: 64,
+      pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      description: "URL-safe slug. Auto-derived from name when omitted.\n",
+    },
+  },
+} as const;
+
+export const OrgSchema = {
+  type: "object",
+  required: ["id", "name", "slug"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+    },
+    slug: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const ActivateOrgResponseSchema = {
+  type: "object",
+  required: ["active_tenant_id"],
+  properties: {
+    active_tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+  },
+} as const;
+
+export const SiteShareRoleSchema = {
+  type: "string",
+  enum: ["viewer", "operator", "admin"],
+  description:
+    "Role a site collaborator holds. Subset of the full org Role enum —\nsite shares cannot be owner.\n",
+} as const;
+
+export const SiteShareSchema = {
+  type: "object",
+  required: ["id", "site_id", "user_id", "role", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    user_id: {
+      type: "string",
+      format: "uuid",
+    },
+    role: {
+      $ref: "#/components/schemas/SiteShareRole",
+    },
+    granted_by: {
+      type: "string",
+      format: "uuid",
+      description: "UUID of the org member who created the share.",
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "When the share expires (null = durable). After this time the\nRESTRICTIVE RLS policy treats the grant as absent.\n",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteShareListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteShare",
+      },
+    },
+  },
+} as const;
+
+export const CreateSiteShareRequestSchema = {
+  type: "object",
+  required: ["email", "role"],
+  properties: {
+    email: {
+      type: "string",
+      format: "email",
+      description:
+        "Email of the collaborator to invite. If a user with this email exists\nthe share is created immediately; otherwise an invitation is emailed/linked.\n",
+    },
+    role: {
+      $ref: "#/components/schemas/SiteShareRole",
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "Optional expiry (RFC3339). Null / omitted = durable grant. Use for\ntime-limited support access.\n",
+    },
+  },
+} as const;
+
+export const SiteShareGrantResponseSchema = {
+  type: "object",
+  required: ["invited"],
+  properties: {
+    share: {
+      $ref: "#/components/schemas/SiteShare",
+      description:
+        "Present when the user already existed and the share is immediate.",
+    },
+    invited: {
+      type: "boolean",
+      description:
+        "true when an invitation was created because the email is not a known\nuser; false when the share was applied directly.\n",
+    },
+    accept_link: {
+      type: "string",
+      description:
+        "The raw invitation accept URL (shown once, like an API key). Present\nwhen invited=true AND the notification SMTP is not configured — the\ninviter must copy and share this link manually.\n",
+    },
+  },
+} as const;
+
+export const AcceptInvitationRequestSchema = {
+  type: "object",
+  required: ["token", "email"],
+  properties: {
+    token: {
+      type: "string",
+      description: "The raw token from the accept link (?token=…).",
+    },
+    email: {
+      type: "string",
+      format: "email",
+      description:
+        "Must match the email the invitation was addressed to (prevents\nidentity swap and enumeration).\n",
+    },
+    name: {
+      type: "string",
+      maxLength: 200,
+      description: "Display name to set when a new user account is created.",
+    },
+    password: {
+      type: "string",
+      minLength: 8,
+      maxLength: 200,
+      description:
+        "Password to set when a new user account is created. Required only\nwhen the invited email has no existing account.\n",
+    },
+  },
+} as const;
+
+export const AcceptInvitationResponseSchema = {
+  type: "object",
+  required: ["tenant_id", "scope"],
+  properties: {
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+      description: "The organisation the invitation belonged to.",
+    },
+    scope: {
+      type: "string",
+      enum: ["org", "site"],
+      description:
+        '"org" when a full membership was granted; "site" when a site-scoped\nshare was created.\n',
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+      description:
+        'Set when scope="site"; the specific site the user now has access to.',
+    },
+  },
+} as const;

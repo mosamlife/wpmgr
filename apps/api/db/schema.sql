@@ -80,6 +80,8 @@ CREATE INDEX sites_tags_idx ON sites USING gin (tags);
 -- across the deployment: a given keypair identifies exactly one site.
 CREATE UNIQUE INDEX sites_agent_public_key_key ON sites (agent_public_key)
     WHERE agent_public_key <> '';
+-- M19: backs the composite FK on site_shares (prevents tenant drift).
+ALTER TABLE sites ADD CONSTRAINT sites_id_tenant_key UNIQUE (id, tenant_id);
 
 -- ---------------------------------------------------------------------------
 -- Row-Level Security
@@ -155,6 +157,9 @@ CREATE TABLE memberships (
 CREATE UNIQUE INDEX memberships_user_tenant_key ON memberships (user_id, tenant_id);
 CREATE INDEX memberships_tenant_id_idx ON memberships (tenant_id);
 CREATE INDEX memberships_user_id_idx ON memberships (user_id);
+-- M19: role vocabulary enforcement.
+ALTER TABLE memberships ADD CONSTRAINT memberships_role_check
+    CHECK (role IN ('owner', 'admin', 'operator', 'viewer'));
 
 -- ---------------------------------------------------------------------------
 -- api_keys
@@ -821,3 +826,81 @@ CREATE POLICY autologin_policies_tenant_isolation ON autologin_policies
 CREATE POLICY autologin_policies_agent ON autologin_policies
     FOR SELECT
     USING (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- site_shares  (M19 — per-site collaborator grants)
+-- ---------------------------------------------------------------------------
+-- One row per (site, user) grant. Allows an outside user (no memberships row)
+-- access to exactly one site within the owning tenant, bounded by role and an
+-- optional expiry. RLS: tenant isolation for org admins + self_read for the
+-- grantee's cross-org discovery path (no site_scope restrictive policy here —
+-- a scoped user reads their own shares via self_read; never lists others').
+CREATE EXTENSION IF NOT EXISTS citext;
+
+CREATE TABLE site_shares (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id  uuid        NOT NULL,
+    site_id    uuid        NOT NULL,
+    user_id    uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    role       text        NOT NULL DEFAULT 'viewer'
+               CHECK (role IN ('viewer', 'operator', 'admin')),
+    granted_by uuid        REFERENCES users (id) ON DELETE SET NULL,
+    expires_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (site_id, user_id),
+    FOREIGN KEY (site_id, tenant_id) REFERENCES sites (id, tenant_id) ON DELETE CASCADE
+);
+
+CREATE INDEX site_shares_user_id_idx ON site_shares (user_id);
+CREATE INDEX site_shares_tenant_id_idx ON site_shares (tenant_id);
+
+ALTER TABLE site_shares ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_shares FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_shares_tenant_isolation ON site_shares
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_shares_self_read ON site_shares
+    FOR SELECT
+    USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- invitations  (M19 — org + site invitation, tokenized)
+-- ---------------------------------------------------------------------------
+-- One row per invitation issued. Covers both org-level (scope='org') and
+-- per-site (scope='site') invitations in a single table. token_hash is a
+-- sha256 of the plaintext token (never stored); the accept endpoint looks it
+-- up pre-auth via the invitations_token_lookup policy. email is citext for
+-- case-insensitive matching at accept time.
+CREATE TABLE invitations (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    email            citext      NOT NULL,
+    scope            text        NOT NULL CHECK (scope IN ('org', 'site')),
+    site_id          uuid        REFERENCES sites (id) ON DELETE CASCADE,
+    role             text        NOT NULL,
+    token_hash       text        NOT NULL UNIQUE,
+    invited_by       uuid        REFERENCES users (id) ON DELETE SET NULL,
+    expires_at       timestamptz NOT NULL,
+    attempts         integer     NOT NULL DEFAULT 0,
+    accepted_at      timestamptz,
+    accepted_user_id uuid        REFERENCES users (id) ON DELETE SET NULL,
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX invitations_tenant_id_idx ON invitations (tenant_id);
+CREATE INDEX invitations_email_idx ON invitations (email);
+
+ALTER TABLE invitations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invitations FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY invitations_tenant_isolation ON invitations
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- Pre-auth lookup: the public /invitations/accept endpoint must resolve a
+-- token before any session/tenant scope exists. Mirrors api_keys_prefix_lookup.
+CREATE POLICY invitations_token_lookup ON invitations
+    FOR SELECT
+    USING (current_setting('app.invite_lookup', true) = 'on');

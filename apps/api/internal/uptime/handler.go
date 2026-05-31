@@ -32,8 +32,14 @@ func NewHandler(svc *Service, rec *audit.Recorder) *Handler {
 // Register mounts the uptime routes. Uptime reads require viewer+; alert-config
 // management requires admin+ (it sets delivery channels + a signing secret).
 func (h *Handler) Register(r *gin.RouterGroup) {
-	r.GET("/sites/:siteId/uptime", authz.RequirePermission(authz.PermSiteRead), h.getUptime)
+	// Per-siteId route: RequireSiteAccess enforces the site allowlist for
+	// site-scoped principals (belt-and-braces in front of the RLS policy on
+	// site_uptime_probes / site_alert_state).
+	r.GET("/sites/:siteId/uptime", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.getUptime)
+	// Tenant-wide collection route: site-scoped filtering done by RLS.
 	r.GET("/uptime/summary", authz.RequirePermission(authz.PermSiteRead), h.summary)
+	// Tenant-level alert-config routes: PermAuditRead is an org-level permission
+	// so RequirePermission will already block site-scoped principals.
 	r.GET("/alert-config", authz.RequirePermission(authz.PermAuditRead), h.getAlertConfig)
 	r.PUT("/alert-config", authz.RequirePermission(authz.PermAuditRead), h.putAlertConfig)
 }

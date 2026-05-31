@@ -181,3 +181,32 @@ func (q *Queries) UpdateMembershipRole(ctx context.Context, arg UpdateMembership
 	)
 	return i, err
 }
+
+const upsertOwnerMembership = `-- name: UpsertOwnerMembership :one
+INSERT INTO memberships (user_id, tenant_id, role)
+VALUES ($1, $2, 'owner')
+ON CONFLICT (user_id, tenant_id)
+DO UPDATE SET role = 'owner', updated_at = now()
+RETURNING id, user_id, tenant_id, role, created_at, updated_at
+`
+
+type UpsertOwnerMembershipParams struct {
+	UserID   uuid.UUID `json:"user_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Tenant-create helper: insert an owner membership for the creator; on conflict
+// (e.g. migration replay or second create attempt) update role to 'owner'.
+func (q *Queries) UpsertOwnerMembership(ctx context.Context, arg UpsertOwnerMembershipParams) (Membership, error) {
+	row := q.db.QueryRow(ctx, upsertOwnerMembership, arg.UserID, arg.TenantID)
+	var i Membership
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TenantID,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

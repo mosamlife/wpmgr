@@ -326,20 +326,20 @@ var coreDirs = []string{
 // coreRootPHPFiles is the set of root-level PHP files shipped with WordPress
 // core that are subject to core_modified / core_missing detection.
 var coreRootPHPFiles = map[string]bool{
-	"index.php":              true,
-	"wp-activate.php":        true,
-	"wp-blog-header.php":     true,
-	"wp-comments-post.php":   true,
-	"wp-config-sample.php":   true,
-	"wp-cron.php":            true,
-	"wp-links-opml.php":      true,
-	"wp-load.php":            true,
-	"wp-login.php":           true,
-	"wp-mail.php":            true,
-	"wp-settings.php":        true,
-	"wp-signup.php":          true,
-	"wp-trackback.php":       true,
-	"xmlrpc.php":             true,
+	"index.php":            true,
+	"wp-activate.php":      true,
+	"wp-blog-header.php":   true,
+	"wp-comments-post.php": true,
+	"wp-config-sample.php": true,
+	"wp-cron.php":          true,
+	"wp-links-opml.php":    true,
+	"wp-load.php":          true,
+	"wp-login.php":         true,
+	"wp-mail.php":          true,
+	"wp-settings.php":      true,
+	"wp-signup.php":        true,
+	"wp-trackback.php":     true,
+	"xmlrpc.php":           true,
 }
 
 // allowedRootFiles is the operator-managed / WordPress-generated root files
