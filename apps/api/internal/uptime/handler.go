@@ -111,6 +111,18 @@ func (h *Handler) summary(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	// Summary enumerates ALL sites in the tenant; a site-scoped collaborator
+	// must only see their granted sites, so filter to the allowlist here (the
+	// per-site /sites/:siteId/uptime route is already RequireSiteAccess-gated).
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok && p.Scope == domain.ScopeSite {
+		allowed := make([]SummaryItem, 0, len(items))
+		for _, it := range items {
+			if p.CanAccessSite(it.SiteID) {
+				allowed = append(allowed, it)
+			}
+		}
+		items = allowed
+	}
 	out := gen.UptimeSummary{Items: make([]gen.UptimeSummaryItem, 0, len(items))}
 	for _, it := range items {
 		gi := gen.UptimeSummaryItem{SiteID: it.SiteID, Up: it.Up}

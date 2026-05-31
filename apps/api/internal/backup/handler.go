@@ -109,6 +109,10 @@ func (h *Handler) getEnvironment(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	if !canReadSite(c, snap.SiteID) {
+		httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
+		return
+	}
 	if h.envFetcher == nil {
 		httpx.Error(c, domain.ServiceUnavailable("env_fetch_unwired",
 			"environment fingerprint reader is not configured on this control plane"))
@@ -219,6 +223,10 @@ func (h *Handler) getBackup(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	if !canReadSite(c, snap.SiteID) {
+		httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
+		return
+	}
 	out := gen.BackupSnapshotDetail{
 		Snapshot: toAPISnapshot(snap),
 		Entries:  make([]gen.BackupManifestEntry, 0, len(entries)),
@@ -267,6 +275,10 @@ func (h *Handler) events(c *gin.Context) {
 	snap, _, err := h.svc.GetSnapshot(c.Request.Context(), tenantID, snapshotID)
 	if err != nil {
 		httpx.Error(c, err)
+		return
+	}
+	if !canReadSite(c, snap.SiteID) {
+		httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
 		return
 	}
 
@@ -466,6 +478,17 @@ func (h *Handler) createRestore(c *gin.Context) {
 	var triggeredBy string
 	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
 		triggeredBy = p.ActorID()
+	}
+
+	// Restore is a destructive cross-site action resolved by snapshot id (no
+	// :siteId). Bind the snapshot's site to the caller's access BEFORE starting
+	// so a site-scoped collaborator cannot restore another site's snapshot.
+	if snap, _, gerr := h.svc.GetSnapshot(c.Request.Context(), tenantID, snapshotID); gerr != nil {
+		httpx.Error(c, gerr)
+		return
+	} else if !canReadSite(c, snap.SiteID) {
+		httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
+		return
 	}
 
 	result, err := h.svc.CreateRestore(c.Request.Context(), tenantID, snapshotID, sel, triggeredBy)

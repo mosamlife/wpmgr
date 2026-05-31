@@ -122,6 +122,10 @@ func (h *Handler) sqlInspectionHandler(deps InspectionDeps) gin.HandlerFunc {
 			httpx.Error(c, err)
 			return
 		}
+		if !canReadSite(c, snap.SiteID) {
+			httpx.Error(c, domain.Forbidden("forbidden", "you do not have access to this site"))
+			return
+		}
 		// A snapshot that doesn't carry any DB content has nothing to inspect.
 		// Distinct from "no inspection cached" — this is a permanent 404 because
 		// no run of the legacy parser will ever find a SQL dump in a
