@@ -87,6 +87,14 @@ const (
 	// fields: nonce_id (may be ""), site_id (may be uuid.Nil string), code (the
 	// domain error code), stage ("mint"|"consume").
 	ActionAutologinFailed = "autologin.failed"
+
+	// Media Optimizer (ADR-043 §6). The destructive delete-originals consent is
+	// recorded with ActorUser + the actor id so the hash chain attributes it.
+	ActionMediaSyncStarted               = "media.sync.started"
+	ActionMediaOptimizeStarted           = "media.optimize.started"
+	ActionMediaRestoreStarted            = "media.restore.started"
+	ActionMediaDeleteOriginalsConfirmed  = "media.delete_originals.confirmed"
+	ActionMediaCancelled                 = "media.cancelled"
 )
 
 // Entry is one audit record.

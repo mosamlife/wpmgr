@@ -83,6 +83,21 @@ const (
 	EventSiteDisconnected = "site.disconnected"
 	EventSiteArchived     = "site.archived"
 	EventSiteRestored     = "site.restored"
+
+	// Media Optimizer (ADR-043 §7) event types, published on the shared tenant
+	// SSE bus and filtered by site_id. The frontend (Phase 5) must add these
+	// strings to SITE_EVENT_TYPES in use-site-events.ts to receive them.
+	EventMediaSyncStarted              = "media.sync.started"
+	EventMediaSyncCompleted            = "media.sync.completed"
+	EventMediaOptimizeStarted          = "media.optimize.started"
+	EventMediaOptimizeProgress         = "media.optimize.progress"
+	EventMediaOptimizeAssetDone        = "media.optimize.asset_done"
+	EventMediaOptimizeCompleted        = "media.optimize.completed"
+	EventMediaRestoreStarted           = "media.restore.started"
+	EventMediaRestoreAssetDone         = "media.restore.asset_done"
+	EventMediaRestoreCompleted         = "media.restore.completed"
+	EventMediaDeleteOriginalsCompleted = "media.delete_originals.completed"
+	EventMediaJobFailed                = "media.job.failed"
 )
 
 // ConnectionEvent is the envelope published to the tenant SSE channel. ID is an

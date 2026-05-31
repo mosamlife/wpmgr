@@ -216,6 +216,62 @@ func (c *Client) Diagnostics(ctx context.Context, siteID uuid.UUID, siteURL stri
 	return c.postRaw(ctx, siteID, siteURL, "diagnostics", struct{}{})
 }
 
+// MediaOptimize sends the signed `media_optimize` command to the site's agent
+// (ADR-043). siteID is bound into the JWT's aud claim. The agent presigned-PUTs
+// each job's source variants and calls back to the CP's encode-ready endpoint;
+// this response is just the command ack. An old agent without the route returns
+// a 404 surfaced as the canonical "rejected by agent: status 404 …" error.
+func (c *Client) MediaOptimize(ctx context.Context, siteID uuid.UUID, siteURL string, req MediaOptimizeRequest) (MediaOptimizeResponse, error) {
+	var out MediaOptimizeResponse
+	if err := c.post(ctx, siteID, siteURL, "media_optimize", req, &out); err != nil {
+		return MediaOptimizeResponse{}, err
+	}
+	return out, nil
+}
+
+// MediaApply sends the signed `media_apply` command: the encoder finished an
+// attachment's variants and the agent should presigned-GET out/* and apply them
+// on disk, then call back to the job-status endpoint. siteID is bound into aud.
+func (c *Client) MediaApply(ctx context.Context, siteID uuid.UUID, siteURL string, req MediaApplyRequest) (MediaApplyResponse, error) {
+	var out MediaApplyResponse
+	if err := c.post(ctx, siteID, siteURL, "media_apply", req, &out); err != nil {
+		return MediaApplyResponse{}, err
+	}
+	return out, nil
+}
+
+// MediaSync sends the signed `media_sync` command: the agent enumerates its
+// media library and pushes pages to the CP's sync-batch endpoint. siteID is
+// bound into aud.
+func (c *Client) MediaSync(ctx context.Context, siteID uuid.UUID, siteURL string, req MediaSyncRequest) (MediaSyncResponse, error) {
+	var out MediaSyncResponse
+	if err := c.post(ctx, siteID, siteURL, "media_sync", req, &out); err != nil {
+		return MediaSyncResponse{}, err
+	}
+	return out, nil
+}
+
+// MediaRestore sends the signed `media_restore` command: revert the attachments
+// behind the job ids to their pre-optimization state. siteID is bound into aud.
+func (c *Client) MediaRestore(ctx context.Context, siteID uuid.UUID, siteURL string, req MediaRestoreRequest) (MediaRestoreResponse, error) {
+	var out MediaRestoreResponse
+	if err := c.post(ctx, siteID, siteURL, "media_restore", req, &out); err != nil {
+		return MediaRestoreResponse{}, err
+	}
+	return out, nil
+}
+
+// MediaDeleteOriginals sends the signed `media_delete_originals` command:
+// IRREVERSIBLY delete the archived originals behind the job ids. siteID is
+// bound into aud.
+func (c *Client) MediaDeleteOriginals(ctx context.Context, siteID uuid.UUID, siteURL string, req MediaDeleteOriginalsRequest) (MediaDeleteOriginalsResponse, error) {
+	var out MediaDeleteOriginalsResponse
+	if err := c.post(ctx, siteID, siteURL, "media_delete_originals", req, &out); err != nil {
+		return MediaDeleteOriginalsResponse{}, err
+	}
+	return out, nil
+}
+
 // post mints a fresh JWT bound to siteID (aud) and command (cmd), POSTs body to
 // the named command endpoint at siteURL, and decodes the JSON response into
 // out. A non-2xx response is an error.

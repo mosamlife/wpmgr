@@ -49,6 +49,7 @@ Thumbs.db
 
 # stray compiled binaries (build to bin/ instead)
 /apps/api/wpmgr
+/apps/api/media-encoder
 /wpmgr
 /cmd
 

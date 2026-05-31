@@ -1097,6 +1097,142 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/media/assets:
+    get:
+      operationId: listMediaAssets
+      summary: List a site's media assets (Media Optimizer, ADR-043)
+      description: |
+        Cursor-paginated media library mirror with a summary rollup. Gated on
+        site:read + per-site access. DTOs are hand-rolled (c.JSON), not ogen.
+      tags: [media]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string } }
+        - { name: search, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of media assets + summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaAssetList" }
+  /api/v1/sites/{siteId}/media/sync:
+    post:
+      operationId: syncMedia
+      summary: Tell the agent to enumerate the media library
+      tags: [media]
+      parameters: [{ $ref: "#/components/parameters/SiteId" }]
+      responses:
+        "202":
+          description: Sync dispatched
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id: { type: string }
+                  started_at: { type: string, format: date-time }
+  /api/v1/sites/{siteId}/media/optimize:
+    post:
+      operationId: optimizeMedia
+      summary: Start an optimize batch (fans out one job per attachment)
+      tags: [media]
+      parameters: [{ $ref: "#/components/parameters/SiteId" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaOptimizeRequest" }
+      responses:
+        "202":
+          description: Optimize batch queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaBatchResult" }
+  /api/v1/sites/{siteId}/media/restore:
+    post:
+      operationId: restoreMedia
+      summary: Restore selected attachments to their pre-optimization state
+      tags: [media]
+      parameters: [{ $ref: "#/components/parameters/SiteId" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaAssetSelection" }
+      responses:
+        "202":
+          description: Restore batch queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaBatchResult" }
+  /api/v1/sites/{siteId}/media/delete-originals:
+    post:
+      operationId: deleteMediaOriginals
+      summary: Irreversibly delete archived originals (admin+)
+      description: Gated on the media:delete_originals permission (RoleAdmin minimum).
+      tags: [media]
+      parameters: [{ $ref: "#/components/parameters/SiteId" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaAssetSelection" }
+      responses:
+        "202":
+          description: Delete-originals batch queued (irreversible)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/MediaBatchResult"
+                  - type: object
+                    properties: { irreversible: { type: boolean } }
+  /api/v1/sites/{siteId}/media/cancel:
+    post:
+      operationId: cancelMedia
+      summary: Cancel all in-flight media jobs for a site
+      tags: [media]
+      parameters: [{ $ref: "#/components/parameters/SiteId" }]
+      responses:
+        "200":
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  cancelled_count: { type: integer }
+  /api/v1/sites/{siteId}/media/jobs:
+    get:
+      operationId: listMediaJobs
+      summary: List media optimization jobs for a site
+      tags: [media]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: state, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of media jobs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaJobList" }
+  /api/v1/sites/{siteId}/media/jobs/{jobId}:
+    get:
+      operationId: getMediaJob
+      summary: Get a media job + its variant results
+      tags: [media]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The job detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaJobDetail" }
   /api/v1/sites/events:
     get:
       operationId: streamSiteEvents
@@ -4871,3 +5007,103 @@ components:
           type: string
           format: uuid
           description: Set when scope="site"; the specific site the user now has access to.
+
+    # ----------------------------------------------------------------------
+    # Media Optimizer (ADR-043, M23). DTOs are hand-rolled in the Go handler
+    # (c.JSON), mirroring the scan feature; these schemas document the wire
+    # shape for the generated TS client.
+    # ----------------------------------------------------------------------
+    MediaAsset:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        wp_attachment_id: { type: integer, format: int64 }
+        title: { type: string }
+        original_url: { type: string }
+        original_mime: { type: string }
+        original_size_bytes: { type: integer, format: int64 }
+        current_format: { type: string, enum: [original, webp, avif] }
+        current_size_bytes: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [pending, optimizing, optimized, failed, restoring, restored, excluded, originals_deleted]
+        generation: { type: integer }
+        sizes_optimized: { type: array, items: { type: string } }
+        sizes_unoptimized: { type: object, additionalProperties: { type: string } }
+        last_optimized_at: { type: string, format: date-time }
+    MediaSummary:
+      type: object
+      properties:
+        total: { type: integer, format: int64 }
+        optimized: { type: integer, format: int64 }
+        pending: { type: integer, format: int64 }
+        failed: { type: integer, format: int64 }
+        bytes_saved: { type: integer, format: int64 }
+    MediaAssetList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/MediaAsset" } }
+        next_cursor: { type: string }
+        total_count: { type: integer, format: int64 }
+        summary: { $ref: "#/components/schemas/MediaSummary" }
+    MediaOptimizeRequest:
+      type: object
+      properties:
+        asset_ids: { type: array, items: { type: string, format: uuid } }
+        all_pending: { type: boolean }
+        target_format: { type: string, enum: [avif, webp, original] }
+        target_quality: { type: string, enum: [lossy, lossless] }
+    MediaAssetSelection:
+      type: object
+      properties:
+        asset_ids: { type: array, items: { type: string, format: uuid } }
+    MediaBatchResult:
+      type: object
+      properties:
+        batch_job_id: { type: string }
+        queued_count: { type: integer }
+    MediaJob:
+      type: object
+      properties:
+        id: { type: string }
+        site_id: { type: string, format: uuid }
+        asset_id: { type: string, format: uuid }
+        wp_attachment_id: { type: integer, format: int64 }
+        kind: { type: string, enum: [optimize, restore, delete_originals, sync] }
+        target_format: { type: string }
+        target_quality: { type: string }
+        state:
+          type: string
+          enum: [queued, in_progress, succeeded, partially_succeeded, failed, cancelled]
+        bytes_before: { type: integer, format: int64 }
+        bytes_after: { type: integer, format: int64 }
+        variants_total: { type: integer }
+        variants_succeeded: { type: integer }
+        variants_failed: { type: integer }
+        error_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+    MediaVariantResult:
+      type: object
+      properties:
+        variant_name: { type: string }
+        source_size_bytes: { type: integer, format: int64 }
+        optimized_size_bytes: { type: integer, format: int64 }
+        source_mime: { type: string }
+        optimized_mime: { type: string }
+        encode_ms: { type: integer }
+        state: { type: string, enum: [succeeded, failed, skipped] }
+        reason: { type: string }
+    MediaJobList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/MediaJob" } }
+        next_cursor: { type: string }
+    MediaJobDetail:
+      allOf:
+        - $ref: "#/components/schemas/MediaJob"
+        - type: object
+          properties:
+            variants: { type: array, items: { $ref: "#/components/schemas/MediaVariantResult" } }

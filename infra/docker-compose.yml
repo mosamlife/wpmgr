@@ -195,6 +195,58 @@ services:
     # (GET /healthz, GET /readyz), add an HTTP healthcheck (e.g. via a small
     # busybox sidecar or by embedding a `wpmgr healthcheck` subcommand). TODO.
 
+  # Media Optimizer encode worker (ADR-043, M23). OPTIONAL: behind the `media`
+  # profile so a self-hoster who doesn't want image optimization simply doesn't
+  # run it (and their core API stays a minimal CGO_ENABLED=0 static binary).
+  # Bring it up with:  docker compose --profile media up
+  #
+  # It connects to the SAME Postgres + object storage as the api (it runs under
+  # the app.agent RLS GUC and moves bytes via presigned URLs — no extra grants).
+  # It registers a River worker on the bounded `media_encode` queue; the api
+  # registers that same queue with ZERO workers (insert-only), so encode jobs
+  # the api enqueues are only ever executed here.
+  media-encoder:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.media-encoder
+    image: wpmgr-media-encoder:dev
+    restart: unless-stopped
+    profiles: ["media"]
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      WPMGR_DB_HOST: postgres
+      WPMGR_DB_PORT: "5432"
+      # App (unprivileged, NOSUPERUSER NOBYPASSRLS) login role — same as the api.
+      WPMGR_DB_USER: wpmgr_app
+      WPMGR_DB_PASSWORD: ${WPMGR_DB_APP_PASSWORD:-wpmgr-app-dev-secret}
+      WPMGR_DB_NAME: ${WPMGR_DB_NAME:-wpmgr}
+      WPMGR_DB_SSLMODE: ${WPMGR_DB_SSLMODE:-disable}
+      WPMGR_ALLOW_RLS_BYPASS_ROLE: "false"
+      # Object storage — identical to the api. Presigned URLs the encoder mints
+      # must be reachable from the agent on the WP host (override via .env when
+      # the agent is external; see the api service's note).
+      WPMGR_S3_ENDPOINT: ${WPMGR_S3_ENDPOINT:-http://seaweedfs:8333}
+      WPMGR_S3_REGION: ${WPMGR_S3_REGION:-us-east-1}
+      WPMGR_S3_BUCKET: ${WPMGR_S3_BUCKET:-wpmgr-backups}
+      WPMGR_S3_ACCESS_KEY: ${WPMGR_S3_ACCESS_KEY:-wpmgr}
+      WPMGR_S3_SECRET_KEY: ${WPMGR_S3_SECRET_KEY:-wpmgr-dev-secret}
+      WPMGR_S3_FORCE_PATH_STYLE: "true"
+      # CP signing key: required to dispatch the signed media_apply command back
+      # to the agent. Share the same key the api uses (.env override in prod).
+      WPMGR_AGENT_SIGNING_PRIVATE_KEY: ${WPMGR_AGENT_SIGNING_PRIVATE_KEY:-}
+      # Public CP base URL the agent reaches callbacks at (presign/encode-ready/
+      # job-status). Same value the api uses.
+      WPMGR_PUBLIC_BASE_URL: ${WPMGR_PUBLIC_BASE_URL:-}
+      # Bounded encode concurrency (also sizes the lilliput ImageOps pool).
+      WPMGR_MEDIA_ENCODE_WORKERS: ${WPMGR_MEDIA_ENCODE_WORKERS:-2}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_started
+
   # Dex — self-host OIDC IdP (ADR-026, Apache-2.0). Part of the BASE stack
   # because auth is core. Config + dev static client/password live in
   # infra/dex/config.yaml. Issuer is http://dex.localhost:5556/dex (see that

@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1
+
+# ---- build stage ----
+# Multi-stage build of the WPMgr Media Optimizer encode worker (cmd/media-encoder,
+# ADR-043). Unlike the main API (infra/Dockerfile.api, CGO_ENABLED=0 on
+# distroless/static), this binary links the CGO lilliput encoder + its bundled
+# native codec libs (libaom/dav1d/etc.), so it builds with CGO_ENABLED=1 against
+# a glibc base. The main API NEVER imports the encoder — these are two distinct
+# images by design.
+FROM golang:1.26 AS build
+
+# CGO ON. linux/amd64 (lilliput ships prebuilt static codec libs for it).
+ENV CGO_ENABLED=1 \
+    GOWORK=off \
+    GOOS=linux \
+    GOARCH=amd64
+
+WORKDIR /src
+
+# Cache module downloads. The api module's go.mod/go.sum are the only ones
+# needed when GOWORK=off.
+COPY apps/api/go.mod apps/api/go.su[m] ./apps/api/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd apps/api && go mod download || true
+
+# lilliput is the CGO image library (ADR-043 §1, MIT). Pin v1.5.0. (Already in
+# go.mod; this `go get` is belt-and-braces so the build is reproducible even if
+# the module graph is regenerated.)
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd apps/api && go get github.com/discord/lilliput@v1.5.0
+
+# Copy the api module source.
+COPY apps/api ./apps/api
+
+ARG VERSION=0.0.0-dev
+
+# Build the CGO binary. No -s -w stripping issues: keep it simple + reproducible.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd apps/api && \
+    go build -trimpath \
+        -ldflags "-X main.version=${VERSION}" \
+        -o /out/media-encoder ./cmd/media-encoder
+
+# ---- final stage ----
+# distroless/base-nonroot (NOT static) — lilliput needs glibc + a libc-backed
+# runtime, which `static` lacks. Still minimal + nonroot (uid 65532).
+FROM gcr.io/distroless/base-nonroot
+
+WORKDIR /
+COPY --from=build /out/media-encoder /usr/local/bin/media-encoder
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/media-encoder"]

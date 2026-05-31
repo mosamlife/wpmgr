@@ -26,6 +26,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
+	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/org"
 	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
@@ -118,6 +119,11 @@ type Deps struct {
 	OrgH        *org.Handler        // POST /orgs, POST /orgs/:orgId/activate
 	SharingH    *sharing.Handler    // site shares CRUD + shared-with-me
 	InvitationH *invitation.Handler // public POST /invitations/accept
+	// M23 — Media Optimizer (ADR-043). MediaH serves the operator-facing
+	// /api/v1/sites/{siteId}/media/... dashboard routes; MediaAgentH serves the
+	// agent-authenticated /agent/v1/media/... callbacks. Either may be nil.
+	MediaH      *mediahandler.Handler
+	MediaAgentH *mediahandler.AgentHandler
 	ServiceName string
 	Version     string
 }
@@ -209,6 +215,12 @@ func New(deps Deps) *Server {
 		if deps.UpdateAgentH != nil {
 			deps.UpdateAgentH.Register(agentGroup)
 		}
+		// M23 — Media Optimizer agent callbacks (sync-batch / presign /
+		// encode-ready / job-status / restore-status). Same Ed25519 signed-request
+		// auth; site + tenant resolved from the verified identity.
+		if deps.MediaAgentH != nil {
+			deps.MediaAgentH.Register(agentGroup)
+		}
 	}
 
 	// Everything under /api/v1 requires an authenticated principal with an
@@ -278,6 +290,10 @@ func New(deps Deps) *Server {
 	}
 	if deps.SharingH != nil {
 		deps.SharingH.Register(v1)
+	}
+	// M23 — operator-facing Media Optimizer dashboard routes.
+	if deps.MediaH != nil {
+		deps.MediaH.Register(v1)
 	}
 
 	return s

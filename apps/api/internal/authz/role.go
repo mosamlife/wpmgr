@@ -62,6 +62,12 @@ const (
 	// (operator/viewer are explicitly excluded; finer per-grant flows are out of
 	// scope for V0).
 	PermSiteAutologin Permission = "site:autologin"
+	// PermMediaDeleteOriginals authorises the IRREVERSIBLE "delete originals"
+	// media action (ADR-043 §6): once a site's archived originals are deleted,
+	// an optimized attachment can never be restored. Gated at admin+ (above the
+	// operator-level PermSiteWrite that guards sync/optimize/restore) and paired
+	// with a type-the-hostname UI confirmation.
+	PermMediaDeleteOriginals Permission = "media:delete_originals"
 )
 
 // minRoleFor maps each permission to the minimum role that holds it. The matrix
@@ -77,6 +83,8 @@ var minRoleFor = map[Permission]Role{
 	PermAuditRead:     RoleAdmin,
 	PermTenantManage:  RoleOwner,
 	PermSiteAutologin: RoleAdmin,
+	// Irreversible media original-deletion: admin+ (ADR-043 §6).
+	PermMediaDeleteOriginals: RoleAdmin,
 }
 
 // Allows reports whether role r is permitted to perform p.

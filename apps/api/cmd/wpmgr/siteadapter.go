@@ -12,6 +12,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
+	mediasvc "github.com/mosamlife/wpmgr/apps/api/internal/media/service"
 	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
 	"github.com/mosamlife/wpmgr/apps/api/internal/security"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
@@ -282,6 +283,29 @@ func (a *scanSiteAdapter) GetScanSiteInfo(ctx context.Context, tenantID, siteID 
 }
 
 var _ scan.SiteLookup = (*scanSiteAdapter)(nil)
+
+// mediaSiteAdapter resolves site info for the Media Optimizer service (agent URL
+// + enrollment). Keeps the media package free of a site import.
+type mediaSiteAdapter struct {
+	svc *site.Service
+}
+
+func newMediaSiteAdapter(svc *site.Service) *mediaSiteAdapter {
+	return &mediaSiteAdapter{svc: svc}
+}
+
+func (a *mediaSiteAdapter) GetMediaSiteInfo(ctx context.Context, tenantID, siteID uuid.UUID) (mediasvc.MediaSiteInfo, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return mediasvc.MediaSiteInfo{}, err
+	}
+	return mediasvc.MediaSiteInfo{
+		URL:      s.URL,
+		Enrolled: s.EnrolledAt != nil,
+	}, nil
+}
+
+var _ mediasvc.SiteLookup = (*mediaSiteAdapter)(nil)
 
 // activitySecurityAlerter is the seam between the activity log and the EXISTING
 // uptime alert Dispatcher (ADR-037 Sprint 3): a high-severity activity event

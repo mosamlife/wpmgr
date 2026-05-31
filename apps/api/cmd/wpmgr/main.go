@@ -35,6 +35,11 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
+	"github.com/mosamlife/wpmgr/apps/api/internal/media"
+	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
+	mediamodel "github.com/mosamlife/wpmgr/apps/api/internal/media/model"
+	mediarepo "github.com/mosamlife/wpmgr/apps/api/internal/media/repo"
+	mediaservice "github.com/mosamlife/wpmgr/apps/api/internal/media/service"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/org"
@@ -494,6 +499,46 @@ func run() error {
 		logger.Warn("scan agent client not wired: CP->agent commander unavailable (signing key empty?)")
 	}
 
+	// M23 — Media Optimizer (ADR-043). The service + handlers are built here
+	// (before River) so the dashboard GETs work as soon as the agent syncs; the
+	// EncodeArgs enqueuer is wired post-River-start (the media_encode queue is
+	// registered with MaxWorkers=0 in the API — the separate media-encoder
+	// process runs the actual encoders). NO encoder import reaches this binary:
+	// the API only client.Inserts model.EncodeArgs (a pure-Go River job type).
+	mediaRepo := mediarepo.NewRepo(pool)
+	var mediaStore *blobstore.Store
+	if cfg.S3.Enabled() {
+		ms, merr := blobstore.New(blobstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			Region:         cfg.S3.Region,
+			Bucket:         cfg.S3.Bucket,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			ForcePathStyle: cfg.S3.ForcePathStyle,
+		})
+		if merr != nil {
+			return fmt.Errorf("media blobstore init: %w", merr)
+		}
+		mediaStore = ms
+	}
+	mediaCPBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	mediaSvc := mediaservice.NewService(mediaRepo, mediaStore, siteEventsPub, auditRec, clock, mediaservice.Config{
+		PresignTTL:    cfg.Backup.PresignTTL,
+		CPBaseURL:     mediaCPBaseURL,
+		RatePerSite:   200,
+		RatePerTenant: 1000,
+		RateWindow:    time.Minute,
+	}, logger)
+	mediaSiteAdapterImpl := newMediaSiteAdapter(siteSvc)
+	if mediaCmd, ok := commander.(mediaservice.AgentMediaClient); ok {
+		mediaSvc.SetAgentClient(mediaCmd, mediaSiteAdapterImpl)
+		logger.Info("media optimizer agent client wired")
+	} else {
+		logger.Warn("media optimizer agent client not wired: CP->agent commander unavailable (signing key empty?)")
+	}
+	mediaH := mediahandler.NewHandler(mediaSvc)
+	mediaAgentH := mediahandler.NewAgentHandler(mediaSvc)
+
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
 		healthChecker:          healthChecker,
 		healthInterval:         cfg.Agent.HealthInterval,
@@ -545,6 +590,11 @@ func run() error {
 	if scanWorker != nil {
 		scanWorker.SetEnqueuer(scanEnqueuer)
 	}
+
+	// M23 Media Optimizer: wire the EncodeArgs enqueuer now that River has
+	// started. The enqueuer lives in the PURE media package (no encoder import),
+	// so this binary still has no CGO dependency.
+	mediaSvc.SetEnqueuer(media.NewRiverEnqueuer(riverClient))
 
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout)
@@ -801,6 +851,9 @@ func run() error {
 		OrgH:        orgH,
 		SharingH:    sharingH,
 		InvitationH: invitationH,
+		// M23 — Media Optimizer.
+		MediaH:      mediaH,
+		MediaAgentH: mediaAgentH,
 		ServiceName: cfg.OTel.ServiceName,
 		Version:     version,
 	})
@@ -934,6 +987,11 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 
 	queues := map[string]river.QueueConfig{
 		river.QueueDefault: {MaxWorkers: 5},
+		// M23 Media Optimizer (ADR-043): the API registers the media_encode queue
+		// with ZERO workers — it only client.Inserts model.EncodeArgs. The actual
+		// EncodeWorker (which imports the CGO lilliput encoder) runs ONLY in the
+		// separate cmd/media-encoder process. This keeps the API CGO_ENABLED=0.
+		mediamodel.MediaEncodeQueue: {MaxWorkers: 0},
 	}
 	// One bounded queue per tenant shard: MaxWorkers caps a single tenant's
 	// concurrency to the per-tenant parallelism limit.
@@ -1130,6 +1188,28 @@ func (disabledCommander) Scan(_ context.Context, _ uuid.UUID, _ string, _ agentc
 
 func (disabledCommander) GetFile(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.GetFileRequest) (agentcmd.GetFileResponse, error) {
 	return agentcmd.GetFileResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+// Media Optimizer (ADR-043) — the disabledCommander refuses every media command
+// so the build still satisfies media.AgentMediaClient when no signing key is set.
+func (disabledCommander) MediaOptimize(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.MediaOptimizeRequest) (agentcmd.MediaOptimizeResponse, error) {
+	return agentcmd.MediaOptimizeResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) MediaApply(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.MediaApplyRequest) (agentcmd.MediaApplyResponse, error) {
+	return agentcmd.MediaApplyResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) MediaSync(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.MediaSyncRequest) (agentcmd.MediaSyncResponse, error) {
+	return agentcmd.MediaSyncResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) MediaRestore(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.MediaRestoreRequest) (agentcmd.MediaRestoreResponse, error) {
+	return agentcmd.MediaRestoreResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+func (disabledCommander) MediaDeleteOriginals(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.MediaDeleteOriginalsRequest) (agentcmd.MediaDeleteOriginalsResponse, error) {
+	return agentcmd.MediaDeleteOriginalsResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
 }
 
 func newLogger(cfg config.Config) *slog.Logger {
