@@ -211,6 +211,11 @@ export function ShareSiteDialog({
     invitations?.filter((i) => i.status === "pending").length ?? 0;
   const expiredCount =
     invitations?.filter((i) => i.status === "expired").length ?? 0;
+  // Accepted invites graduate to the Collaborators tab — the "Pending invites"
+  // link history only shows still-actionable links (pending / expired / revoked).
+  const historyInvites = (invitations ?? []).filter(
+    (i) => i.status !== "accepted",
+  );
   const summarySegments = [
     `${collaboratorCount} ${collaboratorCount === 1 ? "collaborator" : "collaborators"}`,
     `${pendingCount} pending`,
@@ -238,7 +243,7 @@ export function ShareSiteDialog({
                 Collaborators ({collaboratorCount})
               </TabsTrigger>
               <TabsTrigger value="pending">
-                Pending invites ({invitations?.length ?? 0})
+                Pending invites ({historyInvites.length})
               </TabsTrigger>
             </TabsList>
 
@@ -357,7 +362,8 @@ export function ShareSiteDialog({
                     </TableHeader>
                     <TableBody>
                       {shares.map((share) => {
-                        const display = share.email ?? share.user_id;
+                        const display =
+                          share.name || share.email || share.user_id;
                         const isExpired =
                           share.expires_at != null &&
                           new Date(share.expires_at) < new Date();
@@ -453,10 +459,10 @@ export function ShareSiteDialog({
                 <p role="status" className="text-sm text-muted-foreground">
                   Loading invites…
                 </p>
-              ) : !invitations || invitations.length === 0 ? (
+              ) : historyInvites.length === 0 ? (
                 <EmptyState
                   icon={<RefreshCw aria-hidden="true" className="size-5" />}
-                  text="No invite links yet. New-user invites appear here."
+                  text="No outstanding invite links. New-user invites appear here until accepted."
                 />
               ) : (
                 <div className="rounded-lg border border-[var(--color-border)]">
@@ -473,7 +479,7 @@ export function ShareSiteDialog({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {invitations.map((inv) => (
+                      {historyInvites.map((inv) => (
                         <InvitationRow
                           key={inv.id}
                           inv={inv}

@@ -10,13 +10,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Share is the domain model for a site_shares row.
+// Share is the domain model for a site_shares row. Email/Name are resolved from
+// the users table at list time so the UI shows a human identity, not a UUID.
 type Share struct {
 	ID        uuid.UUID
 	TenantID  uuid.UUID
 	SiteID    uuid.UUID
 	UserID    uuid.UUID
 	Role      string
+	Email     string
+	Name      string
 	GrantedBy *uuid.UUID
 	ExpiresAt *time.Time
 	CreatedAt time.Time

@@ -8,6 +8,7 @@ package org
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -54,8 +55,10 @@ func NewHandler(pool *db.Pool, tenants TenantCreator, sessions SessionManager, a
 // POST /orgs requires only authentication (any logged-in user can create a new org).
 // POST /orgs/:orgId/activate requires the caller to be a member of that org.
 func (h *Handler) Register(r *gin.RouterGroup) {
+	r.GET("/orgs", h.list)
 	r.POST("/orgs", h.create)
 	r.POST("/orgs/:orgId/activate", h.activate)
+	r.PATCH("/orgs/:orgId", h.rename)
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +74,23 @@ type orgDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug"`
+}
+
+// orgListItemDTO carries the caller's role so the switcher/settings can gate
+// the rename action (admin/owner only) without a second round-trip.
+type orgListItemDTO struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+	Role string `json:"role"`
+}
+
+type orgListDTO struct {
+	Items []orgListItemDTO `json:"items"`
+}
+
+type renameOrgBody struct {
+	Name string `json:"name"`
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +175,103 @@ func (h *Handler) activate(c *gin.Context) {
 	h.sessions.SetActiveTenant(c.Request.Context(), orgID)
 
 	c.JSON(http.StatusOK, gin.H{"active_tenant_id": orgID.String()})
+}
+
+// list returns the caller's organisations with names + their role in each. Runs
+// under InUserTx so the memberships_self_read policy scopes the join to the
+// caller (no cross-tenant enumeration).
+func (h *Handler) list(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+	var rows []sqlc.ListOrgsForUserRow
+	err := h.pool.InUserTx(c.Request.Context(), p.UserID, func(tx pgx.Tx) error {
+		var qErr error
+		rows, qErr = sqlc.New(tx).ListOrgsForUser(c.Request.Context(), p.UserID)
+		return qErr
+	})
+	if err != nil {
+		httpx.Error(c, domain.Internal("org_list_failed", "failed to list organisations").WithCause(err))
+		return
+	}
+	items := make([]orgListItemDTO, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, orgListItemDTO{
+			ID:   r.ID.String(),
+			Name: r.Name,
+			Slug: r.Slug,
+			Role: r.Role,
+		})
+	}
+	c.JSON(http.StatusOK, orgListDTO{Items: items})
+}
+
+// rename updates an organisation's display name. Requires the caller to be an
+// admin or owner of that org (tenants has no RLS, so the role check is the gate).
+func (h *Handler) rename(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+	orgID, err := uuid.Parse(c.Param("orgId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_org_id", "orgId is not a valid UUID"))
+		return
+	}
+	var body renameOrgBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		httpx.Error(c, domain.Validation("name_required", "name is required"))
+		return
+	}
+	if len(name) > 200 {
+		httpx.Error(c, domain.Validation("name_too_long", "name must be 200 characters or fewer"))
+		return
+	}
+
+	// Authorize: caller must be an admin/owner of this org.
+	role, isMember := h.authSvc.RoleInTenant(c.Request.Context(), p.UserID, orgID)
+	if !isMember {
+		httpx.Error(c, domain.Forbidden("not_a_member", "you are not a member of this organisation"))
+		return
+	}
+	if !role.AtLeast(authz.RoleAdmin) {
+		httpx.Error(c, domain.Forbidden("insufficient_role", "only an admin or owner can rename the organisation"))
+		return
+	}
+
+	var updated sqlc.Tenant
+	err = h.pool.InTenantTx(c.Request.Context(), orgID, func(tx pgx.Tx) error {
+		var uErr error
+		updated, uErr = sqlc.New(tx).UpdateTenantName(c.Request.Context(), sqlc.UpdateTenantNameParams{
+			ID:   orgID,
+			Name: name,
+		})
+		return uErr
+	})
+	if err != nil {
+		httpx.Error(c, domain.Internal("org_rename_failed", "failed to rename organisation").WithCause(err))
+		return
+	}
+
+	_, _ = h.audit.Record(c.Request.Context(), audit.Event{
+		TenantID:   orgID,
+		ActorType:  audit.ActorUser,
+		ActorID:    p.UserID.String(),
+		Action:     "org.renamed",
+		TargetType: "tenant",
+		TargetID:   orgID.String(),
+		Metadata:   map[string]any{"name": name},
+	})
+
+	c.JSON(http.StatusOK, orgDTO{ID: updated.ID.String(), Name: updated.Name, Slug: updated.Slug})
 }
 
 // slugify converts a name to a URL-safe slug (lowercase, spaces→hyphens, strip others).

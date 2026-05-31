@@ -210,6 +210,10 @@ type Querier interface {
 	// It relies on the memberships_self_read policy (app.user_id GUC), so it must be
 	// run via InUserTx, not InTenantTx.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
+	// ListOrgsForUser returns the user's organisations with their role in each, for
+	// the org switcher + settings (real names, not bare ids). Joins memberships under
+	// the memberships_self_read policy (app.user_id GUC) so it MUST run via InUserTx.
+	ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]ListOrgsForUserRow, error)
 	// Terminal runs (completed/failed/skipped/canceled) for a site, newest first.
 	ListPastScheduleRuns(ctx context.Context, arg ListPastScheduleRunsParams) ([]BackupScheduleRun, error)
 	// List pending (not yet accepted, not expired, not revoked) invitations for the
@@ -298,6 +302,9 @@ type Querier interface {
 	// Tenant-scoped metadata update (used by the agent path inside the resolved
 	// site's own tenant scope).
 	UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadataParams) (Site, error)
+	// UpdateTenantName renames a tenant. tenants has no RLS, so the handler verifies
+	// the caller's membership + admin/owner role before calling this.
+	UpdateTenantName(ctx context.Context, arg UpdateTenantNameParams) (Tenant, error)
 	// Tenant-scoped create-or-update of the tenant's default alert channel.
 	UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error)
 	// Mint path (app.tenant_id). Idempotent insert-or-return: the first call seeds

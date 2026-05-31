@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -79,6 +80,51 @@ func (q *Queries) GetTenantForUser(ctx context.Context, arg GetTenantForUserPara
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listOrgsForUser = `-- name: ListOrgsForUser :many
+SELECT t.id, t.name, t.slug, m.role, t.created_at
+FROM tenants t
+JOIN memberships m ON m.tenant_id = t.id
+WHERE m.user_id = $1
+ORDER BY t.created_at ASC
+`
+
+type ListOrgsForUserRow struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ListOrgsForUser returns the user's organisations with their role in each, for
+// the org switcher + settings (real names, not bare ids). Joins memberships under
+// the memberships_self_read policy (app.user_id GUC) so it MUST run via InUserTx.
+func (q *Queries) ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]ListOrgsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listOrgsForUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOrgsForUserRow
+	for rows.Next() {
+		var i ListOrgsForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Slug,
+			&i.Role,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listTenants = `-- name: ListTenants :many
@@ -161,4 +207,31 @@ func (q *Queries) ListTenantsForUser(ctx context.Context, arg ListTenantsForUser
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateTenantName = `-- name: UpdateTenantName :one
+UPDATE tenants
+SET name = $2, updated_at = now()
+WHERE id = $1
+RETURNING id, name, slug, created_at, updated_at
+`
+
+type UpdateTenantNameParams struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+// UpdateTenantName renames a tenant. tenants has no RLS, so the handler verifies
+// the caller's membership + admin/owner role before calling this.
+func (q *Queries) UpdateTenantName(ctx context.Context, arg UpdateTenantNameParams) (Tenant, error) {
+	row := q.db.QueryRow(ctx, updateTenantName, arg.ID, arg.Name)
+	var i Tenant
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

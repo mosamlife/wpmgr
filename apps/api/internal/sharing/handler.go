@@ -80,6 +80,8 @@ type shareDTO struct {
 	ID        string  `json:"id"`
 	SiteID    string  `json:"site_id"`
 	UserID    string  `json:"user_id"`
+	Email     string  `json:"email,omitempty"`
+	Name      string  `json:"name,omitempty"`
 	Role      string  `json:"role"`
 	GrantedBy *string `json:"granted_by,omitempty"`
 	ExpiresAt *string `json:"expires_at,omitempty"`
@@ -355,6 +357,8 @@ func toShareDTO(s Share) shareDTO {
 		ID:        s.ID.String(),
 		SiteID:    s.SiteID.String(),
 		UserID:    s.UserID.String(),
+		Email:     s.Email,
+		Name:      s.Name,
 		Role:      s.Role,
 		CreatedAt: s.CreatedAt.UTC().Format(time.RFC3339),
 	}

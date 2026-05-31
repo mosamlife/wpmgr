@@ -35,7 +35,8 @@ func NewService(pool *db.Pool, authRepo *auth.Repo, rec *audit.Recorder, mailer 
 	return &Service{pool: pool, authRepo: authRepo, audit: rec, mailer: mailer, baseURL: baseURL}
 }
 
-// ListForSite returns all shares for a site (tenant-scoped).
+// ListForSite returns all shares for a site (tenant-scoped), each enriched with
+// the collaborator's email + name so the UI shows a human identity, not a UUID.
 func (s *Service) ListForSite(ctx context.Context, tenantID, siteID uuid.UUID) ([]Share, error) {
 	var out []Share
 	err := s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
@@ -49,7 +50,39 @@ func (s *Service) ListForSite(ctx context.Context, tenantID, siteID uuid.UUID) (
 		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	s.attachUserIdentities(ctx, out)
+	return out, nil
+}
+
+// attachUserIdentities batch-resolves each share's user_id to email + name via
+// the auth repo (users has no RLS, so this spans collaborators outside the org).
+// Best-effort: on lookup failure the rows simply keep empty email/name and the
+// UI falls back to the id.
+func (s *Service) attachUserIdentities(ctx context.Context, shares []Share) {
+	if len(shares) == 0 {
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(shares))
+	for _, sh := range shares {
+		ids = append(ids, sh.UserID)
+	}
+	briefs, err := s.authRepo.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		return
+	}
+	byID := make(map[uuid.UUID]auth.UserBrief, len(briefs))
+	for _, b := range briefs {
+		byID[b.ID] = b
+	}
+	for i := range shares {
+		if b, ok := byID[shares[i].UserID]; ok {
+			shares[i].Email = b.Email
+			shares[i].Name = b.Name
+		}
+	}
 }
 
 // GrantInput is the input for granting/inviting a share.

@@ -21,7 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useMe } from "@/features/auth/use-auth";
-import { useCreateOrg, useActivateOrg } from "@/features/orgs/use-orgs";
+import { useCreateOrg, useActivateOrg, useOrgs } from "@/features/orgs/use-orgs";
 import { useSharedWithMe } from "@/features/sharing/use-shared-with-me";
 
 // OrgSwitcher — dropdown listing all orgs the user can access.
@@ -42,19 +42,22 @@ interface OrgEntry {
 
 export function OrgSwitcher() {
   const { data: me } = useMe();
+  const { data: orgs } = useOrgs();
   const { data: sharedWithMe } = useSharedWithMe();
   const activateOrg = useActivateOrg();
   const [showCreate, setShowCreate] = useState(false);
 
   if (!me) return null;
 
+  // Real org names come from GET /orgs (id → name). The membership list gives
+  // the set of orgs; we resolve each name from /orgs, falling back to the id
+  // only until that query resolves.
+  const nameById = new Map((orgs ?? []).map((o) => [o.id, o.name]));
+
   // Build org list: membership orgs first, then share-only orgs.
   const membershipOrgs: OrgEntry[] = me.memberships.map((m) => ({
     id: m.tenant_id,
-    // The SDK Membership type doesn't carry org name — we show the ID until
-    // the backend enriches the memberships response. The /shared-with-me
-    // response does carry org_name.
-    name: m.tenant_id,
+    name: nameById.get(m.tenant_id) ?? m.tenant_id,
     role: m.role,
   }));
 

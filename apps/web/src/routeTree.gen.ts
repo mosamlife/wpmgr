@@ -25,13 +25,14 @@ import { Route as AuthedSitesIndexRouteImport } from './routes/_authed/sites/ind
 import { Route as AuthedBackupsIndexRouteImport } from './routes/_authed/backups/index'
 import { Route as AuthedUpdatesRunIdRouteImport } from './routes/_authed/updates/$runId'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
-import { Route as AuthedSettingsDestinationsRouteImport } from './routes/_authed/settings/destinations'
+import { Route as AuthedSettingsOrganizationRouteImport } from './routes/_authed/settings/organization'
 import { Route as AuthedSettingsMembersRouteImport } from './routes/_authed/settings/members'
+import { Route as AuthedSettingsDestinationsRouteImport } from './routes/_authed/settings/destinations'
 import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
 import { Route as AuthedSettingsAlertsRouteImport } from './routes/_authed/settings/alerts'
 import { Route as AuthedSettingsAccountRouteImport } from './routes/_authed/settings/account'
-import { Route as AuthedRestoresRestoreIdRouteImport } from './routes/_authed/restores/$restoreId'
 import { Route as AuthedScheduleRunsRunIdRouteImport } from './routes/_authed/schedule-runs/$runId'
+import { Route as AuthedRestoresRestoreIdRouteImport } from './routes/_authed/restores/$restoreId'
 import { Route as AuthedBackupsSnapshotIdRouteImport } from './routes/_authed/backups/$snapshotId'
 import { Route as AuthedSitesSiteIdIndexRouteImport } from './routes/_authed/sites/$siteId.index'
 import { Route as AuthedSitesSiteIdUpdatesRouteImport } from './routes/_authed/sites/$siteId.updates'
@@ -121,10 +122,10 @@ const AuthedSitesSiteIdRoute = AuthedSitesSiteIdRouteImport.update({
   path: '/sites/$siteId',
   getParentRoute: () => AuthedRoute,
 } as any)
-const AuthedSettingsDestinationsRoute =
-  AuthedSettingsDestinationsRouteImport.update({
-    id: '/settings/destinations',
-    path: '/settings/destinations',
+const AuthedSettingsOrganizationRoute =
+  AuthedSettingsOrganizationRouteImport.update({
+    id: '/settings/organization',
+    path: '/settings/organization',
     getParentRoute: () => AuthedRoute,
   } as any)
 const AuthedSettingsMembersRoute = AuthedSettingsMembersRouteImport.update({
@@ -132,6 +133,12 @@ const AuthedSettingsMembersRoute = AuthedSettingsMembersRouteImport.update({
   path: '/settings/members',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedSettingsDestinationsRoute =
+  AuthedSettingsDestinationsRouteImport.update({
+    id: '/settings/destinations',
+    path: '/settings/destinations',
+    getParentRoute: () => AuthedRoute,
+  } as any)
 const AuthedSettingsApiKeysRoute = AuthedSettingsApiKeysRouteImport.update({
   id: '/settings/api-keys',
   path: '/settings/api-keys',
@@ -147,14 +154,14 @@ const AuthedSettingsAccountRoute = AuthedSettingsAccountRouteImport.update({
   path: '/settings/account',
   getParentRoute: () => AuthedRoute,
 } as any)
-const AuthedRestoresRestoreIdRoute = AuthedRestoresRestoreIdRouteImport.update({
-  id: '/restores/$restoreId',
-  path: '/restores/$restoreId',
-  getParentRoute: () => AuthedRoute,
-} as any)
 const AuthedScheduleRunsRunIdRoute = AuthedScheduleRunsRunIdRouteImport.update({
   id: '/schedule-runs/$runId',
   path: '/schedule-runs/$runId',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedRestoresRestoreIdRoute = AuthedRestoresRestoreIdRouteImport.update({
+  id: '/restores/$restoreId',
+  path: '/restores/$restoreId',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedBackupsSnapshotIdRoute = AuthedBackupsSnapshotIdRouteImport.update({
@@ -210,9 +217,9 @@ const AuthedSitesSiteIdActivityRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/accept': typeof AcceptRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
-  '/accept': typeof AcceptRoute
   '/audit': typeof AuthedAuditRoute
   '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
@@ -227,6 +234,7 @@ export interface FileRoutesByFullPath {
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/settings/destinations': typeof AuthedSettingsDestinationsRoute
   '/settings/members': typeof AuthedSettingsMembersRoute
+  '/settings/organization': typeof AuthedSettingsOrganizationRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/backups/': typeof AuthedBackupsIndexRoute
@@ -243,9 +251,9 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/accept': typeof AcceptRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
-  '/accept': typeof AcceptRoute
   '/audit': typeof AuthedAuditRoute
   '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
@@ -260,6 +268,7 @@ export interface FileRoutesByTo {
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/settings/destinations': typeof AuthedSettingsDestinationsRoute
   '/settings/members': typeof AuthedSettingsMembersRoute
+  '/settings/organization': typeof AuthedSettingsOrganizationRoute
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/backups': typeof AuthedBackupsIndexRoute
   '/sites': typeof AuthedSitesIndexRoute
@@ -277,9 +286,9 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_authed': typeof AuthedRouteWithChildren
+  '/accept': typeof AcceptRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
-  '/accept': typeof AcceptRoute
   '/_authed/audit': typeof AuthedAuditRoute
   '/_authed/migrations': typeof AuthedMigrationsRoute
   '/_authed/performance': typeof AuthedPerformanceRoute
@@ -294,6 +303,7 @@ export interface FileRoutesById {
   '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
   '/_authed/settings/destinations': typeof AuthedSettingsDestinationsRoute
   '/_authed/settings/members': typeof AuthedSettingsMembersRoute
+  '/_authed/settings/organization': typeof AuthedSettingsOrganizationRoute
   '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/_authed/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/_authed/backups/': typeof AuthedBackupsIndexRoute
@@ -312,9 +322,9 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/accept'
     | '/login'
     | '/register'
-    | '/accept'
     | '/audit'
     | '/migrations'
     | '/performance'
@@ -329,6 +339,7 @@ export interface FileRouteTypes {
     | '/settings/api-keys'
     | '/settings/destinations'
     | '/settings/members'
+    | '/settings/organization'
     | '/sites/$siteId'
     | '/updates/$runId'
     | '/backups/'
@@ -345,9 +356,9 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/accept'
     | '/login'
     | '/register'
-    | '/accept'
     | '/audit'
     | '/migrations'
     | '/performance'
@@ -362,6 +373,7 @@ export interface FileRouteTypes {
     | '/settings/api-keys'
     | '/settings/destinations'
     | '/settings/members'
+    | '/settings/organization'
     | '/updates/$runId'
     | '/backups'
     | '/sites'
@@ -378,9 +390,9 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_authed'
+    | '/accept'
     | '/login'
     | '/register'
-    | '/accept'
     | '/_authed/audit'
     | '/_authed/migrations'
     | '/_authed/performance'
@@ -395,6 +407,7 @@ export interface FileRouteTypes {
     | '/_authed/settings/api-keys'
     | '/_authed/settings/destinations'
     | '/_authed/settings/members'
+    | '/_authed/settings/organization'
     | '/_authed/sites/$siteId'
     | '/_authed/updates/$runId'
     | '/_authed/backups/'
@@ -413,9 +426,9 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthedRoute: typeof AuthedRouteWithChildren
+  AcceptRoute: typeof AcceptRoute
   LoginRoute: typeof LoginRoute
   RegisterRoute: typeof RegisterRoute
-  AcceptRoute: typeof AcceptRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -532,11 +545,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSitesSiteIdRouteImport
       parentRoute: typeof AuthedRoute
     }
-    '/_authed/settings/destinations': {
-      id: '/_authed/settings/destinations'
-      path: '/settings/destinations'
-      fullPath: '/settings/destinations'
-      preLoaderRoute: typeof AuthedSettingsDestinationsRouteImport
+    '/_authed/settings/organization': {
+      id: '/_authed/settings/organization'
+      path: '/settings/organization'
+      fullPath: '/settings/organization'
+      preLoaderRoute: typeof AuthedSettingsOrganizationRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/settings/members': {
@@ -544,6 +557,13 @@ declare module '@tanstack/react-router' {
       path: '/settings/members'
       fullPath: '/settings/members'
       preLoaderRoute: typeof AuthedSettingsMembersRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/settings/destinations': {
+      id: '/_authed/settings/destinations'
+      path: '/settings/destinations'
+      fullPath: '/settings/destinations'
+      preLoaderRoute: typeof AuthedSettingsDestinationsRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/settings/api-keys': {
@@ -567,18 +587,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSettingsAccountRouteImport
       parentRoute: typeof AuthedRoute
     }
-    '/_authed/restores/$restoreId': {
-      id: '/_authed/restores/$restoreId'
-      path: '/restores/$restoreId'
-      fullPath: '/restores/$restoreId'
-      preLoaderRoute: typeof AuthedRestoresRestoreIdRouteImport
-      parentRoute: typeof AuthedRoute
-    }
     '/_authed/schedule-runs/$runId': {
       id: '/_authed/schedule-runs/$runId'
       path: '/schedule-runs/$runId'
       fullPath: '/schedule-runs/$runId'
       preLoaderRoute: typeof AuthedScheduleRunsRunIdRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/restores/$restoreId': {
+      id: '/_authed/restores/$restoreId'
+      path: '/restores/$restoreId'
+      fullPath: '/restores/$restoreId'
+      preLoaderRoute: typeof AuthedRestoresRestoreIdRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/backups/$snapshotId': {
@@ -687,6 +707,7 @@ interface AuthedRouteChildren {
   AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
   AuthedSettingsDestinationsRoute: typeof AuthedSettingsDestinationsRoute
   AuthedSettingsMembersRoute: typeof AuthedSettingsMembersRoute
+  AuthedSettingsOrganizationRoute: typeof AuthedSettingsOrganizationRoute
   AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRouteWithChildren
   AuthedUpdatesRunIdRoute: typeof AuthedUpdatesRunIdRoute
   AuthedBackupsIndexRoute: typeof AuthedBackupsIndexRoute
@@ -709,6 +730,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
   AuthedSettingsDestinationsRoute: AuthedSettingsDestinationsRoute,
   AuthedSettingsMembersRoute: AuthedSettingsMembersRoute,
+  AuthedSettingsOrganizationRoute: AuthedSettingsOrganizationRoute,
   AuthedSitesSiteIdRoute: AuthedSitesSiteIdRouteWithChildren,
   AuthedUpdatesRunIdRoute: AuthedUpdatesRunIdRoute,
   AuthedBackupsIndexRoute: AuthedBackupsIndexRoute,
@@ -722,9 +744,9 @@ const AuthedRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthedRoute: AuthedRouteWithChildren,
+  AcceptRoute: AcceptRoute,
   LoginRoute: LoginRoute,
   RegisterRoute: RegisterRoute,
-  AcceptRoute: AcceptRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
