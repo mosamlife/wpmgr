@@ -164,10 +164,13 @@ func (h *Handler) activate(c *gin.Context) {
 		return
 	}
 
-	// Verify the caller is a member of the requested org.
+	// The caller may activate an org they're a member of OR one where a site has
+	// been shared with them (a site-scoped collaborator). The auth middleware then
+	// scopes a non-member to exactly their allowed sites in that org, so this
+	// cannot grant org-wide access — it only lets them reach their shared sites.
 	_, isMember := h.authSvc.RoleInTenant(c.Request.Context(), p.UserID, orgID)
-	if !isMember {
-		httpx.Error(c, domain.Forbidden("not_a_member", "you are not a member of this organisation"))
+	if !isMember && !h.hasActiveShare(c.Request.Context(), p.UserID, orgID) {
+		httpx.Error(c, domain.Forbidden("not_a_member", "you do not have access to this organisation"))
 		return
 	}
 
@@ -272,6 +275,25 @@ func (h *Handler) rename(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusOK, orgDTO{ID: updated.ID.String(), Name: updated.Name, Slug: updated.Slug})
+}
+
+// hasActiveShare reports whether the user holds a non-expired site_share in the
+// given tenant (a site-scoped collaborator). Runs under InUserTx so the
+// site_shares_self_read policy exposes the caller's own share rows.
+func (h *Handler) hasActiveShare(ctx context.Context, userID, tenantID uuid.UUID) bool {
+	var has bool
+	err := h.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
+		shares, qErr := sqlc.New(tx).GetActiveSharesForUserTenant(ctx, sqlc.GetActiveSharesForUserTenantParams{
+			UserID:   userID,
+			TenantID: tenantID,
+		})
+		if qErr != nil {
+			return qErr
+		}
+		has = len(shares) > 0
+		return nil
+	})
+	return err == nil && has
 }
 
 // slugify converts a name to a URL-safe slug (lowercase, spaces→hyphens, strip others).

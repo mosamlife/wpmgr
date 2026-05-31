@@ -23,6 +23,24 @@ WHERE user_id = $1
   AND (expires_at IS NULL OR expires_at > now())
 ORDER BY created_at ASC;
 
+-- name: ListSharedSitesForUser :many
+-- Shared-with-me, ENRICHED with each site's url + name and the owning org's name.
+-- Runs under InUserTx: site_shares_self_read exposes the share rows, the M22
+-- sites_shared_read policy exposes the (cross-tenant) site rows, and tenants has
+-- no RLS. So the operator sees url/name/org_name for sites shared with them
+-- without any membership in the owning org.
+SELECT ss.id, ss.tenant_id, ss.site_id, ss.user_id, ss.role,
+       ss.granted_by, ss.expires_at, ss.created_at,
+       st.url   AS site_url,
+       st.name  AS site_name,
+       t.name   AS org_name
+FROM site_shares ss
+JOIN sites   st ON st.id = ss.site_id
+JOIN tenants t  ON t.id  = ss.tenant_id
+WHERE ss.user_id = $1
+  AND (ss.expires_at IS NULL OR ss.expires_at > now())
+ORDER BY ss.created_at ASC;
+
 -- name: DeleteShare :execrows
 DELETE FROM site_shares
 WHERE site_id = $1 AND user_id = $2;

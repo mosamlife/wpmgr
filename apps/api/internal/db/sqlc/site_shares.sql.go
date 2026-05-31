@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -109,6 +110,71 @@ func (q *Queries) GetActiveSharesForUserTenant(ctx context.Context, arg GetActiv
 			&i.GrantedBy,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSharedSitesForUser = `-- name: ListSharedSitesForUser :many
+SELECT ss.id, ss.tenant_id, ss.site_id, ss.user_id, ss.role,
+       ss.granted_by, ss.expires_at, ss.created_at,
+       st.url   AS site_url,
+       st.name  AS site_name,
+       t.name   AS org_name
+FROM site_shares ss
+JOIN sites   st ON st.id = ss.site_id
+JOIN tenants t  ON t.id  = ss.tenant_id
+WHERE ss.user_id = $1
+  AND (ss.expires_at IS NULL OR ss.expires_at > now())
+ORDER BY ss.created_at ASC
+`
+
+type ListSharedSitesForUserRow struct {
+	ID        uuid.UUID          `json:"id"`
+	TenantID  uuid.UUID          `json:"tenant_id"`
+	SiteID    uuid.UUID          `json:"site_id"`
+	UserID    uuid.UUID          `json:"user_id"`
+	Role      string             `json:"role"`
+	GrantedBy pgtype.UUID        `json:"granted_by"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt time.Time          `json:"created_at"`
+	SiteUrl   string             `json:"site_url"`
+	SiteName  string             `json:"site_name"`
+	OrgName   string             `json:"org_name"`
+}
+
+// Shared-with-me, ENRICHED with each site's url + name and the owning org's name.
+// Runs under InUserTx: site_shares_self_read exposes the share rows, the M22
+// sites_shared_read policy exposes the (cross-tenant) site rows, and tenants has
+// no RLS. So the operator sees url/name/org_name for sites shared with them
+// without any membership in the owning org.
+func (q *Queries) ListSharedSitesForUser(ctx context.Context, userID uuid.UUID) ([]ListSharedSitesForUserRow, error) {
+	rows, err := q.db.Query(ctx, listSharedSitesForUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSharedSitesForUserRow
+	for rows.Next() {
+		var i ListSharedSitesForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.SiteID,
+			&i.UserID,
+			&i.Role,
+			&i.GrantedBy,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.SiteUrl,
+			&i.SiteName,
+			&i.OrgName,
 		); err != nil {
 			return nil, err
 		}

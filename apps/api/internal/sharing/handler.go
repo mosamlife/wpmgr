@@ -86,6 +86,11 @@ type shareDTO struct {
 	GrantedBy *string `json:"granted_by,omitempty"`
 	ExpiresAt *string `json:"expires_at,omitempty"`
 	CreatedAt string  `json:"created_at"`
+	// Shared-with-me enrichment (empty on the collaborators list).
+	SiteURL  string `json:"site_url,omitempty"`
+	SiteName string `json:"site_name,omitempty"`
+	OrgID    string `json:"org_id,omitempty"`
+	OrgName  string `json:"org_name,omitempty"`
 }
 
 type shareListDTO struct {
@@ -361,6 +366,14 @@ func toShareDTO(s Share) shareDTO {
 		Name:      s.Name,
 		Role:      s.Role,
 		CreatedAt: s.CreatedAt.UTC().Format(time.RFC3339),
+		SiteURL:   s.SiteURL,
+		SiteName:  s.SiteName,
+		OrgName:   s.OrgName,
+	}
+	// org_id is the share's owning tenant — set it whenever we have the org
+	// context (shared-with-me), so the UI can activate that org on click.
+	if s.OrgName != "" {
+		d.OrgID = s.TenantID.String()
 	}
 	if s.GrantedBy != nil {
 		v := s.GrantedBy.String()

@@ -23,6 +23,11 @@ type Share struct {
 	GrantedBy *uuid.UUID
 	ExpiresAt *time.Time
 	CreatedAt time.Time
+	// Populated only by SharedWithMe (the "Shared with me" surface) so the UI can
+	// show the site + owning org instead of a bare UUID.
+	SiteURL  string
+	SiteName string
+	OrgName  string
 }
 
 // Invitation is the domain model for a site-scoped invitations row, used by the

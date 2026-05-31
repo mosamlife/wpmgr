@@ -1,12 +1,15 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { ExternalLink, Share2 } from "lucide-react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { ExternalLink, Loader2, Share2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { PageError } from "@/components/feedback";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusChip } from "@/components/status";
+import { toast } from "@/components/toast";
 import { relativeTime } from "@/lib/utils";
-import { useSharedWithMe } from "@/features/sharing/use-shared-with-me";
+import { useMe } from "@/features/auth/use-auth";
+import { useActivateOrg } from "@/features/orgs/use-orgs";
+import { useSharedWithMe, type SharedSite } from "@/features/sharing/use-shared-with-me";
 
 export const Route = createFileRoute("/_authed/shared-with-me")({
   component: SharedWithMePage,
@@ -20,6 +23,29 @@ export const Route = createFileRoute("/_authed/shared-with-me")({
 function SharedWithMePage() {
   const { data: shared, isPending, isError, error, refetch, isRefetching } =
     useSharedWithMe();
+  const { data: me } = useMe();
+  const navigate = useNavigate();
+  const activateOrg = useActivateOrg();
+
+  // Opening a shared site requires the session's active org to be the one that
+  // OWNS the site — otherwise the by-id site read runs under the wrong tenant and
+  // 404s. So switch org first (a site-scoped collaborator can now activate an org
+  // they hold a share in), then navigate. If already in that org, just navigate.
+  async function openSharedSite(item: SharedSite) {
+    const target = item.org_id;
+    if (target && me?.active_tenant_id !== target) {
+      try {
+        await activateOrg.mutateAsync(target);
+      } catch {
+        toast.error("Could not switch to the shared site's organisation.");
+        return;
+      }
+    }
+    void navigate({
+      to: "/sites/$siteId/health",
+      params: { siteId: item.site_id },
+    });
+  }
 
   return (
     <section aria-labelledby="shared-heading" className="max-w-3xl space-y-6">
@@ -98,15 +124,20 @@ function SharedWithMePage() {
                   </p>
                 </div>
                 {!isExpired ? (
-                  <Button asChild variant="outline" size="sm">
-                    <Link
-                      to="/sites/$siteId/health"
-                      params={{ siteId: item.site_id }}
-                      aria-label={`Open ${display}`}
-                    >
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Open ${display}`}
+                    disabled={activateOrg.isPending}
+                    onClick={() => void openSharedSite(item)}
+                  >
+                    {activateOrg.isPending ? (
+                      <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+                    ) : (
                       <ExternalLink aria-hidden="true" className="size-3.5" />
-                      Open site
-                    </Link>
+                    )}
+                    Open site
                   </Button>
                 ) : null}
               </div>

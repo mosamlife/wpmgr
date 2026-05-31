@@ -129,6 +129,21 @@ CREATE POLICY sites_agent ON sites
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- M22 shared-read: a site-scoped collaborator (no membership in the owning org)
+-- may READ the metadata of sites shared with them, for the "Shared with me"
+-- surface. Self-read style, keyed on app.user_id (set by InUserTx) via a
+-- non-expired site_shares grant. SELECT-only, permissive (OR-combined), and inert
+-- outside InUserTx (app.user_id empty → no match), so it never widens a
+-- tenant-scoped read.
+CREATE POLICY sites_shared_read ON sites
+    FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM site_shares s
+        WHERE s.site_id = sites.id
+          AND s.user_id = nullif(current_setting('app.user_id', true), '')::uuid
+          AND (s.expires_at IS NULL OR s.expires_at > now())
+    ));
+
 -- ---------------------------------------------------------------------------
 -- users
 -- ---------------------------------------------------------------------------

@@ -265,13 +265,34 @@ func (s *Service) Revoke(ctx context.Context, tenantID, siteID, userID, actorID 
 func (s *Service) SharedWithMe(ctx context.Context, userID uuid.UUID) ([]Share, error) {
 	var out []Share
 	err := s.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
-		rows, err := sqlc.New(tx).ListSharesForUser(ctx, userID)
+		// Enriched read: site_shares_self_read + the M22 sites_shared_read policy
+		// let this JOIN surface the (cross-tenant) site url/name + owning-org name.
+		rows, err := sqlc.New(tx).ListSharedSitesForUser(ctx, userID)
 		if err != nil {
 			return domain.Internal("share_list_failed", "failed to list shares").WithCause(err)
 		}
 		out = make([]Share, 0, len(rows))
 		for _, r := range rows {
-			out = append(out, rowToShare(r))
+			sh := Share{
+				ID:        r.ID,
+				TenantID:  r.TenantID,
+				SiteID:    r.SiteID,
+				UserID:    r.UserID,
+				Role:      r.Role,
+				CreatedAt: r.CreatedAt,
+				SiteURL:   r.SiteUrl,
+				SiteName:  r.SiteName,
+				OrgName:   r.OrgName,
+			}
+			if r.GrantedBy.Valid {
+				id := uuid.UUID(r.GrantedBy.Bytes)
+				sh.GrantedBy = &id
+			}
+			if r.ExpiresAt.Valid {
+				t := r.ExpiresAt.Time
+				sh.ExpiresAt = &t
+			}
+			out = append(out, sh)
 		}
 		return nil
 	})
