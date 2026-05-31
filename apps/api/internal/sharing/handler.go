@@ -85,6 +85,22 @@ type grantBody struct {
 	ExpiresAt *string `json:"expires_at,omitempty"` // RFC3339 or null
 }
 
+// parseExpiry accepts an RFC3339 timestamp (the web sends this), a browser
+// "datetime-local" value ("2006-01-02T15:04", treated as UTC), or a plain date
+// ("2006-01-02", treated as the end of that day UTC so a date-only expiry stays
+// valid through that whole day). Returns ok=false on an unrecognised format.
+func parseExpiry(s string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.Add(24*time.Hour - time.Second).UTC(), true
+	}
+	return time.Time{}, false
+}
+
 type grantResponseDTO struct {
 	Share      *shareDTO `json:"share,omitempty"`
 	Invited    bool      `json:"invited"`
@@ -144,10 +160,15 @@ func (h *Handler) grant(c *gin.Context) {
 	}
 
 	var expiresAt *time.Time
-	if body.ExpiresAt != nil {
-		t, err := time.Parse(time.RFC3339, *body.ExpiresAt)
-		if err != nil {
-			httpx.Error(c, domain.Validation("invalid_expires_at", "expires_at must be RFC3339"))
+	if body.ExpiresAt != nil && *body.ExpiresAt != "" {
+		t, ok := parseExpiry(*body.ExpiresAt)
+		if !ok {
+			httpx.Error(c, domain.Validation("invalid_expires_at",
+				"expires_at must be an RFC3339 timestamp, a datetime-local value, or a YYYY-MM-DD date"))
+			return
+		}
+		if t.Before(time.Now()) {
+			httpx.Error(c, domain.Validation("expires_in_past", "expires_at must be in the future"))
 			return
 		}
 		expiresAt = &t

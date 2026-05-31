@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
@@ -183,14 +184,17 @@ export function ShareSiteDialog({
 
               <div className="flex-1 space-y-2">
                 <Label htmlFor="share-expires">Expires (optional)</Label>
-                <Input
+                <DateTimePicker
                   id="share-expires"
-                  type="date"
                   value={expiresAt}
-                  onChange={(e) => setExpiresAt(e.target.value)}
-                  min={new Date().toISOString().split("T")[0]}
+                  onChange={setExpiresAt}
+                  min={new Date().toISOString()}
                   disabled={createShare.isPending}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Leave empty for a durable share. The access auto-revokes at the
+                  chosen date &amp; time (your local timezone).
+                </p>
               </div>
             </div>
 
