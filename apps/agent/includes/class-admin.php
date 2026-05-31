@@ -232,7 +232,7 @@ final class Admin
             // --- Check for updates (ADR-042) ---
             echo '<h2>' . esc_html('Agent update') . '</h2>';
             echo '<p class="description">'
-                . esc_html('Force an immediate check for a new WPMgr agent version. The result appears in Plugins\u{2009}>\u{2009}Updates.')
+                . esc_html('Force an immediate check for a new WPMgr agent version. The result appears in Plugins > Updates.')
                 . '</p>';
             echo '<form method="post" action="' . $actionUrl . '">';
             wp_nonce_field(self::ACTION_CHECK_UPDATE);

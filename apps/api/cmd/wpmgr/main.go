@@ -736,6 +736,26 @@ func run() error {
 			manifestTTL = 5 * time.Minute
 		}
 		updateAgentH = agent.NewUpdateHandler(manifestStore, manifestSigner, manifestTTL)
+
+		// Boot probe: exercise the exact storage ops the manifest handler relies
+		// on (read agent-releases/latest.json + mint a presigned GET) so a
+		// misconfiguration surfaces in the startup log instead of as an opaque
+		// 500 on the agent's first poll. Runs once, off the hot path.
+		ms := manifestStore
+		go func() {
+			pctx := context.Background()
+			if rc, gerr := ms.Get(pctx, "agent-releases/latest.json"); gerr != nil {
+				logger.Error("ADR-042 self-update boot probe: GET latest.json failed", "err", gerr.Error())
+			} else {
+				_ = rc.Close()
+				logger.Info("ADR-042 self-update boot probe: GET latest.json OK")
+			}
+			if _, perr := ms.PresignGet(pctx, "agent-releases/latest.json", time.Minute); perr != nil {
+				logger.Error("ADR-042 self-update boot probe: PresignGet failed", "err", perr.Error())
+			} else {
+				logger.Info("ADR-042 self-update boot probe: PresignGet OK")
+			}
+		}()
 	} else {
 		logger.Warn("ADR-042 self-update disabled: object storage or WPMGR_AGENT_SIGNING_PRIVATE_KEY not configured")
 	}

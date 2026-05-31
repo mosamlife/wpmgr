@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -142,9 +143,11 @@ func (h *UpdateHandler) manifest(c *gin.Context) {
 			return
 		}
 		if errors.Is(err, errInvalidManifest) {
+			slog.ErrorContext(c.Request.Context(), "ADR-042 manifest invalid", slog.String("site_id", id.SiteID.String()))
 			httpx.Error(c, domain.Internal("update_manifest_invalid", "published release manifest is malformed"))
 			return
 		}
+		slog.ErrorContext(c.Request.Context(), "ADR-042 manifest read failed", slog.String("err", err.Error()), slog.String("site_id", id.SiteID.String()))
 		httpx.Error(c, domain.Internal("update_manifest_read_failed", "failed to read release manifest").WithCause(err))
 		return
 	}
@@ -153,6 +156,7 @@ func (h *UpdateHandler) manifest(c *gin.Context) {
 	// this manifest fresh at install time and downloads within the TTL.
 	pkgURL, err := h.store.PresignGet(c.Request.Context(), rel.PackageObjectKey, h.presignTTL)
 	if err != nil {
+		slog.ErrorContext(c.Request.Context(), "ADR-042 presign failed", slog.String("err", err.Error()), slog.String("key", rel.PackageObjectKey), slog.String("site_id", id.SiteID.String()))
 		httpx.Error(c, domain.Internal("update_presign_failed", "failed to presign release package").WithCause(err))
 		return
 	}

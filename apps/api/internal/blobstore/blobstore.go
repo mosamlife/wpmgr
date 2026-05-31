@@ -65,6 +65,16 @@ func New(cfg Config) (*Store, error) {
 			if cfg.Endpoint != "" {
 				o.BaseEndpoint = aws.String(cfg.Endpoint)
 			}
+			// GCS S3-compat (and other non-AWS S3 backends) reject the flexible
+			// request checksums that aws-sdk-go-v2 began adding by default
+			// (RequestChecksumCalculationWhenSupported) — a live GetObject/PutObject
+			// fails with "SignatureDoesNotMatch: Access denied" because the
+			// x-amz-sdk-checksum-* / x-amz-checksum-* headers are not part of the
+			// signature GCS computes. Presigned URLs were unaffected (no body
+			// checksum), which is why backups worked but the manifest read 500'd.
+			// Restrict checksums to when the operation genuinely requires them.
+			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		},
 	}
 	client := s3.New(s3.Options{}, opts...)
