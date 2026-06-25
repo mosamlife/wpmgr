@@ -193,6 +193,33 @@ final class FileWriteCommand implements CommandInterface {
 			return $this->error( 'write_failed', 'could not write temporary file' );
 		}
 
+		// ------------------------------------------------------------------
+		// Final jail assertion — redundant, self-contained, and visible at the
+		// write call site so a reviewer can verify containment without tracing
+		// the full call stack.
+		//
+		// Full gate the destination already passed:
+		//   (1) resolveJailRoot() validated the jail root via realpath (T3)
+		//   (2) jailPath() verified realpath containment + traversal rejection (§3)
+		//   (3) FileReadCommand::isSensitive() blocked credential/config paths (T6)
+		//   (4) FileGuards::isExecutableWrite() blocked .php and other executables (T1)
+		//   (5) F3 symlink guard above rejected symlink destinations
+		//   (6) F3 parent re-jail above re-confirmed the parent is inside the jail
+		//   (7) The JWT authorising this write carries cmd="file_write" and was
+		//       verified by Ed25519 + anti-replay jti + 60 s expiry window
+		//
+		// This assertion re-resolves $absPath's real parent and confirms it is still
+		// within $jailRoot, catching any race that slipped through the checks above.
+		$finalParentReal = realpath( dirname( $absPath ) );
+		if ( $finalParentReal === false
+			|| ( strncmp( str_replace( '\\', '/', $finalParentReal ), $jailRoot . '/', strlen( $jailRoot ) + 1 ) !== 0
+				&& str_replace( '\\', '/', $finalParentReal ) !== $jailRoot )
+		) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- headless agent; WP_Filesystem never initialized; cleanup of temp file on final-assertion failure
+			@unlink( $tmpPath );
+			return $this->error( 'outside_root', 'write denied: final jail assertion failed — destination escaped the jail root' );
+		}
+
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- WP_Filesystem::move() is non-atomic (copy+delete) and WP_Filesystem is never initialized in the headless agent path; native rename() is the only atomic option on POSIX filesystems
 		if ( ! @rename( $tmpPath, $absPath ) ) {
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- headless agent; WP_Filesystem never initialized; cleanup of temp file on rename failure

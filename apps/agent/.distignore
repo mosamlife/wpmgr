@@ -1,8 +1,9 @@
 # .distignore — files and directories excluded from all distribution zips.
-# Kept in sync with the rsync --exclude flags in:
+# NOTE: the Makefile agent-zip-wporg target is the authoritative packaging path;
+# this file is informational for tooling (e.g. wp-cli dist-archive) and serves
+# as a canonical reference for what must NOT ship in either zip.
+# Kept in sync with the rsync --exclude flags and post-stage find+delete steps in:
 #   Makefile: agent-zip (self-host) and agent-zip-wporg (wp.org build).
-# This file is informational for tooling (e.g. wp-cli dist-archive) and serves
-# as the canonical reference for what must NOT ship in either zip.
 
 # Dev / test infrastructure
 tests/
@@ -26,6 +27,9 @@ includes/support/class-update-checker.php
 NOTICE.md
 README.md
 
+# composer.json — vendor is pre-built; not needed at runtime.
+composer.json
+
 # Vendor CLI entrypoints — not permitted by wp.org; not used at runtime
 # (matthiasmullie/minify is called via its PHP API only, never via the CLI bin scripts).
 vendor/bin/
@@ -34,3 +38,9 @@ vendor/*/bin/
 # Vendor LICENSE files — flagged by wp.org as unexpected non-code files.
 # Library licences are referenced in the plugin's own LICENSE / readme.txt.
 vendor/*/LICENSE
+
+# Vendor data-scripts directories and Python build tooling — not permitted by wp.org
+# (e.g. bjeavons/zxcvbn-php/data-scripts/build_*.py). Removed by post-stage
+# find+delete in the Makefile agent-zip-wporg target.
+vendor/**/data-scripts/
+*.py

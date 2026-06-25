@@ -575,9 +575,9 @@ class AutologinCommand implements CommandInterface
     {
         if (defined('WP_PLUGIN_DIR')) {
             $dir = (string) WP_PLUGIN_DIR;
-        } elseif (defined('WP_CONTENT_DIR')) {
-            $dir = ((string) WP_CONTENT_DIR) . '/plugins';
         } else {
+            // WP_PLUGIN_DIR is always defined in a real WP load; bail rather than
+            // guessing a path that may be wrong on relocated-content installs.
             $dir = '';
         }
 

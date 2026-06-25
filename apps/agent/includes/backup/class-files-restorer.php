@@ -617,13 +617,16 @@ final class FilesRestorer
         if (!defined('WP_CONTENT_DIR')) {
             return;
         }
-        // The old-files dirs live as siblings of the directory we replaced
-        // (typically wp-content/). We sweep both wp-content's parent AND
-        // wp-content itself, since we might have staged either one.
-        $candidates = [
+        // The old-files dirs live as siblings of the directory we replaced.
+        // We sweep: ABSPATH (the canonical WP root, works even on relocated
+        // wp-content installs), dirname(WP_CONTENT_DIR) (equals ABSPATH on
+        // standard installs; differs when wp-content is relocated), and
+        // WP_CONTENT_DIR itself (for any dirs staged one level inside wp-content).
+        $candidates = array_unique([
+            defined('ABSPATH') ? rtrim((string) constant('ABSPATH'), '/\\') : '',
             dirname(WP_CONTENT_DIR),
             WP_CONTENT_DIR,
-        ];
+        ]);
         $now       = time();
         $threshold = self::OLDFILES_GC_AGE_SECONDS_LONG;
         foreach ($candidates as $dir) {
