@@ -1,4 +1,4 @@
-=== Fleet Agent for WPMgr ===
+=== Fleet Agent Site Manager ===
 Contributors: mosamlife
 Tags: backup, restore, performance, cache, security
 Requires at least: 6.0
@@ -8,11 +8,11 @@ Stable tag: 0.36.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Connects this WordPress site to a user-chosen WPMgr control plane for managed backups, performance, and updates.
+Connects this WordPress site to a user-chosen WPMgr control plane for managed backups, performance, security, and updates.
 
 == Description ==
 
-Fleet Agent for WPMgr links your WordPress site to a control plane that YOU choose and configure. The default endpoint is none -- the plugin is completely inert until you supply a control-plane URL and complete a one-time signed enrollment. The control plane is either a WPMgr instance you self-host or the hosted service at manage.wpmgr.app.
+This plugin links your WordPress site to a WPMgr control plane that YOU choose and configure. The default endpoint is none -- the plugin is completely inert until you supply a control-plane URL and complete a one-time signed enrollment. The control plane is either a WPMgr instance you self-host or the hosted service at manage.wpmgr.app.
 
 **How it works / security**
 
@@ -65,7 +65,7 @@ All outbound communication stops immediately. The control plane can no longer re
 
 == Privacy / What data is sent and where ==
 
-Fleet Agent for WPMgr does not contact any external service until you connect it to a WPMgr control plane that you choose. There is NO default endpoint; the agent is inert until you supply a control-plane URL and complete a one-time, signed enrollment from that control plane. The control plane is software you point the agent at -- either a WPMgr instance you self-host, or the hosted WPMgr service at https://manage.wpmgr.app.
+This plugin does not contact any external service until you connect it to a WPMgr control plane that you choose. There is NO default endpoint; the agent is inert until you supply a control-plane URL and complete a one-time, signed enrollment from that control plane. The control plane is software you point the agent at -- either a WPMgr instance you self-host, or the hosted WPMgr service at https://manage.wpmgr.app.
 
 Once connected, the agent communicates only with the control-plane URL you configured. It sends the following data, only to that endpoint, and only for the management actions you (or your schedules) initiate:
 
@@ -107,7 +107,11 @@ This plugin contacts external hosts only after you connect it to a control plane
 
 **WPMgr control plane (the URL you supply)**
 
-Every management action (enrollment, diagnostics, heartbeat, backup progress, cache and performance operations, Remove Unused CSS, autologin token consumption, database clean, font transcoding) sends data to the WPMgr control plane URL you configured. Data transmitted includes: site URL and name, WordPress and PHP versions, active plugin and theme inventory, Site Health results, rendered HTML of selected pages (for used-CSS computation), encrypted backup archives, transcoded font bytes, and cache and performance statistics. All transmission is triggered by actions or schedules you initiate from the control plane, never autonomously. If you use the hosted control plane at https://manage.wpmgr.app its terms and privacy policy apply: Terms https://manage.wpmgr.app/terms -- Privacy https://manage.wpmgr.app/privacy. If you self-host the control plane, you operate the receiving service and your own policies apply.
+Every management action (enrollment, diagnostics, heartbeat, backup progress, cache and performance operations, Remove Unused CSS, autologin token consumption, database clean, font transcoding, password breach checking) sends data to the WPMgr control plane URL you configured. Data transmitted includes: site URL and name, WordPress and PHP versions, active plugin and theme inventory, Site Health results, rendered HTML of selected pages (for used-CSS computation), encrypted backup archives, transcoded font bytes, and cache and performance statistics. All transmission is triggered by actions or schedules you initiate from the control plane, never autonomously. If you use the hosted control plane at https://manage.wpmgr.app its terms and privacy policy apply: Terms https://manage.wpmgr.app/terms -- Privacy https://manage.wpmgr.app/privacy. If you self-host the control plane, you operate the receiving service and your own policies apply.
+
+**Have I Been Pwned (https://haveibeenpwned.com) -- via the WPMgr control plane**
+
+When the optional password-policy breach check is enabled and a site user sets or changes a password, the plugin computes the SHA-1 hash of the candidate password and sends only the first 5 characters of that hash (a k-anonymity range query) to the WPMgr control plane. The full password and the full hash never leave the site. The WPMgr control plane relays the 5-character prefix to the Have I Been Pwned range API (https://haveibeenpwned.com/API/v3#searchingPwnedPasswordsByRange), receives back a list of matching hash suffixes and breach counts, and returns that list to the agent. The agent then checks the remaining 35-character suffix locally to determine whether the password is known-breached. No full password, no full hash, and no user identity is transmitted at any point in this flow. This check is off by default; it runs only when the breach-check policy is active and only at the moment of a password set or change. Data flow: site sends the 5-character prefix to the WPMgr control plane, which forwards the range query to Have I Been Pwned. Have I Been Pwned Terms https://haveibeenpwned.com/Terms -- Have I Been Pwned Privacy https://haveibeenpwned.com/Privacy. The WPMgr control-plane hop is also covered by the terms above: Terms https://manage.wpmgr.app/terms -- Privacy https://manage.wpmgr.app/privacy.
 
 **Object storage (configured by your control plane)**
 

@@ -406,3 +406,115 @@ if (!function_exists('esc_sql')) {
         return $data;
     }
 }
+
+// ---------------------------------------------------------------------------
+// WP HTTP API stubs (wp_remote_get / response helpers / is_wp_error / site_url
+// / esc_url_raw). Required by BackupCommand::isLoopbackGated() and
+// Watchdog::detectQueuedStallReason() for the membership-gate detection path.
+// Tests that need specific responses override via Functions\when().
+// ---------------------------------------------------------------------------
+
+if (!function_exists('wp_remote_get')) {
+    /**
+     * Performs an HTTP GET request — default stub returns WP_Error.
+     * Tests must stub this via Functions\when('wp_remote_get') to return
+     * a specific response or error.
+     *
+     * @param string               $url  Request URL.
+     * @param array<string,mixed>  $args Request arguments.
+     * @return array<string,mixed>|\WP_Error Response array or WP_Error on failure.
+     */
+    function wp_remote_get(string $url, array $args = [])
+    {
+        return new \WP_Error('test_stub', 'wp_remote_get called without a test stub');
+    }
+}
+
+if (!function_exists('wp_remote_retrieve_response_code')) {
+    /**
+     * Retrieve the response code from a wp_remote_get/post response.
+     *
+     * @param array<string,mixed>|\WP_Error $response Response array or WP_Error.
+     * @return int HTTP response code.
+     */
+    function wp_remote_retrieve_response_code($response): int
+    {
+        if (is_array($response) && isset($response['response']['code'])) {
+            return (int) $response['response']['code'];
+        }
+        return 0;
+    }
+}
+
+if (!function_exists('wp_remote_retrieve_header')) {
+    /**
+     * Retrieve a specific header from a wp_remote response.
+     *
+     * @param array<string,mixed>|\WP_Error $response Response array or WP_Error.
+     * @param string                         $header   Header name (lowercase).
+     * @return string Header value or empty string.
+     */
+    function wp_remote_retrieve_header($response, string $header): string
+    {
+        if (is_array($response) && isset($response['headers'][$header])) {
+            return (string) $response['headers'][$header];
+        }
+        return '';
+    }
+}
+
+if (!function_exists('is_wp_error')) {
+    /**
+     * Whether a value is a WP_Error instance.
+     *
+     * @param mixed $thing Value to check.
+     * @return bool
+     */
+    function is_wp_error(mixed $thing): bool
+    {
+        return $thing instanceof \WP_Error;
+    }
+}
+
+if (!function_exists('site_url')) {
+    /**
+     * Returns the site URL — default stub returns a placeholder.
+     * Tests must stub via Functions\when('site_url') when specific URLs matter.
+     *
+     * @param string $path Optional path to append.
+     * @return string
+     */
+    function site_url(string $path = ''): string
+    {
+        return 'https://example.com' . $path;
+    }
+}
+
+if (!function_exists('esc_url_raw')) {
+    /**
+     * Sanitizes a URL for use in a database or redirect.
+     * Passthrough stub for tests.
+     *
+     * @param string $url URL to sanitize.
+     * @return string
+     */
+    function esc_url_raw(string $url): string
+    {
+        return $url;
+    }
+}
+
+if (!function_exists('wp_json_encode')) {
+    /**
+     * Encodes a value as JSON — thin wrapper around json_encode.
+     *
+     * @param mixed $data    Value to encode.
+     * @param int   $options json_encode flags.
+     * @param int   $depth   Maximum depth.
+     * @return string|false JSON string or false on failure.
+     */
+    function wp_json_encode(mixed $data, int $options = 0, int $depth = 512): string|false
+    {
+        return json_encode($data, $options, $depth);
+    }
+}

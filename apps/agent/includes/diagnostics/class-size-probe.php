@@ -346,7 +346,11 @@ final class SizeProbe
         }
 
         $themesDir  = $contentDir !== '' ? $contentDir . '/themes' : '';
-        $pluginsDir = $contentDir !== '' ? $contentDir . '/plugins' : '';
+        // Prefer WP_PLUGIN_DIR (honours relocated plugin dirs) before falling
+        // back to the conventional wp-content/plugins path.
+        $pluginsDir = defined('WP_PLUGIN_DIR')
+            ? rtrim((string) constant('WP_PLUGIN_DIR'), '/\\')
+            : ($contentDir !== '' ? $contentDir . '/plugins' : '');
 
         // wordpress_size excludes uploads/themes/plugins to avoid double-counting
         // (mirrors WP core's own get_sizes() exclusion list).

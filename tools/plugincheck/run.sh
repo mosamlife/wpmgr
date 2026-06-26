@@ -5,22 +5,30 @@
 # plugin, installs the plugin-under-test from its built zip, and runs
 # `wp plugin check`. Exits non-zero on ANY error row.
 #
-# Usage:  PLUGIN_ZIP=/abs/path/to/fleet-agent-for-wpmgr.zip ./run.sh
+# Usage:  PLUGIN_ZIP=/abs/path/to/<slug>.zip ./run.sh
 # (driven by `make agent-plugincheck`).
 #
 set -euo pipefail
 cd "$(dirname "$0")"
 
-: "${PLUGIN_ZIP:?set PLUGIN_ZIP to the built fleet-agent-for-wpmgr.zip}"
+: "${PLUGIN_ZIP:?set PLUGIN_ZIP to the built plugin zip}"
 [ -f "$PLUGIN_ZIP" ] || { echo "run.sh: PLUGIN_ZIP not found: $PLUGIN_ZIP" >&2; exit 2; }
 
-SLUG="fleet-agent-for-wpmgr"
+# Derive the slug from the zip's top-level directory so we always check the
+# real shipped identity, never a hardcoded (possibly stale) slug.
+# Read the full listing into a var (no `| head`, which would SIGPIPE under
+# pipefail), then take the first path component = the top-level plugin dir.
+_ZIP_LISTING="$(unzip -Z1 "$PLUGIN_ZIP")"
+SLUG="${_ZIP_LISTING%%/*}"
+[ -n "$SLUG" ] || { echo "run.sh: could not derive slug from $PLUGIN_ZIP" >&2; exit 2; }
 export PLUGIN_ZIP
 
 cleanup() { docker compose down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-# The bind-mounted WP dir must be writable by the container user.
+# Wipe the bind-mounted WP dir so a stale plugin from a prior run (different
+# slug) can never shadow the build under test. Then recreate it writable.
+rm -rf wp
 mkdir -p wp && chmod -R 777 wp
 
 docker compose up -d

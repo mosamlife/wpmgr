@@ -42,6 +42,7 @@ use WPMgr\Agent\Backup\TaskRunner;
 use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Schema;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\DebugLog;
 
 /**
  * Accepts a `backup` command from the CP, seeds the task row, and drives
@@ -260,73 +261,73 @@ final class BackupCommand implements CommandInterface
         // --- 5. Schedule the watchdog cron event --------------------------
         Watchdog::schedule($snapshotId, Watchdog::RESCHEDULE_SECONDS);
 
-        // --- 6. Release the HTTP response, then continue working ----------
+        // --- 6. Trigger the backup runner ---------------------------------
         //
-        // Pattern: register a shutdown function that flushes the response and
-        // does the heavy work AFTER PHP has sent the body. Why this matters:
+        // Strategy: probe the wp-cron loopback URL (a lightweight HEAD/GET
+        // with no redirect-following) to detect whether the front-end is
+        // gated by a membership or privacy plugin. On gated sites every
+        // request to /wp-cron.php returns a 3xx redirect to a login page,
+        // which means spawn_cron() dispatches the backup event to a cron
+        // worker that immediately redirects away and never runs TaskRunner.
+        // The result is an empty run dir (no environment.json) and a
+        // "no progress for >2m0s" watchdog stall.
         //
-        //   - WordPress REST framework runs my execute() inside a nested
-        //     output buffer. Anything I echo here goes into WP's buffer,
-        //     NOT directly to FPM. Calling fastcgi_finish_request()
-        //     immediately + exit() leaves the buffer unflushed — the
-        //     client sees no body, openresty waits for upstream, fires a
-        //     60s 504 Gateway Timeout, the CP retries, the agent's dedup
-        //     correctly refuses the retry, snapshot marked failed.
-        //     (Exactly what we saw on the first files-backup attempt:
-        //     27f20756-…, 1.5 GB archived but snapshot=failed because the
-        //     CP never got the ACK.)
+        // Detected gates: HTTP 3xx status, WP_Error (DNS/connect failure).
+        // When the loopback IS accessible (2xx / 4xx / 5xx — anything that
+        // is NOT a redirect), spawn_cron() is used as before (the separate-
+        // FPM-worker approach that fixed the 1panel/openresty FCGI timeout).
         //
-        //   - With register_shutdown_function: I return the ACK normally,
-        //     WP REST builds the WP_REST_Response, WP closes all the
-        //     output buffers cleanly, the response goes to FPM, FPM
-        //     responds to nginx/openresty/Cloudflare, the client sees a
-        //     fast 200. Only THEN PHP runs shutdown handlers. Inside the
-        //     handler we call fastcgi_finish_request() (defensive — most
-        //     of the close already happened) and then TaskRunner.
+        // When the loopback is gated, we fall back to in-process execution:
+        //   1. Register a PHP shutdown handler (fires after execute() returns
+        //      and WP REST flushes the response body to FPM).
+        //   2. The handler calls fastcgi_finish_request() (defensive — WP has
+        //      already closed its output buffers at this point) then runs
+        //      TaskRunner::run() directly in the same PHP process.
+        //   3. execute() returns the ACK normally. The CP sees 200 < 1 s.
+        //   4. The FPM worker runs the backup while the FCGI connection is
+        //      closed (fastcgi_finish_request). On hosts where
+        //      fastcgi_finish_request does not fully close the upstream
+        //      connection, ignore_user_abort(true) + set_time_limit(0)
+        //      ensure the runner is not killed mid-backup.
         //
-        //   - This is the standard pattern for long-running WP cron tasks
-        //     that works on every FPM-based WP host.
-        //
-        // On non-FPM SAPIs (mod_php, cli-server) the shutdown function
-        // still fires but fastcgi_finish_request doesn't exist; the work
-        // runs synchronously and the CP's 10-min HTTPTimeout accommodates.
-        // --- 6. Decouple the work into a SEPARATE FPM request ----------
-        //
-        // We learned the hard way (v0.7.4-dev + v0.7.5-dev) that
-        // `register_shutdown_function` + `fastcgi_finish_request` does NOT
-        // reliably release the FCGI response on 1panel's openresty config.
-        // The script keeps the FCGI connection alive while TaskRunner runs,
-        // openresty's 60 s upstream-timeout fires, the CP sees 504 (or
-        // HTTP/2 INTERNAL_ERROR over Cloudflare), River retries, the agent
-        // dedup refuses the retry → snapshot marked failed even though the
-        // runner is happily archiving in the background.
-        //
-        // The bulletproof fix: hand the work off
-        // to a SEPARATE FPM request entirely.
-        //
-        //   1. Schedule the cron event for now (`time()`) bound to
-        //      'wpmgr_backup_run' with the snapshot_id as the sole arg.
-        //   2. Call `spawn_cron()` — WordPress's built-in loopback that
-        //      makes a non-blocking wp_remote_post to /wp-cron.php on this
-        //      same site. The loopback IS the trigger; it returns
-        //      immediately without waiting for cron to actually run.
-        //   3. Return ACK. The REST request exits cleanly in ms — no
-        //      pending shutdown work, no buffer drama, no upstream timeout.
-        //   4. /wp-cron.php fires in a fresh FPM worker, picks up our
-        //      scheduled event, calls the 'wpmgr_backup_run' handler,
-        //      which dispatches TaskRunner. THIS worker can run for
-        //      minutes without affecting the original REST request.
-        //
-        // The watchdog (`wpmgr_backup_watchdog`, scheduled at +120s
-        // above) remains the recovery net if the cron worker also dies
-        // mid-run — it re-enters from `sub_state` via `TaskRunner::run`.
+        // Note: spawn_cron() is still called even on gated sites as a belt-
+        // and-suspenders measure — it costs nothing if the loopback is gated
+        // and acts as a secondary trigger in case the in-process path is also
+        // unreliable on an unusual SAPI configuration.
         if (function_exists('wp_schedule_single_event')) {
             wp_schedule_single_event(time(), 'wpmgr_backup_run', [$snapshotId]);
         }
-        // spawn_cron lives in wp-includes/cron.php; available wherever wp-load
-        // has run (which is always, in a REST request).
+
+        $loopbackGated = $this->isLoopbackGated();
+        if ($loopbackGated) {
+            // Loopback is gated: run TaskRunner in-process after the ACK
+            // is sent. Capture the params in a local variable so the closure
+            // does not hold a reference to $this (which would keep the entire
+            // BackupCommand object alive through the shutdown chain).
+            $shutdownParams = $runnerParams;
+            register_shutdown_function(static function () use ($shutdownParams): void {
+                // fastcgi_finish_request() is only available under PHP-FPM.
+                // Call it defensively: WP has already closed its own output
+                // buffers before shutdown handlers run, so the response was
+                // most likely already sent. This is a belt-and-suspenders flush.
+                if (function_exists('fastcgi_finish_request')) {
+                    fastcgi_finish_request(); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- intentional early-flush of the FCGI connection so the CP receives the ACK before TaskRunner runs
+                }
+                @set_time_limit(0); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup runner must not hit max_execution_time; @-guarded
+                @ignore_user_abort(true);
+                try {
+                    (new TaskRunner($shutdownParams))->run();
+                } catch (\Throwable $e) {
+                    \WPMgr\Agent\Support\DebugLog::write('WPMgr Backup: in-process runner fatal: ' . $e->getMessage());
+                }
+            });
+        }
+
+        // Always fire spawn_cron: on non-gated sites it is the primary
+        // trigger; on gated sites it is a no-op (the loopback redirects
+        // away) but the in-process shutdown above covers the gap.
         if (function_exists('spawn_cron')) {
-            @spawn_cron();
+            @spawn_cron(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- spawn_cron may emit a harmless notice when DISABLE_WP_CRON is set; @-suppressed intentionally
         }
 
         return ['ok' => true, 'detail' => 'accepted'];
@@ -446,6 +447,81 @@ final class BackupCommand implements CommandInterface
             'name'     => defined('DB_NAME') ? (string) DB_NAME : '',
             'prefix'   => is_object($wpdb) && isset($wpdb->prefix) ? (string) $wpdb->prefix : 'wp_',
         ];
+    }
+
+    /**
+     * Probe whether the wp-cron loopback URL is gated by a membership or
+     * privacy plugin.
+     *
+     * Sends a non-redirect-following GET to /wp-cron.php with a 3-second
+     * timeout. Returns true when the response is a 3xx redirect (the
+     * front-end redirects unauthenticated requests to a login page) or when
+     * the request fails entirely (WP_Error — DNS, connect, TLS). Returns
+     * false for any other status code (2xx, 4xx, 5xx) — the loopback is
+     * reachable even if it returns an error, so spawn_cron will work.
+     *
+     * Why we only follow 0 redirects: a single HTTP redirect is the
+     * definitive sign that the gate is active. Multi-hop chains are not
+     * considered; we treat any redirect as gated.
+     *
+     * DISABLE_WP_CRON / ALTERNATE_WP_CRON short-circuit: when WP cron is
+     * disabled the loopback probe is irrelevant (spawn_cron is a no-op too),
+     * so we return false and let the normal path proceed.
+     *
+     * `protected` is a deliberate test seam.
+     */
+    protected function isLoopbackGated(): bool
+    {
+        // If WP cron is disabled entirely, spawn_cron is a no-op regardless
+        // of whether the loopback is gated — nothing to probe.
+        if (defined('DISABLE_WP_CRON') && (bool) constant('DISABLE_WP_CRON')) {
+            return false;
+        }
+
+        if (!function_exists('wp_remote_get') || !function_exists('site_url')) {
+            return false;
+        }
+
+        $cronUrl = (string) site_url('/wp-cron.php');
+        if ($cronUrl === '' || $cronUrl === '/wp-cron.php') {
+            return false;
+        }
+
+        $response = wp_remote_get(
+            $cronUrl,
+            [
+                'timeout'     => 3,
+                'redirection' => 0,  // Do NOT follow redirects — a redirect IS the gate signal.
+                'sslverify'   => false,
+                'blocking'    => true,
+                'user-agent'  => 'WPMgr-Agent/' . (defined('WPMGR_AGENT_VERSION') ? (string) constant('WPMGR_AGENT_VERSION') : '0'),
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            // Cannot reach the loopback at all (DNS failure, TLS error, etc.).
+            // Treat as gated — in-process fallback is safer than spawning into
+            // a black hole.
+            DebugLog::write(sprintf(
+                'WPMgr Backup: loopback probe failed (%s); using in-process runner as fallback',
+                $response->get_error_message()
+            ));
+            return true;
+        }
+
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code >= 300 && $code < 400) {
+            // Redirect — the front-end gate is active.
+            $location = wp_remote_retrieve_header($response, 'location');
+            DebugLog::write(sprintf(
+                'WPMgr Backup: loopback probe returned %d (redirect to: %s); site appears to be behind a membership/privacy gate — using in-process runner as fallback',
+                $code,
+                is_string($location) ? $location : '(unknown)'
+            ));
+            return true;
+        }
+
+        return false;
     }
 
     /** Refusal response — the agent didn't accept the job. */

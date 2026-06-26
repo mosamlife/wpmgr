@@ -1,4 +1,17 @@
 <?php
+// File: class-file-write-command.php — FileWriteCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Keystore;
+use WPMgr\Agent\Support\StoragePaths;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileWriteCommand: create or overwrite a small text file (≤ 256 KiB) within
  * the site jail via an atomic temp-write → rename swap.
@@ -40,21 +53,6 @@
  *     the presigned-upload path, file_upload_apply).
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Keystore;
-use WPMgr\Agent\Support\StoragePaths;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Atomically writes a small file within the agent file jail.
  */
 final class FileWriteCommand implements CommandInterface {
 
@@ -191,6 +189,33 @@ final class FileWriteCommand implements CommandInterface {
 		$written = @file_put_contents( $tmpPath, $content, LOCK_EX );
 		if ( $written === false ) {
 			return $this->error( 'write_failed', 'could not write temporary file' );
+		}
+
+		// ------------------------------------------------------------------
+		// Final jail assertion — redundant, self-contained, and visible at the
+		// write call site so a reviewer can verify containment without tracing
+		// the full call stack.
+		//
+		// Full gate the destination already passed:
+		//   (1) resolveJailRoot() validated the jail root via realpath (T3)
+		//   (2) jailPath() verified realpath containment + traversal rejection (§3)
+		//   (3) FileReadCommand::isSensitive() blocked credential/config paths (T6)
+		//   (4) FileGuards::isExecutableWrite() blocked .php and other executables (T1)
+		//   (5) F3 symlink guard above rejected symlink destinations
+		//   (6) F3 parent re-jail above re-confirmed the parent is inside the jail
+		//   (7) The JWT authorising this write carries cmd="file_write" and was
+		//       verified by Ed25519 + anti-replay jti + 60 s expiry window
+		//
+		// This assertion re-resolves $absPath's real parent and confirms it is still
+		// within $jailRoot, catching any race that slipped through the checks above.
+		$finalParentReal = realpath( dirname( $absPath ) );
+		if ( $finalParentReal === false
+			|| ( strncmp( str_replace( '\\', '/', $finalParentReal ), $jailRoot . '/', strlen( $jailRoot ) + 1 ) !== 0
+				&& str_replace( '\\', '/', $finalParentReal ) !== $jailRoot )
+		) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- headless agent; WP_Filesystem never initialized; cleanup of temp file on final-assertion failure
+			@unlink( $tmpPath );
+			return $this->error( 'outside_root', 'write denied: final jail assertion failed — destination escaped the jail root' );
 		}
 
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- WP_Filesystem::move() is non-atomic (copy+delete) and WP_Filesystem is never initialized in the headless agent path; native rename() is the only atomic option on POSIX filesystems

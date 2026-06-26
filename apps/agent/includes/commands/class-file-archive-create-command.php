@@ -1,4 +1,17 @@
 <?php
+// File: class-file-archive-create-command.php — FileArchiveCreateCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Support\StoragePaths;
+use ZipArchive;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileArchiveCreateCommand: zip one or more jailed paths and stage to S3.
  *
@@ -44,21 +57,6 @@
  * hard-fail), so direct streaming I/O is the correct posture here.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Support\StoragePaths;
-use ZipArchive;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Zips one or more jailed paths and stages the result to S3 via presigned PUTs.
  */
 final class FileArchiveCreateCommand implements CommandInterface {
 

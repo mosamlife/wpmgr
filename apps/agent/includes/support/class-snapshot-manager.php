@@ -277,7 +277,9 @@ class SnapshotManager
 
         if ($type === 'plugin') {
             $folder = strpos($slug, '/') !== false ? substr($slug, 0, strpos($slug, '/')) : $slug;
-            $root   = defined('WP_PLUGIN_DIR') ? rtrim((string) WP_PLUGIN_DIR, '/\\') : $contentDir . '/plugins';
+            // WP_PLUGIN_DIR is always defined in a real WP load; bail if missing
+            // rather than guess a path that may be wrong on relocated-content installs.
+            $root   = defined('WP_PLUGIN_DIR') ? rtrim((string) WP_PLUGIN_DIR, '/\\') : '';
             $path   = $root . '/' . $folder;
         } elseif ($type === 'theme') {
             $root = $this->themeRoot($contentDir);
