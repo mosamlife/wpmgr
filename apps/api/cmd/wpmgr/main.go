@@ -770,6 +770,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// failures are logged and never fail the backup. Uses defStore (the
 		// rebuilt CP-global *blobstore.Store) which satisfies IndexPutter.
 		backupSvc.SetIndexPutter(defStore)
+		// Wire the manifest deleter so snapshot deletions (operator delete + GC
+		// prune) also remove the corresponding manifest.json object. Uses the same
+		// defStore which satisfies IndexDeleter via its Delete method.
+		backupSvc.SetIndexDeleter(defStore)
 	}
 
 	// M5/M6 uptime monitoring: the uptime metrics store, the SSRF-hardened

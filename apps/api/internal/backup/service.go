@@ -79,6 +79,17 @@ type IndexPutter interface {
 	Put(ctx context.Context, key string, body io.Reader, size int64) error
 }
 
+// IndexDeleter removes an object from object storage at an arbitrary key. Used
+// to delete the per-snapshot manifest.json index object when a snapshot is
+// deleted. It is the narrow complement to IndexPutter so tests can stub it
+// independently.
+//
+// Implementations: *blobstore.Store satisfies this interface via its Delete
+// method, which treats 404 as success (idempotent delete).
+type IndexDeleter interface {
+	Delete(ctx context.Context, key string) error
+}
+
 // PresignerForSnapshot is the ADR-036 P1 storage adapter routing interface:
 // given a snapshot it returns the Presigner that should service its
 // chunk-upload/download for the snapshot's destination. The blobstore.Registry
@@ -115,6 +126,10 @@ type Service struct {
 	// indexPutter writes the per-snapshot manifest index object (M5.7 P4).
 	// Optional: when nil the index write is skipped (best-effort by design).
 	indexPutter IndexPutter
+	// indexDeleter removes the per-snapshot manifest index object on delete.
+	// Optional: when nil the manifest object is not explicitly deleted (it will
+	// remain orphaned in object storage until a lifecycle rule reclaims it).
+	indexDeleter IndexDeleter
 	// mailer sends backup-completion/failure notification emails (Track B, m49).
 	// Optional: when nil, notification emails are silently suppressed.
 	mailer BackupMailer
@@ -132,6 +147,14 @@ func (s *Service) SetRegistry(r PresignerForSnapshot) { s.registry = r }
 // A write failure is best-effort: it is logged but never fails the backup.
 // Call once at startup before serving traffic; safe to omit in tests.
 func (s *Service) SetIndexPutter(p IndexPutter) { s.indexPutter = p }
+
+// SetIndexDeleter wires the manifest-index deleter. When set, every snapshot
+// deletion (DeleteSnapshotForUser and the retention GC metadata prune) issues
+// a best-effort delete of the snapshot's manifest.json object so no orphaned
+// manifest keys accumulate in object storage. A delete failure (including an
+// already-absent object) is logged as a warning and never fails the delete.
+// Call once at startup before serving traffic; safe to omit in tests.
+func (s *Service) SetIndexDeleter(d IndexDeleter) { s.indexDeleter = d }
 
 // SetMailer wires the transactional-email enqueuer for backup-completion
 // notifications (Track B, m49). Call once at startup after River is started.
@@ -1559,6 +1582,29 @@ func (s *Service) writeManifestIndex(ctx context.Context, snap Snapshot, in Reco
 	}
 }
 
+// deleteManifestIndex removes the per-snapshot manifest.json index object from
+// object storage. It is the mirror of writeManifestIndex and carries the same
+// best-effort contract: any error (including a missing object, which the
+// blobstore already treats as success) is logged as a warning and never fails
+// the caller — the snapshot row is already gone and the orphaned manifest object
+// is harmless (a lifecycle rule or the next explicit cleanup can reclaim it).
+//
+// tenantID, siteID, snapshotID must be known before calling; typically the
+// caller already holds the Snapshot value fetched before deleting the DB row.
+func (s *Service) deleteManifestIndex(ctx context.Context, tenantID, siteID, snapshotID uuid.UUID) {
+	if s.indexDeleter == nil {
+		return
+	}
+	key := manifestIndexKey(tenantID, siteID, snapshotID)
+	if err := s.indexDeleter.Delete(ctx, key); err != nil {
+		slog.WarnContext(ctx, "backup: manifest index delete failed (best-effort, snapshot delete unaffected)",
+			slog.String("snapshot_id", snapshotID.String()),
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("key", key),
+			slog.Any("error", err))
+	}
+}
+
 // getSnapshotForPresign is the M5.7 P4 helper used by PresignChunks and
 // PlanRestore. It runs the gating snapshot lookup inside the correct scoped
 // transaction based on the principal found (or not) on the request context:
@@ -1754,6 +1800,13 @@ func (s *Service) DeleteSnapshotForUser(ctx context.Context, tenantID, snapshotI
 	if derr := s.repo.DeleteSnapshot(ctx, tenantID, snapshotID); derr != nil {
 		return derr
 	}
+
+	// Delete the per-snapshot manifest.json index object. Best-effort: the DB row
+	// is already gone; a storage error (including an absent manifest on a snapshot
+	// that never completed its write) is logged as a warning and does not fail the
+	// delete. We call this after the DB delete so a transient storage failure can
+	// never strand the DB row in an inconsistent state.
+	s.deleteManifestIndex(ctx, tenantID, snap.SiteID, snapshotID)
 
 	// Reclaim orphaned chunks via the reachability-based GC over the survivors.
 	// Best-effort: the row is already gone; a sweep error is logged, not fatal.

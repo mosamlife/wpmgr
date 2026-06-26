@@ -39,6 +39,7 @@ import {
   useLockBackup,
   useUnlockBackup,
   useBackupSettingsContents,
+  useBackupSchedule,
 } from "@/features/backups/use-backups";
 import {
   StatusBadge,
@@ -58,7 +59,10 @@ import {
   type ScheduleRun,
   type ScheduleRunStatus,
 } from "@/features/backups/use-schedule-runs";
-import { BackupScheduleEditor } from "@/features/backups/backup-schedule-editor";
+import {
+  BackupScheduleEditor,
+  NextRunLine,
+} from "@/features/backups/backup-schedule-editor";
 import { formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupSnapshot } from "@wpmgr/api";
 
@@ -1010,6 +1014,13 @@ const SCHEDULE_STATUS_LABEL: Record<ScheduleRunStatus, string> = {
 
 function ScheduleRunsSection({ siteId }: { siteId: string }) {
   const { data, isPending, isError, error, refetch } = useScheduleRuns(siteId);
+  // Re-use the already-fetched schedule (same Query cache key as BackupScheduleEditor
+  // below — no extra network request). We need it to drive the upcoming empty-state:
+  // the scheduler only materialises a `backup_schedule_runs` row shortly before a
+  // run fires, so `upcoming` is usually empty even when the schedule is enabled.
+  const { data: schedule } = useBackupSchedule(siteId);
+
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
   if (isPending) {
     return (
@@ -1033,16 +1044,24 @@ function ScheduleRunsSection({ siteId }: { siteId: string }) {
 
   const { upcoming, past } = data;
 
+  // Projected next runs from the schedule (server-computed, always consistent
+  // with the "Next run" and "Next 3 runs" strip in the Backup schedule card
+  // below). Only populated when a schedule exists and is enabled — the
+  // scheduler materialises `backup_schedule_runs` rows only shortly before
+  // each fire, so `upcoming` is usually empty even with an active schedule.
+  const projectedRuns: string[] = (() => {
+    if (!schedule?.enabled) return [];
+    if (schedule.next_runs.length > 0) return schedule.next_runs;
+    if (schedule.next_run_at) return [schedule.next_run_at];
+    return [];
+  })();
+
   return (
     <div className="space-y-6">
       {/* Upcoming */}
       <div>
         <h3 className="mb-2 text-sm font-semibold text-foreground">Upcoming</h3>
-        {upcoming.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No upcoming runs. Enable the backup schedule to queue runs.
-          </p>
-        ) : (
+        {upcoming.length > 0 ? (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -1062,6 +1081,29 @@ function ScheduleRunsSection({ siteId }: { siteId: string }) {
               </TableBody>
             </Table>
           </div>
+        ) : projectedRuns.length > 0 ? (
+          // No materialised rows yet, but the schedule is enabled. Show the
+          // server-computed projection so the panel agrees with the "Next run"
+          // and "Next 3 runs" strip in the Backup schedule card below.
+          <div className="space-y-1.5">
+            <p className="text-xs text-muted-foreground">
+              Runs are queued shortly before they are due. Projected next{" "}
+              {projectedRuns.length === 1 ? "run" : "runs"}:
+            </p>
+            <ol className="space-y-0.5">
+              {projectedRuns.map((iso) => (
+                <li key={iso}>
+                  <NextRunLine label="" iso={iso} timezone={browserTz} compact />
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : (
+          // Schedule is disabled (or not yet created). Prompt the user to
+          // enable it — only show this when it is actually applicable.
+          <p className="text-sm text-muted-foreground">
+            No upcoming runs. Enable the backup schedule to queue runs.
+          </p>
         )}
       </div>
 

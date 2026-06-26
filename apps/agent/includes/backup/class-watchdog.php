@@ -162,9 +162,22 @@ final class Watchdog
             // bookkeeping does this normally; doing it here too is
             // defensive (the runner might be wedged in a way we can't
             // re-enter).
+            //
+            // If the task never left the `queued` phase (phase=queued AND
+            // resume_count already at max), the runner was never dispatched
+            // at all — strong signal that both the spawn_cron loopback and
+            // the in-process fallback failed to start the runner. Detect the
+            // loopback-gate scenario and surface a clear, actionable reason.
+            $failureReason = self::detectQueuedStallReason($phase, $snapshotId);
             // @phpstan-ignore-next-line
-            @$wpdb->update($table, ['phase' => TaskRunner::PHASE_FAILED, 'last_progress_at' => time()], ['snapshot_id' => $snapshotId], ['%s', '%d'], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; correctness requires a live write
-            DebugLog::write(sprintf('WPMgr Backup: snapshot %s exhausted %d resume attempts; marked failed', $snapshotId, $maxResumes));
+            @$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; correctness requires a live write
+                $table,
+                ['phase' => TaskRunner::PHASE_FAILED, 'last_progress_at' => time(), 'sub_state' => (string) wp_json_encode(['reason_code' => 'stalled', 'phase_detail' => ['message' => $failureReason]])],
+                ['snapshot_id' => $snapshotId],
+                ['%s', '%d', '%s'],
+                ['%s']
+            );
+            DebugLog::write(sprintf('WPMgr Backup: snapshot %s exhausted %d resume attempts; marked failed. %s', $snapshotId, $maxResumes, $failureReason));
             return;
         }
 
@@ -290,6 +303,83 @@ final class Watchdog
             return;
         }
         wp_schedule_single_event(time() + max(1, $delay), self::HOOK, [$snapshotId]);
+    }
+
+    /**
+     * When a task stalls in the `queued` phase (the runner was never
+     * dispatched at all), probe the wp-cron loopback URL to determine
+     * whether a membership or privacy gate is the likely cause.
+     *
+     * Returns an actionable human-readable message for the failure reason
+     * that is stored on the task row and surfaced to the operator via the
+     * CP dashboard.
+     *
+     * The probe uses `wp_remote_get` with `redirection=0` so a single
+     * HTTP redirect is the definitive gate signal (same logic as
+     * BackupCommand::isLoopbackGated, but from the watchdog context to
+     * cover the case where the in-process fallback also failed — e.g. on
+     * CLI-cron driven sites where PHP's shutdown-function route is also
+     * unreliable).
+     *
+     * @param string $phase      Current task phase (used to decide whether to probe).
+     * @param string $snapshotId Snapshot id (logged for traceability).
+     * @return string Failure reason message.
+     */
+    private static function detectQueuedStallReason(string $phase, string $snapshotId): string
+    {
+        $generic = 'backup runner was never dispatched (stalled in queued phase with no progress)';
+
+        // Only add loopback-gate detail when the task never left queued
+        // (a stall in a later phase has a different root cause).
+        if ($phase !== TaskRunner::PHASE_QUEUED) {
+            return $generic;
+        }
+
+        if (!function_exists('wp_remote_get') || !function_exists('site_url')) {
+            return $generic;
+        }
+
+        $cronUrl = (string) site_url('/wp-cron.php');
+        if ($cronUrl === '' || $cronUrl === '/wp-cron.php') {
+            return $generic;
+        }
+
+        $response = wp_remote_get(
+            $cronUrl,
+            [
+                'timeout'     => 3,
+                'redirection' => 0,
+                'sslverify'   => false,
+                'blocking'    => true,
+                'user-agent'  => 'WPMgr-Agent/Watchdog',
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            return sprintf(
+                'backup runner was never dispatched — the WordPress cron loopback URL (%s) could not be reached (%s); verify that the site can make HTTP requests to itself',
+                esc_url_raw($cronUrl),
+                $response->get_error_message()
+            );
+        }
+
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code >= 300 && $code < 400) {
+            $location = wp_remote_retrieve_header($response, 'location');
+            DebugLog::write(sprintf(
+                'WPMgr Backup Watchdog: loopback probe for snapshot %s returned %d (location: %s) — site appears to be behind a membership/privacy gate',
+                $snapshotId,
+                $code,
+                is_string($location) ? $location : '(unknown)'
+            ));
+            return sprintf(
+                'backup continuation request was redirected to a login page (HTTP %d) — the site appears to be behind a membership or privacy gate that blocks WordPress cron loopback requests to %s; scheduled backups cannot run until the gate allows /wp-cron.php through unauthenticated, or until the WPMgr agent cron loopback is whitelisted in the membership plugin settings',
+                $code,
+                esc_url_raw($cronUrl)
+            );
+        }
+
+        return $generic;
     }
 
     /** Best-effort JSON decode. Returns [] on any failure. */

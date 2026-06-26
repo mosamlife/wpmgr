@@ -77,8 +77,11 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 		return 0, 0, err
 	}
 
-	// expiredIDs: snapshots selected for metadata deletion across all sites.
-	expiredIDs := map[uuid.UUID]bool{}
+	// expiredIDs maps snapshot ID → site ID for every snapshot selected for
+	// metadata deletion across all sites. The site ID is carried so Phase 5 can
+	// construct the manifest key (tenant/<tenantID>/site/<siteID>/backup/<id>/manifest.json)
+	// without an extra DB round-trip.
+	expiredIDs := map[uuid.UUID]uuid.UUID{}
 	// retainedMetas: every completed snapshot that survives the prune, across all
 	// sites (dedup is tenant-global, so the retained set must be tenant-wide).
 	var retainedMetas []SnapshotMeta
@@ -139,7 +142,7 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 				delete(deleteSet, m.ID)
 			}
 			if deleteSet[m.ID] {
-				expiredIDs[m.ID] = true
+				expiredIDs[m.ID] = siteID
 				continue
 			}
 			// Retained. Track it and its chain's highest retained generation.
@@ -241,7 +244,7 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 	// to exist (CHECK 1), and deleting an older generation's file_index rows would
 	// make a carry-forward chunk unreachable on a LATER GC run (re-sweeping it).
 	// So we skip any expired id that also appears in the marked (pinned) set.
-	for id := range expiredIDs {
+	for id, sid := range expiredIDs {
 		if _, pinned := markSnaps[id]; pinned {
 			continue
 		}
@@ -249,6 +252,9 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 			return snapshotsDeleted, chunksDeleted, dserr
 		}
 		snapshotsDeleted++
+		// Delete the per-snapshot manifest.json index object. Best-effort: the DB
+		// row is already gone; an error or an absent object is logged and ignored.
+		s.deleteManifestIndex(ctx, tenantID, sid, id)
 	}
 
 	return snapshotsDeleted, chunksDeleted, nil

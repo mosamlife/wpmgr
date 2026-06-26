@@ -1093,16 +1093,18 @@ export function BackupScheduleEditor({ siteId }: { siteId: string }) {
 
 // ---------------------------------------------------------------------------
 // NextRunLine — renders one scheduled time as absolute (site tz) + relative
+// Exported so the "Backup schedule runs" upcoming panel can reuse the same
+// formatting without duplicating the Intl/relativeTime logic.
 // ---------------------------------------------------------------------------
 
-interface NextRunLineProps {
+export interface NextRunLineProps {
   label: string;
   iso: string;
   timezone: string;
   compact?: boolean;
 }
 
-function NextRunLine({ label, iso, timezone, compact = false }: NextRunLineProps) {
+export function NextRunLine({ label, iso, timezone, compact = false }: NextRunLineProps) {
   const abs = formatInSiteTz(iso, timezone);
   const rel = relativeTime(iso);
 

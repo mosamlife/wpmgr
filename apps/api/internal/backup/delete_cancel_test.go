@@ -7,6 +7,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -253,3 +254,89 @@ func TestSubmitManifest_RejectsCanceledSnapshot(t *testing.T) {
 // ADR-051: an archive-delta increment submits through SubmitManifest, so the
 // post-cancel late-submit rejection is covered by TestSubmitManifest_RejectsCanceledSnapshot
 // above — there is no separate SubmitIncrementalManifest path to test.
+
+// --- manifest index deletion on snapshot delete ----------------------------
+
+// fakeIndexDeleter records Delete calls and optionally returns an error.
+type fakeIndexDeleter struct {
+	deleted []string
+	errOn   string // if non-empty, return an error when this key is deleted
+}
+
+func (f *fakeIndexDeleter) Delete(_ context.Context, key string) error {
+	f.deleted = append(f.deleted, key)
+	if f.errOn != "" && f.errOn == key {
+		return errors.New("simulated storage error")
+	}
+	return nil
+}
+
+// TestDeleteSnapshotForUser_DeletesManifestObject asserts that deleting a
+// snapshot also deletes its manifest.json index object from object storage, and
+// that the expected key matches the manifestIndexKey construction.
+func TestDeleteSnapshotForUser_DeletesManifestObject(t *testing.T) {
+	repo := newDeleteCancelFakeRepo()
+	deleter := &fakeIndexDeleter{}
+	svc := buildDeleteCancelSvc(repo)
+	svc.SetIndexDeleter(deleter)
+
+	tenantID, siteID := uuid.New(), uuid.New()
+	snap := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted}
+	repo.setSnapshot(snap)
+
+	if err := svc.DeleteSnapshotForUser(context.Background(), tenantID, snap.ID); err != nil {
+		t.Fatalf("DeleteSnapshotForUser: unexpected error: %v", err)
+	}
+	if !repo.deleted[snap.ID] {
+		t.Fatalf("snapshot DB row was not deleted")
+	}
+
+	want := manifestIndexKey(tenantID, siteID, snap.ID)
+	if len(deleter.deleted) != 1 || deleter.deleted[0] != want {
+		t.Fatalf("manifest delete calls = %v, want [%q]", deleter.deleted, want)
+	}
+}
+
+// TestDeleteSnapshotForUser_MissingManifestDoesNotFail asserts that a storage
+// error on manifest delete (e.g. already-absent object returning an unexpected
+// status) does NOT fail the snapshot delete — best-effort contract.
+func TestDeleteSnapshotForUser_MissingManifestDoesNotFail(t *testing.T) {
+	repo := newDeleteCancelFakeRepo()
+	tenantID, siteID := uuid.New(), uuid.New()
+	snap := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted}
+	repo.setSnapshot(snap)
+
+	wantKey := manifestIndexKey(tenantID, siteID, snap.ID)
+	deleter := &fakeIndexDeleter{errOn: wantKey}
+	svc := buildDeleteCancelSvc(repo)
+	svc.SetIndexDeleter(deleter)
+
+	// Even though the deleter returns an error, DeleteSnapshotForUser must succeed.
+	if err := svc.DeleteSnapshotForUser(context.Background(), tenantID, snap.ID); err != nil {
+		t.Fatalf("DeleteSnapshotForUser: manifest delete error must not propagate, got: %v", err)
+	}
+	if !repo.deleted[snap.ID] {
+		t.Fatalf("snapshot DB row was not deleted")
+	}
+	// The delete was still attempted.
+	if len(deleter.deleted) == 0 {
+		t.Fatalf("manifest delete was not attempted")
+	}
+}
+
+// TestDeleteSnapshotForUser_NoDeleterIsNoop asserts that when no IndexDeleter
+// is wired (nil), DeleteSnapshotForUser still succeeds without panicking.
+func TestDeleteSnapshotForUser_NoDeleterIsNoop(t *testing.T) {
+	repo := newDeleteCancelFakeRepo()
+	svc := buildDeleteCancelSvc(repo) // no SetIndexDeleter
+	tenantID := uuid.New()
+	snap := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: uuid.New(), Status: StatusCompleted}
+	repo.setSnapshot(snap)
+
+	if err := svc.DeleteSnapshotForUser(context.Background(), tenantID, snap.ID); err != nil {
+		t.Fatalf("DeleteSnapshotForUser (no deleter): unexpected error: %v", err)
+	}
+	if !repo.deleted[snap.ID] {
+		t.Fatalf("snapshot DB row was not deleted")
+	}
+}
