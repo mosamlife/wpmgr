@@ -1,4 +1,14 @@
 <?php
+// File: class-file-search-command.php — FileSearchCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileSearchCommand: recursive filename or content search within the site jail.
  *
@@ -56,18 +66,6 @@
  *   from a different path is rejected.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Recursive file search (name or content) within the agent file jail.
  */
 final class FileSearchCommand implements CommandInterface {
 

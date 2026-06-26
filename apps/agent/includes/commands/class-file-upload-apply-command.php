@@ -1,4 +1,14 @@
 <?php
+// File: class-file-upload-apply-command.php — FileUploadApplyCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileUploadApplyCommand: reassemble a CP-staged upload from presigned S3 GETs
  * and atomically place it within the site jail.
@@ -55,19 +65,6 @@
  * are small (capped) and serial streaming is sufficient.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Reassembles a multi-part presigned-GET upload and atomically places it
- * within the agent file jail, applying the full executable-write prevention.
  */
 final class FileUploadApplyCommand implements CommandInterface {
 

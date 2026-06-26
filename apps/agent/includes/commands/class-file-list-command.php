@@ -1,4 +1,16 @@
 <?php
+// File: class-file-list-command.php — FileListCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Support\FileScanner;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileListCommand: one-level directory listing within the site jail.
  *
@@ -38,17 +50,6 @@
  * guard (realpath + strncmp). The jail root is WPMGR_FILE_JAIL_ROOT (defaults to ABSPATH).
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Support\FileScanner;
-
-/**
- * Returns a one-level directory listing within the agent file jail.
- * Dirs are listed first, then files, both sorted case-insensitively by name.
  */
 final class FileListCommand implements CommandInterface
 {

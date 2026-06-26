@@ -1,4 +1,16 @@
 <?php
+// File: class-file-versions-list-command.php — FileVersionsListCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Support\StoragePaths;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileVersionsListCommand: list the pre-write staged backups for a jailed file.
  *
@@ -50,20 +62,6 @@
  * the absolute path later without leaking host paths in the response.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Support\StoragePaths;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Lists the pre-write staged backups for a jailed file path.
  */
 final class FileVersionsListCommand implements CommandInterface {
 

@@ -1,4 +1,17 @@
 <?php
+// File: class-file-extract-command.php — FileExtractCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Support\StoragePaths;
+use ZipArchive;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileExtractCommand: extract a jailed .zip into a jailed destination.
  *
@@ -62,22 +75,6 @@
  *      a finally block and leave dest untouched.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Support\StoragePaths;
-use ZipArchive;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Safely extracts a jailed .zip into a jailed destination directory.
- * The extraction is atomic: a quarantine temp dir is used; on failure dest is untouched.
  */
 final class FileExtractCommand implements CommandInterface {
 

@@ -162,12 +162,13 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	# agent). vendor/*/LICENSE files are excluded because wp.org flags them as
 	# unexpected non-code files; the library licences are already referenced in the
 	# plugin's own LICENSE / readme.txt.
-	# composer.json is excluded because vendor is pre-built; it is not needed at runtime.
 	# vendor/**/data-scripts/ and *.py files are excluded because wp.org does not
 	# permit build tooling scripts (e.g. bjeavons/zxcvbn-php/data-scripts/build_*.py).
+	# composer.json ships with vendor/ so Plugin Check does not warn about a vendored
+	# directory without a composer.json. composer.lock is excluded (not needed at runtime).
 	rsync -a --delete \
 		--exclude 'tests/' --exclude 'tests-e2e/' --exclude 'tools/' --exclude '*.dist' --exclude '.phpunit.cache/' \
-		--exclude '.phpunit.result.cache' --exclude 'composer.lock' --exclude 'composer.json' \
+		--exclude '.phpunit.result.cache' --exclude 'composer.lock' \
 		--exclude '.DS_Store' --exclude '*.zip' \
 		--exclude '.distignore' --exclude '.gitignore' --exclude '.gitattributes' \
 		--exclude 'phpstan.neon' --exclude 'phpstan-baseline.neon' \

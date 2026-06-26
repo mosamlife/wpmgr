@@ -1,4 +1,14 @@
 <?php
+// File: class-file-download-prepare-command.php — FileDownloadPrepareCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileDownloadPrepareCommand: stage a file to S3 for large-file download.
  *
@@ -46,15 +56,6 @@
  * and hard-fail). This is a justified deviation from the WP_Filesystem sniff.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-/**
- * Stage a single file to S3 via CP-minted presigned PUT URLs, streaming in
- * part_size chunks to respect www-data memory limits.
  */
 final class FileDownloadPrepareCommand implements CommandInterface
 {

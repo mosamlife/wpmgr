@@ -1,4 +1,16 @@
 <?php
+// File: class-file-read-command.php — FileReadCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Support\FileScanner;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileReadCommand: read one file (≤ 256 KiB, base64-encoded) within the site jail.
  *
@@ -36,17 +48,6 @@
  *   .aws/credentials, any file inside a .git/ directory.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Support\FileScanner;
-
-/**
- * Returns the base64-encoded content of a single file within the agent file jail.
- * Enforces the sensitive-file deny-list (T6) and the realpath/strncmp jail (T2).
  */
 final class FileReadCommand implements CommandInterface
 {

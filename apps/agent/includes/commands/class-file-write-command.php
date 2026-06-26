@@ -1,4 +1,17 @@
 <?php
+// File: class-file-write-command.php — FileWriteCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Keystore;
+use WPMgr\Agent\Support\StoragePaths;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileWriteCommand: create or overwrite a small text file (≤ 256 KiB) within
  * the site jail via an atomic temp-write → rename swap.
@@ -40,21 +53,6 @@
  *     the presigned-upload path, file_upload_apply).
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Keystore;
-use WPMgr\Agent\Support\StoragePaths;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Atomically writes a small file within the agent file jail.
  */
 final class FileWriteCommand implements CommandInterface {
 

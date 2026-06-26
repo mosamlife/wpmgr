@@ -1,4 +1,17 @@
 <?php
+// File: class-file-version-restore-command.php — FileVersionRestoreCommand.
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+use WPMgr\Agent\Keystore;
+use WPMgr\Agent\Support\StoragePaths;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * FileVersionRestoreCommand: restore a staged backup version over a jailed file.
  *
@@ -40,21 +53,6 @@
  *     bad_backup. No plaintext fallback exists on 0.60+ installs.
  *
  * @package WPMgr\Agent\Commands
- */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-use WPMgr\Agent\Keystore;
-use WPMgr\Agent\Support\StoragePaths;
-
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
-/**
- * Atomically restores a staged backup version over the original file.
  */
 final class FileVersionRestoreCommand implements CommandInterface {
 

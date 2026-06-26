@@ -27,9 +27,6 @@ includes/support/class-update-checker.php
 NOTICE.md
 README.md
 
-# composer.json — vendor is pre-built; not needed at runtime.
-composer.json
-
 # Vendor CLI entrypoints — not permitted by wp.org; not used at runtime
 # (matthiasmullie/minify is called via its PHP API only, never via the CLI bin scripts).
 vendor/bin/
