@@ -20,11 +20,57 @@ type Pool struct {
 	*pgxpool.Pool
 }
 
-// Connect opens a pgx connection pool and verifies connectivity.
+// Connect opens a pgx connection pool and verifies connectivity. It applies no
+// MinConns floor, making it suitable for short-lived pools such as the
+// migration runner that are closed immediately after use.
+//
+// For the long-lived application pool, use ConnectApp instead.
 func Connect(ctx context.Context, dsn string) (*Pool, error) {
+	return connect(ctx, dsn, false)
+}
+
+// ConnectApp opens the long-lived application pool with a warm connection
+// floor so that post-idle requests do not pay the full Cloud SQL TCP+TLS+auth
+// round-trip cost on every cold start.
+//
+// Connection budget for Cloud SQL db-g1-small (max_connections ≈ 25,
+// Cloud Run maxScale = 4 instances):
+//
+//	Per-instance cap : MaxConns = 5
+//	Per-instance floor: MinConns = 2  (health-checked every 30 s)
+//	Worst-case total  : 5 × 4 = 20 connections
+//	Idle floor total  : 2 × 4 = 8 connections
+//	System headroom   : ~5 remaining for psql/migrations/superuser sessions
+//
+// River (riverpgxv5.New(pool)) borrows from this same pool — it does NOT open
+// its own pgxpool — so River's LISTEN + worker connections count against
+// MaxConns per instance, not in addition to it. Periodic jobs and queue
+// fetches are brief, so contention is rare; 5 MaxConns per instance
+// comfortably handles River + concurrent HTTP handlers.
+//
+// MaxConnIdleTime (5 m) reclaims connections above the floor after a quiet
+// period. HealthCheckPeriod (30 s) pings the floor connections so the pool
+// evicts any stale connection before a request tries to use it.
+// MaxConnLifetime (30 m) rotates connections gradually to prevent long-lived
+// stale connections from accumulating.
+func ConnectApp(ctx context.Context, dsn string) (*Pool, error) {
+	return connect(ctx, dsn, true)
+}
+
+// connect is the shared implementation; warmFloor=true applies the
+// ConnectApp tuning.
+func connect(ctx context.Context, dsn string, warmFloor bool) (*Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)
+	}
+
+	if warmFloor {
+		cfg.MinConns = 2
+		cfg.MaxConns = 5
+		cfg.MaxConnIdleTime = 5 * time.Minute
+		cfg.MaxConnLifetime = 30 * time.Minute
+		cfg.HealthCheckPeriod = 30 * time.Second
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
