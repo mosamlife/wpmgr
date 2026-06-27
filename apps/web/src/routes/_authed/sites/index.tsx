@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
 import { FilterEmpty, SitesPageEmpty } from "@/components/empty";
 import { PageHeader } from "@/components/shared/page-header";
-import { useSites, useDeleteSite } from "@/features/sites/use-sites";
+import { useSites, useDeleteSite, sitesQueryOptions } from "@/features/sites/use-sites";
 import { SitesTable } from "@/features/sites/sites-table";
 import { SitesGrid, SitesGridSkeleton } from "@/features/sites/sites-grid";
 import { SitesToolbar } from "@/features/sites/sites-toolbar";
@@ -64,6 +64,21 @@ type SitesSearch = z.infer<typeof searchSchema>;
 
 export const Route = createFileRoute("/_authed/sites/")({
   validateSearch: searchSchema,
+  // Fire the default sites list fetch immediately after auth resolves, without
+  // awaiting it. This overlaps the network request with React's code-split
+  // chunk load and component mount so the page is data-ready sooner.
+  //
+  // Why not await: we want the skeleton to show instantly and let TanStack
+  // Query manage the loading state — stalling the loader here would delay
+  // the render without benefit (the component already handles isPending).
+  //
+  // Scope: this loader runs only for /_authed/sites/ — no other authed route
+  // fires this prefetch. The key matches sitesKeys.list(undefined,"active",
+  // undefined) exactly, so useSites() with no args subscribes to the
+  // already-in-flight query; TanStack Query deduplicates by key.
+  loader: ({ context: { queryClient } }) => {
+    void queryClient.prefetchQuery(sitesQueryOptions());
+  },
   component: SitesPage,
 });
 

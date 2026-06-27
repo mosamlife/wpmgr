@@ -377,7 +377,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	migPool.Close()
 	logger.Info("migrations applied")
 
-	pool, err := db.Connect(ctx, cfg.DB.DSN())
+	pool, err := db.ConnectApp(ctx, cfg.DB.DSN())
 	if err != nil {
 		return err
 	}
@@ -550,9 +550,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if serr != nil {
 			return fmt.Errorf("blobstore init: %w", serr)
 		}
-		if berr := store.EnsureBucket(ctx); berr != nil {
-			return fmt.Errorf("blobstore ensure bucket: %w", berr)
-		}
+		// EnsureBucket is best-effort (it already returns nil on all error paths)
+		// and involves a public-internet HTTPS round-trip to the S3 endpoint.
+		// Running it synchronously on every cold boot adds ~0.5-2 s of latency
+		// before the HTTP listener opens. Mirror the ADR-042 self-update probe
+		// pattern: run off the critical path in a background goroutine.
+		go func(s *blobstore.Store) {
+			if berr := s.EnsureBucket(context.Background()); berr != nil {
+				slog.Warn("blobstore: EnsureBucket boot probe failed", slog.Any("error", berr))
+			}
+		}(store)
 
 		// File Manager download path stages bytes through the same blobstore.
 		filesSvc.SetPresigner(store)

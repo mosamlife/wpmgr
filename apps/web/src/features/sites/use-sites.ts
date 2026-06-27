@@ -1,4 +1,5 @@
 import {
+  queryOptions,
   useQuery,
   useMutation,
   useQueryClient,
@@ -43,6 +44,26 @@ export class NotFoundError extends Error {
     this.name = "NotFoundError";
   }
 }
+
+/**
+ * Shared query options for the default sites list (active view, no tag, no
+ * client filter). Exporting this object lets route loaders prefetch the exact
+ * same cache entry that `useSites()` reads, so there is no duplicate request
+ * and the component receives already-resolved data on mount.
+ *
+ * This is intentionally limited to the default-filter case: it is the only
+ * call the Sites index page fires on a cold load before any filters are
+ * applied.
+ */
+export const sitesQueryOptions = () =>
+  queryOptions({
+    queryKey: sitesKeys.list(undefined, "active", undefined),
+    queryFn: async () => {
+      const { data, error } = await listSites({});
+      if (error) throw toError(error);
+      return data?.items ?? [];
+    },
+  });
 
 /**
  * List sites, optionally filtered by a single tag (?tag=) and/or a client
