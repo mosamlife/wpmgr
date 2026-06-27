@@ -35,17 +35,46 @@ type SessionManager struct {
 }
 
 // NewRedisPool builds a redigo connection pool for the session store.
+//
+// Idle/timeout tuning is load-bearing for dashboard latency: Memorystore (and
+// the network path) silently drops idle TCP connections, but redigo keeps them
+// cached. Without IdleTimeout the first request after the dashboard sits idle
+// borrows a dead connection, and TestOnBorrow's PING then blocks on the dead
+// socket until the OS TCP retransmit timeout (~7-8s) before the pool redials —
+// surfacing as a one-off ~8s stall on the first request after idle while every
+// subsequent request is fast. The fixes:
+//   - IdleTimeout (4m, below the network/Memorystore idle drop) so the pool
+//     proactively closes idle connections before they go stale and are never
+//     borrowed dead.
+//   - MaxConnLifetime so connections rotate rather than accumulate.
+//   - Dial connect/read/write timeouts so a borrowed-dead PING (or a slow dial)
+//     fails in seconds, not on the multi-second OS TCP timeout.
+//   - TestOnBorrow skips the PING for recently-used connections (cheap path).
 func NewRedisPool(addr, password string) *redis.Pool {
 	return &redis.Pool{
-		MaxIdle: 10,
+		MaxIdle:         10,
+		MaxActive:       64,
+		IdleTimeout:     4 * time.Minute,
+		MaxConnLifetime: 30 * time.Minute,
+		Wait:            true,
 		Dial: func() (redis.Conn, error) {
-			opts := []redis.DialOption{}
+			opts := []redis.DialOption{
+				redis.DialConnectTimeout(5 * time.Second),
+				redis.DialReadTimeout(3 * time.Second),
+				redis.DialWriteTimeout(3 * time.Second),
+			}
 			if password != "" {
 				opts = append(opts, redis.DialPassword(password))
 			}
 			return redis.Dial("tcp", addr, opts...)
 		},
-		TestOnBorrow: func(c redis.Conn, _ time.Time) error {
+		TestOnBorrow: func(c redis.Conn, lastUsed time.Time) error {
+			// Recently-exercised connections are trusted without a round-trip;
+			// only idle-ish ones get a PING, which is now bounded by the dial
+			// read timeout so it can never hang on a dead socket.
+			if time.Since(lastUsed) < time.Minute {
+				return nil
+			}
 			_, err := c.Do("PING")
 			return err
 		},
