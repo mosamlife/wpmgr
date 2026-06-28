@@ -410,6 +410,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	tenantSvc := tenant.NewService(tenant.NewRepo(pool), validator, clock)
 	siteSvc := site.NewService(site.NewRepo(pool), validator, clock)
+	siteSvc.SetLogger(logger)
 	auditRec := audit.NewRecorder(pool, clock)
 
 	// A narrow tenant-creation capability handed to the auth domain (bootstrap +
@@ -492,6 +493,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// alongside filesSvc.SetPresigner (below). It stays nil when object storage
 	// is not configured — in that case only DB rows are pruned.
 	fileTransfersGCWorker := files.NewFileTransfersGCWorker(pool, nil, logger) // deleter wired below if S3 enabled
+
+	// m85 — Uptime-probe retention GC. Always wired; runs daily and deletes
+	// site_uptime_probes rows older than 90 days under InAgentTx (cross-tenant).
+	// Bounding the table size is the root fix for why the 30-day aggregate scan
+	// grows expensive over time.
+	uptimeProbeGCWorker := metrics.NewUptimeProbeGCWorker(pool, logger)
 
 	updateWorker := update.NewWorker(updateRepo, sitesLookup, commander, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
 	// Updates feature (Track B): the refresh-inventory worker dispatches signed
@@ -1335,6 +1342,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// m82 — file-transfers GC (always non-nil; object deletion is a no-op
 		// when S3 is not configured).
 		fileTransfersGCWorker: fileTransfersGCWorker,
+		// m85 — uptime-probe retention GC (always non-nil).
+		uptimeProbeGCWorker: uptimeProbeGCWorker,
 	})
 	if err != nil {
 		return err
@@ -2340,6 +2349,10 @@ type riverDeps struct {
 	// deletes their staged objects) once per day. Always wired; object deletion is
 	// a no-op when the object store is not configured.
 	fileTransfersGCWorker *files.FileTransfersGCWorker
+	// m85 — Uptime-probe retention GC: prunes site_uptime_probes rows older than
+	// 90 days once per day. Always wired; prevents the table from growing
+	// unbounded (the root reason the 30-day aggregate window becomes expensive).
+	uptimeProbeGCWorker *metrics.UptimeProbeGCWorker
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -2756,6 +2769,21 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		periodics = append(periodics, river.NewPeriodicJob(
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return files.FileTransfersGCArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: false},
+		))
+	}
+
+	// m85 — uptime-probe retention GC: prunes site_uptime_probes rows older
+	// than 90 days once per day. Bounding the table is the long-term fix for
+	// why the 30-day aggregate window grows expensive as rows accumulate.
+	// RunOnStart: false — on a fresh deploy or right after the m85 covering
+	// index migration the table may be large; let Postgres settle before the
+	// first GC pass so the migration boot does not compete with the GC DELETE.
+	if d.uptimeProbeGCWorker != nil {
+		river.AddWorker(workers, d.uptimeProbeGCWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(24*time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return metrics.UptimeProbeGCArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: false},
 		))
 	}

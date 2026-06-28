@@ -946,9 +946,14 @@ CREATE TABLE site_uptime_probes (
     PRIMARY KEY (id)
 );
 
--- Latest-probe (per site) is a single index seek.
-CREATE INDEX site_uptime_probes_site_time_idx
-    ON site_uptime_probes (site_id, probed_at DESC);
+-- Covering index for QueryFleetUptime: both the lat LATERAL (LIMIT 1 latest
+-- probe) and the agg LATERAL (30-day COUNT/AVG) filter on (site_id, tenant_id,
+-- probed_at). INCLUDE (up, total_ms) satisfies those columns from the index
+-- without a heap fetch, making both laterals index-only scans on all-visible
+-- pages. This collapses the cold-cache cost from ~8s to sub-second (m85).
+CREATE INDEX site_uptime_probes_agg_idx
+    ON site_uptime_probes (site_id, tenant_id, probed_at DESC)
+    INCLUDE (up, total_ms);
 
 -- Tenant-wide recent scans (summary endpoints).
 CREATE INDEX site_uptime_probes_tenant_time_idx

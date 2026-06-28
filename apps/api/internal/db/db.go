@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -48,11 +49,35 @@ func Connect(ctx context.Context, dsn string) (*Pool, error) {
 // fetches are brief, so contention is rare; 5 MaxConns per instance
 // comfortably handles River + concurrent HTTP handlers.
 //
-// MaxConnIdleTime (5 m) reclaims connections above the floor after a quiet
-// period. HealthCheckPeriod (30 s) pings the floor connections so the pool
-// evicts any stale connection before a request tries to use it.
-// MaxConnLifetime (30 m) rotates connections gradually to prevent long-lived
-// stale connections from accumulating.
+// Dead-connection hardening — why the idle ~8s stall happens and how we stop it:
+//
+//  1. TCP keepalive (DialFunc): the GCP VPC connector and Cloud SQL silently
+//     drop idle TCP connections. Without keepalive, the OS never knows the peer
+//     is gone; pgx holds a half-open connection that looks healthy (IsClosed()==
+//     false) until the next write blocks until the OS retransmit timeout (~8 s).
+//     Setting KeepAlive=30s on the dialer activates OS-level TCP keepalive probes
+//     at 30-second intervals so the kernel detects a dead peer in one or two
+//     intervals rather than the full retransmit sequence. ConnectTimeout=5s caps
+//     the dial for a fresh connection.
+//
+//  2. BeforeAcquire validation: HealthCheckPeriod runs background pings only for
+//     floor connections and only every 30 s. There is a race window: a connection
+//     can die between checks and be handed to a request. BeforeAcquire issues a
+//     ping with a 500 ms deadline before every Acquire(); if it fails pgx
+//     discards the connection and immediately tries the next one (reconnecting if
+//     needed). The round-trip on a healthy Cloud SQL connection over the VPC
+//     connector is <10 ms, so the 500 ms budget is generous for healthy conns and
+//     tight enough to fail a dead one in milliseconds rather than 8 seconds.
+//
+//  3. MaxConnIdleTime 90 s: the VPC connector's idle timeout is well under a few
+//     minutes. Dropping above-floor connections after 90 s of idle prevents them
+//     accumulating long enough to go stale in the first place.
+//
+//  4. MinConns=2 is kept: Cloud SQL VPC reconnect is sub-second, so dialling a
+//     fresh connection is fast. The floor still avoids the post-boot dial cost on
+//     the very first request, and the BeforeAcquire validation guarantees floor
+//     connections are health-checked before every Acquire rather than relying on
+//     the 30 s background sweep alone.
 func ConnectApp(ctx context.Context, dsn string) (*Pool, error) {
 	return connect(ctx, dsn, true)
 }
@@ -65,12 +90,35 @@ func connect(ctx context.Context, dsn string, warmFloor bool) (*Pool, error) {
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 
+	// TCP keepalive: activates OS-level keep probes so a dead peer (VPC-dropped
+	// connection) is detected within one keepalive interval, not the multi-second
+	// OS TCP retransmit timeout. Applied on every pool variant so the migration
+	// pool also does not hang on a stale connection.
+	cfg.ConnConfig.DialFunc = (&net.Dialer{
+		Timeout:   5 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+
 	if warmFloor {
 		cfg.MinConns = 2
 		cfg.MaxConns = 5
-		cfg.MaxConnIdleTime = 5 * time.Minute
+		// 90 s idle eviction: the GCP VPC connector drops idle TCP under a few
+		// minutes. Evicting above-floor connections at 90 s prevents stale
+		// accumulation without forcing a new dial on every request.
+		cfg.MaxConnIdleTime = 90 * time.Second
 		cfg.MaxConnLifetime = 30 * time.Minute
 		cfg.HealthCheckPeriod = 30 * time.Second
+
+		// BeforeAcquire: ping with a short deadline so a dead connection is
+		// discarded before the caller's query runs on it. On a healthy Cloud SQL
+		// connection the round-trip is <10 ms; 500 ms is generous for healthy
+		// conns and tight enough to fast-fail dead ones. pgx retries Acquire()
+		// with a fresh/dialled connection when BeforeAcquire returns false.
+		cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
+			pingCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cancel()
+			return conn.Ping(pingCtx) == nil
+		}
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
