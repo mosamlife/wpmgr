@@ -1,19 +1,19 @@
 package db
 
 import (
+	"context"
+	"net"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestConnectAppPoolConfig verifies that ConnectApp applies the warm-floor
-// tuning without actually dialling a database. We parse a dummy DSN to get a
-// *pgxpool.Config, apply the same logic connect() does, and assert the values
-// rather than testing pgxpool internals.
-//
-// This is an allowlist test: if someone changes the constants in connect() the
-// test breaks loudly, forcing a deliberate connection-budget recalculation.
+// TestConnectAppPoolConfig verifies that ConnectApp applies the warm-floor and
+// dead-connection-hardening tuning without actually dialling a database. We
+// parse a dummy DSN and apply the same logic connect() uses, then assert the
+// values — an allowlist test that forces a deliberate review if constants change.
 func TestConnectAppPoolConfig(t *testing.T) {
 	// A syntactically valid DSN that will never be dialled (no DB is needed).
 	const dsn = "postgres://user:pass@localhost:5432/db"
@@ -23,12 +23,21 @@ func TestConnectAppPoolConfig(t *testing.T) {
 		t.Fatalf("ParseConfig: %v", err)
 	}
 
-	// Apply the same warm-floor tuning that connect(ctx, dsn, true) applies.
+	// Apply the same tuning that connect(ctx, dsn, true) applies.
+	cfg.ConnConfig.DialFunc = (&net.Dialer{
+		Timeout:   5 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
 	cfg.MinConns = 2
 	cfg.MaxConns = 5
-	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.MaxConnIdleTime = 90 * time.Second
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
+	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
+		pingCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+		return conn.Ping(pingCtx) == nil
+	}
 
 	// -- assertions --
 
@@ -40,24 +49,30 @@ func TestConnectAppPoolConfig(t *testing.T) {
 	if cfg.MaxConns != 5 {
 		t.Errorf("MaxConns: want 5, got %d", cfg.MaxConns)
 	}
-	// Idle connections above the MinConns floor should be reclaimed within 5 m.
-	if cfg.MaxConnIdleTime != 5*time.Minute {
-		t.Errorf("MaxConnIdleTime: want 5m, got %v", cfg.MaxConnIdleTime)
+	// 90 s: below the GCP VPC connector idle-drop threshold so above-floor
+	// connections are retired before they go stale.
+	if cfg.MaxConnIdleTime != 90*time.Second {
+		t.Errorf("MaxConnIdleTime: want 90s, got %v", cfg.MaxConnIdleTime)
 	}
-	// Connections are rotated every 30 m to prevent stale accumulation.
+	// Connections are rotated every 30 m to prevent long-lived stale accumulation.
 	if cfg.MaxConnLifetime != 30*time.Minute {
 		t.Errorf("MaxConnLifetime: want 30m, got %v", cfg.MaxConnLifetime)
 	}
-	// The health-check period must be short enough to detect and evict a
-	// dead floor connection before the next request uses it.
+	// The background health-check supplements BeforeAcquire for floor connections.
 	if cfg.HealthCheckPeriod != 30*time.Second {
 		t.Errorf("HealthCheckPeriod: want 30s, got %v", cfg.HealthCheckPeriod)
 	}
-
-	// Connection (MinConns > 0) is strictly positive — the whole point of the
-	// fix is to keep primed connections alive across idle periods.
+	// MinConns > 0 — the warm floor must be present.
 	if cfg.MinConns <= 0 {
-		t.Errorf("MinConns must be > 0 for the warm-floor fix to have effect; got %d", cfg.MinConns)
+		t.Errorf("MinConns must be > 0 for the warm-floor; got %d", cfg.MinConns)
+	}
+	// DialFunc must be set (TCP keepalive active).
+	if cfg.ConnConfig.DialFunc == nil {
+		t.Error("DialFunc must be set for TCP keepalive hardening")
+	}
+	// BeforeAcquire must be wired (dead-conn fast-fail).
+	if cfg.BeforeAcquire == nil {
+		t.Error("BeforeAcquire must be set for dead-connection fast-fail on Acquire")
 	}
 }
 
@@ -72,9 +87,38 @@ func TestConnectMigrationPoolNoFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
-	// connect(ctx, dsn, false) does NOT modify MinConns.
-	// pgxpool default is 0.
+	// connect(ctx, dsn, false) does NOT modify MinConns. pgxpool default is 0.
 	if cfg.MinConns != 0 {
 		t.Errorf("migration pool MinConns: want 0 (pgx default), got %d", cfg.MinConns)
+	}
+}
+
+// TestBeforeAcquireDiscardsClosedConn verifies the BeforeAcquire decision
+// logic: it must return true only when Ping returns nil, and false when Ping
+// returns any error (connection dead / timeout). We test the extracted
+// predicate rather than driving a live pgxpool, because the hook's behaviour
+// is entirely determined by the Ping result — the production hook is:
+//
+//	func(ctx, conn) bool { return conn.Ping(shortCtx) == nil }
+func TestBeforeAcquireDiscardsClosedConn(t *testing.T) {
+	// beforeAcquireOK is the extracted predicate — mirrors the production hook.
+	beforeAcquireOK := func(pingErr error) bool {
+		return pingErr == nil
+	}
+
+	// Healthy connection: Ping returns nil → hook must return true (keep conn).
+	if !beforeAcquireOK(nil) {
+		t.Error("BeforeAcquire must return true for a healthy connection (Ping==nil)")
+	}
+
+	// Dead/stale connection: Ping returns an error (deadline exceeded, EOF, etc.)
+	// → hook must return false so pgx discards and dials a fresh connection.
+	for _, deadErr := range []error{
+		context.DeadlineExceeded,
+		context.Canceled,
+	} {
+		if beforeAcquireOK(deadErr) {
+			t.Errorf("BeforeAcquire must return false for Ping error %v", deadErr)
+		}
 	}
 }

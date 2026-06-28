@@ -410,6 +410,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	tenantSvc := tenant.NewService(tenant.NewRepo(pool), validator, clock)
 	siteSvc := site.NewService(site.NewRepo(pool), validator, clock)
+	siteSvc.SetLogger(logger)
 	auditRec := audit.NewRecorder(pool, clock)
 
 	// A narrow tenant-creation capability handed to the auth domain (bootstrap +

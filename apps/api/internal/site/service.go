@@ -3,6 +3,7 @@ package site
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ type Service struct {
 	repo      Repo
 	validator *domain.Validator
 	clock     domain.Clock
+	logger    *slog.Logger
 	// conn is the M21 connection-lifecycle service. Optional: when wired, a
 	// site-bound enrollment code transitions the bound site (the live-enroll
 	// flow); a legacy NULL-site_id code keeps the create-at-enroll path. nil ⇒
@@ -38,7 +40,15 @@ type Service struct {
 
 // NewService builds a site Service.
 func NewService(repo Repo, v *domain.Validator, clock domain.Clock) *Service {
-	return &Service{repo: repo, validator: v, clock: clock}
+	return &Service{repo: repo, validator: v, clock: clock, logger: slog.Default()}
+}
+
+// SetLogger wires a structured logger for slow-request diagnostics. Called once
+// at boot; defaults to slog.Default() when not called (safe for tests).
+func (s *Service) SetLogger(l *slog.Logger) {
+	if l != nil {
+		s.logger = l
+	}
 }
 
 // SetUptimeStore wires the metrics store for uptime enrichment in List().
@@ -78,27 +88,49 @@ func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (Site, error)
 	return s.repo.Get(ctx, tenantID, id)
 }
 
+// slowListThreshold is the per-phase latency above which List emits a WARN
+// log with per-phase timing. At 200 ms this fires on the symptom (post-idle
+// ~8 s stall) while staying silent on normal fast requests (~50 ms). A single
+// structured log line with repo_ms, uptime_ms, and total_ms pinpoints which
+// phase is slow without any tracing infrastructure.
+const slowListThreshold = 200 * time.Millisecond
+
 // List returns a page of the tenant's sites, optionally filtered by tag.
 // Uptime fields (UptimeUp, UptimePct30d, AvgLatencyMs, TLSExpiresAt) are
 // enriched via the metrics.Store when one is wired, so both ClickHouse and
 // Postgres deployments populate them. Without a wired store, the fields remain
 // nil (unprobed). The 30-day window matches the previous listLatestUptimeSQL.
+//
+// Phase timing: when total elapsed exceeds slowListThreshold, a WARN log is
+// emitted with repo_ms (DB tx: acquire + queries + enrichment), uptime_ms
+// (QueryFleetUptime), and total_ms. This isolates a DB dead-connection acquire
+// stall (slow repo_ms, fast uptime_ms) from a slow uptime query or a slow
+// Redis session load (not visible here — that phase runs in middleware).
 func (s *Service) List(ctx context.Context, in ListInput) ([]Site, error) {
 	if in.TenantID == uuid.Nil {
 		return nil, domain.Forbidden("tenant_required", "a tenant context is required")
 	}
 	in.Limit, in.Offset = normalizePage(in.Limit, in.Offset)
+
+	t0 := time.Now()
+
 	sites, err := s.repo.List(ctx, in)
+	repoElapsed := time.Since(t0)
+
 	if err != nil {
 		return nil, err
 	}
+
+	var uptimeElapsed time.Duration
 	if len(sites) > 0 && s.uptimeStore != nil {
 		ids := make([]uuid.UUID, len(sites))
 		for i := range sites {
 			ids[i] = sites[i].ID
 		}
 		const window30d = 30 * 24 * time.Hour
+		tu := time.Now()
 		uptimeMap, uerr := s.uptimeStore.QueryFleetUptime(ctx, in.TenantID, ids, window30d)
+		uptimeElapsed = time.Since(tu)
 		if uerr != nil {
 			// Non-fatal: log and continue — the site list is still usable without
 			// uptime data (the same tolerance as the old screenshot enrichment path).
@@ -118,6 +150,26 @@ func (s *Service) List(ctx context.Context, in ListInput) ([]Site, error) {
 			}
 		}
 	}
+
+	totalElapsed := time.Since(t0)
+	if totalElapsed >= slowListThreshold {
+		// WARN on any request that took longer than the threshold so post-idle
+		// stalls are immediately visible in Cloud Logging without noise on the
+		// fast path. repo_ms covers the full InTenantTx (pool acquire + GUC set
+		// + ListSites + backup + client + screenshot enrichment + commit).
+		// uptime_ms covers QueryFleetUptime (a second InAgentTx).
+		// If the 8 s is in the DB dead-conn path, repo_ms will dominate.
+		// If repo_ms is fast and uptime_ms dominates, the uptime query is slow.
+		// If both are fast, the delay is outside this service (e.g. Redis session
+		// load in the auth middleware — check the overall request latency vs total_ms).
+		s.logger.WarnContext(ctx, "site list slow",
+			slog.Int64("repo_ms", repoElapsed.Milliseconds()),
+			slog.Int64("uptime_ms", uptimeElapsed.Milliseconds()),
+			slog.Int64("total_ms", totalElapsed.Milliseconds()),
+			slog.Int("site_count", len(sites)),
+		)
+	}
+
 	return sites, nil
 }
 
