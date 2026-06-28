@@ -53,7 +53,15 @@ func (s *Service) SetLogger(l *slog.Logger) {
 
 // SetUptimeStore wires the metrics store for uptime enrichment in List().
 // Call once at boot after the store is constructed. No-op when store is nil.
-func (s *Service) SetUptimeStore(store metrics.Store) { s.uptimeStore = store }
+// The store is transparently wrapped in a short-TTL in-process cache
+// (fleetUptimeCacheTTL = 60s) so repeated /sites loads within the TTL window
+// skip the QueryFleetUptime round-trip entirely (m85 perf fix).
+func (s *Service) SetUptimeStore(store metrics.Store) {
+	if store == nil {
+		return
+	}
+	s.uptimeStore = newCachedMetricsStore(store)
+}
 
 // SetConnectionService wires the M21 lifecycle service into the enroll branch.
 // Call once at boot (the lifecycle service depends on this Service's repo, so
