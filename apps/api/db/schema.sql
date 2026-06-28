@@ -959,6 +959,11 @@ CREATE INDEX site_uptime_probes_agg_idx
 CREATE INDEX site_uptime_probes_tenant_time_idx
     ON site_uptime_probes (tenant_id, probed_at DESC);
 
+-- Retention GC delete (WHERE probed_at < cutoff) — leads on probed_at so the
+-- daily prune is an index range scan, not a full table scan (m86).
+CREATE INDEX site_uptime_probes_probed_at_idx
+    ON site_uptime_probes (probed_at);
+
 ALTER TABLE site_uptime_probes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE site_uptime_probes FORCE ROW LEVEL SECURITY;
 CREATE POLICY site_uptime_probes_tenant_isolation ON site_uptime_probes
