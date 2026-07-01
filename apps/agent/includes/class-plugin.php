@@ -1019,8 +1019,15 @@ final class Plugin
 
     /**
      * Register the GET /wpmgr/v1/autologin route. SEPARATE from the dispatch
-     * router: this route is browser-initiated and the JWT (verified inside the
-     * handler) is the authorization, so permission_callback is __return_true.
+     * router: this route is browser-initiated and the Ed25519 JWT is the
+     * authorization.
+     *
+     * permission_callback performs a READ-ONLY signature + claims check
+     * (Connector::validateCommandSignature) — it verifies the Ed25519 signature,
+     * algorithm, temporal bounds, aud, and cmd WITHOUT touching the jti anti-replay
+     * table. This satisfies the wp.org requirement that permission_callback does
+     * real authorization, while preserving single-use semantics: the authoritative
+     * full verify (including jti recording) runs inside handle() as before.
      *
      * @return void
      */
@@ -1030,13 +1037,22 @@ final class Plugin
             return;
         }
 
+        $connector = $this->connector;
+
         register_rest_route(
             Router::NAMESPACE,
             '/autologin',
             [
                 'methods'             => 'GET',
                 'callback'            => [$this->autologin, 'handle'],
-                'permission_callback' => '__return_true',
+                'permission_callback' => static function (\WP_REST_Request $request) use ($connector): bool {
+                    $token = $request->get_param('token');
+                    $token = is_string($token) ? $token : '';
+                    if ($token === '') {
+                        return false;
+                    }
+                    return $connector->validateCommandSignature($token, 'autologin');
+                },
                 'args'                => [
                     'token'       => [
                         'required' => true,
@@ -1059,9 +1075,13 @@ final class Plugin
      * fire-and-forget LOOPBACK kick from the agent to itself and carries no command
      * authority — it only drains an already-queued, SSRF-filtered, same-host URL
      * set. Authentication is a self-HMAC handshake (NOT Ed25519 Connector signing):
-     * the body's `token` is verified inside PreloadQueue::runFromRest() against
-     * hash_hmac over wp_salt('auth'), so permission_callback is __return_true
-     * (WP nonces/auth cookies are unavailable on a non-blocking loopback POST).
+     * the body's `token` is verified against hash_hmac over wp_salt('auth').
+     *
+     * permission_callback performs the same HMAC verification via
+     * PreloadQueue::verifyRunnerToken() — a pure hash_equals with no side effects.
+     * The handler (runFromRest) re-verifies and is the authoritative gate; the
+     * permission_callback is the early-rejection layer satisfying wp.org requirements.
+     * WP nonces/auth cookies are unavailable on a non-blocking loopback POST.
      * See the §1.10 security-review checklist.
      *
      * @return void
@@ -1080,7 +1100,19 @@ final class Plugin
             [
                 'methods'             => 'POST',
                 'callback'            => [$queue, 'runFromRest'],
-                'permission_callback' => '__return_true',
+                'permission_callback' => static function (\WP_REST_Request $request) use ($queue): bool {
+                    $group    = (string) $request->get_param('group');
+                    $callback = (string) $request->get_param('callback');
+                    $token    = (string) $request->get_param('token');
+                    // sanitize_text_field applied by args before the callback runs,
+                    // but apply here too for defence-in-depth in the early gate.
+                    if (function_exists('sanitize_text_field')) {
+                        $group    = sanitize_text_field($group);
+                        $callback = sanitize_text_field($callback);
+                        $token    = sanitize_text_field($token);
+                    }
+                    return $queue->verifyRunnerToken($group, $callback, $token);
+                },
                 'args'                => [
                     'group' => [
                         'required'          => true,
