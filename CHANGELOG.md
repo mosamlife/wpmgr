@@ -6,15 +6,29 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
-### Added
+No unreleased changes.
 
-- **File Manager.** Operators can browse, edit, upload, download, and manage files on any managed WordPress site directly from the dashboard, under a new Files tab on each site, without needing SFTP or cPanel access. Browse the full file tree; preview text files inline or download binary files via presigned URL. A sensitive-file deny-list (wp-config.php, .env, key files) requires owner confirmation before access. A separate per-site write toggle (off by default) unlocks editing, uploading (drag-and-drop), creating folders, renaming, deleting (typed confirmation), and chmod (safe modes only). Write operations reject executable content (PHP files, any file containing `<?php`) and refuse to touch protected roots (wp-admin, wp-includes, WordPress core). Zip any file or folder and download the archive; extract a zip back into the site with zip-slip and zip-bomb protection. Search files by name or content across the tree. Every edit and overwrite auto-saves an encrypted prior version that operators can browse and restore from a per-file version history panel. The file manager is off by default per site, restricted to owner and admin roles, and every read, write, delete, upload, extract, restore, and denial is written to the operator audit log. The Audit page is now a filterable timeline with filter-by-action-group (including "File manager") and filter-by-site; a "View activity" link in the file manager jumps straight to that site's file trail.
+## [0.61.10] - 2026-07-02
 
-- **CloudPanel cache purge support in the agent.** On CloudPanel sites, WPMgr now clears its disk page cache and CloudPanel Varnish together: full-site purges send both host and cache-tag Varnish purges, per-URL purges clear the matching Varnish URLs, and full-site purges also clean up the host PageSpeed cache when writable. The optional CloudPanel WordPress plugin is not required.
+### Fixed
 
-### Changed
+- **Multi-site bulk update now only creates a task for a site that actually has the selected update pending.** Previously a bulk update created a task for every selected site regardless of whether that site had the chosen plugin, theme, or core update available, so a site without the update simply failed. A target that does not apply to a site is now reported as skipped, not failed. (#126)
 
-- **New marketing website.** The public site at wpmgr.app is now a multipage Next.js application with server-side rendering and static generation for SEO, replacing the previous single-page site. It adds a dedicated page for every feature, solution pages by audience and by job, pricing, a searchable changelog, a resources area with guides and articles, a desktop megamenu plus a mobile drawer, and a self-hosted API reference at /docs generated from the OpenAPI spec with no external network at runtime. Faster, fully crawlable, and easier to extend.
+## [0.61.9] - 2026-07-02
+
+### Fixed
+
+- **A failed plugin or theme update no longer leaves a site stuck in WordPress maintenance mode (critical).** The post-update health check treated a transient 503 from an in-progress database migration as a failure and rolled back an update that had actually succeeded, leaving the site's maintenance page (`.maintenance`) showing 503 to every visitor. The health check now tolerates a brief, migration-related 503 instead of rolling back a successful update. (#127)
+
+## [0.61.6] - 2026-07-02
+
+### Fixed
+
+- **Downtime email alerts now fire reliably.** A race in the alert state machine meant a sustained outage could go unalerted; alert state now transitions atomically so every qualifying outage sends its alert. (#124)
+- **The Notifications settings page now saves correctly**, including the daily email digest toggle, which previously did not persist. (#123)
+- **Fixed a slow first load of the Sites list after the dashboard had been idle.** A pooled database connection could be handed back to a request without being revalidated, and the 30-day uptime aggregate query was not using its covering index; both are fixed, so the first request after idle now loads at normal speed.
+
+## [0.61.3] - 2026-06-26
 
 ### Fixed
 
@@ -30,6 +44,19 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 - The Sites overview Uptime column now shows per-site uptime instead of staying blank.
 - "Open in wp-admin" for a multi-site selection now lists every selected site in a persistent panel with a per-site Open action, instead of a few auto-dismissing toasts.
 - A site's "Backup schedule runs" panel now shows past completed and failed runs that already exist instead of always reporting none.
+
+## [0.61.0] - 2026-06-23
+
+### Added
+
+- **File Manager.** Operators can browse, edit, upload, download, and manage files on any managed WordPress site directly from the dashboard, under a new Files tab on each site, without needing SFTP or cPanel access. Browse the full file tree; preview text files inline or download binary files via presigned URL. A sensitive-file deny-list (wp-config.php, .env, key files) requires owner confirmation before access. A separate per-site write toggle (off by default) unlocks editing, uploading (drag-and-drop), creating folders, renaming, deleting (typed confirmation), and chmod (safe modes only). Write operations reject executable content (PHP files, any file containing `<?php`) and refuse to touch protected roots (wp-admin, wp-includes, WordPress core). Zip any file or folder and download the archive; extract a zip back into the site with zip-slip and zip-bomb protection. Search files by name or content across the tree. Every edit and overwrite auto-saves an encrypted prior version that operators can browse and restore from a per-file version history panel. The file manager is off by default per site, restricted to owner and admin roles, and every read, write, delete, upload, extract, restore, and denial is written to the operator audit log. The Audit page is now a filterable timeline with filter-by-action-group (including "File manager") and filter-by-site; a "View activity" link in the file manager jumps straight to that site's file trail.
+- **CloudPanel cache purge support in the agent.** On CloudPanel sites, WPMgr now clears its disk page cache and CloudPanel Varnish together: full-site purges send both host and cache-tag Varnish purges, per-URL purges clear the matching Varnish URLs, and full-site purges also clean up the host PageSpeed cache when writable. The optional CloudPanel WordPress plugin is not required.
+
+## [0.57.7] - 2026-06-21
+
+### Changed
+
+- **New marketing website.** The public site at wpmgr.app is now a multipage Next.js application with server-side rendering and static generation for SEO, replacing the previous single-page site. It adds a dedicated page for every feature, solution pages by audience and by job, pricing, a searchable changelog, a resources area with guides and articles, a desktop megamenu plus a mobile drawer, and a self-hosted API reference at /docs generated from the OpenAPI spec with no external network at runtime. Faster, fully crawlable, and easier to extend.
 
 ## [0.57.0] - 2026-06-21
 

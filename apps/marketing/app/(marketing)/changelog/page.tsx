@@ -39,6 +39,94 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.10",
+    date: "2026-07-02",
+    summary: "Bulk updates only touch sites that actually need them.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Multi-site bulk update now only creates a task for a site that actually has the selected update pending, instead of also creating a task, and then failing it, for every selected site that does not have that plugin, theme, or core update available. Sites the update does not apply to are now reported as skipped, not failed.",
+      },
+    ],
+  },
+  {
+    version: "0.61.9",
+    date: "2026-07-02",
+    summary: "A failed update no longer strands a site in maintenance mode.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A failed plugin or theme update no longer leaves a site stuck showing WordPress's maintenance page to every visitor. The post-update health check now tolerates a brief, transient 503 from an in-progress database migration instead of treating it as a failure and rolling back an update that actually succeeded.",
+      },
+    ],
+  },
+  {
+    version: "0.61.6",
+    date: "2026-07-02",
+    summary: "Reliable downtime alerts and a faster Sites list.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Downtime email alerts now fire reliably. A race in the alert state machine could let a sustained outage go unalerted; alert state now transitions atomically so every qualifying outage sends its alert.",
+      },
+      {
+        tag: "Fixed",
+        text: "The Notifications settings page now saves correctly, including the daily email digest toggle.",
+      },
+      {
+        tag: "Fixed",
+        text: "Fixed a slow first load of the Sites list after the dashboard had been idle for a while.",
+      },
+    ],
+  },
+  {
+    version: "0.61.3",
+    date: "2026-06-26",
+    summary: "A batch of dashboard, backup, and update fixes.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Backups now correctly preserve plugin and theme vendor code that happens to live in a folder named cache or upgrade, while still excluding real runtime cache and update staging files.",
+      },
+      {
+        tag: "Fixed",
+        text: "The backup schedule form no longer rejects valid day-of-week, day-of-month, or hourly-interval selections, and update run history now shows accurate task counts and completion progress.",
+      },
+      {
+        tag: "Fixed",
+        text: "Closing any dialog no longer leaves the page unclickable, and bulk plugin and theme updates now default to only the items that actually have an update available.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+  },
+  {
+    version: "0.61.0",
+    date: "2026-06-23",
+    summary: "File Manager for every managed site.",
+    items: [
+      {
+        tag: "Added",
+        text: "Browse, preview, edit, upload, download, zip, and restore prior versions of files on any managed WordPress site, right from the dashboard, no SFTP or cPanel required. A sensitive-file deny list and a separate write-access toggle keep it safe, and every action is written to the audit log. Off by default; only owners and admins can turn it on.",
+      },
+      {
+        tag: "Added",
+        text: "CloudPanel sites now get integrated cache purging: WPMgr clears its own page cache and CloudPanel's Varnish cache together, no separate plugin needed.",
+      },
+    ],
+    featureLinks: [{ label: "File Manager", href: "/features/file-manager/" }],
+  },
+  {
+    version: "0.57.7",
+    date: "2026-06-21",
+    summary: "New multipage marketing website.",
+    items: [
+      {
+        tag: "Changed",
+        text: "The public site at wpmgr.app is now a multipage, server-rendered site: a dedicated page for every feature, solution pages by audience and by job, pricing, this changelog, a resources area, and a self-hosted API reference generated from the OpenAPI spec. Faster, fully crawlable, and easier to extend.",
+      },
+    ],
+  },
+  {
     version: "0.57.0",
     date: "2026-06-21",
     summary: "Vulnerability feed configuration from the dashboard.",
