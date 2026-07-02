@@ -10,7 +10,7 @@
  *   - Fallback: If `pre_wp_mail` is unavailable (WP < 5.7), hooks
  *     `wp_mail` (the pluggable function) via a wpmgr_mail() shim registered
  *     only when that hook exists — but in practice WP 5.7+ is the baseline
- *     (Requires at least: 6.0 in the plugin header), so the primary path
+ *     (Requires at least: 6.2 in the plugin header), so the primary path
  *     always fires.
  *
  * Force-from and Return-Path are applied here (before the provider handler

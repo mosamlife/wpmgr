@@ -354,11 +354,11 @@ class BackupSource
             if (!is_string($table) || $table === '') {
                 continue;
             }
-            $create = $wpdb->get_row('SHOW CREATE TABLE `' . str_replace('`', '', $table) . '`', ARRAY_N); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.SchemaChange,WordPress.DB.PreparedSQL.NotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- fallback export SHOW CREATE; identifier is backtick-escaped from SHOW TABLES catalog result; no user input; value is an information_schema-validated identifier
+            $create = $wpdb->get_row($wpdb->prepare('SHOW CREATE TABLE %i', $table), ARRAY_N); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange -- fallback export SHOW CREATE; identifier is from the SHOW TABLES catalog result, parameterized with the %i identifier placeholder (WP 6.2+); no user input
             if (is_array($create) && isset($create[1]) && is_string($create[1])) {
                 $out .= "\nDROP TABLE IF EXISTS `{$table}`;\n" . $create[1] . ";\n";
             }
-            $rows = $wpdb->get_results('SELECT * FROM `' . str_replace('`', '', $table) . '`', ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter,WordPress.DB.PreparedSQL.NotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- fallback export SELECT *; identifier is backtick-escaped from SHOW TABLES catalog result; no user input; value is an information_schema-validated identifier
+            $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM %i', $table), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- fallback export SELECT *; identifier is from the SHOW TABLES catalog result, parameterized with the %i identifier placeholder (WP 6.2+); no user input
             if (!is_array($rows)) {
                 continue;
             }

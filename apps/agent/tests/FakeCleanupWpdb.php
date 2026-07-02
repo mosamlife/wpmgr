@@ -81,10 +81,18 @@ final class FakeCleanupWpdb
             }
         }
         $i = 0;
-        $sql = preg_replace_callback('/%[sd]/', static function ($m) use (&$i, $flat) {
+        $sql = preg_replace_callback('/%[sdi]/', static function ($m) use (&$i, $flat) {
             $v = $flat[$i] ?? '';
             $i++;
-            return $m[0] === '%d' ? (string) (int) $v : "'" . $v . "'";
+            if ($m[0] === '%d') {
+                return (string) (int) $v;
+            }
+            if ($m[0] === '%i') {
+                // Mirrors core wpdb::prepare()'s %i identifier placeholder: backtick-quote,
+                // doubling any embedded backticks.
+                return '`' . str_replace('`', '``', (string) $v) . '`';
+            }
+            return "'" . $v . "'";
         }, $query);
         $this->prepared[] = (string) $sql;
         return (string) $sql;
