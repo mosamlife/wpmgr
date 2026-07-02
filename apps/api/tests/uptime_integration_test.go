@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
@@ -161,6 +162,181 @@ func TestUptimeProbeAlertsTransitionDedupe(t *testing.T) {
 	}
 	if mailer.calls != 2 {
 		t.Fatalf("expected no further alerts on steady-up, got %d", mailer.calls)
+	}
+}
+
+// TestUptimeAlertStateTransitionRace reproduces the lost-update race behind
+// issue #124 (downtime alerts never fired, even for sustained outages): when
+// a probe sweep runs longer than the probe interval — exactly what happens
+// during a real, fleet-wide outage, since down probes each take up to the
+// probe timeout — the NEXT periodic sweep can start before the first
+// finishes, so two overlapping sweeps observe and persist a site's alert
+// state concurrently. A plain "read state, evaluate, write state" sequence
+// loses updates under this overlap: both reads see the same prior
+// consecutive_down, so it never accumulates past 1 and the down threshold is
+// never crossed — silently, with no error logged. TransitionAlertState closes
+// this via a single locked (SELECT ... FOR UPDATE) transaction, so this test
+// fires two concurrent transitions for the SAME site and asserts NEITHER
+// update is lost and EXACTLY one crosses the threshold.
+func TestUptimeAlertStateTransitionRace(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	tenant := seedTenant(t, pool, "uptime-race")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	s := enrollFakeSite(t, pool, tenant, srv.URL)
+
+	repo := uptime.NewRepo(pool)
+
+	const threshold = 2
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		results []uptime.Transition
+	)
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			tr, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now())
+			if err != nil {
+				t.Errorf("transition: %v", err)
+				return
+			}
+			mu.Lock()
+			results = append(results, tr)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	final, found, err := repo.GetAlertState(ctx, s.ID)
+	if err != nil || !found {
+		t.Fatalf("get final alert state: found=%v err=%v", found, err)
+	}
+	if final.ConsecutiveDown != 2 {
+		t.Fatalf("consecutive_down = %d, want 2 (lost update under overlapping sweeps)", final.ConsecutiveDown)
+	}
+	if !final.InIncident {
+		t.Fatal("expected in_incident=true after crossing the threshold")
+	}
+
+	fireCount := 0
+	for _, tr := range results {
+		if tr.FireDown {
+			fireCount++
+		}
+	}
+	if fireCount != 1 {
+		t.Fatalf("expected exactly 1 FireDown across the two overlapping transitions, got %d", fireCount)
+	}
+}
+
+// TestUptimeAlertStateTransitionRaceDeterministic forces the EXACT
+// interleaving a lost-update race requires (rather than hoping goroutine
+// scheduling happens to produce it, which is unreliable on a fast local test
+// DB): transaction 1 takes the row lock and holds it open; transaction 2's
+// locking read is proven to be BLOCKED on that lock before transaction 1 is
+// released to commit. This directly proves FOR UPDATE — not scheduling luck —
+// is what prevents transaction 2 from computing "consecutive_down + 1" off a
+// value that transaction 1 is about to overwrite.
+func TestUptimeAlertStateTransitionRaceDeterministic(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	tenant := seedTenant(t, pool, "uptime-race-det")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	s := enrollFakeSite(t, pool, tenant, srv.URL)
+
+	repo := uptime.NewRepo(pool)
+	// Seed consecutive_down=1 (threshold high so it doesn't fire yet) so both
+	// racing transactions increment an EXISTING row — the case a bare read +
+	// separate write can lose (the very-first insert is already race-safe via
+	// plain ON CONFLICT DO UPDATE).
+	if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, 100, time.Now()); err != nil {
+		t.Fatalf("seed transition: %v", err)
+	}
+
+	tx1Locked := make(chan struct{})
+	releaseTx1 := make(chan struct{})
+	tx2ReadStarted := make(chan struct{})
+	errs := make(chan error, 2)
+
+	lockAndIncrement := func(startedCh chan struct{}, lockedCh chan struct{}, waitCh chan struct{}) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.agent', 'on', true)"); err != nil {
+			errs <- err
+			return
+		}
+		if startedCh != nil {
+			close(startedCh)
+		}
+		q := sqlc.New(tx)
+		row, err := q.GetSiteAlertStateForUpdate(ctx, s.ID) // blocks if another tx holds the lock
+		if err != nil {
+			errs <- err
+			return
+		}
+		if lockedCh != nil {
+			close(lockedCh)
+		}
+		if waitCh != nil {
+			<-waitCh
+		}
+		if _, err := q.UpsertSiteAlertState(ctx, sqlc.UpsertSiteAlertStateParams{
+			SiteID:          s.ID,
+			TenantID:        tenant,
+			LastStatus:      "down",
+			ConsecutiveDown: row.ConsecutiveDown + 1,
+			InIncident:      row.InIncident,
+		}); err != nil {
+			errs <- err
+			return
+		}
+		errs <- tx.Commit(ctx)
+	}
+
+	// tx1 acquires the lock and holds it until told to proceed.
+	go lockAndIncrement(nil, tx1Locked, releaseTx1)
+	<-tx1Locked
+
+	// tx2 starts and issues its own locking read, which must block on tx1's
+	// held lock rather than reading tx1's stale (already-superseded) value.
+	go lockAndIncrement(tx2ReadStarted, nil, nil)
+	<-tx2ReadStarted
+	// Give tx2's SELECT ... FOR UPDATE time to actually reach Postgres and
+	// start waiting on the lock before we release tx1 (best-effort; the
+	// consecutive_down assertion below is what actually proves the ordering).
+	time.Sleep(200 * time.Millisecond)
+	close(releaseTx1)
+
+	if err := <-errs; err != nil {
+		t.Fatalf("tx1: %v", err)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("tx2: %v", err)
+	}
+
+	final, found, err := repo.GetAlertState(ctx, s.ID)
+	if err != nil || !found {
+		t.Fatalf("get final alert state: found=%v err=%v", found, err)
+	}
+	// Seeded at 1; both transactions increment by 1. A transaction that reads
+	// the STALE pre-lock value would land the final count on 2 (a lost
+	// update); the lock forces tx2 to read tx1's committed 2 and land on 3.
+	if final.ConsecutiveDown != 3 {
+		t.Fatalf("consecutive_down = %d, want 3 (FOR UPDATE failed to serialize the two transitions — lost update)", final.ConsecutiveDown)
 	}
 }
 

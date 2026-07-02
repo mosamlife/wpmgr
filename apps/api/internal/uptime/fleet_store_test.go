@@ -31,6 +31,9 @@ func (r *stubRepo) GetAlertState(_ context.Context, _ uuid.UUID) (AlertState, bo
 	panic("not called")
 }
 func (r *stubRepo) UpsertAlertState(_ context.Context, _ AlertState) error { panic("not called") }
+func (r *stubRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time) (Transition, error) {
+	panic("not called")
+}
 func (r *stubRepo) ListAlertConfigsAllTenants(_ context.Context) ([]AlertConfig, error) {
 	panic("not called")
 }

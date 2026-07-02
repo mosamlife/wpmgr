@@ -29,6 +29,20 @@ WHERE enabled = true;
 SELECT * FROM site_alert_state
 WHERE site_id = $1;
 
+-- name: GetSiteAlertStateForUpdate :one
+-- Cross-tenant read-and-LOCK of one site's alert state (app.agent GUC), used by
+-- the probe worker's read-evaluate-write transition. FOR UPDATE holds the row
+-- lock until the enclosing transaction commits, so a second probe sweep that
+-- overlaps this one (e.g. a sweep that runs longer than the probe interval
+-- during a real outage, before the next periodic sweep is enqueued) blocks on
+-- this SELECT until the first sweep's UpsertSiteAlertState commits, then
+-- observes the FRESH consecutive_down instead of racing on a stale read. This
+-- closes a lost-update window that let consecutive_down get stuck below the
+-- alert threshold under overlapping sweeps.
+SELECT * FROM site_alert_state
+WHERE site_id = $1
+FOR UPDATE;
+
 -- name: UpsertSiteAlertState :one
 -- Cross-tenant upsert of a site's alert state (app.agent GUC). The probe worker
 -- writes the new transition memory after each probe.
