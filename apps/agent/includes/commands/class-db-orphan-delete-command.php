@@ -617,8 +617,7 @@ final class DbOrphanDeleteCommand implements CommandInterface
             return self::itemError('table', $validatedName, 'wpdb unavailable');
         }
 
-        $escaped = '`' . str_replace('`', '', $validatedName) . '`';
-        $result  = $wpdb->query('DROP TABLE IF EXISTS ' . $escaped); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.SchemaChange,WordPress.DB.PreparedSQL.NotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- intentional DROP of an orphaned non-core table; identifier validated via information_schema and backtick-escaped; value is an information_schema-validated identifier; not attacker-controlled
+        $result = $wpdb->query($wpdb->prepare('DROP TABLE IF EXISTS %i', $validatedName)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange -- intentional DROP of an orphaned non-core table; identifier validated via information_schema and parameterized with the %i identifier placeholder (WP 6.2+)
 
         if ($result === false) {
             $lastError = isset($wpdb->last_error)

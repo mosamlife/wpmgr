@@ -4145,41 +4145,57 @@ export type PutEmailConnectionRequest = {
 };
 
 /**
- * Per-tenant email alert and digest settings (m62+). Returns sensible defaults (alerts_enabled=false, digest_enabled=false) when no settings row has been created yet — this endpoint never 404s.
+ * Per-tenant email alert and digest settings (m62+). Returns sensible defaults (enabled=false, digest_enabled=false) when no settings row has been created yet — this endpoint never 404s. `recipients` is a single shared list used for both per-failure alerts and the digest.
  *
  */
 export type EmailNotifySettings = {
   /**
-   * Whether per-failure email alerts are active.
-   */
-  alerts_enabled: boolean;
-  /**
-   * Minimum consecutive failure count that triggers an alert. Default 3.
+   * Master switch for email notifications. Both alerts and the digest require this to be true in addition to their own toggle.
    *
    */
-  alert_failure_threshold: number;
+  enabled: boolean;
   /**
-   * Minimum minutes between two alerts for the same site. Default 60.
+   * Shared recipient list for both per-failure alerts and the digest (max 20).
+   *
+   */
+  recipients: Array<string>;
+  /**
+   * Whether per-failure email alerts are active.
+   */
+  alert_on_failure: boolean;
+  /**
+   * Minimum minutes between two alerts for the same site (15-1440). Default 60.
    *
    */
   alert_throttle_minutes: number;
   /**
-   * List of email addresses that receive failure alerts.
-   */
-  alert_recipients: Array<string>;
-  /**
-   * Whether the hourly digest email is active.
+   * Whether the scheduled digest email is active.
    */
   digest_enabled: boolean;
   /**
-   * UTC hour (0-23) at which the daily digest fires. Default 8.
+   * How often the digest is sent. Only enforced when digest_enabled is true.
    *
    */
-  digest_hour_utc: number;
+  digest_cadence: "daily" | "weekly" | "monthly";
   /**
-   * List of email addresses that receive the hourly digest.
+   * For weekly cadence: 0=Sunday...6=Saturday. For monthly cadence: 1-28. Not used for daily cadence. Only enforced when digest_enabled is true.
+   *
    */
-  digest_recipients: Array<string>;
+  digest_day: number;
+  /**
+   * Hour (0-23), in `timezone`, at which the digest fires. Default 8.
+   *
+   */
+  digest_hour: number;
+  /**
+   * IANA timezone used to evaluate digest_hour/digest_day.
+   */
+  timezone: string;
+  /**
+   * Next scheduled digest send time, or null when the digest is disabled or not yet scheduled.
+   *
+   */
+  next_digest_at?: string;
   /**
    * True when the instance-level SMTP/mailer is configured. Alerts and digests require this to be true to deliver.
    *
@@ -4194,32 +4210,42 @@ export type EmailNotifySettings = {
 };
 
 /**
- * Request body for PUT /email/notify-settings. All fields are optional — omitted fields are unchanged (PATCH semantics within a PUT envelope).
+ * Request body for PUT /email/notify-settings. This is a full replace (not a PATCH) — every field is required. digest_cadence/digest_day/ digest_hour/timezone are only validated when digest_enabled is true.
  *
  */
 export type PutEmailNotifySettingsRequest = {
-  alerts_enabled?: boolean;
+  enabled: boolean;
   /**
-   * Minimum failure count to trigger an alert (1-100).
+   * Replace the shared recipients list (max 20).
    */
-  alert_failure_threshold?: number;
+  recipients: Array<string>;
   /**
-   * Minimum minutes between alerts per site (1-1440).
+   * Whether per-failure email alerts are active.
    */
-  alert_throttle_minutes?: number;
+  alert_on_failure: boolean;
   /**
-   * Replace the alert recipients list.
+   * Minimum minutes between alerts per site (15-1440).
    */
-  alert_recipients?: Array<string>;
-  digest_enabled?: boolean;
+  alert_throttle_minutes: number;
+  digest_enabled: boolean;
   /**
-   * UTC hour for the daily digest (0-23).
+   * Required when digest_enabled is true; ignored otherwise. For 'weekly'/'monthly', digest_day must also be set.
+   *
    */
-  digest_hour_utc?: number;
+  digest_cadence: "daily" | "weekly" | "monthly";
   /**
-   * Replace the digest recipients list.
+   * 0-6 for weekly, 1-28 for monthly. Not required for daily cadence or when digest_enabled is false.
+   *
    */
-  digest_recipients?: Array<string>;
+  digest_day: number;
+  /**
+   * Hour (0-23) at which the digest fires.
+   */
+  digest_hour: number;
+  /**
+   * IANA timezone, e.g. "UTC".
+   */
+  timezone: string;
 };
 
 /**

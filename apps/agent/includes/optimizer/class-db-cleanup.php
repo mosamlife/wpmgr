@@ -1977,7 +1977,7 @@ final class DbCleanup
 
         $count = 0;
         foreach ($optimizable as $table) {
-            $this->wpdb->query('OPTIMIZE TABLE `' . str_replace('`', '', $table) . '`'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter,PluginCheck.Security.DirectDB.UnescapedDBParameter -- table identifier validated against information_schema + backtick-escaped; OPTIMIZE TABLE has no placeholder support
+            $this->wpdb->query($this->wpdb->prepare('OPTIMIZE TABLE %i', $table)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- table identifier validated against information_schema, parameterized with the %i identifier placeholder (WP 6.2+)
             $count++;
         }
 

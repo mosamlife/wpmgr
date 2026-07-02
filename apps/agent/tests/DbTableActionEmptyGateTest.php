@@ -590,6 +590,18 @@ final class GateTestWpdb
 
     public function prepare(string $query, ...$args): string
     {
+        // %i (identifier) queries are DDL statements bound for query(), not the
+        // information_schema %s SELECT decoded by get_var() below — substitute
+        // for real, mirroring core wpdb::prepare(), so executedSqls assertions
+        // can see the actual backtick-quoted table name.
+        if (strpos($query, '%i') !== false) {
+            $i = 0;
+            return (string) preg_replace_callback('/%i/', static function ($m) use (&$i, $args) {
+                $v = $args[$i] ?? '';
+                $i++;
+                return '`' . str_replace('`', '``', (string) $v) . '`';
+            }, $query);
+        }
         return json_encode(['sql' => $query, 'args' => $args]) ?: $query;
     }
 
@@ -636,6 +648,18 @@ final class GateTestWpdbMulti
 
     public function prepare(string $query, ...$args): string
     {
+        // %i (identifier) queries are DDL statements bound for query(), not the
+        // information_schema %s SELECT decoded by get_var() below — substitute
+        // for real, mirroring core wpdb::prepare(), so executedSqls assertions
+        // can see the actual backtick-quoted table name.
+        if (strpos($query, '%i') !== false) {
+            $i = 0;
+            return (string) preg_replace_callback('/%i/', static function ($m) use (&$i, $args) {
+                $v = $args[$i] ?? '';
+                $i++;
+                return '`' . str_replace('`', '``', (string) $v) . '`';
+            }, $query);
+        }
         return json_encode(['sql' => $query, 'args' => $args]) ?: $query;
     }
 

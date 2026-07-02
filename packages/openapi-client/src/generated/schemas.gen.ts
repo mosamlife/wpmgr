@@ -7326,56 +7326,74 @@ export const PutEmailConnectionRequestSchema = {
 export const EmailNotifySettingsSchema = {
   type: "object",
   description:
-    "Per-tenant email alert and digest settings (m62+). Returns sensible defaults (alerts_enabled=false, digest_enabled=false) when no settings row has been created yet — this endpoint never 404s.\n",
+    "Per-tenant email alert and digest settings (m62+). Returns sensible defaults (enabled=false, digest_enabled=false) when no settings row has been created yet — this endpoint never 404s. `recipients` is a single shared list used for both per-failure alerts and the digest.\n",
   required: [
-    "alerts_enabled",
-    "alert_failure_threshold",
+    "enabled",
+    "recipients",
+    "alert_on_failure",
     "alert_throttle_minutes",
-    "alert_recipients",
     "digest_enabled",
-    "digest_hour_utc",
-    "digest_recipients",
+    "digest_cadence",
+    "digest_day",
+    "digest_hour",
+    "timezone",
     "instance_mailer_configured",
   ],
   properties: {
-    alerts_enabled: {
+    enabled: {
+      type: "boolean",
+      description:
+        "Master switch for email notifications. Both alerts and the digest require this to be true in addition to their own toggle.\n",
+    },
+    recipients: {
+      type: "array",
+      maxItems: 20,
+      items: {
+        type: "string",
+        format: "email",
+      },
+      description:
+        "Shared recipient list for both per-failure alerts and the digest (max 20).\n",
+    },
+    alert_on_failure: {
       type: "boolean",
       description: "Whether per-failure email alerts are active.",
-    },
-    alert_failure_threshold: {
-      type: "integer",
-      description:
-        "Minimum consecutive failure count that triggers an alert. Default 3.\n",
     },
     alert_throttle_minutes: {
       type: "integer",
       description:
-        "Minimum minutes between two alerts for the same site. Default 60.\n",
-    },
-    alert_recipients: {
-      type: "array",
-      items: {
-        type: "string",
-        format: "email",
-      },
-      description: "List of email addresses that receive failure alerts.",
+        "Minimum minutes between two alerts for the same site (15-1440). Default 60.\n",
     },
     digest_enabled: {
       type: "boolean",
-      description: "Whether the hourly digest email is active.",
+      description: "Whether the scheduled digest email is active.",
     },
-    digest_hour_utc: {
+    digest_cadence: {
+      type: "string",
+      enum: ["daily", "weekly", "monthly"],
+      description:
+        "How often the digest is sent. Only enforced when digest_enabled is true.\n",
+    },
+    digest_day: {
       type: "integer",
       description:
-        "UTC hour (0-23) at which the daily digest fires. Default 8.\n",
+        "For weekly cadence: 0=Sunday...6=Saturday. For monthly cadence: 1-28. Not used for daily cadence. Only enforced when digest_enabled is true.\n",
     },
-    digest_recipients: {
-      type: "array",
-      items: {
-        type: "string",
-        format: "email",
-      },
-      description: "List of email addresses that receive the hourly digest.",
+    digest_hour: {
+      type: "integer",
+      description:
+        "Hour (0-23), in `timezone`, at which the digest fires. Default 8.\n",
+    },
+    timezone: {
+      type: "string",
+      description: "IANA timezone used to evaluate digest_hour/digest_day.",
+    },
+    next_digest_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+      description:
+        "Next scheduled digest send time, or null when the digest is disabled or not yet scheduled.\n",
     },
     instance_mailer_configured: {
       type: "boolean",
@@ -7405,41 +7423,60 @@ export const EmailNotifySettingsSchema = {
 export const PutEmailNotifySettingsRequestSchema = {
   type: "object",
   description:
-    "Request body for PUT /email/notify-settings. All fields are optional — omitted fields are unchanged (PATCH semantics within a PUT envelope).\n",
+    "Request body for PUT /email/notify-settings. This is a full replace (not a PATCH) — every field is required. digest_cadence/digest_day/ digest_hour/timezone are only validated when digest_enabled is true.\n",
+  required: [
+    "enabled",
+    "recipients",
+    "alert_on_failure",
+    "alert_throttle_minutes",
+    "digest_enabled",
+    "digest_cadence",
+    "digest_day",
+    "digest_hour",
+    "timezone",
+  ],
   properties: {
-    alerts_enabled: {
+    enabled: {
       type: "boolean",
     },
-    alert_failure_threshold: {
-      type: "integer",
-      description: "Minimum failure count to trigger an alert (1-100).",
-    },
-    alert_throttle_minutes: {
-      type: "integer",
-      description: "Minimum minutes between alerts per site (1-1440).",
-    },
-    alert_recipients: {
+    recipients: {
       type: "array",
+      maxItems: 20,
       items: {
         type: "string",
         format: "email",
       },
-      description: "Replace the alert recipients list.",
+      description: "Replace the shared recipients list (max 20).",
+    },
+    alert_on_failure: {
+      type: "boolean",
+      description: "Whether per-failure email alerts are active.",
+    },
+    alert_throttle_minutes: {
+      type: "integer",
+      description: "Minimum minutes between alerts per site (15-1440).",
     },
     digest_enabled: {
       type: "boolean",
     },
-    digest_hour_utc: {
-      type: "integer",
-      description: "UTC hour for the daily digest (0-23).",
+    digest_cadence: {
+      type: "string",
+      enum: ["daily", "weekly", "monthly"],
+      description:
+        "Required when digest_enabled is true; ignored otherwise. For 'weekly'/'monthly', digest_day must also be set.\n",
     },
-    digest_recipients: {
-      type: "array",
-      items: {
-        type: "string",
-        format: "email",
-      },
-      description: "Replace the digest recipients list.",
+    digest_day: {
+      type: "integer",
+      description:
+        "0-6 for weekly, 1-28 for monthly. Not required for daily cadence or when digest_enabled is false.\n",
+    },
+    digest_hour: {
+      type: "integer",
+      description: "Hour (0-23) at which the digest fires.",
+    },
+    timezone: {
+      type: "string",
+      description: 'IANA timezone, e.g. "UTC".',
     },
   },
 } as const;

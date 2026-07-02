@@ -702,9 +702,20 @@ final class OrphanWpdb
 
     public function prepare(string $sql, ...$args): string
     {
-        foreach ($args as $arg) {
-            $sql = preg_replace('/%s/', "'" . addslashes((string) $arg) . "'", $sql, 1) ?? $sql;
-        }
+        $i = 0;
+        $sql = (string) preg_replace_callback('/%[sdi]/', function ($m) use (&$i, $args) {
+            $v = $args[$i] ?? '';
+            $i++;
+            if ($m[0] === '%d') {
+                return (string) (int) $v;
+            }
+            if ($m[0] === '%i') {
+                // Mirrors core wpdb::prepare()'s %i identifier placeholder: backtick-quote,
+                // doubling any embedded backticks.
+                return '`' . str_replace('`', '``', (string) $v) . '`';
+            }
+            return "'" . addslashes((string) $v) . "'";
+        }, $sql);
         $this->preparedSqls[] = $sql;
         return $sql;
     }

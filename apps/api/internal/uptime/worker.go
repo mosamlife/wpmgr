@@ -144,21 +144,13 @@ func (w *ProbeWorker) processSite(ctx context.Context, s EnrolledSite, res Probe
 		w.logger.Warn("uptime: set health failed", slog.String("site_id", s.ID.String()), slog.Any("error", err))
 	}
 
-	// Load prior alert state (default zero-value when none yet).
-	prev, _, err := w.repo.GetAlertState(ctx, s.ID)
+	// Atomically read (locked), evaluate, and persist the alert-state
+	// transition in one transaction — see TransitionAlertState for why this
+	// must NOT be split into a separate get + upsert (lost-update race under
+	// overlapping sweeps).
+	tr, err := w.repo.TransitionAlertState(ctx, s.ID, s.TenantID, res.Up, w.threshold, now)
 	if err != nil {
-		w.logger.Warn("uptime: get alert state failed", slog.String("site_id", s.ID.String()), slog.Any("error", err))
-		return
-	}
-	prev.SiteID = s.ID
-	prev.TenantID = s.TenantID
-	if prev.LastStatus == "" {
-		prev.LastStatus = StatusUnknown
-	}
-
-	tr := Evaluate(prev, res.Up, w.threshold, now)
-	if err := w.repo.UpsertAlertState(ctx, tr.NewState); err != nil {
-		w.logger.Warn("uptime: upsert alert state failed", slog.String("site_id", s.ID.String()), slog.Any("error", err))
+		w.logger.Warn("uptime: transition alert state failed", slog.String("site_id", s.ID.String()), slog.Any("error", err))
 		return
 	}
 

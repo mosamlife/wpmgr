@@ -2289,7 +2289,7 @@ CREATE TABLE IF NOT EXISTS email_notify_settings (
         CONSTRAINT email_notify_settings_throttle_range CHECK (alert_throttle_minutes BETWEEN 15 AND 1440),
     digest_enabled         boolean     NOT NULL DEFAULT false,
     digest_cadence         text        NOT NULL DEFAULT 'weekly'
-        CONSTRAINT email_notify_settings_digest_cadence CHECK (digest_cadence IN ('weekly', 'monthly')),
+        CONSTRAINT email_notify_settings_digest_cadence CHECK (digest_cadence IN ('daily', 'weekly', 'monthly')),
     digest_day             integer     NOT NULL DEFAULT 1
         CONSTRAINT email_notify_settings_digest_day CHECK (digest_day BETWEEN 0 AND 28),
     digest_hour            integer     NOT NULL DEFAULT 8

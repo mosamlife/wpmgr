@@ -3415,11 +3415,19 @@ func (s *EmailNotifySettings) Validate() error {
 
 	var failures []validate.FieldError
 	if err := func() error {
-		if s.AlertRecipients == nil {
+		if s.Recipients == nil {
 			return errors.New("nil is invalid value")
 		}
+		if err := (validate.Array{
+			MinLength:    0,
+			MinLengthSet: false,
+			MaxLength:    20,
+			MaxLengthSet: true,
+		}).ValidateLength(len(s.Recipients)); err != nil {
+			return errors.Wrap(err, "array")
+		}
 		var failures []validate.FieldError
-		for i, elem := range s.AlertRecipients {
+		for i, elem := range s.Recipients {
 			if err := func() error {
 				if err := (validate.String{
 					MinLength:     0,
@@ -3450,47 +3458,18 @@ func (s *EmailNotifySettings) Validate() error {
 		return nil
 	}(); err != nil {
 		failures = append(failures, validate.FieldError{
-			Name:  "alert_recipients",
+			Name:  "recipients",
 			Error: err,
 		})
 	}
 	if err := func() error {
-		if s.DigestRecipients == nil {
-			return errors.New("nil is invalid value")
-		}
-		var failures []validate.FieldError
-		for i, elem := range s.DigestRecipients {
-			if err := func() error {
-				if err := (validate.String{
-					MinLength:     0,
-					MinLengthSet:  false,
-					MaxLength:     0,
-					MaxLengthSet:  false,
-					Email:         true,
-					Hostname:      false,
-					Regex:         nil,
-					MinNumeric:    0,
-					MinNumericSet: false,
-					MaxNumeric:    0,
-					MaxNumericSet: false,
-				}).Validate(string(elem)); err != nil {
-					return errors.Wrap(err, "string")
-				}
-				return nil
-			}(); err != nil {
-				failures = append(failures, validate.FieldError{
-					Name:  fmt.Sprintf("[%d]", i),
-					Error: err,
-				})
-			}
-		}
-		if len(failures) > 0 {
-			return &validate.Error{Fields: failures}
+		if err := s.DigestCadence.Validate(); err != nil {
+			return err
 		}
 		return nil
 	}(); err != nil {
 		failures = append(failures, validate.FieldError{
-			Name:  "digest_recipients",
+			Name:  "digest_cadence",
 			Error: err,
 		})
 	}
@@ -3498,6 +3477,19 @@ func (s *EmailNotifySettings) Validate() error {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s EmailNotifySettingsDigestCadence) Validate() error {
+	switch s {
+	case "daily":
+		return nil
+	case "weekly":
+		return nil
+	case "monthly":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s *EmailProviderCatalog) Validate() error {
@@ -7345,8 +7337,19 @@ func (s *PutEmailNotifySettingsRequest) Validate() error {
 
 	var failures []validate.FieldError
 	if err := func() error {
+		if s.Recipients == nil {
+			return errors.New("nil is invalid value")
+		}
+		if err := (validate.Array{
+			MinLength:    0,
+			MinLengthSet: false,
+			MaxLength:    20,
+			MaxLengthSet: true,
+		}).ValidateLength(len(s.Recipients)); err != nil {
+			return errors.Wrap(err, "array")
+		}
 		var failures []validate.FieldError
-		for i, elem := range s.AlertRecipients {
+		for i, elem := range s.Recipients {
 			if err := func() error {
 				if err := (validate.String{
 					MinLength:     0,
@@ -7377,44 +7380,18 @@ func (s *PutEmailNotifySettingsRequest) Validate() error {
 		return nil
 	}(); err != nil {
 		failures = append(failures, validate.FieldError{
-			Name:  "alert_recipients",
+			Name:  "recipients",
 			Error: err,
 		})
 	}
 	if err := func() error {
-		var failures []validate.FieldError
-		for i, elem := range s.DigestRecipients {
-			if err := func() error {
-				if err := (validate.String{
-					MinLength:     0,
-					MinLengthSet:  false,
-					MaxLength:     0,
-					MaxLengthSet:  false,
-					Email:         true,
-					Hostname:      false,
-					Regex:         nil,
-					MinNumeric:    0,
-					MinNumericSet: false,
-					MaxNumeric:    0,
-					MaxNumericSet: false,
-				}).Validate(string(elem)); err != nil {
-					return errors.Wrap(err, "string")
-				}
-				return nil
-			}(); err != nil {
-				failures = append(failures, validate.FieldError{
-					Name:  fmt.Sprintf("[%d]", i),
-					Error: err,
-				})
-			}
-		}
-		if len(failures) > 0 {
-			return &validate.Error{Fields: failures}
+		if err := s.DigestCadence.Validate(); err != nil {
+			return err
 		}
 		return nil
 	}(); err != nil {
 		failures = append(failures, validate.FieldError{
-			Name:  "digest_recipients",
+			Name:  "digest_cadence",
 			Error: err,
 		})
 	}
@@ -7422,6 +7399,19 @@ func (s *PutEmailNotifySettingsRequest) Validate() error {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s PutEmailNotifySettingsRequestDigestCadence) Validate() error {
+	switch s {
+	case "daily":
+		return nil
+	case "weekly":
+		return nil
+	case "monthly":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s *PutEmailWebhookConfigRequest) Validate() error {

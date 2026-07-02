@@ -21315,40 +21315,50 @@ func (s *EmailNotifySettings) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *EmailNotifySettings) encodeFields(e *jx.Encoder) {
 	{
-		e.FieldStart("alerts_enabled")
-		e.Bool(s.AlertsEnabled)
+		e.FieldStart("enabled")
+		e.Bool(s.Enabled)
 	}
 	{
-		e.FieldStart("alert_failure_threshold")
-		e.Int(s.AlertFailureThreshold)
+		e.FieldStart("recipients")
+		e.ArrStart()
+		for _, elem := range s.Recipients {
+			e.Str(elem)
+		}
+		e.ArrEnd()
+	}
+	{
+		e.FieldStart("alert_on_failure")
+		e.Bool(s.AlertOnFailure)
 	}
 	{
 		e.FieldStart("alert_throttle_minutes")
 		e.Int(s.AlertThrottleMinutes)
 	}
 	{
-		e.FieldStart("alert_recipients")
-		e.ArrStart()
-		for _, elem := range s.AlertRecipients {
-			e.Str(elem)
-		}
-		e.ArrEnd()
-	}
-	{
 		e.FieldStart("digest_enabled")
 		e.Bool(s.DigestEnabled)
 	}
 	{
-		e.FieldStart("digest_hour_utc")
-		e.Int(s.DigestHourUtc)
+		e.FieldStart("digest_cadence")
+		s.DigestCadence.Encode(e)
 	}
 	{
-		e.FieldStart("digest_recipients")
-		e.ArrStart()
-		for _, elem := range s.DigestRecipients {
-			e.Str(elem)
+		e.FieldStart("digest_day")
+		e.Int(s.DigestDay)
+	}
+	{
+		e.FieldStart("digest_hour")
+		e.Int(s.DigestHour)
+	}
+	{
+		e.FieldStart("timezone")
+		e.Str(s.Timezone)
+	}
+	{
+		if s.NextDigestAt.Set {
+			e.FieldStart("next_digest_at")
+			s.NextDigestAt.Encode(e, json.EncodeDateTime)
 		}
-		e.ArrEnd()
 	}
 	{
 		e.FieldStart("instance_mailer_configured")
@@ -21374,18 +21384,21 @@ func (s *EmailNotifySettings) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfEmailNotifySettings = [11]string{
-	0:  "alerts_enabled",
-	1:  "alert_failure_threshold",
-	2:  "alert_throttle_minutes",
-	3:  "alert_recipients",
+var jsonFieldsNameOfEmailNotifySettings = [14]string{
+	0:  "enabled",
+	1:  "recipients",
+	2:  "alert_on_failure",
+	3:  "alert_throttle_minutes",
 	4:  "digest_enabled",
-	5:  "digest_hour_utc",
-	6:  "digest_recipients",
-	7:  "instance_mailer_configured",
-	8:  "tenant_id",
-	9:  "created_at",
-	10: "updated_at",
+	5:  "digest_cadence",
+	6:  "digest_day",
+	7:  "digest_hour",
+	8:  "timezone",
+	9:  "next_digest_at",
+	10: "instance_mailer_configured",
+	11: "tenant_id",
+	12: "created_at",
+	13: "updated_at",
 }
 
 // Decode decodes EmailNotifySettings from json.
@@ -21397,32 +21410,52 @@ func (s *EmailNotifySettings) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
-		case "alerts_enabled":
+		case "enabled":
 			requiredBitSet[0] |= 1 << 0
 			if err := func() error {
 				v, err := d.Bool()
-				s.AlertsEnabled = bool(v)
+				s.Enabled = bool(v)
 				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"alerts_enabled\"")
+				return errors.Wrap(err, "decode field \"enabled\"")
 			}
-		case "alert_failure_threshold":
+		case "recipients":
 			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
-				v, err := d.Int()
-				s.AlertFailureThreshold = int(v)
+				s.Recipients = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.Recipients = append(s.Recipients, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"recipients\"")
+			}
+		case "alert_on_failure":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Bool()
+				s.AlertOnFailure = bool(v)
 				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"alert_failure_threshold\"")
+				return errors.Wrap(err, "decode field \"alert_on_failure\"")
 			}
 		case "alert_throttle_minutes":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Int()
 				s.AlertThrottleMinutes = int(v)
@@ -21432,26 +21465,6 @@ func (s *EmailNotifySettings) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"alert_throttle_minutes\"")
-			}
-		case "alert_recipients":
-			requiredBitSet[0] |= 1 << 3
-			if err := func() error {
-				s.AlertRecipients = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.AlertRecipients = append(s.AlertRecipients, elem)
-					return nil
-				}); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"alert_recipients\"")
 			}
 		case "digest_enabled":
 			requiredBitSet[0] |= 1 << 4
@@ -21465,40 +21478,64 @@ func (s *EmailNotifySettings) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"digest_enabled\"")
 			}
-		case "digest_hour_utc":
+		case "digest_cadence":
 			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
+				if err := s.DigestCadence.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"digest_cadence\"")
+			}
+		case "digest_day":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
 				v, err := d.Int()
-				s.DigestHourUtc = int(v)
+				s.DigestDay = int(v)
 				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"digest_hour_utc\"")
+				return errors.Wrap(err, "decode field \"digest_day\"")
 			}
-		case "digest_recipients":
-			requiredBitSet[0] |= 1 << 6
+		case "digest_hour":
+			requiredBitSet[0] |= 1 << 7
 			if err := func() error {
-				s.DigestRecipients = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.DigestRecipients = append(s.DigestRecipients, elem)
-					return nil
-				}); err != nil {
+				v, err := d.Int()
+				s.DigestHour = int(v)
+				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"digest_recipients\"")
+				return errors.Wrap(err, "decode field \"digest_hour\"")
+			}
+		case "timezone":
+			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.Timezone = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"timezone\"")
+			}
+		case "next_digest_at":
+			if err := func() error {
+				s.NextDigestAt.Reset()
+				if err := s.NextDigestAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"next_digest_at\"")
 			}
 		case "instance_mailer_configured":
-			requiredBitSet[0] |= 1 << 7
+			requiredBitSet[1] |= 1 << 2
 			if err := func() error {
 				v, err := d.Bool()
 				s.InstanceMailerConfigured = bool(v)
@@ -21550,7 +21587,7 @@ func (s *EmailNotifySettings) Decode(d *jx.Decoder) error {
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
 		0b11111111,
-		0b00000000,
+		0b00000101,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -21592,6 +21629,48 @@ func (s *EmailNotifySettings) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *EmailNotifySettings) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes EmailNotifySettingsDigestCadence as json.
+func (s EmailNotifySettingsDigestCadence) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes EmailNotifySettingsDigestCadence from json.
+func (s *EmailNotifySettingsDigestCadence) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode EmailNotifySettingsDigestCadence to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch EmailNotifySettingsDigestCadence(v) {
+	case EmailNotifySettingsDigestCadenceDaily:
+		*s = EmailNotifySettingsDigestCadenceDaily
+	case EmailNotifySettingsDigestCadenceWeekly:
+		*s = EmailNotifySettingsDigestCadenceWeekly
+	case EmailNotifySettingsDigestCadenceMonthly:
+		*s = EmailNotifySettingsDigestCadenceMonthly
+	default:
+		*s = EmailNotifySettingsDigestCadence(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s EmailNotifySettingsDigestCadence) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *EmailNotifySettingsDigestCadence) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -55301,65 +55380,57 @@ func (s *PutEmailNotifySettingsRequest) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *PutEmailNotifySettingsRequest) encodeFields(e *jx.Encoder) {
 	{
-		if s.AlertsEnabled.Set {
-			e.FieldStart("alerts_enabled")
-			s.AlertsEnabled.Encode(e)
-		}
+		e.FieldStart("enabled")
+		e.Bool(s.Enabled)
 	}
 	{
-		if s.AlertFailureThreshold.Set {
-			e.FieldStart("alert_failure_threshold")
-			s.AlertFailureThreshold.Encode(e)
+		e.FieldStart("recipients")
+		e.ArrStart()
+		for _, elem := range s.Recipients {
+			e.Str(elem)
 		}
+		e.ArrEnd()
 	}
 	{
-		if s.AlertThrottleMinutes.Set {
-			e.FieldStart("alert_throttle_minutes")
-			s.AlertThrottleMinutes.Encode(e)
-		}
+		e.FieldStart("alert_on_failure")
+		e.Bool(s.AlertOnFailure)
 	}
 	{
-		if s.AlertRecipients != nil {
-			e.FieldStart("alert_recipients")
-			e.ArrStart()
-			for _, elem := range s.AlertRecipients {
-				e.Str(elem)
-			}
-			e.ArrEnd()
-		}
+		e.FieldStart("alert_throttle_minutes")
+		e.Int(s.AlertThrottleMinutes)
 	}
 	{
-		if s.DigestEnabled.Set {
-			e.FieldStart("digest_enabled")
-			s.DigestEnabled.Encode(e)
-		}
+		e.FieldStart("digest_enabled")
+		e.Bool(s.DigestEnabled)
 	}
 	{
-		if s.DigestHourUtc.Set {
-			e.FieldStart("digest_hour_utc")
-			s.DigestHourUtc.Encode(e)
-		}
+		e.FieldStart("digest_cadence")
+		s.DigestCadence.Encode(e)
 	}
 	{
-		if s.DigestRecipients != nil {
-			e.FieldStart("digest_recipients")
-			e.ArrStart()
-			for _, elem := range s.DigestRecipients {
-				e.Str(elem)
-			}
-			e.ArrEnd()
-		}
+		e.FieldStart("digest_day")
+		e.Int(s.DigestDay)
+	}
+	{
+		e.FieldStart("digest_hour")
+		e.Int(s.DigestHour)
+	}
+	{
+		e.FieldStart("timezone")
+		e.Str(s.Timezone)
 	}
 }
 
-var jsonFieldsNameOfPutEmailNotifySettingsRequest = [7]string{
-	0: "alerts_enabled",
-	1: "alert_failure_threshold",
-	2: "alert_throttle_minutes",
-	3: "alert_recipients",
+var jsonFieldsNameOfPutEmailNotifySettingsRequest = [9]string{
+	0: "enabled",
+	1: "recipients",
+	2: "alert_on_failure",
+	3: "alert_throttle_minutes",
 	4: "digest_enabled",
-	5: "digest_hour_utc",
-	6: "digest_recipients",
+	5: "digest_cadence",
+	6: "digest_day",
+	7: "digest_hour",
+	8: "timezone",
 }
 
 // Decode decodes PutEmailNotifySettingsRequest from json.
@@ -55367,96 +55438,123 @@ func (s *PutEmailNotifySettingsRequest) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode PutEmailNotifySettingsRequest to nil")
 	}
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
-		case "alerts_enabled":
+		case "enabled":
+			requiredBitSet[0] |= 1 << 0
 			if err := func() error {
-				s.AlertsEnabled.Reset()
-				if err := s.AlertsEnabled.Decode(d); err != nil {
+				v, err := d.Bool()
+				s.Enabled = bool(v)
+				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"alerts_enabled\"")
+				return errors.Wrap(err, "decode field \"enabled\"")
 			}
-		case "alert_failure_threshold":
+		case "recipients":
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
-				s.AlertFailureThreshold.Reset()
-				if err := s.AlertFailureThreshold.Decode(d); err != nil {
+				s.Recipients = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.Recipients = append(s.Recipients, elem)
+					return nil
+				}); err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"alert_failure_threshold\"")
+				return errors.Wrap(err, "decode field \"recipients\"")
+			}
+		case "alert_on_failure":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Bool()
+				s.AlertOnFailure = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"alert_on_failure\"")
 			}
 		case "alert_throttle_minutes":
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
-				s.AlertThrottleMinutes.Reset()
-				if err := s.AlertThrottleMinutes.Decode(d); err != nil {
+				v, err := d.Int()
+				s.AlertThrottleMinutes = int(v)
+				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"alert_throttle_minutes\"")
 			}
-		case "alert_recipients":
-			if err := func() error {
-				s.AlertRecipients = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.AlertRecipients = append(s.AlertRecipients, elem)
-					return nil
-				}); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"alert_recipients\"")
-			}
 		case "digest_enabled":
+			requiredBitSet[0] |= 1 << 4
 			if err := func() error {
-				s.DigestEnabled.Reset()
-				if err := s.DigestEnabled.Decode(d); err != nil {
+				v, err := d.Bool()
+				s.DigestEnabled = bool(v)
+				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"digest_enabled\"")
 			}
-		case "digest_hour_utc":
+		case "digest_cadence":
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
-				s.DigestHourUtc.Reset()
-				if err := s.DigestHourUtc.Decode(d); err != nil {
+				if err := s.DigestCadence.Decode(d); err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"digest_hour_utc\"")
+				return errors.Wrap(err, "decode field \"digest_cadence\"")
 			}
-		case "digest_recipients":
+		case "digest_day":
+			requiredBitSet[0] |= 1 << 6
 			if err := func() error {
-				s.DigestRecipients = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.DigestRecipients = append(s.DigestRecipients, elem)
-					return nil
-				}); err != nil {
+				v, err := d.Int()
+				s.DigestDay = int(v)
+				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"digest_recipients\"")
+				return errors.Wrap(err, "decode field \"digest_day\"")
+			}
+		case "digest_hour":
+			requiredBitSet[0] |= 1 << 7
+			if err := func() error {
+				v, err := d.Int()
+				s.DigestHour = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"digest_hour\"")
+			}
+		case "timezone":
+			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.Timezone = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"timezone\"")
 			}
 		default:
 			return d.Skip()
@@ -55464,6 +55562,39 @@ func (s *PutEmailNotifySettingsRequest) Decode(d *jx.Decoder) error {
 		return nil
 	}); err != nil {
 		return errors.Wrap(err, "decode PutEmailNotifySettingsRequest")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [2]uint8{
+		0b11111111,
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfPutEmailNotifySettingsRequest) {
+					name = jsonFieldsNameOfPutEmailNotifySettingsRequest[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
 	}
 
 	return nil
@@ -55478,6 +55609,48 @@ func (s *PutEmailNotifySettingsRequest) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *PutEmailNotifySettingsRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutEmailNotifySettingsRequestDigestCadence as json.
+func (s PutEmailNotifySettingsRequestDigestCadence) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes PutEmailNotifySettingsRequestDigestCadence from json.
+func (s *PutEmailNotifySettingsRequestDigestCadence) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutEmailNotifySettingsRequestDigestCadence to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch PutEmailNotifySettingsRequestDigestCadence(v) {
+	case PutEmailNotifySettingsRequestDigestCadenceDaily:
+		*s = PutEmailNotifySettingsRequestDigestCadenceDaily
+	case PutEmailNotifySettingsRequestDigestCadenceWeekly:
+		*s = PutEmailNotifySettingsRequestDigestCadenceWeekly
+	case PutEmailNotifySettingsRequestDigestCadenceMonthly:
+		*s = PutEmailNotifySettingsRequestDigestCadenceMonthly
+	default:
+		*s = PutEmailNotifySettingsRequestDigestCadence(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s PutEmailNotifySettingsRequestDigestCadence) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutEmailNotifySettingsRequestDigestCadence) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

@@ -3,7 +3,6 @@ import { AlertTriangle, Loader2, X } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -22,13 +21,22 @@ import type { PutEmailNotifySettingsRequest } from "@wpmgr/api";
 import { useEmailNotifySettings, usePutEmailNotifySettings } from "./use-email";
 
 // ---------------------------------------------------------------------------
-// Email notifications card (m62)
+// Email notifications card (m62; digest cadence fixed 2026-07 — issue #123)
 //
 // Mounted on the /email fleet page between Deliverability and Fleet log.
-// Two sub-sections:
-//   1. Per-failure alerts — enabled toggle, recipients chip input (max 20),
-//      failure threshold, throttle select
-//   2. Daily digest — enabled toggle, digest recipients, UTC hour
+//
+// The backend keeps a single shared `recipients` list for both alerts and
+// the digest, plus a master `enabled` switch that gates both sections
+// (derived here as alertOnFailure || digestEnabled — there is no separate
+// UI control for it). Two sub-sections:
+//   1. Per-failure alerts — enabled toggle ("alert_on_failure"), throttle
+//      select. There is no configurable failure-count threshold; the
+//      backend alerts on the first failure once the throttle window has
+//      elapsed.
+//   2. Daily digest — enabled toggle ("digest_enabled"), UTC hour. The UI
+//      only ever offers a daily cadence, so digest_cadence is always sent
+//      as "daily" and digest_day (only meaningful for weekly/monthly) is
+//      not collected.
 //
 // The instance_mailer_configured flag controls a warning banner: when false,
 // neither alerts nor digests can deliver. The banner links to /settings/smtp.
@@ -157,40 +165,41 @@ export function EmailNotifySettingsCard() {
 
   // Local state mirrors server values; populated once on first load
   const [alertsEnabled, setAlertsEnabled] = useState(false);
-  const [alertThreshold, setAlertThreshold] = useState(3);
   const [alertThrottle, setAlertThrottle] = useState(60);
-  const [alertRecipients, setAlertRecipients] = useState<string[]>([]);
   const [digestEnabled, setDigestEnabled] = useState(false);
   const [digestHour, setDigestHour] = useState(8);
-  const [digestRecipients, setDigestRecipients] = useState<string[]>([]);
+  // Recipients are a single list shared by both alerts and the digest.
+  const [recipients, setRecipients] = useState<string[]>([]);
   const [initialized, setInitialized] = useState(false);
 
   if (s && !initialized) {
-    setAlertsEnabled(s.alerts_enabled);
-    setAlertThreshold(s.alert_failure_threshold);
+    setAlertsEnabled(s.alert_on_failure);
     setAlertThrottle(s.alert_throttle_minutes);
-    setAlertRecipients(s.alert_recipients ?? []);
     setDigestEnabled(s.digest_enabled);
-    setDigestHour(s.digest_hour_utc);
-    setDigestRecipients(s.digest_recipients ?? []);
+    setDigestHour(s.digest_hour);
+    setRecipients(s.recipients ?? []);
     setInitialized(true);
   }
 
-  const alertRecipientsId = useId();
-  const digestRecipientsId = useId();
-  const thresholdId = useId();
+  const recipientsId = useId();
   const throttleId = useId();
   const digestHourId = useId();
 
   function buildPayload(): PutEmailNotifySettingsRequest {
     return {
-      alerts_enabled: alertsEnabled,
-      alert_failure_threshold: alertThreshold,
+      // Master switch: on whenever either section is enabled. There is no
+      // dedicated UI control for it — each section owns its own toggle.
+      enabled: alertsEnabled || digestEnabled,
+      recipients,
+      alert_on_failure: alertsEnabled,
       alert_throttle_minutes: alertThrottle,
-      alert_recipients: alertRecipients,
       digest_enabled: digestEnabled,
-      digest_hour_utc: digestHour,
-      digest_recipients: digestRecipients,
+      // The UI only ever offers a daily digest; digest_day is meaningless
+      // for that cadence and is only validated when weekly/monthly is used.
+      digest_cadence: "daily",
+      digest_day: 0,
+      digest_hour: digestHour,
+      timezone: "UTC",
     };
   }
 
@@ -252,6 +261,18 @@ export function EmailNotifySettingsCard() {
           </div>
         ) : null}
 
+        {/* Recipients — a single list shared by alerts and the digest */}
+        {alertsEnabled || digestEnabled ? (
+          <RecipientChipInput
+            id={recipientsId}
+            label="Recipients"
+            value={recipients}
+            onChange={setRecipients}
+            max={20}
+            disabled={save.isPending}
+          />
+        ) : null}
+
         {/* Per-failure alerts */}
         <section aria-labelledby="alerts-section-heading">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -263,8 +284,7 @@ export function EmailNotifySettingsCard() {
                 Per-failure alerts
               </h3>
               <p className="text-xs text-[var(--color-muted-foreground)]">
-                Send an alert email when consecutive delivery failures are detected on a
-                site.
+                Send an alert email when a delivery failure is detected on a site.
               </p>
             </div>
             <Switch
@@ -277,29 +297,6 @@ export function EmailNotifySettingsCard() {
 
           {alertsEnabled ? (
             <div className="space-y-4 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-              <RecipientChipInput
-                id={alertRecipientsId}
-                label="Alert recipients"
-                value={alertRecipients}
-                onChange={setAlertRecipients}
-                max={20}
-                disabled={save.isPending}
-              />
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={thresholdId}>Failure threshold</Label>
-                <Input
-                  id={thresholdId}
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={String(alertThreshold)}
-                  onChange={(e) => setAlertThreshold(Number(e.target.value))}
-                  disabled={save.isPending}
-                />
-                <p className="text-xs text-[var(--color-muted-foreground)]">
-                  Minimum consecutive failures to trigger an alert (1 to 100).
-                </p>
-              </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={throttleId}>Minimum time between alerts</Label>
                 <Select
@@ -348,14 +345,6 @@ export function EmailNotifySettingsCard() {
 
           {digestEnabled ? (
             <div className="space-y-4 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-              <RecipientChipInput
-                id={digestRecipientsId}
-                label="Digest recipients"
-                value={digestRecipients}
-                onChange={setDigestRecipients}
-                max={20}
-                disabled={save.isPending}
-              />
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={digestHourId}>Send at (UTC)</Label>
                 <Select
@@ -371,17 +360,12 @@ export function EmailNotifySettingsCard() {
                   ))}
                 </Select>
               </div>
-              {/* next_digest_at is a server-side computed field; cast as the generated
-            type omits it but the server may include it in the JSON response */
-        (() => {
-          const nextAt = (s as Record<string, unknown>)?.next_digest_at;
-          return typeof nextAt === "string" ? (
-            <p className="text-xs text-[var(--color-muted-foreground)]">
-              Next digest:{" "}
-              <time dateTime={nextAt}>{relativeTime(nextAt)}</time>
-            </p>
-          ) : null;
-        })()}
+              {s?.next_digest_at ? (
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  Next digest:{" "}
+                  <time dateTime={s.next_digest_at}>{relativeTime(s.next_digest_at)}</time>
+                </p>
+              ) : null}
             </div>
           ) : null}
         </section>

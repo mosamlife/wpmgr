@@ -24,6 +24,19 @@ type Repo interface {
 	GetAlertState(ctx context.Context, siteID uuid.UUID) (AlertState, bool, error)
 	UpsertAlertState(ctx context.Context, st AlertState) error
 
+	// TransitionAlertState atomically reads (with a row lock via FOR UPDATE),
+	// evaluates, and persists the next alert state for one site in a SINGLE
+	// transaction. This is the probe worker's entry point — it MUST be used
+	// instead of a separate GetAlertState + UpsertAlertState pair, which is a
+	// classic lost-update race: when a sweep runs longer than the probe
+	// interval (exactly what happens during a real, fleet-wide outage — down
+	// probes each take up to the probe timeout, so a sweep with many down
+	// sites can overlap the NEXT periodic sweep), two overlapping sweeps for
+	// the same site would each read the same stale ConsecutiveDown and never
+	// let it accumulate past 1, so the down threshold is never crossed and no
+	// alert ever fires — silently, with no error to log.
+	TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time) (Transition, error)
+
 	// Evaluator path (app.agent GUC, cross-tenant).
 	ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error)
 
@@ -114,6 +127,53 @@ func (r *pgRepo) UpsertAlertState(ctx context.Context, st AlertState) error {
 		}
 		return nil
 	})
+}
+
+// TransitionAlertState is the race-safe replacement for a separate
+// GetAlertState + UpsertAlertState pair: it locks the site's row (or, for a
+// brand-new site, relies on the ON CONFLICT upsert's implicit row lock),
+// evaluates the transition, and writes the result — all inside one
+// transaction — so an overlapping sweep for the same site blocks on the SELECT
+// FOR UPDATE until this one commits, then observes the fresh state instead of
+// a stale one.
+func (r *pgRepo) TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time) (Transition, error) {
+	var tr Transition
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		var prev AlertState
+		row, err := q.GetSiteAlertStateForUpdate(ctx, siteID)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return domain.Internal("uptime_get_state_failed", "failed to read site alert state").WithCause(err)
+			}
+			// No row yet: zero-value prior state, no lock to hold (nothing exists
+			// to lock). The INSERT below takes the DB's own conflict-resolution
+			// lock on the newly-inserted row, so a concurrent first-insert for the
+			// same site still serializes correctly via ON CONFLICT DO UPDATE.
+		} else {
+			prev = alertStateFromRow(row)
+		}
+		prev.SiteID = siteID
+		prev.TenantID = tenantID
+		if prev.LastStatus == "" {
+			prev.LastStatus = StatusUnknown
+		}
+
+		tr = Evaluate(prev, up, threshold, now)
+
+		if _, err := q.UpsertSiteAlertState(ctx, sqlc.UpsertSiteAlertStateParams{
+			SiteID:          tr.NewState.SiteID,
+			TenantID:        tr.NewState.TenantID,
+			LastStatus:      tr.NewState.LastStatus,
+			ConsecutiveDown: tr.NewState.ConsecutiveDown,
+			InIncident:      tr.NewState.InIncident,
+			LastAlertAt:     toTimestamptz(tr.NewState.LastAlertAt),
+		}); err != nil {
+			return domain.Internal("uptime_upsert_state_failed", "failed to upsert site alert state").WithCause(err)
+		}
+		return nil
+	})
+	return tr, err
 }
 
 func (r *pgRepo) ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error) {

@@ -33,6 +33,9 @@ func (r *fakeCronRepo) GetAlertState(_ context.Context, _ uuid.UUID) (AlertState
 func (r *fakeCronRepo) UpsertAlertState(_ context.Context, _ AlertState) error {
 	panic("CronKicker must not call UpsertAlertState")
 }
+func (r *fakeCronRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time) (Transition, error) {
+	panic("CronKicker must not call TransitionAlertState")
+}
 func (r *fakeCronRepo) ListAlertConfigsAllTenants(_ context.Context) ([]AlertConfig, error) {
 	panic("CronKicker must not call ListAlertConfigsAllTenants")
 }

@@ -784,7 +784,8 @@ final class PreloadQueue
     /**
      * REST callback for POST /wpmgr/v1/preload/run. Verifies the self-HMAC, then
      * runs a time-boxed claim/process loop and self-chains a fresh runner when
-     * work remains. permission_callback is __return_true; THIS HMAC is the gate.
+     * work remains. The permission_callback verifies the same self-HMAC
+     * (verifyRunnerToken); this handler re-verifies as the authoritative gate.
      *
      * @param \WP_REST_Request<array<string,mixed>> $request Incoming request.
      * @return \WP_REST_Response|\WP_Error

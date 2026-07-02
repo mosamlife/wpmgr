@@ -174,6 +174,112 @@ final class Connector
     }
 
     /**
+     * Read-only signature + claims check for use in a REST permission_callback.
+     *
+     * Validates the Ed25519 signature, algorithm, temporal bounds (exp), and the
+     * `aud` + `cmd` claims — EXACTLY the same checks as verifyCommand() — but
+     * intentionally SKIPS the anti-replay jti recording step. This makes it safe
+     * to call from a permission_callback (which WordPress may invoke more than once
+     * per HTTP request) without consuming the token's single-use window.
+     *
+     * The authoritative verifyCommand() call in the actual handler still runs the
+     * full pipeline (signature + temporal + jti anti-replay) and is the only path
+     * that records the jti. Belt-and-suspenders: even if something bypassed this
+     * permission_callback, the handler would still reject a tampered or replayed
+     * token.
+     *
+     * @param string   $jwt         Compact token.
+     * @param string   $expectedCmd Expected command name (e.g. "autologin").
+     * @param int|null $now         Override "current time" (testing).
+     * @return bool True when the token is structurally valid and the claims match;
+     *              false on ANY failure (never throws, safe for permission_callback).
+     */
+    public function validateCommandSignature(string $jwt, string $expectedCmd, ?int $now = null): bool
+    {
+        $now = $now ?? time();
+
+        $parts = explode('.', $jwt);
+        if (count($parts) !== 3) {
+            return false;
+        }
+
+        [$encodedHeader, $encodedPayload, $encodedSig] = $parts;
+
+        $signingInput = $encodedHeader . '.' . $encodedPayload;
+        $signature    = self::base64UrlDecode($encodedSig);
+
+        // ---- 1. Signature FIRST — nothing in the payload is trusted yet. ----
+        $publicKey = $this->keystore->getControlPlanePublicKey();
+        if ($publicKey === null || strlen($publicKey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES) {
+            return false;
+        }
+
+        if ($signature === '' || strlen($signature) !== SODIUM_CRYPTO_SIGN_BYTES) {
+            return false;
+        }
+
+        if (!sodium_crypto_sign_verify_detached($signature, $signingInput, $publicKey)) {
+            return false;
+        }
+
+        // ---- 2. Algorithm. ----
+        try {
+            $header = self::decodeJson(self::base64UrlDecode($encodedHeader));
+        } catch (\RuntimeException $e) {
+            return false;
+        }
+        if (!isset($header['alg']) || !is_string($header['alg']) || !hash_equals('EdDSA', $header['alg'])) {
+            return false;
+        }
+
+        // ---- 3. Claims. ----
+        try {
+            $claims = self::decodeJson(self::base64UrlDecode($encodedPayload));
+        } catch (\RuntimeException $e) {
+            return false;
+        }
+
+        // ---- 4. Temporal bounds. ----
+        if (!isset($claims['exp']) || !is_numeric($claims['exp'])) {
+            return false;
+        }
+        $exp = (int) $claims['exp'];
+        if ($exp <= $now || $exp > $now + self::MAX_FUTURE_EXP) {
+            return false;
+        }
+
+        // ---- 5. jti presence only (no DB write, no replay consume). ----
+        if (!isset($claims['jti']) || !is_string($claims['jti']) || $claims['jti'] === '') {
+            return false;
+        }
+
+        // ---- 6. Tenant binding. ----
+        $siteId = $this->settings->siteId();
+        if ($siteId === '') {
+            return false;
+        }
+        if (!isset($claims['aud']) || !is_string($claims['aud']) || $claims['aud'] === '') {
+            return false;
+        }
+        if (!hash_equals($siteId, $claims['aud'])) {
+            return false;
+        }
+
+        // ---- 7. Command binding. ----
+        if ($expectedCmd === '') {
+            return false;
+        }
+        if (!isset($claims['cmd']) || !is_string($claims['cmd']) || $claims['cmd'] === '') {
+            return false;
+        }
+        if (!hash_equals($expectedCmd, $claims['cmd'])) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * Verify a command token, additionally binding it to THIS site (`aud`) and
      * to the specific command being dispatched (`cmd`).
      *

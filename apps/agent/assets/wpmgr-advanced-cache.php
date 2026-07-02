@@ -28,6 +28,10 @@
  * @package WPMgr\Agent\Cache
  */
 
+if (!defined('ABSPATH')) {
+    exit; // No direct access.
+}
+
 /**
  * Drop-in version — bumped whenever the installed content changes structurally.
  * DropinInstaller compares this constant in the template against the string it
@@ -35,10 +39,6 @@
  * existing sites always run the current drop-in logic without manual intervention.
  */
 define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.45.1');
-
-if (!defined('ABSPATH')) {
-    exit; // No direct access.
-}
 
 if (!defined('WP_CACHE')) {
     return;

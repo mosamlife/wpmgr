@@ -211,8 +211,8 @@ type NotifySettings struct {
 	AlertOnFailure       bool
 	AlertThrottleMinutes int
 	DigestEnabled        bool
-	DigestCadence        string // weekly | monthly
-	DigestDay            int
+	DigestCadence        string // daily | weekly | monthly
+	DigestDay            int    // unused for daily; 0-6 (Sun-Sat) for weekly; 1-28 for monthly
 	DigestHour           int
 	Timezone             string
 	NextDigestAt         *time.Time
