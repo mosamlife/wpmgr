@@ -97,6 +97,34 @@ type Worker struct {
 	// keeps the legacy behaviour (no post-update refresh).
 	refresher   RefreshEnqueuer
 	refreshSkip *RefreshDebouncer
+	// probeDelays overrides the default post-update health-probe backoff
+	// schedule (probeRetryDelays). Nil uses the default. Tests set this to a
+	// tiny schedule so the retry loop does not actually sleep ~21s.
+	probeDelays []time.Duration
+}
+
+// probeRetryDelays is the backoff schedule between post-update health-probe
+// attempts (see probeHealthWithRetry). A plugin/theme update — particularly a
+// major-version upgrade that runs a synchronous DB migration on activation
+// (e.g. SureMail 1.x -> 2.0.0) — can legitimately return a transient 503, or
+// be briefly unreachable, for several seconds while the migration runs. A
+// single immediate probe misclassifies that as a broken update and rolls back
+// a site that in fact updated successfully. Total worst-case retry window:
+// sum(probeRetryDelays) ~= 21s, on top of the first (immediate) attempt.
+var probeRetryDelays = []time.Duration{
+	3 * time.Second,
+	4 * time.Second,
+	6 * time.Second,
+	8 * time.Second,
+}
+
+// SetProbeRetryDelays overrides the post-update health-probe backoff
+// schedule. Exposed for tests so the retry loop does not actually sleep the
+// production ~21s window; production code should rely on the default
+// (probeRetryDelays). Passing nil restores the default; pass a non-nil empty
+// slice ([]time.Duration{}) to disable retries entirely (single probe).
+func (w *Worker) SetProbeRetryDelays(delays []time.Duration) {
+	w.probeDelays = delays
 }
 
 // NewWorker builds the update task worker.
@@ -196,18 +224,56 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "already up to date", "")
 	}
 
-	// Post-update health probe of the site homepage.
-	probe, perr := w.prober.Get(ctx, siteURL)
+	// Post-update health probe of the site homepage, retried with backoff
+	// before declaring the update unhealthy (see probeHealthWithRetry): a
+	// normal DB-migration 503 immediately after activation must not trigger an
+	// unnecessary rollback of a site that in fact updated successfully.
+	probe, perr, attempts := w.probeHealthWithRetry(ctx, siteURL)
 	if perr != nil {
-		// Could not even reach the site after the update — treat as unhealthy and
-		// roll back. (A transport/SSRF error here is conservatively a failure.)
-		return w.rollback(ctx, task, siteURL, item, res, fmt.Sprintf("post-update probe error: %v", perr))
+		// Still unreachable after retrying — treat as unhealthy and roll back.
+		return w.rollback(ctx, task, siteURL, item, res, fmt.Sprintf("post-update probe error after %d attempt(s): %v", attempts, perr))
 	}
 	if !probe.Healthy() {
-		return w.rollback(ctx, task, siteURL, item, res, fmt.Sprintf("post-update health failed: status=%d %s", probe.StatusCode, probe.Detail))
+		return w.rollback(ctx, task, siteURL, item, res, fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail))
 	}
 
 	return w.finish(ctx, task, TaskSucceeded, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "updated and healthy", "")
+}
+
+// probeHealthWithRetry probes siteURL and, if the site is unhealthy or
+// unreachable, retries with backoff (probeDelays, defaulting to
+// probeRetryDelays) before giving up. It returns as soon as any attempt
+// reports Healthy(); otherwise it returns the LAST probe result/error after
+// exhausting the schedule, plus the number of attempts made (folded into the
+// rollback reason so an operator can see the update was given a fair chance).
+//
+// A transient transport error (perr != nil) is retried the same as an
+// unhealthy-but-reachable response: during a post-update migration window a
+// momentary connect/timeout error is indistinguishable from — and no less
+// transient than — a 503. A permanent transport error (e.g. SSRF-blocked or
+// an invalid URL) will simply fail the same way on every attempt and still
+// exhausts within the same bounded window, so no separate classification is
+// required to stay conservative here.
+func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (probe agentcmd.ProbeResult, perr error, attempts int) {
+	delays := probeRetryDelays
+	if w.probeDelays != nil {
+		delays = w.probeDelays
+	}
+	for i := 0; ; i++ {
+		attempts = i + 1
+		probe, perr = w.prober.Get(ctx, siteURL)
+		if perr == nil && probe.Healthy() {
+			return probe, nil, attempts
+		}
+		if i >= len(delays) {
+			return probe, perr, attempts
+		}
+		select {
+		case <-ctx.Done():
+			return probe, ctx.Err(), attempts
+		case <-time.After(delays[i]):
+		}
+	}
 }
 
 // rollback issues the signed rollback command and records the rolled_back state.

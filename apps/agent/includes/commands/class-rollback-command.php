@@ -23,6 +23,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Support\Maintenance;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateRunner;
 
@@ -65,6 +66,13 @@ final class RollbackCommand implements CommandInterface
      */
     public function execute(array $claims, array $params): array
     {
+        // Heal a `.maintenance` flag left behind by a prior interrupted
+        // update/rollback before starting new work, and arm the shutdown
+        // backstop so a fatal error or a timeout mid-rollback still clears
+        // whatever flag THIS run may leave set.
+        Maintenance::healStaleIfPresent();
+        Maintenance::armShutdownGuard();
+
         $type       = isset($params['type']) && is_string($params['type']) ? $params['type'] : '';
         $rawSlug    = isset($params['slug']) && is_string($params['slug']) ? $params['slug'] : '';
         $snapshotId = isset($params['snapshot_id']) && is_string($params['snapshot_id']) ? $params['snapshot_id'] : '';
@@ -74,50 +82,59 @@ final class RollbackCommand implements CommandInterface
             return $this->fail('Invalid type.');
         }
 
-        if ($type === 'core') {
-            return $this->rollbackCore($snapshotId, $toVersion);
-        }
-
-        // plugin / theme
-        $slug = UpdateCommand::sanitizeSlug($rawSlug);
-        if ($slug === '' || $slug !== $rawSlug) {
-            return $this->fail('Invalid or unsafe slug.');
-        }
-        if ($snapshotId === '') {
-            return $this->fail('Missing snapshot_id.');
-        }
-
+        // GUARANTEE: this is precisely the reported incident — a rollback
+        // that itself fails (the new version is already active, the restore
+        // errors, etc.) must still clear maintenance mode. Everything from
+        // here on is wrapped so success, failure, or a thrown exception all
+        // reach the `finally`.
         try {
-            $restore = $this->snapshots->restore($type, $slug, $snapshotId);
-        } catch (\Throwable $e) {
-            return $this->fail('Restore error.');
-        }
+            if ($type === 'core') {
+                return $this->rollbackCore($snapshotId, $toVersion);
+            }
 
-        if (!$restore['ok']) {
+            // plugin / theme
+            $slug = UpdateCommand::sanitizeSlug($rawSlug);
+            if ($slug === '' || $slug !== $rawSlug) {
+                return $this->fail('Invalid or unsafe slug.');
+            }
+            if ($snapshotId === '') {
+                return $this->fail('Missing snapshot_id.');
+            }
+
+            try {
+                $restore = $this->snapshots->restore($type, $slug, $snapshotId);
+            } catch (\Throwable $e) {
+                return $this->fail('Restore error.');
+            }
+
+            if (!$restore['ok']) {
+                return [
+                    'ok'               => false,
+                    'restored_version' => '',
+                    'log'              => $restore['log'],
+                ];
+            }
+
+            // Determine the version after restore; prefer the recorded prior version.
+            $restoredVersion = $this->runner->currentVersion($type, $slug);
+            if ($restoredVersion === '') {
+                $restoredVersion = $this->snapshots->recordedVersion($snapshotId);
+            }
+            if ($restoredVersion === '' && $toVersion !== '') {
+                $restoredVersion = $toVersion;
+            }
+
+            // Snapshot consumed; remove it.
+            $this->snapshots->cleanup($snapshotId);
+
             return [
-                'ok'               => false,
-                'restored_version' => '',
+                'ok'               => true,
+                'restored_version' => $restoredVersion,
                 'log'              => $restore['log'],
             ];
+        } finally {
+            Maintenance::clear();
         }
-
-        // Determine the version after restore; prefer the recorded prior version.
-        $restoredVersion = $this->runner->currentVersion($type, $slug);
-        if ($restoredVersion === '') {
-            $restoredVersion = $this->snapshots->recordedVersion($snapshotId);
-        }
-        if ($restoredVersion === '' && $toVersion !== '') {
-            $restoredVersion = $toVersion;
-        }
-
-        // Snapshot consumed; remove it.
-        $this->snapshots->cleanup($snapshotId);
-
-        return [
-            'ok'               => true,
-            'restored_version' => $restoredVersion,
-            'log'              => $restore['log'],
-        ];
     }
 
     /**

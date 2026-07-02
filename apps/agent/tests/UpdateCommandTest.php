@@ -22,14 +22,29 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class UpdateCommandTest extends TestCase
 {
+    /** Absolute path to the `.maintenance` marker under the test ABSPATH. */
+    private string $maintenanceFile = '';
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
+
+        $abspath = defined('ABSPATH') ? rtrim((string) constant('ABSPATH'), '/\\') : '';
+        if ($abspath !== '' && !is_dir($abspath)) {
+            mkdir($abspath, 0755, true);
+        }
+        $this->maintenanceFile = $abspath . '/.maintenance';
+        if (file_exists($this->maintenanceFile)) {
+            unlink($this->maintenanceFile); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
+        }
     }
 
     protected function tear_down(): void
     {
+        if ($this->maintenanceFile !== '' && file_exists($this->maintenanceFile)) {
+            unlink($this->maintenanceFile); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
+        }
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -356,5 +371,92 @@ final class UpdateCommandTest extends TestCase
 
         $this->assertFalse($out['ok']);
         $this->assertSame('failed', $out['results'][0]['status']);
+    }
+
+    // ---- .maintenance guarantee (GitHub issue #127) ------------------------
+
+    /**
+     * A runner spy whose apply() mimics a real WP upgrader: it drops the
+     * `.maintenance` marker (as Plugin_Upgrader/Core_Upgrader do at the start
+     * of an upgrade) and then blows up before it would reach its own cleanup
+     * line — the exact failure mode that orphans the flag in production.
+     */
+    private function spyRunnerThatLeavesMaintenanceOnFailure(string $maintenanceFile): UpdateRunner
+    {
+        return new class ($maintenanceFile) extends UpdateRunner {
+            public function __construct(private string $maintenanceFile)
+            {
+            }
+
+            public function currentVersion(string $type, string $slug): string
+            {
+                return '5.0';
+            }
+
+            public function apply(string $type, string $slug, string $version): array
+            {
+                file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
+                throw new \RuntimeException('upgrade interrupted mid-flight');
+            }
+        };
+    }
+
+    public function test_maintenance_flag_is_removed_after_a_failed_update(): void
+    {
+        $runner = $this->spyRunnerThatLeavesMaintenanceOnFailure($this->maintenanceFile);
+        $cmd    = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+
+        $this->assertSame('failed', $out['results'][0]['status']);
+        $this->assertFileDoesNotExist(
+            $this->maintenanceFile,
+            'a failed update must never leave the site permanently in maintenance mode'
+        );
+    }
+
+    public function test_stale_maintenance_flag_is_healed_before_a_dry_run_starts(): void
+    {
+        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
+        // Well past Maintenance's staleness threshold.
+        touch($this->maintenanceFile, time() - 200);
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:hello/hello.php'] = '1.7.2';
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        // dry_run never calls Maintenance::clear() — this isolates the
+        // start-of-run healStaleIfPresent() proactive heal.
+        $cmd->execute([], [
+            'dry_run' => true,
+            'items'   => [['type' => 'plugin', 'slug' => 'hello/hello.php', 'version' => 'latest']],
+        ]);
+
+        $this->assertFileDoesNotExist(
+            $this->maintenanceFile,
+            'a stale flag from a prior interrupted run must be healed before new work starts'
+        );
+    }
+
+    public function test_fresh_maintenance_flag_is_not_touched_by_a_dry_run(): void
+    {
+        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
+        // Freshly written — well under the staleness threshold.
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:hello/hello.php'] = '1.7.2';
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $cmd->execute([], [
+            'dry_run' => true,
+            'items'   => [['type' => 'plugin', 'slug' => 'hello/hello.php', 'version' => 'latest']],
+        ]);
+
+        $this->assertFileExists(
+            $this->maintenanceFile,
+            'a fresh flag may belong to another in-flight update/rollback and must not be deleted'
+        );
     }
 }
