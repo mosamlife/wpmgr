@@ -21,14 +21,29 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class RollbackCommandTest extends TestCase
 {
+    /** Absolute path to the `.maintenance` marker under the test ABSPATH. */
+    private string $maintenanceFile = '';
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
+
+        $abspath = defined('ABSPATH') ? rtrim((string) constant('ABSPATH'), '/\\') : '';
+        if ($abspath !== '' && !is_dir($abspath)) {
+            mkdir($abspath, 0755, true);
+        }
+        $this->maintenanceFile = $abspath . '/.maintenance';
+        if (file_exists($this->maintenanceFile)) {
+            unlink($this->maintenanceFile); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
+        }
     }
 
     protected function tear_down(): void
     {
+        if ($this->maintenanceFile !== '' && file_exists($this->maintenanceFile)) {
+            unlink($this->maintenanceFile); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
+        }
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -238,5 +253,122 @@ final class RollbackCommandTest extends TestCase
     public function test_command_name(): void
     {
         $this->assertSame('rollback', (new RollbackCommand())->name());
+    }
+
+    // ---- .maintenance guarantee (GitHub issue #127) ------------------------
+
+    /**
+     * Pre-create a `.maintenance` marker as if left behind by the earlier
+     * update this rollback is recovering from.
+     */
+    private function preCreateMaintenanceFlag(): void
+    {
+        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
+    }
+
+    public function test_maintenance_flag_is_removed_after_a_failed_plugin_rollback(): void
+    {
+        $this->preCreateMaintenanceFlag();
+
+        $cmd = new RollbackCommand($this->spySnapshots(false), $this->spyRunner());
+        $out = $cmd->execute([], [
+            'type'        => 'plugin',
+            'slug'        => 'akismet/akismet.php',
+            'snapshot_id' => 'snap_abc',
+        ]);
+
+        $this->assertFalse($out['ok']);
+        $this->assertFileDoesNotExist(
+            $this->maintenanceFile,
+            'a rollback that itself fails must not leave the site permanently in maintenance mode'
+        );
+    }
+
+    public function test_maintenance_flag_is_removed_after_a_successful_plugin_rollback(): void
+    {
+        $this->preCreateMaintenanceFlag();
+
+        $cmd = new RollbackCommand($this->spySnapshots(true), $this->spyRunner());
+        $out = $cmd->execute([], [
+            'type'        => 'plugin',
+            'slug'        => 'akismet/akismet.php',
+            'snapshot_id' => 'snap_abc',
+        ]);
+
+        $this->assertTrue($out['ok']);
+        $this->assertFileDoesNotExist($this->maintenanceFile);
+    }
+
+    public function test_maintenance_flag_is_removed_after_a_failed_core_rollback(): void
+    {
+        $this->preCreateMaintenanceFlag();
+
+        $runner = $this->spyRunner(false);
+        $cmd    = new RollbackCommand($this->spySnapshots(true), $runner);
+
+        $out = $cmd->execute([], [
+            'type'        => 'core',
+            'snapshot_id' => 'snap_core',
+            'to_version'  => '6.3.2',
+        ]);
+
+        $this->assertFalse($out['ok']);
+        $this->assertSame(['6.3.2'], $runner->forced);
+        $this->assertFileDoesNotExist(
+            $this->maintenanceFile,
+            'exactly the reported incident: rollback FAILED must not leave the site at 503'
+        );
+    }
+
+    public function test_maintenance_flag_is_removed_after_a_successful_core_rollback(): void
+    {
+        $this->preCreateMaintenanceFlag();
+
+        $runner = $this->spyRunner(true);
+        $runner->versions['core:core'] = '6.3.2';
+        $cmd = new RollbackCommand($this->spySnapshots(true), $runner);
+
+        $out = $cmd->execute([], [
+            'type'        => 'core',
+            'snapshot_id' => 'snap_core',
+            'to_version'  => '6.3.2',
+        ]);
+
+        $this->assertTrue($out['ok']);
+        $this->assertFileDoesNotExist($this->maintenanceFile);
+    }
+
+    public function test_stale_maintenance_flag_is_healed_even_for_a_rejected_request(): void
+    {
+        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
+        // Well past Maintenance's staleness threshold.
+        touch($this->maintenanceFile, time() - 200);
+
+        // An invalid type is rejected BEFORE the mutating try/finally runs,
+        // isolating the start-of-request healStaleIfPresent() proactive heal
+        // from the unconditional end-of-request clear().
+        $cmd = new RollbackCommand($this->spySnapshots(), $this->spyRunner());
+        $out = $cmd->execute([], ['type' => 'bogus', 'slug' => 'x', 'snapshot_id' => 'snap_a']);
+
+        $this->assertFalse($out['ok']);
+        $this->assertFileDoesNotExist(
+            $this->maintenanceFile,
+            'a stale flag from a prior interrupted run must be healed before new work starts'
+        );
+    }
+
+    public function test_fresh_maintenance_flag_is_not_touched_by_a_rejected_request(): void
+    {
+        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
+        // Freshly written — well under the staleness threshold.
+
+        $cmd = new RollbackCommand($this->spySnapshots(), $this->spyRunner());
+        $out = $cmd->execute([], ['type' => 'bogus', 'slug' => 'x', 'snapshot_id' => 'snap_a']);
+
+        $this->assertFalse($out['ok']);
+        $this->assertFileExists(
+            $this->maintenanceFile,
+            'a fresh flag may belong to another in-flight update/rollback and must not be deleted'
+        );
     }
 }

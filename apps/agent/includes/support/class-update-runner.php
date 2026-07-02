@@ -186,7 +186,16 @@ class UpdateRunner
         $offer->partial_version = '';
 
         $upgrader = new \Core_Upgrader(new \WP_Ajax_Upgrader_Skin());
-        $result   = $upgrader->upgrade($offer);
+        try {
+            $result = $upgrader->upgrade($offer);
+        } finally {
+            // GUARANTEE: whatever core's update_core()/maintenance_mode() did
+            // or failed to do internally, this run's maintenance flag is
+            // cleared on every terminal path — success, WP_Error, or a thrown
+            // exception. See Maintenance class doc for why core alone cannot
+            // be trusted to always reach its own cleanup line.
+            Maintenance::clear($upgrader);
+        }
 
         return $this->upgraderOutcome($result);
     }
@@ -312,7 +321,14 @@ class UpdateRunner
                 $wasNetworkActive = function_exists('is_plugin_active_for_network') ? \is_plugin_active_for_network($slug) : false;
 
                 $upgrader = new \Plugin_Upgrader(new \WP_Ajax_Upgrader_Skin());
-                $result   = $upgrader->upgrade($slug);
+                try {
+                    $result = $upgrader->upgrade($slug);
+                } finally {
+                    // GUARANTEE: clear maintenance mode on every terminal
+                    // path of THIS upgrade() call, independent of whether it
+                    // succeeded, returned a WP_Error, or threw.
+                    Maintenance::clear($upgrader);
+                }
                 $outcome  = $this->upgraderOutcome($result);
 
                 if ($outcome['ok'] && ($wasActive || $wasNetworkActive) && function_exists('activate_plugin')) {
@@ -338,7 +354,11 @@ class UpdateRunner
                     return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
                 }
                 $upgrader = new \Theme_Upgrader(new \WP_Ajax_Upgrader_Skin());
-                $result   = $upgrader->upgrade($slug);
+                try {
+                    $result = $upgrader->upgrade($slug);
+                } finally {
+                    Maintenance::clear($upgrader);
+                }
 
                 return $this->upgraderOutcome($result);
 
@@ -391,7 +411,11 @@ class UpdateRunner
         }
 
         $upgrader = new \Core_Upgrader(new \WP_Ajax_Upgrader_Skin());
-        $result   = $upgrader->upgrade($offer);
+        try {
+            $result = $upgrader->upgrade($offer);
+        } finally {
+            Maintenance::clear($upgrader);
+        }
 
         return $this->upgraderOutcome($result);
     }

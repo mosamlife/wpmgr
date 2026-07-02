@@ -28,6 +28,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Support\Maintenance;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateRunner;
 
@@ -70,6 +71,13 @@ final class UpdateCommand implements CommandInterface
      */
     public function execute(array $claims, array $params): array
     {
+        // Heal a `.maintenance` flag left behind by a prior interrupted
+        // update/rollback before starting new work, and arm the shutdown
+        // backstop so a fatal error or a timeout mid-update still clears
+        // whatever flag THIS run may leave set.
+        Maintenance::healStaleIfPresent();
+        Maintenance::armShutdownGuard();
+
         $dryRun   = isset($params['dry_run']) && (bool) $params['dry_run'];
         $snapshot = isset($params['snapshot']) && (bool) $params['snapshot'];
 
@@ -127,26 +135,34 @@ final class UpdateCommand implements CommandInterface
                 return $this->dryRun($type, $slug, $version, $fromVersion);
             }
 
-            // --- Optional pre-update snapshot. ---
-            $snapshotId = '';
-            $log        = '';
-            if ($snapshot) {
-                $snap        = $this->snapshots->capture($type, $slug, $fromVersion);
-                $snapshotId  = $snap['snapshot_id'];
-                $log        .= $snap['log'];
+            // GUARANTEE: whatever this item's snapshot/apply work does below —
+            // succeed, fail, or throw — a `finally` clears any `.maintenance`
+            // flag before we move on, so a failed item can never leave the
+            // whole site dark for the rest of the batch (or indefinitely).
+            try {
+                // --- Optional pre-update snapshot. ---
+                $snapshotId = '';
+                $log        = '';
+                if ($snapshot) {
+                    $snap        = $this->snapshots->capture($type, $slug, $fromVersion);
+                    $snapshotId  = $snap['snapshot_id'];
+                    $log        .= $snap['log'];
+                }
+
+                // --- Apply the update. ---
+                $applied = $this->runner->apply($type, $slug, $version);
+                $log    .= ($log !== '' ? "\n" : '') . $applied['log'];
+
+                $toVersion = $this->runner->currentVersion($type, $slug);
+
+                $status = $applied['ok']
+                    ? ($toVersion !== $fromVersion ? 'succeeded' : 'up_to_date')
+                    : 'failed';
+
+                return $this->result($type, $slug, $fromVersion, $toVersion, $status, $snapshotId, $log);
+            } finally {
+                Maintenance::clear();
             }
-
-            // --- Apply the update. ---
-            $applied = $this->runner->apply($type, $slug, $version);
-            $log    .= ($log !== '' ? "\n" : '') . $applied['log'];
-
-            $toVersion = $this->runner->currentVersion($type, $slug);
-
-            $status = $applied['ok']
-                ? ($toVersion !== $fromVersion ? 'succeeded' : 'up_to_date')
-                : 'failed';
-
-            return $this->result($type, $slug, $fromVersion, $toVersion, $status, $snapshotId, $log);
         } catch (\Throwable $e) {
             // Never leak internals; keep the per-item failure contained.
             return $this->result($type, $slug, '', '', 'failed', '', 'Update error.');
