@@ -203,12 +203,27 @@ func toUpdateSiteInfo(s site.Site) update.SiteInfo {
 	plugins, themes := s.ParsedComponents()
 	comps := make([]update.Component, 0, len(plugins)+len(themes))
 	for _, p := range plugins {
-		comps = append(comps, update.Component{Type: update.TargetPlugin, Slug: p.Slug, Version: p.Version})
+		comps = append(comps, toUpdateComponentInfo(update.TargetPlugin, p))
 	}
 	for _, th := range themes {
-		comps = append(comps, update.Component{Type: update.TargetTheme, Slug: th.Slug, Version: th.Version})
+		comps = append(comps, toUpdateComponentInfo(update.TargetTheme, th))
 	}
-	return update.SiteInfo{ID: s.ID, URL: s.URL, Name: s.Name, Enrolled: s.EnrolledAt != nil, Components: comps}
+	info := update.SiteInfo{ID: s.ID, URL: s.URL, Name: s.Name, Enrolled: s.EnrolledAt != nil, Components: comps}
+	if core := s.ParsedCoreUpdate(); core != nil && core.NewVersion != "" {
+		info.CoreUpdateAvailable = true
+		info.CoreCurrentVersion = core.CurrentVersion
+		info.CoreNewVersion = core.NewVersion
+	}
+	return info
+}
+
+func toUpdateComponentInfo(typ string, c site.Component) update.Component {
+	out := update.Component{Type: typ, Slug: c.Slug, Version: c.Version}
+	if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" {
+		out.UpdateAvailable = true
+		out.NewVersion = c.AvailableUpdate.NewVersion
+	}
+	return out
 }
 
 // genEd25519PrivBase64 returns a fresh Ed25519 private key as base64-std (the
@@ -231,6 +246,34 @@ type updateTestHarness struct {
 	worker  *update.Worker
 	client  *river.Client[pgx.Tx]
 	siteSvc *site.Service
+}
+
+// seedPendingPlugin records a plugin inventory entry with a pending update
+// advisory on the site, so update.Service.planTasks (#126: intersect a run's
+// requested items against each site's OWN pending set) actually produces a
+// task for it.
+func seedPendingPlugin(t *testing.T, h *updateTestHarness, tenant uuid.UUID, s site.Site, slug, from, to string) {
+	t.Helper()
+	_, err := h.siteSvc.ApplyMetadata(context.Background(), tenant, s.ID, site.Metadata{
+		Plugins: []site.Component{{
+			Slug: slug, Version: from,
+			AvailableUpdate: &site.AvailableUpdate{NewVersion: to},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("seed pending plugin: %v", err)
+	}
+}
+
+// seedPendingCore records a WordPress core update advisory on the site.
+func seedPendingCore(t *testing.T, h *updateTestHarness, tenant uuid.UUID, s site.Site, from, to string) {
+	t.Helper()
+	_, err := h.siteSvc.ApplyMetadata(context.Background(), tenant, s.ID, site.Metadata{
+		CoreUpdate: &site.CoreUpdate{CurrentVersion: from, NewVersion: to},
+	})
+	if err != nil {
+		t.Fatalf("seed pending core: %v", err)
+	}
 }
 
 // enrollFakeSite enrolls a site whose URL points at the fake agent.
@@ -357,6 +400,7 @@ func TestUpdateRunHappyPath(t *testing.T) {
 	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
 	s := enrollFakeSite(t, pool, tenant, fa.url())
 	fa.setExpectAud(s.ID.String())
+	seedPendingPlugin(t, h, tenant, s, "akismet", "1.0.0", "1.1.0")
 
 	run, tasks, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
 		TenantID: tenant,
@@ -411,6 +455,7 @@ func TestUpdateAutoRollback(t *testing.T) {
 	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
 	s := enrollFakeSite(t, pool, tenant, fa.url())
 	fa.setExpectAud(s.ID.String())
+	seedPendingPlugin(t, h, tenant, s, "broken-plugin", "1.0.0", "1.1.0")
 
 	run, _, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
 		TenantID: tenant,
@@ -456,6 +501,7 @@ func TestUpdateDryRunDoesNotMutate(t *testing.T) {
 	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
 	s := enrollFakeSite(t, pool, tenant, fa.url())
 	fa.setExpectAud(s.ID.String())
+	seedPendingCore(t, h, tenant, s, "6.4", "6.5")
 
 	run, _, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
 		TenantID: tenant,

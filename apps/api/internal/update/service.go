@@ -10,21 +10,39 @@ import (
 )
 
 // SiteInfo is the minimal site projection the update service needs to plan and
-// execute a run: identity, the agent target URL, and the current component
-// versions (used to seed from_version without a round-trip to the agent).
+// execute a run: identity, the agent target URL, the current component
+// versions (used to seed from_version without a round-trip to the agent), and
+// the site's OWN pending WordPress-core update advisory (CoreUpdateAvailable
+// etc). planTasks intersects a run's requested items against each site's own
+// pending set (Components[].UpdateAvailable / CoreUpdateAvailable) — see #126.
 type SiteInfo struct {
 	ID         uuid.UUID
 	URL        string
 	Name       string
 	Enrolled   bool
 	Components []Component
+
+	// CoreUpdateAvailable reports whether THIS site's own inventory advertises
+	// a pending WordPress core update. CoreCurrentVersion/CoreNewVersion carry
+	// the versions from that advisory when set.
+	CoreUpdateAvailable bool
+	CoreCurrentVersion  string
+	CoreNewVersion      string
 }
 
-// Component is one installed plugin/theme with its current version.
+// Component is one installed plugin/theme with its current version and its
+// OWN pending-update advisory (mirrors site.Component.AvailableUpdate).
+// UpdateAvailable/NewVersion are the per-site authority planTasks intersects
+// a run's requested items against (#126: a target requested because another
+// site in the run has it pending must not spawn a task on a site that does
+// not).
 type Component struct {
 	Type    string // "plugin" | "theme"
 	Slug    string
 	Version string
+
+	UpdateAvailable bool
+	NewVersion      string
 }
 
 // SiteLookup resolves the target sites for a run. Implemented by the site
@@ -128,18 +146,53 @@ func (s *Service) resolveSites(ctx context.Context, in CreateRunInput) ([]SiteIn
 	return s.sites.ListSiteInfoByTag(ctx, in.TenantID, in.Tag)
 }
 
-// planTasks expands (sites × items) into NewTask rows, seeding from_version from
-// the site's known component version where available.
+// planTasks expands (sites × items) into NewTask rows, INTERSECTED against
+// each site's own pending-update inventory (#126, the N×M task-explosion
+// bug): a default ("latest"/unset) item produces a task on a given site ONLY
+// when that site's own inventory reports the item as pending. A target that
+// is pending on some OTHER site in a multi-site run, but not on this one,
+// produces NO task here — never a task that is doomed to fail (or, with the
+// agent-side defensive fix, silently skip).
+//
+// An item carrying an EXPLICIT version pin (e.g. a deliberate downgrade, or a
+// vuln-remediation fix version the site's own WordPress update-check has not
+// yet caught up to reporting — see vuln.Service.Remediate) is a forced
+// operator/system action: it is applied wherever the target is installed on
+// the site, regardless of whether that site currently flags it as pending.
+//
+// from_version is always seeded from the SITE'S OWN known component version
+// (never another site's), whichever branch created the task.
 func (s *Service) planTasks(sites []SiteInfo, items []Item) []NewTask {
 	tasks := make([]NewTask, 0, len(sites)*len(items))
 	for _, site := range sites {
-		versions := indexVersions(site.Components)
+		installed := indexVersions(site.Components)
+		pending := indexPending(site)
 		for _, item := range items {
 			slug := item.Slug
 			if item.Type == TargetCore {
 				slug = "core"
 			}
-			from := versions[item.Type+"/"+slug]
+			key := item.Type + "/" + slug
+
+			from, hasInstalled := installed[key]
+			_, hasPending := pending[key]
+			if item.Type == TargetCore {
+				hasInstalled = true // core is always "installed"
+				from = site.CoreCurrentVersion
+			}
+
+			pinned := item.Version != "" && item.Version != "latest"
+			switch {
+			case pinned:
+				if !hasInstalled {
+					continue
+				}
+			default:
+				if !hasPending {
+					continue
+				}
+			}
+
 			desired := item.Version
 			if desired == "" {
 				desired = "latest"
@@ -154,6 +207,24 @@ func (s *Service) planTasks(sites []SiteInfo, items []Item) []NewTask {
 		}
 	}
 	return tasks
+}
+
+// indexPending returns the site's own pending-update set keyed by "type/slug"
+// ("core/core" for WordPress core), mapping to the version the site's own
+// inventory advertises as available. Only entries the site itself currently
+// reports as pending are present; this is the per-site authority planTasks
+// intersects a run's requested items against.
+func indexPending(site SiteInfo) map[string]string {
+	m := make(map[string]string, len(site.Components)+1)
+	for _, c := range site.Components {
+		if c.UpdateAvailable && c.NewVersion != "" {
+			m[c.Type+"/"+c.Slug] = c.NewVersion
+		}
+	}
+	if site.CoreUpdateAvailable && site.CoreNewVersion != "" {
+		m[TargetCore+"/core"] = site.CoreNewVersion
+	}
+	return m
 }
 
 // GetRun returns a run with its tasks.

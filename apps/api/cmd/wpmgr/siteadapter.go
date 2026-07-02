@@ -467,20 +467,41 @@ func (a *vulnSiteAdapter) ListAllSiteIDs(ctx context.Context, tenantID uuid.UUID
 
 var _ vuln.SiteLoader = (*vulnSiteAdapter)(nil)
 
+// toSiteInfo translates site.Site (with its JSONB component inventory,
+// including each item's own AvailableUpdate advisory and the optional core
+// update advisory) into update.SiteInfo. Carrying the per-site pending-update
+// signal through is what lets update.Service.planTasks intersect a run's
+// requested items against what THIS site actually has pending, instead of the
+// raw cross-product of the whole run's site/item selection (#126).
 func toSiteInfo(s site.Site) update.SiteInfo {
 	plugins, themes := s.ParsedComponents()
 	comps := make([]update.Component, 0, len(plugins)+len(themes))
 	for _, p := range plugins {
-		comps = append(comps, update.Component{Type: update.TargetPlugin, Slug: p.Slug, Version: p.Version})
+		comps = append(comps, toUpdateComponent(update.TargetPlugin, p))
 	}
 	for _, t := range themes {
-		comps = append(comps, update.Component{Type: update.TargetTheme, Slug: t.Slug, Version: t.Version})
+		comps = append(comps, toUpdateComponent(update.TargetTheme, t))
 	}
-	return update.SiteInfo{
+	info := update.SiteInfo{
 		ID:         s.ID,
 		URL:        s.URL,
 		Name:       s.Name,
 		Enrolled:   s.EnrolledAt != nil,
 		Components: comps,
 	}
+	if core := s.ParsedCoreUpdate(); core != nil && core.NewVersion != "" {
+		info.CoreUpdateAvailable = true
+		info.CoreCurrentVersion = core.CurrentVersion
+		info.CoreNewVersion = core.NewVersion
+	}
+	return info
+}
+
+func toUpdateComponent(typ string, c site.Component) update.Component {
+	out := update.Component{Type: typ, Slug: c.Slug, Version: c.Version}
+	if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" {
+		out.UpdateAvailable = true
+		out.NewVersion = c.AvailableUpdate.NewVersion
+	}
+	return out
 }

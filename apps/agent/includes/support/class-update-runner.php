@@ -71,6 +71,63 @@ class UpdateRunner
     }
 
     /**
+     * Is this item actually present on the site?
+     *
+     * Used to distinguish a genuinely not-applicable update target (plugin/
+     * theme never installed here, e.g. a stale or mistargeted control-plane
+     * task) from a real upgrade failure. Core is always "installed". When the
+     * detection API itself is unavailable (e.g. `get_plugins()` not loaded in
+     * a constrained runtime), this fails OPEN — returns true — so we never
+     * misreport a genuine target as not-installed just because we couldn't
+     * check; a real failure downstream still surfaces as 'failed'.
+     *
+     * @param string $type plugin|theme|core.
+     * @param string $slug Sanitized slug (ignored for core).
+     * @return bool
+     */
+    public function isInstalled(string $type, string $slug): bool
+    {
+        switch ($type) {
+            case 'core':
+                return true;
+
+            case 'plugin':
+                $this->loadPluginApi();
+                if (!function_exists('get_plugins')) {
+                    return true;
+                }
+                $all = get_plugins();
+                if (!is_array($all)) {
+                    return true;
+                }
+                if (isset($all[$slug])) {
+                    return true;
+                }
+                // Allow a folder-only slug to match its "folder/..." basename.
+                foreach (array_keys($all) as $file) {
+                    if (is_string($file) && str_starts_with($file, $slug . '/')) {
+                        return true;
+                    }
+                }
+
+                return false;
+
+            case 'theme':
+                if (!function_exists('wp_get_themes')) {
+                    return true;
+                }
+                $themes = wp_get_themes();
+                if (!is_array($themes)) {
+                    return true;
+                }
+
+                return isset($themes[$slug]);
+        }
+
+        return true;
+    }
+
+    /**
      * Resolve the version that an update would move the item to.
      *
      * Used only by dry-run. For an explicit version request we return it as-is.
