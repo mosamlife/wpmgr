@@ -61,10 +61,31 @@ final class UpdateCommandTest extends TestCase
             public array $versions = [];
             /** @var array<string,string> */
             public array $available = [];
+            /** @var array<string,bool> Explicit installed-state overrides, keyed "type:slug". */
+            public array $installedOverride = [];
+            /** Whether apply() should report success. */
+            public bool $applySucceeds = true;
 
             public function currentVersion(string $type, string $slug): string
             {
                 return $this->versions[$type . ':' . $slug] ?? '';
+            }
+
+            public function isInstalled(string $type, string $slug): bool
+            {
+                $key = $type . ':' . $slug;
+                if (array_key_exists($key, $this->installedOverride)) {
+                    return $this->installedOverride[$key];
+                }
+
+                // Default: known-installed only when the spy has been given a
+                // version for it. Deliberately does NOT fall back to the real
+                // UpdateRunner::isInstalled() here — that would consult the
+                // process-wide get_plugins()/wp_get_themes() stub state, which
+                // another test in this suite may have already redefined via
+                // Brain Monkey (those redefinitions are not un-done between
+                // tests), making this spy's behaviour depend on test order.
+                return array_key_exists($key, $this->versions);
             }
 
             public function availableVersion(string $type, string $slug, string $requested): string
@@ -75,6 +96,11 @@ final class UpdateCommandTest extends TestCase
             public function apply(string $type, string $slug, string $version): array
             {
                 $this->applied[] = [$type, $slug, $version];
+
+                if (!$this->applySucceeds) {
+                    return ['ok' => false, 'log' => 'upgrader reported failure'];
+                }
+
                 // Simulate a successful bump.
                 $this->versions[$type . ':' . $slug] = $version === 'latest' ? '9.9.9' : $version;
 
@@ -303,6 +329,85 @@ final class UpdateCommandTest extends TestCase
         $this->assertCount(2, $out['results']);
         $this->assertSame('failed', $out['results'][0]['status']);
         $this->assertSame('succeeded', $out['results'][1]['status']);
+    }
+
+    // ---- not-applicable targets (GitHub issue #126) ------------------------
+
+    public function test_not_installed_plugin_is_skipped_not_failed(): void
+    {
+        $runner = $this->spyRunner();
+        // No entry in $runner->versions AND explicitly marked absent — this
+        // slug was never installed on the site.
+        $runner->installedOverride['plugin:ghost/ghost.php'] = false;
+
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'ghost/ghost.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertSame('skipped', $r['status']);
+        $this->assertTrue($out['ok'], 'a skipped (not-applicable) item must not flip ok to false');
+        $this->assertSame([], $runner->applied, 'a not-installed target must never reach apply()');
+    }
+
+    public function test_not_installed_theme_is_skipped_not_failed(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->installedOverride['theme:ghost-theme'] = false;
+
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'theme', 'slug' => 'ghost-theme', 'version' => 'latest']],
+        ]);
+
+        $this->assertSame('skipped', $out['results'][0]['status']);
+        $this->assertSame([], $runner->applied);
+    }
+
+    public function test_installed_but_no_pending_update_reports_up_to_date_without_apply(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.3';
+        $runner->installedOverride['plugin:akismet/akismet.php'] = true;
+        // Deliberately no 'available' entry => nothing pending for 'latest'.
+
+        $snapshots = $this->spySnapshots();
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'snapshot' => true,
+            'items'    => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertSame('up_to_date', $r['status']);
+        $this->assertSame('5.3', $r['from_version']);
+        $this->assertSame('5.3', $r['to_version']);
+        $this->assertSame([], $runner->applied, 'nothing pending must never reach apply()');
+        $this->assertSame([], $snapshots->captured, 'nothing pending must never trigger a snapshot');
+        $this->assertTrue($out['ok']);
+    }
+
+    public function test_installed_with_pending_update_that_fails_to_apply_still_fails(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.0';
+        $runner->available['plugin:akismet/akismet.php'] = '5.3';
+        $runner->applySucceeds                           = false;
+
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertSame('failed', $r['status']);
+        $this->assertFalse($out['ok']);
+        $this->assertCount(1, $runner->applied, 'a genuine pending update must still be attempted');
     }
 
     public function test_command_name(): void

@@ -129,10 +129,36 @@ final class UpdateCommand implements CommandInterface
         }
 
         try {
+            // --- Not-applicable target: the plugin/theme isn't present on
+            // this site at all (a stale or mistargeted task). Report this as
+            // skipped, not failed, so it never pollutes the run's failure
+            // count — there is nothing here to have failed.
+            if (!$this->runner->isInstalled($type, $slug)) {
+                return $this->result($type, $slug, '', '', 'skipped', '', 'Not installed on this site.');
+            }
+
             $fromVersion = $this->runner->currentVersion($type, $slug);
 
             if ($dryRun) {
                 return $this->dryRun($type, $slug, $version, $fromVersion);
+            }
+
+            // --- Not-applicable target: installed but nothing to do (already
+            // at, or beyond, the requested/available version). Report this
+            // up front as up_to_date without running a snapshot+apply — both
+            // avoids needless work and keeps a target with no real update to
+            // apply from ever being able to surface as a failure.
+            $available = $this->runner->availableVersion($type, $slug, $version);
+            if (!self::isUpdatable($available, $fromVersion, $version)) {
+                return $this->result(
+                    $type,
+                    $slug,
+                    $fromVersion,
+                    $fromVersion,
+                    'up_to_date',
+                    '',
+                    'Already up to date; no update applied.'
+                );
             }
 
             // GUARANTEE: whatever this item's snapshot/apply work does below —
@@ -181,14 +207,31 @@ final class UpdateCommand implements CommandInterface
     private function dryRun(string $type, string $slug, string $requested, string $fromVersion): array
     {
         $available = $this->runner->availableVersion($type, $slug, $requested);
-
-        $updatable = $available !== '' && $available !== $fromVersion
-            && (version_compare($available, $fromVersion, '>') || $requested !== 'latest');
+        $updatable = self::isUpdatable($available, $fromVersion, $requested);
 
         $status = $updatable ? 'would_update' : 'up_to_date';
         $to     = $updatable ? $available : $fromVersion;
 
         return $this->result($type, $slug, $fromVersion, $to, $status, '', 'Dry run: no changes applied.');
+    }
+
+    /**
+     * Is there an actual update to apply?
+     *
+     * Shared by the dry-run report and the real-apply pre-check so both agree
+     * on what "nothing to do" means: no available version, the available
+     * version already matches what's installed, or (for a 'latest' request)
+     * the available version isn't actually newer.
+     *
+     * @param string $available   Version an update would move to ('' when none).
+     * @param string $fromVersion Currently installed version.
+     * @param string $requested   'latest' or an explicit x.y.z.
+     * @return bool
+     */
+    private static function isUpdatable(string $available, string $fromVersion, string $requested): bool
+    {
+        return $available !== '' && $available !== $fromVersion
+            && (version_compare($available, $fromVersion, '>') || $requested !== 'latest');
     }
 
     /**

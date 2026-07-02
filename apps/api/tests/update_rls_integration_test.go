@@ -35,6 +35,12 @@ func TestUpdateRunCreatesTasksAndEnqueues(t *testing.T) {
 
 	// A site enrolled (no live agent needed; we don't run tasks here).
 	s := enrollFakeSite(t, pool, tenant, "https://create.example.com")
+	if _, err := siteSvc.ApplyMetadata(ctx, tenant, s.ID, site.Metadata{
+		Plugins:    []site.Component{{Slug: "akismet", Version: "1.0.0", AvailableUpdate: &site.AvailableUpdate{NewVersion: "1.1.0"}}},
+		CoreUpdate: &site.CoreUpdate{CurrentVersion: "6.4", NewVersion: "6.5"},
+	}); err != nil {
+		t.Fatalf("seed pending updates: %v", err)
+	}
 
 	run, tasks, err := svc.CreateRun(ctx, update.CreateRunInput{
 		TenantID: tenant,
@@ -71,6 +77,11 @@ func TestUpdateRLSCrossTenantDenied(t *testing.T) {
 	svc := update.NewService(update.NewRepo(pool), &svcSiteLookup{svc: siteSvc}, &noopEnqueuer{}, domain.NewValidator(), domain.SystemClock{})
 
 	sA := enrollFakeSite(t, pool, tenantA, "https://rls-a.example.com")
+	if _, err := siteSvc.ApplyMetadata(ctx, tenantA, sA.ID, site.Metadata{
+		Plugins: []site.Component{{Slug: "akismet", Version: "1.0.0", AvailableUpdate: &site.AvailableUpdate{NewVersion: "1.1.0"}}},
+	}); err != nil {
+		t.Fatalf("seed pending update: %v", err)
+	}
 	runA, _, err := svc.CreateRun(ctx, update.CreateRunInput{
 		TenantID: tenantA,
 		SiteIDs:  []uuid.UUID{sA.ID},
