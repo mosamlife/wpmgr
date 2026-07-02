@@ -1284,9 +1284,18 @@ func (s *Service) PutNotifySettings(ctx context.Context, in NotifySettingsUpsert
 		return NotifySettings{}, err
 	}
 
+	// When the digest is disabled, its scheduling fields are neither validated
+	// nor required from the caller (see validateNotifySettings), so they may
+	// arrive empty/zero. Normalize them to the column defaults here — the DB
+	// CHECK constraints on digest_cadence/digest_day/digest_hour still apply
+	// to every row regardless of digest_enabled, so we must never persist
+	// whatever unvalidated value the caller happened to send.
+	digestCadence, digestDay, digestHour, timezone := in.DigestCadence, in.DigestDay, in.DigestHour, in.Timezone
 	var nextAt *time.Time
 	if in.DigestEnabled {
 		nextAt = nextDigestAt(in.DigestCadence, in.DigestDay, in.DigestHour, in.Timezone)
+	} else {
+		digestCadence, digestDay, digestHour, timezone = "weekly", 1, 8, "UTC"
 	}
 
 	settings := NotifySettings{
@@ -1296,10 +1305,10 @@ func (s *Service) PutNotifySettings(ctx context.Context, in NotifySettingsUpsert
 		AlertOnFailure:       in.AlertOnFailure,
 		AlertThrottleMinutes: in.AlertThrottleMinutes,
 		DigestEnabled:        in.DigestEnabled,
-		DigestCadence:        in.DigestCadence,
-		DigestDay:            in.DigestDay,
-		DigestHour:           in.DigestHour,
-		Timezone:             in.Timezone,
+		DigestCadence:        digestCadence,
+		DigestDay:            digestDay,
+		DigestHour:           digestHour,
+		Timezone:             timezone,
 		NextDigestAt:         nextAt,
 	}
 

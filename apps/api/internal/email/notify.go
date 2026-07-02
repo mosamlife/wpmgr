@@ -234,8 +234,11 @@ func (s *Service) buildDigestData(ctx context.Context, tenantID uuid.UUID, setti
 
 // computePeriodLabel formats a human-readable period label (e.g. "July 2026").
 func computePeriodLabel(cadence string, from time.Time) string {
-	if cadence == "monthly" {
+	switch cadence {
+	case "monthly":
 		return from.Format("January 2006")
+	case "daily":
+		return from.Format("Mon 2 Jan 2006")
 	}
 	// Weekly: "Mon 30 Jun – Sun 6 Jul 2026"
 	to := from.AddDate(0, 0, 6)
@@ -263,6 +266,14 @@ func nextDigestAt(cadence string, day, hour int, tz string) *time.Time {
 
 	var next time.Time
 	switch cadence {
+	case "daily":
+		// Next occurrence of the given hour, today or tomorrow. digest_day is
+		// not meaningful for a daily cadence (the UI only collects a send time).
+		candidate := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, loc)
+		if !candidate.After(now) {
+			candidate = candidate.AddDate(0, 0, 1)
+		}
+		next = candidate
 	case "monthly":
 		d := day
 		if d < 1 {
@@ -332,19 +343,31 @@ func validateNotifySettings(in NotifySettingsUpsertInput) error {
 	if in.AlertThrottleMinutes < 15 || in.AlertThrottleMinutes > 1440 {
 		return errCode("invalid_throttle", "alert_throttle_minutes must be between 15 and 1440")
 	}
-	switch in.DigestCadence {
-	case "weekly", "monthly":
-	default:
-		return errCode("invalid_digest_cadence", "digest_cadence must be 'weekly' or 'monthly'")
+
+	// Digest fields are only meaningful (and only validated/enforced) when the
+	// digest is actually enabled. This keeps the per-failure-alerts section
+	// (recipients/throttle) saveable even when the digest is off or its fields
+	// haven't been filled in by the caller — a digest_cadence/digest_day error
+	// must never block an unrelated alerts-only save.
+	if !in.DigestEnabled {
+		return nil
 	}
-	if in.DigestCadence == "weekly" {
+
+	switch in.DigestCadence {
+	case "daily", "weekly", "monthly":
+	default:
+		return errCode("invalid_digest_cadence", "digest_cadence must be 'daily', 'weekly' or 'monthly'")
+	}
+	switch in.DigestCadence {
+	case "weekly":
 		if in.DigestDay < 0 || in.DigestDay > 6 {
 			return errCode("invalid_digest_day", "digest_day must be 0–6 for weekly cadence")
 		}
-	} else {
+	case "monthly":
 		if in.DigestDay < 1 || in.DigestDay > 28 {
 			return errCode("invalid_digest_day", "digest_day must be 1–28 for monthly cadence")
 		}
+	default: // daily — digest_day is not collected by the UI and is not required
 	}
 	if in.DigestHour < 0 || in.DigestHour > 23 {
 		return errCode("invalid_digest_hour", "digest_hour must be 0–23")

@@ -7576,26 +7576,33 @@ func (*EmailLogList) exportSiteEmailLogRes() {}
 func (*EmailLogList) listFleetEmailLogRes()  {}
 func (*EmailLogList) listSiteEmailLogRes()   {}
 
-// Per-tenant email alert and digest settings (m62+). Returns sensible defaults (alerts_enabled=false,
-//
-//	digest_enabled=false) when no settings row has been created yet — this endpoint never 404s.
-//
+// Per-tenant email alert and digest settings (m62+). Returns sensible defaults (enabled=false,
+// digest_enabled=false) when no settings row has been created yet — this endpoint never 404s.
+// `recipients` is a single shared list used for both per-failure alerts and the digest.
 // Ref: #/components/schemas/EmailNotifySettings
 type EmailNotifySettings struct {
+	// Master switch for email notifications. Both alerts and the digest require this to be true in
+	// addition to their own toggle.
+	Enabled bool `json:"enabled"`
+	// Shared recipient list for both per-failure alerts and the digest (max 20).
+	Recipients []string `json:"recipients"`
 	// Whether per-failure email alerts are active.
-	AlertsEnabled bool `json:"alerts_enabled"`
-	// Minimum consecutive failure count that triggers an alert. Default 3.
-	AlertFailureThreshold int `json:"alert_failure_threshold"`
-	// Minimum minutes between two alerts for the same site. Default 60.
+	AlertOnFailure bool `json:"alert_on_failure"`
+	// Minimum minutes between two alerts for the same site (15-1440). Default 60.
 	AlertThrottleMinutes int `json:"alert_throttle_minutes"`
-	// List of email addresses that receive failure alerts.
-	AlertRecipients []string `json:"alert_recipients"`
-	// Whether the hourly digest email is active.
+	// Whether the scheduled digest email is active.
 	DigestEnabled bool `json:"digest_enabled"`
-	// UTC hour (0-23) at which the daily digest fires. Default 8.
-	DigestHourUtc int `json:"digest_hour_utc"`
-	// List of email addresses that receive the hourly digest.
-	DigestRecipients []string `json:"digest_recipients"`
+	// How often the digest is sent. Only enforced when digest_enabled is true.
+	DigestCadence EmailNotifySettingsDigestCadence `json:"digest_cadence"`
+	// For weekly cadence: 0=Sunday...6=Saturday. For monthly cadence: 1-28. Not used for daily cadence.
+	// Only enforced when digest_enabled is true.
+	DigestDay int `json:"digest_day"`
+	// Hour (0-23), in `timezone`, at which the digest fires. Default 8.
+	DigestHour int `json:"digest_hour"`
+	// IANA timezone used to evaluate digest_hour/digest_day.
+	Timezone string `json:"timezone"`
+	// Next scheduled digest send time, or null when the digest is disabled or not yet scheduled.
+	NextDigestAt OptNilDateTime `json:"next_digest_at"`
 	// True when the instance-level SMTP/mailer is configured. Alerts and digests require this to be true
 	// to deliver.
 	InstanceMailerConfigured bool `json:"instance_mailer_configured"`
@@ -7605,14 +7612,19 @@ type EmailNotifySettings struct {
 	UpdatedAt OptNilDateTime `json:"updated_at"`
 }
 
-// GetAlertsEnabled returns the value of AlertsEnabled.
-func (s *EmailNotifySettings) GetAlertsEnabled() bool {
-	return s.AlertsEnabled
+// GetEnabled returns the value of Enabled.
+func (s *EmailNotifySettings) GetEnabled() bool {
+	return s.Enabled
 }
 
-// GetAlertFailureThreshold returns the value of AlertFailureThreshold.
-func (s *EmailNotifySettings) GetAlertFailureThreshold() int {
-	return s.AlertFailureThreshold
+// GetRecipients returns the value of Recipients.
+func (s *EmailNotifySettings) GetRecipients() []string {
+	return s.Recipients
+}
+
+// GetAlertOnFailure returns the value of AlertOnFailure.
+func (s *EmailNotifySettings) GetAlertOnFailure() bool {
+	return s.AlertOnFailure
 }
 
 // GetAlertThrottleMinutes returns the value of AlertThrottleMinutes.
@@ -7620,24 +7632,34 @@ func (s *EmailNotifySettings) GetAlertThrottleMinutes() int {
 	return s.AlertThrottleMinutes
 }
 
-// GetAlertRecipients returns the value of AlertRecipients.
-func (s *EmailNotifySettings) GetAlertRecipients() []string {
-	return s.AlertRecipients
-}
-
 // GetDigestEnabled returns the value of DigestEnabled.
 func (s *EmailNotifySettings) GetDigestEnabled() bool {
 	return s.DigestEnabled
 }
 
-// GetDigestHourUtc returns the value of DigestHourUtc.
-func (s *EmailNotifySettings) GetDigestHourUtc() int {
-	return s.DigestHourUtc
+// GetDigestCadence returns the value of DigestCadence.
+func (s *EmailNotifySettings) GetDigestCadence() EmailNotifySettingsDigestCadence {
+	return s.DigestCadence
 }
 
-// GetDigestRecipients returns the value of DigestRecipients.
-func (s *EmailNotifySettings) GetDigestRecipients() []string {
-	return s.DigestRecipients
+// GetDigestDay returns the value of DigestDay.
+func (s *EmailNotifySettings) GetDigestDay() int {
+	return s.DigestDay
+}
+
+// GetDigestHour returns the value of DigestHour.
+func (s *EmailNotifySettings) GetDigestHour() int {
+	return s.DigestHour
+}
+
+// GetTimezone returns the value of Timezone.
+func (s *EmailNotifySettings) GetTimezone() string {
+	return s.Timezone
+}
+
+// GetNextDigestAt returns the value of NextDigestAt.
+func (s *EmailNotifySettings) GetNextDigestAt() OptNilDateTime {
+	return s.NextDigestAt
 }
 
 // GetInstanceMailerConfigured returns the value of InstanceMailerConfigured.
@@ -7660,14 +7682,19 @@ func (s *EmailNotifySettings) GetUpdatedAt() OptNilDateTime {
 	return s.UpdatedAt
 }
 
-// SetAlertsEnabled sets the value of AlertsEnabled.
-func (s *EmailNotifySettings) SetAlertsEnabled(val bool) {
-	s.AlertsEnabled = val
+// SetEnabled sets the value of Enabled.
+func (s *EmailNotifySettings) SetEnabled(val bool) {
+	s.Enabled = val
 }
 
-// SetAlertFailureThreshold sets the value of AlertFailureThreshold.
-func (s *EmailNotifySettings) SetAlertFailureThreshold(val int) {
-	s.AlertFailureThreshold = val
+// SetRecipients sets the value of Recipients.
+func (s *EmailNotifySettings) SetRecipients(val []string) {
+	s.Recipients = val
+}
+
+// SetAlertOnFailure sets the value of AlertOnFailure.
+func (s *EmailNotifySettings) SetAlertOnFailure(val bool) {
+	s.AlertOnFailure = val
 }
 
 // SetAlertThrottleMinutes sets the value of AlertThrottleMinutes.
@@ -7675,24 +7702,34 @@ func (s *EmailNotifySettings) SetAlertThrottleMinutes(val int) {
 	s.AlertThrottleMinutes = val
 }
 
-// SetAlertRecipients sets the value of AlertRecipients.
-func (s *EmailNotifySettings) SetAlertRecipients(val []string) {
-	s.AlertRecipients = val
-}
-
 // SetDigestEnabled sets the value of DigestEnabled.
 func (s *EmailNotifySettings) SetDigestEnabled(val bool) {
 	s.DigestEnabled = val
 }
 
-// SetDigestHourUtc sets the value of DigestHourUtc.
-func (s *EmailNotifySettings) SetDigestHourUtc(val int) {
-	s.DigestHourUtc = val
+// SetDigestCadence sets the value of DigestCadence.
+func (s *EmailNotifySettings) SetDigestCadence(val EmailNotifySettingsDigestCadence) {
+	s.DigestCadence = val
 }
 
-// SetDigestRecipients sets the value of DigestRecipients.
-func (s *EmailNotifySettings) SetDigestRecipients(val []string) {
-	s.DigestRecipients = val
+// SetDigestDay sets the value of DigestDay.
+func (s *EmailNotifySettings) SetDigestDay(val int) {
+	s.DigestDay = val
+}
+
+// SetDigestHour sets the value of DigestHour.
+func (s *EmailNotifySettings) SetDigestHour(val int) {
+	s.DigestHour = val
+}
+
+// SetTimezone sets the value of Timezone.
+func (s *EmailNotifySettings) SetTimezone(val string) {
+	s.Timezone = val
+}
+
+// SetNextDigestAt sets the value of NextDigestAt.
+func (s *EmailNotifySettings) SetNextDigestAt(val OptNilDateTime) {
+	s.NextDigestAt = val
 }
 
 // SetInstanceMailerConfigured sets the value of InstanceMailerConfigured.
@@ -7717,6 +7754,55 @@ func (s *EmailNotifySettings) SetUpdatedAt(val OptNilDateTime) {
 
 func (*EmailNotifySettings) getEmailNotifySettingsRes() {}
 func (*EmailNotifySettings) putEmailNotifySettingsRes() {}
+
+// How often the digest is sent. Only enforced when digest_enabled is true.
+type EmailNotifySettingsDigestCadence string
+
+const (
+	EmailNotifySettingsDigestCadenceDaily   EmailNotifySettingsDigestCadence = "daily"
+	EmailNotifySettingsDigestCadenceWeekly  EmailNotifySettingsDigestCadence = "weekly"
+	EmailNotifySettingsDigestCadenceMonthly EmailNotifySettingsDigestCadence = "monthly"
+)
+
+// AllValues returns all EmailNotifySettingsDigestCadence values.
+func (EmailNotifySettingsDigestCadence) AllValues() []EmailNotifySettingsDigestCadence {
+	return []EmailNotifySettingsDigestCadence{
+		EmailNotifySettingsDigestCadenceDaily,
+		EmailNotifySettingsDigestCadenceWeekly,
+		EmailNotifySettingsDigestCadenceMonthly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s EmailNotifySettingsDigestCadence) MarshalText() ([]byte, error) {
+	switch s {
+	case EmailNotifySettingsDigestCadenceDaily:
+		return []byte(s), nil
+	case EmailNotifySettingsDigestCadenceWeekly:
+		return []byte(s), nil
+	case EmailNotifySettingsDigestCadenceMonthly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *EmailNotifySettingsDigestCadence) UnmarshalText(data []byte) error {
+	switch EmailNotifySettingsDigestCadence(data) {
+	case EmailNotifySettingsDigestCadenceDaily:
+		*s = EmailNotifySettingsDigestCadenceDaily
+		return nil
+	case EmailNotifySettingsDigestCadenceWeekly:
+		*s = EmailNotifySettingsDigestCadenceWeekly
+		return nil
+	case EmailNotifySettingsDigestCadenceMonthly:
+		*s = EmailNotifySettingsDigestCadenceMonthly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Static catalog of supported email providers and their field schemas.
 // Ref: #/components/schemas/EmailProviderCatalog
@@ -25260,92 +25346,168 @@ type PutEmailNotifySettingsForbidden Error
 
 func (*PutEmailNotifySettingsForbidden) putEmailNotifySettingsRes() {}
 
-// Request body for PUT /email/notify-settings. All fields are optional — omitted fields are
-// unchanged (PATCH semantics within a PUT envelope).
+// Request body for PUT /email/notify-settings. This is a full replace (not a PATCH) — every field
+// is required. digest_cadence/digest_day/ digest_hour/timezone are only validated when
+// digest_enabled is true.
 // Ref: #/components/schemas/PutEmailNotifySettingsRequest
 type PutEmailNotifySettingsRequest struct {
-	AlertsEnabled OptBool `json:"alerts_enabled"`
-	// Minimum failure count to trigger an alert (1-100).
-	AlertFailureThreshold OptInt `json:"alert_failure_threshold"`
-	// Minimum minutes between alerts per site (1-1440).
-	AlertThrottleMinutes OptInt `json:"alert_throttle_minutes"`
-	// Replace the alert recipients list.
-	AlertRecipients []string `json:"alert_recipients"`
-	DigestEnabled   OptBool  `json:"digest_enabled"`
-	// UTC hour for the daily digest (0-23).
-	DigestHourUtc OptInt `json:"digest_hour_utc"`
-	// Replace the digest recipients list.
-	DigestRecipients []string `json:"digest_recipients"`
+	Enabled bool `json:"enabled"`
+	// Replace the shared recipients list (max 20).
+	Recipients []string `json:"recipients"`
+	// Whether per-failure email alerts are active.
+	AlertOnFailure bool `json:"alert_on_failure"`
+	// Minimum minutes between alerts per site (15-1440).
+	AlertThrottleMinutes int  `json:"alert_throttle_minutes"`
+	DigestEnabled        bool `json:"digest_enabled"`
+	// Required when digest_enabled is true; ignored otherwise. For 'weekly'/'monthly', digest_day must
+	// also be set.
+	DigestCadence PutEmailNotifySettingsRequestDigestCadence `json:"digest_cadence"`
+	// 0-6 for weekly, 1-28 for monthly. Not required for daily cadence or when digest_enabled is false.
+	DigestDay int `json:"digest_day"`
+	// Hour (0-23) at which the digest fires.
+	DigestHour int `json:"digest_hour"`
+	// IANA timezone, e.g. "UTC".
+	Timezone string `json:"timezone"`
 }
 
-// GetAlertsEnabled returns the value of AlertsEnabled.
-func (s *PutEmailNotifySettingsRequest) GetAlertsEnabled() OptBool {
-	return s.AlertsEnabled
+// GetEnabled returns the value of Enabled.
+func (s *PutEmailNotifySettingsRequest) GetEnabled() bool {
+	return s.Enabled
 }
 
-// GetAlertFailureThreshold returns the value of AlertFailureThreshold.
-func (s *PutEmailNotifySettingsRequest) GetAlertFailureThreshold() OptInt {
-	return s.AlertFailureThreshold
+// GetRecipients returns the value of Recipients.
+func (s *PutEmailNotifySettingsRequest) GetRecipients() []string {
+	return s.Recipients
+}
+
+// GetAlertOnFailure returns the value of AlertOnFailure.
+func (s *PutEmailNotifySettingsRequest) GetAlertOnFailure() bool {
+	return s.AlertOnFailure
 }
 
 // GetAlertThrottleMinutes returns the value of AlertThrottleMinutes.
-func (s *PutEmailNotifySettingsRequest) GetAlertThrottleMinutes() OptInt {
+func (s *PutEmailNotifySettingsRequest) GetAlertThrottleMinutes() int {
 	return s.AlertThrottleMinutes
 }
 
-// GetAlertRecipients returns the value of AlertRecipients.
-func (s *PutEmailNotifySettingsRequest) GetAlertRecipients() []string {
-	return s.AlertRecipients
-}
-
 // GetDigestEnabled returns the value of DigestEnabled.
-func (s *PutEmailNotifySettingsRequest) GetDigestEnabled() OptBool {
+func (s *PutEmailNotifySettingsRequest) GetDigestEnabled() bool {
 	return s.DigestEnabled
 }
 
-// GetDigestHourUtc returns the value of DigestHourUtc.
-func (s *PutEmailNotifySettingsRequest) GetDigestHourUtc() OptInt {
-	return s.DigestHourUtc
+// GetDigestCadence returns the value of DigestCadence.
+func (s *PutEmailNotifySettingsRequest) GetDigestCadence() PutEmailNotifySettingsRequestDigestCadence {
+	return s.DigestCadence
 }
 
-// GetDigestRecipients returns the value of DigestRecipients.
-func (s *PutEmailNotifySettingsRequest) GetDigestRecipients() []string {
-	return s.DigestRecipients
+// GetDigestDay returns the value of DigestDay.
+func (s *PutEmailNotifySettingsRequest) GetDigestDay() int {
+	return s.DigestDay
 }
 
-// SetAlertsEnabled sets the value of AlertsEnabled.
-func (s *PutEmailNotifySettingsRequest) SetAlertsEnabled(val OptBool) {
-	s.AlertsEnabled = val
+// GetDigestHour returns the value of DigestHour.
+func (s *PutEmailNotifySettingsRequest) GetDigestHour() int {
+	return s.DigestHour
 }
 
-// SetAlertFailureThreshold sets the value of AlertFailureThreshold.
-func (s *PutEmailNotifySettingsRequest) SetAlertFailureThreshold(val OptInt) {
-	s.AlertFailureThreshold = val
+// GetTimezone returns the value of Timezone.
+func (s *PutEmailNotifySettingsRequest) GetTimezone() string {
+	return s.Timezone
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *PutEmailNotifySettingsRequest) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetRecipients sets the value of Recipients.
+func (s *PutEmailNotifySettingsRequest) SetRecipients(val []string) {
+	s.Recipients = val
+}
+
+// SetAlertOnFailure sets the value of AlertOnFailure.
+func (s *PutEmailNotifySettingsRequest) SetAlertOnFailure(val bool) {
+	s.AlertOnFailure = val
 }
 
 // SetAlertThrottleMinutes sets the value of AlertThrottleMinutes.
-func (s *PutEmailNotifySettingsRequest) SetAlertThrottleMinutes(val OptInt) {
+func (s *PutEmailNotifySettingsRequest) SetAlertThrottleMinutes(val int) {
 	s.AlertThrottleMinutes = val
 }
 
-// SetAlertRecipients sets the value of AlertRecipients.
-func (s *PutEmailNotifySettingsRequest) SetAlertRecipients(val []string) {
-	s.AlertRecipients = val
-}
-
 // SetDigestEnabled sets the value of DigestEnabled.
-func (s *PutEmailNotifySettingsRequest) SetDigestEnabled(val OptBool) {
+func (s *PutEmailNotifySettingsRequest) SetDigestEnabled(val bool) {
 	s.DigestEnabled = val
 }
 
-// SetDigestHourUtc sets the value of DigestHourUtc.
-func (s *PutEmailNotifySettingsRequest) SetDigestHourUtc(val OptInt) {
-	s.DigestHourUtc = val
+// SetDigestCadence sets the value of DigestCadence.
+func (s *PutEmailNotifySettingsRequest) SetDigestCadence(val PutEmailNotifySettingsRequestDigestCadence) {
+	s.DigestCadence = val
 }
 
-// SetDigestRecipients sets the value of DigestRecipients.
-func (s *PutEmailNotifySettingsRequest) SetDigestRecipients(val []string) {
-	s.DigestRecipients = val
+// SetDigestDay sets the value of DigestDay.
+func (s *PutEmailNotifySettingsRequest) SetDigestDay(val int) {
+	s.DigestDay = val
+}
+
+// SetDigestHour sets the value of DigestHour.
+func (s *PutEmailNotifySettingsRequest) SetDigestHour(val int) {
+	s.DigestHour = val
+}
+
+// SetTimezone sets the value of Timezone.
+func (s *PutEmailNotifySettingsRequest) SetTimezone(val string) {
+	s.Timezone = val
+}
+
+// Required when digest_enabled is true; ignored otherwise. For 'weekly'/'monthly', digest_day must
+// also be set.
+type PutEmailNotifySettingsRequestDigestCadence string
+
+const (
+	PutEmailNotifySettingsRequestDigestCadenceDaily   PutEmailNotifySettingsRequestDigestCadence = "daily"
+	PutEmailNotifySettingsRequestDigestCadenceWeekly  PutEmailNotifySettingsRequestDigestCadence = "weekly"
+	PutEmailNotifySettingsRequestDigestCadenceMonthly PutEmailNotifySettingsRequestDigestCadence = "monthly"
+)
+
+// AllValues returns all PutEmailNotifySettingsRequestDigestCadence values.
+func (PutEmailNotifySettingsRequestDigestCadence) AllValues() []PutEmailNotifySettingsRequestDigestCadence {
+	return []PutEmailNotifySettingsRequestDigestCadence{
+		PutEmailNotifySettingsRequestDigestCadenceDaily,
+		PutEmailNotifySettingsRequestDigestCadenceWeekly,
+		PutEmailNotifySettingsRequestDigestCadenceMonthly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s PutEmailNotifySettingsRequestDigestCadence) MarshalText() ([]byte, error) {
+	switch s {
+	case PutEmailNotifySettingsRequestDigestCadenceDaily:
+		return []byte(s), nil
+	case PutEmailNotifySettingsRequestDigestCadenceWeekly:
+		return []byte(s), nil
+	case PutEmailNotifySettingsRequestDigestCadenceMonthly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *PutEmailNotifySettingsRequestDigestCadence) UnmarshalText(data []byte) error {
+	switch PutEmailNotifySettingsRequestDigestCadence(data) {
+	case PutEmailNotifySettingsRequestDigestCadenceDaily:
+		*s = PutEmailNotifySettingsRequestDigestCadenceDaily
+		return nil
+	case PutEmailNotifySettingsRequestDigestCadenceWeekly:
+		*s = PutEmailNotifySettingsRequestDigestCadenceWeekly
+		return nil
+	case PutEmailNotifySettingsRequestDigestCadenceMonthly:
+		*s = PutEmailNotifySettingsRequestDigestCadenceMonthly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 type PutEmailNotifySettingsUnauthorized Error

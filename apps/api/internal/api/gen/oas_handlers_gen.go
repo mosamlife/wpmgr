@@ -13454,7 +13454,7 @@ func (s *Server) handleGetDbScanResultRequest(args [1]string, argsEscaped bool, 
 //
 // Returns the tenant-level email alert and digest notification settings.
 // Always returns 200 with sensible defaults when no settings row exists
-// yet (alerts_enabled=false, digest_enabled=false).
+// yet (enabled=false, digest_enabled=false).
 // Also returns `instance_mailer_configured` — when false, alerts and
 // digests cannot be delivered even if enabled.
 // Org-level route. Requires `site.email.manage` permission.
@@ -28002,8 +28002,12 @@ func (s *Server) handlePutEmailConnectionRequest(args [2]string, argsEscaped boo
 // handlePutEmailNotifySettingsRequest handles putEmailNotifySettings operation.
 //
 // Creates or updates the tenant-level email notification settings.
-// All fields are optional — omitted fields are unchanged (PATCH semantics
-// within a PUT envelope).
+// This is a full replace, not a partial patch — every field is required
+// and the request body fully overwrites the stored row.
+// `digest_cadence`/`digest_day`/`digest_hour`/`timezone` are only
+// enforced when `digest_enabled` is true; when the digest is disabled
+// they may be sent as zero values (a save that only touches the
+// per-failure-alerts section must not be blocked by digest fields).
 // Org-level route. Requires `site.email.manage` permission.
 //
 // PUT /api/v1/email/notify-settings
