@@ -501,6 +501,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	uptimeProbeGCWorker := metrics.NewUptimeProbeGCWorker(pool, logger)
 
 	updateWorker := update.NewWorker(updateRepo, sitesLookup, commander, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
+	// #131 follow-up — periodic reaper for update_tasks stuck in pending/running
+	// past staleTaskThreshold (a worker crash mid-task, or a failed enqueue that
+	// leaves a task pending). Without this, such a task permanently occupies its
+	// (tenant, site, target_type, target_slug) slot in the
+	// update_tasks_inflight_target_idx partial unique index (m88), and every
+	// future update attempt for that target 409s targets_in_flight forever.
+	// Always wired: it reuses updateWorker's repo/hub/audit/logger, needs no
+	// signing key (it only reads/writes update_tasks), and reaping is itself the
+	// backstop for MF-1 (the m88 migration's pre-dedup) going forward.
+	updateReaperWorker := update.NewReaperWorker(updateWorker)
 	// Updates feature (Track B): the refresh-inventory worker dispatches signed
 	// CP->agent commands to re-pull a site's inventory. It satisfies River's
 	// JobArgs interface so the per-tenant queue shard bounds its concurrency
@@ -1285,6 +1295,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		siteSweepWorker:        siteSweepWorker,
 		siteEventPruneWorker:   siteEventPruneWorker,
 		updateWorker:           updateWorker,
+		updateReaperWorker:     updateReaperWorker,
 		refreshWorker:          refreshWorker,
 		perTenantParallelism:   cfg.Update.PerTenantParallelism,
 		backupWorker:           backupWorker,
@@ -2284,7 +2295,10 @@ type riverDeps struct {
 	siteSweepWorker        *site.SweepWorker
 	siteEventPruneWorker   *site.EventPruneWorker
 	updateWorker           *update.Worker
-	refreshWorker          *update.RefreshInventoryWorker
+	// #131 follow-up — periodic reaper for update_tasks stuck in
+	// pending/running past the stale-task threshold (always wired).
+	updateReaperWorker *update.ReaperWorker
+	refreshWorker      *update.RefreshInventoryWorker
 	perTenantParallelism   int
 	backupWorker           *backup.BackupWorker
 	restoreWorker          *backup.RestoreWorker
@@ -2367,6 +2381,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, site.NewHealthCheckWorker(d.healthChecker))
 	river.AddWorker(workers, d.updateWorker)
+	if d.updateReaperWorker != nil {
+		river.AddWorker(workers, d.updateReaperWorker)
+	}
 	if d.refreshWorker != nil {
 		river.AddWorker(workers, d.refreshWorker)
 	}
@@ -2429,6 +2446,22 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.PeriodicInterval(time.Minute),
 			func() (river.JobArgs, *river.InsertOpts) { return site.EventPruneArgs{}, nil },
 			nil,
+		))
+	}
+
+	// #131 follow-up — periodic reaper for update_tasks stuck in pending/running
+	// past the stale-task threshold (45 min; see update.staleTaskThreshold).
+	// Always registered; cross-tenant, no signing key required. RunOnStart:
+	// true — unlike the perf watchdogs (which skip a fresh-boot false positive
+	// since nothing could be in flight yet), a task already stuck for 45+
+	// minutes should be reaped immediately on boot, not held for up to a full
+	// tick interval. 10-minute interval keeps the sweep cheap while unblocking
+	// a stuck (site, target) reasonably promptly.
+	if d.updateReaperWorker != nil {
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(10*time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return update.ReapStaleTasksArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}
 

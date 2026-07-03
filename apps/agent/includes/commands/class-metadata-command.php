@@ -133,7 +133,7 @@ final class MetadataCommand implements CommandInterface
             'is_atomic'    => defined('IS_ATOMIC') || defined('ATOMIC_SITE_ID'),
             'is_kinsta'    => defined('KINSTAMU_VERSION') || defined('KINSTA_CACHE_ZONE'),
             'is_flywheel'  => defined('FLYWHEEL_CONFIG_DIR') || defined('FLYWHEEL_PLUGIN_DIR'),
-            'is_runcloud'  => defined('RUNCLOUD') || is_dir('/var/lib/runcloud'),
+            'is_runcloud'  => defined('RUNCLOUD') || @is_dir('/var/lib/runcloud'),
             'is_cloudways' => defined('CLOUDWAYS') || isset($_SERVER['CW_HOSTNAME']),
         ];
     }

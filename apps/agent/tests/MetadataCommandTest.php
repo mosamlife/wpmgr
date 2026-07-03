@@ -347,4 +347,132 @@ final class MetadataCommandTest extends TestCase
 
         $this->assertNull($data['core_update']);
     }
+
+    // ---- open_basedir log-flood guard (GitHub issue #131) -----------------
+
+    /**
+     * Reproduces the reported log flood: on a locked-down managed host with
+     * `open_basedir` restricting the PHP process to the webroot,
+     * `is_dir('/var/lib/runcloud')` — an absolute, out-of-webroot probe — used
+     * to raise an unsilenced E_WARNING on every single agent request. Fixed
+     * by `@`-guarding that one call site (class-metadata-command.php).
+     *
+     * `open_basedir` can only ever be TIGHTENED at runtime — PHP refuses to
+     * widen it back — so genuinely reproducing the restriction cannot be done
+     * inline: it would permanently break every later filesystem-touching test
+     * in this (single, non-isolated) PHPUnit process. Instead this spawns a
+     * disposable `php -d open_basedir=...` child process whose entire
+     * lifetime is the probe: it loads only the two source files hostFlags()
+     * needs (no WordPress dependency — the method is pure PHP), invokes it
+     * under a custom error handler, and reports what it saw as JSON. The
+     * restriction, and its irreversibility, are fully contained to that
+     * throwaway process.
+     */
+    public function test_host_flags_runcloud_probe_raises_no_warning_under_open_basedir(): void
+    {
+        if (!function_exists('exec')) {
+            $this->markTestSkipped('exec() is unavailable in this PHP configuration.');
+        }
+
+        $includesDir = dirname(__DIR__) . '/includes';
+        $tmpDir      = sys_get_temp_dir();
+
+        $probeScript = (string) tempnam($tmpDir, 'wpmgr-hostflags-');
+        file_put_contents($probeScript, self::hostFlagsProbeSource());
+
+        try {
+            $cmd = escapeshellarg(PHP_BINARY)
+                . ' -d ' . escapeshellarg('open_basedir=' . $includesDir . PATH_SEPARATOR . $tmpDir)
+                . ' -f ' . escapeshellarg($probeScript)
+                . ' -- ' . escapeshellarg($includesDir);
+
+            exec($cmd . ' 2>&1', $outputLines, $exitCode); // phpcs:ignore WordPress.PHP.DiscouragedFunctions.exec -- test-only: spawns a disposable subprocess to safely reproduce a runtime-irreversible open_basedir restriction; all inputs are internally generated absolute paths, none are request-derived
+        } finally {
+            @unlink($probeScript); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
+        }
+
+        $rawOutput = implode("\n", $outputLines);
+        $this->assertSame(0, $exitCode, 'probe subprocess must exit cleanly: ' . $rawOutput);
+
+        $result = json_decode($rawOutput, true);
+        $this->assertIsArray($result, 'probe subprocess must emit parseable JSON: ' . $rawOutput);
+        $this->assertSame(
+            [],
+            $result['warnings'] ?? ['<missing warnings key>'],
+            'hostFlags() must not leak an unsuppressed warning from the RunCloud filesystem probe under open_basedir'
+        );
+        $this->assertTrue($result['is_runcloud_is_bool'] ?? false, 'is_runcloud must remain a bool');
+    }
+
+    /**
+     * Source for the isolated open_basedir probe subprocess spawned by
+     * test_host_flags_runcloud_probe_raises_no_warning_under_open_basedir().
+     *
+     * Deliberately a standalone script with no Composer/WordPress bootstrap:
+     * hostFlags() is pure PHP (defined()/is_dir()/$_SERVER only), so loading
+     * just the command interface + class under test is sufficient. Takes the
+     * includes/ directory as argv[1] so it never hard-codes an absolute path
+     * that could drift from this test file's own location.
+     */
+    private static function hostFlagsProbeSource(): string
+    {
+        return <<<'PHP'
+<?php
+declare(strict_types=1);
+
+$includesDir = $argv[1] ?? '';
+require_once $includesDir . '/commands/interface-command-interface.php';
+require_once $includesDir . '/commands/class-metadata-command.php';
+
+$warnings = [];
+// Respect the standard @-operator convention: PHP still invokes a custom
+// error handler for a silenced expression, but the handler's
+// error_reporting() reads a reduced mask that excludes the silenced level —
+// AND-ing it against $errno is how a well-behaved handler tells "silenced"
+// apart from "a warning that actually escaped" (checking `=== 0` is NOT
+// reliable: PHP 8's @ mask still includes the always-fatal levels).
+set_error_handler(static function (int $errno, string $errstr) use (&$warnings): bool {
+    if ((error_reporting() & $errno) === 0) {
+        return true;
+    }
+    $warnings[] = $errstr;
+
+    return true;
+});
+
+$ref = new ReflectionMethod(\WPMgr\Agent\Commands\MetadataCommand::class, 'hostFlags');
+$flags = $ref->invoke(new \WPMgr\Agent\Commands\MetadataCommand());
+
+restore_error_handler();
+
+echo json_encode([
+    'warnings'            => $warnings,
+    'is_runcloud_is_bool' => is_bool($flags['is_runcloud']),
+]);
+PHP;
+    }
+
+    /**
+     * Durable, environment-independent regression guard: no matter what a
+     * future edit does to hostFlags() (or adds beside it), an absolute
+     * out-of-webroot filesystem probe like `/var/lib/runcloud` must never be
+     * called unsilenced. A static source check catches this even in an
+     * environment (or a future PHP) where the open_basedir-restriction test
+     * above cannot be exercised.
+     */
+    public function test_metadata_command_source_has_no_unsuppressed_var_lib_probe(): void
+    {
+        $source = (string) file_get_contents(dirname(__DIR__) . '/includes/commands/class-metadata-command.php');
+
+        $this->assertMatchesRegularExpression(
+            "#@is_dir\\('/var/lib/runcloud'\\)#",
+            $source,
+            'the RunCloud probe must remain @-guarded'
+        );
+        $this->assertDoesNotMatchRegularExpression(
+            "#(?<!@)is_dir\\('/var/#",
+            $source,
+            'no unsuppressed is_dir() call against an absolute /var/... path may be reintroduced'
+        );
+    }
 }

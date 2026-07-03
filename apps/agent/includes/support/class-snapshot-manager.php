@@ -27,6 +27,82 @@ class SnapshotManager
     private const DIR = 'wpmgr-snapshots';
 
     /**
+     * M1 (GitHub issue #131 adversarial review) — per-slug retention cap
+     * enforced at capture time, BEFORE the new snapshot for this apply is
+     * written. Every plugin/theme update now ALWAYS captures a full
+     * directory copy (see UpdateCommand's class doc, D2) and — until this
+     * fix — nothing ever deleted them: an install that updates the same
+     * plugin repeatedly accumulated one full copy per update forever, until
+     * disk filled up and took the site down.
+     *
+     * This is a HARD bound, not a courtesy cleanup, and it is deliberately
+     * scoped to never endanger the control plane's post-update health-probe
+     * window (~1 minute, including the #127 retry):
+     *   - pruneForSlug() (called from capture(), below) only ever considers
+     *     snapshots that ALREADY exist for $type/$slug — the snapshot THIS
+     *     capture() call is about to create does not exist yet when
+     *     pruneForSlug() runs, so it can never be pruned by its own capture.
+     *   - Keeping the most recent (MAX_SNAPSHOTS_PER_SLUG - 1) EXISTING
+     *     snapshots before adding the new one means the PREVIOUS update's
+     *     snapshot — the one a same-session CP rollback would target —
+     *     survives at least until the update AFTER NEXT for that same slug.
+     *     In practice that is always far past any single health-probe
+     *     window; two update cycles back-to-back on the same slug inside
+     *     ~1 minute is not a scenario the control plane produces.
+     * See gcExpired()'s doc below for the separate, age-only cron backstop
+     * that catches what this count-based prune cannot (a slug later
+     * uninstalled/renamed, a core meta-only snapshot, or a crashed capture
+     * that never got as far as writing a readable meta.json).
+     */
+    private const MAX_SNAPSHOTS_PER_SLUG = 2;
+
+    /**
+     * Belt (issue #131 final-hardening review) — a floor UNDER
+     * MAX_SNAPSHOTS_PER_SLUG's count cap: pruneForSlug() must never delete a
+     * snapshot younger than this, REGARDLESS of its rank or the capture-time
+     * TTL below. The count cap alone assumes updates for one slug are
+     * reasonably spaced out; it breaks down if the SAME slug is captured
+     * multiple times in quick succession — for example two concurrent
+     * `update` requests for the same site racing on the same plugin (a CP
+     * dedup bug is being fixed separately to prevent that race at the
+     * source, but the agent should not depend on the CP never sending it).
+     * In that race, a later capture()'s own prune pass could otherwise
+     * delete the snapshot an EARLIER, still-in-flight request's post-update
+     * health probe or rollback still needs. 10 minutes is comfortably longer
+     * than the CP's ~1-minute post-update health-probe window (including the
+     * #127 retry) while still being short enough that this floor never
+     * meaningfully weakens the disk bound MAX_SNAPSHOTS_PER_SLUG exists to
+     * enforce under normal, non-racing update cadence.
+     */
+    private const MIN_KEEP_AGE_SECONDS = 600; // 10 minutes
+
+    /**
+     * Capture-time TTL: an existing snapshot for a slug is pruned once it is
+     * older than this, even if it is still within the count-based cap above.
+     * 24h is two orders of magnitude larger than the ~1 minute CP
+     * health-probe window, so this can never race a legitimate in-flight
+     * rollback — it only ever removes snapshots from update cycles that
+     * finished, one way or another, the better part of a day ago.
+     */
+    private const CAPTURE_PRUNE_TTL_SECONDS = 86400; // 24h
+
+    /** Recurring cron hook name for the GC backstop (gcExpired()). */
+    public const HOOK_GC = 'wpmgr_snapshot_gc';
+
+    /**
+     * GC cron backstop age threshold. Sweeps ANY snapshot dir — regardless
+     * of type/slug — independent of the per-slug count cap in
+     * pruneForSlug(), so orphans the count-based prune cannot reach (a
+     * renamed/uninstalled slug that will never trigger another capture() for
+     * itself, a core meta-only snapshot, or a crashed capture that left a
+     * directory with no meta.json at all) are still hard-bounded. 72h is
+     * comfortably longer than the 24h capture-time TTL above (so the two
+     * never fight over the same snapshot under normal update cadence) and
+     * vastly longer than the ~1 minute CP health-probe window.
+     */
+    private const GC_BACKSTOP_TTL_SECONDS = 259200; // 72h
+
+    /**
      * Capture a pre-update snapshot for an item.
      *
      * For plugin/theme the live source directory is copied into the snapshot
@@ -46,6 +122,12 @@ class SnapshotManager
         }
 
         $this->protectBaseDir($base);
+
+        // M1 (issue #131) — bound disk BEFORE writing a new snapshot. See
+        // MAX_SNAPSHOTS_PER_SLUG's doc above for why this can never remove
+        // the snapshot this very call is about to create, nor one still
+        // needed for the CP's post-update health-probe window.
+        $this->pruneForSlug($base, $type, $slug);
 
         $dest = $base . '/' . $snapshotId;
 
@@ -105,18 +187,101 @@ class SnapshotManager
 
         $asideName = $live . '.wpmgr-old-' . $snapshotId;
 
+        // F1 (issue #131 final-hardening review) — heal a RE-INTERRUPTED
+        // restore for this EXACT snapshot before attempting to stage
+        // anything aside. If $asideName already exists here, a PRIOR
+        // restore() call for this exact snapshot id was itself hard-killed
+        // mid-copy: $asideName holds whatever was live right before that
+        // first attempt started, and $live (if it exists at all right now)
+        // holds only a partial copy() of $payload from the interrupted
+        // attempt — content that is never worth preserving, since the whole
+        // point of THIS call is to overwrite $live with $payload anyway.
+        //
+        // Without this heal, the rename() immediately below would hit an
+        // existing, NON-EMPTY $asideName and fail outright (ENOTEMPTY),
+        // wedging recovery permanently: every subsequent restore attempt for
+        // this snapshot — including a manual RollbackCommand retry, or the
+        // out-of-band UpdateInFlight reconcile — would bail the exact same
+        // way forever, with the good pre-update snapshot payload sitting
+        // right there, unreachable.
+        //
+        // Recover deterministically by discarding the partial $live and
+        // putting the prior aside back in its place, so this call resumes
+        // from precisely the clean starting state a never-interrupted
+        // restore() would have seen — then falls straight through into the
+        // normal stage-aside / copy-back flow below, i.e. this is a full,
+        // fresh retry, not a partial patch-up. The only unavoidable gap is
+        // the brief moment between deleteDir($live) and the rename() call
+        // succeeding (the same delete-then-rename shape already used by the
+        // mid-copy failure path further down); a rename() failure there is
+        // reported rather than silently swallowed, rather than risk ending
+        // this call with NEITHER live nor aside present.
+        if (is_dir($asideName)) {
+            if (is_dir($live)) {
+                $this->deleteDir($live);
+            }
+            if (!@rename($asideName, $live)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem recovery swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+                return [
+                    'ok'  => false,
+                    'log' => 'A prior interrupted restore left ' . $asideName
+                        . ' stranded and it could not be recovered automatically — manual recovery required.',
+                ];
+            }
+        }
+
         // Move the current live dir aside (if present).
-        if (is_dir($live) && !@rename($live, $asideName)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
-            return ['ok' => false, 'log' => 'Could not stage live directory aside.'];
+        if (is_dir($live)) {
+            if (!@rename($live, $asideName)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+                return ['ok' => false, 'log' => 'Could not stage live directory aside.'];
+            }
+
+            // Fix 1 (issue #131 final-hardening review) — rename() PRESERVES
+            // the source's mtime; it does not reset it to "now". Without
+            // this, an aside carved from a plugin/theme directory whose
+            // CONTENTS happened to be untouched for longer than
+            // GC_BACKSTOP_TTL_SECONDS (72h) would be "born" already past the
+            // sweepStrandedAsides() age threshold, making it eligible for
+            // immediate GC sweep during the narrow window this very
+            // restore() call has it staged aside — i.e. while the copy-back
+            // below is in progress, or if it fails and the aside is the only
+            // remaining good copy. Stamping the mtime to the moment the
+            // aside was actually staged gives it the FULL 72h grace period,
+            // same as any other freshly created aside.
+            @touch($asideName); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_touch -- resets the aside's mtime to staging time so sweepStrandedAsides()'s age-based GC gets the full 72h grace; not a WP_Filesystem-eligible path (headless agent, no FTP context)
         }
 
         if (!$this->copyDir($payload, $live)) {
-            // Roll back the move so we don't leave the site without the dir.
-            if (is_dir($asideName) && !is_dir($live)) {
-                @rename($asideName, $live); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+            // S5 (issue #131 adversarial review) — copyDir() creates $live as
+            // its very first step (mkdir), so at this point $live almost
+            // always exists again as an empty or partially-populated
+            // directory even though the copy itself failed. The original
+            // `is_dir($asideName) && !is_dir($live)` guard therefore was
+            // false in the exact case it was meant to catch — a mid-copy
+            // failure — so the aside was never renamed back: the live dir
+            // was left half-written AND the good pre-restore original sat
+            // stranded forever at .wpmgr-old-<id>. Unconditionally clear
+            // whatever partial content is at $live (best effort) before
+            // restoring the set-aside original, rather than gating that
+            // restore on a check that copyDir()'s own behavior defeats.
+            if (is_dir($live)) {
+                $this->deleteDir($live);
             }
 
-            return ['ok' => false, 'log' => 'Restore copy failed; original retained.'];
+            if (is_dir($asideName)) {
+                $restored = @rename($asideName, $live); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem rollback swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+
+                return [
+                    'ok'  => false,
+                    'log' => $restored
+                        ? 'Restore copy failed; rolled back to the pre-restore original.'
+                        : 'Restore copy failed; pre-restore original retained at ' . $asideName . ' but could not be renamed back — manual recovery required.',
+                ];
+            }
+
+            // Nothing was staged aside (the live directory did not exist
+            // before this restore attempt began) — there is no pre-existing
+            // original to roll back to.
+            return ['ok' => false, 'log' => 'Restore copy failed; no pre-existing directory to roll back to.'];
         }
 
         // Success: drop the set-aside copy.
@@ -157,6 +322,33 @@ class SnapshotManager
     }
 
     /**
+     * Whether a snapshot id still resolves to a real, on-disk snapshot
+     * directory.
+     *
+     * F2 (issue #131 final-hardening review) — used by
+     * UpdateInFlight::healStaleIfPresent() to verify a stale marker's
+     * referenced snapshot is still present BEFORE attempting a restore from
+     * it. The snapshot may already have been pruned (M1's per-slug cap or
+     * the gcExpired() backstop) or consumed by an earlier successful
+     * RollbackCommand call for the same marker; calling restore() on a
+     * vanished snapshot id would just fail with 'Invalid snapshot id.' after
+     * the fact — checking first lets the caller log a clear, specific reason
+     * and clear the marker without a doomed restore attempt.
+     *
+     * @param string $snapshotId Snapshot identifier.
+     * @return bool
+     */
+    public function snapshotExists(string $snapshotId): bool
+    {
+        $base = $this->snapshotBaseDir();
+        if ($base === '') {
+            return false;
+        }
+
+        return $this->resolveSnapshotDir($base, $snapshotId) !== '';
+    }
+
+    /**
      * Remove a snapshot directory and its contents.
      *
      * @param string $snapshotId Snapshot identifier.
@@ -174,6 +366,298 @@ class SnapshotManager
         }
 
         return $this->deleteDir($dir);
+    }
+
+    // ---------------------------------------------------------------------
+    // M1 (issue #131) — bounded snapshot GC
+    // ---------------------------------------------------------------------
+
+    /**
+     * Enforce the per-slug retention cap + capture-time TTL for $type/$slug,
+     * BEFORE a new snapshot for it is written. See MAX_SNAPSHOTS_PER_SLUG's
+     * class-level doc for the full reasoning and the CP health-probe-window
+     * safety argument; in short: this only ever touches snapshots that
+     * ALREADY exist for this exact type/slug pair, never the one this
+     * capture() call is about to create.
+     *
+     * @param string $base Absolute snapshot base directory.
+     * @param string $type plugin|theme|core.
+     * @param string $slug Sanitized slug.
+     * @return void
+     */
+    private function pruneForSlug(string $base, string $type, string $slug): void
+    {
+        $entries = $this->listSnapshotsForSlug($base, $type, $slug);
+        if ($entries === []) {
+            return;
+        }
+
+        // Newest first, so the rank check below keeps the MOST RECENT
+        // (MAX_SNAPSHOTS_PER_SLUG - 1) existing entries.
+        usort($entries, static function (array $a, array $b): int {
+            return $b['created_at'] <=> $a['created_at'];
+        });
+
+        $now = time();
+        foreach ($entries as $rank => $entry) {
+            $age = $now - $entry['created_at'];
+
+            // Belt (issue #131 final-hardening review) — the min-keep-age
+            // floor overrides everything below it: a snapshot younger than
+            // MIN_KEEP_AGE_SECONDS is NEVER pruned here, regardless of rank
+            // or the capture-time TTL. See MIN_KEEP_AGE_SECONDS's class-level
+            // doc for the concurrent-same-slug-capture race this guards.
+            if ($age < self::MIN_KEEP_AGE_SECONDS) {
+                continue;
+            }
+
+            // Reserve one slot for the snapshot capture() is about to create.
+            $withinCountCap = $rank < (self::MAX_SNAPSHOTS_PER_SLUG - 1);
+            $withinTtl      = $age < self::CAPTURE_PRUNE_TTL_SECONDS;
+            if ($withinCountCap && $withinTtl) {
+                // Kept: both recent enough by rank AND young enough by age.
+                continue;
+            }
+            $this->deleteDir($base . '/' . $entry['id']);
+        }
+    }
+
+    /**
+     * Scan the snapshot base for entries whose recorded meta matches
+     * $type/$slug. The base directory only ever holds a small, bounded
+     * number of entries per slug (this pruning is exactly what keeps it
+     * bounded), so a full scandir()+meta-read pass is cheap.
+     *
+     * @param string $base Absolute snapshot base directory.
+     * @param string $type plugin|theme|core.
+     * @param string $slug Sanitized slug.
+     * @return list<array{id:string,created_at:float}>
+     */
+    private function listSnapshotsForSlug(string $base, string $type, string $slug): array
+    {
+        $items = @scandir($base);
+        if (!is_array($items)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+            if (preg_match('#^snap_[A-Za-z0-9_]+$#', $item) !== 1) {
+                continue;
+            }
+            $dir = $base . '/' . $item;
+            if (!is_dir($dir)) {
+                continue;
+            }
+            $meta = $this->readMeta($dir);
+            if ($meta === null) {
+                continue;
+            }
+            if (($meta['type'] ?? '') !== $type || ($meta['slug'] ?? '') !== $slug) {
+                continue;
+            }
+            $out[] = [
+                'id'         => $item,
+                'created_at' => isset($meta['created_at']) && is_numeric($meta['created_at']) ? (float) $meta['created_at'] : 0.0,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Read a snapshot's meta.json as an associative array, or null when
+     * missing/unreadable.
+     *
+     * @param string $dir Absolute snapshot directory.
+     * @return array<string,mixed>|null
+     */
+    private function readMeta(string $dir): ?array
+    {
+        $metaFile = $dir . '/meta.json';
+        if (!is_file($metaFile)) {
+            return null;
+        }
+        $raw = @file_get_contents($metaFile);
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+        $meta = json_decode($raw, true);
+
+        return is_array($meta) ? $meta : null;
+    }
+
+    /**
+     * GC cron backstop — sweep the WHOLE snapshot store for any directory
+     * older than GC_BACKSTOP_TTL_SECONDS, independent of the per-slug prune
+     * in pruneForSlug() above. This is the safety net for what count-based
+     * pruning structurally cannot reach: a snapshot whose slug was later
+     * uninstalled or renamed (so it will never again be the target of a
+     * capture() call that would prune it), a core meta-only snapshot from a
+     * repeatedly-requested `snapshot=true` core update, or a crashed capture
+     * that left a directory behind with no readable meta.json at all.
+     * ALSO sweeps stranded `.wpmgr-old-<snap_id>` asides left behind in the
+     * live plugins/themes tree (F4, issue #131 final-hardening review) — see
+     * sweepStrandedAsides()'s doc. Bound to the `wpmgr_snapshot_gc` recurring
+     * cron event — see scheduleGc() — AND invoked opportunistically from the
+     * start of the `update` command (C, same review) since WP-Cron is
+     * unreliable on `DISABLE_WP_CRON`/dormant sites.
+     *
+     * `new static()`, not `new self()` — late static binding lets a test
+     * double subclass override strandedAsideRoots() and still exercise this
+     * exact production code path via `SubclassName::gcExpired()`, the same
+     * way `SnapshotManager::gcExpired()` behaves identically to a plain
+     * `new self()` for real callers.
+     *
+     * @return void
+     */
+    public static function gcExpired(): void
+    {
+        $mgr  = new static();
+        $base = $mgr->snapshotBaseDir();
+        if ($base !== '') {
+            $items = @scandir($base);
+            if (is_array($items)) {
+                $now = time();
+                foreach ($items as $item) {
+                    if ($item === '.' || $item === '..') {
+                        continue;
+                    }
+                    if (preg_match('#^snap_[A-Za-z0-9_]+$#', $item) !== 1) {
+                        continue;
+                    }
+                    $dir = $base . '/' . $item;
+                    if (!is_dir($dir)) {
+                        continue;
+                    }
+                    $age = $now - $mgr->snapshotAge($dir);
+                    if ($age < self::GC_BACKSTOP_TTL_SECONDS) {
+                        continue;
+                    }
+                    $mgr->deleteDir($dir);
+                }
+            }
+        }
+
+        $mgr->sweepStrandedAsides();
+    }
+
+    /**
+     * F4 (issue #131 final-hardening review) — sweep stranded
+     * `<slug>.wpmgr-old-<snap_id>` sibling directories left behind in the
+     * live plugins/themes tree by a restore() call whose FINAL
+     * rename-back-on-failure step itself failed (the "pre-restore original
+     * retained ... but could not be renamed back — manual recovery
+     * required" path in restore()'s doc — a disk-full/permissions edge
+     * case, not the common case). Left alone, a stranded aside is a full
+     * duplicate copy of a plugin/theme directory that wastes disk
+     * indefinitely and can surface in wp-admin's plugin/theme list as a
+     * bogus "ghost" entry on some configurations (WordPress enumerates
+     * every directory under the plugins root looking for a header). Swept
+     * on the SAME backstop TTL as the snapshot store itself, so both
+     * classes of #131 orphan are reclaimed on one cadence.
+     *
+     * @return void
+     */
+    private function sweepStrandedAsides(): void
+    {
+        $now = time();
+        foreach ($this->strandedAsideRoots() as $root) {
+            if ($root === '' || !is_dir($root)) {
+                continue;
+            }
+            $items = @scandir($root);
+            if (!is_array($items)) {
+                continue;
+            }
+            foreach ($items as $item) {
+                if ($item === '.' || $item === '..') {
+                    continue;
+                }
+                if (preg_match('#\.wpmgr-old-snap_[A-Za-z0-9_]+$#', $item) !== 1) {
+                    continue;
+                }
+                $path = $root . '/' . $item;
+                if (!is_dir($path) || is_link($path)) {
+                    continue;
+                }
+                $mtime = @filemtime($path);
+                $age   = $mtime !== false ? ($now - $mtime) : PHP_INT_MAX;
+                if ($age < self::GC_BACKSTOP_TTL_SECONDS) {
+                    continue;
+                }
+                $this->deleteDir($path);
+            }
+        }
+    }
+
+    /**
+     * Absolute roots that could hold a stranded `.wpmgr-old-<id>` aside:
+     * WP_PLUGIN_DIR (every plugin slug resolves to exactly one folder level
+     * under it — see liveDir()) and the active theme root. Both are the
+     * exact parents liveDir() resolves a plugin/theme's live directory
+     * under, i.e. exactly where restore() would have left an aside sibling.
+     * Protected (not private) so a test double can override it with a
+     * fully controlled path — mirrors liveDir()'s own testability seam —
+     * without depending on the real, process-global WP_PLUGIN_DIR/
+     * WP_CONTENT_DIR constants.
+     *
+     * @return list<string>
+     */
+    protected function strandedAsideRoots(): array
+    {
+        $roots = [];
+        if (defined('WP_PLUGIN_DIR')) {
+            $roots[] = rtrim((string) WP_PLUGIN_DIR, '/\\');
+        }
+        $contentDir = defined('WP_CONTENT_DIR') ? rtrim((string) WP_CONTENT_DIR, '/\\') : '';
+        if ($contentDir !== '') {
+            $roots[] = $this->themeRoot($contentDir);
+        }
+
+        return $roots;
+    }
+
+    /**
+     * Age reference for a snapshot directory: its recorded meta.json
+     * `created_at` when readable, else the directory's own filesystem mtime
+     * (covers a crashed capture that never got as far as writeMeta()).
+     *
+     * @param string $dir Absolute snapshot directory.
+     * @return int Unix timestamp.
+     */
+    private function snapshotAge(string $dir): int
+    {
+        $meta = $this->readMeta($dir);
+        if ($meta !== null && isset($meta['created_at']) && is_numeric($meta['created_at'])) {
+            return (int) $meta['created_at'];
+        }
+
+        $mtime = @filemtime($dir);
+
+        return $mtime !== false ? (int) $mtime : time();
+    }
+
+    /**
+     * Schedule the recurring GC backstop (gcExpired()). Safe to call on
+     * every activation / reschedule pass — a no-op when already scheduled.
+     * Mirrors EmailLogger::schedule_prune()'s idempotent-schedule shape.
+     *
+     * @param int $now Current time.
+     * @return void
+     */
+    public static function scheduleGc(int $now): void
+    {
+        if (!function_exists('wp_next_scheduled') || !function_exists('wp_schedule_event')) {
+            return;
+        }
+        if (wp_next_scheduled(self::HOOK_GC) !== false) {
+            return;
+        }
+        wp_schedule_event($now + 3600, 'daily', self::HOOK_GC);
     }
 
     // ---------------------------------------------------------------------
@@ -382,7 +866,17 @@ class SnapshotManager
             'type'         => $type,
             'slug'         => $slug,
             'from_version' => $fromVersion,
-            'created_at'   => time(),
+            // M1 (issue #131 adversarial review) — microtime(true), not
+            // time(): pruneForSlug() orders same-slug snapshots by this
+            // field to decide which to keep, and two captures for the same
+            // slug landing within the same wall-clock SECOND (plausible
+            // under rapid successive updates, or simply a fast disk) would
+            // otherwise tie under time()'s 1-second resolution, making the
+            // "keep the most recent" ordering fall back to arbitrary
+            // scandir() order — exactly the kind of ambiguity that could
+            // prune the wrong snapshot. Microsecond resolution makes a tie
+            // between two real capture() calls practically impossible.
+            'created_at'   => microtime(true),
         ];
         @file_put_contents($dir . '/meta.json', (string) json_encode($meta));
     }

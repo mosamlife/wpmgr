@@ -442,6 +442,81 @@ func (w *Worker) recordAudit(ctx context.Context, task Task) {
 	})
 }
 
+// ----------------------------------------------------------------------------
+// ReapStaleTasksArgs — periodic stale-task reaper sweep (#131 follow-up)
+// ----------------------------------------------------------------------------
+
+// ReapStaleTasksArgs is the River job payload for the periodic stale-task
+// reaper sweep. No fields — it enumerates stale rows itself.
+type ReapStaleTasksArgs struct{}
+
+// Kind implements river.JobArgs.
+func (ReapStaleTasksArgs) Kind() string { return "update_task_reaper" }
+
+// staleTaskThreshold is how long a task may sit in pending/running before the
+// reaper terminalizes it. Comfortably longer than any real update, including
+// the post-update health-probe retry window (worst case ~21s, see
+// probeRetryDelays) and the per-tenant parallelism snooze backoff: a worker
+// crash between MarkTaskRunning and finish(), or an EnqueueTask failure that
+// leaves a task pending (Service.CreateRun's best-effort enqueue after
+// CreateRunWithTasks), would otherwise permanently occupy the
+// update_tasks_inflight_target_idx slot for that (tenant, site, target) —
+// every future update attempt for it 409s targets_in_flight forever (m88).
+const staleTaskThreshold = 45 * time.Minute
+
+// staleTaskReapLimit bounds how many stale tasks one sweep reaps, so an
+// unbounded backlog cannot make a single periodic tick unbounded; any
+// remainder is caught by the next sweep (see the periodic job interval, wired
+// in cmd/wpmgr/main.go).
+const staleTaskReapLimit = 500
+
+// ReaperWorker is the periodic River job that sweeps update_tasks for rows
+// stuck in pending/running past staleTaskThreshold and terminalizes them as
+// failed, freeing the (tenant, site, target_type, target_slug) slot the
+// update_tasks_inflight_target_idx partial unique index (m88) would otherwise
+// hold forever. It wraps the same Worker used to execute update tasks and
+// reuses Worker.finish, so a reaped task gets the exact same treatment as a
+// task the agent itself finished (publish to the SSE hub + audit record + the
+// run-completion check that would otherwise never re-run for an orphaned run
+// whose last outstanding task never called finish()).
+type ReaperWorker struct {
+	river.WorkerDefaults[ReapStaleTasksArgs]
+	w *Worker
+}
+
+// NewReaperWorker builds the stale-task reaper, backed by the same Worker
+// (and therefore the same repo/hub/audit/logger) used to execute update
+// tasks.
+func NewReaperWorker(w *Worker) *ReaperWorker {
+	return &ReaperWorker{w: w}
+}
+
+// Work runs one reaper sweep: list stale tasks and terminalize each one.
+// Errors are logged and swallowed — the reaper must not fail the periodic
+// River job (that would just retry the exact same stale rows sooner).
+func (rw *ReaperWorker) Work(ctx context.Context, _ *river.Job[ReapStaleTasksArgs]) error {
+	stale, err := rw.w.repo.ListStaleUpdateTasks(ctx, staleTaskThreshold, staleTaskReapLimit)
+	if err != nil {
+		rw.w.logger.Warn("update task reaper: failed to list stale tasks", slog.Any("error", err))
+		return nil
+	}
+	for _, task := range stale {
+		if ferr := rw.w.finish(ctx, task, TaskFailed, task.FromVersion, task.ToVersion,
+			"stale: task exceeded max runtime", "reaped by the periodic stale-task sweep after no progress within the threshold"); ferr != nil {
+			rw.w.logger.Warn("update task reaper: failed to terminalize stale task",
+				slog.String("task_id", task.ID.String()), slog.Any("error", ferr))
+			continue
+		}
+		rw.w.logger.Warn("update task reaper: terminalized stale task",
+			slog.String("task_id", task.ID.String()),
+			slog.String("run_id", task.RunID.String()),
+			slog.String("site_id", task.SiteID.String()),
+			slog.String("target", task.TargetType+"/"+task.TargetSlug),
+			slog.String("prior_status", task.Status))
+	}
+	return nil
+}
+
 func firstResult(rs []agentcmd.ItemResult) agentcmd.ItemResult {
 	if len(rs) == 0 {
 		return agentcmd.ItemResult{Status: agentcmd.ItemFailed, Log: "agent returned no item result"}

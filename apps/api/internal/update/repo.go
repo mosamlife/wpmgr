@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,38 @@ type Repo interface {
 	SetRunStatus(ctx context.Context, tenantID, runID uuid.UUID, status string) (Run, error)
 	CountUnfinishedTasks(ctx context.Context, tenantID, runID uuid.UUID) (int64, error)
 	CountRunningTasksForTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// ListInFlightTargets returns the set of (site_id, target_type, target_slug)
+	// keys that currently have a pending or running task for the tenant, across
+	// ANY run, restricted to siteIDs. Used by Service.planTasks to skip creating
+	// a duplicate task for a target that already has an update in flight from
+	// another run (#131 hardening): without this, a scheduled auto-update, an
+	// operator bulk update, and a portal trigger can all create tasks for the
+	// SAME (site, plugin) within the same window, and several run concurrently —
+	// racing the agent's own rollback-snapshot pruning and running concurrent
+	// WordPress Plugin_Upgrader instances against the same plugin directory. The
+	// authoritative guard is the update_tasks_inflight_target_idx partial unique
+	// index (see CreateUpdateTask's ON CONFLICT); this pre-check just avoids
+	// planning doomed tasks and lets CreateRun report a clean "already in
+	// progress" error instead of a partially-empty run.
+	ListInFlightTargets(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID) (map[InFlightKey]struct{}, error)
+	// ListStaleUpdateTasks returns tasks stuck in pending/running for longer
+	// than threshold, across ALL tenants, capped at limit rows. Used by the
+	// periodic reaper (see ReaperWorker) to terminalize a task a worker crash
+	// or a failed enqueue left permanently occupying its (tenant, site,
+	// target_type, target_slug) slot in the update_tasks_inflight_target_idx
+	// partial unique index (m88) — without this, every future update attempt
+	// for that target would 409 targets_in_flight forever.
+	ListStaleUpdateTasks(ctx context.Context, threshold time.Duration, limit int32) ([]Task, error)
+}
+
+// InFlightKey identifies one (site, target) pair that currently has a
+// pending/running update task, keyed the same way tasks are planned
+// ("site + type + slug"). Used by ListInFlightTargets/planTasks for the
+// cross-run dedup guard (#131 hardening).
+type InFlightKey struct {
+	SiteID     uuid.UUID
+	TargetType string
+	TargetSlug string
 }
 
 // NewTask is the slim per-(site,item) row to insert when creating a run.
@@ -101,9 +134,25 @@ func (r *pgRepo) CreateRunWithTasks(ctx context.Context, in CreateRunInput, task
 				FromVersion:    t.FromVersion,
 			})
 			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					// The update_tasks_inflight_target_idx partial unique index
+					// rejected this insert as a no-op (ON CONFLICT ... DO NOTHING):
+					// a sibling run's task for the same (site, target) became
+					// in-flight in the narrow window between the service's
+					// ListInFlightTargets pre-check and this insert (#131
+					// hardening). Skip it — a tight race is not a hard error.
+					continue
+				}
 				return domain.Internal("update_task_create_failed", "failed to create update task").WithCause(err)
 			}
 			outTasks = append(outTasks, toTask(taskRow))
+		}
+		if len(outTasks) == 0 {
+			// Every planned task lost the in-flight race to a concurrent run
+			// between the pre-check and this transaction: do not commit a run
+			// with zero tasks (it would otherwise sit "pending" forever, since
+			// nothing ever marks it completed).
+			return domain.Conflict("targets_in_flight", "the selected updates already have an update in progress in another run")
 		}
 		return nil
 	})
@@ -304,6 +353,55 @@ func (r *pgRepo) CountRunningTasksForTenant(ctx context.Context, tenantID uuid.U
 		return nil
 	})
 	return n, err
+}
+
+func (r *pgRepo) ListInFlightTargets(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID) (map[InFlightKey]struct{}, error) {
+	out := map[InFlightKey]struct{}{}
+	if len(siteIDs) == 0 {
+		return out, nil
+	}
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListInFlightUpdateTargets(ctx, sqlc.ListInFlightUpdateTargetsParams{
+			TenantID: tenantID,
+			SiteIds:  siteIDs,
+		})
+		if err != nil {
+			return domain.Internal("update_inflight_list_failed", "failed to list in-flight update targets").WithCause(err)
+		}
+		for _, row := range rows {
+			out[InFlightKey{SiteID: row.SiteID, TargetType: row.TargetType, TargetSlug: row.TargetSlug}] = struct{}{}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// ListStaleUpdateTasks runs cross-tenant (InAgentTx) since a stuck task can
+// belong to any tenant and the reaper sweep must find all of them in one pass.
+func (r *pgRepo) ListStaleUpdateTasks(ctx context.Context, threshold time.Duration, limit int32) ([]Task, error) {
+	var out []Task
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListStaleUpdateTasks(ctx, sqlc.ListStaleUpdateTasksParams{
+			Threshold: durationToInterval(threshold),
+			RowLimit:  limit,
+		})
+		if err != nil {
+			return domain.Internal("update_task_stale_list_failed", "failed to list stale update tasks").WithCause(err)
+		}
+		out = make([]Task, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, toTask(row))
+		}
+		return nil
+	})
+	return out, err
+}
+
+// durationToInterval converts a time.Duration to a pgtype.Interval suitable
+// for an @threshold::interval parameter (pgtype.Interval stores microseconds
+// in the Microseconds field).
+func durationToInterval(d time.Duration) pgtype.Interval {
+	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 }
 
 func toRun(r sqlc.UpdateRun) Run {

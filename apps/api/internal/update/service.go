@@ -107,8 +107,28 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (Run, []Task
 		return Run{}, nil, domain.Validation("no_target_sites", "no enrolled sites matched the selection")
 	}
 
-	tasks := s.planTasks(sites, in.Items)
+	// Cross-run dedup pre-check (#131 hardening): find every (site, target)
+	// among the resolved sites that already has a pending/running task from
+	// ANY OTHER run, so planTasks can skip creating a doomed duplicate instead
+	// of racing the agent's rollback-snapshot pruning / concurrent
+	// Plugin_Upgrader runs against the same plugin directory. The
+	// update_tasks_inflight_target_idx partial unique index (enforced inside
+	// CreateRunWithTasks) is the authoritative guard for the remaining race
+	// window between this check and the insert.
+	siteIDs := make([]uuid.UUID, 0, len(sites))
+	for _, si := range sites {
+		siteIDs = append(siteIDs, si.ID)
+	}
+	inFlight, err := s.repo.ListInFlightTargets(ctx, in.TenantID, siteIDs)
+	if err != nil {
+		return Run{}, nil, err
+	}
+
+	tasks, skippedInFlight := s.planTasks(sites, in.Items, inFlight)
 	if len(tasks) == 0 {
+		if skippedInFlight > 0 {
+			return Run{}, nil, domain.Conflict("targets_in_flight", "the selected updates already have an update in progress in another run")
+		}
 		return Run{}, nil, domain.Validation("no_tasks", "the selection produced no update tasks")
 	}
 
@@ -162,8 +182,18 @@ func (s *Service) resolveSites(ctx context.Context, in CreateRunInput) ([]SiteIn
 //
 // from_version is always seeded from the SITE'S OWN known component version
 // (never another site's), whichever branch created the task.
-func (s *Service) planTasks(sites []SiteInfo, items []Item) []NewTask {
+//
+// inFlight is the tenant's current cross-run in-flight-task set (#131
+// hardening — see Repo.ListInFlightTargets): a (site, target) pair already
+// present there has a pending/running task in ANOTHER run, so planTasks skips
+// it here rather than creating a duplicate task that would race the agent's
+// rollback-snapshot pruning or run a concurrent Plugin_Upgrader against the
+// same plugin directory. It returns the produced tasks plus how many
+// candidates were skipped for this reason, so CreateRun can distinguish
+// "nothing pending" from "everything is already in progress".
+func (s *Service) planTasks(sites []SiteInfo, items []Item, inFlight map[InFlightKey]struct{}) ([]NewTask, int) {
 	tasks := make([]NewTask, 0, len(sites)*len(items))
+	skippedInFlight := 0
 	for _, site := range sites {
 		installed := indexVersions(site.Components)
 		pending := indexPending(site)
@@ -193,6 +223,11 @@ func (s *Service) planTasks(sites []SiteInfo, items []Item) []NewTask {
 				}
 			}
 
+			if _, blocked := inFlight[InFlightKey{SiteID: site.ID, TargetType: item.Type, TargetSlug: slug}]; blocked {
+				skippedInFlight++
+				continue
+			}
+
 			desired := item.Version
 			if desired == "" {
 				desired = "latest"
@@ -206,7 +241,7 @@ func (s *Service) planTasks(sites []SiteInfo, items []Item) []NewTask {
 			})
 		}
 	}
-	return tasks
+	return tasks, skippedInFlight
 }
 
 // indexPending returns the site's own pending-update set keyed by "type/slug"

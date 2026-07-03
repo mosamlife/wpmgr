@@ -116,7 +116,9 @@ use WPMgr\Agent\Support\ErrorMonitor;
 use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\MuPluginInstaller;
+use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateChecker;
+use WPMgr\Agent\Support\UpdateInFlight;
 use WPMgr\Agent\AutoOptimizeUpload;
 use WPMgr\Agent\Webhooks\MediaModalInjector;
 
@@ -565,6 +567,24 @@ final class Plugin
         // on cleanup; the handler sweeps anything older than 24 h.
         add_action('wpmgr_restore_oldfiles_gc', [FilesRestorer::class, 'gcOldFiles']);
 
+        // M1 (issue #131 adversarial review) — recurring GC backstop for the
+        // wpmgr-snapshots/ store UpdateCommand's pre-update snapshots live
+        // in. Bounds disk even for orphans the per-slug prune in
+        // SnapshotManager::capture() cannot reach (a since-uninstalled/
+        // renamed slug, a core meta-only snapshot, a crashed capture).
+        // Scheduled daily by SnapshotManager::scheduleGc() (activate() below
+        // + maybeRescheduleCron()'s self-heal).
+        add_action(SnapshotManager::HOOK_GC, [SnapshotManager::class, 'gcExpired']);
+
+        // S4 (issue #131 adversarial review) — recurring reconcile sweep for
+        // update-in-flight markers left stale by a PHP-FPM
+        // request_terminate_timeout hard-kill (the one case
+        // UpdateGuard's register_shutdown_function() backstop cannot catch).
+        // Scheduled hourly by UpdateInFlight::scheduleGc() (activate() below
+        // + maybeRescheduleCron()'s self-heal); see UpdateInFlight's class
+        // doc for the full design.
+        add_action(UpdateInFlight::HOOK_GC, [UpdateInFlight::class, 'gcSweep']);
+
         // Media Optimizer — WP attachment-deletion cleanup. When an attachment
         // is deleted (wp-admin, programmatic, WP-CLI, or REST), WordPress purges
         // ONLY the files it tracks in _wp_attachment_metadata; WPMgr's own
@@ -861,6 +881,15 @@ final class Plugin
         // Phase 4b — suppression-cache pull: 15-minute recurring event.
         SuppressionCache::schedule_pull($now);
 
+        // M1 (issue #131 adversarial review) — daily snapshot-store GC
+        // backstop (bounded disk for wpmgr-snapshots/).
+        SnapshotManager::scheduleGc($now);
+
+        // S4 (issue #131 adversarial review) — hourly update-in-flight
+        // reconcile sweep (recovers a PHP-FPM hard-killed apply that never
+        // reached UpdateGuard's own shutdown-function backstop).
+        UpdateInFlight::scheduleGc($now);
+
         // v0.9.13 — push diagnostics within ~30s of activation rather than
         // waiting out the jittered daily cron's 0..4h first-fire offset
         // (Scheduler::diagnosticsJitter). The single-event below fires the
@@ -986,6 +1015,10 @@ final class Plugin
             wp_clear_scheduled_hook(EmailLogger::HOOK_PRUNE);
             wp_clear_scheduled_hook(EmailLogReporter::HOOK_PUSH);
             wp_clear_scheduled_hook(SuppressionCache::HOOK_PULL);
+            // M1 / S4 (issue #131 adversarial review) — snapshot-store GC
+            // backstop + update-in-flight reconcile sweep.
+            wp_clear_scheduled_hook(SnapshotManager::HOOK_GC);
+            wp_clear_scheduled_hook(UpdateInFlight::HOOK_GC);
         }
 
         // Phase 3 — page-cache teardown. Cleanly reverse every server-side
@@ -1279,6 +1312,14 @@ final class Plugin
 
         // Phase 4b — suppression-cache pull — re-arm when missing.
         SuppressionCache::schedule_pull($now);
+
+        // M1 (issue #131 adversarial review) — snapshot-store GC backstop —
+        // re-arm when missing.
+        SnapshotManager::scheduleGc($now);
+
+        // S4 (issue #131 adversarial review) — update-in-flight reconcile
+        // sweep — re-arm when missing.
+        UpdateInFlight::scheduleGc($now);
     }
 
     /**

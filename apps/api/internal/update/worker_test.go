@@ -70,6 +70,14 @@ func (f *probeFakeRepo) CountRunningTasksForTenant(context.Context, uuid.UUID) (
 	panic("not implemented")
 }
 
+func (f *probeFakeRepo) ListInFlightTargets(context.Context, uuid.UUID, []uuid.UUID) (map[InFlightKey]struct{}, error) {
+	panic("not implemented")
+}
+
+func (f *probeFakeRepo) ListStaleUpdateTasks(context.Context, time.Duration, int32) ([]Task, error) {
+	panic("not implemented")
+}
+
 // fakeCommander records Rollback calls and never actually contacts an agent.
 type fakeCommander struct {
 	rollbackCalled bool

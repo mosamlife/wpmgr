@@ -193,6 +193,13 @@ type Querier interface {
 	// tenant_id is supplied explicitly for defense-in-depth; RLS additionally
 	// enforces it matches the current app.tenant_id setting.
 	CreateUpdateRun(ctx context.Context, arg CreateUpdateRunParams) (UpdateRun, error)
+	// ON CONFLICT targets the update_tasks_inflight_target_idx partial unique
+	// index (tenant_id, site_id, target_type, target_slug) WHERE status IN
+	// ('pending','running') — the authoritative cross-run dedup guard (#131
+	// hardening). If the same (site, target) already has an in-flight task from
+	// ANY OTHER run, the insert is a no-op and this returns zero rows (pgx
+	// surfaces that as ErrNoRows); the repo treats that as "already in flight",
+	// not an error, and skips creating the duplicate task.
 	CreateUpdateTask(ctx context.Context, arg CreateUpdateTaskParams) (UpdateTask, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	// DEPRECATED (ADR-050): refcount is observability-only post-mark-and-sweep and
@@ -966,6 +973,14 @@ type Querier interface {
 	// min(markStart, inflightFloor) as the deletion horizon. Returns NULL when no
 	// in-flight snapshot exists (the caller then uses markStart alone).
 	ListInFlightSnapshotFloor(ctx context.Context, tenantID uuid.UUID) (time.Time, error)
+	// Returns the (site_id, target_type, target_slug) of every task currently
+	// pending or running for the tenant, restricted to the given site_ids, across
+	// ANY run. Used by Service.planTasks to skip creating a duplicate task for a
+	// target that already has an update in flight from another run (#131
+	// hardening — see the update_tasks_inflight_target_idx partial unique index,
+	// which is the authoritative guard; this query is the service-level
+	// pre-check that avoids planning doomed tasks).
+	ListInFlightUpdateTargets(ctx context.Context, arg ListInFlightUpdateTargetsParams) ([]ListInFlightUpdateTargetsRow, error)
 	// Pending + accepted + expired + revoked client invitations for a client,
 	// newest first. Mirrors ListInvitationsForSite. tenant_id filter is redundant
 	// with RLS but adds an explicit index hint for performance.
@@ -1053,6 +1068,19 @@ type Querier interface {
 	// deleting the row. Cross-tenant read path (InAgentTx / app.agent GUC).
 	// Capped at 500 rows per sweep to keep the pass short and idempotent.
 	ListStaleFileTransfers(ctx context.Context, cutoff time.Time) ([]ListStaleFileTransfersRow, error)
+	// Returns update_tasks stuck in pending/running for longer than @threshold,
+	// across ALL tenants. Used by the periodic stale-task reaper (see
+	// update.ReaperWorker) to un-stick a target that would otherwise permanently
+	// occupy the update_tasks_inflight_target_idx partial unique index slot (m88)
+	// forever — e.g. a worker crash between MarkUpdateTaskRunning and
+	// FinishUpdateTask, or a failed EnqueueTask that leaves a task pending
+	// (service.go's best-effort enqueue after CreateRunWithTasks). updated_at is
+	// the staleness watermark: it is set at row creation and again by
+	// MarkUpdateTaskRunning/FinishUpdateTask, so it reflects the last real
+	// progress on the row. Capped at @row_limit per sweep so one periodic tick
+	// cannot be unbounded; any remainder is caught by the next sweep. Runs under
+	// app.agent (cross-tenant).
+	ListStaleUpdateTasks(ctx context.Context, arg ListStaleUpdateTasksParams) ([]UpdateTask, error)
 	// Watchdog feeder: a running snapshot whose latest progress is older than the
 	// stall threshold (or whose runner never reported any progress despite being
 	// running for longer than the threshold). The new index
