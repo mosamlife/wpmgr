@@ -25,6 +25,7 @@ namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Support\Maintenance;
 use WPMgr\Agent\Support\SnapshotManager;
+use WPMgr\Agent\Support\UpdateInFlight;
 use WPMgr\Agent\Support\UpdateRunner;
 
 /**
@@ -114,6 +115,17 @@ final class RollbackCommand implements CommandInterface
                     'log'              => $restore['log'],
                 ];
             }
+
+            // S4 (issue #131 adversarial review) — defensive cleanup: the CP
+            // may call RollbackCommand directly against a snapshot whose
+            // original `update` request was hard-killed severely enough that
+            // it never reached its own cleanup (so an UpdateInFlight marker
+            // for this type/slug could still be sitting around). This
+            // restore already handled recovery, so clear it now rather than
+            // leaving a stale marker for the reconcile sweep to needlessly
+            // re-restore later. Unconditionally safe — a no-op when no
+            // marker exists for this type/slug.
+            UpdateInFlight::clear($type, $slug);
 
             // Determine the version after restore; prefer the recorded prior version.
             $restoredVersion = $this->runner->currentVersion($type, $slug);

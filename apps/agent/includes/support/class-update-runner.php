@@ -103,9 +103,12 @@ class UpdateRunner
                 if (isset($all[$slug])) {
                     return true;
                 }
-                // Allow a folder-only slug to match its "folder/..." basename.
+                // Allow a folder-only slug — or a full "folder/main-file.php"
+                // basename whose main file was since renamed (S6, issue
+                // #131) — to match by FOLDER. See pluginFolder()'s doc.
+                $folder = self::pluginFolder($slug);
                 foreach (array_keys($all) as $file) {
-                    if (is_string($file) && str_starts_with($file, $slug . '/')) {
+                    if (is_string($file) && str_starts_with($file, $folder . '/')) {
                         return true;
                     }
                 }
@@ -175,6 +178,194 @@ class UpdateRunner
         }
 
         return $this->applyViaUpgrader($type, $slug, $version);
+    }
+
+    /**
+     * Verify that a just-applied plugin/theme update produced a complete,
+     * loadable artifact rather than a half-written directory left by an
+     * aborted copy (GitHub issue #131).
+     *
+     * A version-header bump alone does not prove an apply finished: WordPress
+     * core's install_package()/copy_dir() is a non-atomic recursive copy that
+     * clears the destination directory FIRST, then copies files in; if the
+     * PHP process is killed mid-copy (max_execution_time, PHP-FPM
+     * request_terminate_timeout) the main plugin/theme file — which core
+     * copies early — can already be in place and report a new version while
+     * the rest of the tree (e.g. a `vendor/` autoloader) is still missing.
+     *
+     * Deliberately MINIMAL: this reuses WordPress's own definition of "valid"
+     * rather than inventing content hashing, file-count comparisons, or any
+     * other heuristic that could false-fail a legitimately unusual (but
+     * complete) plugin/theme layout.
+     *   - plugin: validate_plugin() — the same check core itself runs before
+     *     activating a plugin. It resolves the header via get_plugins() and
+     *     confirms the main file exists on disk; a WP_Error return means the
+     *     header could not be re-read (the half-write symptom).
+     *   - theme: the style.css `Name` header must still be present and
+     *     non-empty after the apply — the same signal WordPress treats as
+     *     "this is not a valid theme".
+     *   - core: always true. Core updates have no directory-level rollback
+     *     here by design (see UpdateCommand's class doc, D3) — recovery for
+     *     core relies on UpdateCommand::execute()'s resource guard (B1) plus
+     *     WordPress's own Core_Upgrader temp-backup mechanism.
+     *
+     * BLOCKER (issue #131 final-hardening review) — an earlier revision of
+     * this method ALSO flagged a plugin incomplete when its main file's
+     * source merely referenced the literal string `vendor/autoload.php` and
+     * that exact path was missing on disk (S3, original adversarial
+     * review). That check was too eager: a plain `str_contains()` over the
+     * first 8 KB of the main file cannot tell the near-universal DEFENSIVE
+     * idiom — `if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
+     * require ...; }`, or even a bare comment mentioning the path — apart
+     * from an unconditional `require`. A legitimate plugin that references
+     * the path but genuinely ships WITHOUT a `vendor/` directory (a
+     * dev-only Composer dependency, a "lite" build, or a
+     * graceful-degradation pattern) would fail this check after a
+     * perfectly GOOD apply, triggering an automatic revert that reports the
+     * update as `failed` — and STICKILY so: every subsequent run would
+     * re-apply and immediately re-revert the same update, permanently
+     * un-updatable via the agent. Deleted entirely rather than trying to
+     * special-case the idiom (parsing PHP conditionals reliably is exactly
+     * the kind of heuristic this method's doc already warns against). The
+     * half-write symptom this was meant to catch — a good main file with a
+     * missing `vendor/` tree — is still caught by the control plane's
+     * post-update health probe (issue #132's wp_fatal detection), which was
+     * always the backstop for anything this method's necessarily-narrow
+     * checks miss.
+     *
+     * Net effect: isComplete() == validate_plugin() for plugin, the
+     * style.css `Name` re-read for theme, always true for core.
+     *
+     * Fails OPEN (returns true) whenever the detection API itself is
+     * unavailable, mirroring isInstalled()'s stance — a constrained runtime
+     * must never cause a false rollback of a genuinely good update; a real
+     * problem still surfaces through the normal apply()/currentVersion() path.
+     *
+     * @param string $type plugin|theme|core.
+     * @param string $slug Sanitized slug (ignored for core).
+     * @return bool
+     */
+    public function isComplete(string $type, string $slug): bool
+    {
+        return match ($type) {
+            'plugin' => $this->isPluginComplete($slug),
+            'theme'  => $this->isThemeComplete($slug),
+            default  => true,
+        };
+    }
+
+    /**
+     * Plugin half of isComplete(). See isComplete()'s doc for the rationale.
+     *
+     * @param string $slug Sanitized plugin basename or folder.
+     * @return bool
+     */
+    private function isPluginComplete(string $slug): bool
+    {
+        $this->loadPluginApi();
+        if (!function_exists('get_plugins') || !function_exists('validate_plugin')) {
+            return true;
+        }
+
+        if (function_exists('wp_clean_plugins_cache')) {
+            // The main plugin file may have just been rewritten; force a
+            // fresh header read rather than trusting a pre-apply cache.
+            wp_clean_plugins_cache(true);
+        }
+
+        $all = get_plugins();
+        if (!is_array($all)) {
+            return true;
+        }
+
+        $basename = isset($all[$slug]) ? $slug : '';
+        if ($basename === '') {
+            // S6 (issue #131 adversarial review) — resolve by FOLDER, not by
+            // re-appending '/' to $slug directly. The CP sends the FULL
+            // "folder/main-file.php" basename as the slug; when an update
+            // legitimately renames the plugin's bootstrap file, get_plugins()
+            // no longer has a "folder/oldmain.php" key at all, and the old
+            // fallback (`str_starts_with($file, $slug . '/')`) could never
+            // match anything either — $slug already ends in ".php", so it
+            // was checking for a key literally starting with
+            // "folder/oldmain.php/", which no installed plugin basename can
+            // ever be. That made a GOOD, differently-named update
+            // indistinguishable from a real half-write and triggered a
+            // false auto-rollback. Deriving the folder first lets a
+            // renamed-main-file plugin still resolve correctly.
+            $folder = self::pluginFolder($slug);
+            foreach (array_keys($all) as $file) {
+                if (is_string($file) && str_starts_with($file, $folder . '/')) {
+                    $basename = $file;
+                    break;
+                }
+            }
+        }
+
+        if ($basename === '') {
+            // get_plugins() no longer resolves this slug to any header at
+            // all — the classic half-written-main-file symptom.
+            return false;
+        }
+
+        $result = validate_plugin($basename);
+        if (is_wp_error($result)) {
+            return false;
+        }
+
+        // BLOCKER (issue #131 final-hardening review) — the S3
+        // vendor/autoload.php sub-check that previously lived here has been
+        // REMOVED entirely; see this method's class doc (isComplete()) for
+        // why. validate_plugin() succeeding is the whole signal.
+        return true;
+    }
+
+    /**
+     * Extract the plugin FOLDER component from a slug that may be a bare
+     * folder name ("akismet") or a full "folder/main-file.php" basename.
+     * Shared by the folder-prefix fallback in isInstalled(), pluginVersion(),
+     * and isPluginComplete() so a plugin whose main file was renamed by an
+     * update — the CP-supplied slug's exact basename no longer matching any
+     * installed key — still resolves by folder rather than failing to match
+     * at all (S6, GitHub issue #131).
+     *
+     * @param string $slug Sanitized plugin slug/basename.
+     * @return string Folder name (never contains a '/').
+     */
+    private static function pluginFolder(string $slug): string
+    {
+        $pos = strpos($slug, '/');
+
+        return $pos === false ? $slug : substr($slug, 0, $pos);
+    }
+
+    /**
+     * Theme half of isComplete(). See isComplete()'s doc for the rationale.
+     *
+     * @param string $slug Sanitized theme stylesheet.
+     * @return bool
+     */
+    private function isThemeComplete(string $slug): bool
+    {
+        if (!function_exists('wp_get_theme')) {
+            return true;
+        }
+
+        if (function_exists('wp_clean_themes_cache')) {
+            wp_clean_themes_cache();
+        }
+
+        $theme = wp_get_theme($slug);
+        if (!is_object($theme) || !method_exists($theme, 'get')) {
+            return true;
+        }
+
+        // A half-written theme (style.css truncated or its header block
+        // corrupted mid-copy) reads back with an empty Name — the same
+        // signal WordPress itself treats as "this is not a valid theme".
+        $name = (string) $theme->get('Name');
+
+        return $name !== '';
     }
 
     /**
@@ -353,6 +544,23 @@ class UpdateRunner
     {
         $this->loadUpgraderApi();
 
+        // B3 (GitHub issue #131) — harden the unpack directory. WordPress's
+        // own temp-directory resolution (get_temp_dir(), used by
+        // WP_Filesystem_*::unzip_file()/wp_tempnam() when WP_TEMP_DIR is
+        // undefined) falls through to sys_get_temp_dir() / upload_tmp_dir on
+        // a locked-down host, which can sit OUTSIDE open_basedir and fail
+        // silently there. wp-content/upgrade is always inside the site's own
+        // writable tree, so pin WP_TEMP_DIR to it explicitly rather than
+        // trusting that fallback.
+        $upgradeDir = defined('WP_CONTENT_DIR') ? rtrim((string) WP_CONTENT_DIR, '/\\') . '/upgrade' : '';
+        if ($upgradeDir !== '' && !is_dir($upgradeDir) && function_exists('wp_mkdir_p')) {
+            wp_mkdir_p($upgradeDir);
+        }
+        if ($upgradeDir !== '' && is_dir($upgradeDir) && !defined('WP_TEMP_DIR')) {
+            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- WP_TEMP_DIR is a documented, overridable WordPress core constant (wp-admin/includes/file.php get_temp_dir()), not a constant of our own; it is simply missing from this sniff's hardcoded allowed_core_constants list
+            define('WP_TEMP_DIR', $upgradeDir);
+        }
+
         if (function_exists('wp_update_plugins') && $type === 'plugin') {
             wp_update_plugins();
         }
@@ -360,70 +568,88 @@ class UpdateRunner
             wp_update_themes();
         }
 
-        switch ($type) {
-            case 'plugin':
-                if (!class_exists('\Plugin_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
-                    return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
-                }
+        // Force a clean working directory for THIS upgrade only. A prior
+        // interrupted apply can leave a stale wp-content/upgrade/<slug>.<ver>/
+        // extraction directory behind (the reported orphaned
+        // upgrade/latepoint.5.6.4/); Plugin_Upgrader::install_package()
+        // otherwise reuses whatever it finds there instead of a fresh unpack.
+        // Added immediately before, and removed immediately after, this
+        // single upgrade() call so it never leaks into an unrelated
+        // concurrent upgrade running in a different request.
+        $forceCleanWorking = static function (array $options): array {
+            $options['clear_working'] = true;
+            return $options;
+        };
+        add_filter('upgrader_package_options', $forceCleanWorking);
 
-                // Capture active state BEFORE upgrade. WordPress's
-                // Plugin_Upgrader::upgrade() registers an upgrader_pre_install
-                // hook that calls deactivate_plugins($plugin, silent=true) and
-                // does NOT re-activate after the upgrade finishes. WP-CLI's
-                // `wp plugin update` preserves active state; we mirror that
-                // behaviour here so the PHP-fallback path doesn't strand an
-                // active plugin inactive after a successful upgrade.
-                $pluginsFilePath  = WPMGR_AGENT_DIR; // unused — silence linters about the var
-                $wasActive        = function_exists('is_plugin_active')             ? \is_plugin_active($slug) : false;
-                $wasNetworkActive = function_exists('is_plugin_active_for_network') ? \is_plugin_active_for_network($slug) : false;
-
-                $upgrader = new \Plugin_Upgrader(new \WP_Ajax_Upgrader_Skin());
-                try {
-                    $result = $upgrader->upgrade($slug);
-                } finally {
-                    // GUARANTEE: clear maintenance mode on every terminal
-                    // path of THIS upgrade() call, independent of whether it
-                    // succeeded, returned a WP_Error, or threw.
-                    Maintenance::clear($upgrader);
-                }
-                $outcome  = $this->upgraderOutcome($result);
-
-                if ($outcome['ok'] && ($wasActive || $wasNetworkActive) && function_exists('activate_plugin')) {
-                    // Refresh plugin caches before reactivating: the upgrade
-                    // may have changed the main plugin file (slug stays the
-                    // same but the metadata cache is stale).
-                    if (function_exists('wp_clean_plugins_cache')) {
-                        \wp_clean_plugins_cache(true);
+        try {
+            switch ($type) {
+                case 'plugin':
+                    if (!class_exists('\Plugin_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
+                        return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
                     }
-                    $activated = \activate_plugin($slug, '', $wasNetworkActive, true);
-                    if (\is_wp_error($activated)) {
-                        $outcome['log'] .= "\n[wpmgr] upgrade succeeded but reactivation failed: "
-                            . $activated->get_error_message();
-                        \WPMgr\Agent\Support\DebugLog::write('WPMgr Agent: post-upgrade reactivation failed for '
-                            . $slug . ': ' . $activated->get_error_message());
+
+                    // Capture active state BEFORE upgrade. WordPress's
+                    // Plugin_Upgrader::upgrade() registers an upgrader_pre_install
+                    // hook that calls deactivate_plugins($plugin, silent=true) and
+                    // does NOT re-activate after the upgrade finishes. WP-CLI's
+                    // `wp plugin update` preserves active state; we mirror that
+                    // behaviour here so the PHP-fallback path doesn't strand an
+                    // active plugin inactive after a successful upgrade.
+                    $pluginsFilePath  = WPMGR_AGENT_DIR; // unused — silence linters about the var
+                    $wasActive        = function_exists('is_plugin_active')             ? \is_plugin_active($slug) : false;
+                    $wasNetworkActive = function_exists('is_plugin_active_for_network') ? \is_plugin_active_for_network($slug) : false;
+
+                    $upgrader = new \Plugin_Upgrader(new \WP_Ajax_Upgrader_Skin());
+                    try {
+                        $result = $upgrader->upgrade($slug);
+                    } finally {
+                        // GUARANTEE: clear maintenance mode on every terminal
+                        // path of THIS upgrade() call, independent of whether it
+                        // succeeded, returned a WP_Error, or threw.
+                        Maintenance::clear($upgrader);
                     }
-                }
+                    $outcome  = $this->upgraderOutcome($result);
 
-                return $outcome;
+                    if ($outcome['ok'] && ($wasActive || $wasNetworkActive) && function_exists('activate_plugin')) {
+                        // Refresh plugin caches before reactivating: the upgrade
+                        // may have changed the main plugin file (slug stays the
+                        // same but the metadata cache is stale).
+                        if (function_exists('wp_clean_plugins_cache')) {
+                            \wp_clean_plugins_cache(true);
+                        }
+                        $activated = \activate_plugin($slug, '', $wasNetworkActive, true);
+                        if (\is_wp_error($activated)) {
+                            $outcome['log'] .= "\n[wpmgr] upgrade succeeded but reactivation failed: "
+                                . $activated->get_error_message();
+                            \WPMgr\Agent\Support\DebugLog::write('WPMgr Agent: post-upgrade reactivation failed for '
+                                . $slug . ': ' . $activated->get_error_message());
+                        }
+                    }
 
-            case 'theme':
-                if (!class_exists('\Theme_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
-                    return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
-                }
-                $upgrader = new \Theme_Upgrader(new \WP_Ajax_Upgrader_Skin());
-                try {
-                    $result = $upgrader->upgrade($slug);
-                } finally {
-                    Maintenance::clear($upgrader);
-                }
+                    return $outcome;
 
-                return $this->upgraderOutcome($result);
+                case 'theme':
+                    if (!class_exists('\Theme_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
+                        return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
+                    }
+                    $upgrader = new \Theme_Upgrader(new \WP_Ajax_Upgrader_Skin());
+                    try {
+                        $result = $upgrader->upgrade($slug);
+                    } finally {
+                        Maintenance::clear($upgrader);
+                    }
 
-            case 'core':
-                return $this->applyCoreUpgrade($version);
+                    return $this->upgraderOutcome($result);
+
+                case 'core':
+                    return $this->applyCoreUpgrade($version);
+            }
+
+            return ['ok' => false, 'log' => 'Unsupported type.'];
+        } finally {
+            remove_filter('upgrader_package_options', $forceCleanWorking);
         }
-
-        return ['ok' => false, 'log' => 'Unsupported type.'];
     }
 
     /**
@@ -541,12 +767,15 @@ class UpdateRunner
             return (string) $all[$slug]['Version'];
         }
 
-        // Allow a folder-only slug to match its "folder/..." basename.
+        // Allow a folder-only slug — or a full "folder/main-file.php"
+        // basename whose main file was since renamed (S6, issue #131) — to
+        // match by FOLDER. See pluginFolder()'s doc.
+        $folder = self::pluginFolder($slug);
         foreach ($all as $file => $meta) {
             if (!is_string($file) || !is_array($meta)) {
                 continue;
             }
-            if (str_starts_with($file, $slug . '/') && isset($meta['Version'])) {
+            if (str_starts_with($file, $folder . '/') && isset($meta['Version'])) {
                 return (string) $meta['Version'];
             }
         }
