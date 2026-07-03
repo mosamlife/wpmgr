@@ -518,11 +518,42 @@ CREATE INDEX update_tasks_run_id_idx ON update_tasks (run_id);
 CREATE INDEX update_tasks_tenant_id_idx ON update_tasks (tenant_id);
 CREATE INDEX update_tasks_site_id_idx ON update_tasks (site_id);
 
+-- update_tasks_inflight_target_idx (m88) is the authoritative cross-run dedup
+-- guard: at most one pending/running task may exist per (tenant, site,
+-- target_type, target_slug) at a time, across ALL runs. Without it, a
+-- scheduled auto-update, an operator bulk "Update all", and a client-portal
+-- trigger can each create a task for the SAME (site, plugin) within the same
+-- ~1s window; the River queue only caps per-tenant concurrency, so several
+-- can run concurrently — racing the agent's own rollback-snapshot pruning (a
+-- task's own snapshot gets pruned by a sibling task, producing "rollback
+-- FAILED / Invalid snapshot id") and running concurrent WordPress
+-- Plugin_Upgrader instances against the same plugin directory (can corrupt
+-- wp-content/plugins/<slug>). CreateUpdateTask relies on this index as an ON
+-- CONFLICT ... DO NOTHING arbiter; the service-level ListInFlightUpdateTargets
+-- pre-check (planTasks) narrows the race further but cannot itself be atomic
+-- without this index. A task falls out of the partial index once it reaches a
+-- terminal status, so a sequential re-update after the prior run finished is
+-- unaffected. The versioned m88 migration additionally pre-dedups any
+-- pending/running rows a live database already accumulated under the
+-- pre-m88 bug before creating this index (schema.sql only carries the
+-- resulting end state; see the migration file for the one-time data fix).
+CREATE UNIQUE INDEX update_tasks_inflight_target_idx ON update_tasks
+    (tenant_id, site_id, target_type, target_slug)
+    WHERE status IN ('pending', 'running');
+
 ALTER TABLE update_tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE update_tasks FORCE ROW LEVEL SECURITY;
 CREATE POLICY update_tasks_tenant_isolation ON update_tasks
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- update_tasks_agent (m89) lets the #131 stale-task reaper (ReaperWorker ->
+-- ListStaleUpdateTasks) read across ALL tenants in one sweep under InAgentTx.
+-- Added after the fact because M3 only shipped the tenant_isolation policy;
+-- every query against this table was tenant-scoped until the reaper's
+-- cross-tenant sweep needed it (same bug class as m84's backup_schedules fix).
+CREATE POLICY update_tasks_agent ON update_tasks
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- backup_chunks  (M4 — incremental, content-addressed dedup + GC)

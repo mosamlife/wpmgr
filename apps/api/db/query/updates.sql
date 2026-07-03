@@ -9,11 +9,21 @@ VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: CreateUpdateTask :one
+-- ON CONFLICT targets the update_tasks_inflight_target_idx partial unique
+-- index (tenant_id, site_id, target_type, target_slug) WHERE status IN
+-- ('pending','running') — the authoritative cross-run dedup guard (#131
+-- hardening). If the same (site, target) already has an in-flight task from
+-- ANY OTHER run, the insert is a no-op and this returns zero rows (pgx
+-- surfaces that as ErrNoRows); the repo treats that as "already in flight",
+-- not an error, and skips creating the duplicate task.
 INSERT INTO update_tasks (
     run_id, tenant_id, site_id, target_type, target_slug, desired_version,
     from_version, status
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+ON CONFLICT (tenant_id, site_id, target_type, target_slug)
+    WHERE status IN ('pending', 'running')
+    DO NOTHING
 RETURNING *;
 
 -- name: GetUpdateRun :one
@@ -100,6 +110,39 @@ WHERE run_id = $1 AND tenant_id = $2
 -- one tenant cannot saturate the worker pool. Runs in the tenant's RLS scope.
 SELECT count(*) FROM update_tasks
 WHERE tenant_id = $1 AND status = 'running';
+
+-- name: ListInFlightUpdateTargets :many
+-- Returns the (site_id, target_type, target_slug) of every task currently
+-- pending or running for the tenant, restricted to the given site_ids, across
+-- ANY run. Used by Service.planTasks to skip creating a duplicate task for a
+-- target that already has an update in flight from another run (#131
+-- hardening — see the update_tasks_inflight_target_idx partial unique index,
+-- which is the authoritative guard; this query is the service-level
+-- pre-check that avoids planning doomed tasks).
+SELECT DISTINCT site_id, target_type, target_slug
+FROM update_tasks
+WHERE tenant_id = @tenant_id
+  AND site_id = ANY(@site_ids::uuid[])
+  AND status IN ('pending', 'running');
+
+-- name: ListStaleUpdateTasks :many
+-- Returns update_tasks stuck in pending/running for longer than @threshold,
+-- across ALL tenants. Used by the periodic stale-task reaper (see
+-- update.ReaperWorker) to un-stick a target that would otherwise permanently
+-- occupy the update_tasks_inflight_target_idx partial unique index slot (m88)
+-- forever — e.g. a worker crash between MarkUpdateTaskRunning and
+-- FinishUpdateTask, or a failed EnqueueTask that leaves a task pending
+-- (service.go's best-effort enqueue after CreateRunWithTasks). updated_at is
+-- the staleness watermark: it is set at row creation and again by
+-- MarkUpdateTaskRunning/FinishUpdateTask, so it reflects the last real
+-- progress on the row. Capped at @row_limit per sweep so one periodic tick
+-- cannot be unbounded; any remainder is caught by the next sweep. Runs under
+-- app.agent (cross-tenant).
+SELECT * FROM update_tasks
+WHERE status IN ('pending', 'running')
+  AND updated_at < now() - @threshold::interval
+ORDER BY created_at ASC, id ASC
+LIMIT @row_limit;
 
 -- name: ListAppliedTasksForSite :many
 -- Returns successfully applied update tasks for one site, ordered newest first.

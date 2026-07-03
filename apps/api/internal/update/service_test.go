@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -31,19 +32,26 @@ func (f *fakeSiteLookup) ListSiteInfoByTag(_ context.Context, _ uuid.UUID, _ str
 	return out, nil
 }
 
-// fakeCreateRepo is a minimal Repo that only implements CreateRunWithTasks
-// (the only method Service.CreateRun's planning path reaches), assembling
+// fakeCreateRepo is a minimal Repo that implements CreateRunWithTasks and
+// ListInFlightTargets — the two methods Service.CreateRun's planning path
+// reaches (the latter added for the #131 cross-run dedup guard) — assembling
 // Task rows from the NewTask rows planTasks produced so the test can assert
 // on the exact composed set. All other methods are unused by CreateRun.
+//
+// tasks accumulates every task ever created across calls to
+// CreateRunWithTasks (mirroring the real update_tasks table across runs), so
+// ListInFlightTargets can compute the in-flight set the way the real
+// cross-run query (backed by update_tasks_inflight_target_idx) would.
 type fakeCreateRepo struct {
 	tenantID uuid.UUID
+	tasks    []Task
 }
 
 func (f *fakeCreateRepo) CreateRunWithTasks(_ context.Context, in CreateRunInput, tasks []NewTask) (Run, []Task, error) {
 	run := Run{ID: uuid.New(), TenantID: in.TenantID, Status: RunPending, DryRun: in.DryRun}
 	out := make([]Task, 0, len(tasks))
 	for _, nt := range tasks {
-		out = append(out, Task{
+		t := Task{
 			ID:             uuid.New(),
 			RunID:          run.ID,
 			TenantID:       in.TenantID,
@@ -53,9 +61,45 @@ func (f *fakeCreateRepo) CreateRunWithTasks(_ context.Context, in CreateRunInput
 			DesiredVersion: nt.DesiredVersion,
 			FromVersion:    nt.FromVersion,
 			Status:         TaskPending,
-		})
+		}
+		out = append(out, t)
+		f.tasks = append(f.tasks, t)
 	}
 	return run, out, nil
+}
+
+// completeTask marks every tracked task for (siteID, targetType, targetSlug)
+// as terminal (succeeded), simulating the real update_tasks_inflight_target_idx
+// partial index dropping the row once its status leaves pending/running — so
+// a SEQUENTIAL re-update after completion is no longer blocked.
+func (f *fakeCreateRepo) completeTask(siteID uuid.UUID, targetType, targetSlug string) {
+	for i := range f.tasks {
+		t := &f.tasks[i]
+		if t.SiteID == siteID && t.TargetType == targetType && t.TargetSlug == targetSlug {
+			t.Status = TaskSucceeded
+		}
+	}
+}
+
+func (f *fakeCreateRepo) ListInFlightTargets(_ context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID) (map[InFlightKey]struct{}, error) {
+	allowed := make(map[uuid.UUID]struct{}, len(siteIDs))
+	for _, id := range siteIDs {
+		allowed[id] = struct{}{}
+	}
+	out := map[InFlightKey]struct{}{}
+	for _, t := range f.tasks {
+		if t.TenantID != tenantID {
+			continue
+		}
+		if _, ok := allowed[t.SiteID]; !ok {
+			continue
+		}
+		if t.Status != TaskPending && t.Status != TaskRunning {
+			continue
+		}
+		out[InFlightKey{SiteID: t.SiteID, TargetType: t.TargetType, TargetSlug: t.TargetSlug}] = struct{}{}
+	}
+	return out, nil
 }
 
 func (f *fakeCreateRepo) GetRun(context.Context, uuid.UUID, uuid.UUID) (Run, error) { panic("not used") }
@@ -84,6 +128,9 @@ func (f *fakeCreateRepo) CountUnfinishedTasks(context.Context, uuid.UUID, uuid.U
 	panic("not used")
 }
 func (f *fakeCreateRepo) CountRunningTasksForTenant(context.Context, uuid.UUID) (int64, error) {
+	panic("not used")
+}
+func (f *fakeCreateRepo) ListStaleUpdateTasks(context.Context, time.Duration, int32) ([]Task, error) {
 	panic("not used")
 }
 
@@ -302,5 +349,76 @@ func TestCreateRunExplicitPinAppliesRegardlessOfPendingFlag(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("want an error: the pinned target is not installed on the site at all")
+	}
+}
+
+// TestCreateRunSkipsDuplicateInFlightTarget is the regression test for the
+// #131 hardening: multiple update runs targeting the SAME (site, target) must
+// not be allowed to have concurrently in-flight tasks. A scheduled
+// auto-update, an operator bulk update, and a portal trigger for the same
+// (site, plugin) racing within the same window must produce exactly ONE
+// in-flight task — never two tasks the worker could run concurrently (which
+// would race the agent's rollback-snapshot pruning and could run concurrent
+// WordPress Plugin_Upgrader instances against the same plugin directory).
+//
+// A SEQUENTIAL re-update — a new run for the same target created AFTER the
+// prior run's task reached a terminal state — must still succeed; only
+// pending/running tasks block a duplicate.
+func TestCreateRunSkipsDuplicateInFlightTarget(t *testing.T) {
+	tenant := uuid.New()
+	siteID := uuid.New()
+	lookup := &fakeSiteLookup{sites: map[uuid.UUID]SiteInfo{
+		siteID: {
+			ID: siteID, Enrolled: true,
+			Components: []Component{
+				{Type: TargetPlugin, Slug: "akismet", Version: "1.0.0", UpdateAvailable: true, NewVersion: "1.1.0"},
+			},
+		},
+	}}
+	repo := &fakeCreateRepo{tenantID: tenant}
+	svc := NewService(repo, lookup, &countingEnqueuer{}, domain.NewValidator(), domain.SystemClock{})
+	items := []Item{{Type: "plugin", Slug: "akismet", Version: "latest"}}
+
+	// First run creates the (only) in-flight task for this target.
+	run1, tasks1, err := svc.CreateRun(context.Background(), CreateRunInput{
+		TenantID: tenant, SiteIDs: []uuid.UUID{siteID}, Items: items,
+	})
+	if err != nil {
+		t.Fatalf("first create run: %v", err)
+	}
+	if len(tasks1) != 1 {
+		t.Fatalf("first run task count = %d, want 1", len(tasks1))
+	}
+
+	// A second run for the SAME (site, target) while the first task is still
+	// pending/running must NOT create a duplicate task — it must be rejected.
+	_, _, err = svc.CreateRun(context.Background(), CreateRunInput{
+		TenantID: tenant, SiteIDs: []uuid.UUID{siteID}, Items: items,
+	})
+	if err == nil {
+		t.Fatal("want an error: the target already has an in-flight task from another run")
+	}
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Kind != domain.KindConflict {
+		t.Fatalf("want a KindConflict domain error, got %v", err)
+	}
+	if got := len(repo.tasks); got != 1 {
+		t.Fatalf("total tasks ever created = %d, want 1 (no duplicate in-flight task)", got)
+	}
+
+	// Once the first run's task reaches a terminal state, a NEW run for the
+	// same target is a legitimate sequential re-update and must succeed.
+	repo.completeTask(siteID, TargetPlugin, "akismet")
+	run2, tasks2, err := svc.CreateRun(context.Background(), CreateRunInput{
+		TenantID: tenant, SiteIDs: []uuid.UUID{siteID}, Items: items,
+	})
+	if err != nil {
+		t.Fatalf("create run after the prior task completed: %v", err)
+	}
+	if len(tasks2) != 1 {
+		t.Fatalf("post-completion run task count = %d, want 1", len(tasks2))
+	}
+	if run2.ID == run1.ID {
+		t.Fatal("the post-completion run must be a distinct run from the first")
 	}
 }

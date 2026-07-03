@@ -71,6 +71,14 @@ func (f *fakeRepo) CountRunningTasksForTenant(context.Context, uuid.UUID) (int64
 	panic("not used")
 }
 
+func (f *fakeRepo) ListInFlightTargets(context.Context, uuid.UUID, []uuid.UUID) (map[InFlightKey]struct{}, error) {
+	panic("not used")
+}
+
+func (f *fakeRepo) ListStaleUpdateTasks(context.Context, time.Duration, int32) ([]Task, error) {
+	panic("not used")
+}
+
 // flushableRecorder wraps httptest.ResponseRecorder so gin's writer implements
 // http.Flusher (the events handler checks for it before opening the stream).
 type flushableRecorder struct {
