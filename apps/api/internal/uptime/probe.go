@@ -10,12 +10,16 @@
 package uptime
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptrace"
+	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
@@ -23,7 +27,13 @@ import (
 
 // maxProbeBody bounds how much of the response body the probe reads (we only
 // need TTFB + a small drain to complete the request and free the connection).
+// It also bounds how much scanFatal ever buffers/inspects — see the Probe
+// body-buffering comment below (issue #132 S1).
 const maxProbeBody = 64 << 10
+
+// wpFatalDetectEnv is the kill-switch env var for the wp-fatal-page scan.
+// Detection defaults ON; only "0" or "false" (case-insensitive) disables it.
+const wpFatalDetectEnv = "WPMGR_UPTIME_WPFATAL_DETECT"
 
 // ProbeResult is the measured outcome of a single site probe. All durations are
 // milliseconds. Up is the classification (2xx/3xx = up; 5xx/timeout/conn-error
@@ -50,17 +60,29 @@ type ProbeResult struct {
 // uses the client's underlying *http.Client (SSRF transport preserved) with a
 // per-probe httptrace to break down DNS/connect/TLS/TTFB.
 type Prober struct {
-	client  *httpclient.Client
-	timeout time.Duration
+	client        *httpclient.Client
+	timeout       time.Duration
+	wpFatalDetect bool
 }
 
 // NewProber builds a Prober around the SSRF-hardened client. timeout bounds a
-// single probe (defaults to 15s when non-positive).
+// single probe (defaults to 15s when non-positive). The wp-fatal-page scan
+// kill-switch (WPMGR_UPTIME_WPFATAL_DETECT) is read once here, not per-probe.
 func NewProber(client *httpclient.Client, timeout time.Duration) *Prober {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &Prober{client: client, timeout: timeout}
+	return &Prober{client: client, timeout: timeout, wpFatalDetect: wpFatalDetectEnabled()}
+}
+
+// wpFatalDetectEnabled reads the WPMGR_UPTIME_WPFATAL_DETECT kill-switch.
+// Detection defaults ON; only "0" or "false" (case-insensitive) disables it.
+func wpFatalDetectEnabled() bool {
+	v := strings.TrimSpace(os.Getenv(wpFatalDetectEnv))
+	if v == "" {
+		return true
+	}
+	return v != "0" && !strings.EqualFold(v, "false")
 }
 
 // Probe issues a GET to targetURL and measures the connection phases. A
@@ -132,8 +154,19 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 		fillTimings(&res, start, dnsStart, dnsDone, connectStart, connectDone, tlsStart, tlsDone, firstByte)
 		return res
 	}
-	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxProbeBody)); _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxProbeBody))
+	defer func() { _ = resp.Body.Close() }()
+	// Buffer up to maxProbeBody bytes for the wp-fatal-page scan below. A
+	// WordPress fatal error only reaches the client as HTTP 200 once headers
+	// have already been sent (WP can no longer switch to a 500 at that
+	// point), which means the wp_die/db-error document is appended AFTER
+	// whatever partial page had already flushed — a modern block theme can
+	// flush 30-80 KB of inline global-styles CSS in <head> alone. A small
+	// head-only scan window would miss the appended document entirely, so we
+	// keep everything already read up to the existing maxProbeBody read
+	// budget (nothing beyond it is ever read, so memory stays bounded) rather
+	// than discarding all but a small head fraction of it (issue #132 S1).
+	var bodyBuf bytes.Buffer
+	_, _ = io.Copy(&bodyBuf, io.LimitReader(resp.Body, maxProbeBody))
 	end := time.Now()
 
 	res := ProbeResult{
@@ -148,6 +181,15 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 	}
 	if !res.Up {
 		res.Error = fmt.Sprintf("http status %d", resp.StatusCode)
+	} else if p.wpFatalDetect {
+		// A WordPress critical-error or database-connection page is served
+		// with HTTP 200, so a status-only classification never catches it;
+		// scan the buffered window for its structural signature and
+		// reclassify as DOWN when it matches (issue #132).
+		if down, reason := scanFatal(bodyBuf.Bytes(), resp.Header.Get("Content-Type")); down {
+			res.Up = false
+			res.Error = reason
+		}
 	}
 	fillTimings(&res, start, dnsStart, dnsDone, connectStart, connectDone, tlsStart, tlsDone, firstByte)
 	res.TotalMs = msSince(start, end)
@@ -178,4 +220,122 @@ func msSince(start, end time.Time) float64 {
 		return 0
 	}
 	return float64(end.Sub(start).Microseconds()) / 1000.0
+}
+
+// fatalProximityBytes bounds the byte distance allowed between a structural
+// marker and its companion phrase for scanFatal to treat them as the same
+// rendered error document rather than two unrelated mentions scattered
+// across an unrelated page (issue #132 S2). WordPress's own templates place
+// the marker and the message immediately adjacent to one another — for the
+// critical-error screen, <body id="error-page"> is followed straight away by
+// <div class="wp-die-message">{message}</div> with no chrome in between; for
+// the db-error screen, the <title>Database Error</title> and the lone <h1>
+// message are only a few dozen bytes apart in a page that is otherwise just
+// a bare <html><head>...</head><body>...</body></html> skeleton. 1 KB gives
+// generous margin for that real shape while staying far too tight to bridge
+// an article's separate code sample and prose paragraphs.
+const fatalProximityBytes = 1024
+
+// criticalErrorPhrase is the hard-coded, non-translated English phrase WP
+// core's fatal-error catch emits (wp-includes/load.php) before it has had a
+// chance to load translations.
+const criticalErrorPhrase = "there has been a critical error on this website"
+
+// dbConnectionPhrase is the hard-coded, non-translated English phrase
+// wpdb::bail()/dead_db() emits before WordPress has loaded translations.
+const dbConnectionPhrase = "error establishing a database connection"
+
+// dbErrorTitleRe matches WP core's dead_db() default <title> element
+// verbatim: just "Database Error", with no site branding around it. A real
+// page's own <title> almost always carries the site name/tagline around any
+// prose mention of a database error (e.g. a "How to Fix the Error
+// Establishing a Database Connection in WordPress - My Blog" support
+// article), so requiring the tag's entire content to be exactly this phrase
+// is a structural signal a legitimate page will not produce incidentally.
+var dbErrorTitleRe = regexp.MustCompile(`<title[^>]*>\s*database error\s*</title>`)
+
+// scanFatal inspects the buffered response body (at most maxProbeBody bytes,
+// see Probe) for the signature of a WordPress fatal-error page served with
+// HTTP 200 — the wp_die()-rendered critical-error screen, or the classic
+// database connection failure screen (issue #132).
+//
+// It only scans text/html responses (JSON/XML/binary bodies are skipped
+// outright). Both checks require a structural marker AND its companion
+// phrase to co-occur WITHIN fatalProximityBytes of each other — true DOM
+// co-location, not mere presence anywhere in the buffered response. That is
+// what makes a false-DOWN on a healthy site (one that merely discusses the
+// error, or quotes its markup in an unrelated code sample far from where it
+// mentions the phrase) effectively impossible, while still catching the real
+// chrome-less error document wherever it lands in the buffered window
+// (including one appended after tens of KB of already-flushed theme output —
+// issue #132 S1).
+//
+// This is intentionally stricter than internal/agentcmd/client.go's
+// fatalSignatures ("fatal error", "uncaught error", ...): that loose list is
+// fine for the post-update self-probe of a site we just changed, but far too
+// loose for monitoring arbitrary public sites, whose legitimate content may
+// contain those substrings.
+func scanFatal(body []byte, contentType string) (down bool, reason string) {
+	if !isHTMLContentType(contentType) {
+		return false, ""
+	}
+	window := bytes.ToLower(body)
+
+	if markerNearPhrase(window, `id="error-page"`, criticalErrorPhrase, fatalProximityBytes) ||
+		markerNearPhrase(window, `class="wp-die-message"`, criticalErrorPhrase, fatalProximityBytes) {
+		return true, "wp_fatal_error"
+	}
+
+	if loc := dbErrorTitleRe.FindIndex(window); loc != nil {
+		lo, hi := windowAround(loc[0], loc[1], fatalProximityBytes, len(window))
+		if bytes.Contains(window[lo:hi], []byte(dbConnectionPhrase)) {
+			return true, "wp_db_error"
+		}
+	}
+
+	return false, ""
+}
+
+// markerNearPhrase reports whether any occurrence of the literal marker and
+// any occurrence of phrase fall within proximity bytes of each other in
+// window (see fatalProximityBytes for why proximity, not mere presence,
+// matters here).
+func markerNearPhrase(window []byte, marker, phrase string, proximity int) bool {
+	markerBytes, phraseBytes := []byte(marker), []byte(phrase)
+	for cursor := 0; ; {
+		idx := bytes.Index(window[cursor:], markerBytes)
+		if idx < 0 {
+			return false
+		}
+		pos := cursor + idx
+		lo, hi := windowAround(pos, pos+len(markerBytes), proximity, len(window))
+		if bytes.Contains(window[lo:hi], phraseBytes) {
+			return true
+		}
+		cursor = pos + 1
+	}
+}
+
+// windowAround returns the [lo, hi) slice bounds spanning [start, end)
+// expanded by proximity bytes on each side, clamped to [0, length).
+func windowAround(start, end, proximity, length int) (lo, hi int) {
+	lo = start - proximity
+	if lo < 0 {
+		lo = 0
+	}
+	hi = end + proximity
+	if hi > length {
+		hi = length
+	}
+	return lo, hi
+}
+
+// isHTMLContentType reports whether the response's Content-Type header names
+// text/html, ignoring parameters (charset, etc.) and case.
+func isHTMLContentType(contentType string) bool {
+	ct := contentType
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return strings.EqualFold(strings.TrimSpace(ct), "text/html")
 }

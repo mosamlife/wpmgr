@@ -218,10 +218,23 @@ func renderEmail(a Alert) (subject, body string) {
 			name, a.SiteURL, a.FiredAt.UTC().Format(time.RFC3339))
 		return subject, body
 	}
-	subject = fmt.Sprintf("[WPMgr] DOWN: %s is unreachable", name)
+	// wp_fatal_error/wp_db_error (issue #132) are WordPress fatal-error pages
+	// served with HTTP 200 — the site DID respond, so "is unreachable" is
+	// misleading; give operators copy that matches what scanFatal actually
+	// found instead of a generic reachability message.
 	detail := a.Error
-	if detail == "" && a.HTTPStatus > 0 {
-		detail = fmt.Sprintf("HTTP %d", a.HTTPStatus)
+	switch a.Error {
+	case "wp_fatal_error":
+		subject = fmt.Sprintf("[WPMgr] DOWN: %s is serving a critical-error page (HTTP 200)", name)
+		detail = "WordPress critical error: the site returns HTTP 200 with a fatal-error page"
+	case "wp_db_error":
+		subject = fmt.Sprintf("[WPMgr] DOWN: %s has a database connection error", name)
+		detail = "Error establishing a database connection (site returns HTTP 200)"
+	default:
+		subject = fmt.Sprintf("[WPMgr] DOWN: %s is unreachable", name)
+		if detail == "" && a.HTTPStatus > 0 {
+			detail = fmt.Sprintf("HTTP %d", a.HTTPStatus)
+		}
 	}
 	body = fmt.Sprintf("Your site %s (%s) appears to be DOWN as of %s.\nDetail: %s",
 		name, a.SiteURL, a.FiredAt.UTC().Format(time.RFC3339), detail)
