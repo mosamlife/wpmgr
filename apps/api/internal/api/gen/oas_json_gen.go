@@ -6587,6 +6587,18 @@ func (s *AuditEntry) encodeFields(e *jx.Encoder) {
 		e.Str(s.ActorID)
 	}
 	{
+		if s.ActorName.Set {
+			e.FieldStart("actor_name")
+			s.ActorName.Encode(e)
+		}
+	}
+	{
+		if s.ActorEmail.Set {
+			e.FieldStart("actor_email")
+			s.ActorEmail.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("action")
 		e.Str(s.Action)
 	}
@@ -6618,18 +6630,20 @@ func (s *AuditEntry) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuditEntry = [11]string{
+var jsonFieldsNameOfAuditEntry = [13]string{
 	0:  "id",
 	1:  "tenant_id",
 	2:  "actor_type",
 	3:  "actor_id",
-	4:  "action",
-	5:  "target_type",
-	6:  "target_id",
-	7:  "metadata",
-	8:  "prev_hash",
-	9:  "hash",
-	10: "created_at",
+	4:  "actor_name",
+	5:  "actor_email",
+	6:  "action",
+	7:  "target_type",
+	8:  "target_id",
+	9:  "metadata",
+	10: "prev_hash",
+	11: "hash",
+	12: "created_at",
 }
 
 // Decode decodes AuditEntry from json.
@@ -6689,8 +6703,28 @@ func (s *AuditEntry) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"actor_id\"")
 			}
+		case "actor_name":
+			if err := func() error {
+				s.ActorName.Reset()
+				if err := s.ActorName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"actor_name\"")
+			}
+		case "actor_email":
+			if err := func() error {
+				s.ActorEmail.Reset()
+				if err := s.ActorEmail.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"actor_email\"")
+			}
 		case "action":
-			requiredBitSet[0] |= 1 << 4
+			requiredBitSet[0] |= 1 << 6
 			if err := func() error {
 				v, err := d.Str()
 				s.Action = string(v)
@@ -6702,7 +6736,7 @@ func (s *AuditEntry) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"action\"")
 			}
 		case "target_type":
-			requiredBitSet[0] |= 1 << 5
+			requiredBitSet[0] |= 1 << 7
 			if err := func() error {
 				v, err := d.Str()
 				s.TargetType = string(v)
@@ -6714,7 +6748,7 @@ func (s *AuditEntry) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"target_type\"")
 			}
 		case "target_id":
-			requiredBitSet[0] |= 1 << 6
+			requiredBitSet[1] |= 1 << 0
 			if err := func() error {
 				v, err := d.Str()
 				s.TargetID = string(v)
@@ -6736,7 +6770,7 @@ func (s *AuditEntry) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"metadata\"")
 			}
 		case "prev_hash":
-			requiredBitSet[1] |= 1 << 0
+			requiredBitSet[1] |= 1 << 2
 			if err := func() error {
 				v, err := d.Str()
 				s.PrevHash = string(v)
@@ -6748,7 +6782,7 @@ func (s *AuditEntry) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"prev_hash\"")
 			}
 		case "hash":
-			requiredBitSet[1] |= 1 << 1
+			requiredBitSet[1] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.Hash = string(v)
@@ -6760,7 +6794,7 @@ func (s *AuditEntry) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"hash\"")
 			}
 		case "created_at":
-			requiredBitSet[1] |= 1 << 2
+			requiredBitSet[1] |= 1 << 4
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -6781,8 +6815,8 @@ func (s *AuditEntry) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
-		0b01111111,
-		0b00000111,
+		0b11001111,
+		0b00011101,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

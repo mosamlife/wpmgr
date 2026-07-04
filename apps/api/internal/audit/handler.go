@@ -100,6 +100,16 @@ func toAPI(e Entry) gen.AuditEntry {
 		Hash:       e.Hash,
 		CreatedAt:  e.CreatedAt,
 	}
+	if e.ActorName != nil {
+		out.ActorName = gen.NewOptNilString(*e.ActorName)
+	} else {
+		out.ActorName.SetToNull()
+	}
+	if e.ActorEmail != nil {
+		out.ActorEmail = gen.NewOptNilString(*e.ActorEmail)
+	} else {
+		out.ActorEmail.SetToNull()
+	}
 	if len(e.Metadata) > 0 {
 		md := make(gen.AuditEntryMetadata, len(e.Metadata))
 		for k, v := range e.Metadata {

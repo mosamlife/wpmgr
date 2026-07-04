@@ -1,34 +1,51 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import {
-  ClipboardList,
   ShieldCheck,
   ShieldAlert,
+  ShieldQuestion,
   ChevronLeft,
   ChevronRight,
   Inbox,
+  Search,
   RefreshCw,
 } from "lucide-react";
 import { z } from "zod";
+import type { AuditEntry } from "@wpmgr/api";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { PageError } from "@/components/feedback";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn, relativeTime } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useSites } from "@/features/sites/use-sites";
 import { useAudit, useAuditVerify } from "@/features/audit/use-audit";
-import type { AuditEntry } from "@wpmgr/api";
+import { AuditIntegrityReport } from "@/features/audit/audit-integrity-report";
+import { AuditEntryRow, AuditRunRow } from "@/features/audit/audit-row";
+import { groupRuns } from "@/features/audit/group-runs";
+import { actionLabel, classifySeverity, type AuditSeverity } from "@/features/audit/labels";
+import { resolveActor } from "@/features/audit/actor";
+import { metaString } from "@/features/audit/metadata";
+import type { SiteMin } from "@/features/audit/types";
+
+// Fleet audit log — redesigned for real operators (see the audit-log UX
+// investigation this implements). The page owns: the two server-side filters
+// (action-prefix preset, site), the client-side page filters (outcome,
+// free-text search — cheap over one page of up to 50 entries), day-grouped
+// rendering with read-burst collapsing, and the integrity badge/dialog. Row
+// rendering, labeling, severity, and actor resolution all live in
+// features/audit/* so this file stays about page composition.
 
 // ---------------------------------------------------------------------------
 // Route definition + search params
 // ---------------------------------------------------------------------------
 
 const searchSchema = z.object({
-  // Prefix-match on the action field; "" means all.
+  // Prefix-match on the action field; "" means all. Server-side filter.
   action: z.string().optional(),
-  // UUID of a specific site; "" means all sites.
+  // UUID of a specific site; "" means all sites. Server-side filter.
   site_id: z.string().optional(),
   // Pagination offset.
   offset: z.number().int().nonnegative().optional(),
@@ -47,106 +64,31 @@ export const Route = createFileRoute("/_authed/audit")({
 
 const PAGE_LIMIT = 50;
 
-// Quick-filter presets for the action field.
+// Quick-filter presets for the action field. Prefixes match the real
+// emitted keys (apps/api/internal/audit/audit.go + each domain's Record call
+// sites) — the previous "cache."/"settings."/"security." chips silently
+// missed site.cache.*, smtp.settings.*, and site_security_*/auth.2fa.*.
 const ACTION_PRESETS: { label: string; value: string }[] = [
   { label: "All events", value: "" },
   { label: "File manager", value: "site.files." },
   { label: "Backups", value: "backup." },
+  { label: "Restores", value: "restore." },
   { label: "Updates", value: "update." },
-  { label: "Settings", value: "settings." },
-  { label: "Security", value: "security." },
-  { label: "Cache", value: "cache." },
+  { label: "Security", value: "site_security" },
+  { label: "2FA", value: "auth.2fa." },
+  { label: "SMTP", value: "smtp.settings." },
+  { label: "Cache", value: "site.cache." },
 ];
 
-// ---------------------------------------------------------------------------
-// Action label mapping
-// ---------------------------------------------------------------------------
+type OutcomeFilter = "all" | AuditSeverity;
 
-/**
- * Derive a human-readable label from an audit action string.
- *
- * Strategy: check exact known actions first, then fall back to
- * segment-based decomposition so new actions get a reasonable label
- * automatically without needing to hand-code every one.
- */
-function actionLabel(action: string): string {
-  // Check for denied suffix first so it reads clearly regardless of domain.
-  if (action.endsWith(".denied")) {
-    const base = action.slice(0, -".denied".length);
-    return `${actionLabel(base)} (denied)`;
-  }
-
-  // Exact or prefix-matched known labels.
-  const KNOWN: Record<string, string> = {
-    // File manager
-    "site.files.read": "Read file",
-    "site.files.write": "Edited file",
-    "site.files.delete": "Deleted file",
-    "site.files.extract": "Extracted archive",
-    "site.files.archive": "Created archive",
-    "site.files.mkdir": "Created folder",
-    "site.files.rename": "Renamed file",
-    "site.files.chmod": "Changed permissions",
-    "site.files.upload": "Uploaded file",
-    "site.files.download": "Downloaded file",
-    "site.files.search": "Searched files",
-    "site.files.version.list": "Viewed version history",
-    "site.files.version.restore": "Restored file version",
-    // Backups
-    "backup.create": "Created backup",
-    "backup.restore": "Restored backup",
-    "backup.delete": "Deleted backup",
-    "backup.schedule.update": "Updated backup schedule",
-    "backup.download": "Downloaded backup",
-    // Updates
-    "update.run": "Ran updates",
-    "update.schedule.update": "Updated update schedule",
-    // Settings
-    "settings.update": "Updated settings",
-    "settings.smtp.update": "Updated SMTP settings",
-    // Security
-    "security.ban.create": "Created ban rule",
-    "security.ban.delete": "Deleted ban rule",
-    "security.hardening.update": "Updated hardening",
-    "security.2fa.enable": "Enabled 2FA",
-    "security.2fa.disable": "Disabled 2FA",
-    // Cache
-    "cache.purge": "Purged cache",
-    "cache.enable": "Enabled cache",
-    "cache.disable": "Disabled cache",
-  };
-
-  if (action in KNOWN) return KNOWN[action] as string;
-
-  // Segment-based fallback: take the last two segments and title-case them.
-  const parts = action.split(".");
-  if (parts.length >= 2) {
-    const last = parts[parts.length - 1] ?? "";
-    const prev = parts[parts.length - 2] ?? "";
-    const verb = last.charAt(0).toUpperCase() + last.slice(1);
-    const noun = prev.charAt(0).toUpperCase() + prev.slice(1);
-    return `${verb} ${noun}`;
-  }
-
-  // Last resort: title-case the whole action.
-  return action.charAt(0).toUpperCase() + action.slice(1);
-}
-
-/** True when the action represents a denied access attempt. */
-function isDenied(action: string): boolean {
-  return action.endsWith(".denied");
-}
-
-/** True when the action is a destructive or write operation. */
-function isDestructive(action: string): boolean {
-  return (
-    action.includes(".delete") ||
-    action.includes(".restore") ||
-    action.includes(".extract") ||
-    action.includes(".chmod") ||
-    action.includes(".ban.")
-  );
-}
+const OUTCOME_FILTERS: { value: OutcomeFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "denied", label: "Denied" },
+  { value: "write", label: "Writes" },
+  { value: "sensitive", label: "Sensitive" },
+  { value: "read", label: "Reads" },
+];
 
 // ---------------------------------------------------------------------------
 // Page
@@ -160,9 +102,6 @@ function AuditPage() {
   const siteId = search.site_id ?? "";
   const offset = search.offset ?? 0;
 
-  // We build a local "action preset" state that reflects the dropdown; if the
-  // user types a site_id deep-link with action=site.files. that value will
-  // already match one of the presets so the chip group highlights correctly.
   const activePreset = ACTION_PRESETS.find((p) => p.value === action)?.value ?? action;
 
   const setFilter = useCallback(
@@ -171,7 +110,7 @@ function AuditPage() {
         search: (prev: AuditSearch) => ({
           ...prev,
           ...patch,
-          // Reset to page 0 whenever any filter changes.
+          // Reset to page 0 whenever any server-side filter changes.
           offset: "offset" in patch ? patch.offset : 0,
         }),
         replace: true,
@@ -180,7 +119,12 @@ function AuditPage() {
     [navigate],
   );
 
-  // Sites list for the site dropdown (share the existing cache).
+  // Client-side page filters: outcome + free-text search operate over the
+  // currently loaded page only (cheap at 50 rows; no new endpoint needed).
+  const [outcome, setOutcome] = useState<OutcomeFilter>("all");
+  const [query, setQuery] = useState("");
+
+  // Sites list for the site dropdown + target-site resolution.
   const { data: sites = [] } = useSites();
 
   // Audit data.
@@ -193,13 +137,36 @@ function AuditPage() {
 
   // Integrity check.
   const verify = useAuditVerify();
+  const [integrityOpen, setIntegrityOpen] = useState(false);
 
-  // Group by calendar day for the timeline display.
-  const groups = useMemo(() => groupByDay(items), [items]);
+  const severityCounts = useMemo(() => {
+    const counts: Record<OutcomeFilter, number> = {
+      all: items.length,
+      denied: 0,
+      write: 0,
+      sensitive: 0,
+      read: 0,
+    };
+    for (const entry of items) counts[classifySeverity(entry.action)] += 1;
+    return counts;
+  }, [items]);
+
+  const visibleItems = useMemo(
+    () => items.filter((e) => matchesFilters(e, outcome, query, sites)),
+    [items, outcome, query, sites],
+  );
+
+  const groups = useMemo(() => groupByDay(visibleItems), [visibleItems]);
 
   const totalOnPage = items.length;
   const hasPrev = offset > 0;
   const hasNext = totalOnPage === PAGE_LIMIT;
+  const isFiltered = visibleItems.length !== items.length;
+
+  const clearPageFilters = () => {
+    setOutcome("all");
+    setQuery("");
+  };
 
   return (
     <div className="space-y-6 px-4 pb-10 pt-6 sm:px-6">
@@ -208,7 +175,7 @@ function AuditPage() {
         subline="Fleet-wide operator event stream, newest first."
         actions={
           <div className="flex items-center gap-2">
-            <IntegrityBadge verify={verify} />
+            <IntegrityBadge verify={verify} onOpenReport={() => setIntegrityOpen(true)} />
             <Button
               type="button"
               size="sm"
@@ -223,11 +190,10 @@ function AuditPage() {
         }
       />
 
-      {/* Filters */}
+      {/* Server-side filters: action category + site */}
       <div className="flex flex-wrap items-center gap-3">
-        {/* Action preset chips */}
         <div
-          className="inline-flex flex-wrap items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] p-0.5"
+          className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-card p-0.5"
           role="group"
           aria-label="Filter by action category"
         >
@@ -241,10 +207,10 @@ function AuditPage() {
                 onClick={() => setFilter({ action: preset.value || undefined })}
                 className={cn(
                   "rounded px-2.5 py-1 text-xs font-medium transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] focus-visible:ring-offset-1",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
                   selected
-                    ? "bg-[var(--color-muted)] text-[var(--color-foreground)]"
-                    : "text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]",
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {preset.label}
@@ -253,7 +219,6 @@ function AuditPage() {
           })}
         </div>
 
-        {/* Site filter */}
         {sites.length > 0 ? (
           <div className="w-[220px]">
             <label htmlFor="audit-site-filter" className="sr-only">
@@ -262,9 +227,7 @@ function AuditPage() {
             <Select
               id="audit-site-filter"
               value={siteId}
-              onChange={(e) =>
-                setFilter({ site_id: e.target.value || undefined })
-              }
+              onChange={(e) => setFilter({ site_id: e.target.value || undefined })}
               aria-label="Filter by site"
             >
               <option value="">All sites</option>
@@ -276,6 +239,54 @@ function AuditPage() {
             </Select>
           </div>
         ) : null}
+      </div>
+
+      {/* Client-side filters: outcome + free-text search over this page */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-card p-0.5"
+          role="group"
+          aria-label="Filter by outcome"
+        >
+          {OUTCOME_FILTERS.map((f) => {
+            const selected = outcome === f.value;
+            const count = severityCounts[f.value];
+            return (
+              <button
+                key={f.value}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => setOutcome(f.value)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                  selected
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {f.label}
+                <span className="font-mono tabular-nums opacity-70">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="relative w-full sm:ml-auto sm:w-[280px]">
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            type="search"
+            inputMode="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search this page: operator, action, path…"
+            aria-label="Search the loaded events"
+            className="h-9 w-full pl-8"
+          />
+        </div>
       </div>
 
       {/* Content */}
@@ -290,12 +301,15 @@ function AuditPage() {
         />
       ) : items.length === 0 ? (
         <EmptyAudit action={action} siteId={siteId} sites={sites} />
+      ) : visibleItems.length === 0 ? (
+        <EmptyFilteredAudit outcome={outcome} query={query} onClear={clearPageFilters} />
       ) : (
-        <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]">
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
           {groups.map((group) => (
             <DayGroup
               key={group.key}
               label={group.label}
+              isToday={group.isToday}
               entries={group.entries}
               sites={sites}
             />
@@ -306,8 +320,10 @@ function AuditPage() {
       {/* Pagination */}
       {!isPending && !isError && items.length > 0 ? (
         <div className="flex items-center justify-between gap-3 px-1">
-          <span className="text-xs tabular-nums text-[var(--color-muted-foreground)]">
-            {offset + 1}&ndash;{offset + totalOnPage} events
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {isFiltered
+              ? `${visibleItems.length} of ${totalOnPage} shown (page filtered)`
+              : `${offset + 1}–${offset + totalOnPage} events`}
           </span>
           <div className="flex items-center gap-1">
             <Button
@@ -337,8 +353,45 @@ function AuditPage() {
           </div>
         </div>
       ) : null}
+
+      {integrityOpen && verify.data && !verify.data.ok && verify.data.broken_at ? (
+        <AuditIntegrityReport
+          open={integrityOpen}
+          onClose={() => setIntegrityOpen(false)}
+          brokenAt={verify.data.broken_at}
+          entries={items}
+          onRecheck={() => void verify.refetch()}
+        />
+      ) : null}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Client-side filter matching
+// ---------------------------------------------------------------------------
+
+function matchesFilters(
+  entry: AuditEntry,
+  outcome: OutcomeFilter,
+  query: string,
+  sites: SiteMin[],
+): boolean {
+  if (outcome !== "all" && classifySeverity(entry.action) !== outcome) return false;
+  if (!query.trim()) return true;
+
+  const q = query.trim().toLowerCase();
+  const actor = resolveActor(entry);
+  const path = metaString(entry.metadata, "path") ?? "";
+  const site =
+    entry.target_type === "site"
+      ? (sites.find((s) => s.id === entry.target_id)?.name ?? "")
+      : "";
+
+  const haystack = [actionLabel(entry.action), entry.action, actor.name, actor.detail ?? "", path, site]
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(q);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,35 +400,48 @@ function AuditPage() {
 
 function IntegrityBadge({
   verify,
+  onOpenReport,
 }: {
   verify: ReturnType<typeof useAuditVerify>;
+  onOpenReport: () => void;
 }) {
   if (verify.isPending) {
     return (
-      <span className="inline-flex items-center rounded border border-[var(--color-border)] bg-[var(--color-muted)] px-2 py-0.5 text-xs font-medium text-[var(--color-muted-foreground)]">
+      <span className="inline-flex items-center rounded border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
         Verifying
       </span>
     );
   }
   if (verify.isError || !verify.data) {
-    return null;
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+        <ShieldQuestion aria-hidden="true" className="size-3.5" />
+        Integrity: not checked
+      </span>
+    );
   }
   if (verify.data.ok) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded bg-[var(--color-success-subtle,oklch(94%_0.05_145))] px-2 py-0.5 text-xs font-medium text-[var(--color-success-subtle-fg,oklch(38%_0.1_145))]">
+      <span className="inline-flex items-center gap-1.5 rounded bg-success-subtle px-2 py-0.5 text-xs font-medium text-success-subtle-fg">
         <ShieldCheck aria-hidden="true" className="size-3.5" />
         Chain verified
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1.5 rounded bg-[var(--color-destructive-subtle,oklch(95%_0.04_25))] px-2 py-0.5 text-xs font-medium text-[var(--color-destructive-subtle-fg,oklch(40%_0.15_25))]">
+    <button
+      type="button"
+      aria-haspopup="dialog"
+      onClick={onOpenReport}
+      className={cn(
+        "inline-flex cursor-pointer items-center gap-1.5 rounded bg-destructive-subtle px-2 py-0.5 text-xs font-medium text-destructive-subtle-fg",
+        "underline-offset-2 hover:underline",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+      )}
+    >
       <ShieldAlert aria-hidden="true" className="size-3.5" />
       Chain break
-      {verify.data.broken_at ? (
-        <span className="font-mono tabular-nums">{verify.data.broken_at}</span>
-      ) : null}
-    </span>
+    </button>
   );
 }
 
@@ -386,6 +452,7 @@ function IntegrityBadge({
 interface DayGroupData {
   key: string;
   label: string;
+  isToday: boolean;
   entries: AuditEntry[];
 }
 
@@ -406,6 +473,7 @@ function groupByDay(entries: AuditEntry[]): DayGroupData[] {
       group = {
         key,
         label: dayLabel(key, date, todayKey, yesterdayKey),
+        isToday: key === todayKey,
         entries: [],
       };
       byKey.set(key, group);
@@ -440,197 +508,46 @@ function dayLabel(
 }
 
 // ---------------------------------------------------------------------------
-// DayGroup + AuditEntryRow
+// DayGroup — renders each day's entries as collapsed runs + standalone rows
 // ---------------------------------------------------------------------------
-
-type SiteMin = { id: string; name?: string | null; url: string };
 
 function DayGroup({
   label,
+  isToday,
   entries,
   sites,
 }: {
   label: string;
+  isToday: boolean;
   entries: AuditEntry[];
   sites: SiteMin[];
 }) {
+  const runs = useMemo(() => groupRuns(entries), [entries]);
+
   return (
     <div>
-      <div className="sticky top-0 z-10 border-b border-[var(--color-border)] bg-[var(--color-card)]/95 px-4 py-1.5 text-xs font-medium uppercase tracking-wide text-[var(--color-muted-foreground)] backdrop-blur supports-[backdrop-filter]:bg-[var(--color-card)]/80">
+      <div className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-card/80">
         {label}
       </div>
-      <ul className="divide-y divide-[var(--color-border)]">
-        {entries.map((entry) => (
-          <li key={entry.id}>
-            <AuditEntryRow entry={entry} sites={sites} />
-          </li>
-        ))}
+      <ul className="divide-y divide-border">
+        {runs.map((run, index) => {
+          // Every run always has at least one entry (see groupRuns); its first
+          // entry's id is a stable, pure key. The index fallback only matters
+          // for a hypothetical empty run, which groupRuns never produces.
+          const key = run.entries[0]?.id ?? `run-${index}`;
+          return (
+            <li key={key}>
+              {run.kind === "run" ? (
+                <AuditRunRow run={run} sites={sites} isToday={isToday} />
+              ) : (
+                <AuditEntryRow entry={run.entries[0]!} sites={sites} isToday={isToday} />
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
-}
-
-function AuditEntryRow({
-  entry,
-  sites,
-}: {
-  entry: AuditEntry;
-  sites: SiteMin[];
-}) {
-  const denied = isDenied(entry.action);
-  const destructive = isDestructive(entry.action);
-  const label = actionLabel(entry.action);
-  const rel = relativeTime(entry.created_at);
-
-  // Resolve target site name.
-  const targetSite =
-    entry.target_type === "site"
-      ? (sites.find((s) => s.id === entry.target_id) ?? null)
-      : null;
-
-  // Pull path from metadata for file ops.
-  const filePath =
-    entry.metadata && typeof entry.metadata["path"] === "string"
-      ? entry.metadata["path"]
-      : null;
-
-  // Outcome chip: "denied" from action suffix, else "allowed".
-  const outcome: "denied" | "allowed" | "destructive" = denied
-    ? "denied"
-    : destructive
-      ? "destructive"
-      : "allowed";
-
-  return (
-    <div
-      className={cn(
-        "flex items-start gap-3 px-4 py-3",
-        denied &&
-          "border-l-2 border-[var(--color-destructive)] bg-[var(--color-destructive)]/5",
-      )}
-    >
-      {/* Outcome indicator dot */}
-      <OutcomeDot outcome={outcome} />
-
-      {/* Content */}
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        {/* Line 1: label + time */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-            <span
-              className={cn(
-                "text-sm font-medium",
-                denied
-                  ? "text-[var(--color-destructive)]"
-                  : "text-[var(--color-foreground)]",
-              )}
-            >
-              {label}
-            </span>
-            <OutcomeChip outcome={outcome} />
-          </div>
-          <time
-            dateTime={entry.created_at}
-            title={entry.created_at}
-            className="shrink-0 text-xs tabular-nums text-[var(--color-muted-foreground)]"
-          >
-            {rel ?? "just now"}
-          </time>
-        </div>
-
-        {/* Line 2: actor + target */}
-        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
-          {/* Action */}
-          <span className="rounded-sm bg-[var(--color-muted)] px-1.5 py-0.5 font-mono text-[11px]">
-            {entry.action}
-          </span>
-
-          {/* Actor */}
-          <span aria-hidden="true">·</span>
-          <span>
-            {entry.actor_type === "system" || !entry.actor_id ? (
-              <span className="italic">system</span>
-            ) : (
-              <span className="font-medium text-[var(--color-foreground)]">
-                {entry.actor_id}
-              </span>
-            )}
-          </span>
-
-          {/* Target site */}
-          {targetSite ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="font-medium text-[var(--color-foreground)]">
-                {targetSite.name ?? targetSite.url}
-              </span>
-            </>
-          ) : entry.target_id ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono text-[11px] text-[var(--color-muted-foreground)]">
-                {entry.target_type}/{entry.target_id.slice(0, 8)}
-              </span>
-            </>
-          ) : null}
-
-          {/* File path (from metadata) */}
-          {filePath ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span
-                className="max-w-[280px] truncate font-mono text-[11px]"
-                title={filePath}
-              >
-                {filePath}
-              </span>
-            </>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Outcome chip + dot
-// ---------------------------------------------------------------------------
-
-type Outcome = "allowed" | "denied" | "destructive";
-
-function OutcomeDot({ outcome }: { outcome: Outcome }) {
-  const cls =
-    outcome === "denied"
-      ? "bg-[var(--color-destructive)]"
-      : outcome === "destructive"
-        ? "bg-[var(--color-warning,oklch(72%_0.15_70))]"
-        : "bg-[var(--color-muted-foreground)]";
-
-  return (
-    <span
-      aria-hidden="true"
-      className={cn("mt-2 size-1.5 shrink-0 rounded-full", cls)}
-    />
-  );
-}
-
-function OutcomeChip({ outcome }: { outcome: Outcome }) {
-  if (outcome === "denied") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-[var(--color-destructive)]/15 px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-destructive)]">
-        <ClipboardList aria-hidden="true" className="size-3" />
-        Denied
-      </span>
-    );
-  }
-  if (outcome === "destructive") {
-    return (
-      <span className="inline-flex items-center rounded bg-[var(--color-warning,oklch(72%_0.15_70))]/15 px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-warning,oklch(40%_0.1_70))]">
-        Write
-      </span>
-    );
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -652,17 +569,12 @@ function EmptyAudit({
     : null;
 
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-6 py-14 text-center">
-      <Inbox
-        aria-hidden="true"
-        className="size-6 text-[var(--color-muted-foreground)]"
-      />
+    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-card px-6 py-14 text-center">
+      <Inbox aria-hidden="true" className="size-6 text-muted-foreground" />
       {hasFilter ? (
         <>
-          <p className="text-sm font-medium text-[var(--color-foreground)]">
-            No matching events
-          </p>
-          <p className="max-w-xs text-xs text-[var(--color-muted-foreground)]">
+          <p className="text-sm font-medium text-foreground">No matching events</p>
+          <p className="max-w-xs text-xs text-muted-foreground">
             {action && siteName
               ? `No ${action} events for ${siteName}.`
               : action
@@ -672,10 +584,8 @@ function EmptyAudit({
         </>
       ) : (
         <>
-          <p className="text-sm font-medium text-[var(--color-foreground)]">
-            No audit events yet
-          </p>
-          <p className="max-w-xs text-xs text-[var(--color-muted-foreground)]">
+          <p className="text-sm font-medium text-foreground">No audit events yet</p>
+          <p className="max-w-xs text-xs text-muted-foreground">
             Operator events are recorded here as they occur across all sites in
             your account.
           </p>
@@ -685,27 +595,56 @@ function EmptyAudit({
   );
 }
 
+function EmptyFilteredAudit({
+  outcome,
+  query,
+  onClear,
+}: {
+  outcome: OutcomeFilter;
+  query: string;
+  onClear: () => void;
+}) {
+  const outcomeLabel = OUTCOME_FILTERS.find((f) => f.value === outcome)?.label ?? "matching";
+
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-card px-6 py-14 text-center">
+      <Inbox aria-hidden="true" className="size-6 text-muted-foreground" />
+      <p className="text-sm font-medium text-foreground">
+        {outcome === "all"
+          ? "No events match your search"
+          : `No ${outcomeLabel.toLowerCase()} events in this range`}
+      </p>
+      <p className="max-w-xs text-xs text-muted-foreground">
+        {query
+          ? `Nothing on this page matches "${query}".`
+          : "Try a different outcome filter, or page back to see older events."}
+      </p>
+      <Button type="button" variant="outline" size="sm" onClick={onClear}>
+        Clear page filters
+      </Button>
+    </div>
+  );
+}
+
 function AuditSkeleton() {
   return (
     <div
       role="status"
       aria-busy="true"
-      className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]"
+      className="overflow-hidden rounded-lg border border-border bg-card"
     >
       <span className="sr-only">Loading audit log</span>
-      <div className="border-b border-[var(--color-border)] px-4 py-1.5">
+      <div className="border-b border-border px-4 py-1.5">
         <Skeleton className="h-3 w-12" />
       </div>
-      <ul className="divide-y divide-[var(--color-border)]">
+      <ul className="divide-y divide-border">
         {Array.from({ length: 8 }).map((_, i) => (
-          <li key={i} className="flex items-start gap-3 px-4 py-3">
-            <Skeleton className="mt-2 size-1.5 rounded-full" />
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <div className="flex items-center justify-between gap-3">
-                <Skeleton className="h-3.5 w-1/3" />
-                <Skeleton className="h-3 w-10 shrink-0" />
-              </div>
-              <Skeleton className="h-3 w-1/2" />
+          <li key={i} className="flex items-center gap-3 px-4 py-3">
+            <Skeleton className="size-5 shrink-0 rounded-full" />
+            <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+              <Skeleton className="h-3.5 w-1/3" />
+              <Skeleton className="h-3 w-1/4" />
+              <Skeleton className="h-3 w-10 shrink-0" />
             </div>
           </li>
         ))}

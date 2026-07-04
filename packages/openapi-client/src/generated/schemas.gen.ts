@@ -1566,6 +1566,18 @@ export const AuditEntrySchema = {
     actor_id: {
       type: "string",
     },
+    actor_name: {
+      type: "string",
+      nullable: true,
+      description:
+        "Display name of the acting user (users.name), or the API key's\nlabel (api_keys.name) when the actor is an api_key, resolved\nserver-side. Null for system events and for any actor row that no\nlonger exists.\n",
+    },
+    actor_email: {
+      type: "string",
+      nullable: true,
+      description:
+        "Email of the acting user, resolved server-side. Null for\napi_key/system actors and for any actor row that no longer\nexists.\n",
+    },
     action: {
       type: "string",
     },

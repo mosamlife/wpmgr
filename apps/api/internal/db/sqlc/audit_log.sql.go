@@ -78,9 +78,24 @@ func (q *Queries) InsertAuditEntry(ctx context.Context, arg InsertAuditEntryPara
 }
 
 const listAuditEntries = `-- name: ListAuditEntries :many
-SELECT id, tenant_id, actor_type, actor_id, action, target_type, target_id, metadata, prev_hash, hash, created_at FROM audit_log
-WHERE tenant_id = $1
-ORDER BY created_at ASC, id ASC
+SELECT
+    al.id, al.tenant_id, al.actor_type, al.actor_id, al.action, al.target_type,
+    al.target_id, al.metadata, al.prev_hash, al.hash, al.created_at,
+    u.name  AS actor_user_name,
+    ak.name AS actor_key_name,
+    u.email AS actor_email
+FROM audit_log al
+LEFT JOIN users u
+    ON al.actor_type = 'user'
+   AND u.id = CASE WHEN al.actor_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                    THEN al.actor_id::uuid END
+LEFT JOIN api_keys ak
+    ON al.actor_type = 'api_key'
+   AND ak.tenant_id = al.tenant_id
+   AND ak.id = CASE WHEN al.actor_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                     THEN al.actor_id::uuid END
+WHERE al.tenant_id = $1
+ORDER BY al.created_at DESC, al.id DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -90,15 +105,56 @@ type ListAuditEntriesParams struct {
 	Offset   int32     `json:"offset"`
 }
 
-func (q *Queries) ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]AuditLog, error) {
+type ListAuditEntriesRow struct {
+	ID            uuid.UUID `json:"id"`
+	TenantID      uuid.UUID `json:"tenant_id"`
+	ActorType     string    `json:"actor_type"`
+	ActorID       string    `json:"actor_id"`
+	Action        string    `json:"action"`
+	TargetType    string    `json:"target_type"`
+	TargetID      string    `json:"target_id"`
+	Metadata      []byte    `json:"metadata"`
+	PrevHash      string    `json:"prev_hash"`
+	Hash          string    `json:"hash"`
+	CreatedAt     time.Time `json:"created_at"`
+	ActorUserName *string   `json:"actor_user_name"`
+	ActorKeyName  *string   `json:"actor_key_name"`
+	ActorEmail    *string   `json:"actor_email"`
+}
+
+// Newest-first, matching the web "Audit" page contract (page 1 = most recent;
+// Next/Prev page via OFFSET now walks BACKWARD in time). actor_user_name/
+// actor_key_name/actor_email resolve the acting user's display name + email,
+// or (for an api_key actor) the key's label, via a defensive regex-guarded
+// join: actor_id is a free-text column shared across actor_type in
+// ('user','api_key','system'), so a non-uuid or empty actor_id must never
+// reach the ::uuid cast — it should just yield NULL actor fields rather than
+// erroring the query. Note the regex guard is NOT expressed as a plain
+// `actor_id ~ regex AND id = actor_id::uuid` conjunction in the ON clause:
+// Postgres does not guarantee AND operands are evaluated left-to-right or
+// short-circuited, so the planner is free to evaluate the ::uuid cast before
+// the regex guard for every left-hand row, which throws 22P02 (invalid input
+// syntax for type uuid) for actor_type='system'/” rows (written by uptime
+// alerts, backups, scans, updates, etc.) well before the guard would have
+// filtered them out. The CASE WHEN below forces the cast to only ever be
+// evaluated when the regex already matched, yielding NULL (safe, no cast) for
+// every non-uuid actor_id. actor_user_name and actor_key_name are mutually
+// exclusive (the two LEFT JOINs are gated on actor_type, so at most one ever
+// matches per row); the audit package merges them into one display name. All
+// three columns are NULL for actor_type='system' and for any actor row that
+// no longer exists. Two separate nullable name columns (instead of a
+// CASE/COALESCE over them) because sqlc cannot infer NULL-safe Go types
+// across a CASE/COALESCE spanning two different LEFT JOINs — see the LEFT
+// JOIN LATERAL note in alerts.sql for the same class of limitation.
+func (q *Queries) ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]ListAuditEntriesRow, error) {
 	rows, err := q.db.Query(ctx, listAuditEntries, arg.TenantID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AuditLog
+	var items []ListAuditEntriesRow
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditEntriesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
@@ -111,6 +167,9 @@ func (q *Queries) ListAuditEntries(ctx context.Context, arg ListAuditEntriesPara
 			&i.PrevHash,
 			&i.Hash,
 			&i.CreatedAt,
+			&i.ActorUserName,
+			&i.ActorKeyName,
+			&i.ActorEmail,
 		); err != nil {
 			return nil, err
 		}
@@ -123,11 +182,26 @@ func (q *Queries) ListAuditEntries(ctx context.Context, arg ListAuditEntriesPara
 }
 
 const listAuditEntriesFiltered = `-- name: ListAuditEntriesFiltered :many
-SELECT id, tenant_id, actor_type, actor_id, action, target_type, target_id, metadata, prev_hash, hash, created_at FROM audit_log
-WHERE tenant_id = $1
-  AND ($2 = '' OR action LIKE $2 || '%')
-  AND ($3::text = '00000000-0000-0000-0000-000000000000' OR (target_type = 'site' AND target_id = $3::text))
-ORDER BY created_at ASC, id ASC
+SELECT
+    al.id, al.tenant_id, al.actor_type, al.actor_id, al.action, al.target_type,
+    al.target_id, al.metadata, al.prev_hash, al.hash, al.created_at,
+    u.name  AS actor_user_name,
+    ak.name AS actor_key_name,
+    u.email AS actor_email
+FROM audit_log al
+LEFT JOIN users u
+    ON al.actor_type = 'user'
+   AND u.id = CASE WHEN al.actor_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                    THEN al.actor_id::uuid END
+LEFT JOIN api_keys ak
+    ON al.actor_type = 'api_key'
+   AND ak.tenant_id = al.tenant_id
+   AND ak.id = CASE WHEN al.actor_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                     THEN al.actor_id::uuid END
+WHERE al.tenant_id = $1
+  AND ($2 = '' OR al.action LIKE $2 || '%')
+  AND ($3::text = '00000000-0000-0000-0000-000000000000' OR (al.target_type = 'site' AND al.target_id = $3::text))
+ORDER BY al.created_at DESC, al.id DESC
 LIMIT  $5
 OFFSET $4
 `
@@ -140,11 +214,32 @@ type ListAuditEntriesFilteredParams struct {
 	RowLimit     int32       `json:"row_limit"`
 }
 
+type ListAuditEntriesFilteredRow struct {
+	ID            uuid.UUID `json:"id"`
+	TenantID      uuid.UUID `json:"tenant_id"`
+	ActorType     string    `json:"actor_type"`
+	ActorID       string    `json:"actor_id"`
+	Action        string    `json:"action"`
+	TargetType    string    `json:"target_type"`
+	TargetID      string    `json:"target_id"`
+	Metadata      []byte    `json:"metadata"`
+	PrevHash      string    `json:"prev_hash"`
+	Hash          string    `json:"hash"`
+	CreatedAt     time.Time `json:"created_at"`
+	ActorUserName *string   `json:"actor_user_name"`
+	ActorKeyName  *string   `json:"actor_key_name"`
+	ActorEmail    *string   `json:"actor_email"`
+}
+
 // Optional filters: action prefix (LIKE 'prefix%'), site_id (target_type='site'
 // AND target_id = site_id::text). Passing an empty string for action_prefix or
 // a zero UUID for site_id disables those filters respectively. RLS is still the
 // primary tenant-isolation gate; the explicit tenant_id is defense-in-depth.
-func (q *Queries) ListAuditEntriesFiltered(ctx context.Context, arg ListAuditEntriesFilteredParams) ([]AuditLog, error) {
+// Newest-first (see ListAuditEntries); actor_user_name/actor_key_name/
+// actor_email resolve the same way, including the CASE-guarded ::uuid cast
+// (see ListAuditEntries for the full join contract and why a plain regex-AND
+// guard is NOT safe here).
+func (q *Queries) ListAuditEntriesFiltered(ctx context.Context, arg ListAuditEntriesFilteredParams) ([]ListAuditEntriesFilteredRow, error) {
 	rows, err := q.db.Query(ctx, listAuditEntriesFiltered,
 		arg.TenantID,
 		arg.ActionPrefix,
@@ -156,9 +251,9 @@ func (q *Queries) ListAuditEntriesFiltered(ctx context.Context, arg ListAuditEnt
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AuditLog
+	var items []ListAuditEntriesFilteredRow
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditEntriesFilteredRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
@@ -171,6 +266,9 @@ func (q *Queries) ListAuditEntriesFiltered(ctx context.Context, arg ListAuditEnt
 			&i.PrevHash,
 			&i.Hash,
 			&i.CreatedAt,
+			&i.ActorUserName,
+			&i.ActorKeyName,
+			&i.ActorEmail,
 		); err != nil {
 			return nil, err
 		}
