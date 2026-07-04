@@ -1252,4 +1252,491 @@ final class Site2faModuleTest extends TestCase
             'N1 regression: cross-request check must still return true when no failures recorded'
         );
     }
+
+    // -------------------------------------------------------------------------
+    // I1: Browser-binding fix for maybeResumeInterstitial() (wp.org review, 0.61.9)
+    //
+    // THE VULNERABILITY: maybeResumeInterstitial() re-rendered ANY pending
+    // session (including SETUP, which displays a pending TOTP secret/QR) keyed
+    // only on $_POST['wpmgr_2fa_user_id'] plus the existence of a server-side
+    // session -- with no proof the caller was the browser that started the
+    // flow. An attacker who merely knew/guessed a user_id could disclose that
+    // user's pending TOTP secret while a setup session was live.
+    //
+    // THE FIX: createSession() now mints a random bind token, stores only its
+    // SHA-256 hash in session['bind_hash'], and hands the raw token to the
+    // browser via an HttpOnly cookie (COOKIE_BIND). maybeResumeInterstitial()
+    // requires hasValidBindCookie() to match BEFORE rendering ANY pending
+    // screen. The existing HMAC-token verification on the SUBMIT path
+    // (handleVerifySubmit -> verifySessionHmac) is untouched by this fix and
+    // is re-verified below to still function correctly.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Helper: build a SESSION_TYPE_2FA_SETUP session array bound to the given
+     * raw bind token, without going through createSession() (so the test
+     * controls the raw token value instead of a random one).
+     *
+     * @param int    $userId
+     * @param string $bindToken Raw bind token; session['bind_hash'] is its SHA-256.
+     * @param string $step      SETUP_STEP_* constant.
+     * @return array<string,mixed>
+     */
+    private function buildSetupSession(int $userId, string $bindToken, string $step = Site2faModule::SETUP_STEP_TOTP): array
+    {
+        return [
+            'id'          => bin2hex(random_bytes(16)),
+            'uuid'        => bin2hex(random_bytes(16)),
+            'user_id'     => $userId,
+            'created_at'  => time(),
+            'redirect_to' => '/wp-admin/',
+            'remember_me' => false,
+            'attempts'    => 0,
+            'type'        => Site2faModule::SESSION_TYPE_2FA_SETUP,
+            'setup_step'  => $step,
+            'bind_hash'   => hash('sha256', $bindToken),
+        ];
+    }
+
+    public function test_i1_createsession_mints_a_bind_hash_and_persists_it(): void
+    {
+        $policy = SecurityPolicy::fromArray(['policy' => ['two_factor_enabled' => true]]);
+        $module = $this->makeModule($policy);
+        $userId = 80;
+
+        $createRef = new \ReflectionMethod($module, 'createSession');
+        $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+
+        $this->assertArrayHasKey('bind_hash', $session, 'I1: createSession must mint a bind_hash');
+        $this->assertIsString($session['bind_hash'] ?? null);
+        $this->assertSame(64, strlen((string) $session['bind_hash']), 'I1: bind_hash must be a sha256 hex digest (64 chars)');
+
+        $stored = $this->userMeta[$userId][Site2faModule::META_SESSION] ?? null;
+        $this->assertIsArray($stored, 'I1: the session must be persisted to user-meta');
+        $this->assertSame($session['bind_hash'], $stored['bind_hash'] ?? null, 'I1: bind_hash must be part of the persisted session');
+    }
+
+    public function test_i1_hasvalidbindcookie_accepts_the_matching_raw_token(): void
+    {
+        $policy    = SecurityPolicy::fromArray(['policy' => ['two_factor_enabled' => true]]);
+        $module    = $this->makeModule($policy);
+        $bindToken = bin2hex(random_bytes(32));
+        $session   = $this->buildSetupSession(90, $bindToken);
+
+        $_COOKIE[Site2faModule::COOKIE_BIND] = $bindToken;
+
+        $ref    = new \ReflectionMethod($module, 'hasValidBindCookie');
+        $result = $ref->invoke($module, $session);
+
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        $this->assertTrue($result, 'I1: a bind cookie whose hash matches session[bind_hash] must validate');
+    }
+
+    public function test_i1_hasvalidbindcookie_rejects_a_wrong_token(): void
+    {
+        $policy    = SecurityPolicy::fromArray(['policy' => ['two_factor_enabled' => true]]);
+        $module    = $this->makeModule($policy);
+        $bindToken = bin2hex(random_bytes(32));
+        $session   = $this->buildSetupSession(91, $bindToken);
+
+        // A different token entirely (e.g. an attacker's guess).
+        $_COOKIE[Site2faModule::COOKIE_BIND] = bin2hex(random_bytes(32));
+
+        $ref    = new \ReflectionMethod($module, 'hasValidBindCookie');
+        $result = $ref->invoke($module, $session);
+
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        $this->assertFalse($result, 'I1: a non-matching bind cookie must be rejected');
+    }
+
+    public function test_i1_hasvalidbindcookie_rejects_when_cookie_is_absent(): void
+    {
+        $policy    = SecurityPolicy::fromArray(['policy' => ['two_factor_enabled' => true]]);
+        $module    = $this->makeModule($policy);
+        $bindToken = bin2hex(random_bytes(32));
+        $session   = $this->buildSetupSession(92, $bindToken);
+
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        $ref    = new \ReflectionMethod($module, 'hasValidBindCookie');
+        $result = $ref->invoke($module, $session);
+
+        $this->assertFalse($result, 'I1: an absent bind cookie must be rejected, never treated as a pass');
+    }
+
+    public function test_i1_hasvalidbindcookie_backward_compat_rejects_pre_fix_session(): void
+    {
+        // Simulate a session minted before this fix: no bind_hash key at all.
+        // This must be treated as "cannot safely resume", never crash, and
+        // never be trusted even if the caller supplies SOME cookie value.
+        $policy    = SecurityPolicy::fromArray(['policy' => ['two_factor_enabled' => true]]);
+        $module    = $this->makeModule($policy);
+        $session   = $this->buildSetupSession(93, bin2hex(random_bytes(32)));
+        unset($session['bind_hash']);
+
+        $_COOKIE[Site2faModule::COOKIE_BIND] = 'attacker-supplied-value-of-any-length-00000000';
+
+        $ref    = new \ReflectionMethod($module, 'hasValidBindCookie');
+        $result = $ref->invoke($module, $session);
+
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        $this->assertFalse($result, 'I1 backward-compat: a pre-fix session with no bind_hash must never be resumable');
+    }
+
+    public function test_i1_resume_setup_without_bind_cookie_never_generates_or_renders_the_totp_secret(): void
+    {
+        // THE VULNERABILITY, end to end: an attacker who only knows/guesses a
+        // user_id (no bind cookie at all) must not be able to trigger the
+        // setup interstitial's TOTP-secret screen via the bare resume path.
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+        $module = $this->makeModule($policy);
+        $userId = 94;
+        $user   = $this->makeUser($userId, ['administrator']);
+
+        $bindToken = bin2hex(random_bytes(32));
+        $session   = $this->buildSetupSession($userId, $bindToken, Site2faModule::SETUP_STEP_TOTP);
+
+        $storeRef = new \ReflectionMethod($module, 'storeSession');
+        $storeRef->invoke($module, $userId, $session);
+
+        Functions\when('get_userdata')->justReturn($user);
+
+        $renderReached = false;
+        Functions\when('login_header')->alias(function () use (&$renderReached) {
+            $renderReached = true;
+            // Should never fire; throwing makes a regression loud rather than
+            // silently rendering (and this test would then fail as an error).
+            throw new \RuntimeException('marker:setup_rendered_without_bind');
+        });
+
+        // Attacker request: only the (guessable) user_id, no wpmgr_2fa_bind cookie.
+        $_POST['wpmgr_2fa_user_id'] = (string) $userId;
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        ob_start();
+        try {
+            $module->maybeResumeInterstitial();
+        } catch (\RuntimeException $e) {
+            ob_end_clean();
+            throw $e;
+        }
+        ob_end_clean();
+
+        unset($_POST['wpmgr_2fa_user_id']);
+
+        $this->assertFalse(
+            $renderReached,
+            'SECURITY (I1): the setup screen must never render for a caller with no valid bind cookie'
+        );
+        $this->assertArrayNotHasKey(
+            TotpProvider::META_PENDING_SECRET,
+            $this->userMeta[$userId] ?? [],
+            'SECURITY (I1): no TOTP secret may be generated/exposed when the bind cookie is absent'
+        );
+        // Fail-closed on the RENDER, not on the session: the pending session is
+        // left untouched so the legitimate browser (which does carry the
+        // cookie) can still resume it.
+        $this->assertArrayHasKey(
+            Site2faModule::META_SESSION,
+            $this->userMeta[$userId] ?? [],
+            'I1: the pending session itself is left intact when a resume is rejected'
+        );
+    }
+
+    public function test_i1_resume_setup_with_wrong_bind_cookie_never_renders_the_totp_secret(): void
+    {
+        // Same as above, but the caller presents SOME cookie -- just not the
+        // one minted with this session (e.g. a stale/foreign cookie).
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+        $module = $this->makeModule($policy);
+        $userId = 95;
+        $user   = $this->makeUser($userId, ['administrator']);
+
+        $bindToken = bin2hex(random_bytes(32));
+        $session   = $this->buildSetupSession($userId, $bindToken, Site2faModule::SETUP_STEP_TOTP);
+
+        $storeRef = new \ReflectionMethod($module, 'storeSession');
+        $storeRef->invoke($module, $userId, $session);
+
+        Functions\when('get_userdata')->justReturn($user);
+
+        $renderReached = false;
+        Functions\when('login_header')->alias(function () use (&$renderReached) {
+            $renderReached = true;
+            throw new \RuntimeException('marker:setup_rendered_with_wrong_bind');
+        });
+
+        $_POST['wpmgr_2fa_user_id']          = (string) $userId;
+        $_COOKIE[Site2faModule::COOKIE_BIND] = bin2hex(random_bytes(32));
+
+        ob_start();
+        try {
+            $module->maybeResumeInterstitial();
+        } catch (\RuntimeException $e) {
+            ob_end_clean();
+            throw $e;
+        }
+        ob_end_clean();
+
+        unset($_POST['wpmgr_2fa_user_id'], $_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        $this->assertFalse(
+            $renderReached,
+            'SECURITY (I1): a mismatched bind cookie must not resume the setup screen either'
+        );
+        $this->assertArrayNotHasKey(
+            TotpProvider::META_PENDING_SECRET,
+            $this->userMeta[$userId] ?? [],
+            'SECURITY (I1): no TOTP secret may be generated/exposed with a mismatched bind cookie'
+        );
+    }
+
+    public function test_i1_resume_2fa_verify_session_without_bind_cookie_does_not_render(): void
+    {
+        // The gate applies uniformly to the plain 2FA verify interstitial too
+        // (no secret to leak there, but resuming it without proof of browser
+        // origin is still session confusion we should not allow).
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+        $module = $this->makeModule($policy);
+        $userId = 96;
+        $user   = $this->makeUser($userId, ['administrator']);
+
+        $bindToken = bin2hex(random_bytes(32));
+        $session   = [
+            'id'          => bin2hex(random_bytes(16)),
+            'uuid'        => bin2hex(random_bytes(16)),
+            'user_id'     => $userId,
+            'created_at'  => time(),
+            'redirect_to' => '/wp-admin/',
+            'remember_me' => false,
+            'attempts'    => 0,
+            'type'        => '2fa',
+            'bind_hash'   => hash('sha256', $bindToken),
+        ];
+
+        $storeRef = new \ReflectionMethod($module, 'storeSession');
+        $storeRef->invoke($module, $userId, $session);
+
+        Functions\when('get_userdata')->justReturn($user);
+
+        $renderReached = false;
+        Functions\when('login_header')->alias(function () use (&$renderReached) {
+            $renderReached = true;
+            throw new \RuntimeException('marker:2fa_rendered_without_bind');
+        });
+
+        $_POST['wpmgr_2fa_user_id'] = (string) $userId;
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        ob_start();
+        try {
+            $module->maybeResumeInterstitial();
+        } catch (\RuntimeException $e) {
+            ob_end_clean();
+            throw $e;
+        }
+        ob_end_clean();
+
+        unset($_POST['wpmgr_2fa_user_id']);
+
+        $this->assertFalse(
+            $renderReached,
+            'I1: the plain 2FA verify interstitial must also not resume without a matching bind cookie'
+        );
+    }
+
+    public function test_i1_resume_with_matching_bind_cookie_still_renders_the_setup_screen(): void
+    {
+        // The legitimate flow: the SAME browser that received the bind cookie
+        // when the session was created presents it back. Resume must still
+        // work exactly as before this fix.
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+        $module = $this->makeModule($policy);
+        $userId = 97;
+        $user   = $this->makeUser($userId, ['administrator']);
+
+        $bindToken = bin2hex(random_bytes(32));
+        $session   = $this->buildSetupSession($userId, $bindToken, Site2faModule::SETUP_STEP_TOTP);
+
+        $storeRef = new \ReflectionMethod($module, 'storeSession');
+        $storeRef->invoke($module, $userId, $session);
+
+        Functions\when('get_userdata')->justReturn($user);
+        // buildSetupTotpHtml() calls get_bloginfo('name') for the QR issuer label.
+        Functions\when('get_bloginfo')->justReturn('Test Site');
+
+        $reachedEnd = false;
+        Functions\when('login_footer')->alias(function () use (&$reachedEnd) {
+            $reachedEnd = true;
+            throw new \RuntimeException('marker:setup_render_complete');
+        });
+
+        // Legitimate browser: presents the exact bind token minted with the session.
+        $_POST['wpmgr_2fa_user_id']          = (string) $userId;
+        $_COOKIE[Site2faModule::COOKIE_BIND] = $bindToken;
+
+        $threwCompletionMarker = false;
+        ob_start();
+        try {
+            $module->maybeResumeInterstitial();
+        } catch (\RuntimeException $e) {
+            if ($e->getMessage() === 'marker:setup_render_complete') {
+                $threwCompletionMarker = true;
+            } else {
+                ob_end_clean();
+                throw $e;
+            }
+        }
+        ob_end_clean();
+
+        unset($_POST['wpmgr_2fa_user_id'], $_COOKIE[Site2faModule::COOKIE_BIND]);
+
+        $this->assertTrue($reachedEnd, 'I1: a legitimate resume with a matching bind cookie must reach the full render');
+        $this->assertTrue($threwCompletionMarker, 'I1: rendering must run to completion for a valid bind cookie');
+        $this->assertArrayHasKey(
+            TotpProvider::META_PENDING_SECRET,
+            $this->userMeta[$userId] ?? [],
+            'I1: a legitimate resume must still generate/display the pending TOTP secret exactly as before this fix'
+        );
+    }
+
+    public function test_i1_handleverifysubmit_rejects_wrong_hmac_token_with_valid_session(): void
+    {
+        // The SUBMIT path's HMAC check (verifySessionHmac) is unchanged by this
+        // fix. Confirm it still rejects an incorrect token on an otherwise
+        // valid, live session.
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+        $module = $this->makeModule($policy);
+        $userId = 98;
+        $user   = $this->makeUser($userId, ['administrator']);
+
+        $createRef = new \ReflectionMethod($module, 'createSession');
+        $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+
+        Functions\when('get_userdata')->justReturn($user);
+
+        $_POST['wpmgr_2fa_user_id']    = (string) $userId;
+        $_POST['wpmgr_2fa_session_id'] = $session['id'];
+        $_POST['wpmgr_2fa_token']      = 'not-the-real-hmac-token';
+        $_POST['wpmgr_2fa_provider']   = 'email';
+
+        $threw = false;
+        try {
+            $module->handleVerifySubmit();
+        } catch (\RuntimeException $e) {
+            $threw = str_contains($e->getMessage(), 'Session expired or invalid');
+        }
+
+        unset(
+            $_POST['wpmgr_2fa_user_id'],
+            $_POST['wpmgr_2fa_session_id'],
+            $_POST['wpmgr_2fa_token'],
+            $_POST['wpmgr_2fa_provider']
+        );
+
+        $this->assertTrue($threw, 'I1 regression: handleVerifySubmit must still reject an incorrect HMAC token');
+        $this->assertArrayNotHasKey(
+            Site2faModule::META_SESSION,
+            $this->userMeta[$userId] ?? [],
+            'the invalid-token submit path must still clear the session'
+        );
+    }
+
+    public function test_i1_handleverifysubmit_accepts_correct_hmac_token_and_proceeds_past_the_session_gate(): void
+    {
+        // The SUBMIT path's HMAC check must still ACCEPT a correct token on a
+        // valid session and let processing continue (past the session/TTL/
+        // attempt gates, into provider handling) -- proving this fix did not
+        // regress the legitimate verify flow.
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+        $module = $this->makeModule($policy);
+        $userId = 99;
+        $user   = $this->makeUser($userId, ['administrator']);
+
+        $createRef = new \ReflectionMethod($module, 'createSession');
+        $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+
+        $hmacRef = new \ReflectionMethod($module, 'computeSessionHmac');
+        $hmac = $hmacRef->invoke($module, $userId, $session['id'], $session['created_at'], $session['uuid']);
+
+        Functions\when('get_userdata')->justReturn($user);
+        // renderInterstitial() falls back to the email provider, whose preRender()
+        // sends a code via wp_hash()/get_bloginfo()/wp_mail(); wp_mail is absent so
+        // sendCode() ultimately no-ops, but wp_hash()/get_bloginfo() are still called
+        // unconditionally beforehand.
+        Functions\when('wp_hash')->alias(fn (string $data) => hash('sha256', $data));
+        Functions\when('get_bloginfo')->justReturn('Test Site');
+        Functions\when('wp_mail')->justReturn(true);
+
+        $reachedProviderStage = false;
+        Functions\when('login_header')->alias(function () use (&$reachedProviderStage) {
+            $reachedProviderStage = true;
+            throw new \RuntimeException('marker:reached_provider_stage');
+        });
+
+        $_POST['wpmgr_2fa_user_id']    = (string) $userId;
+        $_POST['wpmgr_2fa_session_id'] = $session['id'];
+        $_POST['wpmgr_2fa_token']      = $hmac;
+        // An unknown provider key routes to renderInterstitial()'s "Invalid
+        // provider selected" branch -- reaching it proves the HMAC/TTL/attempt
+        // gates were all passed with a correctly computed token.
+        $_POST['wpmgr_2fa_provider']   = 'not-a-real-provider';
+
+        $threwMarker = false;
+        ob_start();
+        try {
+            $module->handleVerifySubmit();
+        } catch (\RuntimeException $e) {
+            if ($e->getMessage() === 'marker:reached_provider_stage') {
+                $threwMarker = true;
+            } else {
+                ob_end_clean();
+                throw $e;
+            }
+        }
+        ob_end_clean();
+
+        unset(
+            $_POST['wpmgr_2fa_user_id'],
+            $_POST['wpmgr_2fa_session_id'],
+            $_POST['wpmgr_2fa_token'],
+            $_POST['wpmgr_2fa_provider']
+        );
+
+        $this->assertTrue($reachedProviderStage, 'I1 regression: a correct HMAC token on a valid session must still pass the submit-path gate');
+        $this->assertTrue($threwMarker);
+    }
 }

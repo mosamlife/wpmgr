@@ -63,6 +63,28 @@
  * exactly mirroring the 2FA failure/success paths. A legitimate user who changes
  * their password successfully is NOT counted as a failure.
  *
+ * BROWSER-BINDING FIX (I1 fix -- wp.org review, 0.61.9):
+ * maybeResumeInterstitial() re-renders a pending session keyed purely on
+ * $_POST['wpmgr_2fa_user_id'] plus the existence of a server-side session --
+ * with no proof the caller is the browser that started the flow. For a pending
+ * SETUP session this let an unauthenticated caller who merely knows or guesses
+ * a user_id (e.g. 1) POST it to wp-login.php and have renderSetupScreen()
+ * disclose that user's pending TOTP secret/QR, undermining enrollment.
+ *
+ * Fix: every session minted by createSession() also mints a random "bind"
+ * token, stores only its SHA-256 hash in session['bind_hash'], and sets an
+ * HttpOnly/SameSite=Lax cookie (COOKIE_BIND) carrying the raw token, scoped to
+ * the login path and expiring with the session. maybeResumeInterstitial() now
+ * requires hasValidBindCookie() to hash_equals()-match BEFORE rendering ANY
+ * pending screen (setup, 2FA verify, or forced-change); a missing or
+ * mismatched cookie falls through to the normal login page instead of
+ * re-rendering anything. A session minted before this fix (no bind_hash key)
+ * is treated as unsafe to resume -- never as implicitly trusted -- the user
+ * simply logs in again to mint a bound session. The existing HMAC token on the
+ * verify/setup SUBMIT path (computeSessionHmac/verifySessionHmac) is
+ * unchanged: this adds the render-time browser binding the resume path was
+ * missing, it does not replace the HMAC.
+ *
  * LOCKOUT-PROOFING:
  * - If define('WPMGR_DISABLE_SITE_2FA', true) is in wp-config, 2FA and
  *   forced-change enforcement are fully disabled.
@@ -106,6 +128,18 @@ final class Site2faModule
     /** Cookie name for the trusted-device token. */
     public const COOKIE_DEVICE = 'wpmgr_2fa_device';
 
+    /**
+     * Cookie name for the browser-binding token minted alongside every
+     * interstitial session. Only the browser holding this HttpOnly cookie may
+     * resume a pending session's render on login_init -- see
+     * maybeResumeInterstitial() / hasValidBindCookie(). This closes an
+     * info-disclosure where an unauthenticated caller who merely knows or
+     * guesses a user_id could otherwise re-render a pending SETUP screen
+     * (which exposes the pending TOTP secret/QR) without ever having received
+     * the original form.
+     */
+    public const COOKIE_BIND = 'wpmgr_2fa_bind';
+
     /** Interstitial session TTL in seconds (1 hour). */
     private const SESSION_TTL = 3600;
 
@@ -120,6 +154,9 @@ final class Site2faModule
 
     /** Minimum cookie token length for trusted-device tokens. */
     private const DEVICE_TOKEN_BYTES = 32;
+
+    /** Byte length of the browser-binding token minted for interstitial sessions. */
+    private const BIND_TOKEN_BYTES = 32;
 
     /**
      * Interstitial session type identifier for the standard 2FA challenge.
@@ -639,8 +676,10 @@ final class Site2faModule
         }
 
         // Check if there is a pending session for a known user_id in POST/GET.
+        // This user_id alone proves nothing (it is attacker-guessable); the
+        // hasValidBindCookie() check below is what gates the actual render.
         $userId = isset($_POST['wpmgr_2fa_user_id']) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- interstitial session uses its own HMAC signing, not WP nonces (see section 3.2: machine session, not browser nonce)
-            ? absint(wp_unslash($_POST['wpmgr_2fa_user_id'])) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same; the HMAC token field validates session integrity
+            ? absint(wp_unslash($_POST['wpmgr_2fa_user_id'])) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
             : 0;
         if ($userId <= 0) {
             return;
@@ -653,6 +692,18 @@ final class Site2faModule
 
         $session = $this->loadSession($userId);
         if ($session === null) {
+            return;
+        }
+
+        // BROWSER-BINDING FIX (I1): only the browser that originated this
+        // session -- and therefore received the wpmgr_2fa_bind cookie when the
+        // session was created -- may resume ANY pending screen here. This
+        // path is reached with nothing but a guessable user_id and an
+        // existing session, so without a bind match we must not render
+        // anything: falling through to the normal login page, rather than
+        // re-rendering the setup screen (which can expose a pending TOTP
+        // secret/QR), the 2FA verify form, or the forced-change form.
+        if (!$this->hasValidBindCookie($session)) {
             return;
         }
 
@@ -1222,6 +1273,13 @@ final class Site2faModule
         $uuid    = bin2hex(random_bytes(16));
         $id      = bin2hex(random_bytes(16));
         $created = time();
+
+        // BROWSER-BINDING FIX (I1): mint a random token whose hash alone is
+        // stored server-side; the raw token is handed to the browser only via
+        // an HttpOnly cookie. Resuming this session's render later requires
+        // proving possession of that cookie (see hasValidBindCookie()).
+        $bindToken = bin2hex(random_bytes(self::BIND_TOKEN_BYTES));
+
         $session = [
             'id'          => $id,
             'uuid'        => $uuid,
@@ -1231,8 +1289,10 @@ final class Site2faModule
             'remember_me' => $rememberMe,
             'attempts'    => 0,
             'type'        => $type,
+            'bind_hash'   => hash('sha256', $bindToken),
         ];
         $this->storeSession($userId, $session);
+        $this->setBindCookie($bindToken);
         return $session;
     }
 
@@ -1288,6 +1348,110 @@ final class Site2faModule
         if (function_exists('delete_user_meta')) {
             delete_user_meta($userId, self::META_SESSION);
         }
+        $this->clearBindCookie();
+    }
+
+    // -------------------------------------------------------------------------
+    // Browser-binding cookie (I1 fix)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Check whether the current request carries a browser-binding cookie that
+     * hash-matches the given session's bind_hash.
+     *
+     * BACKWARD-COMPAT: a session minted before this fix carries no bind_hash
+     * key. That is treated as "cannot safely resume a session screen" -- NOT
+     * as implicitly trusted -- so this returns false rather than throwing or
+     * silently allowing the render. The user simply logs in again, which
+     * mints a fresh, bound session.
+     *
+     * @param array<string,mixed> $session
+     * @return bool
+     */
+    private function hasValidBindCookie(array $session): bool
+    {
+        if (!isset($session['bind_hash']) || !is_string($session['bind_hash']) || $session['bind_hash'] === '') {
+            return false;
+        }
+
+        if (!isset($_COOKIE[self::COOKIE_BIND]) || !is_string($_COOKIE[self::COOKIE_BIND])) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized on the next line
+            return false;
+        }
+
+        $raw = sanitize_text_field(wp_unslash($_COOKIE[self::COOKIE_BIND]));
+        if ($raw === '' || strlen($raw) < self::BIND_TOKEN_BYTES * 2) {
+            return false;
+        }
+
+        return hash_equals($session['bind_hash'], hash('sha256', $raw));
+    }
+
+    /**
+     * Set the browser-binding cookie for a newly minted interstitial session.
+     * HttpOnly + SameSite=Lax + Secure-when-SSL; scoped to the login path and
+     * expiring alongside the session (SESSION_TTL).
+     *
+     * @param string $token Raw bind token (its hash is what session['bind_hash'] stores).
+     * @return void
+     */
+    private function setBindCookie(string $token): void
+    {
+        if (headers_sent()) {
+            return;
+        }
+        setcookie(
+            self::COOKIE_BIND,
+            $token,
+            [
+                'expires'  => time() + self::SESSION_TTL,
+                'path'     => $this->loginPath(),
+                'httponly' => true,
+                'secure'   => is_ssl(),
+                'samesite' => 'Lax',
+            ]
+        );
+    }
+
+    /**
+     * Clear the browser-binding cookie. Called whenever the interstitial
+     * session itself is cleared, so a stale bind token never outlives its
+     * session.
+     *
+     * @return void
+     */
+    private function clearBindCookie(): void
+    {
+        if (headers_sent()) {
+            return;
+        }
+        setcookie(
+            self::COOKIE_BIND,
+            '',
+            [
+                'expires'  => time() - self::SESSION_TTL,
+                'path'     => $this->loginPath(),
+                'httponly' => true,
+                'secure'   => is_ssl(),
+                'samesite' => 'Lax',
+            ]
+        );
+    }
+
+    /**
+     * Resolve the path component of the site's login URL, used to scope the
+     * browser-binding cookie so it is only ever sent back to wp-login.php.
+     *
+     * @return string
+     */
+    private function loginPath(): string
+    {
+        if (function_exists('wp_login_url') && function_exists('wp_parse_url')) {
+            $parsed = wp_parse_url(wp_login_url());
+            if (is_array($parsed) && isset($parsed['path']) && is_string($parsed['path']) && $parsed['path'] !== '') {
+                return $parsed['path'];
+            }
+        }
+        return '/wp-login.php';
     }
 
     /**
