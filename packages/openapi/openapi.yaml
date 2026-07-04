@@ -9040,6 +9040,21 @@ components:
           type: string
         actor_id:
           type: string
+        actor_name:
+          type: string
+          nullable: true
+          description: |
+            Display name of the acting user (users.name), or the API key's
+            label (api_keys.name) when the actor is an api_key, resolved
+            server-side. Null for system events and for any actor row that no
+            longer exists.
+        actor_email:
+          type: string
+          nullable: true
+          description: |
+            Email of the acting user, resolved server-side. Null for
+            api_key/system actors and for any actor row that no longer
+            exists.
         action:
           type: string
         target_type:

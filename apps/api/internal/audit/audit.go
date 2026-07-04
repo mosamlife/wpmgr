@@ -278,6 +278,15 @@ type Entry struct {
 	PrevHash   string
 	Hash       string
 	CreatedAt  time.Time
+	// ActorName is the acting user's display name (users.name) when
+	// ActorType == ActorUser, or the API key's label (api_keys.name) when
+	// ActorType == ActorAPIKey. Nil for ActorSystem events and for any actor
+	// row that no longer exists (e.g. a deleted user). Only List and
+	// ListFiltered populate this field; Record's returned Entry does not.
+	ActorName *string
+	// ActorEmail is the acting user's email when ActorType == ActorUser. Nil
+	// otherwise. Only List and ListFiltered populate this field.
+	ActorEmail *string
 }
 
 // Event is the input describing something that happened.
@@ -350,6 +359,20 @@ func (r *Recorder) Record(ctx context.Context, e Event) (Entry, error) {
 	var out Entry
 	err = r.pool.InTenantTx(ctx, e.TenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
+		// Serialize appends per tenant. Without this, two concurrent Records
+		// for the same tenant run in overlapping READ COMMITTED transactions,
+		// both read the same "previous" hash below, and both chain their new
+		// row to it — Verify then reports the second row as a broken link
+		// (tampering) even though nothing was actually corrupted; it was a
+		// lost-update race, not a security incident. pg_advisory_xact_lock is
+		// scoped to this transaction and releases automatically on commit or
+		// rollback, so a second concurrent Record for the same tenant simply
+		// blocks here until the first one finishes, then reads the TRUE
+		// latest prev-hash. hashtext(text) produces an int4 that Postgres
+		// implicitly widens to the int8 pg_advisory_xact_lock expects.
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('wpmgr_audit:' || $1))", e.TenantID.String()); err != nil {
+			return domain.Internal("audit_lock_failed", "failed to acquire audit chain lock").WithCause(err)
+		}
 		prevHash, err := q.GetLastAuditHash(ctx, e.TenantID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return domain.Internal("audit_prev_failed", "failed to read previous audit hash").WithCause(err)
@@ -384,7 +407,8 @@ func (r *Recorder) Record(ctx context.Context, e Event) (Entry, error) {
 	return out, err
 }
 
-// List returns a page of a tenant's audit entries (oldest first).
+// List returns a page of a tenant's audit entries, newest first (page 1 =
+// most recent; a larger offset walks further into the past).
 func (r *Recorder) List(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Entry, error) {
 	var out []Entry
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
@@ -394,7 +418,7 @@ func (r *Recorder) List(ctx context.Context, tenantID uuid.UUID, limit, offset i
 		}
 		out = make([]Entry, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, rowToEntry(row))
+			out = append(out, rowToEntryFromList(row))
 		}
 		return nil
 	})
@@ -418,9 +442,12 @@ type Filter struct {
 }
 
 // ListFiltered returns a page of a tenant's audit entries with optional
-// action-prefix and site-id filters applied. RLS is the primary tenancy gate;
-// the explicit tenantID in the query is defense-in-depth. The hash/prev_hash
-// fields are included so the integrity badge on the web layer keeps working.
+// action-prefix and site-id filters applied, newest first (see List). RLS is
+// the primary tenancy gate; the explicit tenantID in the query is
+// defense-in-depth. The hash/prev_hash fields are included so the integrity
+// badge on the web layer keeps working. ActionPrefix is a LIKE 'prefix%'
+// match (see the query), so e.g. "site.files." matches every file-manager
+// action.
 func (r *Recorder) ListFiltered(ctx context.Context, tenantID uuid.UUID, f Filter, limit, offset int32) ([]Entry, error) {
 	// Sentinel zero UUID disables the site_id filter in the SQL (see query).
 	siteIDStr := "00000000-0000-0000-0000-000000000000"
@@ -441,7 +468,7 @@ func (r *Recorder) ListFiltered(ctx context.Context, tenantID uuid.UUID, f Filte
 		}
 		out = make([]Entry, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, rowToEntry(row))
+			out = append(out, rowToEntryFromListFiltered(row))
 		}
 		return nil
 	})
@@ -509,5 +536,56 @@ func rowToEntry(row sqlc.AuditLog) Entry {
 		PrevHash:   row.PrevHash,
 		Hash:       row.Hash,
 		CreatedAt:  row.CreatedAt,
+	}
+}
+
+// mergeActorName returns whichever of the two mutually-exclusive per-actor-
+// kind name columns the query resolved (at most one of them is ever non-nil
+// for a given row — see the ListAuditEntries join contract in
+// db/query/audit_log.sql), or nil if neither resolved.
+func mergeActorName(userName, keyName *string) *string {
+	if userName != nil {
+		return userName
+	}
+	return keyName
+}
+
+func rowToEntryFromList(row sqlc.ListAuditEntriesRow) Entry {
+	var meta map[string]any
+	_ = json.Unmarshal(row.Metadata, &meta)
+	return Entry{
+		ID:         row.ID,
+		TenantID:   row.TenantID,
+		ActorType:  row.ActorType,
+		ActorID:    row.ActorID,
+		Action:     row.Action,
+		TargetType: row.TargetType,
+		TargetID:   row.TargetID,
+		Metadata:   meta,
+		PrevHash:   row.PrevHash,
+		Hash:       row.Hash,
+		CreatedAt:  row.CreatedAt,
+		ActorName:  mergeActorName(row.ActorUserName, row.ActorKeyName),
+		ActorEmail: row.ActorEmail,
+	}
+}
+
+func rowToEntryFromListFiltered(row sqlc.ListAuditEntriesFilteredRow) Entry {
+	var meta map[string]any
+	_ = json.Unmarshal(row.Metadata, &meta)
+	return Entry{
+		ID:         row.ID,
+		TenantID:   row.TenantID,
+		ActorType:  row.ActorType,
+		ActorID:    row.ActorID,
+		Action:     row.Action,
+		TargetType: row.TargetType,
+		TargetID:   row.TargetID,
+		Metadata:   meta,
+		PrevHash:   row.PrevHash,
+		Hash:       row.Hash,
+		CreatedAt:  row.CreatedAt,
+		ActorName:  mergeActorName(row.ActorUserName, row.ActorKeyName),
+		ActorEmail: row.ActorEmail,
 	}
 }

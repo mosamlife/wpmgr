@@ -1955,10 +1955,19 @@ func (*AssignSitesToClientUnauthorized) assignSitesToClientRes() {}
 
 // Ref: #/components/schemas/AuditEntry
 type AuditEntry struct {
-	ID         uuid.UUID             `json:"id"`
-	TenantID   uuid.UUID             `json:"tenant_id"`
-	ActorType  string                `json:"actor_type"`
-	ActorID    string                `json:"actor_id"`
+	ID        uuid.UUID `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	ActorType string    `json:"actor_type"`
+	ActorID   string    `json:"actor_id"`
+	// Display name of the acting user (users.name), or the API key's
+	// label (api_keys.name) when the actor is an api_key, resolved
+	// server-side. Null for system events and for any actor row that no
+	// longer exists.
+	ActorName OptNilString `json:"actor_name"`
+	// Email of the acting user, resolved server-side. Null for
+	// api_key/system actors and for any actor row that no longer
+	// exists.
+	ActorEmail OptNilString          `json:"actor_email"`
 	Action     string                `json:"action"`
 	TargetType string                `json:"target_type"`
 	TargetID   string                `json:"target_id"`
@@ -1986,6 +1995,16 @@ func (s *AuditEntry) GetActorType() string {
 // GetActorID returns the value of ActorID.
 func (s *AuditEntry) GetActorID() string {
 	return s.ActorID
+}
+
+// GetActorName returns the value of ActorName.
+func (s *AuditEntry) GetActorName() OptNilString {
+	return s.ActorName
+}
+
+// GetActorEmail returns the value of ActorEmail.
+func (s *AuditEntry) GetActorEmail() OptNilString {
+	return s.ActorEmail
 }
 
 // GetAction returns the value of Action.
@@ -2041,6 +2060,16 @@ func (s *AuditEntry) SetActorType(val string) {
 // SetActorID sets the value of ActorID.
 func (s *AuditEntry) SetActorID(val string) {
 	s.ActorID = val
+}
+
+// SetActorName sets the value of ActorName.
+func (s *AuditEntry) SetActorName(val OptNilString) {
+	s.ActorName = val
+}
+
+// SetActorEmail sets the value of ActorEmail.
+func (s *AuditEntry) SetActorEmail(val OptNilString) {
+	s.ActorEmail = val
 }
 
 // SetAction sets the value of Action.

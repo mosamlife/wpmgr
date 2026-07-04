@@ -795,6 +795,21 @@ export type AuditEntry = {
   tenant_id: string;
   actor_type: string;
   actor_id: string;
+  /**
+   * Display name of the acting user (users.name), or the API key's
+   * label (api_keys.name) when the actor is an api_key, resolved
+   * server-side. Null for system events and for any actor row that no
+   * longer exists.
+   *
+   */
+  actor_name?: string;
+  /**
+   * Email of the acting user, resolved server-side. Null for
+   * api_key/system actors and for any actor row that no longer
+   * exists.
+   *
+   */
+  actor_email?: string;
   action: string;
   target_type: string;
   target_id: string;
