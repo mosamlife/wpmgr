@@ -830,6 +830,14 @@ export type AuditVerify = {
   broken_at?: string;
 };
 
+export type AuditRebaselineRequest = {
+  /**
+   * The `broken_at` id from a prior `verifyAudit` ok=false response that this re-baseline acknowledges. Optional — recorded in the `audit.integrity.rebaselined` event's metadata for forensic context only; it is never used to locate or alter any row.
+   *
+   */
+  broken_at?: string;
+};
+
 /**
  * One thing to update on a site.
  */
@@ -6799,6 +6807,42 @@ export type VerifyAuditResponses = {
 
 export type VerifyAuditResponse =
   VerifyAuditResponses[keyof VerifyAuditResponses];
+
+export type RebaselineAuditIntegrityData = {
+  body?: AuditRebaselineRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/audit/integrity/rebaseline";
+};
+
+export type RebaselineAuditIntegrityErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * The tenant has no audit history to baseline yet
+   */
+  409: Error;
+};
+
+export type RebaselineAuditIntegrityError =
+  RebaselineAuditIntegrityErrors[keyof RebaselineAuditIntegrityErrors];
+
+export type RebaselineAuditIntegrityResponses = {
+  /**
+   * The re-baseline was applied; the returned verification result should report ok=true unless tampering occurred concurrently with this call.
+   *
+   */
+  200: AuditVerify;
+};
+
+export type RebaselineAuditIntegrityResponse =
+  RebaselineAuditIntegrityResponses[keyof RebaselineAuditIntegrityResponses];
 
 export type ListTenantsData = {
   body?: never;

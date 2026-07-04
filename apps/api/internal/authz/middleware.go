@@ -140,6 +140,7 @@ var orgLevelPerms = map[Permission]struct{}{
 	PermAPIKeyRead:   {},
 	PermAPIKeyManage: {},
 	PermAuditRead:    {},
+	PermAuditManage:  {},
 	PermTenantManage: {},
 	PermSMTPManage:   {},
 }

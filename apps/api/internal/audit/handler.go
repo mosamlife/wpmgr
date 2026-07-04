@@ -30,6 +30,7 @@ func NewHandler(rec *Recorder) *Handler {
 func (h *Handler) Register(r *gin.RouterGroup) {
 	r.GET("/audit", authz.RequirePermission(authz.PermAuditRead), h.list)
 	r.GET("/audit/verify", authz.RequirePermission(authz.PermAuditRead), h.verify)
+	r.POST("/audit/integrity/rebaseline", authz.RequirePermission(authz.PermAuditManage), h.rebaseline)
 }
 
 func (h *Handler) list(c *gin.Context) {
@@ -87,6 +88,50 @@ func (h *Handler) verify(c *gin.Context) {
 	c.JSON(http.StatusOK, &out)
 }
 
+// rebaselineRequest is the optional body for POST /audit/integrity/rebaseline.
+// BrokenAt, when present, is the previously-reported broken-link id this
+// re-baseline acknowledges; it is recorded in the acknowledgment event's
+// metadata for forensic context only — it is never used to locate or touch
+// any row (audit_log stays append-only; nothing is altered or deleted).
+type rebaselineRequest struct {
+	BrokenAt *uuid.UUID `json:"broken_at"`
+}
+
+// rebaseline moves the tenant's audit-integrity anchor to the current chain
+// head (authz.PermAuditManage, owner-only). The endpoint is itself audited —
+// Rebaseline records an `audit.integrity.rebaselined` entry — and never
+// alters or deletes any existing audit_log row. Returns the fresh Verify
+// result, which should report ok=true immediately afterward (barring any
+// tampering that happened concurrently with this call).
+func (h *Handler) rebaseline(c *gin.Context) {
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+
+	var body rebaselineRequest
+	// Body is optional; tolerate an empty/absent body (no broken_at to record).
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil {
+			httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+			return
+		}
+	}
+
+	if _, err := h.rec.Rebaseline(c.Request.Context(), p.TenantID, actorType(p), p.ActorID(), p.UserID, body.BrokenAt); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+
+	ok, brokenAt, err := h.rec.Verify(c.Request.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	out := gen.AuditVerify{Ok: ok}
+	if !ok {
+		out.BrokenAt = gen.NewOptUUID(brokenAt)
+	}
+	c.JSON(http.StatusOK, &out)
+}
+
 func toAPI(e Entry) gen.AuditEntry {
 	out := gen.AuditEntry{
 		ID:         e.ID,
@@ -122,6 +167,15 @@ func toAPI(e Entry) gen.AuditEntry {
 		out.Metadata = gen.NewOptAuditEntryMetadata(md)
 	}
 	return out
+}
+
+// actorType returns the audit ActorType string for a principal, mirroring the
+// same convention used by every other handler's audit.Record call.
+func actorType(p domain.Principal) string {
+	if p.Type == domain.PrincipalAPIKey {
+		return ActorAPIKey
+	}
+	return ActorUser
 }
 
 func parseInt32(s string, def int32) int32 {

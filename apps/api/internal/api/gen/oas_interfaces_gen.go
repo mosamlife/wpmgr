@@ -577,6 +577,10 @@ type ReadSiteFileContentRes interface {
 	readSiteFileContentRes()
 }
 
+type RebaselineAuditIntegrityRes interface {
+	rebaselineAuditIntegrityRes()
+}
+
 type RefreshSiteDiagnosticsRes interface {
 	refreshSiteDiagnosticsRes()
 }

@@ -9,7 +9,7 @@ import { AuditEntryDetail, RunDetail } from "./audit-detail";
 import type { AuditRun } from "./group-runs";
 import { runSummaryLabel } from "./group-runs";
 import { actionLabel, classifySeverity, type AuditSeverity } from "./labels";
-import { commonPathPrefix, formatClockTime, metaString } from "./metadata";
+import { commonPathPrefix, formatClockTime, formatDateTime, metaString } from "./metadata";
 import type { SiteMin } from "./types";
 
 // One row of the fleet audit log (redesign points 1, 3, 4, 5, 7, 10).
@@ -59,7 +59,7 @@ function SeverityPill({ severity }: { severity: AuditSeverity }) {
 }
 
 function EntryTime({ iso, isToday }: { iso: string; isToday: boolean }) {
-  const display = isToday ? (relativeTime(iso) ?? "just now") : formatClockTime(iso);
+  const display = isToday ? (relativeTime(iso) ?? "just now") : formatDateTime(iso);
   return (
     <time
       dateTime={iso}
@@ -237,7 +237,13 @@ export function AuditRunRow({
           ) : null}
         </div>
         <span className="justify-self-start text-xs tabular-nums text-muted-foreground sm:justify-self-end">
-          {formatClockTime(startIso)}&ndash;{formatClockTime(endIso)}
+          <time dateTime={startIso} title={startIso}>
+            {isToday ? formatClockTime(startIso) : formatDateTime(startIso)}
+          </time>
+          &ndash;
+          <time dateTime={endIso} title={endIso}>
+            {formatClockTime(endIso)}
+          </time>
         </span>
       </summary>
       {open ? <RunDetail entries={entries} isToday={isToday} /> : null}

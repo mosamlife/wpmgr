@@ -199,6 +199,7 @@ const (
 	PutSiteLoginBrandOperation              OperationName = "PutSiteLoginBrand"
 	PutSiteLoginProtectionOperation         OperationName = "PutSiteLoginProtection"
 	ReadSiteFileContentOperation            OperationName = "ReadSiteFileContent"
+	RebaselineAuditIntegrityOperation       OperationName = "RebaselineAuditIntegrity"
 	RefreshSiteDiagnosticsOperation         OperationName = "RefreshSiteDiagnostics"
 	RefreshSiteScreenshotOperation          OperationName = "RefreshSiteScreenshot"
 	RefreshSiteUpdatesOperation             OperationName = "RefreshSiteUpdates"

@@ -62,6 +62,25 @@ export function formatClockTime(iso: string): string {
 }
 
 /**
+ * Compact date + time for a non-today row ("Jul 3, 16:43:03", or
+ * "Jul 3 2025, 16:43:03" when the entry's year differs from the current
+ * year). Pairs with `formatClockTime`: a row that scrolls out from under its
+ * sticky day-group header still carries its own date, rather than reading as
+ * a bare time with no context.
+ */
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  const monthDay = date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  const datePart = sameYear ? monthDay : `${monthDay} ${date.getFullYear()}`;
+  return `${datePart}, ${formatClockTime(iso)}`;
+}
+
+/**
  * Longest common "/"-separated directory prefix across a set of file paths,
  * used to summarize a collapsed read-burst ("wp-content/uploads/…"). Returns
  * null when there's nothing meaningful to show (no paths, or no shared

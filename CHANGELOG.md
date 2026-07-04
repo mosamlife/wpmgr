@@ -8,6 +8,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.14] - 2026-07-04
+
+### Fixed
+
+- Fleet Audit log appeared to stop recording: the event list was ordered oldest-first while presented as newest-first, so once a tenant passed one page of events the recent activity was paged off the end. It now lists newest events first. No audit data was ever lost.
+- The Audit "Chain break" integrity warning could fire from two operator actions being recorded at the same instant (a harmless race, not tampering). Audit writes are now serialized per tenant so the integrity chain stays intact.
+- The Audit page could fail to load for accounts that had any automated activity (uptime alerts, backups, scans, updates), because a query change did not guard a type cast on system-generated rows.
+
+### Changed
+
+- Redesigned the fleet Audit log. Events now read as plain sentences (no raw internal event codes), the operator who performed each action is shown by name instead of an ID, and long runs of routine file reads collapse into one expandable line so that writes, deletions, and denied actions stand out. Added an outcome filter (Denied, Writes, Sensitive), a search box, exact timestamps, and a per-event detail view that shows the reason an action was denied.
+
 ## [0.61.10] - 2026-07-02
 
 ### Fixed
