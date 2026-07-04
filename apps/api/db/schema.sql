@@ -3226,3 +3226,42 @@ CREATE POLICY file_transfers_tenant_isolation ON file_transfers
 CREATE POLICY file_transfers_agent ON file_transfers
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- audit_integrity_baseline  (m90 — audit-integrity re-baseline)
+-- ---------------------------------------------------------------------------
+-- audit_log is append-only and hash-chained (see above); a historical break
+-- caused by a race that pre-dates the per-tenant advisory-lock fix in
+-- Recorder.Record can never be repaired in-place, so Verify would report it
+-- forever with no way for an operator to acknowledge it. This table holds, at
+-- most, ONE row per tenant: the chain-head snapshot (id/created_at/hash) an
+-- operator moved the trusted "verify from here forward" anchor to, plus who
+-- did it and when. Verify (internal/audit/audit.go) walks the FULL chain from
+-- genesis when no row exists here (unchanged default behaviour); when a row
+-- exists, it seeds the running hash with baseline_hash and only walks entries
+-- STRICTLY AFTER (baseline_created_at, baseline_id) — so a break BEFORE the
+-- baseline is permanently acknowledged (not re-reported) while any tampering
+-- AFTER the baseline is still caught. Re-baselining never alters or deletes
+-- any audit_log row; it only moves this anchor, and it is itself recorded as
+-- a normal hash-chained audit_log entry (action
+-- "audit.integrity.rebaselined") so the acknowledgment lives in the tamper-
+-- evident trail too. Operator-only (no app.agent policy — the agent has no
+-- reason to read or write this table).
+CREATE TABLE IF NOT EXISTS audit_integrity_baseline (
+    tenant_id           uuid        PRIMARY KEY,
+    baseline_created_at timestamptz NOT NULL,
+    baseline_id         uuid        NOT NULL,
+    baseline_hash       text        NOT NULL,
+    set_by              uuid        REFERENCES users (id) ON DELETE SET NULL,
+    set_at              timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT audit_integrity_baseline_tenant_fkey
+        FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+
+ALTER TABLE audit_integrity_baseline ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_integrity_baseline FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY audit_integrity_baseline_tenant_isolation ON audit_integrity_baseline
+    USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);

@@ -2404,6 +2404,30 @@ func (UnimplementedHandler) ReadSiteFileContent(ctx context.Context, params Read
 	return r, ht.ErrNotImplemented
 }
 
+// RebaselineAuditIntegrity implements rebaselineAuditIntegrity operation.
+//
+// Moves the tenant's audit-integrity verification anchor to the CURRENT
+// chain head, so `verifyAudit` treats everything up to and including
+// that point as trusted and only walks entries written after it going
+// forward. This exists because `audit_log` is append-only and hash-
+// chained: a historical break caused by a race that pre-dates the
+// per-tenant serialization in the append path can never be repaired in
+// place, so without this endpoint an operator would see a permanent
+// "chain break" badge with no way to acknowledge it.
+// This endpoint NEVER alters or deletes any `audit_log` row — the
+// flagged rows (and everything else) remain exactly as written, for
+// forensic review; re-baselining only moves where verification starts.
+// It is itself recorded as a normal hash-chained audit entry (action
+// `audit.integrity.rebaselined`), so the acknowledgment lives in the
+// tamper-evident trail too. Any tampering that happens AFTER the
+// baseline is still caught by `verifyAudit`. Owner-only
+// (`audit:manage`) — the same trust bar as tenant/SMTP management.
+//
+// POST /api/v1/audit/integrity/rebaseline
+func (UnimplementedHandler) RebaselineAuditIntegrity(ctx context.Context, req OptAuditRebaselineRequest) (r RebaselineAuditIntegrityRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // RefreshSiteDiagnostics implements refreshSiteDiagnostics operation.
 //
 // Enqueues a signed `diagnostics` command to the agent. The agent runs

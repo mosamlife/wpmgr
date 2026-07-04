@@ -62,6 +62,14 @@ const (
 	PermAPIKeyManage Permission = "apikey:manage"
 	// PermAuditRead reads the audit log.
 	PermAuditRead Permission = "audit:read"
+	// PermAuditManage moves a tenant's audit-integrity re-baseline anchor
+	// (audit.integrity.rebaselined) — the operation that lets an operator
+	// acknowledge a historical, unrepairable chain break so Verify stops
+	// reporting it while still catching any NEW tampering going forward.
+	// Owner-only: it is a tenant-wide trust decision about the integrity
+	// mechanism itself, the same bar as PermTenantManage/PermSMTPManage, and
+	// strictly higher than the admin-level PermAuditRead it sits alongside.
+	PermAuditManage Permission = "audit:manage"
 	// PermTenantManage manages tenant settings.
 	PermTenantManage Permission = "tenant:manage"
 	// PermSiteAutologin mints a one-time autologin URL into a managed WordPress
@@ -188,6 +196,7 @@ var minRoleFor = map[Permission]Role{
 	PermAPIKeyRead:    RoleAdmin,
 	PermAPIKeyManage:  RoleAdmin,
 	PermAuditRead:     RoleAdmin,
+	PermAuditManage:   RoleOwner,
 	PermTenantManage:  RoleOwner,
 	PermSiteAutologin: RoleAdmin,
 	// Irreversible media original-deletion: admin+ (ADR-043 §6).

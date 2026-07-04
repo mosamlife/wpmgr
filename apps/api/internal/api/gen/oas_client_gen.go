@@ -1840,6 +1840,27 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/files/content
 	ReadSiteFileContent(ctx context.Context, params ReadSiteFileContentParams) (ReadSiteFileContentRes, error)
+	// RebaselineAuditIntegrity invokes rebaselineAuditIntegrity operation.
+	//
+	// Moves the tenant's audit-integrity verification anchor to the CURRENT
+	// chain head, so `verifyAudit` treats everything up to and including
+	// that point as trusted and only walks entries written after it going
+	// forward. This exists because `audit_log` is append-only and hash-
+	// chained: a historical break caused by a race that pre-dates the
+	// per-tenant serialization in the append path can never be repaired in
+	// place, so without this endpoint an operator would see a permanent
+	// "chain break" badge with no way to acknowledge it.
+	// This endpoint NEVER alters or deletes any `audit_log` row — the
+	// flagged rows (and everything else) remain exactly as written, for
+	// forensic review; re-baselining only moves where verification starts.
+	// It is itself recorded as a normal hash-chained audit entry (action
+	// `audit.integrity.rebaselined`), so the acknowledgment lives in the
+	// tamper-evident trail too. Any tampering that happens AFTER the
+	// baseline is still caught by `verifyAudit`. Owner-only
+	// (`audit:manage`) — the same trust bar as tenant/SMTP management.
+	//
+	// POST /api/v1/audit/integrity/rebaseline
+	RebaselineAuditIntegrity(ctx context.Context, request OptAuditRebaselineRequest) (RebaselineAuditIntegrityRes, error)
 	// RefreshSiteDiagnostics invokes refreshSiteDiagnostics operation.
 	//
 	// Enqueues a signed `diagnostics` command to the agent. The agent runs
@@ -22543,6 +22564,98 @@ func (c *Client) sendReadSiteFileContent(ctx context.Context, params ReadSiteFil
 
 	stage = "DecodeResponse"
 	result, err := decodeReadSiteFileContentResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// RebaselineAuditIntegrity invokes rebaselineAuditIntegrity operation.
+//
+// Moves the tenant's audit-integrity verification anchor to the CURRENT
+// chain head, so `verifyAudit` treats everything up to and including
+// that point as trusted and only walks entries written after it going
+// forward. This exists because `audit_log` is append-only and hash-
+// chained: a historical break caused by a race that pre-dates the
+// per-tenant serialization in the append path can never be repaired in
+// place, so without this endpoint an operator would see a permanent
+// "chain break" badge with no way to acknowledge it.
+// This endpoint NEVER alters or deletes any `audit_log` row — the
+// flagged rows (and everything else) remain exactly as written, for
+// forensic review; re-baselining only moves where verification starts.
+// It is itself recorded as a normal hash-chained audit entry (action
+// `audit.integrity.rebaselined`), so the acknowledgment lives in the
+// tamper-evident trail too. Any tampering that happens AFTER the
+// baseline is still caught by `verifyAudit`. Owner-only
+// (`audit:manage`) — the same trust bar as tenant/SMTP management.
+//
+// POST /api/v1/audit/integrity/rebaseline
+func (c *Client) RebaselineAuditIntegrity(ctx context.Context, request OptAuditRebaselineRequest) (RebaselineAuditIntegrityRes, error) {
+	res, err := c.sendRebaselineAuditIntegrity(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendRebaselineAuditIntegrity(ctx context.Context, request OptAuditRebaselineRequest) (res RebaselineAuditIntegrityRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("rebaselineAuditIntegrity"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/audit/integrity/rebaseline"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RebaselineAuditIntegrityOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/audit/integrity/rebaseline"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeRebaselineAuditIntegrityRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeRebaselineAuditIntegrityResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

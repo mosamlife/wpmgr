@@ -48,6 +48,8 @@ func TestRequirePermissionRBAC(t *testing.T) {
 		{"admin allowed apikey manage", RoleAdmin, PermAPIKeyManage, http.StatusOK},
 		{"admin denied tenant manage", RoleAdmin, PermTenantManage, http.StatusForbidden},
 		{"owner allowed tenant manage", RoleOwner, PermTenantManage, http.StatusOK},
+		{"admin denied audit manage (rebaseline)", RoleAdmin, PermAuditManage, http.StatusForbidden},
+		{"owner allowed audit manage (rebaseline)", RoleOwner, PermAuditManage, http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,6 +79,7 @@ func TestRequirePermissionOrgScopeGuard(t *testing.T) {
 		{PermAPIKeyRead, RoleAdmin},
 		{PermAPIKeyManage, RoleAdmin},
 		{PermAuditRead, RoleAdmin},
+		{PermAuditManage, RoleOwner},
 		{PermTenantManage, RoleOwner},
 	}
 	for _, tt := range orgLevelTests {

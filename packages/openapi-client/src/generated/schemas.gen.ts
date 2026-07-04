@@ -1631,6 +1631,18 @@ export const AuditVerifySchema = {
   },
 } as const;
 
+export const AuditRebaselineRequestSchema = {
+  type: "object",
+  properties: {
+    broken_at: {
+      type: "string",
+      format: "uuid",
+      description:
+        "The `broken_at` id from a prior `verifyAudit` ok=false response that this re-baseline acknowledges. Optional — recorded in the `audit.integrity.rebaselined` event's metadata for forensic context only; it is never used to locate or alter any row.\n",
+    },
+  },
+} as const;
+
 export const UpdateItemSchema = {
   type: "object",
   required: ["type"],

@@ -1131,6 +1131,63 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/audit/integrity/rebaseline:
+    post:
+      operationId: rebaselineAuditIntegrity
+      summary: Acknowledge a historical audit chain break by re-baselining (owner)
+      description: |
+        Moves the tenant's audit-integrity verification anchor to the CURRENT
+        chain head, so `verifyAudit` treats everything up to and including
+        that point as trusted and only walks entries written after it going
+        forward. This exists because `audit_log` is append-only and hash-
+        chained: a historical break caused by a race that pre-dates the
+        per-tenant serialization in the append path can never be repaired in
+        place, so without this endpoint an operator would see a permanent
+        "chain break" badge with no way to acknowledge it.
+
+        This endpoint NEVER alters or deletes any `audit_log` row — the
+        flagged rows (and everything else) remain exactly as written, for
+        forensic review; re-baselining only moves where verification starts.
+        It is itself recorded as a normal hash-chained audit entry (action
+        `audit.integrity.rebaselined`), so the acknowledgment lives in the
+        tamper-evident trail too. Any tampering that happens AFTER the
+        baseline is still caught by `verifyAudit`. Owner-only
+        (`audit:manage`) — the same trust bar as tenant/SMTP management.
+      tags: [audit]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuditRebaselineRequest"
+      responses:
+        "200":
+          description: >
+            The re-baseline was applied; the returned verification result
+            should report ok=true unless tampering occurred concurrently with
+            this call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditVerify"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The tenant has no audit history to baseline yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/tenants:
     post:
       operationId: createTenant
@@ -9088,6 +9145,17 @@ components:
         broken_at:
           type: string
           format: uuid
+    AuditRebaselineRequest:
+      type: object
+      properties:
+        broken_at:
+          type: string
+          format: uuid
+          description: >
+            The `broken_at` id from a prior `verifyAudit` ok=false response
+            that this re-baseline acknowledges. Optional — recorded in the
+            `audit.integrity.rebaselined` event's metadata for forensic
+            context only; it is never used to locate or alter any row.
     UpdateItem:
       type: object
       required: [type]

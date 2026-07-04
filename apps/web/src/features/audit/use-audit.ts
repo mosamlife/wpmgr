@@ -1,8 +1,12 @@
 import {
+  useMutation,
   useQuery,
+  useQueryClient,
+  type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
 import {
+  client,
   listAudit,
   verifyAudit,
   type AuditEntry,
@@ -20,6 +24,10 @@ import { toError } from "@/features/auth/use-auth";
 //
 // useAuditVerify: calls /api/v1/audit/verify to check the hash-chain integrity
 //   of the tenant's audit log. Returns { ok, broken_at }.
+//
+// useAuditRebaseline: calls /api/v1/audit/integrity/rebaseline to move the
+//   integrity anchor to the current chain head after an operator has reviewed
+//   and acknowledged a historical break (see AuditIntegrityReport).
 
 export const auditKeys = {
   all: ["audit"] as const,
@@ -39,6 +47,8 @@ export interface UseAuditResult {
   items: AuditEntry[];
   isPending: boolean;
   isError: boolean;
+  /** True while a fetch (initial or refetch) is in flight; drives the Reload button's loading state. */
+  isFetching: boolean;
   error: Error | null;
   refetch: UseQueryResult<AuditEntry[], Error>["refetch"];
 }
@@ -67,6 +77,7 @@ export function useAudit(params: AuditParams): UseAuditResult {
     items: result.data ?? [],
     isPending: result.isPending,
     isError: result.isError,
+    isFetching: result.isFetching,
     error: result.error,
     refetch: result.refetch,
   };
@@ -81,5 +92,37 @@ export function useAuditVerify(): UseQueryResult<AuditVerify, Error> {
       return data ?? { ok: true };
     },
     refetchInterval: 60_000,
+  });
+}
+
+/**
+ * POST /api/v1/audit/integrity/rebaseline (owner/admin): moves the chain's
+ * trusted anchor to the current head so verification runs forward from that
+ * point on. This is the resolution for a historical chain break: the
+ * append-only log is never edited, only where verification starts is, and
+ * the rebaseline itself is audited server-side.
+ *
+ * Hand-rolled via the raw `client` (same pattern as the other not-yet-in-the-
+ * generated-SDK hooks across the app, e.g. use-hardening.ts / use-scan.ts):
+ * the backend is landing this OpenAPI operation and regenerating the SDK in
+ * parallel. Migrate this to the generated `postAuditIntegrityRebaseline` fn
+ * (re-exported from packages/openapi-client/src/index.ts) once that lands.
+ *
+ * `verify` is the single source of truth for the badge/dialog state, so on
+ * success we invalidate + refetch it rather than trust a hand-typed response
+ * body.
+ */
+export function useAuditRebaseline(): UseMutationResult<void, Error, void> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const result = await client.post({
+        url: "/api/v1/audit/integrity/rebaseline",
+      });
+      if (result.error) throw toError(result.error);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: auditKeys.verify() });
+    },
   });
 }

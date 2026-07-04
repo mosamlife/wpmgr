@@ -42,6 +42,9 @@ func TestAllows(t *testing.T) {
 		{"operator cannot read audit", RoleOperator, PermAuditRead, false},
 		{"admin cannot manage tenant", RoleAdmin, PermTenantManage, false},
 		{"owner can manage tenant", RoleOwner, PermTenantManage, true},
+		// Audit-integrity re-baseline (m90): owner-only, same bar as PermTenantManage.
+		{"admin cannot manage audit integrity", RoleAdmin, PermAuditManage, false},
+		{"owner can manage audit integrity", RoleOwner, PermAuditManage, true},
 		{"viewer cannot autologin", RoleViewer, PermSiteAutologin, false},
 		{"operator cannot autologin", RoleOperator, PermSiteAutologin, false},
 		{"admin can autologin", RoleAdmin, PermSiteAutologin, true},

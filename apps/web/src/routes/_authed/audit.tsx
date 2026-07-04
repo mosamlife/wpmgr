@@ -128,7 +128,7 @@ function AuditPage() {
   const { data: sites = [] } = useSites();
 
   // Audit data.
-  const { items, isPending, isError, error, refetch } = useAudit({
+  const { items, isPending, isError, error, isFetching, refetch } = useAudit({
     action,
     siteId,
     limit: PAGE_LIMIT,
@@ -138,6 +138,25 @@ function AuditPage() {
   // Integrity check.
   const verify = useAuditVerify();
   const [integrityOpen, setIntegrityOpen] = useState(false);
+  // Captured at the moment the badge is clicked, independent of `verify`'s
+  // live state, so a successful re-baseline (which flips verify.data.ok to
+  // true while the dialog is still open) doesn't yank `broken_at` out from
+  // under the dialog and unmount its content mid-confirmation.
+  const [integrityBrokenAt, setIntegrityBrokenAt] = useState<string | null>(null);
+
+  const openIntegrityReport = useCallback(() => {
+    setIntegrityBrokenAt(verify.data?.broken_at ?? null);
+    setIntegrityOpen(true);
+  }, [verify.data]);
+
+  // Reload re-checks both the event list and chain integrity, and visibly
+  // shows it's working (spinning icon + disabled button); previously it
+  // only refetched the list with no feedback, so a click looked like a no-op.
+  const isReloading = isFetching || verify.isFetching;
+  const reload = () => {
+    void refetch();
+    void verify.refetch();
+  };
 
   const severityCounts = useMemo(() => {
     const counts: Record<OutcomeFilter, number> = {
@@ -175,15 +194,23 @@ function AuditPage() {
         subline="Fleet-wide operator event stream, newest first."
         actions={
           <div className="flex items-center gap-2">
-            <IntegrityBadge verify={verify} onOpenReport={() => setIntegrityOpen(true)} />
+            <IntegrityBadge verify={verify} onOpenReport={openIntegrityReport} />
             <Button
               type="button"
               size="sm"
               variant="ghost"
-              onClick={() => void refetch()}
+              onClick={reload}
+              disabled={isReloading}
+              aria-busy={isReloading}
               className="gap-1.5"
             >
-              <RefreshCw aria-hidden="true" className="size-3.5" />
+              <RefreshCw
+                aria-hidden="true"
+                className={cn(
+                  "size-3.5",
+                  isReloading && "motion-safe:animate-spin motion-reduce:animate-none",
+                )}
+              />
               Reload
             </Button>
           </div>
@@ -354,13 +381,13 @@ function AuditPage() {
         </div>
       ) : null}
 
-      {integrityOpen && verify.data && !verify.data.ok && verify.data.broken_at ? (
+      {integrityOpen && integrityBrokenAt ? (
         <AuditIntegrityReport
           open={integrityOpen}
           onClose={() => setIntegrityOpen(false)}
-          brokenAt={verify.data.broken_at}
+          brokenAt={integrityBrokenAt}
           entries={items}
-          onRecheck={() => void verify.refetch()}
+          verify={verify}
         />
       ) : null}
     </div>

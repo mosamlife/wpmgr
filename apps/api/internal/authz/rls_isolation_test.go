@@ -88,6 +88,7 @@ func TestOrgLevelPermsBlockedForSiteScope(t *testing.T) {
 		PermAPIKeyRead,
 		PermAPIKeyManage,
 		PermAuditRead,
+		PermAuditManage,
 		PermTenantManage,
 	}
 
@@ -122,9 +123,11 @@ func TestOrgLevelPermsAllowedForOrgScope(t *testing.T) {
 		{PermAPIKeyRead, RoleAdmin, true},
 		{PermAPIKeyManage, RoleAdmin, true},
 		{PermAuditRead, RoleAdmin, true},
+		{PermAuditManage, RoleOwner, true},
 		{PermTenantManage, RoleOwner, true},
 		// Verify that a role BELOW the minimum is still denied for org-scope.
 		{PermMemberManage, RoleViewer, false},
+		{PermAuditManage, RoleAdmin, false},
 		{PermTenantManage, RoleAdmin, false},
 	}
 	for _, tt := range tests {
@@ -264,6 +267,7 @@ func TestOrgLevelPermsSetIntegrity(t *testing.T) {
 		PermAPIKeyRead,
 		PermAPIKeyManage,
 		PermAuditRead,
+		PermAuditManage,
 		PermTenantManage,
 	}
 	for _, perm := range expectedOrgPerms {

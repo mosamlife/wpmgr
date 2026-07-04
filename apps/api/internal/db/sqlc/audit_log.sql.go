@@ -26,6 +26,28 @@ func (q *Queries) GetLastAuditHash(ctx context.Context, tenantID uuid.UUID) (str
 	return hash, err
 }
 
+const getLatestAuditEntry = `-- name: GetLatestAuditEntry :one
+SELECT id, hash, created_at FROM audit_log
+WHERE tenant_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLatestAuditEntryRow struct {
+	ID        uuid.UUID `json:"id"`
+	Hash      string    `json:"hash"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Returns the current chain head (newest row) for a tenant — the anchor point
+// captured by an integrity re-baseline. Not used by Verify itself.
+func (q *Queries) GetLatestAuditEntry(ctx context.Context, tenantID uuid.UUID) (GetLatestAuditEntryRow, error) {
+	row := q.db.QueryRow(ctx, getLatestAuditEntry, tenantID)
+	var i GetLatestAuditEntryRow
+	err := row.Scan(&i.ID, &i.Hash, &i.CreatedAt)
+	return i, err
+}
+
 const insertAuditEntry = `-- name: InsertAuditEntry :one
 INSERT INTO audit_log (
     tenant_id, actor_type, actor_id, action, target_type, target_id, metadata, prev_hash, hash, created_at
@@ -288,6 +310,59 @@ ORDER BY created_at ASC, id ASC
 
 func (q *Queries) ListAuditEntriesForVerify(ctx context.Context, tenantID uuid.UUID) ([]AuditLog, error) {
 	rows, err := q.db.Query(ctx, listAuditEntriesForVerify, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditLog
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.TargetType,
+			&i.TargetID,
+			&i.Metadata,
+			&i.PrevHash,
+			&i.Hash,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuditEntriesForVerifyFromBaseline = `-- name: ListAuditEntriesForVerifyFromBaseline :many
+SELECT id, tenant_id, actor_type, actor_id, action, target_type, target_id, metadata, prev_hash, hash, created_at FROM audit_log
+WHERE tenant_id = $1
+  AND (created_at, id) > ($2::timestamptz, $3::uuid)
+ORDER BY created_at ASC, id ASC
+`
+
+type ListAuditEntriesForVerifyFromBaselineParams struct {
+	TenantID          uuid.UUID `json:"tenant_id"`
+	BaselineCreatedAt time.Time `json:"baseline_created_at"`
+	BaselineID        uuid.UUID `json:"baseline_id"`
+}
+
+// Same forward walk as ListAuditEntriesForVerify, but starting STRICTLY AFTER
+// a previously-set integrity baseline (audit_integrity_baseline). The
+// composite predicate is required (not a bare `created_at >`) because two
+// appends can legitimately share the same created_at timestamp; a bare
+// comparison could skip or re-include a co-timestamped row. The baseline row
+// itself is excluded — Verify seeds its running prev-hash with baseline_hash
+// before consuming these rows, so this only ever returns entries written
+// after the baseline was taken.
+func (q *Queries) ListAuditEntriesForVerifyFromBaseline(ctx context.Context, arg ListAuditEntriesForVerifyFromBaselineParams) ([]AuditLog, error) {
+	rows, err := q.db.Query(ctx, listAuditEntriesForVerifyFromBaseline, arg.TenantID, arg.BaselineCreatedAt, arg.BaselineID)
 	if err != nil {
 		return nil, err
 	}

@@ -92,3 +92,25 @@ OFFSET @row_offset;
 SELECT * FROM audit_log
 WHERE tenant_id = $1
 ORDER BY created_at ASC, id ASC;
+
+-- name: ListAuditEntriesForVerifyFromBaseline :many
+-- Same forward walk as ListAuditEntriesForVerify, but starting STRICTLY AFTER
+-- a previously-set integrity baseline (audit_integrity_baseline). The
+-- composite predicate is required (not a bare `created_at >`) because two
+-- appends can legitimately share the same created_at timestamp; a bare
+-- comparison could skip or re-include a co-timestamped row. The baseline row
+-- itself is excluded — Verify seeds its running prev-hash with baseline_hash
+-- before consuming these rows, so this only ever returns entries written
+-- after the baseline was taken.
+SELECT * FROM audit_log
+WHERE tenant_id = @tenant_id
+  AND (created_at, id) > (@baseline_created_at::timestamptz, @baseline_id::uuid)
+ORDER BY created_at ASC, id ASC;
+
+-- name: GetLatestAuditEntry :one
+-- Returns the current chain head (newest row) for a tenant — the anchor point
+-- captured by an integrity re-baseline. Not used by Verify itself.
+SELECT id, hash, created_at FROM audit_log
+WHERE tenant_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

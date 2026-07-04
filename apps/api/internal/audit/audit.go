@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -263,6 +264,16 @@ const (
 	// ActionTrustedDevicesRevokedAll: all device trusts were revoked for a user
 	// (e.g. on password change or 2FA disable). metadata: count (int).
 	ActionTrustedDevicesRevokedAll = "auth.2fa.trusted_device.revoked_all"
+
+	// ActionAuditIntegrityRebaselined is recorded when an operator moves the
+	// tenant's integrity-verification anchor to the current chain head (m90).
+	// This never alters or deletes any audit_log row — it only changes where
+	// Verify starts its forward walk — and the acknowledgment itself is
+	// recorded as a normal hash-chained entry so it lives in the tamper-evident
+	// trail too. Metadata: baseline_id, baseline_created_at (RFC3339Nano), and
+	// acknowledged_broken_at (the previously-reported break id, when the caller
+	// supplied one).
+	ActionAuditIntegrityRebaselined = "audit.integrity.rebaselined"
 )
 
 // Entry is one audit record.
@@ -287,6 +298,18 @@ type Entry struct {
 	// ActorEmail is the acting user's email when ActorType == ActorUser. Nil
 	// otherwise. Only List and ListFiltered populate this field.
 	ActorEmail *string
+}
+
+// Baseline is a tenant's integrity re-baseline anchor (audit_integrity_baseline).
+// When set, Verify seeds its running hash with Hash and only walks audit_log
+// rows strictly after (CreatedAt, ID) — see Verify and Rebaseline.
+type Baseline struct {
+	TenantID  uuid.UUID
+	CreatedAt time.Time // baseline_created_at: the anchored entry's created_at
+	ID        uuid.UUID // baseline_id: the anchored entry's id
+	Hash      string    // baseline_hash: the anchored entry's hash
+	SetBy     *uuid.UUID
+	SetAt     time.Time
 }
 
 // Event is the input describing something that happened.
@@ -343,6 +366,56 @@ func hashHex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// lockChain acquires the per-tenant advisory lock that serializes audit_log
+// appends (see appendLocked). Scoped to the current transaction (pg_advisory_
+// xact_lock releases automatically on commit/rollback); re-acquiring it more
+// than once within the SAME transaction (e.g. Rebaseline taking it once for
+// both the head-read and the append) is safe — Postgres never self-deadlocks
+// a backend against its own already-held advisory lock.
+func lockChain(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('wpmgr_audit:' || $1))", tenantID.String()); err != nil {
+		return domain.Internal("audit_lock_failed", "failed to acquire audit chain lock").WithCause(err)
+	}
+	return nil
+}
+
+// appendLocked inserts one hash-chained entry within an already-open tenant
+// tx. The caller must hold the per-tenant advisory lock (via lockChain) around
+// its read of the "previous" hash and this call, or two concurrent appends can
+// both chain onto the same prev-hash — see Record's lock for the full
+// rationale.
+func appendLocked(ctx context.Context, q *sqlc.Queries, e Event, createdAt time.Time) (sqlc.AuditLog, error) {
+	metaJSON, err := json.Marshal(orEmpty(e.Metadata))
+	if err != nil {
+		return sqlc.AuditLog{}, domain.Internal("audit_marshal_failed", "failed to encode audit metadata").WithCause(err)
+	}
+	prevHash, err := q.GetLastAuditHash(ctx, e.TenantID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return sqlc.AuditLog{}, domain.Internal("audit_prev_failed", "failed to read previous audit hash").WithCause(err)
+	}
+	payload, err := canonical(prevHash, e, createdAt)
+	if err != nil {
+		return sqlc.AuditLog{}, domain.Internal("audit_canonical_failed", "failed to canonicalize audit entry").WithCause(err)
+	}
+	h := hashHex(payload)
+	row, err := q.InsertAuditEntry(ctx, sqlc.InsertAuditEntryParams{
+		TenantID:   e.TenantID,
+		ActorType:  e.ActorType,
+		ActorID:    e.ActorID,
+		Action:     e.Action,
+		TargetType: e.TargetType,
+		TargetID:   e.TargetID,
+		Metadata:   metaJSON,
+		PrevHash:   prevHash,
+		Hash:       h,
+		CreatedAt:  createdAt,
+	})
+	if err != nil {
+		return sqlc.AuditLog{}, domain.Internal("audit_insert_failed", "failed to append audit entry").WithCause(err)
+	}
+	return row, nil
+}
+
 // Record appends an audit entry for the event, chaining it to the tenant's
 // previous entry. It runs in the tenant's RLS scope. A best-effort recorder:
 // callers should log but not fail the request if Record errors, except where
@@ -351,13 +424,9 @@ func (r *Recorder) Record(ctx context.Context, e Event) (Entry, error) {
 	if e.ActorType == "" {
 		e.ActorType = ActorSystem
 	}
-	metaJSON, err := json.Marshal(orEmpty(e.Metadata))
-	if err != nil {
-		return Entry{}, domain.Internal("audit_marshal_failed", "failed to encode audit metadata").WithCause(err)
-	}
 
 	var out Entry
-	err = r.pool.InTenantTx(ctx, e.TenantID, func(tx pgx.Tx) error {
+	err := r.pool.InTenantTx(ctx, e.TenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		// Serialize appends per tenant. Without this, two concurrent Records
 		// for the same tenant run in overlapping READ COMMITTED transactions,
@@ -370,36 +439,16 @@ func (r *Recorder) Record(ctx context.Context, e Event) (Entry, error) {
 		// blocks here until the first one finishes, then reads the TRUE
 		// latest prev-hash. hashtext(text) produces an int4 that Postgres
 		// implicitly widens to the int8 pg_advisory_xact_lock expects.
-		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('wpmgr_audit:' || $1))", e.TenantID.String()); err != nil {
-			return domain.Internal("audit_lock_failed", "failed to acquire audit chain lock").WithCause(err)
-		}
-		prevHash, err := q.GetLastAuditHash(ctx, e.TenantID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return domain.Internal("audit_prev_failed", "failed to read previous audit hash").WithCause(err)
+		if err := lockChain(ctx, tx, e.TenantID); err != nil {
+			return err
 		}
 		// Truncate to microseconds — Postgres timestamptz resolution — so the hash
 		// computed here matches the value re-read during Verify (RFC3339Nano over a
 		// nanosecond time would never re-hash equal after the DB round-trip).
 		createdAt := r.clock.Now().UTC().Truncate(time.Microsecond)
-		payload, err := canonical(prevHash, e, createdAt)
+		row, err := appendLocked(ctx, q, e, createdAt)
 		if err != nil {
-			return domain.Internal("audit_canonical_failed", "failed to canonicalize audit entry").WithCause(err)
-		}
-		h := hashHex(payload)
-		row, err := q.InsertAuditEntry(ctx, sqlc.InsertAuditEntryParams{
-			TenantID:   e.TenantID,
-			ActorType:  e.ActorType,
-			ActorID:    e.ActorID,
-			Action:     e.Action,
-			TargetType: e.TargetType,
-			TargetID:   e.TargetID,
-			Metadata:   metaJSON,
-			PrevHash:   prevHash,
-			Hash:       h,
-			CreatedAt:  createdAt,
-		})
-		if err != nil {
-			return domain.Internal("audit_insert_failed", "failed to append audit entry").WithCause(err)
+			return err
 		}
 		out = rowToEntry(row)
 		return nil
@@ -475,15 +524,158 @@ func (r *Recorder) ListFiltered(ctx context.Context, tenantID uuid.UUID, f Filte
 	return out, err
 }
 
+// rowToBaseline maps a sqlc.AuditIntegrityBaseline row to the package-level
+// Baseline type, unwrapping the nullable set_by column.
+func rowToBaseline(row sqlc.AuditIntegrityBaseline) Baseline {
+	b := Baseline{
+		TenantID:  row.TenantID,
+		CreatedAt: row.BaselineCreatedAt,
+		ID:        row.BaselineID,
+		Hash:      row.BaselineHash,
+		SetAt:     row.SetAt,
+	}
+	if row.SetBy.Valid {
+		id := uuid.UUID(row.SetBy.Bytes)
+		b.SetBy = &id
+	}
+	return b
+}
+
+// GetBaseline returns the tenant's current integrity re-baseline anchor, or
+// nil if one has never been set (Verify then walks the full chain from
+// genesis).
+func (r *Recorder) GetBaseline(ctx context.Context, tenantID uuid.UUID) (*Baseline, error) {
+	var out *Baseline
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, qerr := sqlc.New(tx).GetAuditIntegrityBaseline(ctx, tenantID)
+		if qerr != nil {
+			if errors.Is(qerr, pgx.ErrNoRows) {
+				return nil
+			}
+			return domain.Internal("audit_baseline_read_failed", "failed to read the integrity baseline").WithCause(qerr)
+		}
+		b := rowToBaseline(row)
+		out = &b
+		return nil
+	})
+	return out, err
+}
+
+// Rebaseline moves the tenant's integrity-verification anchor to the CURRENT
+// chain head, so Verify treats everything up to and including that point as
+// trusted and only walks entries written after it. It never alters or deletes
+// any existing audit_log row — the flagged rows (and everything else) remain
+// exactly as written, for forensic review; re-baselining only changes where
+// Verify starts looking. The re-baseline itself is recorded as a normal
+// hash-chained audit_log entry (action ActionAuditIntegrityRebaselined) via
+// Record, so the acknowledgment lives in the tamper-evident trail too — if
+// that append fails, the baseline is already durably set (matching this
+// package's established mutate-then-audit ordering), but the error is still
+// surfaced since an unaudited re-baseline defeats the point of the feature.
+//
+// actorType/actorID identify the caller for the recorded audit entry (ActorUser
+// or ActorAPIKey, mirroring every other handler's actor convention). setByUserID
+// is stored in the baseline row's set_by column and is uuid.Nil (stored as
+// NULL) for a non-user (API-key) principal — the column exists to answer
+// "which operator did this", not "which principal". brokenAt, when non-nil, is
+// the previously-reported broken-link id being acknowledged; it is recorded in
+// the audit entry's metadata for forensic context only — it is never used to
+// locate or touch any row.
+func (r *Recorder) Rebaseline(ctx context.Context, tenantID uuid.UUID, actorType, actorID string, setByUserID uuid.UUID, brokenAt *uuid.UUID) (Baseline, error) {
+	var out Baseline
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		// Serialize with concurrent Record/Rebaseline calls for this tenant so
+		// the "current head" read below can't race a concurrent append (same
+		// lock Record uses; see lockChain).
+		if err := lockChain(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		head, qerr := q.GetLatestAuditEntry(ctx, tenantID)
+		if qerr != nil {
+			if errors.Is(qerr, pgx.ErrNoRows) {
+				return domain.Conflict("audit_rebaseline_empty", "there is no audit history to baseline yet")
+			}
+			return domain.Internal("audit_rebaseline_head_failed", "failed to read the current audit chain head").WithCause(qerr)
+		}
+		setAt := r.clock.Now().UTC().Truncate(time.Microsecond)
+		baselineRow, uerr := q.UpsertAuditIntegrityBaseline(ctx, sqlc.UpsertAuditIntegrityBaselineParams{
+			TenantID:          tenantID,
+			BaselineCreatedAt: head.CreatedAt,
+			BaselineID:        head.ID,
+			BaselineHash:      head.Hash,
+			SetBy:             pgtype.UUID{Bytes: setByUserID, Valid: setByUserID != uuid.Nil},
+			SetAt:             setAt,
+		})
+		if uerr != nil {
+			return domain.Internal("audit_rebaseline_upsert_failed", "failed to persist the integrity baseline").WithCause(uerr)
+		}
+		out = rowToBaseline(baselineRow)
+		return nil
+	})
+	if err != nil {
+		return Baseline{}, err
+	}
+
+	meta := map[string]any{
+		"baseline_id":         out.ID.String(),
+		"baseline_created_at": out.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if brokenAt != nil {
+		meta["acknowledged_broken_at"] = brokenAt.String()
+	}
+	if _, rerr := r.Record(ctx, Event{
+		TenantID:   tenantID,
+		ActorType:  actorType,
+		ActorID:    actorID,
+		Action:     ActionAuditIntegrityRebaselined,
+		TargetType: "audit_log",
+		TargetID:   out.ID.String(),
+		Metadata:   meta,
+	}); rerr != nil {
+		return out, domain.Internal("audit_rebaseline_record_failed", "the baseline was set but recording the acknowledgment event failed").WithCause(rerr)
+	}
+	return out, nil
+}
+
 // Verify recomputes the hash chain for a tenant and reports the first broken
 // link, if any. ok is true when the entire chain is intact.
+//
+// When the tenant has a re-baseline anchor set (audit_integrity_baseline —
+// see Rebaseline), Verify seeds the running hash with the baseline's hash and
+// walks only entries strictly after it: a break before the baseline is
+// permanently acknowledged and never re-reported, while any tampering after
+// the baseline is still detected exactly as before. With no baseline set,
+// behaviour is unchanged — the full chain is walked from genesis.
 func (r *Recorder) Verify(ctx context.Context, tenantID uuid.UUID) (ok bool, brokenAt uuid.UUID, err error) {
 	err = r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		rows, qerr := sqlc.New(tx).ListAuditEntriesForVerify(ctx, tenantID)
-		if qerr != nil {
-			return domain.Internal("audit_verify_failed", "failed to load audit entries").WithCause(qerr)
-		}
+		q := sqlc.New(tx)
+
 		prev := ""
+		var rows []sqlc.AuditLog
+		baseline, berr := q.GetAuditIntegrityBaseline(ctx, tenantID)
+		switch {
+		case berr == nil:
+			prev = baseline.BaselineHash
+			r2, qerr := q.ListAuditEntriesForVerifyFromBaseline(ctx, sqlc.ListAuditEntriesForVerifyFromBaselineParams{
+				TenantID:          tenantID,
+				BaselineCreatedAt: baseline.BaselineCreatedAt,
+				BaselineID:        baseline.BaselineID,
+			})
+			if qerr != nil {
+				return domain.Internal("audit_verify_failed", "failed to load audit entries").WithCause(qerr)
+			}
+			rows = r2
+		case errors.Is(berr, pgx.ErrNoRows):
+			r2, qerr := q.ListAuditEntriesForVerify(ctx, tenantID)
+			if qerr != nil {
+				return domain.Internal("audit_verify_failed", "failed to load audit entries").WithCause(qerr)
+			}
+			rows = r2
+		default:
+			return domain.Internal("audit_verify_failed", "failed to load the integrity baseline").WithCause(berr)
+		}
+
 		for _, row := range rows {
 			var meta map[string]any
 			if uerr := json.Unmarshal(row.Metadata, &meta); uerr != nil {

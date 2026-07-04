@@ -2135,6 +2135,24 @@ func (s *AuditList) SetItems(val []AuditEntry) {
 
 func (*AuditList) listAuditRes() {}
 
+// Ref: #/components/schemas/AuditRebaselineRequest
+type AuditRebaselineRequest struct {
+	// The `broken_at` id from a prior `verifyAudit` ok=false response that this re-baseline acknowledges.
+	//  Optional — recorded in the `audit.integrity.rebaselined` event's metadata for forensic context
+	// only; it is never used to locate or alter any row.
+	BrokenAt OptUUID `json:"broken_at"`
+}
+
+// GetBrokenAt returns the value of BrokenAt.
+func (s *AuditRebaselineRequest) GetBrokenAt() OptUUID {
+	return s.BrokenAt
+}
+
+// SetBrokenAt sets the value of BrokenAt.
+func (s *AuditRebaselineRequest) SetBrokenAt(val OptUUID) {
+	s.BrokenAt = val
+}
+
 // Ref: #/components/schemas/AuditVerify
 type AuditVerify struct {
 	Ok       bool    `json:"ok"`
@@ -2161,7 +2179,8 @@ func (s *AuditVerify) SetBrokenAt(val OptUUID) {
 	s.BrokenAt = val
 }
 
-func (*AuditVerify) verifyAuditRes() {}
+func (*AuditVerify) rebaselineAuditIntegrityRes() {}
+func (*AuditVerify) verifyAuditRes()              {}
 
 // Ref: #/components/schemas/AutologinConsumeRequest
 type AutologinConsumeRequest struct {
@@ -16599,6 +16618,52 @@ func (o OptAuditEntryMetadata) Or(d AuditEntryMetadata) AuditEntryMetadata {
 	return d
 }
 
+// NewOptAuditRebaselineRequest returns new OptAuditRebaselineRequest with value set to v.
+func NewOptAuditRebaselineRequest(v AuditRebaselineRequest) OptAuditRebaselineRequest {
+	return OptAuditRebaselineRequest{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuditRebaselineRequest is optional AuditRebaselineRequest.
+type OptAuditRebaselineRequest struct {
+	Value AuditRebaselineRequest
+	Set   bool
+}
+
+// IsSet returns true if OptAuditRebaselineRequest was set.
+func (o OptAuditRebaselineRequest) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuditRebaselineRequest) Reset() {
+	var v AuditRebaselineRequest
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuditRebaselineRequest) SetTo(v AuditRebaselineRequest) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuditRebaselineRequest) Get() (v AuditRebaselineRequest, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuditRebaselineRequest) Or(d AuditRebaselineRequest) AuditRebaselineRequest {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAutologinCreate returns new OptAutologinCreate with value set to v.
 func NewOptAutologinCreate(v AutologinCreate) OptAutologinCreate {
 	return OptAutologinCreate{
@@ -25773,6 +25838,18 @@ func (s *ReadinessStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type RebaselineAuditIntegrityConflict Error
+
+func (*RebaselineAuditIntegrityConflict) rebaselineAuditIntegrityRes() {}
+
+type RebaselineAuditIntegrityForbidden Error
+
+func (*RebaselineAuditIntegrityForbidden) rebaselineAuditIntegrityRes() {}
+
+type RebaselineAuditIntegrityUnauthorized Error
+
+func (*RebaselineAuditIntegrityUnauthorized) rebaselineAuditIntegrityRes() {}
 
 // RefreshSiteDiagnosticsAccepted is response for RefreshSiteDiagnostics operation.
 type RefreshSiteDiagnosticsAccepted struct{}

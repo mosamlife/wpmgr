@@ -313,6 +313,10 @@ type Querier interface {
 	// M5 uptime alerting: per-tenant alert config + per-site alert state.
 	// Tenant-scoped read of the tenant's default alert channel.
 	GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (AlertConfig, error)
+	// Returns the tenant's current re-baseline anchor, if one has ever been set.
+	// Callers must handle pgx.ErrNoRows as "no baseline" (Verify walks the full
+	// chain from genesis in that case).
+	GetAuditIntegrityBaseline(ctx context.Context, tenantID uuid.UUID) (AuditIntegrityBaseline, error)
 	// Mint path (app.tenant_id). When no row exists the service auto-creates the
 	// default policy on first read (see UpsertAutologinPolicyDefault).
 	GetAutologinPolicy(ctx context.Context, arg GetAutologinPolicyParams) (AutologinPolicy, error)
@@ -483,6 +487,9 @@ type Querier interface {
 	// Pre-auth lookup: must be run under InInviteLookupTx (app.invite_lookup='on').
 	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (Invitation, error)
 	GetLastAuditHash(ctx context.Context, tenantID uuid.UUID) (string, error)
+	// Returns the current chain head (newest row) for a tenant — the anchor point
+	// captured by an integrity re-baseline. Not used by Verify itself.
+	GetLatestAuditEntry(ctx context.Context, tenantID uuid.UUID) (GetLatestAuditEntryRow, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	// ---------------------------------------------------------------------------
 	// email_notify_settings  (m62 — alerts + digest)
@@ -887,6 +894,15 @@ type Querier interface {
 	// guard is NOT safe here).
 	ListAuditEntriesFiltered(ctx context.Context, arg ListAuditEntriesFilteredParams) ([]ListAuditEntriesFilteredRow, error)
 	ListAuditEntriesForVerify(ctx context.Context, tenantID uuid.UUID) ([]AuditLog, error)
+	// Same forward walk as ListAuditEntriesForVerify, but starting STRICTLY AFTER
+	// a previously-set integrity baseline (audit_integrity_baseline). The
+	// composite predicate is required (not a bare `created_at >`) because two
+	// appends can legitimately share the same created_at timestamp; a bare
+	// comparison could skip or re-include a co-timestamped row. The baseline row
+	// itself is excluded — Verify seeds its running prev-hash with baseline_hash
+	// before consuming these rows, so this only ever returns entries written
+	// after the baseline was taken.
+	ListAuditEntriesForVerifyFromBaseline(ctx context.Context, arg ListAuditEntriesForVerifyFromBaselineParams) ([]AuditLog, error)
 	// Returns the tenant's already-stored chunks among the given hashes (dedup: the
 	// agent only uploads hashes NOT returned here).
 	ListBackupChunksByHashes(ctx context.Context, arg ListBackupChunksByHashesParams) ([]BackupChunk, error)
@@ -1398,6 +1414,11 @@ type Querier interface {
 	UpdateWooThemeFragmentsSupported(ctx context.Context, arg UpdateWooThemeFragmentsSupportedParams) (int64, error)
 	// Tenant-scoped create-or-update of the tenant's default alert channel.
 	UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error)
+	// Moves the tenant's integrity anchor to the given chain-head snapshot. At
+	// most one row per tenant (PRIMARY KEY tenant_id) — a second re-baseline
+	// replaces the previous anchor rather than stacking history; the audit_log
+	// entry recorded alongside each call is the durable history of when/why.
+	UpsertAuditIntegrityBaseline(ctx context.Context, arg UpsertAuditIntegrityBaselineParams) (AuditIntegrityBaseline, error)
 	// Mint path (app.tenant_id). Idempotent insert-or-return: the first call seeds
 	// the default policy (enabled, allowed=administrator, 2FA off, max age 30m);
 	// subsequent calls return the existing row unchanged.

@@ -43,6 +43,15 @@ type ApiKey struct {
 	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 }
 
+type AuditIntegrityBaseline struct {
+	TenantID          uuid.UUID   `json:"tenant_id"`
+	BaselineCreatedAt time.Time   `json:"baseline_created_at"`
+	BaselineID        uuid.UUID   `json:"baseline_id"`
+	BaselineHash      string      `json:"baseline_hash"`
+	SetBy             pgtype.UUID `json:"set_by"`
+	SetAt             time.Time   `json:"set_at"`
+}
+
 type AuditLog struct {
 	ID         uuid.UUID `json:"id"`
 	TenantID   uuid.UUID `json:"tenant_id"`
