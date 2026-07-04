@@ -8,6 +8,20 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.15] - 2026-07-04
+
+### Added
+
+- Audit log integrity re-baseline. A "Chain break" that predates the integrity-locking fix is a permanent artifact, because the audit log is append-only and its rows can never be altered. An owner can now acknowledge such a break, which moves the integrity anchor to the current point so verification runs forward from there. New tampering is still detected, the acknowledgment is itself recorded in the audit log, and no existing entries are ever removed.
+
+### Changed
+
+- Each audit row now shows its date, not just the time, so a row keeps its date when scrolled away from its day header.
+
+### Fixed
+
+- The audit log Reload button now visibly refreshes both the event list and the integrity check, with a spinner while it works.
+
 ## [0.61.14] - 2026-07-04
 
 ### Fixed
