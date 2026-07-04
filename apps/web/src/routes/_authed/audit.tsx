@@ -553,8 +553,13 @@ function DayGroup({
 
   return (
     <div>
-      <div className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-card/80">
-        {label}
+      <div className="sticky top-0 z-10 flex items-center justify-between border-y border-border bg-muted/95 px-4 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-muted/80">
+        <span className="text-xs font-semibold uppercase tracking-wide text-foreground">
+          {label}
+        </span>
+        <span className="text-[11px] font-medium tabular-nums text-muted-foreground">
+          {entries.length}
+        </span>
       </div>
       <ul className="divide-y divide-border">
         {runs.map((run, index) => {
