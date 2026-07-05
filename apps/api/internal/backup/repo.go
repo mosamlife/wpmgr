@@ -193,6 +193,30 @@ type Repo interface {
 	// (chunkRefs, storedCount). Tenant-scoped.
 	CompleteIncrementalManifest(ctx context.Context, in CompleteIncrementalInput) (chunkRefs, storedCount int64, err error)
 
+	// Chain-aware bulk delete (issue #115).
+
+	// GetSnapshotsByIDs resolves a batch of snapshot IDs to their rows in ONE
+	// query, tenant-scoped. An id that does not exist, or belongs to another
+	// tenant, is simply absent from the returned map — RLS plus the explicit
+	// tenant_id filter already collapse "does not exist" and "wrong tenant" into
+	// the same observable outcome, so the caller (BulkDeleteSnapshots) never gets
+	// a chance to leak the difference. Returns an empty (non-nil) map for an
+	// empty ids slice without touching the database.
+	GetSnapshotsByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]Snapshot, error)
+
+	// HasActiveRestore reports, for each supplied "restore group key" (see
+	// restoreGroupKey — a chain's own chain_id for a chained snapshot, or a
+	// standalone snapshot's own id), whether at least one restore_runs row in
+	// an ACTIVE status (queued|running) currently targets ANY snapshot sharing
+	// that key. A restore plans over the WHOLE chain up to its target
+	// generation, so an active restore anchored on any member makes every
+	// member of that chain unsafe to delete — grouping by chain (rather than by
+	// the exact snapshot id a restore_runs row references) is what makes this
+	// check correct for siblings the caller never even mentioned. Tenant-scoped.
+	// Returns an empty (non-nil) map for an empty groupKeys slice without
+	// touching the database.
+	HasActiveRestore(ctx context.Context, tenantID uuid.UUID, groupKeys []uuid.UUID) (map[uuid.UUID]bool, error)
+
 	// ADR-049 incremental restore chain planner.
 
 	// ListChainSnapshots returns all snapshots belonging to chainID whose
@@ -1134,6 +1158,71 @@ func (r *pgRepo) DeleteSnapshot(ctx context.Context, tenantID, snapshotID uuid.U
 		}
 		return nil
 	})
+}
+
+// GetSnapshotsByIDs resolves ids in ONE query. See the Repo interface doc.
+func (r *pgRepo) GetSnapshotsByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]Snapshot, error) {
+	out := make(map[uuid.UUID]Snapshot, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			snapshotSelectColumns+` FROM backup_snapshots WHERE tenant_id=$1 AND id = ANY($2)`,
+			tenantID, ids,
+		)
+		if err != nil {
+			return domain.Internal("backup_snapshot_list_failed", "failed to load snapshots").WithCause(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			s, serr := scanSnapshotWithChainFields(rows)
+			if serr != nil {
+				return domain.Internal("backup_snapshot_list_scan_failed", "failed to scan snapshot row").WithCause(serr)
+			}
+			out[s.ID] = s
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// HasActiveRestore reports which of the supplied restore-group keys have an
+// active restore in flight. See the Repo interface doc for the grouping
+// semantics. restore_runs does not carry chain_id directly, so this joins
+// backup_snapshots to resolve COALESCE(chain_id, id) — a chained snapshot's
+// grouping key is its chain_id (shared by every generation, including the
+// base, whose own id IS the chain_id); a standalone snapshot's grouping key is
+// its own id.
+func (r *pgRepo) HasActiveRestore(ctx context.Context, tenantID uuid.UUID, groupKeys []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool, len(groupKeys))
+	if len(groupKeys) == 0 {
+		return out, nil
+	}
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT DISTINCT COALESCE(bs.chain_id, bs.id) AS grp
+			FROM restore_runs rr
+			JOIN backup_snapshots bs ON bs.id = rr.snapshot_id AND bs.tenant_id = rr.tenant_id
+			WHERE rr.tenant_id = $1
+			  AND rr.status IN ('queued', 'running')
+			  AND COALESCE(bs.chain_id, bs.id) = ANY($2)`,
+			tenantID, groupKeys,
+		)
+		if err != nil {
+			return domain.Internal("backup_active_restore_check_failed", "failed to check active restores").WithCause(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var grp uuid.UUID
+			if serr := rows.Scan(&grp); serr != nil {
+				return domain.Internal("backup_active_restore_scan_failed", "failed to scan active restore row").WithCause(serr)
+			}
+			out[grp] = true
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 func (r *pgRepo) ListInFlightSnapshotFloor(ctx context.Context, tenantID uuid.UUID) (time.Time, error) {

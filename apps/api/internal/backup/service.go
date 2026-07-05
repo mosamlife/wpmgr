@@ -1757,6 +1757,14 @@ func (s *Service) SetSnapshotLocked(ctx context.Context, tenantID, snapshotID uu
 // Only TERMINAL snapshots (completed/failed) may be deleted. A running/pending
 // snapshot must be cancelled first (CancelSnapshot) — deleting an in-flight row
 // would race the agent's chunk uploads and the grace floor.
+//
+// DeleteSnapshotForUser is a thin wrapper around deleteSnapshotCore (the shared
+// guard-and-delete primitive issue #115 also drives from BulkDeleteSnapshots):
+// it resolves the single snapshot, runs the core guards + delete, and — only on
+// a successful delete — runs the retention GC exactly once. This is also where
+// the single-delete path picks up the restore_in_progress guard (previously
+// missing here): deleteSnapshotCore refuses to delete a snapshot any active
+// restore is currently reading, chain-wide.
 func (s *Service) DeleteSnapshotForUser(ctx context.Context, tenantID, snapshotID uuid.UUID) error {
 	if tenantID == uuid.Nil {
 		return domain.Forbidden("tenant_required", "a tenant context is required")
@@ -1765,48 +1773,13 @@ func (s *Service) DeleteSnapshotForUser(ctx context.Context, tenantID, snapshotI
 	if err != nil {
 		return err
 	}
-	if snap.Status == StatusRunning || snap.Status == StatusPending {
-		return domain.Validation("snapshot_in_progress",
-			"this backup is still running; cancel it before deleting")
+	code, cerr := s.deleteSnapshotCore(ctx, tenantID, snap, nil)
+	if cerr != nil {
+		return cerr
 	}
-
-	// Lock guard (m49): a locked snapshot is exempt from retention GC AND from
-	// manual deletion. The operator must explicitly unlock before deleting, so a
-	// lock genuinely protects the backup (not just from the auto-pruner).
-	if snap.Locked {
-		return domain.Validation("snapshot_locked",
-			"this backup is locked; unlock it before deleting")
+	if code != "" {
+		return domain.Validation(code, skipMessage(code))
 	}
-
-	// Chain-safety: never orphan a dependent increment. If this snapshot anchors
-	// or sits mid-chain (i.e. a sibling exists at a HIGHER generation in the same
-	// chain), refuse — the dependents would become unrestorable.
-	if snap.ChainID != nil {
-		siblings, lerr := s.repo.ListChainSnapshots(ctx, tenantID, *snap.ChainID, maxChainEnumGeneration)
-		if lerr != nil {
-			return lerr
-		}
-		for _, sib := range siblings {
-			if sib.Generation > snap.Generation {
-				return domain.Validation("chain_has_dependents",
-					"this backup is part of an incremental chain and later increments depend on it; "+
-						"delete the newer increments first")
-			}
-		}
-	}
-
-	// Remove the snapshot row (cascades file_index + manifest via FK). Chunks are
-	// NOT freed here (post-ADR-050 only the mark-and-sweep frees objects).
-	if derr := s.repo.DeleteSnapshot(ctx, tenantID, snapshotID); derr != nil {
-		return derr
-	}
-
-	// Delete the per-snapshot manifest.json index object. Best-effort: the DB row
-	// is already gone; a storage error (including an absent manifest on a snapshot
-	// that never completed its write) is logged as a warning and does not fail the
-	// delete. We call this after the DB delete so a transient storage failure can
-	// never strand the DB row in an inconsistent state.
-	s.deleteManifestIndex(ctx, tenantID, snap.SiteID, snapshotID)
 
 	// Reclaim orphaned chunks via the reachability-based GC over the survivors.
 	// Best-effort: the row is already gone; a sweep error is logged, not fatal.
@@ -1816,6 +1789,350 @@ func (s *Service) DeleteSnapshotForUser(ctx context.Context, tenantID, snapshotI
 			slog.String("snapshot_id", snapshotID.String()), slog.Any("error", gerr))
 	}
 	return nil
+}
+
+// evaluateDeleteGuards runs every delete guard against an already-resolved
+// snapshot WITHOUT mutating anything, so it doubles as the dry-run planner for
+// BulkDeleteSnapshots. Guards, in order:
+//
+//  1. in_progress — a running/pending snapshot must be cancelled first.
+//  2. locked — an operator lock exempts a snapshot from any delete (manual or
+//     GC) until explicitly unlocked.
+//  3. restore_in_progress — an active (queued|running) restore_runs row reads
+//     this snapshot's WHOLE chain (see restoreGroupKey), so deleting any member
+//     while a restore runs would pull the rug out from under the agent mid-read.
+//  4. chain_has_dependents — refuses to orphan a later-generation increment.
+//     Re-checked against LIVE chain membership (repo.ListChainSnapshots) rather
+//     than a snapshot list cached before this call. deletedThisReq lets a caller
+//     that is deleting an entire chain in ONE bulk request treat siblings it has
+//     ALREADY deleted earlier in the SAME request as gone, so a newest-first
+//     walk down a whole chain doesn't trip this guard on its own already-doomed
+//     tip. Pass a nil/empty map for a single, isolated delete.
+//
+// Returns ("", nil) when every guard passes (the snapshot IS deletable); a
+// non-empty skip code (and nil error) when a guard refuses; a non-nil err only
+// for a genuine infrastructure failure.
+func (s *Service) evaluateDeleteGuards(ctx context.Context, tenantID uuid.UUID, snap Snapshot, deletedThisReq map[uuid.UUID]bool) (skipCode string, err error) {
+	if snap.Status == StatusRunning || snap.Status == StatusPending {
+		return SkipSnapshotInProgress, nil
+	}
+
+	// Lock guard (m49): a locked snapshot is exempt from retention GC AND from
+	// manual deletion. The operator must explicitly unlock before deleting, so a
+	// lock genuinely protects the backup (not just from the auto-pruner).
+	if snap.Locked {
+		return SkipSnapshotLocked, nil
+	}
+
+	active, aerr := s.hasActiveRestore(ctx, tenantID, snap)
+	if aerr != nil {
+		return "", aerr
+	}
+	if active {
+		return SkipRestoreInProgress, nil
+	}
+
+	// Chain-safety: never orphan a dependent increment. If this snapshot anchors
+	// or sits mid-chain (i.e. a sibling exists at a HIGHER generation in the same
+	// chain), refuse — the dependents would become unrestorable.
+	if snap.ChainID != nil {
+		siblings, lerr := s.repo.ListChainSnapshots(ctx, tenantID, *snap.ChainID, maxChainEnumGeneration)
+		if lerr != nil {
+			return "", lerr
+		}
+		for _, sib := range siblings {
+			if sib.Generation > snap.Generation && !deletedThisReq[sib.ID] {
+				return SkipChainHasDependents, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// deleteSnapshotCore is the shared guard-and-delete primitive behind both
+// DeleteSnapshotForUser (single delete) and BulkDeleteSnapshots (issue #115).
+// It applies every evaluateDeleteGuards check and, only if all of them pass,
+// removes the snapshot row (metadata-only — chunks are freed later by the
+// mark-and-sweep GC) plus the best-effort manifest-index object. It
+// deliberately does NOT run the retention GC: callers own that, and
+// BulkDeleteSnapshots relies on running it exactly ONCE for the whole batch
+// rather than once per deleted id (each GC pass re-marks every retained
+// manifest tenant-wide, so a per-id call would be wasteful, not merely
+// suboptimal, at any real batch size).
+func (s *Service) deleteSnapshotCore(ctx context.Context, tenantID uuid.UUID, snap Snapshot, deletedThisReq map[uuid.UUID]bool) (skipCode string, err error) {
+	code, gerr := s.evaluateDeleteGuards(ctx, tenantID, snap, deletedThisReq)
+	if gerr != nil || code != "" {
+		return code, gerr
+	}
+
+	// Remove the snapshot row (cascades file_index + manifest via FK). Chunks are
+	// NOT freed here (post-ADR-050 only the mark-and-sweep frees objects).
+	if derr := s.repo.DeleteSnapshot(ctx, tenantID, snap.ID); derr != nil {
+		return "", derr
+	}
+
+	// Delete the per-snapshot manifest.json index object. Best-effort: the DB row
+	// is already gone; a storage error (including an absent manifest on a snapshot
+	// that never completed its write) is logged as a warning and does not fail the
+	// delete. We call this after the DB delete so a transient storage failure can
+	// never strand the DB row in an inconsistent state.
+	s.deleteManifestIndex(ctx, tenantID, snap.SiteID, snap.ID)
+	return "", nil
+}
+
+// restoreGroupKey is the key HasActiveRestore groups by: a chained snapshot's
+// chain_id (shared by every generation in the chain, including the base — whose
+// own id IS the chain_id), or a standalone snapshot's own id.
+func restoreGroupKey(snap Snapshot) uuid.UUID {
+	if snap.ChainID != nil {
+		return *snap.ChainID
+	}
+	return snap.ID
+}
+
+// hasActiveRestore reports whether an active restore currently reads snap or,
+// when snap is chained, any sibling sharing its restoreGroupKey.
+func (s *Service) hasActiveRestore(ctx context.Context, tenantID uuid.UUID, snap Snapshot) (bool, error) {
+	key := restoreGroupKey(snap)
+	active, err := s.repo.HasActiveRestore(ctx, tenantID, []uuid.UUID{key})
+	if err != nil {
+		return false, err
+	}
+	return active[key], nil
+}
+
+// Bulk-delete outcome + skip-code vocabulary (issue #115). Code is a closed
+// set the frontend switches on to render a per-row message; Message mirrors
+// the wording DeleteSnapshotForUser's equivalent single-delete refusal uses
+// (see skipMessage) so the two entry points never drift.
+const (
+	BulkDeleteOutcomeDeleted = "deleted"
+	BulkDeleteOutcomeSkipped = "skipped"
+
+	SkipSnapshotNotFound   = "snapshot_not_found"
+	SkipSnapshotInProgress = "snapshot_in_progress"
+	SkipSnapshotLocked     = "snapshot_locked"
+	SkipChainHasDependents = "chain_has_dependents"
+	SkipRestoreInProgress  = "restore_in_progress"
+)
+
+// BulkDeleteMaxIDs caps the number of snapshot ids accepted per bulk-delete
+// call (issue #115).
+const BulkDeleteMaxIDs = 100
+
+// skipMessage returns the human-readable explanation for a skip code. Shared
+// by DeleteSnapshotForUser's single-delete error path (domain.Validation(code,
+// skipMessage(code))) and BulkDeleteSnapshots' per-id result rows.
+func skipMessage(code string) string {
+	switch code {
+	case SkipSnapshotNotFound:
+		return "backup snapshot not found"
+	case SkipSnapshotInProgress:
+		return "this backup is still running; cancel it before deleting"
+	case SkipSnapshotLocked:
+		return "this backup is locked; unlock it before deleting"
+	case SkipRestoreInProgress:
+		return "a restore is currently reading this backup's chain; wait for it to finish before deleting"
+	case SkipChainHasDependents:
+		return "this backup is part of an incremental chain and later increments depend on it; " +
+			"delete the newer increments first"
+	default:
+		return ""
+	}
+}
+
+// BulkDeleteResult is the per-id outcome reported by BulkDeleteSnapshots.
+// Kind/Status are NOT part of the wire response (see toBulkDeleteResponse) —
+// they are carried here purely so the HTTP handler can audit each actually-
+// deleted row (recordBackupAction) without an extra per-id fetch of a row that
+// (by the time the handler sees it) has already been removed.
+type BulkDeleteResult struct {
+	ID uuid.UUID
+	// Outcome is BulkDeleteOutcomeDeleted or BulkDeleteOutcomeSkipped. In
+	// dry-run mode, "deleted" means "would be deleted".
+	Outcome string
+	// Code is the skip reason; empty when Outcome == BulkDeleteOutcomeDeleted.
+	Code string
+	// Message is the human-readable explanation of Code; empty when
+	// Outcome == BulkDeleteOutcomeDeleted.
+	Message string
+	// Kind and Status are copied from the resolved Snapshot for every
+	// candidate (i.e. every id that was NOT a snapshot_not_found skip). Both
+	// are zero-value for a snapshot_not_found result, since no row was ever
+	// resolved.
+	Kind   string
+	Status string
+}
+
+// BulkDeleteOutput is the aggregate result of a BulkDeleteSnapshots call.
+type BulkDeleteOutput struct {
+	DryRun                 bool
+	Requested              int
+	Deleted                int
+	Skipped                int
+	Results                []BulkDeleteResult
+	ReclaimedBytesEstimate int64
+}
+
+// BulkDeleteSnapshots deletes (or, when dryRun, plans the deletion of) up to
+// BulkDeleteMaxIDs snapshots in one call. It is chain-aware and ALWAYS
+// partial-success: an id that fails a guard is reported as a "skipped" result
+// row rather than aborting the whole request — one locked or in-flight backup
+// in a batch never blocks the rest from being cleaned up, and the method
+// returns a nil error (200 to the caller) even when every id is skipped.
+//
+// ids are deduplicated (first occurrence wins) before the 1..BulkDeleteMaxIDs
+// count check runs, so a client that double-submits the same id is not
+// penalized. A id count of zero after dedup, or a count over BulkDeleteMaxIDs,
+// is rejected with a domain.Validation error (missing_ids / too_many_ids) and
+// no partial work is attempted.
+//
+// Delete ORDER matters for chain safety: within each incremental chain,
+// requested snapshots are deleted newest-generation-first (tip → base).
+// Deleting in this order means every surviving snapshot's chain stays
+// contiguous 0..tip at every intermediate point of the request — the same
+// invariant planRestoreChain's CHECK 1 and the retention GC's chain-aware
+// pinning rely on — so a crash or error partway through the batch can never
+// strand an unrestorable mid-chain gap. evaluateDeleteGuards' chain_has_dependents
+// guard is re-checked against LIVE DB state (via repo.ListChainSnapshots)
+// immediately before each row would be deleted, treating ids already deleted
+// (or, in dry-run, already "would-delete"d) EARLIER in this same request as
+// gone; this is what makes it safe to request an entire chain (base + every
+// increment) in one call, and what makes "base+mid requested, tip omitted"
+// correctly skip BOTH (the live tip — untouched — still counts as a dependent).
+//
+// The retention GC runs at most ONCE, after every requested id has been
+// processed — never per-id (see deleteSnapshotCore).
+//
+// dryRun computes the exact same plan (guards + would-be delete order) via
+// evaluateDeleteGuards but performs NO mutation whatsoever: no row delete, no
+// manifest-index delete, no GC, no audit (the audit call lives in the HTTP
+// handler, which the caller is expected to skip when dryRun is set; this
+// method itself never touches the DB in dry-run mode regardless).
+func (s *Service) BulkDeleteSnapshots(ctx context.Context, tenantID, siteID uuid.UUID, ids []uuid.UUID, dryRun bool) (BulkDeleteOutput, error) {
+	if tenantID == uuid.Nil {
+		return BulkDeleteOutput{}, domain.Forbidden("tenant_required", "a tenant context is required")
+	}
+
+	// Dedupe while preserving first-occurrence order.
+	seen := make(map[uuid.UUID]bool, len(ids))
+	uniqueIDs := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if id == uuid.Nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return BulkDeleteOutput{}, domain.Validation("missing_ids", "ids must contain at least one entry")
+	}
+	if len(uniqueIDs) > BulkDeleteMaxIDs {
+		return BulkDeleteOutput{}, domain.Validation("too_many_ids",
+			fmt.Sprintf("ids may contain at most %d entries per call", BulkDeleteMaxIDs))
+	}
+
+	// Resolve every requested id in ONE query.
+	found, ferr := s.repo.GetSnapshotsByIDs(ctx, tenantID, uniqueIDs)
+	if ferr != nil {
+		return BulkDeleteOutput{}, ferr
+	}
+
+	// resultByID accumulates the outcome for every requested id, regardless of
+	// which phase decided it, so the final Results slice can be assembled in the
+	// caller's requested order at the end.
+	resultByID := make(map[uuid.UUID]BulkDeleteResult, len(uniqueIDs))
+
+	// candidates holds the ids that passed the not-found check (right tenant —
+	// guaranteed by GetSnapshotsByIDs — AND right site), preserving request order.
+	candidates := make([]Snapshot, 0, len(uniqueIDs))
+	for _, id := range uniqueIDs {
+		snap, ok := found[id]
+		if !ok || snap.SiteID != siteID {
+			resultByID[id] = BulkDeleteResult{
+				ID: id, Outcome: BulkDeleteOutcomeSkipped,
+				Code: SkipSnapshotNotFound, Message: skipMessage(SkipSnapshotNotFound),
+			}
+			continue
+		}
+		candidates = append(candidates, snap)
+	}
+
+	// Bucket candidates by chain (a standalone snapshot is its own singleton
+	// "chain" keyed by its own id), preserving first-seen chain order.
+	chains := make(map[uuid.UUID][]Snapshot, len(candidates))
+	chainOrder := make([]uuid.UUID, 0, len(candidates))
+	for _, snap := range candidates {
+		key := restoreGroupKey(snap)
+		if _, ok := chains[key]; !ok {
+			chainOrder = append(chainOrder, key)
+		}
+		chains[key] = append(chains[key], snap)
+	}
+
+	deletedThisReq := make(map[uuid.UUID]bool, len(candidates))
+	var reclaimed int64
+
+	for _, key := range chainOrder {
+		members := chains[key]
+		// Newest-generation-first within the chain (tip before base).
+		sort.Slice(members, func(i, j int) bool { return members[i].Generation > members[j].Generation })
+		for _, snap := range members {
+			var (
+				code string
+				gerr error
+			)
+			if dryRun {
+				code, gerr = s.evaluateDeleteGuards(ctx, tenantID, snap, deletedThisReq)
+			} else {
+				code, gerr = s.deleteSnapshotCore(ctx, tenantID, snap, deletedThisReq)
+			}
+			if gerr != nil {
+				return BulkDeleteOutput{}, gerr
+			}
+			if code == "" {
+				deletedThisReq[snap.ID] = true
+				reclaimed += snap.TotalSize
+				resultByID[snap.ID] = BulkDeleteResult{
+					ID: snap.ID, Outcome: BulkDeleteOutcomeDeleted,
+					Kind: snap.Kind, Status: snap.Status,
+				}
+			} else {
+				resultByID[snap.ID] = BulkDeleteResult{
+					ID: snap.ID, Outcome: BulkDeleteOutcomeSkipped,
+					Code: code, Message: skipMessage(code),
+					Kind: snap.Kind, Status: snap.Status,
+				}
+			}
+		}
+	}
+
+	out := BulkDeleteOutput{
+		DryRun:                 dryRun,
+		Requested:              len(uniqueIDs),
+		Results:                make([]BulkDeleteResult, 0, len(uniqueIDs)),
+		ReclaimedBytesEstimate: reclaimed,
+	}
+	for _, id := range uniqueIDs {
+		res := resultByID[id]
+		out.Results = append(out.Results, res)
+		if res.Outcome == BulkDeleteOutcomeDeleted {
+			out.Deleted++
+		} else {
+			out.Skipped++
+		}
+	}
+
+	// Retention GC runs exactly ONCE for the whole batch, and only when the
+	// batch actually deleted something and we are NOT in dry-run mode.
+	if !dryRun && out.Deleted > 0 {
+		if _, _, gerr := s.RunRetentionGC(ctx, tenantID); gerr != nil {
+			slog.WarnContext(ctx, "bulk backup delete: post-delete GC sweep failed (orphans reclaimed on next periodic GC)",
+				slog.String("tenant_id", tenantID.String()),
+				slog.Int("deleted", out.Deleted), slog.Any("error", gerr))
+		}
+	}
+	return out, nil
 }
 
 // maxChainEnumGeneration bounds ListChainSnapshots when we want EVERY generation

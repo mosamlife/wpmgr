@@ -196,6 +196,12 @@ func (r *wiringRepo) CountInFlightSnapshots(_ context.Context, _, _ uuid.UUID) (
 func (r *wiringRepo) HealOverdueSchedules(_ context.Context, _ time.Time, _ func(Schedule, time.Time) time.Time) (int, error) {
 	return 0, nil
 }
+func (r *wiringRepo) GetSnapshotsByIDs(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]Snapshot, error) {
+	panic("wiringRepo.GetSnapshotsByIDs not implemented")
+}
+func (r *wiringRepo) HasActiveRestore(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+	panic("wiringRepo.HasActiveRestore not implemented")
+}
 func (r *wiringRepo) ReconcileDuplicateInflightSnapshots(_ context.Context) (int, error) {
 	return 0, nil
 }

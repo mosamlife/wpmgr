@@ -1125,6 +1125,69 @@ export type BackupSnapshotDetail = {
 };
 
 /**
+ * Chain-aware bulk delete request (issue #115). Every requested id is
+ * processed independently — a locked, in-flight, dependent, or
+ * actively-restoring snapshot in the batch is reported as a skipped
+ * result row rather than aborting the whole request.
+ *
+ */
+export type BulkDeleteBackupsRequest = {
+  /**
+   * Snapshot IDs to delete. 1-100 unique ids per call; duplicates are
+   * silently deduplicated before the count is checked. Empty (after
+   * dedup) or over 100 is rejected with 400.
+   *
+   */
+  ids: Array<string>;
+  /**
+   * When true, compute the plan but write nothing (no deletes, no GC, no audit).
+   */
+  dry_run?: boolean;
+};
+
+export type BulkDeleteBackupsResultItem = {
+  id: string;
+  /**
+   * "deleted" — the snapshot was removed (or, in dry_run, WOULD be
+   * removed). "skipped" — the snapshot was left in place; see code.
+   *
+   */
+  outcome: "deleted" | "skipped";
+  /**
+   * Null when outcome=deleted; the skip reason otherwise.
+   */
+  code?:
+    | "snapshot_not_found"
+    | "snapshot_in_progress"
+    | "snapshot_locked"
+    | "chain_has_dependents"
+    | "restore_in_progress";
+  /**
+   * Human-readable explanation of code; null when outcome=deleted.
+   */
+  message?: string;
+};
+
+export type BulkDeleteBackupsCounts = {
+  requested: number;
+  deleted: number;
+  skipped: number;
+};
+
+export type BulkDeleteBackupsResponse = {
+  dry_run: boolean;
+  counts: BulkDeleteBackupsCounts;
+  results: Array<BulkDeleteBackupsResultItem>;
+  /**
+   * Sum of total_size over deleted (or, in dry_run, would-be-deleted)
+   * rows. An estimate only — actual space is freed asynchronously by
+   * the next retention GC sweep.
+   *
+   */
+  reclaimed_bytes_estimate: number;
+};
+
+/**
  * Restore selection. Omit both arrays (or set full=true) for a full
  * restore; provide paths for partial file restore, or db_tables for partial
  * db restore. `components` further restricts the operation to specific
@@ -8114,6 +8177,37 @@ export type CreateBackupResponses = {
 
 export type CreateBackupResponse =
   CreateBackupResponses[keyof CreateBackupResponses];
+
+export type BulkDeleteBackupsData = {
+  body: BulkDeleteBackupsRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/backups/bulk-delete";
+};
+
+export type BulkDeleteBackupsErrors = {
+  /**
+   * ids was empty, contained more than 100 unique entries after
+   * deduplication (too_many_ids), or contained a malformed UUID.
+   *
+   */
+  400: Error;
+};
+
+export type BulkDeleteBackupsError =
+  BulkDeleteBackupsErrors[keyof BulkDeleteBackupsErrors];
+
+export type BulkDeleteBackupsResponses = {
+  /**
+   * Per-id outcome for every requested snapshot.
+   */
+  200: BulkDeleteBackupsResponse;
+};
+
+export type BulkDeleteBackupsResponse2 =
+  BulkDeleteBackupsResponses[keyof BulkDeleteBackupsResponses];
 
 export type DeleteBackupData = {
   body?: never;

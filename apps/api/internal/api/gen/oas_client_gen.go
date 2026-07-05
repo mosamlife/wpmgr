@@ -277,6 +277,28 @@ type Invoker interface {
 	//
 	// PUT /api/v1/cache/bulk-config
 	BulkConfigCache(ctx context.Context, request *BulkConfigRequest) (BulkConfigCacheRes, error)
+	// BulkDeleteBackups invokes bulkDeleteBackups operation.
+	//
+	// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id
+	// that is not found (or belongs to another site/tenant), still
+	// running/pending, locked, mid-chain with dependent later increments, or
+	// currently targeted by an active restore is reported as a "skipped"
+	// result row (see BulkDeleteBackupsResultItem) rather than aborting the
+	// whole request — this endpoint always returns 200, even when every id
+	// is skipped.
+	// Within an incremental chain, deletable snapshots are removed
+	// newest-generation-first so a partial batch never strands an
+	// unrestorable mid-chain gap. An active restore anchored on ANY member
+	// of a chain causes EVERY requested id in that chain to be skipped
+	// (restore_in_progress) — a restore reads the whole chain, not just the
+	// snapshot it was launched against.
+	// Set dry_run=true to compute the identical plan (same outcomes, same
+	// reclaimed_bytes_estimate) without deleting anything: no row deletes,
+	// no manifest-index deletes, no retention GC, no audit log entries.
+	// Requires operator+ (site.write).
+	//
+	// POST /api/v1/sites/{siteId}/backups/bulk-delete
+	BulkDeleteBackups(ctx context.Context, request *BulkDeleteBackupsRequest, params BulkDeleteBackupsParams) (BulkDeleteBackupsRes, error)
 	// BulkDeleteEmailLog invokes bulkDeleteEmailLog operation.
 	//
 	// Deletes a list of email log entries by id. RLS ensures only entries
@@ -4722,6 +4744,118 @@ func (c *Client) sendBulkConfigCache(ctx context.Context, request *BulkConfigReq
 
 	stage = "DecodeResponse"
 	result, err := decodeBulkConfigCacheResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// BulkDeleteBackups invokes bulkDeleteBackups operation.
+//
+// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id
+// that is not found (or belongs to another site/tenant), still
+// running/pending, locked, mid-chain with dependent later increments, or
+// currently targeted by an active restore is reported as a "skipped"
+// result row (see BulkDeleteBackupsResultItem) rather than aborting the
+// whole request — this endpoint always returns 200, even when every id
+// is skipped.
+// Within an incremental chain, deletable snapshots are removed
+// newest-generation-first so a partial batch never strands an
+// unrestorable mid-chain gap. An active restore anchored on ANY member
+// of a chain causes EVERY requested id in that chain to be skipped
+// (restore_in_progress) — a restore reads the whole chain, not just the
+// snapshot it was launched against.
+// Set dry_run=true to compute the identical plan (same outcomes, same
+// reclaimed_bytes_estimate) without deleting anything: no row deletes,
+// no manifest-index deletes, no retention GC, no audit log entries.
+// Requires operator+ (site.write).
+//
+// POST /api/v1/sites/{siteId}/backups/bulk-delete
+func (c *Client) BulkDeleteBackups(ctx context.Context, request *BulkDeleteBackupsRequest, params BulkDeleteBackupsParams) (BulkDeleteBackupsRes, error) {
+	res, err := c.sendBulkDeleteBackups(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendBulkDeleteBackups(ctx context.Context, request *BulkDeleteBackupsRequest, params BulkDeleteBackupsParams) (res BulkDeleteBackupsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("bulkDeleteBackups"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/backups/bulk-delete"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, BulkDeleteBackupsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/backups/bulk-delete"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeBulkDeleteBackupsRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeBulkDeleteBackupsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

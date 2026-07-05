@@ -4065,6 +4065,180 @@ func (s *Server) handleBulkConfigCacheRequest(args [0]string, argsEscaped bool, 
 	}
 }
 
+// handleBulkDeleteBackupsRequest handles bulkDeleteBackups operation.
+//
+// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id
+// that is not found (or belongs to another site/tenant), still
+// running/pending, locked, mid-chain with dependent later increments, or
+// currently targeted by an active restore is reported as a "skipped"
+// result row (see BulkDeleteBackupsResultItem) rather than aborting the
+// whole request — this endpoint always returns 200, even when every id
+// is skipped.
+// Within an incremental chain, deletable snapshots are removed
+// newest-generation-first so a partial batch never strands an
+// unrestorable mid-chain gap. An active restore anchored on ANY member
+// of a chain causes EVERY requested id in that chain to be skipped
+// (restore_in_progress) — a restore reads the whole chain, not just the
+// snapshot it was launched against.
+// Set dry_run=true to compute the identical plan (same outcomes, same
+// reclaimed_bytes_estimate) without deleting anything: no row deletes,
+// no manifest-index deletes, no retention GC, no audit log entries.
+// Requires operator+ (site.write).
+//
+// POST /api/v1/sites/{siteId}/backups/bulk-delete
+func (s *Server) handleBulkDeleteBackupsRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("bulkDeleteBackups"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/api/v1/sites/{siteId}/backups/bulk-delete"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), BulkDeleteBackupsOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: BulkDeleteBackupsOperation,
+			ID:   "bulkDeleteBackups",
+		}
+	)
+	params, err := decodeBulkDeleteBackupsParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	var rawBody []byte
+	request, rawBody, close, err := s.decodeBulkDeleteBackupsRequest(r)
+	if err != nil {
+		err = &ogenerrors.DecodeRequestError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeRequest", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+	defer func() {
+		if err := close(); err != nil {
+			recordError("CloseRequest", err)
+		}
+	}()
+
+	var response BulkDeleteBackupsRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    BulkDeleteBackupsOperation,
+			OperationSummary: "Chain-aware bulk delete of backup snapshots (issue",
+			OperationID:      "bulkDeleteBackups",
+			Body:             request,
+			RawBody:          rawBody,
+			Params: middleware.Parameters{
+				{
+					Name: "siteId",
+					In:   "path",
+				}: params.SiteId,
+			},
+			Raw: r,
+		}
+
+		type (
+			Request  = *BulkDeleteBackupsRequest
+			Params   = BulkDeleteBackupsParams
+			Response = BulkDeleteBackupsRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			unpackBulkDeleteBackupsParams,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.BulkDeleteBackups(ctx, request, params)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.BulkDeleteBackups(ctx, request, params)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeBulkDeleteBackupsResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleBulkDeleteEmailLogRequest handles bulkDeleteEmailLog operation.
 //
 // Deletes a list of email log entries by id. RLS ensures only entries

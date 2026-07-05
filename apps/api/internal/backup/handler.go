@@ -67,6 +67,9 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// site-scoped principals (belt-and-braces in front of the RLS policy).
 	r.POST("/sites/:siteId/backups", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.createBackup)
 	r.GET("/sites/:siteId/backups", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.listBackups)
+	// issue #115: chain-aware bulk delete. Same middleware as createBackup —
+	// operator+ write access, gated by the site allowlist.
+	r.POST("/sites/:siteId/backups/bulk-delete", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.bulkDeleteBackups)
 	r.GET("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteRead), authz.RequireSiteAccess("siteId"), h.getSchedule)
 	r.PUT("/sites/:siteId/backup-schedule", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.putSchedule)
 	// m50: per-site backup settings (Track-A content scope + Track-B notifications).
@@ -599,6 +602,51 @@ func (h *Handler) cancelBackup(c *gin.Context) {
 	c.JSON(http.StatusOK, &out)
 }
 
+// bulkDeleteBackups is the chain-aware bulk-delete endpoint (issue #115). It is
+// ALWAYS partial-success: a per-id guard failure (not found, in progress,
+// locked, an active restore, or a dependent increment) is reported as a
+// "skipped" result row, never as an error response — this handler returns 200
+// even when every requested id was skipped. Audit records ActionBackupDeleted
+// (the SAME action single-delete uses; no new audit action) once per row
+// actually deleted, and never at all in dry-run mode.
+func (h *Handler) bulkDeleteBackups(c *gin.Context) {
+	tenantID, ok := tenantOf(c)
+	if !ok {
+		return
+	}
+	siteID, ok := uuidParam(c, "siteId", "invalid_site_id")
+	if !ok {
+		return
+	}
+	var req gen.BulkDeleteBackupsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+	dryRun := req.DryRun.Or(false)
+
+	out, err := h.svc.BulkDeleteSnapshots(c.Request.Context(), tenantID, siteID, req.Ids, dryRun)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+
+	if !dryRun {
+		for _, r := range out.Results {
+			if r.Outcome != BulkDeleteOutcomeDeleted {
+				continue
+			}
+			h.recordBackupAction(c, Snapshot{
+				ID: r.ID, TenantID: tenantID, SiteID: siteID,
+				Kind: r.Kind, Status: r.Status,
+			}, ActionBackupDeleted, map[string]any{"bulk": true})
+		}
+	}
+
+	resp := toBulkDeleteResponse(out)
+	c.JSON(http.StatusOK, &resp)
+}
+
 func (h *Handler) getSchedule(c *gin.Context) {
 	tenantID, ok := tenantOf(c)
 	if !ok {
@@ -741,6 +789,36 @@ func (h *Handler) recordScheduleChange(c *gin.Context, sched Schedule) {
 }
 
 // --- mapping helpers ---
+
+// toBulkDeleteResponse maps a service-layer BulkDeleteOutput to the wire
+// contract. Code/Message are left null (SetToNull) for a deleted row; a
+// skipped row always carries both.
+func toBulkDeleteResponse(out BulkDeleteOutput) gen.BulkDeleteBackupsResponse {
+	resp := gen.BulkDeleteBackupsResponse{
+		DryRun: out.DryRun,
+		Counts: gen.BulkDeleteBackupsCounts{
+			Requested: int64(out.Requested),
+			Deleted:   int64(out.Deleted),
+			Skipped:   int64(out.Skipped),
+		},
+		Results:                make([]gen.BulkDeleteBackupsResultItem, 0, len(out.Results)),
+		ReclaimedBytesEstimate: out.ReclaimedBytesEstimate,
+	}
+	for _, r := range out.Results {
+		item := gen.BulkDeleteBackupsResultItem{ID: r.ID}
+		if r.Outcome == BulkDeleteOutcomeDeleted {
+			item.Outcome = gen.BulkDeleteBackupsResultItemOutcomeDeleted
+			item.Code.SetToNull()
+			item.Message.SetToNull()
+		} else {
+			item.Outcome = gen.BulkDeleteBackupsResultItemOutcomeSkipped
+			item.Code.SetTo(gen.BulkDeleteBackupsResultItemCode(r.Code))
+			item.Message.SetTo(r.Message)
+		}
+		resp.Results = append(resp.Results, item)
+	}
+	return resp
+}
 
 func toAPISnapshot(s Snapshot) gen.BackupSnapshot {
 	out := gen.BackupSnapshot{

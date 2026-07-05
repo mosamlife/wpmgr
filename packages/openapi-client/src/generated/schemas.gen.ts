@@ -2252,6 +2252,111 @@ export const BackupSnapshotDetailSchema = {
   },
 } as const;
 
+export const BulkDeleteBackupsRequestSchema = {
+  type: "object",
+  required: ["ids"],
+  description:
+    "Chain-aware bulk delete request (issue #115). Every requested id is\nprocessed independently — a locked, in-flight, dependent, or\nactively-restoring snapshot in the batch is reported as a skipped\nresult row rather than aborting the whole request.\n",
+  properties: {
+    ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 100,
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+      description:
+        "Snapshot IDs to delete. 1-100 unique ids per call; duplicates are\nsilently deduplicated before the count is checked. Empty (after\ndedup) or over 100 is rejected with 400.\n",
+    },
+    dry_run: {
+      type: "boolean",
+      default: false,
+      description:
+        "When true, compute the plan but write nothing (no deletes, no GC, no audit).",
+    },
+  },
+} as const;
+
+export const BulkDeleteBackupsResultItemSchema = {
+  type: "object",
+  required: ["id", "outcome"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    outcome: {
+      type: "string",
+      enum: ["deleted", "skipped"],
+      description:
+        '"deleted" — the snapshot was removed (or, in dry_run, WOULD be\nremoved). "skipped" — the snapshot was left in place; see code.\n',
+    },
+    code: {
+      type: "string",
+      nullable: true,
+      enum: [
+        "snapshot_not_found",
+        "snapshot_in_progress",
+        "snapshot_locked",
+        "chain_has_dependents",
+        "restore_in_progress",
+      ],
+      description: "Null when outcome=deleted; the skip reason otherwise.",
+    },
+    message: {
+      type: "string",
+      nullable: true,
+      description:
+        "Human-readable explanation of code; null when outcome=deleted.",
+    },
+  },
+} as const;
+
+export const BulkDeleteBackupsCountsSchema = {
+  type: "object",
+  required: ["requested", "deleted", "skipped"],
+  properties: {
+    requested: {
+      type: "integer",
+      format: "int64",
+    },
+    deleted: {
+      type: "integer",
+      format: "int64",
+    },
+    skipped: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const BulkDeleteBackupsResponseSchema = {
+  type: "object",
+  required: ["dry_run", "counts", "results", "reclaimed_bytes_estimate"],
+  properties: {
+    dry_run: {
+      type: "boolean",
+    },
+    counts: {
+      $ref: "#/components/schemas/BulkDeleteBackupsCounts",
+    },
+    results: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/BulkDeleteBackupsResultItem",
+      },
+    },
+    reclaimed_bytes_estimate: {
+      type: "integer",
+      format: "int64",
+      description:
+        "Sum of total_size over deleted (or, in dry_run, would-be-deleted)\nrows. An estimate only — actual space is freed asynchronously by\nthe next retention GC sweep.\n",
+    },
+  },
+} as const;
+
 export const RestoreCreateSchema = {
   type: "object",
   description:

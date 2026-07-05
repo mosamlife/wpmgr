@@ -29,6 +29,7 @@ const (
 	AssignSitesToClientOperation            OperationName = "AssignSitesToClient"
 	BeginReEnrollmentOperation              OperationName = "BeginReEnrollment"
 	BulkConfigCacheOperation                OperationName = "BulkConfigCache"
+	BulkDeleteBackupsOperation              OperationName = "BulkDeleteBackups"
 	BulkDeleteEmailLogOperation             OperationName = "BulkDeleteEmailLog"
 	BulkPurgeCacheOperation                 OperationName = "BulkPurgeCache"
 	BulkResendEmailLogOperation             OperationName = "BulkResendEmailLog"

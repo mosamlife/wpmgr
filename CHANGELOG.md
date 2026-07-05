@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.17] - 2026-07-05
+
+### Added
+
+- Bulk snapshot delete, chain-aware. Select multiple backups with checkboxes (including whole incremental chains via a tri-state chain checkbox), use one-click filters for all failed or all zero-byte runs, and delete the batch in one action. Selecting a snapshot automatically includes the later generations that depend on it, shown before you confirm, so a chain can never be left broken. The server deletes newest generation first, re-checks dependents live, skips locked, running, or actively-restoring snapshots individually (one bad row never blocks the rest), and reports a per-snapshot outcome.
+- Right-sized delete confirmation. A batch of failed or zero-byte runs needs one plain confirmation instead of typing an id per snapshot. A batch containing any completed backup asks you to type one phrase for the whole batch.
+- Deleting a snapshot now refuses while a restore that reads it is in progress. This guard also applies to single-snapshot delete, which previously had no such check.
+
 ## [0.61.15] - 2026-07-04
 
 ### Added
