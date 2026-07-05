@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.18] - 2026-07-05
+
+### Fixed
+
+- TLS certificate expiry now shows for monitored sites. The uptime prober only read the certificate during a fresh TLS handshake, but its keep-alive connection meant a fresh handshake almost never happened after the first probe, so the TLS column on the Uptime page, the per-site Uptime tab, and the sites-list SSL badge stayed empty from the start. The prober now reads the certificate from the response on every probe, fresh or reused connection. Values appear on their own within a minute of upgrading; no other changes needed.
+
 ## [0.61.17] - 2026-07-05
 
 ### Added
