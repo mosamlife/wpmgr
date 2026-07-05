@@ -96,6 +96,83 @@ func TestProbeTLSExpiry(t *testing.T) {
 	}
 }
 
+// TestProbe_TLSExpiryOnReusedConnection is the regression test for the bug
+// where tlsExpiry was populated ONLY inside the httptrace ClientTrace's
+// TLSHandshakeDone callback, which never fires on a reused keep-alive
+// connection. The uptime prober shares one *http.Client across every 60s
+// probe of a site (see internal/httpclient's 90s IdleConnTimeout), so after
+// the first probe every subsequent probe reused the connection and persisted
+// tls_expiry = NULL forever. This test drives TWO probes against the same
+// TLS server over the SAME shared client — the second reuses the
+// connection — and asserts BOTH results still carry a non-zero TLSExpiry
+// equal to the test certificate's NotAfter, because the fix reads the
+// certificate from resp.TLS (populated on fresh AND reused connections)
+// rather than solely from the trace callback.
+func TestProbe_TLSExpiryOnReusedConnection(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	wantExpiry := srv.Certificate().NotAfter
+
+	// One shared client/prober across both probes, exactly like the
+	// production Prober (constructed once in main.go, probed on a 60s
+	// ticker) reuses its keep-alive connection to a site.
+	tlsClient := httpclient.New(httpclient.Config{
+		Timeout:               5 * time.Second,
+		AllowPrivateNetworks:  true,
+		InsecureSkipTLSVerify: true,
+	})
+	prober := NewProber(tlsClient, 5*time.Second)
+
+	first := prober.Probe(context.Background(), srv.URL)
+	if !first.Up {
+		t.Fatalf("expected first probe up, got %+v", first)
+	}
+	if first.TLSExpiry.IsZero() {
+		t.Fatalf("expected a non-zero TLS expiry on the first (fresh-handshake) probe, got %+v", first)
+	}
+	if !first.TLSExpiry.Equal(wantExpiry) {
+		t.Fatalf("expected first probe TLSExpiry=%v, got %v", wantExpiry, first.TLSExpiry)
+	}
+
+	second := prober.Probe(context.Background(), srv.URL)
+	if !second.Up {
+		t.Fatalf("expected second probe up, got %+v", second)
+	}
+	// The second probe reuses the keep-alive connection: its TLSHandshakeDone
+	// trace callback never fires (TLSMs stays 0), which is exactly the
+	// condition that used to leave TLSExpiry at zero.
+	if second.TLSMs != 0 {
+		t.Fatalf("expected the second probe to reuse the connection (TLSMs==0), got %v — test is not exercising connection reuse", second.TLSMs)
+	}
+	if second.TLSExpiry.IsZero() {
+		t.Fatalf("expected a non-zero TLS expiry on the second (reused-connection) probe — this is the regression this test guards against, got %+v", second)
+	}
+	if !second.TLSExpiry.Equal(wantExpiry) {
+		t.Fatalf("expected second probe TLSExpiry=%v, got %v", wantExpiry, second.TLSExpiry)
+	}
+}
+
+// TestProbe_TLSExpiryPlainHTTPStaysZero asserts a plain-HTTP (non-TLS) probe
+// still yields a zero TLSExpiry (recorded as NULL), unaffected by reading the
+// certificate from resp.TLS.
+func TestProbe_TLSExpiryPlainHTTPStaysZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := NewProber(testClient(), 5*time.Second).Probe(context.Background(), srv.URL)
+	if !res.Up {
+		t.Fatalf("expected plain-HTTP probe up, got %+v", res)
+	}
+	if !res.TLSExpiry.IsZero() {
+		t.Fatalf("expected zero TLS expiry for a plain-HTTP probe, got %v", res.TLSExpiry)
+	}
+}
+
 // TestProbeSSRFBlocked asserts the production-posture SSRF guard refuses a
 // loopback (127.0.0.1) target: the probe records DOWN with an ssrf_blocked
 // error and never connects.

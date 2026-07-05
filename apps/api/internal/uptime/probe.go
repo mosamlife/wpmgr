@@ -94,18 +94,17 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 	defer cancel()
 
 	var (
-		start            = time.Now()
-		dnsStart         time.Time
-		dnsDone          time.Time
-		connectStart     time.Time
-		connectDone      time.Time
-		tlsStart         time.Time
-		tlsDone          time.Time
-		firstByte        time.Time
-		tlsExpiry        time.Time
-		tlsIssuer        string
-		tlsSubject       string
-		gotConnReusedTLS bool
+		start        = time.Now()
+		dnsStart     time.Time
+		dnsDone      time.Time
+		connectStart time.Time
+		connectDone  time.Time
+		tlsStart     time.Time
+		tlsDone      time.Time
+		firstByte    time.Time
+		tlsExpiry    time.Time
+		tlsIssuer    string
+		tlsSubject   string
 	)
 
 	trace := &httptrace.ClientTrace{
@@ -118,24 +117,18 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 		},
 		ConnectDone:       func(_, _ string, _ error) { connectDone = time.Now() },
 		TLSHandshakeStart: func() { tlsStart = time.Now() },
-		TLSHandshakeDone: func(cs tls.ConnectionState, err error) {
+		// This callback only measures the handshake PHASE TIMING (TLSMs). It
+		// NEVER fires on a reused keep-alive connection — the shared client
+		// (90s IdleConnTimeout, probes every 60s) reuses its connection to a
+		// site after the first probe, so relying on this callback for the
+		// certificate itself left tls_expiry permanently NULL from the second
+		// probe onward. The certificate fields are instead read from
+		// resp.TLS below, which is populated on both fresh AND reused
+		// connections.
+		TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
 			tlsDone = time.Now()
-			if err == nil && len(cs.PeerCertificates) > 0 {
-				// The leaf certificate is first; its NotAfter is the expiry the
-				// dashboard surfaces, and the Issuer/Subject CommonName is what
-				// the operator sees as "Let's Encrypt", "Cloudflare", etc.
-				leaf := cs.PeerCertificates[0]
-				tlsExpiry = leaf.NotAfter
-				tlsIssuer = leaf.Issuer.CommonName
-				tlsSubject = leaf.Subject.CommonName
-			}
 		},
 		GotFirstResponseByte: func() { firstByte = time.Now() },
-		GotConn: func(gci httptrace.GotConnInfo) {
-			// A reused (keep-alive) connection skips DNS/connect/TLS traces; note it
-			// so we don't report a misleadingly-zero handshake.
-			gotConnReusedTLS = gci.Reused
-		},
 	}
 
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, targetURL, nil)
@@ -155,6 +148,19 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 		return res
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// resp.TLS is populated on the FINAL response — after following any
+	// redirects — for both a fresh handshake and a reused keep-alive
+	// connection, on HTTP/1.1 and HTTP/2 alike. It is the authoritative
+	// source for the certificate fields (TLSHandshakeDone above only ever
+	// fires on a fresh handshake, so a reused connection would otherwise
+	// never report an expiry). Plain-HTTP sites leave resp.TLS nil, which
+	// keeps TLSExpiry zero (recorded as NULL), unchanged from before.
+	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		leaf := resp.TLS.PeerCertificates[0]
+		tlsExpiry = leaf.NotAfter
+		tlsIssuer = leaf.Issuer.CommonName
+		tlsSubject = leaf.Subject.CommonName
+	}
 	// Buffer up to maxProbeBody bytes for the wp-fatal-page scan below. A
 	// WordPress fatal error only reaches the client as HTTP 200 once headers
 	// have already been sent (WP can no longer switch to a 500 at that
@@ -193,7 +199,6 @@ func (p *Prober) Probe(ctx context.Context, targetURL string) ProbeResult {
 	}
 	fillTimings(&res, start, dnsStart, dnsDone, connectStart, connectDone, tlsStart, tlsDone, firstByte)
 	res.TotalMs = msSince(start, end)
-	_ = gotConnReusedTLS
 	return res
 }
 
