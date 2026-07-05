@@ -93,6 +93,10 @@ type BulkConfigCacheRes interface {
 	bulkConfigCacheRes()
 }
 
+type BulkDeleteBackupsRes interface {
+	bulkDeleteBackupsRes()
+}
+
 type BulkDeleteEmailLogRes interface {
 	bulkDeleteEmailLogRes()
 }

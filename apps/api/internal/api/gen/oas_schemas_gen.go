@@ -4026,6 +4026,288 @@ func (s *BulkConfigRequestPreset) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/BulkDeleteBackupsCounts
+type BulkDeleteBackupsCounts struct {
+	Requested int64 `json:"requested"`
+	Deleted   int64 `json:"deleted"`
+	Skipped   int64 `json:"skipped"`
+}
+
+// GetRequested returns the value of Requested.
+func (s *BulkDeleteBackupsCounts) GetRequested() int64 {
+	return s.Requested
+}
+
+// GetDeleted returns the value of Deleted.
+func (s *BulkDeleteBackupsCounts) GetDeleted() int64 {
+	return s.Deleted
+}
+
+// GetSkipped returns the value of Skipped.
+func (s *BulkDeleteBackupsCounts) GetSkipped() int64 {
+	return s.Skipped
+}
+
+// SetRequested sets the value of Requested.
+func (s *BulkDeleteBackupsCounts) SetRequested(val int64) {
+	s.Requested = val
+}
+
+// SetDeleted sets the value of Deleted.
+func (s *BulkDeleteBackupsCounts) SetDeleted(val int64) {
+	s.Deleted = val
+}
+
+// SetSkipped sets the value of Skipped.
+func (s *BulkDeleteBackupsCounts) SetSkipped(val int64) {
+	s.Skipped = val
+}
+
+// Chain-aware bulk delete request (issue #115). Every requested id is
+// processed independently — a locked, in-flight, dependent, or
+// actively-restoring snapshot in the batch is reported as a skipped
+// result row rather than aborting the whole request.
+// Ref: #/components/schemas/BulkDeleteBackupsRequest
+type BulkDeleteBackupsRequest struct {
+	// Snapshot IDs to delete. 1-100 unique ids per call; duplicates are
+	// silently deduplicated before the count is checked. Empty (after
+	// dedup) or over 100 is rejected with 400.
+	Ids []uuid.UUID `json:"ids"`
+	// When true, compute the plan but write nothing (no deletes, no GC, no audit).
+	DryRun OptBool `json:"dry_run"`
+}
+
+// GetIds returns the value of Ids.
+func (s *BulkDeleteBackupsRequest) GetIds() []uuid.UUID {
+	return s.Ids
+}
+
+// GetDryRun returns the value of DryRun.
+func (s *BulkDeleteBackupsRequest) GetDryRun() OptBool {
+	return s.DryRun
+}
+
+// SetIds sets the value of Ids.
+func (s *BulkDeleteBackupsRequest) SetIds(val []uuid.UUID) {
+	s.Ids = val
+}
+
+// SetDryRun sets the value of DryRun.
+func (s *BulkDeleteBackupsRequest) SetDryRun(val OptBool) {
+	s.DryRun = val
+}
+
+// Ref: #/components/schemas/BulkDeleteBackupsResponse
+type BulkDeleteBackupsResponse struct {
+	DryRun  bool                          `json:"dry_run"`
+	Counts  BulkDeleteBackupsCounts       `json:"counts"`
+	Results []BulkDeleteBackupsResultItem `json:"results"`
+	// Sum of total_size over deleted (or, in dry_run, would-be-deleted)
+	// rows. An estimate only — actual space is freed asynchronously by
+	// the next retention GC sweep.
+	ReclaimedBytesEstimate int64 `json:"reclaimed_bytes_estimate"`
+}
+
+// GetDryRun returns the value of DryRun.
+func (s *BulkDeleteBackupsResponse) GetDryRun() bool {
+	return s.DryRun
+}
+
+// GetCounts returns the value of Counts.
+func (s *BulkDeleteBackupsResponse) GetCounts() BulkDeleteBackupsCounts {
+	return s.Counts
+}
+
+// GetResults returns the value of Results.
+func (s *BulkDeleteBackupsResponse) GetResults() []BulkDeleteBackupsResultItem {
+	return s.Results
+}
+
+// GetReclaimedBytesEstimate returns the value of ReclaimedBytesEstimate.
+func (s *BulkDeleteBackupsResponse) GetReclaimedBytesEstimate() int64 {
+	return s.ReclaimedBytesEstimate
+}
+
+// SetDryRun sets the value of DryRun.
+func (s *BulkDeleteBackupsResponse) SetDryRun(val bool) {
+	s.DryRun = val
+}
+
+// SetCounts sets the value of Counts.
+func (s *BulkDeleteBackupsResponse) SetCounts(val BulkDeleteBackupsCounts) {
+	s.Counts = val
+}
+
+// SetResults sets the value of Results.
+func (s *BulkDeleteBackupsResponse) SetResults(val []BulkDeleteBackupsResultItem) {
+	s.Results = val
+}
+
+// SetReclaimedBytesEstimate sets the value of ReclaimedBytesEstimate.
+func (s *BulkDeleteBackupsResponse) SetReclaimedBytesEstimate(val int64) {
+	s.ReclaimedBytesEstimate = val
+}
+
+func (*BulkDeleteBackupsResponse) bulkDeleteBackupsRes() {}
+
+// Ref: #/components/schemas/BulkDeleteBackupsResultItem
+type BulkDeleteBackupsResultItem struct {
+	ID uuid.UUID `json:"id"`
+	// "deleted" — the snapshot was removed (or, in dry_run, WOULD be
+	// removed). "skipped" — the snapshot was left in place; see code.
+	Outcome BulkDeleteBackupsResultItemOutcome `json:"outcome"`
+	// Null when outcome=deleted; the skip reason otherwise.
+	Code OptNilBulkDeleteBackupsResultItemCode `json:"code"`
+	// Human-readable explanation of code; null when outcome=deleted.
+	Message OptNilString `json:"message"`
+}
+
+// GetID returns the value of ID.
+func (s *BulkDeleteBackupsResultItem) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetOutcome returns the value of Outcome.
+func (s *BulkDeleteBackupsResultItem) GetOutcome() BulkDeleteBackupsResultItemOutcome {
+	return s.Outcome
+}
+
+// GetCode returns the value of Code.
+func (s *BulkDeleteBackupsResultItem) GetCode() OptNilBulkDeleteBackupsResultItemCode {
+	return s.Code
+}
+
+// GetMessage returns the value of Message.
+func (s *BulkDeleteBackupsResultItem) GetMessage() OptNilString {
+	return s.Message
+}
+
+// SetID sets the value of ID.
+func (s *BulkDeleteBackupsResultItem) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetOutcome sets the value of Outcome.
+func (s *BulkDeleteBackupsResultItem) SetOutcome(val BulkDeleteBackupsResultItemOutcome) {
+	s.Outcome = val
+}
+
+// SetCode sets the value of Code.
+func (s *BulkDeleteBackupsResultItem) SetCode(val OptNilBulkDeleteBackupsResultItemCode) {
+	s.Code = val
+}
+
+// SetMessage sets the value of Message.
+func (s *BulkDeleteBackupsResultItem) SetMessage(val OptNilString) {
+	s.Message = val
+}
+
+// Null when outcome=deleted; the skip reason otherwise.
+type BulkDeleteBackupsResultItemCode string
+
+const (
+	BulkDeleteBackupsResultItemCodeSnapshotNotFound   BulkDeleteBackupsResultItemCode = "snapshot_not_found"
+	BulkDeleteBackupsResultItemCodeSnapshotInProgress BulkDeleteBackupsResultItemCode = "snapshot_in_progress"
+	BulkDeleteBackupsResultItemCodeSnapshotLocked     BulkDeleteBackupsResultItemCode = "snapshot_locked"
+	BulkDeleteBackupsResultItemCodeChainHasDependents BulkDeleteBackupsResultItemCode = "chain_has_dependents"
+	BulkDeleteBackupsResultItemCodeRestoreInProgress  BulkDeleteBackupsResultItemCode = "restore_in_progress"
+)
+
+// AllValues returns all BulkDeleteBackupsResultItemCode values.
+func (BulkDeleteBackupsResultItemCode) AllValues() []BulkDeleteBackupsResultItemCode {
+	return []BulkDeleteBackupsResultItemCode{
+		BulkDeleteBackupsResultItemCodeSnapshotNotFound,
+		BulkDeleteBackupsResultItemCodeSnapshotInProgress,
+		BulkDeleteBackupsResultItemCodeSnapshotLocked,
+		BulkDeleteBackupsResultItemCodeChainHasDependents,
+		BulkDeleteBackupsResultItemCodeRestoreInProgress,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BulkDeleteBackupsResultItemCode) MarshalText() ([]byte, error) {
+	switch s {
+	case BulkDeleteBackupsResultItemCodeSnapshotNotFound:
+		return []byte(s), nil
+	case BulkDeleteBackupsResultItemCodeSnapshotInProgress:
+		return []byte(s), nil
+	case BulkDeleteBackupsResultItemCodeSnapshotLocked:
+		return []byte(s), nil
+	case BulkDeleteBackupsResultItemCodeChainHasDependents:
+		return []byte(s), nil
+	case BulkDeleteBackupsResultItemCodeRestoreInProgress:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BulkDeleteBackupsResultItemCode) UnmarshalText(data []byte) error {
+	switch BulkDeleteBackupsResultItemCode(data) {
+	case BulkDeleteBackupsResultItemCodeSnapshotNotFound:
+		*s = BulkDeleteBackupsResultItemCodeSnapshotNotFound
+		return nil
+	case BulkDeleteBackupsResultItemCodeSnapshotInProgress:
+		*s = BulkDeleteBackupsResultItemCodeSnapshotInProgress
+		return nil
+	case BulkDeleteBackupsResultItemCodeSnapshotLocked:
+		*s = BulkDeleteBackupsResultItemCodeSnapshotLocked
+		return nil
+	case BulkDeleteBackupsResultItemCodeChainHasDependents:
+		*s = BulkDeleteBackupsResultItemCodeChainHasDependents
+		return nil
+	case BulkDeleteBackupsResultItemCodeRestoreInProgress:
+		*s = BulkDeleteBackupsResultItemCodeRestoreInProgress
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// "deleted" — the snapshot was removed (or, in dry_run, WOULD be
+// removed). "skipped" — the snapshot was left in place; see code.
+type BulkDeleteBackupsResultItemOutcome string
+
+const (
+	BulkDeleteBackupsResultItemOutcomeDeleted BulkDeleteBackupsResultItemOutcome = "deleted"
+	BulkDeleteBackupsResultItemOutcomeSkipped BulkDeleteBackupsResultItemOutcome = "skipped"
+)
+
+// AllValues returns all BulkDeleteBackupsResultItemOutcome values.
+func (BulkDeleteBackupsResultItemOutcome) AllValues() []BulkDeleteBackupsResultItemOutcome {
+	return []BulkDeleteBackupsResultItemOutcome{
+		BulkDeleteBackupsResultItemOutcomeDeleted,
+		BulkDeleteBackupsResultItemOutcomeSkipped,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BulkDeleteBackupsResultItemOutcome) MarshalText() ([]byte, error) {
+	switch s {
+	case BulkDeleteBackupsResultItemOutcomeDeleted:
+		return []byte(s), nil
+	case BulkDeleteBackupsResultItemOutcomeSkipped:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BulkDeleteBackupsResultItemOutcome) UnmarshalText(data []byte) error {
+	switch BulkDeleteBackupsResultItemOutcome(data) {
+	case BulkDeleteBackupsResultItemOutcomeDeleted:
+		*s = BulkDeleteBackupsResultItemOutcomeDeleted
+		return nil
+	case BulkDeleteBackupsResultItemOutcomeSkipped:
+		*s = BulkDeleteBackupsResultItemOutcomeSkipped
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type BulkDeleteEmailLogBadRequest Error
 
 func (*BulkDeleteEmailLogBadRequest) bulkDeleteEmailLogRes() {}
@@ -8757,6 +9039,7 @@ func (*Error) agentMediaSyncFinalizeRes()         {}
 func (*Error) archiveSiteRes()                    {}
 func (*Error) beginReEnrollmentRes()              {}
 func (*Error) bulkConfigCacheRes()                {}
+func (*Error) bulkDeleteBackupsRes()              {}
 func (*Error) createBackupRes()                   {}
 func (*Error) createPairingCodeRes()              {}
 func (*Error) createRestoreRes()                  {}
@@ -19297,6 +19580,69 @@ func (o OptNilBool) Get() (v bool, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilBool) Or(d bool) bool {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilBulkDeleteBackupsResultItemCode returns new OptNilBulkDeleteBackupsResultItemCode with value set to v.
+func NewOptNilBulkDeleteBackupsResultItemCode(v BulkDeleteBackupsResultItemCode) OptNilBulkDeleteBackupsResultItemCode {
+	return OptNilBulkDeleteBackupsResultItemCode{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilBulkDeleteBackupsResultItemCode is optional nullable BulkDeleteBackupsResultItemCode.
+type OptNilBulkDeleteBackupsResultItemCode struct {
+	Value BulkDeleteBackupsResultItemCode
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilBulkDeleteBackupsResultItemCode was set.
+func (o OptNilBulkDeleteBackupsResultItemCode) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilBulkDeleteBackupsResultItemCode) Reset() {
+	var v BulkDeleteBackupsResultItemCode
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilBulkDeleteBackupsResultItemCode) SetTo(v BulkDeleteBackupsResultItemCode) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilBulkDeleteBackupsResultItemCode) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilBulkDeleteBackupsResultItemCode) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v BulkDeleteBackupsResultItemCode
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilBulkDeleteBackupsResultItemCode) Get() (v BulkDeleteBackupsResultItemCode, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilBulkDeleteBackupsResultItemCode) Or(d BulkDeleteBackupsResultItemCode) BulkDeleteBackupsResultItemCode {
 	if v, ok := o.Get(); ok {
 		return v
 	}

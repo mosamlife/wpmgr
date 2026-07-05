@@ -282,6 +282,12 @@ func (r *fakeRepo) HealOverdueSchedules(_ context.Context, _ time.Time, _ func(S
 func (r *fakeRepo) ReconcileDuplicateInflightSnapshots(_ context.Context) (int, error) {
 	return 0, nil
 }
+func (r *fakeRepo) GetSnapshotsByIDs(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]Snapshot, error) {
+	panic("fakeRepo.GetSnapshotsByIDs not implemented")
+}
+func (r *fakeRepo) HasActiveRestore(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+	panic("fakeRepo.HasActiveRestore not implemented")
+}
 
 // ---------------------------------------------------------------------------
 // fakeClock — deterministic clock for tests.

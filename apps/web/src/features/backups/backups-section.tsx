@@ -1,6 +1,14 @@
 import { useState, useMemo, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { Lock, LockOpen, Info, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  Lock,
+  LockOpen,
+  Info,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  MoreHorizontal,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +27,23 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { PageError } from "@/components/feedback";
 import { StatusChip } from "@/components/status/status-chip";
 import type { StatusTone } from "@/components/status/status-dot";
@@ -40,6 +65,7 @@ import {
   useUnlockBackup,
   useBackupSettingsContents,
   useBackupSchedule,
+  isTerminal,
 } from "@/features/backups/use-backups";
 import {
   StatusBadge,
@@ -63,6 +89,22 @@ import {
   BackupScheduleEditor,
   NextRunLine,
 } from "@/features/backups/backup-schedule-editor";
+import {
+  useBackupsSelection,
+  type BackupsSelection,
+} from "@/features/backups/use-backups-selection";
+import {
+  chainDependents,
+  terminalChainDependents,
+  memberCheckState,
+  chainCheckState,
+  countAutoIncludedDependents,
+  reclaimableBytes,
+} from "@/features/backups/backups-chain-selection";
+import {
+  useBulkDeleteBackups,
+  computeBulkDeleteToken,
+} from "@/features/backups/use-bulk-delete-backups";
 import { formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupSnapshot } from "@wpmgr/api";
 
@@ -239,6 +281,75 @@ function SnapshotList({
     () => (data ? groupSnapshots(data) : []),
     [data],
   );
+  const byId = useMemo(
+    () => new Map((data ?? []).map((s) => [s.id, s] as const)),
+    [data],
+  );
+  const allIds = useMemo(() => (data ?? []).map((s) => s.id), [data]);
+  const deletableIds = useMemo(
+    () => (data ?? []).filter((s) => isTerminal(s.status)).map((s) => s.id),
+    [data],
+  );
+  const failedIds = useMemo(
+    () => (data ?? []).filter((s) => s.status === "failed").map((s) => s.id),
+    [data],
+  );
+  const zeroByteIds = useMemo(
+    () =>
+      (data ?? [])
+        .filter((s) => isTerminal(s.status) && (s.total_size ?? 0) === 0)
+        .map((s) => s.id),
+    [data],
+  );
+
+  // Issue #115 — bulk-delete selection state. Local to this list (not a
+  // module singleton — see use-backups-selection.ts), pruned against the
+  // live id set on every poll so a row that disappears never lingers
+  // "selected" in the toolbar count or a submitted batch.
+  const selection = useBackupsSelection(allIds);
+  const bulkDelete = useBulkDeleteBackups(siteId, selection.clear);
+  const [pendingBatch, setPendingBatch] = useState<BackupSnapshot[] | null>(
+    null,
+  );
+
+  // The raw selection already contains auto-included dependents (see
+  // ChainMemberRow's toggle handler), so mapping it straight through `byId`
+  // gives the full effective batch — no separate "expansion" pass needed.
+  const effectiveBatch = useMemo(
+    () =>
+      Array.from(selection.selected)
+        .map((id) => byId.get(id))
+        .filter((s): s is BackupSnapshot => s !== undefined),
+    [selection.selected, byId],
+  );
+  const selectedBytes = useMemo(
+    () => effectiveBatch.reduce((sum, s) => sum + (s.total_size ?? 0), 0),
+    [effectiveBatch],
+  );
+
+  function openConfirm(batch: BackupSnapshot[]) {
+    if (batch.length === 0) return;
+    setPendingBatch(batch);
+  }
+
+  function closeConfirm() {
+    if (bulkDelete.isPending) return;
+    setPendingBatch(null);
+    bulkDelete.reset();
+  }
+
+  /**
+   * "Delete entire chain..." (the chain parent's overflow menu) is a single
+   * action: mark the chain's deletable members selected (so the checkboxes
+   * reflect it) AND open the confirm directly against exactly those members —
+   * it does not wait for a second "Delete selected" click.
+   */
+  function handleDeleteChain(group: SnapshotGroup) {
+    const eligible = group.members.filter((m) => isTerminal(m.status));
+    if (eligible.length === 0) return;
+    selection.setMany(eligible.map((m) => m.id), true);
+    openConfirm(eligible);
+  }
 
   if (isPending) {
     return (
@@ -267,41 +378,424 @@ function SnapshotList({
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Kind</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Size</TableHead>
-          <TableHead>Chunks</TableHead>
-          <TableHead>Created</TableHead>
-          <TableHead>Finished</TableHead>
-          <TableHead>
-            <span className="sr-only">Actions</span>
-          </TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {groups.map((group) =>
-          group.members.length === 1 ? (
-            // Safe: length===1 guarantees members[0] exists.
-            <SingletonRow
-              key={group.key}
-              snap={group.members[0]!}
-              siteId={siteId}
-              canOperate={canOperate}
+    <div className="space-y-3">
+      {canOperate ? (
+        <QuickSelectChips
+          failedIds={failedIds}
+          zeroByteIds={zeroByteIds}
+          onSelect={(ids) => selection.setMany(ids, true)}
+        />
+      ) : null}
+
+      {canOperate && selection.count > 0 ? (
+        <SelectionToolbar
+          count={selection.count}
+          reclaimableBytesTotal={selectedBytes}
+          onClear={selection.clear}
+          onDelete={() => openConfirm(effectiveBatch)}
+        />
+      ) : null}
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            {canOperate ? (
+              <TableHead className="w-10">
+                <SelectAllHeaderCheckbox
+                  deletableIds={deletableIds}
+                  selection={selection}
+                />
+              </TableHead>
+            ) : null}
+            <TableHead>Kind</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Size</TableHead>
+            <TableHead>Chunks</TableHead>
+            <TableHead>Created</TableHead>
+            <TableHead>Finished</TableHead>
+            <TableHead>
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {groups.map((group) =>
+            group.members.length === 1 ? (
+              // Safe: length===1 guarantees members[0] exists.
+              <SingletonRow
+                key={group.key}
+                snap={group.members[0]!}
+                siteId={siteId}
+                canOperate={canOperate}
+                selection={selection}
+              />
+            ) : (
+              <ChainGroupRows
+                key={group.key}
+                group={group}
+                siteId={siteId}
+                canOperate={canOperate}
+                selection={selection}
+                onDeleteChain={handleDeleteChain}
+              />
+            ),
+          )}
+        </TableBody>
+      </Table>
+
+      {canOperate ? (
+        <BulkDeleteConfirmDialogs
+          batch={pendingBatch ?? []}
+          open={pendingBatch !== null}
+          isPending={bulkDelete.isPending}
+          errorMessage={bulkDelete.isError ? bulkDelete.error.message : null}
+          onClose={closeConfirm}
+          onConfirm={() => {
+            const ids = (pendingBatch ?? [])
+              .filter((s) => !s.locked)
+              .map((s) => s.id);
+            if (ids.length === 0) return;
+            bulkDelete.mutate(ids, {
+              onSuccess: () => setPendingBatch(null),
+            });
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bulk-delete selection UI (issue #115)
+// ---------------------------------------------------------------------------
+
+/** Header checkbox — select-all-deletable, tri-state via the indeterminate ref trick. */
+function SelectAllHeaderCheckbox({
+  deletableIds,
+  selection,
+}: {
+  deletableIds: readonly string[];
+  selection: BackupsSelection;
+}) {
+  const allSelected =
+    deletableIds.length > 0 &&
+    deletableIds.every((id) => selection.selected.has(id));
+  const someSelected =
+    deletableIds.some((id) => selection.selected.has(id)) && !allSelected;
+
+  return (
+    <Checkbox
+      aria-label={
+        allSelected ? "Deselect all snapshots" : "Select all deletable snapshots"
+      }
+      checked={allSelected}
+      ref={(el) => {
+        if (el) el.indeterminate = someSelected;
+      }}
+      disabled={deletableIds.length === 0}
+      onChange={() => selection.setMany(deletableIds, !allSelected)}
+    />
+  );
+}
+
+const QUICK_SELECT_CHIP_CLASSES =
+  "inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+
+/** "All failed (K)" / "All 0 B (K)" quick-select pills — the junk-clearing fast path. */
+function QuickSelectChips({
+  failedIds,
+  zeroByteIds,
+  onSelect,
+}: {
+  failedIds: readonly string[];
+  zeroByteIds: readonly string[];
+  onSelect: (ids: readonly string[]) => void;
+}) {
+  if (failedIds.length === 0 && zeroByteIds.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Quick select
+      </span>
+      {failedIds.length > 0 ? (
+        <button
+          type="button"
+          className={QUICK_SELECT_CHIP_CLASSES}
+          onClick={() => onSelect(failedIds)}
+        >
+          All failed ({failedIds.length})
+        </button>
+      ) : null}
+      {zeroByteIds.length > 0 ? (
+        <button
+          type="button"
+          className={QUICK_SELECT_CHIP_CLASSES}
+          onClick={() => onSelect(zeroByteIds)}
+        >
+          All 0 B ({zeroByteIds.length})
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Slim selection bar rendered between the card header and the table once a
+ * snapshot is selected (SitesToolbar ActionMode style, scaled down for a
+ * single card rather than a full page toolbar).
+ */
+function SelectionToolbar({
+  count,
+  reclaimableBytesTotal,
+  onClear,
+  onDelete,
+}: {
+  count: number;
+  reclaimableBytesTotal: number;
+  onClear: () => void;
+  onDelete: () => void;
+}) {
+  const noun = count === 1 ? "snapshot" : "snapshots";
+  return (
+    <div
+      role="toolbar"
+      aria-label="Bulk snapshot actions"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2"
+    >
+      <span
+        aria-live="polite"
+        className="flex flex-wrap items-center gap-2 text-sm text-foreground"
+      >
+        <span className="font-mono font-medium tabular-nums">{count}</span>
+        <span className="text-muted-foreground">{noun} selected</span>
+        <span aria-hidden="true" className="text-muted-foreground">
+          ·
+        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          Clear selection
+        </button>
+      </span>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-muted-foreground">
+          ~{formatBytes(reclaimableBytesTotal)} reclaimable
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="gap-1.5 text-destructive-subtle-fg"
+          onClick={onDelete}
+        >
+          Delete selected ({count})
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The chain parent's overflow menu: "Select chain (M)" + "Delete entire chain...". */
+function ChainOverflowMenu({
+  eligibleCount,
+  onSelectChain,
+  onDeleteChain,
+}: {
+  eligibleCount: number;
+  onSelectChain: () => void;
+  onDeleteChain: () => void;
+}) {
+  if (eligibleCount === 0) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label="More chain actions"
+          className="px-2"
+        >
+          <MoreHorizontal aria-hidden="true" className="size-3.5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onSelectChain}>
+          Select chain ({eligibleCount})
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={onDeleteChain}
+          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+        >
+          Delete entire chain...
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** Shared breakdown block rendered inside BOTH confirm tiers. */
+function BulkDeleteSummaryBody({
+  submittable,
+  lockedCount,
+  dependentsCount,
+  reclaimable,
+}: {
+  submittable: BackupSnapshot[];
+  lockedCount: number;
+  dependentsCount: number;
+  reclaimable: number;
+}) {
+  const failedCount = submittable.filter((s) => s.status === "failed").length;
+  const zeroByteCount = submittable.filter(
+    (s) => (s.total_size ?? 0) === 0,
+  ).length;
+  const completedCount = submittable.filter(
+    (s) => s.status === "completed",
+  ).length;
+
+  return (
+    <div className="space-y-2 text-sm">
+      {submittable.length > 0 ? (
+        <p className="text-muted-foreground">
+          {failedCount} failed, {zeroByteCount} 0 B, {completedCount} completed
+        </p>
+      ) : null}
+      {dependentsCount > 0 ? (
+        <p className="text-muted-foreground">
+          +{dependentsCount} dependent{dependentsCount === 1 ? "" : "s"}{" "}
+          auto-included. Later generations depend on the ones you selected.
+        </p>
+      ) : null}
+      {lockedCount > 0 ? (
+        <p className="text-warning-subtle-fg">
+          {lockedCount} locked excluded. Unlock{" "}
+          {lockedCount === 1 ? "it" : "them"} first (the Lock button on the
+          row) to include {lockedCount === 1 ? "it" : "them"} in a future
+          batch.
+        </p>
+      ) : null}
+      {submittable.length > 0 ? (
+        <p className="text-muted-foreground">
+          Reclaims ~{formatBytes(reclaimable)}.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Two confirm tiers (issue #115's core win):
+ *   LIGHT  — plain AlertDialog, no typing, when every submitted snapshot is
+ *            failed or 0 B (the junk-clearing fast path).
+ *   STRONG — type-to-confirm the whole-batch token "DELETE N SNAPSHOTS" when
+ *            the batch contains any completed, non-zero-byte snapshot.
+ * Locked snapshots are excluded from `submittable` (never auto-unlocked) —
+ * both tiers surface a "K locked excluded" line when that applies.
+ */
+function BulkDeleteConfirmDialogs({
+  batch,
+  open,
+  isPending,
+  errorMessage,
+  onClose,
+  onConfirm,
+}: {
+  batch: BackupSnapshot[];
+  open: boolean;
+  isPending: boolean;
+  errorMessage: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const submittable = useMemo(() => batch.filter((s) => !s.locked), [batch]);
+  const lockedCount = batch.length - submittable.length;
+  const dependentsCount = useMemo(
+    () => countAutoIncludedDependents(submittable),
+    [submittable],
+  );
+  const reclaimable = useMemo(
+    () => reclaimableBytes(submittable),
+    [submittable],
+  );
+  // Any completed snapshot escalates to type-to-confirm, regardless of size:
+  // the light path is reserved for failed/0-byte junk only.
+  const strong = submittable.some((s) => s.status === "completed");
+  const n = submittable.length;
+  const title = `Delete ${n} snapshot${n === 1 ? "" : "s"}`;
+
+  if (!open) return null;
+
+  if (strong) {
+    return (
+      <DestructiveConfirm
+        open={open}
+        onClose={onClose}
+        onConfirm={onConfirm}
+        title={title}
+        consequencesBody={
+          <>
+            <p>
+              This permanently deletes {n} snapshot{n === 1 ? "" : "s"} and
+              reclaims their storage. This cannot be undone.
+            </p>
+            <BulkDeleteSummaryBody
+              submittable={submittable}
+              lockedCount={lockedCount}
+              dependentsCount={dependentsCount}
+              reclaimable={reclaimable}
             />
-          ) : (
-            <ChainGroupRows
-              key={group.key}
-              group={group}
-              siteId={siteId}
-              canOperate={canOperate}
-            />
-          ),
-        )}
-      </TableBody>
-    </Table>
+          </>
+        }
+        resourceName={computeBulkDeleteToken(n)}
+        confirmLabel="Delete snapshots"
+        cancelLabel="Keep snapshots"
+        isPending={isPending}
+        errorMessage={errorMessage}
+      />
+    );
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {n === 0
+              ? "Every selected snapshot is locked. Unlock them first to delete."
+              : "These are all failed or empty snapshots. This permanently deletes them and reclaims their storage."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <BulkDeleteSummaryBody
+          submittable={submittable}
+          lockedCount={lockedCount}
+          dependentsCount={dependentsCount}
+          reclaimable={reclaimable}
+        />
+        {errorMessage ? (
+          <p role="alert" className="text-sm text-destructive-subtle-fg">
+            {errorMessage}
+          </p>
+        ) : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={onClose} disabled={isPending} />
+          <AlertDialogAction
+            variant="destructive"
+            disabled={isPending || n === 0}
+            onClick={onConfirm}
+          >
+            {isPending ? (
+              <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+            ) : null}
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -310,13 +804,42 @@ function SingletonRow({
   snap,
   siteId,
   canOperate,
+  selection,
 }: {
   snap: BackupSnapshot;
   siteId: string;
   canOperate: boolean;
+  selection: BackupsSelection;
 }) {
+  const deletable = isTerminal(snap.status);
   return (
     <TableRow data-testid="backup-row">
+      {canOperate ? (
+        <TableCell onClick={(e) => e.stopPropagation()}>
+          {deletable ? (
+            <div className="flex items-center gap-1">
+              <Checkbox
+                aria-label={`Select snapshot ${snap.id.slice(0, 8)}`}
+                checked={selection.selected.has(snap.id)}
+                onChange={() => selection.toggle(snap.id)}
+              />
+              {snap.locked ? (
+                <span title="Locked, excluded from bulk delete until unlocked">
+                  <Lock aria-hidden="true" className="size-3 text-muted-foreground" />
+                </span>
+              ) : null}
+            </div>
+          ) : (
+            <span
+              title={`Selectable once this ${snap.status} snapshot finishes`}
+              className="inline-flex size-4 items-center justify-center text-xs text-muted-foreground/40"
+            >
+              <span className="sr-only">Not selectable while {snap.status}</span>
+              –
+            </span>
+          )}
+        </TableCell>
+      ) : null}
       <TableCell>
         <div className="flex flex-col items-start gap-1">
           <KindBadge kind={snap.kind} />
@@ -390,10 +913,14 @@ function ChainGroupRows({
   group,
   siteId,
   canOperate,
+  selection,
+  onDeleteChain,
 }: {
   group: SnapshotGroup;
   siteId: string;
   canOperate: boolean;
+  selection: BackupsSelection;
+  onDeleteChain: (group: SnapshotGroup) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -424,13 +951,40 @@ function ChainGroupRows({
 
   const subLabel = `base + ${incrCount} increment${incrCount === 1 ? "" : "s"}`;
 
+  // Issue #115 — the chain parent's own tri-state "select chain" checkbox,
+  // computed over the terminal (deletable) members only.
+  const eligibleIds = useMemo(
+    () => group.members.filter((m) => isTerminal(m.status)).map((m) => m.id),
+    [group.members],
+  );
+  const chainState = chainCheckState(selection.selected, group.members);
+
   return (
     <>
       {/* Parent row — the TIP */}
       <TableRow data-testid="backup-row" data-chain-id={group.key}>
+        {canOperate ? <TableCell aria-hidden="true" /> : null}
         <TableCell>
           <div className="flex flex-col items-start gap-1">
             <div className="flex items-center gap-1">
+              {canOperate ? (
+                <Checkbox
+                  aria-label={
+                    chainState === "checked"
+                      ? "Deselect all snapshots in this chain"
+                      : `Select all ${eligibleIds.length} deletable snapshots in this chain`
+                  }
+                  checked={chainState === "checked"}
+                  ref={(el) => {
+                    if (el) el.indeterminate = chainState === "indeterminate";
+                  }}
+                  disabled={eligibleIds.length === 0}
+                  onChange={() =>
+                    selection.setMany(eligibleIds, chainState !== "checked")
+                  }
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : null}
               <button
                 type="button"
                 aria-label={expanded ? "Collapse chain" : "Expand chain members"}
@@ -503,6 +1057,13 @@ function ChainGroupRows({
                 View
               </Link>
             </Button>
+            {canOperate ? (
+              <ChainOverflowMenu
+                eligibleCount={eligibleIds.length}
+                onSelectChain={() => selection.setMany(eligibleIds, true)}
+                onDeleteChain={() => onDeleteChain(group)}
+              />
+            ) : null}
           </div>
         </TableCell>
       </TableRow>
@@ -513,8 +1074,10 @@ function ChainGroupRows({
             <ChainMemberRow
               key={member.id}
               member={member}
+              members={group.members}
               siteId={siteId}
               canOperate={canOperate}
+              selection={selection}
             />
           ))
         : null}
@@ -522,7 +1085,7 @@ function ChainGroupRows({
       {/* Restore dialog seeded with the full chain (version-picker) */}
       {restoreOpen ? (
         <tr aria-hidden>
-          <td colSpan={7} className="p-0">
+          <td colSpan={canOperate ? 8 : 7} className="p-0">
             <RestoreDialog
               open={restoreOpen}
               onClose={() => setRestoreOpen(false)}
@@ -540,21 +1103,72 @@ function ChainGroupRows({
 /** Indented child row for one chain member (gen N). */
 function ChainMemberRow({
   member,
+  members,
   siteId,
   canOperate,
+  selection,
 }: {
   member: BackupSnapshot;
+  /** The full chain (all generations, ASC) — used to derive dependents. */
+  members: BackupSnapshot[];
   siteId: string;
   canOperate: boolean;
+  selection: BackupsSelection;
 }) {
   const gen = member.generation ?? 0;
   const genLabel = gen === 0 ? "base" : `gen ${gen}`;
+  const deletable = isTerminal(member.status);
+  const checkState = memberCheckState(selection.selected, members, member);
+
+  // Issue #115 auto-expand: checking a member auto-checks every same-chain
+  // dependent (higher generation) so the operator always sees the full
+  // effective set. Unchecking only ever removes the clicked id itself — an
+  // ancestor that becomes newly-invalid (its dependent got unchecked) is
+  // reflected automatically via memberCheckState's "indeterminate" branch,
+  // no explicit cascade needed.
+  function onToggle() {
+    if (selection.selected.has(member.id)) {
+      selection.toggle(member.id);
+      return;
+    }
+    const depIds = terminalChainDependents(members, member).map((d) => d.id);
+    selection.setMany([member.id, ...depIds], true);
+  }
 
   return (
     <TableRow
       data-testid="backup-chain-member"
       className="bg-muted/30 hover:bg-muted/50"
     >
+      {canOperate ? (
+        <TableCell onClick={(e) => e.stopPropagation()}>
+          {deletable ? (
+            <div className="flex items-center gap-1">
+              <Checkbox
+                aria-label={`Select ${genLabel} snapshot`}
+                checked={checkState === "checked"}
+                ref={(el) => {
+                  if (el) el.indeterminate = checkState === "indeterminate";
+                }}
+                onChange={onToggle}
+              />
+              {member.locked ? (
+                <span title="Locked, excluded from bulk delete until unlocked">
+                  <Lock aria-hidden="true" className="size-3 text-muted-foreground" />
+                </span>
+              ) : null}
+            </div>
+          ) : (
+            <span
+              title={`Selectable once this ${member.status} snapshot finishes`}
+              className="inline-flex size-4 items-center justify-center text-xs text-muted-foreground/40"
+            >
+              <span className="sr-only">Not selectable while {member.status}</span>
+              –
+            </span>
+          )}
+        </TableCell>
+      ) : null}
       <TableCell>
         <div className="flex flex-col items-start gap-1 pl-6">
           <div className="flex items-center gap-1.5">
@@ -614,7 +1228,11 @@ function ChainMemberRow({
             </Link>
           </Button>
           {canOperate ? (
-            <BackupRowActions snapshot={member} siteId={siteId} />
+            <BackupRowActions
+              snapshot={member}
+              siteId={siteId}
+              chainMembers={members}
+            />
           ) : null}
         </div>
       </TableCell>
@@ -699,10 +1317,13 @@ function SnapshotLockToggle({
  * Gating:
  *   - Cancel shows only for running/pending snapshots and stops the in-flight
  *     run (server marks it failed — there is no "cancelled" status).
- *   - Delete shows only for terminal snapshots (completed/failed). The server is
- *     chain-safe and refuses to delete a base/mid-chain increment that still has
- *     dependents, surfacing that as an inline error in the confirm dialog (we
- *     don't have the chain tip locally to pre-disable it — task #180).
+ *   - Delete shows only for terminal snapshots (completed/failed). The server
+ *     is chain-safe and refuses to delete a base/mid-chain increment that
+ *     still has dependents (422 chain_has_dependents). When `chainMembers` is
+ *     passed (issue #115 — a member of a 2+ chain) this row already knows its
+ *     dependent count locally and surfaces it up front — both on the button
+ *     label ("Delete + N dependents") and in the confirm body — instead of
+ *     dead-ending the operator at a server error after the fact.
  *   - A LOCKED snapshot cannot be deleted (the server returns "snapshot_locked").
  *     Clicking Delete on it opens a warning that explains the lock and offers to
  *     unlock first, rather than dead-ending the operator at a server error.
@@ -710,9 +1331,12 @@ function SnapshotLockToggle({
 function BackupRowActions({
   snapshot,
   siteId,
+  chainMembers,
 }: {
   snapshot: BackupSnapshot;
   siteId: string;
+  /** The full chain this snapshot belongs to (all generations), if any. */
+  chainMembers?: BackupSnapshot[];
 }) {
   const [confirm, setConfirm] = useState<null | "cancel" | "delete" | "locked">(
     null,
@@ -725,6 +1349,9 @@ function BackupRowActions({
     snapshot.status === "running" || snapshot.status === "pending";
   const isLocked = snapshot.locked === true;
   const shortId = snapshot.id.slice(0, 8);
+  const dependentsCount = chainMembers
+    ? chainDependents(chainMembers, snapshot).length
+    : 0;
 
   function close() {
     setConfirm(null);
@@ -750,7 +1377,9 @@ function BackupRowActions({
           className="text-destructive-subtle-fg"
           onClick={() => setConfirm(isLocked ? "locked" : "delete")}
         >
-          Delete
+          {dependentsCount > 0
+            ? `Delete + ${dependentsCount} dependents`
+            : "Delete"}
         </Button>
       )}
 
@@ -782,11 +1411,22 @@ function BackupRowActions({
         }
         title="Delete backup"
         consequencesBody={
-          <p>
-            This permanently deletes the snapshot and reclaims its storage.
-            Unique chunks are removed; chunks still used by other snapshots are
-            kept. This cannot be undone.
-          </p>
+          <>
+            <p>
+              This permanently deletes the snapshot and reclaims its storage.
+              Unique chunks are removed; chunks still used by other snapshots are
+              kept. This cannot be undone.
+            </p>
+            {dependentsCount > 0 ? (
+              <p className="text-warning-subtle-fg">
+                This snapshot has {dependentsCount} later increment
+                {dependentsCount === 1 ? "" : "s"} in its chain that depend on
+                it. Deleting it alone will be rejected. Delete the dependents
+                first, or use the checkboxes to bulk-delete the whole chain at
+                once.
+              </p>
+            ) : null}
+          </>
         }
         resourceName={shortId}
         confirmLabel="Delete backup"

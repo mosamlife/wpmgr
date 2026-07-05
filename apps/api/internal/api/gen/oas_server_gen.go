@@ -257,6 +257,28 @@ type Handler interface {
 	//
 	// PUT /api/v1/cache/bulk-config
 	BulkConfigCache(ctx context.Context, req *BulkConfigRequest) (BulkConfigCacheRes, error)
+	// BulkDeleteBackups implements bulkDeleteBackups operation.
+	//
+	// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id
+	// that is not found (or belongs to another site/tenant), still
+	// running/pending, locked, mid-chain with dependent later increments, or
+	// currently targeted by an active restore is reported as a "skipped"
+	// result row (see BulkDeleteBackupsResultItem) rather than aborting the
+	// whole request — this endpoint always returns 200, even when every id
+	// is skipped.
+	// Within an incremental chain, deletable snapshots are removed
+	// newest-generation-first so a partial batch never strands an
+	// unrestorable mid-chain gap. An active restore anchored on ANY member
+	// of a chain causes EVERY requested id in that chain to be skipped
+	// (restore_in_progress) — a restore reads the whole chain, not just the
+	// snapshot it was launched against.
+	// Set dry_run=true to compute the identical plan (same outcomes, same
+	// reclaimed_bytes_estimate) without deleting anything: no row deletes,
+	// no manifest-index deletes, no retention GC, no audit log entries.
+	// Requires operator+ (site.write).
+	//
+	// POST /api/v1/sites/{siteId}/backups/bulk-delete
+	BulkDeleteBackups(ctx context.Context, req *BulkDeleteBackupsRequest, params BulkDeleteBackupsParams) (BulkDeleteBackupsRes, error)
 	// BulkDeleteEmailLog implements bulkDeleteEmailLog operation.
 	//
 	// Deletes a list of email log entries by id. RLS ensures only entries

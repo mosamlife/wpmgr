@@ -32,6 +32,8 @@ var canonicalBackupRoutes = []string{
 	// Per-site backup CRUD.
 	"POST   /api/v1/sites/:siteId/backups",
 	"GET    /api/v1/sites/:siteId/backups",
+	// issue #115: chain-aware bulk delete.
+	"POST   /api/v1/sites/:siteId/backups/bulk-delete",
 	// Backup schedule (CP-owned cron config).
 	"GET    /api/v1/sites/:siteId/backup-schedule",
 	"PUT    /api/v1/sites/:siteId/backup-schedule",

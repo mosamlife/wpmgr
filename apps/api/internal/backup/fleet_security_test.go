@@ -172,6 +172,12 @@ func (r *secFleetRepo) HealOverdueSchedules(_ context.Context, _ time.Time, _ fu
 func (r *secFleetRepo) ReconcileDuplicateInflightSnapshots(_ context.Context) (int, error) {
 	return 0, nil
 }
+func (r *secFleetRepo) GetSnapshotsByIDs(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]Snapshot, error) {
+	panic("secFleetRepo.GetSnapshotsByIDs not implemented")
+}
+func (r *secFleetRepo) HasActiveRestore(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+	panic("secFleetRepo.HasActiveRestore not implemented")
+}
 
 // compile-time interface check.
 var _ Repo = (*secFleetRepo)(nil)

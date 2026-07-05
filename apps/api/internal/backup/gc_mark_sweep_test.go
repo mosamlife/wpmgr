@@ -365,6 +365,12 @@ func (r *gcFakeRepo) HealOverdueSchedules(_ context.Context, _ time.Time, _ func
 func (r *gcFakeRepo) ReconcileDuplicateInflightSnapshots(_ context.Context) (int, error) {
 	return 0, nil
 }
+func (r *gcFakeRepo) GetSnapshotsByIDs(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]Snapshot, error) {
+	panic("gcFakeRepo.GetSnapshotsByIDs not implemented")
+}
+func (r *gcFakeRepo) HasActiveRestore(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+	panic("gcFakeRepo.HasActiveRestore not implemented")
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

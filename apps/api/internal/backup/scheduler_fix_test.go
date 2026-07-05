@@ -316,6 +316,12 @@ func (r *schedulerTestRepo) HealOverdueSchedules(_ context.Context, _ time.Time,
 func (r *schedulerTestRepo) ReconcileDuplicateInflightSnapshots(_ context.Context) (int, error) {
 	return 0, nil
 }
+func (r *schedulerTestRepo) GetSnapshotsByIDs(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]Snapshot, error) {
+	panic("schedulerTestRepo.GetSnapshotsByIDs not implemented")
+}
+func (r *schedulerTestRepo) HasActiveRestore(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+	panic("schedulerTestRepo.HasActiveRestore not implemented")
+}
 
 // ---------------------------------------------------------------------------
 // Test 1: PutSchedule re-enable heals next_run_at

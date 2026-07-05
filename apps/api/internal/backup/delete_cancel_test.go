@@ -25,14 +25,25 @@ type deleteCancelFakeRepo struct {
 	chains  map[uuid.UUID][]Snapshot // chainID -> snapshots
 	failed  map[uuid.UUID]string     // snapshotID -> error msg passed to FailSnapshot
 	deleted map[uuid.UUID]bool       // snapshotIDs removed
+	// activeRestores simulates restore_runs rows in an active (queued|running)
+	// status, keyed by restoreGroupKey (a chain's chain_id, or a standalone
+	// snapshot's own id). Tests toggle this to exercise the restore_in_progress
+	// guard without a real restore_runs table.
+	activeRestores map[uuid.UUID]bool
+	// gcCalls counts ListSiteIDsWithSnapshots invocations — see its doc comment.
+	gcCalls int
+	// deleteOrder records the sequence DeleteSnapshot was called in, so a bulk
+	// test can assert newest-generation-first ordering.
+	deleteOrder []uuid.UUID
 }
 
 func newDeleteCancelFakeRepo() *deleteCancelFakeRepo {
 	return &deleteCancelFakeRepo{
-		fakeRepo: newFakeRepo(),
-		chains:   map[uuid.UUID][]Snapshot{},
-		failed:   map[uuid.UUID]string{},
-		deleted:  map[uuid.UUID]bool{},
+		fakeRepo:       newFakeRepo(),
+		chains:         map[uuid.UUID][]Snapshot{},
+		failed:         map[uuid.UUID]string{},
+		deleted:        map[uuid.UUID]bool{},
+		activeRestores: map[uuid.UUID]bool{},
 	}
 }
 
@@ -63,15 +74,59 @@ func (r *deleteCancelFakeRepo) FailSnapshot(_ context.Context, _, snapshotID uui
 
 func (r *deleteCancelFakeRepo) DeleteSnapshot(_ context.Context, _, snapshotID uuid.UUID) error {
 	r.deleted[snapshotID] = true
+	r.deleteOrder = append(r.deleteOrder, snapshotID)
+	// Keep the chains bookkeeping in sync with the delete (a real Postgres-backed
+	// repo has only ONE source of truth — the table — so a subsequent
+	// ListChainSnapshots naturally stops seeing a deleted row; the fake has to do
+	// this explicitly).
+	if s, ok := r.snapshots[snapshotID]; ok && s.ChainID != nil {
+		chainID := *s.ChainID
+		remaining := make([]Snapshot, 0, len(r.chains[chainID]))
+		for _, sib := range r.chains[chainID] {
+			if sib.ID != snapshotID {
+				remaining = append(remaining, sib)
+			}
+		}
+		r.chains[chainID] = remaining
+	}
 	delete(r.snapshots, snapshotID)
 	return nil
+}
+
+// GetSnapshotsByIDs resolves ids against the fake's snapshots map, mirroring
+// the real repo's tenant-scoped batch lookup (an id missing from the map is
+// simply absent from the result, exactly like "not found").
+func (r *deleteCancelFakeRepo) GetSnapshotsByIDs(_ context.Context, _ uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]Snapshot, error) {
+	out := make(map[uuid.UUID]Snapshot, len(ids))
+	for _, id := range ids {
+		if s, ok := r.snapshots[id]; ok {
+			out[id] = s
+		}
+	}
+	return out, nil
+}
+
+// HasActiveRestore reports which of the supplied group keys are marked active
+// in r.activeRestores (see the field doc).
+func (r *deleteCancelFakeRepo) HasActiveRestore(_ context.Context, _ uuid.UUID, groupKeys []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool, len(groupKeys))
+	for _, k := range groupKeys {
+		if r.activeRestores[k] {
+			out[k] = true
+		}
+	}
+	return out, nil
 }
 
 // --- chunk reclamation stubs (the post-delete RunRetentionGC reuses these). The
 // GC is best-effort in DeleteSnapshotForUser, so an empty/zero sweep is fine; we
 // only need it to not panic. ---
 
+// ListSiteIDsWithSnapshots is the FIRST call RunRetentionGC makes, so counting
+// invocations here is how TestBulkDelete_SingleGCPass asserts the bulk-delete
+// path runs the GC exactly once per request (never per deleted id).
 func (r *deleteCancelFakeRepo) ListSiteIDsWithSnapshots(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	r.gcCalls++
 	return nil, nil
 }
 func (r *deleteCancelFakeRepo) DBNow(_ context.Context, _ uuid.UUID) (time.Time, error) {

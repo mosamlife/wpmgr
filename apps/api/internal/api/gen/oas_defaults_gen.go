@@ -59,6 +59,14 @@ func (s *BackupScheduleUpdate) setDefaults() {
 }
 
 // setDefaults set default value of fields.
+func (s *BulkDeleteBackupsRequest) setDefaults() {
+	{
+		val := bool(false)
+		s.DryRun.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
 func (s *ClientReportSectionFlags) setDefaults() {
 	{
 		val := bool(true)
