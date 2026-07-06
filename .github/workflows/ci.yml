@@ -100,6 +100,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # House rule: competitor products are never named in docs or root markdown.
+      # Functional source references (conflict-detection slugs, plugin-signature
+      # seeds, compat handling) are out of scope, and ADR-055 is excluded because
+      # it documents plugin interop behavior that mirrors shipped code.
+      - name: Docs vocabulary check (no competitor names)
+        run: |
+          banned='flyingpress|flying-press|wpvivid|wp-rocket|wp rocket|wpremote|updraft|nitropack|perfmatters|managewp|mainwp|malcare'
+          hits=$(grep -rniE "$banned" --include='*.md' docs/ ./*.md 2>/dev/null | grep -v 'docs/adr/ADR-055' || true)
+          if [ -n "$hits" ]; then
+            echo "Competitor names found in markdown (house rule: describe techniques neutrally):"
+            echo "$hits"
+            exit 1
+          fi
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"

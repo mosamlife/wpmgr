@@ -20,7 +20,7 @@ The original Phase 0-6 plan is complete and in production:
 
 ## In flight
 
-- [ ] **WordPress.org listing** — agent submitted as "Fleet Agent Site Manager"; passed the automated scans' real finding (2FA resume binding, fixed 0.61.9); awaiting human review. Crux item: autologin (MainWP/ManageWP precedent). Fallback if rejected: strip autologin + file-write from the wp.org build only.
+- [ ] **WordPress.org listing** — agent submitted as "Fleet Agent Site Manager"; passed the automated scans' real finding (2FA resume binding, fixed 0.61.9); awaiting human review. Crux item: autologin (established management-plugin precedent). Fallback if rejected: strip autologin + file-write from the wp.org build only.
 - [ ] **Patchstack decision** — research complete (docs/security/ internal). Recommended: Phase 0 provider abstraction + Phase 1a BYO App-API-key co-existence; paid feed/vPatch only via a for-Hosts contract. Awaiting go/no-go.
 
 ## Next up (priority order)
