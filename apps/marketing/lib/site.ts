@@ -79,8 +79,9 @@ export const FOOTER_NAV: NavGroup[] = [
     items: [
       { label: "Legal hub", href: "/legal/" },
       { label: "Security policy", href: "/legal/security-policy/" },
-      { label: "Terms", href: `${SITE_CONFIG.dashboard}/terms`, external: true },
-      { label: "Privacy", href: `${SITE_CONFIG.dashboard}/privacy`, external: true },
+      { label: "Terms", href: "/terms/" },
+      { label: "Privacy", href: "/privacy/" },
+      { label: "Refund policy", href: "/refunds/" },
       { label: "License", href: `${SITE_CONFIG.github}/blob/main/LICENSE`, external: true },
     ],
   },
