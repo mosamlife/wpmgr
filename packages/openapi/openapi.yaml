@@ -68,6 +68,16 @@ tags:
       Hosted-billing plan, payment-provider checkout, and billing-management
       portal (owner-only; mounted only when the control plane runs with
       hosted billing enabled).
+  - name: admin-billing
+    description: >-
+      Superadmin instance-wide billing console: the accounts list, one
+      account's full detail page, the revenue dashboard, and manual
+      overrides (comp, override limits, extend grace, suspend/restore, force
+      state). Every route requires is_superadmin=true. These handlers are
+      hand-rolled Gin (ADR-047 — ogen's own server is not mounted for this
+      area because the routes need requireSuperadmin/RLS middleware); this
+      contract documents the wire shape so the TypeScript client is
+      generated and a backend test can enforce conformance.
   - name: security
     description: Core file-integrity scans, brute-force protection, and the IP firewall.
   - name: api-keys
@@ -1302,6 +1312,572 @@ paths:
           description: >
             This workspace has no payment-provider customer yet — start a
             checkout first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts:
+    get:
+      operationId: listAdminAccounts
+      summary: Paginated, filtered list of tenant accounts (superadmin)
+      description: |
+        Superadmin-only accounts console: instance-wide header tiles (always
+        unfiltered by the current query, so they read as a stable instance
+        census) plus a filtered, sorted, paginated list of every tenant.
+        Default order is a server-computed "needs attention" ranking:
+        suspended first, then past_due (soonest-to-expire grace first), then
+        active (MRR desc), then everything else (newest first). Requires
+        is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Case-insensitive substring match against org name, org slug, or owner email.
+        - name: status
+          in: query
+          schema: { type: string }
+          description: >-
+            Comma-separated tenants.plan_status values to filter by (e.g.
+            "past_due,canceled").
+        - name: plan
+          in: query
+          schema: { type: string }
+          description: Comma-separated plan tiers to filter by (e.g. "starter,agency").
+        - name: past_due
+          in: query
+          schema: { type: boolean, default: false }
+          description: Restrict to accounts whose plan_status is past_due.
+        - name: near_limit
+          in: query
+          schema: { type: boolean, default: false }
+          description: Restrict to accounts at or above 80% of their site or storage cap.
+        - name: has_overrides
+          in: query
+          schema: { type: boolean, default: false }
+          description: Restrict to accounts with a non-empty tenants.plan_overrides.
+        - name: comped
+          in: query
+          schema: { type: boolean, default: false }
+          description: Restrict to accounts whose plan_status is comped.
+        - name: idle_90d
+          in: query
+          schema: { type: boolean, default: false }
+          description: Restrict to accounts with no recorded activity in the last 90 days.
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Header tiles + the filtered/paginated accounts page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAccountsResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{tenantId}:
+    get:
+      operationId: getAdminAccount
+      summary: Full account-detail page for one tenant (superadmin)
+      description: |
+        Returns the account header, usage-vs-entitlement meters, subscription
+        card, a merged billing_events+audit_log timeline (newest first), the
+        member roster, and a compact site list. Requires is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The account-detail page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAccountDetail"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{tenantId}/comp:
+    post:
+      operationId: compAdminAccount
+      summary: Grant a manual comp (superadmin)
+      description: |
+        Sets plan_status=comped and plan=tier, bypassing the payment provider
+        entirely. A comped tenant is immune to webhook-driven plan mutation.
+        Requires is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminCompAccountRequest"
+      responses:
+        "200":
+          description: Comp granted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: reason is empty, or tier is not one of free, starter, agency, scale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: revokeAdminAccountComp
+      summary: Revoke a manual comp (superadmin)
+      description: |
+        Adopts the tenant's live payment-provider subscription if one exists,
+        else falls back to plan=free/plan_status=none. Requires
+        is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminReasonRequest"
+      responses:
+        "200":
+          description: Comp revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: reason is empty
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{tenantId}/overrides:
+    put:
+      operationId: setAdminAccountOverrides
+      summary: Set manual limit overrides (superadmin)
+      description: |
+        Each field is a signed delta applied on top of the tenant's CURRENT
+        plan's ladder base (not accumulated with any prior override for that
+        key — a second PUT replaces the delta). Omitting a key leaves that
+        limit untouched; sending it as `null` (or `0`) clears it back to the
+        pure ladder base. Requires is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminSetOverridesRequest"
+      responses:
+        "200":
+          description: Overrides updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: reason is empty
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{tenantId}/grace:
+    post:
+      operationId: extendAdminAccountGrace
+      summary: Extend a past_due tenant's grace period (superadmin)
+      description: |
+        Sets tenants.grace_until, clamped to at most 90 days out from now and
+        forward-only (a new grace_until must extend further out than the
+        current one). Requires is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminExtendGraceRequest"
+      responses:
+        "200":
+          description: Grace period extended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            reason is empty, until is not a valid RFC3339 timestamp, or the
+            new grace_until does not extend further out than the current one
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{tenantId}/suspend:
+    post:
+      operationId: suspendAdminAccount
+      summary: Suspend a tenant (superadmin)
+      description: |
+        Sets tenants.suspended_at/suspended_reason — a field distinct from
+        plan_status. Tenant data is never touched. Requires
+        is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminReasonRequest"
+      responses:
+        "200":
+          description: Account suspended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: reason is empty
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{tenantId}/restore:
+    post:
+      operationId: restoreAdminAccount
+      summary: Un-suspend a tenant (superadmin)
+      description: |
+        Clears tenants.suspended_at/suspended_reason, returning the tenant to
+        whatever its underlying plan/plan_status already was. A missing or
+        empty request body is tolerated (treated as an empty reason, which
+        then fails the reason-required validation below) rather than a hard
+        400 — every other manual control on this page rejects a malformed
+        body outright. Requires is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminReasonRequest"
+      responses:
+        "200":
+          description: Account restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: reason is empty
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{tenantId}/state:
+    post:
+      operationId: forceAdminAccountState
+      summary: Force plan + plan_status directly (superadmin)
+      description: |
+        The manual escape hatch for payment-provider webhook drift: sets
+        plan and plan_status directly and clears grace_until. Never use this
+        to grant service for free — use the comp endpoint instead. Requires
+        is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminForceStateRequest"
+      responses:
+        "200":
+          description: Billing state forced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            reason is empty, plan is not one of free, starter, agency, scale,
+            or plan_status is not one of none, trialing, active, past_due,
+            canceled, paused, comped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/revenue:
+    get:
+      operationId: getAdminRevenue
+      summary: Instance-wide revenue dashboard (superadmin)
+      description: |
+        Local-state-only revenue view derived from tenants + billing_events —
+        zero payment-provider API calls. Requires is_superadmin=true.
+      tags: [admin-billing]
+      responses:
+        "200":
+          description: The revenue dashboard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRevenueResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
           content:
             application/json:
               schema:
@@ -9408,6 +9984,371 @@ components:
           type: string
           format: uri
           description: Redirect the browser here to the billing-management portal.
+    # -------------------------------------------------------------------------
+    # Superadmin billing-admin panel (admin-billing tag). The wire shapes below
+    # transcribe apps/api/internal/admin/billing_dto.go field-for-field — that
+    # file remains the source of truth for the Go struct tags; this is the
+    # generated-client/conformance-test source of truth for everything else.
+    # -------------------------------------------------------------------------
+    AdminAccountTiles:
+      type: object
+      description: Instance-wide accounts-page header tiles — unaffected by the current list filter.
+      required: [mrr_cents, active_subs, past_due_count, accounts_total]
+      properties:
+        mrr_cents: { type: integer, format: int64 }
+        active_subs: { type: integer, format: int64 }
+        past_due_count: { type: integer, format: int64 }
+        accounts_total: { type: integer, format: int64 }
+    AdminAccountListItem:
+      type: object
+      description: One row of GET /api/v1/admin/accounts.
+      required:
+        - tenant_id
+        - org_name
+        - org_slug
+        - plan
+        - plan_status
+        - has_overrides
+        - mrr_cents
+        - sites_used
+        - sites_cap
+        - storage_used_bytes_approx
+        - storage_cap_bytes
+        - near_limit
+        - created_at
+      properties:
+        tenant_id: { type: string, format: uuid }
+        org_name: { type: string }
+        org_slug: { type: string }
+        owner_email: { type: string }
+        plan:
+          type: string
+          enum: [free, starter, agency, scale]
+        plan_status:
+          type: string
+          enum: [none, trialing, active, past_due, canceled, paused, comped]
+        suspended_at: { type: string, format: date-time }
+        has_overrides: { type: boolean }
+        mrr_cents: { type: integer, format: int64 }
+        sites_used: { type: integer }
+        sites_cap: { type: integer }
+        storage_used_bytes_approx:
+          type: integer
+          format: int64
+          description: >-
+            A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant) —
+            does not yet distinguish CP-managed from BYO-storage
+            destinations.
+        storage_cap_bytes:
+          type: integer
+          format: int64
+          description: 0 for the free tier (BYO-storage only; no CP-managed cap to approach).
+        near_limit: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_activity: { type: string, format: date-time }
+    AdminAccountsResponse:
+      type: object
+      description: The full GET /api/v1/admin/accounts body.
+      required: [tiles, items, total, limit, offset]
+      properties:
+        tiles:
+          $ref: "#/components/schemas/AdminAccountTiles"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAccountListItem"
+        total:
+          type: integer
+          description: Count AFTER filtering (before limit/offset).
+        limit: { type: integer }
+        offset: { type: integer }
+    AdminAccountUsageMeter:
+      type: object
+      required: [used, cap]
+      properties:
+        used: { type: integer, format: int64 }
+        cap: { type: integer, format: int64 }
+    AdminAccountEntitlementValues:
+      type: object
+      description: >-
+        Display-only reference values for the account-detail "what this plan
+        includes" rows — not enforced anywhere.
+      required:
+        - probe_interval_floor_sec
+        - backup_cadence_floor_seconds
+        - incremental_backups
+        - client_portal
+      properties:
+        probe_interval_floor_sec: { type: integer }
+        backup_cadence_floor_seconds: { type: integer }
+        incremental_backups: { type: boolean }
+        client_portal: { type: boolean }
+    AdminAccountUsage:
+      type: object
+      description: The account-detail usage-vs-limits block.
+      required: [sites, storage_bytes_approx, seats_used, restore_volume_bytes_approx, entitlements]
+      properties:
+        sites:
+          $ref: "#/components/schemas/AdminAccountUsageMeter"
+        storage_bytes_approx:
+          $ref: "#/components/schemas/AdminAccountUsageMeter"
+        seats_used: { type: integer, format: int64 }
+        restore_volume_bytes_approx:
+          type: integer
+          format: int64
+          description: >-
+            An APPROXIMATION: SUM of restore_runs' snapshot sizes for this
+            tenant since the current billing period started (or the last 30
+            days, when no period is on record yet).
+        entitlements:
+          $ref: "#/components/schemas/AdminAccountEntitlementValues"
+    AdminAccountSubscription:
+      type: object
+      description: The account-detail subscription card.
+      required: [cancel_at_period_end, stale]
+      properties:
+        provider: { type: string }
+        provider_customer_id: { type: string }
+        provider_subscription_id: { type: string }
+        dashboard_url:
+          type: string
+          description: >-
+            A Stripe-dashboard deep link. Empty when the provider is not
+            Stripe, or there is no subscription id yet.
+        current_period_end: { type: string, format: date-time }
+        cancel_at_period_end: { type: boolean }
+        grace_until: { type: string, format: date-time }
+        comp_reason: { type: string }
+        last_billing_event_at: { type: string, format: date-time }
+        stale:
+          type: boolean
+          description: >-
+            True when plan_status=="past_due" and last_billing_event_at is
+            either unset or more than 25 hours old — a signal the webhook
+            pipe may itself be stuck rather than the customer's card.
+    AdminAccountTimelineEntry:
+      type: object
+      description: >-
+        One merged row in the account-detail timeline (billing_events +
+        audit_log admin.billing.*/billing.* actions), newest first.
+      required: [source, occurred_at, kind]
+      properties:
+        source:
+          type: string
+          enum: [billing_event, audit]
+        occurred_at: { type: string, format: date-time }
+        kind:
+          type: string
+          description: billing_events.kind, or audit_log.action.
+        actor_type: { type: string }
+        actor_id: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+    AdminAccountMember:
+      type: object
+      description: One row in the account-detail member roster.
+      required: [id, email, name, role, status, email_verified, member_since]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        name: { type: string }
+        role: { type: string }
+        status: { type: string }
+        email_verified: { type: boolean }
+        last_login_at: { type: string, format: date-time }
+        member_since: { type: string, format: date-time }
+    AdminAccountSite:
+      type: object
+      description: One compact row in the account-detail site list.
+      required: [id, url, connection_state, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        connection_state: { type: string }
+        created_at: { type: string, format: date-time }
+    AdminAccountDetail:
+      type: object
+      description: The full GET /api/v1/admin/accounts/{tenantId} body.
+      required:
+        - tenant_id
+        - org_name
+        - org_slug
+        - plan
+        - plan_status
+        - mrr_cents
+        - created_at
+        - usage
+        - subscription
+        - timeline
+        - members
+        - sites
+      properties:
+        tenant_id: { type: string, format: uuid }
+        org_name: { type: string }
+        org_slug: { type: string }
+        owner_email: { type: string }
+        plan:
+          type: string
+          enum: [free, starter, agency, scale]
+        plan_status:
+          type: string
+          enum: [none, trialing, active, past_due, canceled, paused, comped]
+        mrr_cents: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        suspended_at: { type: string, format: date-time }
+        suspended_reason: { type: string }
+        usage:
+          $ref: "#/components/schemas/AdminAccountUsage"
+        subscription:
+          $ref: "#/components/schemas/AdminAccountSubscription"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAccountTimelineEntry"
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAccountMember"
+        sites:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAccountSite"
+    AdminRevenueTiles:
+      type: object
+      description: The revenue-page header tiles.
+      required:
+        - mrr_cents
+        - mrr_past_due_cents
+        - active_subs
+        - trialing_subs
+        - past_due_count
+        - past_due_at_risk_cents
+        - new_this_month
+        - canceled_this_month
+      properties:
+        mrr_cents: { type: integer, format: int64 }
+        mrr_past_due_cents: { type: integer, format: int64 }
+        active_subs: { type: integer, format: int64 }
+        trialing_subs: { type: integer, format: int64 }
+        past_due_count: { type: integer, format: int64 }
+        past_due_at_risk_cents: { type: integer, format: int64 }
+        new_this_month: { type: integer, format: int64 }
+        canceled_this_month: { type: integer, format: int64 }
+    AdminPlanDistributionRow:
+      type: object
+      description: One row of the revenue page's plan-distribution table.
+      required: [plan, count, mrr_cents]
+      properties:
+        plan: { type: string }
+        count: { type: integer, format: int64 }
+        mrr_cents: { type: integer, format: int64 }
+    AdminCompedRow:
+      type: object
+      description: >-
+        The revenue page's "comped value" summary row — a hypothetical
+        figure (what these tenants WOULD pay), never real revenue.
+      required: [count, hypothetical_value_cents]
+      properties:
+        count: { type: integer, format: int64 }
+        hypothetical_value_cents: { type: integer, format: int64 }
+    AdminPastDueRow:
+      type: object
+      description: One row of the revenue page's past-due list.
+      required: [tenant_id, org_name, org_slug, amount_cents, days_past_due]
+      properties:
+        tenant_id: { type: string, format: uuid }
+        org_name: { type: string }
+        org_slug: { type: string }
+        owner_email: { type: string }
+        amount_cents: { type: integer, format: int64 }
+        days_past_due: { type: integer }
+        grace_until: { type: string, format: date-time }
+        last_payment_failed_at: { type: string, format: date-time }
+    AdminRecentBillingEvent:
+      type: object
+      description: One row of the revenue page's recent-activity feed.
+      required: [id, occurred_at, kind, provider]
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        org_name: { type: string }
+        org_slug: { type: string }
+        tenant_id: { type: string, format: uuid }
+        kind: { type: string }
+        provider: { type: string }
+    AdminRevenueResponse:
+      type: object
+      description: The full GET /api/v1/admin/revenue body.
+      required: [tiles, plan_distribution, comped, past_due, recent_events]
+      properties:
+        tiles:
+          $ref: "#/components/schemas/AdminRevenueTiles"
+        plan_distribution:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminPlanDistributionRow"
+        comped:
+          $ref: "#/components/schemas/AdminCompedRow"
+        past_due:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminPastDueRow"
+        recent_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminRecentBillingEvent"
+        last_webhook_received_at: { type: string, format: date-time }
+    AdminBillingAck:
+      type: object
+      description: Shared success acknowledgement for the admin-billing manual controls.
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    AdminCompAccountRequest:
+      type: object
+      required: [tier, reason]
+      properties:
+        tier:
+          type: string
+          enum: [free, starter, agency, scale]
+        reason: { type: string }
+    AdminReasonRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string }
+    AdminSetOverridesRequest:
+      type: object
+      description: >-
+        Each of sites/storage_gb/seats is a signed delta on top of the
+        tenant's current plan's ladder base. An omitted key leaves that
+        limit untouched; `null` (or `0`) clears it.
+      required: [reason]
+      properties:
+        sites: { type: integer, nullable: true }
+        storage_gb: { type: integer, nullable: true }
+        seats: { type: integer, nullable: true }
+        reason: { type: string }
+    AdminExtendGraceRequest:
+      type: object
+      required: [until, reason]
+      properties:
+        until:
+          type: string
+          format: date-time
+        reason: { type: string }
+    AdminForceStateRequest:
+      type: object
+      required: [plan, plan_status, reason]
+      properties:
+        plan:
+          type: string
+          enum: [free, starter, agency, scale]
+        plan_status:
+          type: string
+          enum: [none, trialing, active, past_due, canceled, paused, comped]
+        reason: { type: string }
     UpdateItem:
       type: object
       required: [type]

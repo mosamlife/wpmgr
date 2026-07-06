@@ -6,197 +6,99 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 import { client } from "@wpmgr/api";
+import type {
+  AdminAccountTiles,
+  AdminAccountListItem,
+  AdminAccountsResponse,
+  AdminAccountUsage,
+  AdminAccountSubscription,
+  AdminAccountTimelineEntry,
+  AdminAccountMember,
+  AdminAccountSite,
+  AdminAccountDetail,
+  AdminRevenueTiles,
+  AdminPlanDistributionRow,
+  AdminCompedRow,
+  AdminPastDueRow,
+  AdminRecentBillingEvent,
+  AdminRevenueResponse,
+  AdminCompAccountRequest,
+  AdminReasonRequest,
+  AdminExtendGraceRequest,
+  AdminForceStateRequest,
+} from "@wpmgr/api";
 
 import { toast } from "@/components/toast";
 import { toError } from "@/features/auth/use-auth";
-import type { BillingPlanId, BillingPlanStatus } from "@/features/billing/use-billing";
 import { buildAccountsQuery, type AdminAccountsFilters } from "./admin-accounts-format";
 
 // M16 Phase C1 — superadmin Billing Admin Panel hooks.
 //
 // These call the hand-rolled /api/v1/admin/accounts* and /api/v1/admin/revenue
-// endpoints. Like use-admin.ts and use-admin-vuln-feed.ts, they are NOT in the
-// generated OpenAPI SDK (superadmin-only; the control plane is landing this
-// contract in parallel with this web surface) — hand-rolled via the shared
-// `client` (same credentials/baseUrl as every generated SDK call). Swap to
-// generated `listAdminAccounts` / `getAdminAccount` / `getAdminRevenue` /
-// `compAdminAccount` etc. (re-exported from packages/openapi-client/src/index.ts)
-// once the SDK regenerates against the landed contract.
+// endpoints via the shared `client` (same credentials/baseUrl as every
+// generated SDK call), NOT the generated SDK operation functions — the ROUTES
+// themselves stay hand-rolled Gin (ADR-047: ogen's own server is not mounted
+// for /admin/*, because these routes need requireSuperadmin/RLS middleware
+// that only Gin carries), so there is no generated `listAdminAccounts` /
+// `getAdminAccount` / `compAdminAccount` etc. to call.
 //
-// IMPORTANT: the types below MUST track apps/api/internal/admin/billing_dto.go
-// field-for-field (names, nesting, optionality) until these endpoints move
-// into OpenAPI and this file is deleted in favor of a generated client. A
-// prior drift between this file and billing_dto.go (invented nesting like
-// `sites: {used,cap}` instead of the real flat `sites_used`/`sites_cap`,
-// `tiles.past_due`/`tiles.total` instead of `past_due_count`/`accounts_total`)
-// crashed the whole /admin/accounts panel in prod — read billing_dto.go, not
-// memory, before touching this file again. A future task should add
-// /admin/accounts* to packages/openapi/openapi.yaml so the client here is
-// generated instead of hand-rolled.
+// The WIRE TYPES below, however, ARE generated: packages/openapi/openapi.yaml
+// documents this contract under the `admin-billing` tag, and
+// apps/api/internal/admin/billing_contract_test.go enforces, server-side,
+// that the hand-rolled Go DTOs in billing_dto.go still match it. Every type
+// exported from this file is either a direct re-export of the generated
+// `@wpmgr/api` type, or a same-shape alias where this file's
+// already-established name differs from the spec's schema name (documented
+// inline below) — there is no hand-maintained duplicate struct left to drift.
+//
+// A prior drift between a hand-maintained interface in this file and
+// billing_dto.go (invented nesting like `sites: {used,cap}` instead of the
+// real flat `sites_used`/`sites_cap`, `tiles.past_due`/`tiles.total` instead
+// of `past_due_count`/`accounts_total`) crashed the whole /admin/accounts
+// panel in prod. Importing the generated type instead of hand-declaring one
+// turns that class of bug into a compile error — if the backend and the spec
+// ever disagree, `billing_contract_test.go` fails first; if this file and the
+// spec ever disagree, `pnpm -C apps/web typecheck` fails.
+//
+// The mutation INPUT types are the one place this file keeps a hand-written
+// shape: SetOverridesInput allows `null` to explicitly clear a previously-set
+// override (see admin-account-dialogs.tsx, which sends `null` for an emptied
+// input), but the OpenAPI code generator (hey-api 0.97.3) strips a schema's
+// `nullable: true` on an OPTIONAL property down to plain `?:` in the emitted
+// TS type (compare `AdminSetOverridesRequest` in @wpmgr/api, whose
+// `sites`/`storage_gb`/`seats` come out as `number | undefined`, not
+// `number | null | undefined`) — using it verbatim here would reject a real,
+// spec-legal payload. Every other mutation input below IS the generated
+// request type directly.
+
 // ---------------------------------------------------------------------------
-// Domain types — wire DTOs only. View-model derivation (usage meters,
-// entitlement display rows, timeline labels) lives in admin-accounts-format.ts
-// alongside its other pure derivation helpers.
+// Domain types — re-exported from the generated OpenAPI client. View-model
+// derivation (usage meters, entitlement display rows, timeline labels) lives
+// in admin-accounts-format.ts alongside its other pure derivation helpers.
 // ---------------------------------------------------------------------------
 
-export interface AdminAccountTiles {
-  mrr_cents: number;
-  active_subs: number;
-  past_due_count: number;
-  accounts_total: number;
-}
+export type {
+  AdminAccountTiles,
+  AdminAccountListItem,
+  AdminAccountUsage,
+  AdminAccountSubscription,
+  AdminAccountTimelineEntry,
+  AdminAccountMember,
+  AdminAccountSite,
+  AdminAccountDetail,
+  AdminRevenueTiles,
+  AdminPlanDistributionRow,
+  AdminCompedRow,
+  AdminPastDueRow,
+};
 
-export interface AdminAccountListItem {
-  tenant_id: string;
-  org_name: string;
-  org_slug: string;
-  owner_email?: string;
-  plan: string;
-  plan_status: string;
-  suspended_at?: string;
-  has_overrides: boolean;
-  mrr_cents: number;
-  sites_used: number;
-  sites_cap: number;
-  storage_used_bytes_approx: number;
-  storage_cap_bytes: number;
-  near_limit: boolean;
-  created_at: string;
-  last_activity?: string;
-}
+/** Alias for the generated `AdminAccountsResponse` — kept under this file's established name (every call site imports it as such). */
+export type AdminAccountsListResponse = AdminAccountsResponse;
 
-export interface AdminAccountsListResponse {
-  tiles: AdminAccountTiles;
-  items: AdminAccountListItem[];
-  total: number;
-  limit: number;
-  offset: number;
-}
+/** Alias for the generated `AdminRecentBillingEvent` — kept under this file's established name (every call site imports it as such). */
+export type AdminRevenueEvent = AdminRecentBillingEvent;
 
-export interface AdminAccountEntitlementValues {
-  probe_interval_floor_sec: number;
-  backup_cadence_floor_seconds: number;
-  incremental_backups: boolean;
-  client_portal: boolean;
-}
-
-export interface AdminAccountUsage {
-  sites: { used: number; cap: number };
-  storage_bytes_approx: { used: number; cap: number };
-  seats_used: number;
-  restore_volume_bytes_approx: number;
-  entitlements: AdminAccountEntitlementValues;
-}
-
-export interface AdminAccountSubscription {
-  provider?: string;
-  provider_customer_id?: string;
-  provider_subscription_id?: string;
-  dashboard_url?: string;
-  current_period_end?: string;
-  cancel_at_period_end: boolean;
-  grace_until?: string;
-  comp_reason?: string;
-  last_billing_event_at?: string;
-  stale: boolean;
-}
-
-export interface AdminAccountTimelineEntry {
-  source: "billing_event" | "audit";
-  occurred_at: string;
-  kind: string;
-  actor_type?: string;
-  actor_id?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface AdminAccountMember {
-  id: string;
-  email: string;
-  name: string;
-  role: string;
-  status: string;
-  email_verified: boolean;
-  last_login_at?: string;
-  member_since: string;
-}
-
-export interface AdminAccountSite {
-  id: string;
-  url: string;
-  connection_state: string;
-  created_at: string;
-}
-
-export interface AdminAccountDetail {
-  tenant_id: string;
-  org_name: string;
-  org_slug: string;
-  owner_email?: string;
-  plan: string;
-  plan_status: string;
-  mrr_cents: number;
-  created_at: string;
-  suspended_at?: string;
-  suspended_reason?: string;
-  usage: AdminAccountUsage;
-  subscription: AdminAccountSubscription;
-  timeline: AdminAccountTimelineEntry[];
-  members: AdminAccountMember[];
-  sites: AdminAccountSite[];
-}
-
-export interface AdminRevenueTiles {
-  mrr_cents: number;
-  mrr_past_due_cents: number;
-  active_subs: number;
-  trialing_subs: number;
-  past_due_count: number;
-  past_due_at_risk_cents: number;
-  new_this_month: number;
-  canceled_this_month: number;
-}
-
-export interface AdminPlanDistributionRow {
-  plan: string;
-  count: number;
-  mrr_cents: number;
-}
-
-export interface AdminCompedRow {
-  count: number;
-  hypothetical_value_cents: number;
-}
-
-export interface AdminPastDueRow {
-  tenant_id: string;
-  org_name: string;
-  org_slug: string;
-  owner_email?: string;
-  amount_cents: number;
-  days_past_due: number;
-  grace_until?: string;
-  last_payment_failed_at?: string;
-}
-
-export interface AdminRevenueEvent {
-  id: string;
-  occurred_at: string;
-  org_name?: string;
-  org_slug?: string;
-  tenant_id?: string;
-  kind: string;
-  provider: string;
-}
-
-export interface AdminRevenueResponse {
-  tiles: AdminRevenueTiles;
-  plan_distribution: AdminPlanDistributionRow[];
-  comped: AdminCompedRow;
-  past_due: AdminPastDueRow[];
-  recent_events: AdminRevenueEvent[];
-  last_webhook_received_at?: string;
-}
+export type { AdminRevenueResponse };
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -276,10 +178,8 @@ export function useAdminRevenue() {
 // tiles in onSuccess so every surface reflects the change immediately.
 // ---------------------------------------------------------------------------
 
-export interface CompAccountInput {
-  tier: BillingPlanId;
-  reason: string;
-}
+/** The POST .../comp body — the generated request type directly (tier accepts the full ladder including "free", matching billing.ValidTier server-side). */
+export type CompAccountInput = AdminCompAccountRequest;
 
 export function useAdminCompAccount(
   tenantId: string,
@@ -304,9 +204,8 @@ export function useAdminCompAccount(
   });
 }
 
-export interface RevokeCompInput {
-  reason: string;
-}
+/** The DELETE .../comp body — the generated request type directly. */
+export type RevokeCompInput = AdminReasonRequest;
 
 export function useAdminRevokeComp(
   tenantId: string,
@@ -331,14 +230,14 @@ export function useAdminRevokeComp(
   });
 }
 
+/**
+ * The PUT .../overrides body. Hand-kept (NOT the generated
+ * `AdminSetOverridesRequest`) — see this file's header comment: the codegen
+ * strips `nullable: true` on an optional property, but `null` is a real,
+ * spec-legal value here (explicitly clears a previously-set override; an
+ * omitted key leaves it untouched; see admin-account-dialogs.tsx).
+ */
 export interface SetOverridesInput {
-  /**
-   * `number` sets an override, `null` explicitly clears a previously-set
-   * override, and an omitted key leaves that limit untouched — the endpoint
-   * signature marks every field optional (`sites?`), which reads as a
-   * partial-update PUT rather than a full-replace, so untouched rows are
-   * simply never sent.
-   */
   sites?: number | null;
   storage_gb?: number | null;
   seats?: number | null;
@@ -368,10 +267,8 @@ export function useAdminSetOverrides(
   });
 }
 
-export interface ExtendGraceInput {
-  until: string;
-  reason: string;
-}
+/** The POST .../grace body — the generated request type directly. */
+export type ExtendGraceInput = AdminExtendGraceRequest;
 
 export function useAdminExtendGrace(
   tenantId: string,
@@ -396,9 +293,8 @@ export function useAdminExtendGrace(
   });
 }
 
-export interface ReasonInput {
-  reason: string;
-}
+/** The POST .../suspend and .../restore body — the generated request type directly. */
+export type ReasonInput = AdminReasonRequest;
 
 export function useAdminSuspendAccount(
   tenantId: string,
@@ -446,11 +342,8 @@ export function useAdminRestoreAccount(
   });
 }
 
-export interface ForceStateInput {
-  plan: BillingPlanId;
-  plan_status: BillingPlanStatus;
-  reason: string;
-}
+/** The POST .../state body — the generated request type directly. */
+export type ForceStateInput = AdminForceStateRequest;
 
 /** "Force billing state" — reconciles the CP's view of plan/status with the provider only. Never call this to grant service; use comp for that. */
 export function useAdminForceBillingState(

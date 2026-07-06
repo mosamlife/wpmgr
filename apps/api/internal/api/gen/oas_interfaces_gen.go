@@ -117,6 +117,10 @@ type ChmodSiteFileRes interface {
 	chmodSiteFileRes()
 }
 
+type CompAdminAccountRes interface {
+	compAdminAccountRes()
+}
+
 type CreateApiKeyRes interface {
 	createApiKeyRes()
 }
@@ -241,12 +245,28 @@ type ExportSiteEmailLogRes interface {
 	exportSiteEmailLogRes()
 }
 
+type ExtendAdminAccountGraceRes interface {
+	extendAdminAccountGraceRes()
+}
+
 type ExtractSiteFileArchiveRes interface {
 	extractSiteFileArchiveRes()
 }
 
+type ForceAdminAccountStateRes interface {
+	forceAdminAccountStateRes()
+}
+
 type GenerateClientReportRes interface {
 	generateClientReportRes()
+}
+
+type GetAdminAccountRes interface {
+	getAdminAccountRes()
+}
+
+type GetAdminRevenueRes interface {
+	getAdminRevenueRes()
 }
 
 type GetBackupEnvironmentRes interface {
@@ -387,6 +407,10 @@ type GetUpdateRunRes interface {
 
 type InviteMemberRes interface {
 	inviteMemberRes()
+}
+
+type ListAdminAccountsRes interface {
+	listAdminAccountsRes()
 }
 
 type ListApiKeysRes interface {
@@ -633,12 +657,20 @@ type ResetPasswordRes interface {
 	resetPasswordRes()
 }
 
+type RestoreAdminAccountRes interface {
+	restoreAdminAccountRes()
+}
+
 type RestoreSiteFileVersionRes interface {
 	restoreSiteFileVersionRes()
 }
 
 type RestoreSiteRes interface {
 	restoreSiteRes()
+}
+
+type RevokeAdminAccountCompRes interface {
+	revokeAdminAccountCompRes()
 }
 
 type RevokeApiKeyRes interface {
@@ -661,12 +693,20 @@ type SendTestEmailRes interface {
 	sendTestEmailRes()
 }
 
+type SetAdminAccountOverridesRes interface {
+	setAdminAccountOverridesRes()
+}
+
 type SetSiteTagsRes interface {
 	setSiteTagsRes()
 }
 
 type SilenceSitePHPErrorRes interface {
 	silenceSitePHPErrorRes()
+}
+
+type SuspendAdminAccountRes interface {
+	suspendAdminAccountRes()
 }
 
 type SyncSiteEmailConfigRes interface {

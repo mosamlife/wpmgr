@@ -1,5 +1,9 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { createFileRoute, Link, Outlet, redirect, useLocation } from "@tanstack/react-router";
+// The admin billing pages render Tooltip components (approximate-storage marker,
+// overrides dot, etc.). The app has no global TooltipProvider — each feature
+// provides its own — so the admin layout provides one for every /admin page.
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   ArrowLeft,
   Building2,
@@ -130,6 +134,7 @@ function AdminLayout() {
   const pathname = location.pathname;
 
   return (
+    <TooltipProvider>
     <div className="mx-auto w-full max-w-5xl">
       <div className="flex flex-col gap-6 md:flex-row md:gap-10">
         {/* Left navigation — mirrors the Settings area side-menu pattern. */}
@@ -205,5 +210,6 @@ function AdminLayout() {
         </main>
       </div>
     </div>
+    </TooltipProvider>
   );
 }

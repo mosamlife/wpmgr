@@ -424,7 +424,7 @@ describe("buildAccountsQuery", () => {
     expect(params.has("near_limit")).toBe(false);
     expect(params.has("has_overrides")).toBe(false);
     expect(params.has("comped")).toBe(false);
-    expect(params.has("idle")).toBe(false);
+    expect(params.has("idle_90d")).toBe(false);
   });
 
   it("always includes sort/limit/offset", () => {
@@ -470,9 +470,10 @@ describe("buildAccountsQuery", () => {
     expect(new URLSearchParams(qs).get("comped")).toBe("true");
   });
 
-  it("maps idle90d to idle=true (wire param is 'idle', not 'idle90d')", () => {
+  it("maps idle90d to the handler's idle_90d wire param", () => {
     const qs = buildAccountsQuery(filters({ idle90d: true }));
-    expect(new URLSearchParams(qs).get("idle")).toBe("true");
+    expect(new URLSearchParams(qs).get("idle_90d")).toBe("true");
+    expect(new URLSearchParams(qs).has("idle")).toBe(false);
     expect(new URLSearchParams(qs).has("idle90d")).toBe(false);
   });
 
@@ -506,7 +507,7 @@ describe("buildAccountsQuery", () => {
     expect(params.get("near_limit")).toBe("true");
     expect(params.get("has_overrides")).toBe("true");
     expect(params.get("comped")).toBe("true");
-    expect(params.get("idle")).toBe("true");
+    expect(params.get("idle_90d")).toBe("true");
     expect(params.get("sort")).toBe("created_desc");
     expect(params.get("limit")).toBe("10");
     expect(params.get("offset")).toBe("20");

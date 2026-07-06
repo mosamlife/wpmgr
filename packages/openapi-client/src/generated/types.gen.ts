@@ -909,6 +909,299 @@ export type BillingPortalResponse = {
 };
 
 /**
+ * Instance-wide accounts-page header tiles — unaffected by the current list filter.
+ */
+export type AdminAccountTiles = {
+  mrr_cents: number;
+  active_subs: number;
+  past_due_count: number;
+  accounts_total: number;
+};
+
+/**
+ * One row of GET /api/v1/admin/accounts.
+ */
+export type AdminAccountListItem = {
+  tenant_id: string;
+  org_name: string;
+  org_slug: string;
+  owner_email?: string;
+  plan: "free" | "starter" | "agency" | "scale";
+  plan_status:
+    | "none"
+    | "trialing"
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "paused"
+    | "comped";
+  suspended_at?: string;
+  has_overrides: boolean;
+  mrr_cents: number;
+  sites_used: number;
+  sites_cap: number;
+  /**
+   * A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant) — does not yet distinguish CP-managed from BYO-storage destinations.
+   */
+  storage_used_bytes_approx: number;
+  /**
+   * 0 for the free tier (BYO-storage only; no CP-managed cap to approach).
+   */
+  storage_cap_bytes: number;
+  near_limit: boolean;
+  created_at: string;
+  last_activity?: string;
+};
+
+/**
+ * The full GET /api/v1/admin/accounts body.
+ */
+export type AdminAccountsResponse = {
+  tiles: AdminAccountTiles;
+  items: Array<AdminAccountListItem>;
+  /**
+   * Count AFTER filtering (before limit/offset).
+   */
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminAccountUsageMeter = {
+  used: number;
+  cap: number;
+};
+
+/**
+ * Display-only reference values for the account-detail "what this plan includes" rows — not enforced anywhere.
+ */
+export type AdminAccountEntitlementValues = {
+  probe_interval_floor_sec: number;
+  backup_cadence_floor_seconds: number;
+  incremental_backups: boolean;
+  client_portal: boolean;
+};
+
+/**
+ * The account-detail usage-vs-limits block.
+ */
+export type AdminAccountUsage = {
+  sites: AdminAccountUsageMeter;
+  storage_bytes_approx: AdminAccountUsageMeter;
+  seats_used: number;
+  /**
+   * An APPROXIMATION: SUM of restore_runs' snapshot sizes for this tenant since the current billing period started (or the last 30 days, when no period is on record yet).
+   */
+  restore_volume_bytes_approx: number;
+  entitlements: AdminAccountEntitlementValues;
+};
+
+/**
+ * The account-detail subscription card.
+ */
+export type AdminAccountSubscription = {
+  provider?: string;
+  provider_customer_id?: string;
+  provider_subscription_id?: string;
+  /**
+   * A Stripe-dashboard deep link. Empty when the provider is not Stripe, or there is no subscription id yet.
+   */
+  dashboard_url?: string;
+  current_period_end?: string;
+  cancel_at_period_end: boolean;
+  grace_until?: string;
+  comp_reason?: string;
+  last_billing_event_at?: string;
+  /**
+   * True when plan_status=="past_due" and last_billing_event_at is either unset or more than 25 hours old — a signal the webhook pipe may itself be stuck rather than the customer's card.
+   */
+  stale: boolean;
+};
+
+/**
+ * One merged row in the account-detail timeline (billing_events + audit_log admin.billing.*billing.* actions), newest first.
+ */
+export type AdminAccountTimelineEntry = {
+  source: "billing_event" | "audit";
+  occurred_at: string;
+  /**
+   * billing_events.kind, or audit_log.action.
+   */
+  kind: string;
+  actor_type?: string;
+  actor_id?: string;
+  metadata?: {
+    [key: string]: unknown;
+  };
+};
+
+/**
+ * One row in the account-detail member roster.
+ */
+export type AdminAccountMember = {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  status: string;
+  email_verified: boolean;
+  last_login_at?: string;
+  member_since: string;
+};
+
+/**
+ * One compact row in the account-detail site list.
+ */
+export type AdminAccountSite = {
+  id: string;
+  url: string;
+  connection_state: string;
+  created_at: string;
+};
+
+/**
+ * The full GET /api/v1/admin/accounts/{tenantId} body.
+ */
+export type AdminAccountDetail = {
+  tenant_id: string;
+  org_name: string;
+  org_slug: string;
+  owner_email?: string;
+  plan: "free" | "starter" | "agency" | "scale";
+  plan_status:
+    | "none"
+    | "trialing"
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "paused"
+    | "comped";
+  mrr_cents: number;
+  created_at: string;
+  suspended_at?: string;
+  suspended_reason?: string;
+  usage: AdminAccountUsage;
+  subscription: AdminAccountSubscription;
+  timeline: Array<AdminAccountTimelineEntry>;
+  members: Array<AdminAccountMember>;
+  sites: Array<AdminAccountSite>;
+};
+
+/**
+ * The revenue-page header tiles.
+ */
+export type AdminRevenueTiles = {
+  mrr_cents: number;
+  mrr_past_due_cents: number;
+  active_subs: number;
+  trialing_subs: number;
+  past_due_count: number;
+  past_due_at_risk_cents: number;
+  new_this_month: number;
+  canceled_this_month: number;
+};
+
+/**
+ * One row of the revenue page's plan-distribution table.
+ */
+export type AdminPlanDistributionRow = {
+  plan: string;
+  count: number;
+  mrr_cents: number;
+};
+
+/**
+ * The revenue page's "comped value" summary row — a hypothetical figure (what these tenants WOULD pay), never real revenue.
+ */
+export type AdminCompedRow = {
+  count: number;
+  hypothetical_value_cents: number;
+};
+
+/**
+ * One row of the revenue page's past-due list.
+ */
+export type AdminPastDueRow = {
+  tenant_id: string;
+  org_name: string;
+  org_slug: string;
+  owner_email?: string;
+  amount_cents: number;
+  days_past_due: number;
+  grace_until?: string;
+  last_payment_failed_at?: string;
+};
+
+/**
+ * One row of the revenue page's recent-activity feed.
+ */
+export type AdminRecentBillingEvent = {
+  id: string;
+  occurred_at: string;
+  org_name?: string;
+  org_slug?: string;
+  tenant_id?: string;
+  kind: string;
+  provider: string;
+};
+
+/**
+ * The full GET /api/v1/admin/revenue body.
+ */
+export type AdminRevenueResponse = {
+  tiles: AdminRevenueTiles;
+  plan_distribution: Array<AdminPlanDistributionRow>;
+  comped: AdminCompedRow;
+  past_due: Array<AdminPastDueRow>;
+  recent_events: Array<AdminRecentBillingEvent>;
+  last_webhook_received_at?: string;
+};
+
+/**
+ * Shared success acknowledgement for the admin-billing manual controls.
+ */
+export type AdminBillingAck = {
+  ok: boolean;
+};
+
+export type AdminCompAccountRequest = {
+  tier: "free" | "starter" | "agency" | "scale";
+  reason: string;
+};
+
+export type AdminReasonRequest = {
+  reason: string;
+};
+
+/**
+ * Each of sites/storage_gb/seats is a signed delta on top of the tenant's current plan's ladder base. An omitted key leaves that limit untouched; `null` (or `0`) clears it.
+ */
+export type AdminSetOverridesRequest = {
+  sites?: number;
+  storage_gb?: number;
+  seats?: number;
+  reason: string;
+};
+
+export type AdminExtendGraceRequest = {
+  until: string;
+  reason: string;
+};
+
+export type AdminForceStateRequest = {
+  plan: "free" | "starter" | "agency" | "scale";
+  plan_status:
+    | "none"
+    | "trialing"
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "paused"
+    | "comped";
+  reason: string;
+};
+
+/**
  * One thing to update on a site.
  */
 export type UpdateItem = {
@@ -7080,6 +7373,467 @@ export type CreateBillingPortalResponses = {
 
 export type CreateBillingPortalResponse =
   CreateBillingPortalResponses[keyof CreateBillingPortalResponses];
+
+export type ListAdminAccountsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * Case-insensitive substring match against org name, org slug, or owner email.
+     */
+    search?: string;
+    /**
+     * Comma-separated tenants.plan_status values to filter by (e.g. "past_due,canceled").
+     */
+    status?: string;
+    /**
+     * Comma-separated plan tiers to filter by (e.g. "starter,agency").
+     */
+    plan?: string;
+    /**
+     * Restrict to accounts whose plan_status is past_due.
+     */
+    past_due?: boolean;
+    /**
+     * Restrict to accounts at or above 80% of their site or storage cap.
+     */
+    near_limit?: boolean;
+    /**
+     * Restrict to accounts with a non-empty tenants.plan_overrides.
+     */
+    has_overrides?: boolean;
+    /**
+     * Restrict to accounts whose plan_status is comped.
+     */
+    comped?: boolean;
+    /**
+     * Restrict to accounts with no recorded activity in the last 90 days.
+     */
+    idle_90d?: boolean;
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/admin/accounts";
+};
+
+export type ListAdminAccountsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type ListAdminAccountsError =
+  ListAdminAccountsErrors[keyof ListAdminAccountsErrors];
+
+export type ListAdminAccountsResponses = {
+  /**
+   * Header tiles + the filtered/paginated accounts page
+   */
+  200: AdminAccountsResponse;
+};
+
+export type ListAdminAccountsResponse =
+  ListAdminAccountsResponses[keyof ListAdminAccountsResponses];
+
+export type GetAdminAccountData = {
+  body?: never;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}";
+};
+
+export type GetAdminAccountErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type GetAdminAccountError =
+  GetAdminAccountErrors[keyof GetAdminAccountErrors];
+
+export type GetAdminAccountResponses = {
+  /**
+   * The account-detail page
+   */
+  200: AdminAccountDetail;
+};
+
+export type GetAdminAccountResponse =
+  GetAdminAccountResponses[keyof GetAdminAccountResponses];
+
+export type RevokeAdminAccountCompData = {
+  body: AdminReasonRequest;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}/comp";
+};
+
+export type RevokeAdminAccountCompErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * reason is empty
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type RevokeAdminAccountCompError =
+  RevokeAdminAccountCompErrors[keyof RevokeAdminAccountCompErrors];
+
+export type RevokeAdminAccountCompResponses = {
+  /**
+   * Comp revoked
+   */
+  200: AdminBillingAck;
+};
+
+export type RevokeAdminAccountCompResponse =
+  RevokeAdminAccountCompResponses[keyof RevokeAdminAccountCompResponses];
+
+export type CompAdminAccountData = {
+  body: AdminCompAccountRequest;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}/comp";
+};
+
+export type CompAdminAccountErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * reason is empty, or tier is not one of free, starter, agency, scale
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type CompAdminAccountError =
+  CompAdminAccountErrors[keyof CompAdminAccountErrors];
+
+export type CompAdminAccountResponses = {
+  /**
+   * Comp granted
+   */
+  200: AdminBillingAck;
+};
+
+export type CompAdminAccountResponse =
+  CompAdminAccountResponses[keyof CompAdminAccountResponses];
+
+export type SetAdminAccountOverridesData = {
+  body: AdminSetOverridesRequest;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}/overrides";
+};
+
+export type SetAdminAccountOverridesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * reason is empty
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type SetAdminAccountOverridesError =
+  SetAdminAccountOverridesErrors[keyof SetAdminAccountOverridesErrors];
+
+export type SetAdminAccountOverridesResponses = {
+  /**
+   * Overrides updated
+   */
+  200: AdminBillingAck;
+};
+
+export type SetAdminAccountOverridesResponse =
+  SetAdminAccountOverridesResponses[keyof SetAdminAccountOverridesResponses];
+
+export type ExtendAdminAccountGraceData = {
+  body: AdminExtendGraceRequest;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}/grace";
+};
+
+export type ExtendAdminAccountGraceErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * reason is empty, until is not a valid RFC3339 timestamp, or the new grace_until does not extend further out than the current one
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type ExtendAdminAccountGraceError =
+  ExtendAdminAccountGraceErrors[keyof ExtendAdminAccountGraceErrors];
+
+export type ExtendAdminAccountGraceResponses = {
+  /**
+   * Grace period extended
+   */
+  200: AdminBillingAck;
+};
+
+export type ExtendAdminAccountGraceResponse =
+  ExtendAdminAccountGraceResponses[keyof ExtendAdminAccountGraceResponses];
+
+export type SuspendAdminAccountData = {
+  body: AdminReasonRequest;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}/suspend";
+};
+
+export type SuspendAdminAccountErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * reason is empty
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type SuspendAdminAccountError =
+  SuspendAdminAccountErrors[keyof SuspendAdminAccountErrors];
+
+export type SuspendAdminAccountResponses = {
+  /**
+   * Account suspended
+   */
+  200: AdminBillingAck;
+};
+
+export type SuspendAdminAccountResponse =
+  SuspendAdminAccountResponses[keyof SuspendAdminAccountResponses];
+
+export type RestoreAdminAccountData = {
+  body?: AdminReasonRequest;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}/restore";
+};
+
+export type RestoreAdminAccountErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * reason is empty
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type RestoreAdminAccountError =
+  RestoreAdminAccountErrors[keyof RestoreAdminAccountErrors];
+
+export type RestoreAdminAccountResponses = {
+  /**
+   * Account restored
+   */
+  200: AdminBillingAck;
+};
+
+export type RestoreAdminAccountResponse =
+  RestoreAdminAccountResponses[keyof RestoreAdminAccountResponses];
+
+export type ForceAdminAccountStateData = {
+  body: AdminForceStateRequest;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{tenantId}/state";
+};
+
+export type ForceAdminAccountStateErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * reason is empty, plan is not one of free, starter, agency, scale, or plan_status is not one of none, trialing, active, past_due, canceled, paused, comped
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type ForceAdminAccountStateError =
+  ForceAdminAccountStateErrors[keyof ForceAdminAccountStateErrors];
+
+export type ForceAdminAccountStateResponses = {
+  /**
+   * Billing state forced
+   */
+  200: AdminBillingAck;
+};
+
+export type ForceAdminAccountStateResponse =
+  ForceAdminAccountStateResponses[keyof ForceAdminAccountStateResponses];
+
+export type GetAdminRevenueData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/revenue";
+};
+
+export type GetAdminRevenueErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type GetAdminRevenueError =
+  GetAdminRevenueErrors[keyof GetAdminRevenueErrors];
+
+export type GetAdminRevenueResponses = {
+  /**
+   * The revenue dashboard
+   */
+  200: AdminRevenueResponse;
+};
+
+export type GetAdminRevenueResponse =
+  GetAdminRevenueResponses[keyof GetAdminRevenueResponses];
 
 export type ListTenantsData = {
   body?: never;
