@@ -1032,6 +1032,10 @@ type Tenant struct {
 	ProviderCustomerID     *string            `json:"provider_customer_id"`
 	ProviderSubscriptionID *string            `json:"provider_subscription_id"`
 	CurrentPeriodEnd       pgtype.Timestamptz `json:"current_period_end"`
+	CompReason             *string            `json:"comp_reason"`
+	SuspendedAt            pgtype.Timestamptz `json:"suspended_at"`
+	SuspendedReason        *string            `json:"suspended_reason"`
+	CancelAtPeriodEnd      bool               `json:"cancel_at_period_end"`
 	CreatedAt              time.Time          `json:"created_at"`
 	UpdatedAt              time.Time          `json:"updated_at"`
 }

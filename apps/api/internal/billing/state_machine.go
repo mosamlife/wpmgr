@@ -7,6 +7,13 @@ import "time"
 // see effectiveTier in entitlements.go) before falling back to free.
 const pastDueGracePeriod = 7 * 24 * time.Hour
 
+// PastDueGracePeriod exposes pastDueGracePeriod to callers outside this
+// package (the superadmin revenue page, internal/admin, M16 Phase C1) that
+// need to derive "when did this tenant first enter past_due" from
+// tenants.grace_until (= entry instant + this constant) for a "days past due"
+// display — without duplicating the 7-day literal at the call site.
+func PastDueGracePeriod() time.Duration { return pastDueGracePeriod }
+
 // tenantBillingProfile is the provider-agnostic subset of a tenant's billing
 // row the state machine reads and writes. Decoupled from the sqlc row shape
 // so nextBillingState stays a pure, table-free function (mirrors resolve()'s

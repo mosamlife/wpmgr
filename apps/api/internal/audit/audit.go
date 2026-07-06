@@ -171,9 +171,9 @@ const (
 
 	// Agency Clients (m63). Recorded when a client is created, updated, deleted,
 	// or when sites are bulk-assigned.
-	ActionClientCreated      = "client.created"
-	ActionClientUpdated      = "client.updated"
-	ActionClientDeleted      = "client.deleted"
+	ActionClientCreated       = "client.created"
+	ActionClientUpdated       = "client.updated"
+	ActionClientDeleted       = "client.deleted"
 	ActionClientSitesAssigned = "client.sites.assigned"
 
 	// Agency Client Reports (m64). Recorded on schedule update and report
@@ -274,6 +274,37 @@ const (
 	// acknowledged_broken_at (the previously-reported break id, when the caller
 	// supplied one).
 	ActionAuditIntegrityRebaselined = "audit.integrity.rebaselined"
+
+	// M16 Phase C1 — superadmin billing-admin panel (internal/admin). Every
+	// mutation there is recorded under the TARGET tenant's own hash chain
+	// (ActorType=ActorUser + the superadmin's REAL user id — never a
+	// synthetic actor string; see the audit_log actor_id ::uuid-cast incident
+	// this rule guards against) alongside a billing_events row (source=
+	// "admin" — see billing.Service.RecordAdminBillingEvent). Metadata always
+	// carries a before->after snapshot of the mutated fields plus the
+	// REQUIRED operator-supplied reason.
+	//
+	// ActionAdminBillingCompGranted: metadata: plan, reason,
+	// old_plan, old_plan_status.
+	ActionAdminBillingCompGranted = "admin.billing.comp.granted"
+	// ActionAdminBillingCompRevoked: metadata: reason, adopted_live_subscription
+	// (bool), new_plan, new_plan_status.
+	ActionAdminBillingCompRevoked = "admin.billing.comp.revoked"
+	// ActionAdminBillingOverrideSet: metadata: reason, deltas (the requested
+	// {sites?,storage_gb?,seats?} deltas), resulting_overrides.
+	ActionAdminBillingOverrideSet = "admin.billing.override.set"
+	// ActionAdminBillingOverrideCleared: metadata: reason, cleared_keys.
+	ActionAdminBillingOverrideCleared = "admin.billing.override.cleared"
+	// ActionAdminBillingGraceExtended: metadata: reason, old_grace_until,
+	// new_grace_until.
+	ActionAdminBillingGraceExtended = "admin.billing.grace.extended"
+	// ActionAdminBillingSuspended: metadata: reason.
+	ActionAdminBillingSuspended = "admin.billing.suspended"
+	// ActionAdminBillingRestored: metadata: reason.
+	ActionAdminBillingRestored = "admin.billing.restored"
+	// ActionAdminBillingStateForced: metadata: reason, old_plan,
+	// old_plan_status, new_plan, new_plan_status.
+	ActionAdminBillingStateForced = "admin.billing.state.forced"
 )
 
 // Entry is one audit record.

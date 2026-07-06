@@ -115,6 +115,14 @@ WHERE id = @id AND tenant_id IS NULL;
 -- name: MarkBillingEventProcessed :exec
 UPDATE billing_events SET processed_at = now() WHERE id = @id;
 
+-- name: GetTenantSuspension :one
+-- M16 Phase C1 — the per-request suspension gate's (internal/billing's
+-- SuspensionGate, wired on the tenant-scoped /api/v1 group) lightweight read.
+-- tenants carries no RLS — bare pool.
+SELECT suspended_at, suspended_reason
+FROM tenants
+WHERE id = @tenant_id;
+
 -- name: LastProcessedBillingEventOccurredAtForTenant :one
 -- The out-of-order guard: the newest occurred_at among this tenant's ALREADY
 -- APPLIED events (processed_at IS NOT NULL), excluding the event currently

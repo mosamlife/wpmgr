@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -503,9 +504,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// (see server.Deps.BillingH/BillingWebhookH's doc comments).
 	var billingHForRoutes *billing.Handler
 	var billingWebhookHForRoutes *billing.WebhookHandler
+	// M16 Phase C1 — the superadmin hard-lockout enforcement middleware
+	// (tenants.suspended_at, m92). Same nil/non-nil split: self-host
+	// (unhosted) never even constructs the closure, matching every other
+	// hosted-only wiring in this block. billingSvc.SuspensionGate() also
+	// carries its own in-body s.enabled guard (belt-and-braces).
+	var billingSuspensionGateForRoutes gin.HandlerFunc
 	if cfg.Hosted.Enabled {
 		billingHForRoutes = billingH
 		billingWebhookHForRoutes = billingWebhookH
+		billingSuspensionGateForRoutes = billingSvc.SuspensionGate()
 	}
 
 	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc, pool)
@@ -1911,6 +1919,17 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// vuln River block above), so this call sees a fully-wired service.
 	adminH.SetVulnFeed(vulnRepo, vulnFeedKeySvc)
 
+	// M16 Phase C1 — superadmin billing-admin panel (accounts / account
+	// detail / revenue / manual controls). Wired unconditionally (cheap,
+	// stateless, mirrors the billing.Handler construction above): superadmin
+	// reads work regardless of WPMGR_HOSTED, and every mutation degrades to a
+	// clean "not configured" only if billingRepo itself were nil, which it
+	// never is here. stripeTestMode drives the account-detail subscription
+	// card's Stripe-dashboard deep link (test vs live URL prefix).
+	stripeTestMode := strings.HasPrefix(cfg.Billing.Stripe.SecretKey, "sk_test_")
+	adminBillingRepo := admin.NewBillingRepo(pool)
+	adminSvc.SetBillingPanel(adminBillingRepo, billingSvc, auditRec, stripeTestMode)
+
 	// ADR-042 — CP-driven agent self-update manifest handler. Needs object
 	// storage (to read agent-releases/latest.json + presign the package) AND the
 	// CP signing key (to sign the manifest). When either is absent the handler
@@ -2066,10 +2085,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// (the webhook path 404s the same way — ProcessWebhook would also
 		// refuse an unrecognized provider, but there is no reason to mount an
 		// unreachable public endpoint at all on a self-host/unhosted boot).
-		BillingH:        billingHForRoutes,
-		BillingWebhookH: billingWebhookHForRoutes,
-		ServiceName:     cfg.OTel.ServiceName,
-		Version:         version,
+		BillingH:              billingHForRoutes,
+		BillingWebhookH:       billingWebhookHForRoutes,
+		BillingSuspensionGate: billingSuspensionGateForRoutes,
+		ServiceName:           cfg.OTel.ServiceName,
+		Version:               version,
 	})
 
 	return srv.Run(ctx)
@@ -2376,13 +2396,13 @@ type riverDeps struct {
 	healthChecker  *site.HealthChecker
 	healthInterval time.Duration
 	// M21 connection lifecycle: the timeout sweeper (15s) + site_events prune (1m).
-	siteSweepWorker        *site.SweepWorker
-	siteEventPruneWorker   *site.EventPruneWorker
-	updateWorker           *update.Worker
+	siteSweepWorker      *site.SweepWorker
+	siteEventPruneWorker *site.EventPruneWorker
+	updateWorker         *update.Worker
 	// #131 follow-up — periodic reaper for update_tasks stuck in
 	// pending/running past the stale-task threshold (always wired).
-	updateReaperWorker *update.ReaperWorker
-	refreshWorker      *update.RefreshInventoryWorker
+	updateReaperWorker     *update.ReaperWorker
+	refreshWorker          *update.RefreshInventoryWorker
 	perTenantParallelism   int
 	backupWorker           *backup.BackupWorker
 	restoreWorker          *backup.RestoreWorker

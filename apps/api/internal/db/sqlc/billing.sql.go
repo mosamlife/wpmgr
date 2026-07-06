@@ -172,6 +172,27 @@ func (q *Queries) GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUI
 	return i, err
 }
 
+const getTenantSuspension = `-- name: GetTenantSuspension :one
+SELECT suspended_at, suspended_reason
+FROM tenants
+WHERE id = $1
+`
+
+type GetTenantSuspensionRow struct {
+	SuspendedAt     pgtype.Timestamptz `json:"suspended_at"`
+	SuspendedReason *string            `json:"suspended_reason"`
+}
+
+// M16 Phase C1 — the per-request suspension gate's (internal/billing's
+// SuspensionGate, wired on the tenant-scoped /api/v1 group) lightweight read.
+// tenants carries no RLS — bare pool.
+func (q *Queries) GetTenantSuspension(ctx context.Context, tenantID uuid.UUID) (GetTenantSuspensionRow, error) {
+	row := q.db.QueryRow(ctx, getTenantSuspension, tenantID)
+	var i GetTenantSuspensionRow
+	err := row.Scan(&i.SuspendedAt, &i.SuspendedReason)
+	return i, err
+}
+
 const insertBillingEvent = `-- name: InsertBillingEvent :one
 
 INSERT INTO billing_events (

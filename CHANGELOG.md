@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.21] - 2026-07-06
+
+### Added
+
+- A superadmin billing admin panel (behind the same off-by-default hosted flag): an accounts overview with plan, usage-versus-limit, and payment status; a per-account detail screen with a full activity timeline; a revenue overview; and operator controls to comp an account, adjust per-account limits, extend a grace period, force a billing state, or suspend and restore access, each requiring a reason and recorded in the audit log. Self-hosted installations are unaffected; no user-facing change in this release.
+
 ## [0.61.20] - 2026-07-06
 
 ### Changed
