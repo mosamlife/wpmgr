@@ -1,10 +1,13 @@
 import type { AuditEntry } from "@wpmgr/api";
 
-import { formatBytes, relativeTime } from "@/lib/utils";
+import { cn, formatBytes, relativeTime } from "@/lib/utils";
 import { DefinitionList, type KvRowProps } from "@/components/shared/definition-list";
 
 import {
   formatClockTime,
+  formatDeliveryStatus,
+  humanizeDeliveryReason,
+  humanizeDeliveryStatus,
   humanizeKey,
   humanizeReason,
   humanizeTargetType,
@@ -20,7 +23,17 @@ import {
 
 // Fields already surfaced elsewhere in the row (path in the target slot,
 // reason in the "why" callout) or too internal to repeat verbatim here.
-const HANDLED_KEYS = new Set(["path", "reason"]);
+// email_reason/webhook_reason are folded into their paired email_status/
+// webhook_status row (see DELIVERY_STATUS_REASON_KEYS below) instead of
+// rendering as their own separate line.
+const HANDLED_KEYS = new Set(["path", "reason", "email_reason", "webhook_reason"]);
+
+// Maps a delivery-status metadata key to the reason key that, when present,
+// explains a non-"sent" outcome.
+const DELIVERY_STATUS_REASON_KEYS: Record<string, string> = {
+  email_status: "email_reason",
+  webhook_status: "webhook_reason",
+};
 
 export function AuditEntryDetail({ entry }: { entry: AuditEntry }) {
   const denied = entry.action.endsWith(".denied");
@@ -31,11 +44,25 @@ export function AuditEntryDetail({ entry }: { entry: AuditEntry }) {
     ([key]) => !HANDLED_KEYS.has(key),
   );
 
-  const metaRows: KvRowProps[] = metaEntries.map(([key, value]) => ({
-    label: humanizeKey(key),
-    value: formatMetaValue(key, value),
-    mono: key.endsWith("_id") || key === "ip" || key === "user_agent",
-  }));
+  const metaRows: KvRowProps[] = metaEntries.map(([key, value]) => {
+    const reasonKey = DELIVERY_STATUS_REASON_KEYS[key];
+    if (reasonKey && typeof value === "string") {
+      return {
+        label: humanizeKey(key),
+        value: (
+          <DeliveryStatusValue
+            status={value}
+            reason={metaString(entry.metadata, reasonKey)}
+          />
+        ),
+      };
+    }
+    return {
+      label: humanizeKey(key),
+      value: formatMetaValue(key, value),
+      mono: key.endsWith("_id") || key === "ip" || key === "user_agent",
+    };
+  });
 
   return (
     <div className="space-y-3 border-t border-border bg-muted/20 px-4 py-3 text-sm">
@@ -69,6 +96,51 @@ export function AuditEntryDetail({ entry }: { entry: AuditEntry }) {
         ]}
       />
     </div>
+  );
+}
+
+// Tone for the email_status/webhook_status pill: success for "sent",
+// destructive for "failed", and the quiet muted default for "skipped" (and
+// any future/unknown status code) — a skip isn't an error, so it shouldn't
+// read as one.
+const DELIVERY_STATUS_TONE: Record<string, string> = {
+  sent: "bg-success-subtle text-success-subtle-fg",
+  failed: "bg-destructive-subtle text-destructive-subtle-fg",
+};
+const DELIVERY_STATUS_DEFAULT_TONE = "bg-muted text-muted-foreground";
+
+/** Renders an email_status/webhook_status value as a colored pill, with the
+ * paired reason (when the outcome isn't "sent") as plain text alongside it —
+ * e.g. a "Skipped" pill next to "(SMTP not configured)". Replaces the old
+ * "Emailed: Yes" line, which asserted delivery even when it was skipped or
+ * failed. */
+function DeliveryStatusValue({
+  status,
+  reason,
+}: {
+  status: string;
+  reason: string | null;
+}) {
+  const tone = DELIVERY_STATUS_TONE[status] ?? DELIVERY_STATUS_DEFAULT_TONE;
+  return (
+    <span
+      className="inline-flex flex-wrap items-center gap-1.5"
+      title={formatDeliveryStatus(status, reason)}
+    >
+      <span
+        className={cn(
+          "inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[11px] font-medium",
+          tone,
+        )}
+      >
+        {humanizeDeliveryStatus(status)}
+      </span>
+      {status !== "sent" && reason ? (
+        <span className="text-xs text-muted-foreground">
+          ({humanizeDeliveryReason(reason)})
+        </span>
+      ) : null}
+    </span>
   );
 }
 

@@ -20,15 +20,40 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 )
 
-// Mailer sends an alert email to recipients. An interface so the evaluator can
-// be tested with a stub sink and the SMTP transport stays swappable.
-type Mailer interface {
-	Send(ctx context.Context, recipients []string, subject, body string) error
+// SendResult is the REAL outcome of one Mailer.Send call — as opposed to
+// merely "recipients were configured" — so callers can record an honest audit
+// trail (GH #144: the uptime alert dispatcher used to record "emailed: true"
+// whenever recipients were configured, even though the send itself was never
+// attempted or had failed).
+type SendResult struct {
+	// Status is one of SendResultSent, SendResultSkipped, or SendResultFailed.
+	Status string
+	// Reason is set whenever Status != SendResultSent: a coarse, ALREADY-
+	// SCRUBBED code/message safe to persist in the audit log (never raw SMTP
+	// host/credential/error detail).
+	Reason string
 }
 
-// SMTPMailer delivers alert emails over the self-host SMTP relay via go-mail
-// (ADR-029). When SMTP is unconfigured it is replaced by NoopMailer in wiring;
-// this type assumes a configured host. SMTP credentials are NEVER logged.
+// SendResult.Status values.
+const (
+	SendResultSent    = "sent"
+	SendResultSkipped = "skipped"
+	SendResultFailed  = "failed"
+)
+
+// Mailer sends an alert email to recipients and reports the real delivery
+// outcome. An interface so the evaluator can be tested with a stub sink and
+// the SMTP transport stays swappable.
+type Mailer interface {
+	Send(ctx context.Context, recipients []string, subject, body string) (SendResult, error)
+}
+
+// SMTPMailer delivers email over a boot-time-configured SMTP relay via go-mail
+// (ADR-029). It is retained for the sharing/invitation legacy env-SMTP wiring
+// (cmd/wpmgr/main.go) — it is NOT used for uptime/security alerts, which
+// resolve their transport per-send from the DB-configured SMTP via
+// internal/mailer.Service (see cmd/wpmgr/uptime_mailer.go, GH #144). SMTP
+// credentials are NEVER logged.
 type SMTPMailer struct {
 	cfg    config.SMTPConfig
 	logger *slog.Logger
@@ -79,29 +104,6 @@ func (m *SMTPMailer) Send(ctx context.Context, recipients []string, subject, bod
 	if err := client.DialAndSendWithContext(ctx, msg); err != nil {
 		return fmt.Errorf("smtp send: %w", err)
 	}
-	return nil
-}
-
-// NoopMailer is used when SMTP is unconfigured: email alerts log and no-op so
-// webhook alerts still fire.
-type NoopMailer struct{ logger *slog.Logger }
-
-// NewNoopMailer builds a NoopMailer.
-func NewNoopMailer(logger *slog.Logger) *NoopMailer {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &NoopMailer{logger: logger}
-}
-
-// Send logs that the email was skipped (no recipients are leaked at info level
-// beyond their count).
-func (m *NoopMailer) Send(_ context.Context, recipients []string, subject, _ string) error {
-	if len(recipients) == 0 {
-		return nil
-	}
-	m.logger.Info("smtp not configured: alert email skipped",
-		slog.Int("recipients", len(recipients)), slog.String("subject", subject))
 	return nil
 }
 
@@ -166,4 +168,25 @@ func (p *SSRFWebhookPoster) Post(ctx context.Context, url, secret string, payloa
 		return fmt.Errorf("webhook endpoint returned status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// classifyWebhookError maps a Post error onto a coarse, stable reason code
+// safe to persist in the audit log: NEVER the endpoint's response body, and
+// deliberately not the raw error text either (which can echo the resolved
+// destination host/IP from the SSRF-hardened dialer).
+func classifyWebhookError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "returned status"):
+		return "webhook_non_2xx_response"
+	case strings.Contains(msg, "marshal webhook payload"):
+		return "webhook_payload_marshal_failed"
+	case strings.Contains(msg, "build webhook request"):
+		return "webhook_request_build_failed"
+	default:
+		return "webhook_transport_failed"
+	}
 }

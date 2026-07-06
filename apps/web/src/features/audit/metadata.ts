@@ -47,6 +47,55 @@ export function humanizeTargetType(targetType: string): string {
   return humanizeKey(targetType.replace(/_/g, " "));
 }
 
+// ---------------------------------------------------------------------------
+// Delivery status (uptime.alert.sent's email_status/webhook_status metadata)
+// ---------------------------------------------------------------------------
+//
+// New rows carry an honest email_status/webhook_status ("sent"/"skipped"/
+// "failed") plus a reason code when the outcome isn't "sent" — replacing the
+// old bare "emailed"/"webhooked" booleans that always read "Yes" whether or
+// not delivery actually happened. Historical rows still have the old
+// booleans and keep rendering through the generic formatMetaValue path in
+// audit-detail.tsx; this section only covers the new keys.
+
+const DELIVERY_STATUS_WORDS: Record<string, string> = {
+  sent: "Sent",
+  skipped: "Skipped",
+  failed: "Failed",
+};
+
+/** Human label for an email_status/webhook_status code; unknown codes fall
+ * back to sentence case rather than a raw lowercase token. */
+export function humanizeDeliveryStatus(status: string): string {
+  return DELIVERY_STATUS_WORDS[status] ?? humanizeKey(status);
+}
+
+const DELIVERY_REASON_LABELS: Record<string, string> = {
+  smtp_not_configured: "SMTP not configured",
+  no_recipients: "No recipients",
+  no_recipients_configured: "No recipients",
+  resolve_smtp: "SMTP lookup failed",
+};
+
+/** Human label for an email_reason/webhook_reason code; an unknown code
+ * passes through unchanged (the control plane already scrubs raw transport
+ * errors before they reach audit metadata). */
+export function humanizeDeliveryReason(reason: string): string {
+  return DELIVERY_REASON_LABELS[reason] ?? reason;
+}
+
+/**
+ * Full plain-text status line for a delivery outcome, e.g. "Sent",
+ * "Skipped (SMTP not configured)", "Failed (SMTP lookup failed)". Used as
+ * the rendered row's title/tooltip; the on-screen value additionally colors
+ * the leading word with a status pill (see audit-detail.tsx).
+ */
+export function formatDeliveryStatus(status: string, reason: string | null): string {
+  const word = humanizeDeliveryStatus(status);
+  if (status === "sent" || !reason) return word;
+  return `${word} (${humanizeDeliveryReason(reason)})`;
+}
+
 /** Absolute local clock time (HH:MM:SS) for a past-day timestamp (point 7:
  * only "today" uses a relative label; anything in an already-labeled day
  * bucket shows an unambiguous absolute time instead). */

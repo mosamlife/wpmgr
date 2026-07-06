@@ -235,7 +235,11 @@ const ACTION_LABELS: Record<string, string> = {
   "backup.schedule.changed": "Changed backup schedule",
 
   // Uptime & alerts
-  "uptime.alert.sent": "Sent downtime alert",
+  // Deliberately doesn't assert "Sent" — the row's email_status/webhook_status
+  // metadata (rendered in audit-detail.tsx) carries the actual sent/skipped/
+  // failed truth per channel; this action fires for down, recovery, AND
+  // security-event alerts alike.
+  "uptime.alert.sent": "Downtime alert",
   "alert.config.changed": "Changed alert settings",
 };
 

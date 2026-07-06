@@ -34,13 +34,13 @@ type countingMailer struct {
 	recipients [][]string
 }
 
-func (m *countingMailer) Send(_ context.Context, recipients []string, _, _ string) error {
+func (m *countingMailer) Send(_ context.Context, recipients []string, _, _ string) (uptime.SendResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
 	cp := append([]string(nil), recipients...)
 	m.recipients = append(m.recipients, cp)
-	return nil
+	return uptime.SendResult{Status: uptime.SendResultSent}, nil
 }
 
 // nameLookup is a static SiteLookup for the probe worker.

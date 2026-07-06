@@ -72,18 +72,28 @@ func Evaluate(prev AlertState, up bool, threshold int, now time.Time) Transition
 	return t
 }
 
+// auditSink is the narrow slice of *audit.Recorder the Dispatcher needs. An
+// interface so Fire/FireSecurityEvent are unit-testable with a stub sink
+// instead of a live Postgres pool.
+type auditSink interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
+}
+
 // Dispatcher delivers fired alerts to a tenant's configured channels (email +
-// webhook) and records an audit event. Both channels are best-effort and
-// independent: one failing is logged but does not block the other.
+// webhook) and records an audit event carrying the REAL delivery outcome of
+// each channel (GH #144 — the audit trail used to record "emailed"/"webhooked"
+// as "a recipient/URL was configured", not "the send actually succeeded").
+// Both channels are best-effort and independent: one failing is logged but
+// does not block the other.
 type Dispatcher struct {
 	mailer  Mailer
 	webhook WebhookPoster
-	audit   *audit.Recorder
+	audit   auditSink
 	logger  *slog.Logger
 }
 
 // NewDispatcher builds an alert Dispatcher.
-func NewDispatcher(mailer Mailer, webhook WebhookPoster, rec *audit.Recorder, logger *slog.Logger) *Dispatcher {
+func NewDispatcher(mailer Mailer, webhook WebhookPoster, rec auditSink, logger *slog.Logger) *Dispatcher {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -91,37 +101,77 @@ func NewDispatcher(mailer Mailer, webhook WebhookPoster, rec *audit.Recorder, lo
 }
 
 // Fire delivers one alert to the tenant's channels and records it in the audit
-// log. Returns nil even when a channel errors (delivery is best-effort and the
-// transition has already been recorded by the caller); errors are logged.
+// log WITH the real delivery outcome of each channel (GH #144). Returns nil
+// even when a channel errors (delivery is best-effort and the transition has
+// already been recorded by the caller); errors are logged.
 func (d *Dispatcher) Fire(ctx context.Context, cfg AlertConfig, alert Alert) {
 	subject, body := renderEmail(alert)
-	if d.mailer != nil && len(cfg.EmailRecipients) > 0 {
-		if err := d.mailer.Send(ctx, cfg.EmailRecipients, subject, body); err != nil {
-			d.logger.Warn("uptime alert email failed",
-				slog.String("site_id", alert.SiteID.String()),
-				slog.String("kind", string(alert.Kind)),
-				slog.Any("error", err))
-		}
+	emailResult, emailErr := d.sendEmail(ctx, cfg.EmailRecipients, subject, body)
+	if emailErr != nil {
+		d.logger.Warn("uptime alert email failed",
+			slog.String("site_id", alert.SiteID.String()),
+			slog.String("kind", string(alert.Kind)),
+			slog.Any("error", emailErr))
 	}
-	if d.webhook != nil && cfg.WebhookURL != "" {
-		payload := WebhookPayload{
-			Event:      "uptime." + string(alert.Kind),
-			TenantID:   alert.TenantID.String(),
-			SiteID:     alert.SiteID.String(),
-			SiteURL:    alert.SiteURL,
-			SiteName:   alert.SiteName,
-			HTTPStatus: alert.HTTPStatus,
-			Error:      alert.Error,
-			FiredAt:    alert.FiredAt,
-		}
-		if err := d.webhook.Post(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload); err != nil {
-			d.logger.Warn("uptime alert webhook failed",
-				slog.String("site_id", alert.SiteID.String()),
-				slog.String("kind", string(alert.Kind)),
-				slog.Any("error", err))
-		}
+
+	payload := WebhookPayload{
+		Event:      "uptime." + string(alert.Kind),
+		TenantID:   alert.TenantID.String(),
+		SiteID:     alert.SiteID.String(),
+		SiteURL:    alert.SiteURL,
+		SiteName:   alert.SiteName,
+		HTTPStatus: alert.HTTPStatus,
+		Error:      alert.Error,
+		FiredAt:    alert.FiredAt,
 	}
-	d.recordAudit(ctx, alert, len(cfg.EmailRecipients) > 0, cfg.WebhookURL != "")
+	webhookResult, webhookErr := d.sendWebhook(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload)
+	if webhookErr != nil {
+		d.logger.Warn("uptime alert webhook failed",
+			slog.String("site_id", alert.SiteID.String()),
+			slog.String("kind", string(alert.Kind)),
+			slog.Any("error", webhookErr))
+	}
+
+	d.recordAudit(ctx, alert, emailResult, webhookResult)
+}
+
+// sendEmail sends the alert email over the dispatcher's mailer (when one is
+// wired and recipients are configured) and returns the REAL delivery outcome
+// — never "sent" merely because recipients exist (GH #144). The returned error
+// is the raw, unscrubbed error for server-side logging only; SendResult.Reason
+// is always safe to persist (the Mailer implementation is responsible for
+// scrubbing it, e.g. internal/mailer.Service via scrubSMTPError).
+func (d *Dispatcher) sendEmail(ctx context.Context, recipients []string, subject, body string) (SendResult, error) {
+	if d.mailer == nil || len(recipients) == 0 {
+		return SendResult{Status: SendResultSkipped, Reason: "no_recipients_configured"}, nil
+	}
+	res, err := d.mailer.Send(ctx, recipients, subject, body)
+	if err != nil {
+		if res.Status == "" {
+			res.Status = SendResultFailed
+		}
+		if res.Reason == "" {
+			res.Reason = "send_failed"
+		}
+		return res, err
+	}
+	if res.Status == "" {
+		res.Status = SendResultSent
+	}
+	return res, nil
+}
+
+// sendWebhook POSTs the alert webhook (when configured) and returns the REAL
+// delivery outcome, with a coarse/scrubbed reason on failure that NEVER
+// includes the endpoint's response body.
+func (d *Dispatcher) sendWebhook(ctx context.Context, url, secret string, payload WebhookPayload) (SendResult, error) {
+	if d.webhook == nil || url == "" {
+		return SendResult{Status: SendResultSkipped, Reason: "webhook_not_configured"}, nil
+	}
+	if err := d.webhook.Post(ctx, url, secret, payload); err != nil {
+		return SendResult{Status: SendResultFailed, Reason: classifyWebhookError(err)}, err
+	}
+	return SendResult{Status: SendResultSent}, nil
 }
 
 // FireSecurityEvent delivers a high-severity ADR-037 activity-log event to the
@@ -141,69 +191,84 @@ func (d *Dispatcher) FireSecurityEvent(ctx context.Context, cfg AlertConfig, ev 
 	body := fmt.Sprintf("Security event on %s: %s\n\nEvent: %s\nSeverity: %s\nDetected at: %s",
 		name, ev.Summary, ev.EventType, ev.Severity, ev.FiredAt.UTC().Format(time.RFC3339))
 
-	if d.mailer != nil && len(cfg.EmailRecipients) > 0 {
-		if err := d.mailer.Send(ctx, cfg.EmailRecipients, subject, body); err != nil {
-			d.logger.Warn("security alert email failed",
-				slog.String("site_id", ev.SiteID.String()),
-				slog.String("event_type", ev.EventType),
-				slog.Any("error", err))
-		}
+	emailResult, emailErr := d.sendEmail(ctx, cfg.EmailRecipients, subject, body)
+	if emailErr != nil {
+		d.logger.Warn("security alert email failed",
+			slog.String("site_id", ev.SiteID.String()),
+			slog.String("event_type", ev.EventType),
+			slog.Any("error", emailErr))
 	}
-	if d.webhook != nil && cfg.WebhookURL != "" {
-		payload := WebhookPayload{
-			Event:    "security." + ev.EventType,
-			TenantID: ev.TenantID.String(),
-			SiteID:   ev.SiteID.String(),
-			SiteURL:  ev.SiteURL,
-			SiteName: ev.SiteName,
-			Error:    ev.Summary,
-			FiredAt:  ev.FiredAt,
-		}
-		if err := d.webhook.Post(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload); err != nil {
-			d.logger.Warn("security alert webhook failed",
-				slog.String("site_id", ev.SiteID.String()),
-				slog.String("event_type", ev.EventType),
-				slog.Any("error", err))
-		}
+
+	payload := WebhookPayload{
+		Event:    "security." + ev.EventType,
+		TenantID: ev.TenantID.String(),
+		SiteID:   ev.SiteID.String(),
+		SiteURL:  ev.SiteURL,
+		SiteName: ev.SiteName,
+		Error:    ev.Summary,
+		FiredAt:  ev.FiredAt,
 	}
+	webhookResult, webhookErr := d.sendWebhook(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload)
+	if webhookErr != nil {
+		d.logger.Warn("security alert webhook failed",
+			slog.String("site_id", ev.SiteID.String()),
+			slog.String("event_type", ev.EventType),
+			slog.Any("error", webhookErr))
+	}
+
 	if d.audit != nil {
+		meta := channelMetadata(emailResult, webhookResult)
+		meta["kind"] = string(AlertSecurity)
+		meta["event_type"] = ev.EventType
+		meta["severity"] = ev.Severity
+		meta["summary"] = ev.Summary
+		meta["site_url"] = ev.SiteURL
 		_, _ = d.audit.Record(ctx, audit.Event{
 			TenantID:   ev.TenantID,
 			ActorType:  audit.ActorSystem,
 			Action:     ActionAlertSent,
 			TargetType: "site",
 			TargetID:   ev.SiteID.String(),
-			Metadata: map[string]any{
-				"kind":       string(AlertSecurity),
-				"event_type": ev.EventType,
-				"severity":   ev.Severity,
-				"summary":    ev.Summary,
-				"site_url":   ev.SiteURL,
-				"emailed":    len(cfg.EmailRecipients) > 0,
-				"webhooked":  cfg.WebhookURL != "",
-			},
+			Metadata:   meta,
 		})
 	}
 }
 
-func (d *Dispatcher) recordAudit(ctx context.Context, alert Alert, emailed, webhooked bool) {
+// channelMetadata builds the shared email/webhook outcome fields persisted on
+// every alert audit row: "email_status"/"webhook_status" always, plus
+// "email_reason"/"webhook_reason" ONLY when the corresponding channel did not
+// succeed (both are coarse, already-scrubbed codes — never raw SMTP/webhook
+// error detail, credentials, or response bodies).
+func channelMetadata(email, webhook SendResult) map[string]any {
+	meta := map[string]any{
+		"email_status":   email.Status,
+		"webhook_status": webhook.Status,
+	}
+	if email.Status != SendResultSent && email.Reason != "" {
+		meta["email_reason"] = email.Reason
+	}
+	if webhook.Status != SendResultSent && webhook.Reason != "" {
+		meta["webhook_reason"] = webhook.Reason
+	}
+	return meta
+}
+
+func (d *Dispatcher) recordAudit(ctx context.Context, alert Alert, email, webhook SendResult) {
 	if d.audit == nil {
 		return
 	}
+	meta := channelMetadata(email, webhook)
+	meta["kind"] = string(alert.Kind)
+	meta["site_url"] = alert.SiteURL
+	meta["http_status"] = alert.HTTPStatus
+	meta["error"] = alert.Error
 	_, _ = d.audit.Record(ctx, audit.Event{
 		TenantID:   alert.TenantID,
 		ActorType:  audit.ActorSystem,
 		Action:     ActionAlertSent,
 		TargetType: "site",
 		TargetID:   alert.SiteID.String(),
-		Metadata: map[string]any{
-			"kind":        string(alert.Kind),
-			"site_url":    alert.SiteURL,
-			"http_status": alert.HTTPStatus,
-			"error":       alert.Error,
-			"emailed":     emailed,
-			"webhooked":   webhooked,
-		},
+		Metadata:   meta,
 	})
 }
 
