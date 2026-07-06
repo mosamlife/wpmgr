@@ -9,12 +9,13 @@ import {
   ACCOUNT_STATUS_LABEL,
   METER_TONE_TEXT_CLASS,
   accountDisplayStatus,
+  formatMeterValue,
   isOverCap,
   meterBarPercent,
   meterPercent,
   meterTone,
+  type AccountMeterRow,
 } from "./admin-accounts-format";
-import type { AdminAccountMeter, AdminAccountStorageUsage } from "./use-admin-accounts";
 
 // Shared, presentation-only building blocks for the Accounts table, the
 // account detail page, and the Revenue plan-distribution table. Kept
@@ -28,7 +29,7 @@ import type { AdminAccountMeter, AdminAccountStorageUsage } from "./use-admin-ac
 export function AccountStatusBadge({
   account,
 }: {
-  account: { plan_status: string; suspended: boolean };
+  account: { plan_status: string; suspended_at?: string | null };
 }) {
   const status = accountDisplayStatus(account);
   return (
@@ -103,8 +104,22 @@ export function SitesMeterChip({ used, cap }: { used: number; cap: number }) {
   );
 }
 
-export function StorageMeterChip({ storage }: { storage: AdminAccountStorageUsage }) {
-  const tone = meterTone(meterPercent(storage.used_bytes, storage.cap_bytes));
+/**
+ * `usedBytes`/`capBytes` map directly to the wire's flat
+ * `storage_used_bytes_approx`/`storage_cap_bytes` fields (there is no nested
+ * `storage` object, and no per-account `approximate` flag — the metric is
+ * ALWAYS an approximation, so the "~" prefix and tooltip are unconditional).
+ * `capBytes <= 0` means "no CP-managed cap to approach" (free tier,
+ * BYO-storage only), not zero capacity.
+ */
+export function StorageMeterChip({
+  usedBytes,
+  capBytes,
+}: {
+  usedBytes: number;
+  capBytes: number;
+}) {
+  const tone = meterTone(meterPercent(usedBytes, capBytes));
   const chip = (
     <span
       className={cn(
@@ -112,12 +127,10 @@ export function StorageMeterChip({ storage }: { storage: AdminAccountStorageUsag
         CHIP_TONE_CLASS[tone],
       )}
     >
-      {storage.approximate ? <span aria-hidden="true">~</span> : null}
-      {formatBytes(storage.used_bytes)} / {formatBytes(storage.cap_bytes)}
+      <span aria-hidden="true">~</span>
+      {formatBytes(usedBytes)} / {capBytes > 0 ? formatBytes(capBytes) : "no cap"}
     </span>
   );
-
-  if (!storage.approximate) return chip;
 
   return (
     <Tooltip content="Storage usage is computed periodically, not live.">
@@ -134,7 +147,7 @@ export function StorageMeterChip({ storage }: { storage: AdminAccountStorageUsag
 // "over cap" note that Phase B's UsageMeterList doesn't need.
 // ---------------------------------------------------------------------------
 
-export function AdminMeterList({ meters }: { meters: AdminAccountMeter[] }) {
+export function AdminMeterList({ meters }: { meters: AccountMeterRow[] }) {
   if (meters.length === 0) {
     return <p className="text-sm text-muted-foreground">No usage data.</p>;
   }
@@ -164,7 +177,8 @@ export function AdminMeterList({ meters }: { meters: AdminAccountMeter[] }) {
                 )}
               >
                 {meter.approximate ? "~" : ""}
-                {meter.used} / {meter.cap}
+                {formatMeterValue(meter.used, meter.unit)} /{" "}
+                {meter.cap > 0 ? formatMeterValue(meter.cap, meter.unit) : "no cap"}
               </span>
             </div>
             <div style={barStyle}>
@@ -175,7 +189,7 @@ export function AdminMeterList({ meters }: { meters: AdminAccountMeter[] }) {
             </div>
             {over ? (
               <p className="text-xs text-destructive">
-                Over cap by {(meter.used - meter.cap).toLocaleString()}.
+                Over cap by {formatMeterValue(meter.used - meter.cap, meter.unit)}.
               </p>
             ) : null}
           </div>

@@ -22,117 +22,124 @@ import { buildAccountsQuery, type AdminAccountsFilters } from "./admin-accounts-
 // generated `listAdminAccounts` / `getAdminAccount` / `getAdminRevenue` /
 // `compAdminAccount` etc. (re-exported from packages/openapi-client/src/index.ts)
 // once the SDK regenerates against the landed contract.
-
+//
+// IMPORTANT: the types below MUST track apps/api/internal/admin/billing_dto.go
+// field-for-field (names, nesting, optionality) until these endpoints move
+// into OpenAPI and this file is deleted in favor of a generated client. A
+// prior drift between this file and billing_dto.go (invented nesting like
+// `sites: {used,cap}` instead of the real flat `sites_used`/`sites_cap`,
+// `tiles.past_due`/`tiles.total` instead of `past_due_count`/`accounts_total`)
+// crashed the whole /admin/accounts panel in prod — read billing_dto.go, not
+// memory, before touching this file again. A future task should add
+// /admin/accounts* to packages/openapi/openapi.yaml so the client here is
+// generated instead of hand-rolled.
 // ---------------------------------------------------------------------------
-// Domain types — MUST exactly match the Go handler DTOs (pinned contract).
+// Domain types — wire DTOs only. View-model derivation (usage meters,
+// entitlement display rows, timeline labels) lives in admin-accounts-format.ts
+// alongside its other pure derivation helpers.
 // ---------------------------------------------------------------------------
 
 export interface AdminAccountTiles {
   mrr_cents: number;
   active_subs: number;
-  past_due: number;
-  total: number;
-}
-
-export interface AdminAccountSitesUsage {
-  used: number;
-  cap: number;
-}
-
-export interface AdminAccountStorageUsage {
-  used_bytes: number;
-  cap_bytes: number;
-  approximate: boolean;
+  past_due_count: number;
+  accounts_total: number;
 }
 
 export interface AdminAccountListItem {
   tenant_id: string;
   org_name: string;
-  slug: string;
-  owner_email: string;
+  org_slug: string;
+  owner_email?: string;
   plan: string;
   plan_status: string;
-  suspended: boolean;
+  suspended_at?: string;
   has_overrides: boolean;
   mrr_cents: number;
-  sites: AdminAccountSitesUsage;
-  storage: AdminAccountStorageUsage;
+  sites_used: number;
+  sites_cap: number;
+  storage_used_bytes_approx: number;
+  storage_cap_bytes: number;
+  near_limit: boolean;
   created_at: string;
-  last_activity_at: string | null;
+  last_activity?: string;
 }
 
 export interface AdminAccountsListResponse {
   tiles: AdminAccountTiles;
-  accounts: AdminAccountListItem[];
+  items: AdminAccountListItem[];
   total: number;
+  limit: number;
+  offset: number;
 }
 
-export interface AdminAccountHeader {
-  org_name: string;
-  slug: string;
-  tenant_id: string;
-  plan: string;
-  plan_status: string;
-  suspended_at: string | null;
-  mrr_cents: number;
-  created_at: string;
-  owner_email: string;
+export interface AdminAccountEntitlementValues {
+  probe_interval_floor_sec: number;
+  backup_cadence_floor_seconds: number;
+  incremental_backups: boolean;
+  client_portal: boolean;
 }
 
-export interface AdminAccountMeter {
-  key: string;
-  label: string;
-  used: number;
-  cap: number;
-  approximate?: boolean;
-}
-
-export interface AdminAccountEntitlement {
-  label: string;
-  value: string;
+export interface AdminAccountUsage {
+  sites: { used: number; cap: number };
+  storage_bytes_approx: { used: number; cap: number };
+  seats_used: number;
+  restore_volume_bytes_approx: number;
+  entitlements: AdminAccountEntitlementValues;
 }
 
 export interface AdminAccountSubscription {
-  provider: string | null;
-  provider_customer_id: string | null;
-  provider_subscription_id: string | null;
-  stripe_dashboard_base: string | null;
-  current_period_end: string | null;
+  provider?: string;
+  provider_customer_id?: string;
+  provider_subscription_id?: string;
+  dashboard_url?: string;
+  current_period_end?: string;
   cancel_at_period_end: boolean;
-  grace_until: string | null;
-  comp_reason: string | null;
-  last_event_at: string | null;
-  webhook_stale: boolean;
+  grace_until?: string;
+  comp_reason?: string;
+  last_billing_event_at?: string;
+  stale: boolean;
 }
 
 export interface AdminAccountTimelineEntry {
-  at: string;
+  source: "billing_event" | "audit";
+  occurred_at: string;
   kind: string;
-  label: string;
-  actor: string | null;
-  source: string;
-  reason?: string;
+  actor_type?: string;
+  actor_id?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AdminAccountMember {
+  id: string;
   email: string;
   name: string;
   role: string;
   status: string;
   email_verified: boolean;
-  last_login_at: string | null;
+  last_login_at?: string;
+  member_since: string;
 }
 
 export interface AdminAccountSite {
+  id: string;
   url: string;
   connection_state: string;
   created_at: string;
 }
 
 export interface AdminAccountDetail {
-  header: AdminAccountHeader;
-  meters: AdminAccountMeter[];
-  entitlements: AdminAccountEntitlement[];
+  tenant_id: string;
+  org_name: string;
+  org_slug: string;
+  owner_email?: string;
+  plan: string;
+  plan_status: string;
+  mrr_cents: number;
+  created_at: string;
+  suspended_at?: string;
+  suspended_reason?: string;
+  usage: AdminAccountUsage;
   subscription: AdminAccountSubscription;
   timeline: AdminAccountTimelineEntry[];
   members: AdminAccountMember[];
@@ -141,8 +148,9 @@ export interface AdminAccountDetail {
 
 export interface AdminRevenueTiles {
   mrr_cents: number;
+  mrr_past_due_cents: number;
   active_subs: number;
-  trialing: number;
+  trialing_subs: number;
   past_due_count: number;
   past_due_at_risk_cents: number;
   new_this_month: number;
@@ -152,34 +160,42 @@ export interface AdminRevenueTiles {
 export interface AdminPlanDistributionRow {
   plan: string;
   count: number;
-  mrr_share_cents: number;
-  comped_value_cents?: number;
+  mrr_cents: number;
+}
+
+export interface AdminCompedRow {
+  count: number;
+  hypothetical_value_cents: number;
 }
 
 export interface AdminPastDueRow {
   tenant_id: string;
   org_name: string;
+  org_slug: string;
+  owner_email?: string;
   amount_cents: number;
   days_past_due: number;
-  grace_until: string | null;
-  last_failed_at: string | null;
-  owner_email: string;
+  grace_until?: string;
+  last_payment_failed_at?: string;
 }
 
 export interface AdminRevenueEvent {
-  at: string;
-  org_name: string;
+  id: string;
+  occurred_at: string;
+  org_name?: string;
+  org_slug?: string;
+  tenant_id?: string;
   kind: string;
-  source: string;
+  provider: string;
 }
 
 export interface AdminRevenueResponse {
   tiles: AdminRevenueTiles;
   plan_distribution: AdminPlanDistributionRow[];
+  comped: AdminCompedRow;
   past_due: AdminPastDueRow[];
   recent_events: AdminRevenueEvent[];
-  last_webhook_at: string | null;
-  webhook_stale: boolean;
+  last_webhook_received_at?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -26,9 +26,15 @@ import {
   useAdminSuspendAccount,
   useAdminRestoreAccount,
   useAdminForceBillingState,
-  type AdminAccountDetail,
-  type AdminAccountMeter,
+  type AdminAccountUsage,
+  type AdminAccountTimelineEntry,
 } from "./use-admin-accounts";
+import {
+  buildAccountMeters,
+  bytesToWholeGB,
+  timelineActorLabel,
+  type AccountMeterRow,
+} from "./admin-accounts-format";
 
 // M16 Phase C1 — manual controls for a single account. Every mutation here
 // requires an operator-supplied reason (superadmin audit trail). Dialogs are
@@ -244,7 +250,7 @@ const OVERRIDE_ROWS: readonly OverrideRowConfig[] = [
 
 /** Best-effort lookup of "who last changed this override, and when" from the generic timeline — the pinned contract has no dedicated overrides-history field, so this degrades to nothing shown if the backend's event kind naming doesn't match. */
 function findLastOverrideEvent(
-  timeline: AdminAccountDetail["timeline"],
+  timeline: AdminAccountTimelineEntry[],
   field: string,
 ) {
   return timeline.find(
@@ -254,7 +260,7 @@ function findLastOverrideEvent(
   ) ?? timeline.find((e) => e.kind.toLowerCase().includes("override"));
 }
 
-function meterFor(meters: AdminAccountMeter[], key: string) {
+function meterFor(meters: AccountMeterRow[], key: string) {
   return meters.find((m) => m.key === key);
 }
 
@@ -262,17 +268,20 @@ export function OverridesEditorDialog({
   open,
   onClose,
   tenantId,
-  detail,
+  usage,
+  timeline,
 }: {
   open: boolean;
   onClose: () => void;
   tenantId: string;
-  detail: AdminAccountDetail;
+  usage: AdminAccountUsage;
+  timeline: AdminAccountTimelineEntry[];
 }) {
   const titleId = useId();
   const [values, setValues] = useState<Record<string, string>>({});
   const mutation = useAdminSetOverrides(tenantId);
   const [reason, setReason] = useState("");
+  const meters = buildAccountMeters(usage);
 
   if (useJustOpened(open)) {
     setValues({});
@@ -335,17 +344,25 @@ export function OverridesEditorDialog({
 
           <div className="space-y-3">
             {OVERRIDE_ROWS.map((row) => {
-              const meter = meterFor(detail.meters, row.meterKey);
+              const meter = meterFor(meters, row.meterKey);
               const touched = row.field in values;
               const cleared = touched && values[row.field] === "";
-              const lastEvent = findLastOverrideEvent(detail.timeline, row.field);
+              const lastEvent = findLastOverrideEvent(timeline, row.field);
+              // The storage_gb override is GB-denominated on the wire, but its
+              // usage meter (usage.storage_bytes_approx) is bytes — convert
+              // for display so "Effective" reads in the same unit as the input.
+              const effective = meter
+                ? row.field === "storage_gb"
+                  ? `${bytesToWholeGB(meter.cap).toLocaleString()} GB`
+                  : meter.cap.toLocaleString()
+                : "–";
 
               return (
                 <div key={row.field} className="rounded-md border border-border p-3">
                   <div className="flex items-center justify-between gap-2">
                     <Label htmlFor={`override-${row.field}`}>{row.label}</Label>
                     <span className="text-xs text-muted-foreground">
-                      Effective: {meter ? meter.cap.toLocaleString() : "–"}
+                      Effective: {effective}
                     </span>
                   </div>
                   <div className="mt-1.5 flex items-center gap-2">
@@ -389,8 +406,8 @@ export function OverridesEditorDialog({
                   </div>
                   {lastEvent ? (
                     <p className="mt-1.5 text-xs text-muted-foreground">
-                      Last set {lastEvent.actor ? `by ${lastEvent.actor} ` : ""}
-                      &middot; {new Date(lastEvent.at).toLocaleString()}
+                      Last set {timelineActorLabel(lastEvent) ? `by ${timelineActorLabel(lastEvent)} ` : ""}
+                      &middot; {new Date(lastEvent.occurred_at).toLocaleString()}
                     </p>
                   ) : null}
                 </div>

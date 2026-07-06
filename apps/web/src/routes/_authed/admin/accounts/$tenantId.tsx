@@ -23,7 +23,15 @@ import {
   AdminMeterList,
   PlanBadge,
 } from "@/features/admin/admin-account-ui";
-import { formatCents } from "@/features/admin/admin-accounts-format";
+import {
+  buildAccountMeters,
+  buildEntitlementRows,
+  formatCents,
+  sortEventsNewestFirst,
+  timelineActorLabel,
+  timelineEntryLabel,
+  timelineReason,
+} from "@/features/admin/admin-accounts-format";
 import {
   CompAccountDialog,
   ExtendGraceDialog,
@@ -87,45 +95,64 @@ function AdminAccountDetailPage() {
     );
   }
 
-  const { header, meters, entitlements, subscription, timeline, members, sites } = data;
-  const isComped = header.plan_status === "comped";
+  const {
+    tenant_id,
+    org_name,
+    org_slug,
+    owner_email,
+    plan,
+    plan_status,
+    mrr_cents,
+    created_at,
+    suspended_at,
+    usage,
+    subscription,
+    timeline,
+    members,
+    sites,
+  } = data;
+  const isComped = plan_status === "comped";
   const hasActiveSubscription =
     subscription.provider_subscription_id != null &&
-    header.plan_status !== "canceled" &&
-    header.plan_status !== "none";
-  const isSuspended = header.suspended_at != null;
+    plan_status !== "canceled" &&
+    plan_status !== "none";
+  const isSuspended = suspended_at != null;
 
-  const timelineNewestFirst = [...timeline].sort(
-    (a, b) => Date.parse(b.at) - Date.parse(a.at),
-  );
+  const meters = buildAccountMeters(usage);
+  const entitlementRows = buildEntitlementRows(usage.entitlements);
+  const timelineNewestFirst = sortEventsNewestFirst(timeline);
 
   return (
     <section className="max-w-4xl space-y-6">
       <PageHeader
-        title={header.org_name}
-        copyable={header.tenant_id}
+        title={org_name}
+        copyable={tenant_id}
         backTo={{ to: "/admin/accounts", label: "Back to Accounts" }}
         badges={
           <>
-            <PlanBadge plan={header.plan} comped={isComped} hasOverrides={false} />
-            <AccountStatusBadge account={{ plan_status: header.plan_status, suspended: isSuspended }} />
+            <PlanBadge plan={plan} comped={isComped} hasOverrides={false} />
+            <AccountStatusBadge account={{ plan_status, suspended_at }} />
           </>
         }
         subline={
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="font-mono text-xs">{header.slug}</span>
+            <span className="font-mono text-xs">{org_slug}</span>
+            {owner_email ? (
+              <>
+                <span aria-hidden="true">&middot;</span>
+                <a href={`mailto:${owner_email}`} className="inline-flex items-center gap-1 hover:underline">
+                  <Mail aria-hidden="true" className="size-3" />
+                  {owner_email}
+                </a>
+              </>
+            ) : null}
             <span aria-hidden="true">&middot;</span>
-            <a href={`mailto:${header.owner_email}`} className="inline-flex items-center gap-1 hover:underline">
-              <Mail aria-hidden="true" className="size-3" />
-              {header.owner_email}
-            </a>
-            <span aria-hidden="true">&middot;</span>
-            <span>MRR {formatCents(header.mrr_cents)}</span>
+            <span>MRR {formatCents(mrr_cents)}</span>
             <span aria-hidden="true">&middot;</span>
             <span>
               Created{" "}
-              <time dateTime={header.created_at} title={new Date(header.created_at).toLocaleString()}>
-                {relativeTime(header.created_at) ?? header.created_at}
+              <time dateTime={created_at} title={new Date(created_at).toLocaleString()}>
+                {relativeTime(created_at) ?? created_at}
               </time>
             </span>
           </div>
@@ -142,16 +169,14 @@ function AdminAccountDetailPage() {
         </CardHeader>
         <CardContent className="space-y-5">
           <AdminMeterList meters={meters} />
-          {entitlements.length > 0 ? (
-            <div className="border-t border-border pt-4">
-              <DefinitionList
-                rows={entitlements.map((e) => ({
-                  label: e.label,
-                  value: e.value || "Not on this plan",
-                }))}
-              />
-            </div>
-          ) : null}
+          <div className="border-t border-border pt-4">
+            <DefinitionList
+              rows={entitlementRows.map((e) => ({
+                label: e.label,
+                value: e.value || "Not on this plan",
+              }))}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -178,7 +203,7 @@ function AdminAccountDetailPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          {subscription.webhook_stale ? (
+          {subscription.stale ? (
             <p
               role="alert"
               className="flex items-center gap-2 rounded-md border border-[var(--color-warning)]/40 bg-warning-subtle px-3 py-2 text-sm text-warning-subtle-fg"
@@ -190,14 +215,14 @@ function AdminAccountDetailPage() {
 
           <DefinitionList
             rows={[
-              { label: "Provider", value: subscription.provider ?? undefined },
+              { label: "Provider", value: subscription.provider },
               {
                 label: "Customer id",
-                copyable: subscription.provider_customer_id ?? undefined,
+                copyable: subscription.provider_customer_id,
               },
               {
                 label: "Subscription id",
-                copyable: subscription.provider_subscription_id ?? undefined,
+                copyable: subscription.provider_subscription_id,
               },
               {
                 label: "Renews",
@@ -217,39 +242,28 @@ function AdminAccountDetailPage() {
               },
               {
                 label: "Comp reason",
-                value: subscription.comp_reason ?? undefined,
+                value: subscription.comp_reason,
               },
               {
                 label: "Last billing event",
-                value: subscription.last_event_at
-                  ? (relativeTime(subscription.last_event_at) ?? subscription.last_event_at)
+                value: subscription.last_billing_event_at
+                  ? (relativeTime(subscription.last_billing_event_at) ?? subscription.last_billing_event_at)
                   : undefined,
               },
             ]}
           />
 
-          {subscription.stripe_dashboard_base && subscription.provider_customer_id ? (
+          {subscription.dashboard_url ? (
             <div className="flex flex-wrap gap-3 border-t border-border pt-3">
               <a
-                href={`${subscription.stripe_dashboard_base}/customers/${subscription.provider_customer_id}`}
+                href={subscription.dashboard_url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-sm text-foreground underline underline-offset-2 hover:no-underline"
               >
-                View customer in Stripe
+                View subscription in Stripe
                 <ExternalLink aria-hidden="true" className="size-3" />
               </a>
-              {subscription.provider_subscription_id ? (
-                <a
-                  href={`${subscription.stripe_dashboard_base}/subscriptions/${subscription.provider_subscription_id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-sm text-foreground underline underline-offset-2 hover:no-underline"
-                >
-                  View subscription in Stripe
-                  <ExternalLink aria-hidden="true" className="size-3" />
-                </a>
-              ) : null}
             </div>
           ) : null}
         </CardContent>
@@ -265,25 +279,31 @@ function AdminAccountDetailPage() {
             <p className="text-sm text-muted-foreground">No events recorded yet.</p>
           ) : (
             <ul className="divide-y divide-border">
-              {timelineNewestFirst.map((entry, i) => (
-                <li key={`${entry.at}-${i}`} className="flex flex-col gap-0.5 py-2.5 text-sm">
-                  <div className="flex flex-wrap items-baseline gap-x-2">
-                    <time
-                      dateTime={entry.at}
-                      title={new Date(entry.at).toLocaleString()}
-                      className="text-xs text-muted-foreground"
-                    >
-                      {relativeTime(entry.at) ?? entry.at}
-                    </time>
-                    <span className="font-medium text-foreground">{entry.label}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {entry.actor ? `${entry.actor} · ` : ""}
-                    {entry.source}
-                    {entry.reason ? ` · ${entry.reason}` : ""}
-                  </p>
-                </li>
-              ))}
+              {timelineNewestFirst.map((entry, i) => {
+                const who = timelineActorLabel(entry);
+                const reason = timelineReason(entry);
+                return (
+                  <li key={`${entry.occurred_at}-${i}`} className="flex flex-col gap-0.5 py-2.5 text-sm">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <time
+                        dateTime={entry.occurred_at}
+                        title={new Date(entry.occurred_at).toLocaleString()}
+                        className="text-xs text-muted-foreground"
+                      >
+                        {relativeTime(entry.occurred_at) ?? entry.occurred_at}
+                      </time>
+                      <span className="font-medium text-foreground">
+                        {timelineEntryLabel(entry.kind)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {who ? `${who} · ` : ""}
+                      {entry.source === "billing_event" ? "Billing" : "Audit"}
+                      {reason ? ` · ${reason}` : ""}
+                    </p>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </CardContent>
@@ -318,7 +338,7 @@ function AdminAccountDetailPage() {
                 </TableRow>
               ) : (
                 members.map((m) => (
-                  <TableRow key={m.email}>
+                  <TableRow key={m.id}>
                     <TableCell className="font-mono text-xs">{m.email}</TableCell>
                     <TableCell className={cn("text-sm", m.role === "owner" && "font-semibold text-foreground")}>
                       {m.role}
@@ -349,7 +369,7 @@ function AdminAccountDetailPage() {
           ) : (
             <ul className="divide-y divide-border text-sm">
               {sites.map((site) => (
-                <li key={site.url} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+                <li key={site.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
                   <a
                     href={site.url}
                     target="_blank"
@@ -401,42 +421,43 @@ function AdminAccountDetailPage() {
       <CompAccountDialog
         open={openDialog === "comp"}
         onClose={() => setOpenDialog(null)}
-        tenantId={header.tenant_id}
+        tenantId={tenant_id}
         hasActiveSubscription={hasActiveSubscription}
       />
       <RevokeCompDialog
         open={openDialog === "revoke-comp"}
         onClose={() => setOpenDialog(null)}
-        tenantId={header.tenant_id}
+        tenantId={tenant_id}
       />
       <OverridesEditorDialog
         open={openDialog === "overrides"}
         onClose={() => setOpenDialog(null)}
-        tenantId={header.tenant_id}
-        detail={data}
+        tenantId={tenant_id}
+        usage={usage}
+        timeline={timeline}
       />
       <ExtendGraceDialog
         open={openDialog === "grace"}
         onClose={() => setOpenDialog(null)}
-        tenantId={header.tenant_id}
+        tenantId={tenant_id}
       />
       <ForceBillingStateDialog
         open={openDialog === "force-state"}
         onClose={() => setOpenDialog(null)}
-        tenantId={header.tenant_id}
-        currentPlan={header.plan}
+        tenantId={tenant_id}
+        currentPlan={plan}
       />
       <SuspendAccountDialog
         open={openDialog === "suspend"}
         onClose={() => setOpenDialog(null)}
-        tenantId={header.tenant_id}
-        orgSlug={header.slug}
+        tenantId={tenant_id}
+        orgSlug={org_slug}
       />
       <RestoreAccountDialog
         open={openDialog === "restore"}
         onClose={() => setOpenDialog(null)}
-        tenantId={header.tenant_id}
-        orgSlug={header.slug}
+        tenantId={tenant_id}
+        orgSlug={org_slug}
       />
     </section>
   );

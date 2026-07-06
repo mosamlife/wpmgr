@@ -174,10 +174,10 @@ function AdminAccountsPage() {
         <Tile label="Active subs" value={tiles ? tiles.active_subs.toLocaleString() : "–"} />
         <Tile
           label="Past due"
-          value={tiles ? tiles.past_due.toLocaleString() : "–"}
-          tone={tiles && tiles.past_due > 0 ? "critical" : undefined}
+          value={tiles ? tiles.past_due_count.toLocaleString() : "–"}
+          tone={tiles && tiles.past_due_count > 0 ? "critical" : undefined}
         />
-        <Tile label="Accounts total" value={tiles ? tiles.total.toLocaleString() : "–"} />
+        <Tile label="Accounts total" value={tiles ? tiles.accounts_total.toLocaleString() : "–"} />
       </div>
 
       {/* Filters */}
@@ -303,7 +303,7 @@ function AdminAccountsPage() {
                   Loading accounts...
                 </TableCell>
               </TableRow>
-            ) : !data || data.accounts.length === 0 ? (
+            ) : !data || data.items.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
                   {activeFilterCount > 0 || filters.search
@@ -312,7 +312,7 @@ function AdminAccountsPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              data.accounts.map((account) => (
+              data.items.map((account) => (
                 <AccountRow key={account.tenant_id} account={account} />
               ))
             )}
@@ -492,7 +492,7 @@ function MultiSelectMenu<T extends string>({
 // ---------------------------------------------------------------------------
 
 function AccountRow({ account }: { account: AdminAccountListItem }) {
-  const idle = isIdle90d(account.last_activity_at);
+  const idle = isIdle90d(account.last_activity);
 
   return (
     <TableRow>
@@ -505,8 +505,10 @@ function AccountRow({ account }: { account: AdminAccountListItem }) {
           <span className="text-sm font-medium text-foreground hover:underline">
             {account.org_name}
           </span>
-          <span className="font-mono text-xs text-muted-foreground">{account.slug}</span>
-          <span className="text-xs text-muted-foreground">{account.owner_email}</span>
+          <span className="font-mono text-xs text-muted-foreground">{account.org_slug}</span>
+          {account.owner_email ? (
+            <span className="text-xs text-muted-foreground">{account.owner_email}</span>
+          ) : null}
         </Link>
       </TableCell>
       <TableCell>
@@ -523,10 +525,13 @@ function AccountRow({ account }: { account: AdminAccountListItem }) {
         {formatAccountMrr(account)}
       </TableCell>
       <TableCell>
-        <SitesMeterChip used={account.sites.used} cap={account.sites.cap} />
+        <SitesMeterChip used={account.sites_used} cap={account.sites_cap} />
       </TableCell>
       <TableCell>
-        <StorageMeterChip storage={account.storage} />
+        <StorageMeterChip
+          usedBytes={account.storage_used_bytes_approx}
+          capBytes={account.storage_cap_bytes}
+        />
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">
         <time dateTime={account.created_at} title={new Date(account.created_at).toLocaleString()}>
@@ -534,12 +539,12 @@ function AccountRow({ account }: { account: AdminAccountListItem }) {
         </time>
       </TableCell>
       <TableCell className={cn("text-xs", idle ? "text-warning-subtle-fg" : "text-muted-foreground")}>
-        {account.last_activity_at ? (
+        {account.last_activity ? (
           <time
-            dateTime={account.last_activity_at}
-            title={new Date(account.last_activity_at).toLocaleString()}
+            dateTime={account.last_activity}
+            title={new Date(account.last_activity).toLocaleString()}
           >
-            {relativeTime(account.last_activity_at) ?? "–"}
+            {relativeTime(account.last_activity) ?? "–"}
             {idle ? " · idle" : ""}
           </time>
         ) : (

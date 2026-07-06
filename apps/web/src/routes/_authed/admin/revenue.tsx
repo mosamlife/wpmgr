@@ -18,6 +18,7 @@ import { relativeTime, cn } from "@/lib/utils";
 import { useAdminRevenue } from "@/features/admin/use-admin-accounts";
 import {
   formatCents,
+  isWebhookStale,
   sortEventsNewestFirst,
   sortPastDueOldestFirst,
 } from "@/features/admin/admin-accounts-format";
@@ -65,9 +66,10 @@ function AdminRevenuePage() {
     );
   }
 
-  const { tiles, plan_distribution, past_due, recent_events, last_webhook_at, webhook_stale } = data;
+  const { tiles, plan_distribution, comped, past_due, recent_events, last_webhook_received_at } = data;
   const pastDueSorted = sortPastDueOldestFirst(past_due);
   const eventsSorted = sortEventsNewestFirst(recent_events).slice(0, 20);
+  const webhookStale = isWebhookStale(last_webhook_received_at);
 
   return (
     <section className="max-w-4xl space-y-6">
@@ -89,7 +91,7 @@ function AdminRevenuePage() {
         <Tile
           label="Active subs"
           value={tiles.active_subs.toLocaleString()}
-          subline={`${tiles.trialing.toLocaleString()} trialing`}
+          subline={`${tiles.trialing_subs.toLocaleString()} trialing`}
         />
         <Tile
           label="Past due"
@@ -117,34 +119,45 @@ function AdminRevenuePage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {plan_distribution.length === 0 ? (
+              {plan_distribution.length === 0 && comped.count === 0 ? (
                 <TableRow>
                   <TableCell colSpan={3} className="py-6 text-center text-sm text-muted-foreground">
                     No accounts yet.
                   </TableCell>
                 </TableRow>
               ) : (
-                plan_distribution.map((row) => (
-                  <TableRow key={row.plan}>
-                    <TableCell>
-                      <Link
-                        to="/admin/accounts"
-                        search={{ plan: [row.plan as BillingPlanId] }}
-                        className="text-sm font-medium capitalize text-foreground hover:underline"
-                      >
-                        {planLabel(row.plan)}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-sm">
-                      {row.count.toLocaleString()}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-sm">
-                      {row.comped_value_cents != null
-                        ? `${formatCents(row.comped_value_cents)} comped value`
-                        : formatCents(row.mrr_share_cents)}
-                    </TableCell>
-                  </TableRow>
-                ))
+                <>
+                  {plan_distribution.map((row) => (
+                    <TableRow key={row.plan}>
+                      <TableCell>
+                        <Link
+                          to="/admin/accounts"
+                          search={{ plan: [row.plan as BillingPlanId] }}
+                          className="text-sm font-medium capitalize text-foreground hover:underline"
+                        >
+                          {planLabel(row.plan)}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-sm">
+                        {row.count.toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-sm">
+                        {formatCents(row.mrr_cents)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {comped.count > 0 ? (
+                    <TableRow>
+                      <TableCell className="text-sm text-muted-foreground">Comped</TableCell>
+                      <TableCell className="text-right tabular-nums text-sm">
+                        {comped.count.toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-sm text-muted-foreground">
+                        {formatCents(comped.hypothetical_value_cents)} hypothetical
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </>
               )}
             </TableBody>
           </Table>
@@ -186,13 +199,15 @@ function AdminRevenuePage() {
                         <span className="text-sm font-medium text-foreground hover:underline">
                           {row.org_name}
                         </span>
-                        <a
-                          href={`mailto:${row.owner_email}`}
-                          className="text-xs text-muted-foreground hover:underline"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {row.owner_email}
-                        </a>
+                        {row.owner_email ? (
+                          <a
+                            href={`mailto:${row.owner_email}`}
+                            className="text-xs text-muted-foreground hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {row.owner_email}
+                          </a>
+                        ) : null}
                       </Link>
                     </TableCell>
                     <TableCell className="text-right tabular-nums text-sm">
@@ -205,8 +220,8 @@ function AdminRevenuePage() {
                       {row.grace_until ? new Date(row.grace_until).toLocaleDateString() : "–"}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {row.last_failed_at
-                        ? (relativeTime(row.last_failed_at) ?? row.last_failed_at)
+                      {row.last_payment_failed_at
+                        ? (relativeTime(row.last_payment_failed_at) ?? row.last_payment_failed_at)
                         : "–"}
                     </TableCell>
                   </TableRow>
@@ -227,18 +242,18 @@ function AdminRevenuePage() {
             <p className="text-sm text-muted-foreground">No recent billing events.</p>
           ) : (
             <ul className="divide-y divide-border">
-              {eventsSorted.map((ev, i) => (
-                <li key={`${ev.at}-${i}`} className="flex flex-wrap items-baseline gap-x-2 py-2 text-sm">
+              {eventsSorted.map((ev) => (
+                <li key={ev.id} className="flex flex-wrap items-baseline gap-x-2 py-2 text-sm">
                   <time
-                    dateTime={ev.at}
-                    title={new Date(ev.at).toLocaleString()}
+                    dateTime={ev.occurred_at}
+                    title={new Date(ev.occurred_at).toLocaleString()}
                     className="text-xs text-muted-foreground"
                   >
-                    {relativeTime(ev.at) ?? ev.at}
+                    {relativeTime(ev.occurred_at) ?? ev.occurred_at}
                   </time>
-                  <span className="font-medium text-foreground">{ev.org_name}</span>
+                  <span className="font-medium text-foreground">{ev.org_name ?? "—"}</span>
                   <span className="text-muted-foreground">{ev.kind}</span>
-                  <span className="ml-auto text-xs text-muted-foreground">{ev.source}</span>
+                  <span className="ml-auto text-xs text-muted-foreground">{ev.provider}</span>
                 </li>
               ))}
             </ul>
@@ -247,12 +262,12 @@ function AdminRevenuePage() {
           <div
             className={cn(
               "flex items-center gap-2 border-t border-border pt-3 text-xs",
-              webhook_stale ? "text-warning-subtle-fg" : "text-muted-foreground",
+              webhookStale ? "text-warning-subtle-fg" : "text-muted-foreground",
             )}
           >
-            {webhook_stale ? <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" /> : null}
-            {last_webhook_at
-              ? `Last webhook received ${relativeTime(last_webhook_at) ?? last_webhook_at}`
+            {webhookStale ? <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" /> : null}
+            {last_webhook_received_at
+              ? `Last webhook received ${relativeTime(last_webhook_received_at) ?? last_webhook_received_at}`
               : "No webhook has ever been received."}
           </div>
         </CardContent>
