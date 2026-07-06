@@ -1,248 +1,53 @@
 # WPMgr Development Plan
 
-## Phase 0 — Setup
-- [x] Create PLAN.md
-- [x] Create DECISIONS.md
-- [x] Create .claude/agents/ subagents
-- [ ] User approval to proceed
+Updated 2026-07-06 (v0.61.18). History of everything shipped lives in [CHANGELOG.md](./CHANGELOG.md); architecture decisions in [docs/adr/](./docs/adr/) and [DECISIONS.md](./DECISIONS.md).
 
-## Phase 1 — Subagents (covered in 0.3)
-- [x] tech-stack-researcher
-- [x] backend-architect
-- [x] frontend-architect
-- [x] wp-agent-engineer
-- [x] devops-engineer
-- [x] security-reviewer
-- [x] docs-writer
+## Shipped (V0 + most of V1)
 
-## Phase 2 — Repo Bootstrap
-- [x] Root files (LICENSE, README, .gitignore, etc.)
-- [x] Turborepo + pnpm workspace
-- [x] Go workspace
-- [x] apps/ scaffolds
-- [x] packages/ scaffolds
-- [x] infra/ scaffolds
-- [ ] User approval to proceed
+The original Phase 0-6 plan is complete and in production:
 
-## Phase 3 — Tech Stack ADRs
-- [x] ADR-001 ORM/query layer → **sqlc** (+ pgx/v5)
-- [x] ADR-002 Migration tool → **Atlas CE** (Apache-2.0 only; fallback goose)
-- [x] ADR-003 Job queue → **River** (Postgres-native)
-- [x] ADR-004 OpenAPI codegen (Go) → **ogen** (isolate from Gin)
-- [x] ADR-005 Validation (Go) → **go-playground/validator**
-- [x] ADR-006 Logging (Go) → **log/slog**
-- [x] ADR-007 Config (Go) → **koanf**
-- [x] ADR-008 WebSocket (Go) → **coder/websocket**
-- [x] ADR-009 HTTP client (Go) → **net/http + SSRF transport**
-- [x] ADR-010 S3 client (Go) → **aws-sdk-go-v2** (⚠ MinIO server EOL — see risk register)
-- [x] ADR-011 OTel stack → **OTel SDK + otelgin → Collector → Tempo + Prometheus + Grafana**
-- [x] ADR-012 Frontend router → **TanStack Router**
-- [x] ADR-013 Frontend data fetching → **TanStack Query v5**
-- [x] ADR-014 Component lib → **shadcn/ui + Radix + TanStack Table**
-- [x] ADR-015 Forms → **react-hook-form**
-- [x] ADR-016 Validation (TS) → **Zod 4**
-- [x] ADR-017 State (TS) → **Zustand**
-- [x] ADR-018 Charts → **Tremor** (on Recharts)
-- [x] ADR-019 i18n → **Lingui v5**
-- [x] ADR-020 E2E → **Playwright**
-- [x] ADR-021 PHP testing → **PHPUnit** (+ Brain Monkey, Polyfills)
-- [x] ADR-022 PHP static analysis → **PHPStan** (+ WP stubs)
-- [x] Risk register item 1 resolved → **SeaweedFS** for self-host object store
-- [ ] User approval to proceed
+- **Foundation** — multi-tenant CP (Gin + sqlc + River + RLS), Ed25519-signed agent protocol, React dashboard, self-host compose stack + quickstart script, GCP hosted deployment.
+- **Auth & tenancy** — email/OIDC login, RBAC, organisations, per-site sharing (outside collaborators), operator 2FA (TOTP + passkeys), superadmin console, hash-chained audit log with integrity re-baseline.
+- **Sites & lifecycle** — live enrollment, connection-state machine, heartbeats, one-click login (autologin), site screenshots, host-provider detection.
+- **Backups** — pure-PHP engine, archive-delta incrementals, selective components + exclusions, encrypted off-site storage, restore with inspection preview, DB snapshots, snapshot locking, retention mark-and-sweep GC, chain-aware bulk delete, update-failure auto-restore.
+- **Updates** — bulk plugin/theme/core updates with pre-update snapshots, health probe + auto-rollback, half-write recovery.
+- **Monitoring** — uptime + TLS expiry probes, WP fatal (HTTP-200 WSOD) detection, downtime alerts (email + webhook), fleet dashboards (uptime, backup health, performance, email deliverability), real-user monitoring (Core Web Vitals).
+- **Performance suite** — page cache, object cache, RUCSS, minify/delay/defer, font optimization + WOFF2 transcoding, image optimization (media-encoder), CDN rewrite, DB + media cleaners.
+- **Security suite** — hardening + login bans, file integrity, site-user 2FA + password policy, vulnerability scanner (Wordfence Intelligence feed), File Manager (jailed, audited, off by default).
+- **Agency** — white-label client reports, branded client portal, client invites.
+- **Email** — instance SMTP, alert/digest cadences, fleet deliverability dashboard.
+- **Distribution** — OSS releases (GHCR images + agent zip), marketing site (wpmgr.app), WordPress.org agent submission (in review).
 
-## Phase 4 — V0 Skeleton
-- [x] Backend skeleton (Gin, pgx, Atlas, sqlc, ogen, tenant+site CRUD, RLS, /healthz+/readyz)
-- [x] Agent skeleton (PHP plugin, Ed25519 verify, AES-GCM keystore, jti anti-replay, wpmgr/v1)
-- [x] Frontend skeleton (TanStack Router/Query, shadcn/Tailwind v4, @wpmgr/api, login+sites)
-- [x] Infra skeleton (distroless Dockerfiles, compose w/ SeaweedFS, observability profile, CI)
-- [x] Docs skeleton (README, architecture, install, agent, contributing, security, api)
-- [x] Security review → PASS (no high/critical); 2 items carried to M1 (below)
-- [x] Full-stack `docker compose up` E2E verification (healthz/readyz 200, CRUD, cross-tenant denied)
-- [x] User approval to proceed
+## In flight
 
-### Security carry-forward into Phase 5/M1 (from Phase 4 review)
-- [ ] Enforce NOSUPERUSER/NOBYPASSRLS app DB role at startup (hard-fail) + split migration DSN from app DSN (currently only a startup WARNING — `db.WarnIfRLSBypassRole`)
-- [ ] Replace unauthenticated `X-Tenant-ID` header stub in `middleware.Tenant()` with session-derived tenant (must land with auth)
-- [ ] Apply ADR-009 SSRF-hardened transport to webhooks / agent calls / backup URLs
-- [ ] Reject default `WPMGR_SESSION_SECRET` and enforce ≥32 bytes at startup
-- [ ] Add security-headers middleware + CORS allowlist once SPA origin is finalized
+- [ ] **WordPress.org listing** — agent submitted as "Fleet Agent Site Manager"; passed the automated scans' real finding (2FA resume binding, fixed 0.61.9); awaiting human review. Crux item: autologin (MainWP/ManageWP precedent). Fallback if rejected: strip autologin + file-write from the wp.org build only.
+- [ ] **Patchstack decision** — research complete (docs/security/ internal). Recommended: Phase 0 provider abstraction + Phase 1a BYO App-API-key co-existence; paid feed/vPatch only via a for-Hosts contract. Awaiting go/no-go.
 
-## Phase 5 — V0 Feature Build
-- [x] M1 — Auth + tenant + RBAC ✅ (E2E verified; security review PASS after fixes)
-  - [x] ADR-023 OIDC client · ADR-024 sessions · ADR-025 password hash · ADR-026 Dex
-  - [x] Non-superuser app DB role + migration/app DSN split + startup hard-fail
-  - [x] Email+password (argon2id) + OIDC (go-oidc) login; SCS Redis sessions
-  - [x] Replace X-Tenant-ID stub → session-derived tenant + membership
-  - [x] RBAC roles owner/admin/operator/viewer + permission matrix middleware
-  - [x] Tenant-scoped API keys (hashed, shown once)
-  - [x] Append-only hash-chained audit log (+ /audit/verify)
-  - [x] Dex in docker-compose for self-host OIDC
-  - [x] RLS isolation tests prove cross-tenant denial; frontend real login
-  - [x] Reject default WPMGR_SESSION_SECRET; nginx security headers
-  - [x] Security review fixes: tenant read scoping (HIGH), invite role-ceiling, OIDC email_verified
-  - Known follow-ups: dummy-hash login timing; API-key expiry; tenant-create→creator-membership; SeaweedFS healthcheck flakiness (S3 unused until M4)
-- [x] M2 — Site registry + agent enrollment ✅ (E2E verified; security review PASS)
-  - [x] Pairing-code enrollment (one-time, hashed, TTL) + public /enroll; per-site Ed25519 (agent gen, CP stores pubkey)
-  - [x] Agent-auth (signed METHOD\nPATH\nTS\nNONCE\nhash; skew + single-use nonce; identity-from-key)
-  - [x] Site metadata sync (WP/PHP/server/themes/plugins/active/multisite) + tags + tag filter
-  - [x] River (ADR-003) wired; 5-min health sweep (heartbeat freshness) + nonce pruning
-  - [x] WordPress agent: enroll/sign/metadata/heartbeat/wp-cron + 30-min auto-deactivate
-  - [x] Frontend: Add-site pairing dialog, health/enrollment badges, site metadata + components
-  - [x] Security: hardened nonce pruning (DoS), prod guard for dev CP signing key
-  - Deferred to M3: enroll/agent RLS policy tenant-predicate (defense-in-depth; correct today via Go filters); agent-key revocation/disabled-site rejection; /enroll edge rate-limiting; force https for agent CP URL outside localhost
-- [x] M3 — Bulk updates with rollback ✅ (E2E smoke + security review PASS after fixes)
-  - [x] Update orchestrator (River, per-tenant parallelism) + update_runs/update_tasks (RLS)
-  - [x] SSRF-hardened HTTP client (ADR-009) for all CP→agent/site calls
-  - [x] CP→agent signed command channel (EdDSA JWT bound to aud=site + cmd); update/rollback
-  - [x] Agent: WP-CLI + PHP-fallback update/rollback, pre-update snapshots (path-traversal safe)
-  - [x] Post-update health probe + auto-rollback on 5xx/fatal
-  - [x] Bulk UI: multi-select/tag, dry-run default, schedule; live SSE progress + polling fallback
-  - [x] Update history (from→to version diffs); audit events
-  - [x] Security fixes: JWT site+command binding (HIGH cross-tenant replay), version/slug validation (MED)
-  - Deferred to later: per-run SSE subscriber cap (LOW); full backup-primitive snapshot integration after M4
-- [x] M4 — Incremental backups + restore ✅ (E2E enroll-through-nginx verified; security review pending)
-  - [x] blobstore (aws-sdk-go-v2) over SeaweedFS/S3; presigned PUT/GET
-  - [x] blake3 content-addressed ~4MB chunks + per-tenant dedup/refcount; manifests in Postgres
-  - [x] client-side age encryption (CP stores only ciphertext + public recipient; cannot decrypt) — ADR-027
-  - [x] backup (files|db|full) + restore (full|paths|db_tables partial) + per-site schedule
-  - [x] River scheduled backups + retention GC (30d rolling + monthly archive); orphan-chunk deletion
-  - [x] agent: pure-PHP age+blake3 (real-age interop), presign upload, manifest, blake3-verify restore
-  - [x] frontend: backups section, snapshot detail, restore dialog, schedule editor
-  - [x] RLS on all backup tables; audit events
-  - [ ] M4 security review
-  - Also fixed (prod): single-origin API routing (enrollment 405 + dashboard 404); agent keystore portable master key + graceful activation
-- [x] M5 — Uptime monitoring ✅ (live: real site probed up + TLS expiry; security review pending)
-  - [x] ADR-028 clickhouse-go v2 · ADR-029 wneessen/go-mail (SMTP)
-  - [x] ClickHouse metrics store (auto schema, MergeTree+TTL 90d, native batch insert)
-  - [x] HTTPS probe (httptrace timings: DNS/connect/TLS/TTFB; TLS expiry from peer cert) via SSRF-hardened client
-  - [x] River periodic probe every ~60s with concurrency cap; site health_status updated from results
-  - [x] Uptime API per-site (7d/30d/90d windows: uptime%, avg latency, series) + dashboard summary
-  - [x] Downtime alerts: email (go-mail SMTP) + signed webhook on transition >threshold consecutive downs (dedupe + recovery)
-  - [x] Alert config (email recipients + webhook URL), RLS-scoped; webhook secret write-only
-  - [x] Frontend: uptime section with window toggle + chart + TLS expiry warn; sites list status; alerts settings
-  - [x] M5 security review → PASS (no high/critical)
-  - [x] Hardening applied: loud-log SSRF/TLS test escape hatches; enforce http(s) scheme on site URL + webhook URL
-  - Deferred to later: encrypt alert_configs.webhook_secret at rest (CP-side AES-GCM with a master key); per-tenant probe fairness in the sweep (interleave or per-tenant cap)
-- [ ] **Phase 5.5 — One-Click Login (inserted before M6)** ⚠️ critical agency feature
-  - [x] ADR-030 nonce store (Postgres + Redis hot-path) · ADR-031 token format (reuse agentcmd Ed25519 JWT)
-  - [ ] User approval to proceed
-  - [ ] Backend (apps/api/internal/autologin): tokens + policies migration with RLS; mint + consume service; rate-limit (per initiator,site + per site); RBAC perm `site.autologin` added to authz matrix; reuse `agentcmd` to mint JWT with cmd="autologin", aud=site, jti=nonce, tgt=wp_user_login, exp≤60s
-  - [ ] Endpoints: POST /api/v1/sites/{id}/autologin (operator+, with `site.autologin` perm); agent-auth POST /agent/v1/autologin/consume (atomic single-use; Redis GETDEL → PG UPDATE … WHERE consumed_at IS NULL RETURNING fallback)
-  - [ ] Agent (apps/agent): `class-autologin-command.php` registering GET /wpmgr/v1/autologin — verifyCommand (signature + exp + jti + aud + cmd=autologin) → callback consume → role-allowed check → wp_clear_auth_cookie → wp_set_auth_cookie → wp_safe_redirect (open-redirect-safe sanitizer)
-  - [ ] Frontend: "Log in to site" dropdown button on site card + detail (default user / Plugins / Themes / other user); user-picker modal (from existing components.users sync); site Settings → Auto-login (enable, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes); error toasts mapped to API codes
-  - [ ] Audit events: autologin.requested / autologin.consumed / autologin.failed (with code: rbac_denied / policy_disabled / rate_limited / token_expired / consume_rejected)
-  - [ ] Hash-chained audit (M1 chain) entries for every initiate + every consume; IP + UA captured
-  - [ ] 2FA step-up: feature-FLAGGED off for V0 (WPMgr has no 2FA system yet — requires building a TOTP enroll/verify pass first; gated by `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP=false` default; spec'd in ADR + endpoint returns 409 with `code: "2fa_required"` when policy demands it and the user has no 2FA bound)
-  - [ ] Tests: unit (mint/consume/double-consume/expired/rate-limit/RBAC); integration testcontainers (concurrent consume — only one wins); PHP (bad sig/replay/redirect sanitizer/role check); Playwright E2E (mock the new tab; assert /wp-admin/-shaped path) — real-WP container E2E is a nice-to-have, defer if heavy
-  - [ ] Security review (security-reviewer agent) — MANDATORY before merge; the 16-item checklist from the spec must all pass
-  - [ ] Docs: docs/features/autologin.md (user how-to + troubleshooting); docs/agent.md (compatibility: Wordfence strict, iThemes Security strict; filters/actions); docs/security.md (threat model + mitigations)
-- [ ] **M5.6 — Backup engine rebuild on pure-PHP pattern (ADR-033 supersedes ADR-032)** ⚠️ M4 + ADR-032 pivot
-  - **Why this exists, twice**: live QA against curvabykerline.in (1panel Docker WP) revealed two layers of problem. Layer 1: M4's inline PHP backup hit openresty 504 at ~3-5 min — that's why ADR-032 moved work to a detached phpbu subprocess. Layer 2: ADR-032's phpbu reached working end-to-end execution but failed at the first source: phpbu shells out to `mysqldump`, which the WP container doesn't ship. A research deep-dive into mature WP backup plugins (40M+ installs) showed **no mature WP backup plugin assumes binaries** — they use `ifsnop/mysqldump-php` + `ZipArchive` + `fastcgi_finish_request` + `wp_schedule_single_event` resume. ADR-033 adopts that pattern. CP-side work from ADR-032 is engine-agnostic and retained.
-  - **What carries over from ADR-032 (no rework)**:
-    - [x] CP `backup_snapshots.progress JSONB` + `progress_updated_at` columns + watchdog index (applied)
-    - [x] CP `POST /agent/v1/backups/:id/progress` endpoint, Ed25519-verified, 4 KiB body cap, closed-set phase validation
-    - [x] CP `ProgressWatchdogWorker` (River periodic, 120 s stall threshold, 30 s tick)
-    - [x] CP `BackupRequest.ProgressEndpoint` field + worker plumbing
-    - [x] CP `Backup.HTTPTimeout` config + River per-job timeout override (10 m / 12 m)
-    - [x] Frontend `SnapshotProgressCard` + 1.5 s polling
-    - [x] Agent build pipeline (`make agent-vendor` + `agent-zip`)
-    - [x] Agent `wpmgr_backup_runs` dedup table (small extension to richer task table below)
-    - [x] Agent `ProgressClient` (signed `/progress` POSTs)
-  - **What gets replaced from ADR-032 (the throwaway)**:
-    - [ ] Drop composer dep `phpbu/phpbu`; add `ifsnop/mysqldump-php`
-    - [ ] Delete `apps/agent/includes/phpbu/PresignedS3.php` (phpbu Sync impl)
-    - [ ] Delete `apps/agent/includes/phpbu/WpmgrProgressSubscriber.php` (phpbu Listener+Logger)
-    - [ ] Delete `apps/agent/bin/wpmgr-backup-runner.php` (CLI runner spawn target)
-    - [ ] Rewrite `apps/agent/includes/commands/class-backup-command.php` for the pure-PHP pattern (state-machine entry + `fastcgi_finish_request` flush, no `proc_open`)
-  - **What gets built new (ADR-033 implementation)**:
-    - [x] ADR-033 — pure-PHP `ifsnop/mysqldump-php` + `ZipArchive` + `fastcgi_finish_request` + checkpointed task state
-    - [x] User approval to proceed
-    - [ ] Agent: `composer require ifsnop/mysqldump-php` (~600 KB MIT pure-PHP)
-    - [ ] Agent: new `wpmgr_backup_tasks` table — `{snapshot_id PK, kind, phase, sub_state JSONB, started_at, last_progress_at, resume_count, max_resumes}` (replaces the slimmer `wpmgr_backup_runs` dedup)
-    - [ ] Agent `WPMgr\Agent\Backup\DbDumper` — thin wrapper around `ifsnop/mysqldump-php`. Streams `LIMIT 5000` row pages → `gzwrite` to scratch. `--single-transaction` REPEATABLE READ. BLOB → HEX. Per-table resume cursor saved to `sub_state`
-    - [ ] Agent `WPMgr\Agent\Backup\FilesArchiver` — `ZipArchive`-based (with PclZip fallback detection). Walks `wp-content` via streaming `opendir`/`readdir` with the path list written to an **on-disk cache file** (OOM defense). Rotates `.partNNN.zip` at configured `chunk_bytes` cap (default 200 MB) or 55 k entries. Per-part resume cursor saved to `sub_state`
-    - [ ] Agent `WPMgr\Agent\Backup\TaskRunner` — state machine driver. Phases (closed set): `queued / dumping_db / archiving_files / encrypting_uploading / submitting_manifest / completed / failed`. Each phase reads `sub_state`, does bounded work, updates `last_progress_at` + `sub_state`, posts to `/progress`, transitions
-    - [ ] Agent `WPMgr\Agent\Backup\EncryptAndUpload` — reuses existing `AgeCrypto::encrypt` per 4 MiB chunk + `Blake3::hashHex` over ciphertext + existing `BackupTransport::presignChunks` / `putChunk` / `submitManifest` (M4 transport unchanged). New: reads chunks FROM FILES (the dump.sql.gz, files.partNN.zip) instead of in-memory blobs — memory bound independent of total backup size
-    - [ ] Agent: refactored `class-backup-command.php` — validate JWT → dedup-claim → write task row → `fastcgi_finish_request()` → ACK CP `{ok: true, detail: "accepted"}` → continue under `ignore_user_abort(true)` calling `TaskRunner::run()`. Falls through to synchronous behavior on non-FPM hosts (the M4 ~10 min HTTPTimeout already accommodates that case)
-    - [ ] Agent: `wp_schedule_single_event(time()+120, 'wpmgr_backup_watchdog', [snapshot_id])` on backup entry; watchdog handler reads task, checks `last_progress_at < now()-180s` AND non-terminal `phase` → increments `resume_count` (cap 6) → re-enters `TaskRunner::run()` which resumes from `sub_state`
-    - [ ] Plugin version bump to 0.7.0 (architectural change: phpbu → pure-PHP pattern)
-    - [ ] Live QA on curvabykerline.in: db backup, files backup, full backup end-to-end; restore (still uses existing M4 path); schedule fires; concurrent runs refuse via dedup; kill PHP mid-stream and confirm watchdog resumes
-    - [ ] Security review (16-item checklist): JWT-replay shield holds; `/progress` endpoint signature verification; runner cannot escape `wp-content/wpmgr-agent/runs/{id}/` scratch; `wpmgr_backup_tasks` resume_count cap; ZipArchive symlink handling; `ifsnop` SQL escaping; multi-tenant isolation; no plaintext credentials in error responses
-    - [ ] Docs: `docs/agent.md` adds host-compat matrix (FPM vs mod_php, ZipArchive vs PclZip, ifsnop deps); `docs/security.md` adds backup-task threat model; `docs/install.md` clarifies that no system binaries are required on the WP host
-  - **Restore stays on M4 path for V0** — the new artifact shape (1 dump.sql.gz + N files.partNN.zip vs M4's per-file chunks) requires a small restore adapter; tracked as a follow-up ADR after V0 ships
-- [ ] **M5.7 — Organisations + per-site sharing + tenant-namespaced storage** ⚠️ critical pre-open-source feature
-  - **Why**: before open-sourcing, formalize the multi-tenant model as **Organisations** (tenant = org). A user can own/switch **multiple organisations**, each with **multiple websites**, and can **share one website** with another user (e.g. a support engineer) WITHOUT giving them the whole org. Object storage is namespaced **`tenant_id/site_id/backup…`** for clean org-level partitioning. Membership is already N:N (`memberships` UNIQUE(user_id, tenant_id)), so the data layer already supports multi-org — the new work is the **Organisation UX**, **per-site sharing/RBAC**, and the **storage layout**. Designed via a dedicated research+synthesis workflow (`multiorg-sharing-research`); plan refined from its output + the open-decision answers below.
-  - [ ] Organisation model + UX: present tenant as "Organisation"; org switcher in the app shell; create-org (+ creator→owner membership); org settings + members management
-  - [ ] Per-site sharing (the crux): additive `site_shares` grant table (site_id, grantee, role/scope, expires_at?, revoked_at); invite-by-email + accept flow; "Share this site" on site detail; "Shared with me" surface; audit events (grant/accept/revoke); revocable + optional time-limited support access
-  - [ ] RLS strategy for SITE-scoped access without weakening tenant isolation: additive grant policy / scoped principal constraining to allowed site IDs (a row is visible when tenant matches OR the site ∈ the caller's granted-site set). **Security review MANDATORY** — no cross-org leakage via a single shared site.
-  - [ ] Object storage → `tenant_id/site_id/…` for chunks/manifests/snapshots; decide existing-object handling (new-prefix + dual-read fallback vs one-time migration); preserve per-tenant chunk dedup semantics; update presign key generation; agent unchanged (CP signs keys)
-  - [ ] Frontend: org switcher, org/members management, share-site dialog, shared-with-me view, role/scope gating (canManage/canOperate aware of shared-site role)
-  - **Confirmed decisions** (2026-05-31; full spec: `docs/design/m5.7-orgs-sharing.md`):
-    - Storage: KEEP `chunks/<tenant>/<blake3>` dedup; ADD a browseable per-snapshot index object `tenant/<t>/site/<s>/backup/<id>/manifest.json`. No chunk migration, no agent change. (User's "site-first" premise was inverted — chunks are already tenant-first content-addressed.)
-    - Sharing = **outside collaborators**: invite ANY email; accept creates/links a `users` row but NO membership — site-scoped restrictive RLS is their only access.
-    - Invites = **tokenized email accept links** (hash-stored, 7d, single-use, email-bound; reuse M5 go-mail SMTP).
-    - Per-share **optional `expires_at`** for time-limited support access (RLS filters expiry; zero cleanup).
-    - Keep the 4-role vocab (`viewer<operator<admin<owner`); add a DB CHECK.
-    - RLS = **RESTRICTIVE** `<t>_site_scope` policy gated by `app.site_scope` GUC on ALL 21 site_id tables + 2 indirect children; allowlist passed via `app.allowed_site_ids` GUC (no policy subquery → no recursion); new `InScopedTenantTx` + central scope-dispatch.
-  - Docs: `docs/features/organisations.md` (org + sharing how-to) + `docs/security.md` threat-model update (per-site grant)
-- [x] **Phase 5.7 — Live enrollment + connection lifecycle** ✅ SHIPPED v0.10.0-lifecycle (agent 0.10.1-revoke-verify); fixes "Add site needs a manual refresh"
-  - **Why**: after the user clicks Enroll in the WP agent, the dashboard does not update live — the Add-site modal + sites list require a manual refresh. Recon (`analysis/live-enrollment-recon.md`) showed the SSE bus is in-process only (no cross-instance fan-out, no replay), enrollment has no completion signal, and there is no CP-side connection-state machine / revoke / archive. Heartbeat already exists (5-min wp-cron) so it's an extension.
-  - [x] Recon complete (`analysis/live-enrollment-recon.md`)
-  - [x] ADRs locked — ADR-038 (SSE scoping = Postgres LISTEN/NOTIFY, tenant channel, `?since` replay) · ADR-039 (heartbeat 60s; degraded 180s / disconnected 360s; immediate post-enroll beat) · ADR-040 (signed best-effort last-will + timeout fallback) · ADR-041 (additive `connection_state` enum + `connection_generation`; re-enroll reuses `site_id`; revoke/archive/restore)
-  - [x] User approval of ADRs + PLAN
-  - [x] Backend: connection-state machine (`internal/site/service/connection.go`) — single owner of transitions (validate source → write state + history + audit in one tx → publish SSE after commit); migration adds `connection_state`/`connection_generation`/`disconnected_at`/`disconnected_reason`/`archived_at` + `site_enrollment_codes` + `site_connection_history` + `site_events`
-  - [x] Backend: shared SSE bus via Postgres LISTEN/NOTIFY (`tenant:<id>` channel, ULID event ids, `site_events` 5-min replay) + `GET /api/v1/sites/events`
-  - [x] Backend: heartbeat extension + River timeout sweeper (15s tick; 180s→degraded, 360s→disconnected) + revoke/archive/restore/re-enroll endpoints + signed agent disconnect endpoint
-  - [x] Agent: 60s heartbeat (extend scheduler) + immediate post-enroll beat + last-will on deactivate/uninstall (signed, 3s, best-effort) + revoke-instruction handling (wipe keystore + self-deactivate) + explicit Re-enroll button
-  - [x] Frontend: live AddSiteDialog (3-state: URL → awaiting-agent w/ SSE wait + code countdown → success) ; sites list SSE-driven cache patch (no polling) ; disconnect/archive/reconnect flows ; `ConnectionStateBadge` ; Activity tab from `site_connection_history`
-  - [x] Tests: Go unit (transitions, sweeper fake-clock, atomic single-use code) + integration (testcontainers full lifecycle) + Playwright E2E (enroll→success w/o refresh; disconnect+undo) + real-WP container E2E
-  - [x] Security review (10-item checklist) — MANDATORY before merge
-  - [x] `impeccable detect` clean on new modal + badge
-  - [x] Docs: `docs/features/site-lifecycle.md`, `docs/agent.md` (heartbeat + last-will + no-cron note), `docs/api/sites.md`, `docs/architecture.md` (state-machine mermaid)
-- [x] **Phase 5.8 — Media Optimizer** (cloud-encode JPEG/PNG → WebP/AVIF; WPMgr's own code + lilliput)
-  - **Why**: a high-value feature (image optimization) with a product surface comparable to leading optimization plugins. Encode runs on WPMgr's own software (Discord `lilliput`, MIT), not a third-party SaaS. Open-source & self-hostable throughout.
-  - [x] Recon complete
-  - [x] ADR locked — **ADR-043** (image lib = lilliput v1.5.0 MIT; encode in a SEPARATE OPTIONAL `media-encoder` container [CGO+glibc] so the lean static API is untouched and self-hosters opt in via a compose profile; transport = presigned object-storage like backups, no bytes through the CP; ≤10 variants/job; AVIF q50/s6 + WebP q80 + mozjpeg q82 + PNG lossless; per-variant 2× retry; no media bytes persisted on CP; govips/libvips fallback)
-  - [x] User approval of ADR + PLAN
-  - [x] **Phase 2** — Data model: migration `20260531110000_m23_media_optimizer.sql` (`site_media_assets`/`media_optimization_jobs`/`media_variant_results`, FORCE RLS + `app.agent` policy, no triggers) + the agent `wpmgr_image_optimization` postmeta blob spec
-  - [x] **Phase 3** — Backend: `cmd/media-encoder` + `infra/Dockerfile.media-encoder` (CGO+lilliput, `distroless/base-nonroot`) + `internal/media/{model,repo,encoder,service,handler,worker}` + River `media_encode` queue + dashboard/agent endpoints (hand-rolled DTOs) + `media.*` SSE + compose `--profile media`
-  - [x] **Phase 4** — Agent: media-sync/optimize/restore/delete-originals commands + `.wpmgr-original.*` rename + serialized-safe DB URL rewriter + Accept-header `.htaccess` installer (+ nginx notice) + WP media-modal stats injection + attachment meta box
-  - [x] **Phase 5** — Frontend: site-detail **Media** tab + assets table (virtualized) + bulk optimize/restore + JobsDrawer (live SSE) + delete-originals (type-hostname, `PermMediaDeleteOriginals` admin+) ; `impeccable detect` clean
-  - [x] **Phase 6** — Security review (16-item checklist: multipart/size limits N/A→presigned bounds, magic-byte MIME, 100MP guard, RLS, RBAC split, signed transport, serialized-rewrite safety, encoder OOM caps, idempotent `.htaccess`, modal XSS, audit on delete-originals, temp-object cleanup, per-tenant rate limit)
-  - [x] **Phase 7** — Tests (agent PHPUnit + CP Go testcontainers Postgres/MinIO/River; live-WP-container E2E **deferred** — net-new infra) + docs (`docs/features/media-optimizer.md`, `docs/architecture/media-optimizer.md`, `docs/api/media.md`, agent .htaccess/nginx note, security threat-model) + `apps/agent/NOTICE.md` attribution
-- [ ] M6 — Vuln scan (Wordfence Intelligence)
-- [ ] M7 — Reports
-- [ ] M8 — Polish & launch (audit log, V0 release)
-- [ ] User approval to proceed
+## Next up (priority order)
 
-## Phase 6 — Performance Suite
-- [ ] M5.5 — Performance Suite (ADR-046): agent-side disk page cache + asset optimization + pure-Go RUCSS on the control plane
-  - [ ] **Phase 1-2** — ADR + data model: ADR-046 locked; migration `20260603080000_m36_perf_suite.sql` (`site_perf_config`/`site_cache_stats`/`cache_purge_audit`/`rucss_results`/`rucss_jobs`, FORCE RLS + `app.agent` policy, no triggers) + `db/query/perf.sql` sqlc queries + RBAC perms (`site.cache.manage`/`.purge`/`site.perf.config` operator+, `site.cache.delete-everything` admin+) + audit constants
-  - [ ] **6.1 Caching (agent)** — standard `WP_CACHE` advanced-cache drop-in (per-host filename quirks) + disk cache store/serve + `.htaccess`/nginx serve rules + `cache_*` commands (enable/disable/purge/preload) + cache stats on heartbeat/metadata + drop-in install/uninstall on activate/deactivate + owned-options + schema/cron teardown
-  - [ ] **6.2 Optimization (agent)** — minify CSS/JS (`matthiasmullie/minify`) + JS delay/defer + font display-swap/preload + lazy-load + properly-sized images + self-host third-party + bloat removal + CDN rewrite (Cache-Tag/CDN-Cache-Control headers) + DB auto-clean (revisions/drafts/trashed/transients/optimize) + `sync_perf_config` command
-  - [ ] **6.3 Pure-Go RUCSS (control plane)** — `internal/perf` RUCSS engine (`x/net/html` + `tdewolff/parse/v2/css` + `cascadia`, NO headless Chrome) + per-site safelist + runtime-state pseudos always kept + structure-hash cache (`rucss_results`/`rucss_jobs`) + River compute worker + used-CSS to object storage + agent fetch-by-hash + graceful degradation (CP unreachable → serve full CSS, never block)
-  - [ ] **6.4 Dashboard** — site-detail **Cache** + **Optimize** tabs + autosave settings panels + cache stats/metrics + purge/preload actions + delete-everything (type-hostname, admin+) + `perf.*` SSE events; `impeccable detect` clean
-  - [ ] Security review + tests (agent PHPUnit + CP Go testcontainers Postgres/RUCSS golden-file) + docs (landing `content.ts` + root `CHANGELOG.md`)
-  - [x] **6.5 RUM storage & scale research (ADR-054)** — Postgres-only RUM data model for the MIT `apps/tracker` web-vitals beacon. Decision: store **fixed-boundary histogram-bucket rollups**, NOT raw beacons (mirrors GoatCounter aggregate-by-default + CrUX histograms; NO ClickHouse, NO `tdigest` C extension). Pipeline: tracker → CP `POST /perf/rum` (NOT the agent) → 48h `rum_events_raw` (partitioned by day, drill-down only) → River rollup worker → `rum_rollup_hourly` → daily worker → `rum_rollup_daily`, each per `(site_id,url_pattern,metric,device,country,bucket_start)` with `bucket_counts int[]`. p75/p95 via cumulative-histogram linear interpolation (<~5% error). Cardinality control: URL template-ize (strip query, numeric/UUID/slug segments), device→{mobile,tablet,desktop}, country→ISO-2, per-site `sample_rate` + `max_distinct_urls` (overflow→`__other__`). RLS mirrors m55/m42 EXACTLY (denormalized `tenant_id`, FORCE RLS, `_tenant_isolation` + `_agent` policies). Self-host vs SaaS retention caps differ; 100 sites × 10k pv/day fits inside the ~$470/mo floor with no new line item. Full ADR draft in DECISIONS.md (append after `git checkout -- DECISIONS.md` restores the file).
+1. [ ] **M16 — Hosted SaaS monetization** (the critical gap: pricing designed, tiers defined, `WPMGR_HOSTED` open-core gating exists, superadmin console growing — but **no billing**). Stripe subscriptions, plan limits enforcement (sites/storage per tier), upgrade/downgrade flows, dunning. Billable entity = org.
+2. [ ] **Per-site outgoing email (SMTP/API providers) + cross-site email log** — plan locked, 6-phase CP-first build not started (docs/per-site-email-smtp-plan-2026-06-10.md).
+3. [ ] **Font subsetting Phase 2** — per-font processing UI + WP Font Library discovery; media-encoder-first ordering (docs/adr/font-subsetting-phase2-plan.md).
+4. [ ] **Security suite P5/P6** — IP reputation + geo controls (docs/security/security-suite-plan.md).
+5. [ ] **Community feature requests** — #128 SFTP fallback for file operations, #113 bulk-update run basket.
 
-## Phase 7 — V1
-- [ ] M9 — Visual regression
-- [ ] M10 — AI update advisor
-- [ ] M11 — Real-time backup (DynSync)
-- [ ] M12 — Multi-region probes
-- [ ] M13 — White-label + client portal
-- [ ] M14 — Webhooks + CLI
-- [ ] M15 — Patchstack + WPScan integration
-- [ ] M16 — Hosted SaaS launch
-- [ ] User approval to proceed
+## Later (V1 remainder + V2 candidates)
 
-## Phase 8 — V2
-- [ ] M17 — Terraform provider
-- [ ] M18 — GitOps update flow
-- [ ] M19 — Vulnerability auto-patching
-- [ ] M20 — Headless WordPress & multi-CMS
-- [ ] M21 — Temporal-based workflows
-- [ ] M22 — Mobile dashboard
-- [ ] M23 — SOC2 prep
-- [ ] M24 — Plugin marketplace
-- [ ] V2 release
+- [ ] Multi-region uptime probes
+- [ ] Visual regression testing (pre/post-update screenshots diff)
+- [ ] AI update advisor
+- [ ] Real-time/continuous backup
+- [ ] Standing webhooks + integrations surface; real CLI
+- [ ] WPScan as an additional vuln source; Patchstack vPatch orchestration (Phase 2, on demand)
+- [ ] Real CDN provider integration (beyond URL rewriting)
+- [ ] Restic-style packing for the backup chunk store (deferred decision)
+- [ ] Terraform provider, GitOps updates, mobile dashboard, SOC2 prep
+
+## Standing engineering debt (tracked, low urgency)
+
+- Perf-suite real-WP+Apache cache E2E harness; addendum punch-list (N1-N5, A7, A9)
+- Auto-prune failed 0-byte backup runs (follow-up from #115)
+- Audit re-baseline acknowledgment in the same tx as the baseline upsert
+- TLS-enable redigo pool + re-enable Memorystore SERVER_AUTHENTICATION
+- Swap blobstore GC + EnsureBucket to the native GCS Go SDK
+- task-runner cleanup glob for per-component part filenames
