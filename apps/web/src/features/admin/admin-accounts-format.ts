@@ -40,6 +40,7 @@ export function formatAccountMrr(item: {
 // ---------------------------------------------------------------------------
 
 export type AccountDisplayStatus =
+  | "none"
   | "active"
   | "trialing"
   | "past_due"
@@ -48,6 +49,9 @@ export type AccountDisplayStatus =
   | "suspended";
 
 export const ACCOUNT_STATUS_LABEL: Record<AccountDisplayStatus, string> = {
+  // A free tenant that has never had a subscription (plan_status="none", the
+  // default) — NOT the same as "Canceled" (which means a paid plan was ended).
+  none: "No subscription",
   active: "Active",
   trialing: "Trialing",
   past_due: "Past due",
@@ -65,6 +69,7 @@ export const ACCOUNT_STATUS_LABEL: Record<AccountDisplayStatus, string> = {
  * reuse the shared success/warning/destructive subtle tokens.
  */
 export const ACCOUNT_STATUS_BADGE_CLASS: Record<AccountDisplayStatus, string> = {
+  none: "bg-muted text-muted-foreground",
   active: "bg-success-subtle text-success-subtle-fg",
   trialing: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
   past_due: "bg-warning-subtle text-warning-subtle-fg",
@@ -92,9 +97,10 @@ export function accountDisplayStatus(account: {
       return "trialing";
     case "past_due":
       return "past_due";
+    case "none":
+      return "none";
     case "canceled":
     case "paused":
-    case "none":
       return "canceled";
     default:
       return "active";
@@ -306,7 +312,12 @@ export function isWebhookStale(
 // subscription is in any state).
 // ---------------------------------------------------------------------------
 
-export const ACCOUNT_STATUS_FILTER_OPTIONS: readonly AccountDisplayStatus[] = [
+// The status FILTER excludes the display-only "none" (never-subscribed): it is
+// not a filterable subscription state (the handler does not accept it), only a
+// display badge.
+export type FilterableAccountStatus = Exclude<AccountDisplayStatus, "none">;
+
+export const ACCOUNT_STATUS_FILTER_OPTIONS: readonly FilterableAccountStatus[] = [
   "active",
   "trialing",
   "past_due",
@@ -343,7 +354,7 @@ export const ACCOUNT_SORT_OPTIONS: ReadonlyArray<{
 
 export interface AdminAccountsFilters {
   search: string;
-  status: AccountDisplayStatus[];
+  status: FilterableAccountStatus[];
   plan: BillingPlanId[];
   nearLimit: boolean;
   hasOverrides: boolean;

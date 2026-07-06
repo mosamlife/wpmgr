@@ -105,10 +105,13 @@ describe("accountDisplayStatus", () => {
     );
   });
 
-  it("maps canceled/paused/none plan_status to 'canceled' (muted)", () => {
+  it("maps canceled/paused plan_status to 'canceled' (muted)", () => {
     expect(accountDisplayStatus({ plan_status: "canceled", suspended_at: null })).toBe("canceled");
     expect(accountDisplayStatus({ plan_status: "paused", suspended_at: null })).toBe("canceled");
-    expect(accountDisplayStatus({ plan_status: "none", suspended_at: null })).toBe("canceled");
+  });
+
+  it("maps never-subscribed (plan_status='none') to 'none', NOT 'canceled'", () => {
+    expect(accountDisplayStatus({ plan_status: "none", suspended_at: null })).toBe("none");
   });
 
   it("maps comped plan_status to 'comped'", () => {
@@ -617,7 +620,7 @@ describe("minimal (all-omitempty-absent) payload survival", () => {
     expect(() => accountDisplayStatus(MINIMAL_LIST_ITEM)).not.toThrow();
     expect(() => formatAccountMrr(MINIMAL_LIST_ITEM)).not.toThrow();
     expect(() => isIdle90d(MINIMAL_LIST_ITEM.last_activity)).not.toThrow();
-    expect(accountDisplayStatus(MINIMAL_LIST_ITEM)).toBe("canceled");
+    expect(accountDisplayStatus(MINIMAL_LIST_ITEM)).toBe("none");
   });
 
   const MINIMAL_USAGE: AdminAccountUsage = {
