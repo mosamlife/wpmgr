@@ -44,29 +44,65 @@ use ZipArchive;
 final class FilesRestorer
 {
     /**
-     * Files we never overwrite during a restore. Substring match (matches
-     * Historical substring-based pattern (so `notwp-config.php` is also a
-     * false positive but never a security hole).
+     * wp-content-ROOT drop-ins / config we never overwrite during a restore.
+     * Matched by EXACT full-path equality against the normalized entry name
+     * (i.e. the entry must sit at the top of the archive, with no directory
+     * prefix) — these filenames only carry drop-in/config semantics when
+     * WordPress finds them at the wp-content root. A same-named file nested
+     * inside a plugin/theme (e.g. `includes/modules/redirections/class-db.php`,
+     * or a bundled `redis-cache/includes/object-cache.php` template) is
+     * ordinary plugin content and MUST be restored — see GH #147, where a
+     * prior unanchored substring match dropped every nested `*db.php` file
+     * silently at extract time.
+     *
+     * `wp-config.php`, `.htaccess`, and `.user.ini` live in ABSPATH, OUTSIDE
+     * wp-content, so a well-formed wp-content archive should never contain
+     * them at all; they're listed here purely as belt-and-suspenders in case
+     * one ever appears at the root of a wp-content zip.
      *
      * @var list<string>
      */
-    private const EXCLUDE_SUBSTRINGS = [
+    private const EXCLUDE_EXACT_PATHS = [
         'wp-config.php',
         'db.php',
         'object-cache.php',
         'advanced-cache.php',
         '.htaccess',
         '.user.ini',
-        'wpmgr-agent/',
-        'wpmgr-snapshots/',
-        // Defensive — the agent's own plugin tree should not be replaced by a
-        // restore of a past wp-content.
+    ];
+
+    /**
+     * WPMgr's own scratch/secret asset names, excluded wherever they appear —
+     * matched by EXACT segment equality against ANY `/`-separated component
+     * of the normalized entry name (unlike EXCLUDE_EXACT_PATHS, depth doesn't
+     * matter here). Safe to match at any depth because these names are
+     * unique to the agent and never legitimately collide with third-party
+     * plugin/theme file or directory names.
+     *
+     * - `wpmgr-agent`      — the agent scratch + keystore root (either at the
+     *                        wp-content root, `wp-content/wpmgr-agent/`, or
+     *                        the plugin directory `plugins/wpmgr-agent/`).
+     * - `wpmgr-agent.php`  — the single-file plugin variant / main plugin
+     *                        file, wherever it lands in the tree.
+     * - `wpmgr-snapshots`  — UpdateCommand pre-update snapshot store; lives
+     *                        under `uploads/wpmgr-snapshots/` by default or
+     *                        the legacy `wp-content/wpmgr-snapshots/` on
+     *                        read-only-uploads hosts — either way it must
+     *                        never be restored from a stale backup.
+     * - `wpmgr-object-cache-config.php` — object-cache credentials file
+     *                        (plaintext Redis password); the live credential
+     *                        must remain intact across a restore.
+     * - `.wpmgr-oc-state.json` — FD-6 object-cache cool-down state; must not
+     *                        be restored so a stale window cannot suppress
+     *                        Redis on a healthy site.
+     *
+     * @var list<string>
+     */
+    private const EXCLUDE_SEGMENTS = [
+        'wpmgr-agent',
         'wpmgr-agent.php',
-        // Object-cache credentials file: never restore from a backup archive;
-        // the live credential must remain intact across a restore.
+        'wpmgr-snapshots',
         'wpmgr-object-cache-config.php',
-        // FD-6: Object-cache cool-down state file; must not be restored from
-        // a backup so a stale window cannot suppress Redis on a healthy site.
         '.wpmgr-oc-state.json',
     ];
 
@@ -95,12 +131,15 @@ final class FilesRestorer
     public const OLDFILES_GC_AGE_SECONDS_LONG = 86400;
 
     /**
-     * Path-prefix denylist applied at zip-extract time. Any entry whose
-     * normalized name starts with one of these prefixes is silently dropped
-     * before it reaches staging. This is the defense-in-depth twin of
-     * `EXCLUDE_SUBSTRINGS` (substring match) — a prefix match is stricter and
-     * catches the wpmgr-agent plugin tree even if a malicious zip tried to
-     * smuggle it past the substring check via path normalization tricks.
+     * Anchored path-prefix denylist applied at zip-extract time. Any entry
+     * whose normalized name starts with one of these prefixes is silently
+     * dropped before it reaches staging. This is a THIRD, belt-and-suspenders
+     * layer on top of `EXCLUDE_SEGMENTS` — the segment check above already
+     * catches these paths at any depth (a `wpmgr-agent` or `wpmgr-snapshots`
+     * segment anywhere in the tree), but an anchored prefix is stricter still
+     * for the specific top-level locations these trees are known to live at,
+     * so it keeps working even if a future change ever narrowed the segment
+     * list.
      *
      * Backslashes in entry names are normalized to `/` before matching so a
      * Windows-packed zip can't bypass the check with `plugins\wpmgr-agent\`.
@@ -110,6 +149,8 @@ final class FilesRestorer
     private const ENTRY_DENYLIST_PREFIXES = [
         'plugins/wpmgr-agent/',
         'plugins/wpmgr-agent.php',
+        'wpmgr-agent/',
+        'wpmgr-snapshots/',
     ];
 
     /**
@@ -121,10 +162,19 @@ final class FilesRestorer
      * are recursive for directories. Entries already present in staging are
      * NOT overwritten — only missing entries are pulled forward from live.
      *
+     * `db.php`, `object-cache.php`, and `advanced-cache.php` are excluded
+     * from staging entirely (see `EXCLUDE_EXACT_PATHS`) because a snapshot
+     * from a different host/config (e.g. a Memcached-era backup restored
+     * onto a Redis host) must not clobber the live drop-in — so staging will
+     * NEVER already contain them, and the entries below unconditionally pull
+     * the live copy forward across the swap (GH #147 fix — previously these
+     * were excluded from staging but NOT preserved-from-live, so a restore
+     * silently deleted the running drop-in with no replacement).
+     *
      * Note on scope: `swap()` operates on wp-content only, so `wp-config.php`,
      * `.htaccess`, and `.user.ini` (which live in ABSPATH, OUTSIDE wp-content)
      * are not in scope here. They're already filtered by the backup-side
-     * excludes + by `EXCLUDE_SUBSTRINGS` above; they were never written to
+     * excludes + by `EXCLUDE_EXACT_PATHS` above; they were never written to
      * staging to begin with, so they continue to live at their original
      * ABSPATH location across a restore.
      *
@@ -141,8 +191,12 @@ final class FilesRestorer
         // .wpmgr-agent-master.key (keystore). v0.9.7 swap_files destroyed
         // this dir; v0.9.9 explicitly preserves it from live → staging so the
         // dump file survives the swap and restore_db finds it. Same pattern
-        // Same pattern leading backup plugins use for their own scratch dirs.
+        // leading backup plugins use for their own scratch dirs.
         'wpmgr-agent',
+        // Host-state drop-ins: keep the LIVE copy across a restore — GH #147.
+        'db.php',
+        'object-cache.php',
+        'advanced-cache.php',
     ];
 
     /**
@@ -228,7 +282,8 @@ final class FilesRestorer
                         continue;
                     }
 
-                    // Drop-in / config exclude list — substring match.
+                    // Drop-in / config / WPMgr-scratch exclude list — anchored
+                    // match (exact path or exact segment; never substring).
                     if (self::isExcluded($entryName)) {
                         continue;
                     }
@@ -682,29 +737,56 @@ final class FilesRestorer
     }
 
     /**
-     * Whether an entry name should be skipped at extract time. Combines two
-     * filters:
+     * Whether an entry name should be skipped at extract time. GH #147:
+     * previously this used an UNANCHORED substring match
+     * (`strpos($entryName, $sub) !== false`), so `db.php` matched inside
+     * `.../class-db.php`, silently dropping unrelated plugin files at
+     * extract time — before extraction, so the loss was never even logged as
+     * a skip-with-reason. Every check below is now anchored (exact-path,
+     * exact-segment, or anchored-prefix — never a bare substring), mirroring
+     * the already-correct discipline in `FilesArchiver::isExcluded()`.
      *
-     *   1. EXCLUDE_SUBSTRINGS — historical substring match. Catches config
-     *      files + drop-ins anywhere in the path.
-     *   2. ENTRY_DENYLIST_PREFIXES — path-prefix match against the wp-content-
-     *      relative name. Stricter than substring match and explicitly guards
-     *      against the wpmgr-agent plugin tree being clobbered by a stale
-     *      backup. Backslashes are normalized to `/` first so a zip packed on
-     *      Windows (entries like `plugins\wpmgr-agent\foo.php`) is still
-     *      matched.
+     * Combines three anchored filters, most-specific first:
+     *
+     *   1. EXCLUDE_EXACT_PATHS — the normalized entry name must equal the
+     *      excluded value EXACTLY (i.e. the entry sits at the top of the
+     *      archive with no directory prefix). Catches wp-content-root
+     *      drop-ins/config without over-matching same-named nested files.
+     *   2. EXCLUDE_SEGMENTS — one `/`-separated segment of the normalized
+     *      entry name must equal the excluded value exactly, at any depth.
+     *      Reserved for WPMgr's own uniquely-named scratch/secret assets,
+     *      which never legitimately collide with third-party file names.
+     *   3. ENTRY_DENYLIST_PREFIXES — anchored-prefix match against the
+     *      normalized name. Belt-and-suspenders on top of (2) for the
+     *      specific top-level locations the wpmgr-agent tree and scratch
+     *      dirs are known to live at.
+     *
+     * Backslashes are normalized to `/` first (and any leading `/` is
+     * stripped) so a zip packed on Windows (entries like
+     * `plugins\wpmgr-agent\foo.php`) is still matched by all three checks.
      */
     private static function isExcluded(string $entryName): bool
     {
-        foreach (self::EXCLUDE_SUBSTRINGS as $sub) {
-            if (strpos($entryName, $sub) !== false) {
+        $normalized = str_replace('\\', '/', $entryName);
+        $normalized = ltrim($normalized, '/');
+        if ($normalized === '') {
+            return false;
+        }
+
+        // 1) Exact top-level path match.
+        if (in_array($normalized, self::EXCLUDE_EXACT_PATHS, true)) {
+            return true;
+        }
+
+        // 2) Exact segment match at any depth.
+        $segments = explode('/', $normalized);
+        foreach ($segments as $segment) {
+            if ($segment !== '' && in_array($segment, self::EXCLUDE_SEGMENTS, true)) {
                 return true;
             }
         }
-        // Prefix denylist — normalize Windows-style separators first so a
-        // zip packed on Windows can't slip past with `plugins\wpmgr-agent\`.
-        $normalized = str_replace('\\', '/', $entryName);
-        $normalized = ltrim($normalized, '/');
+
+        // 3) Anchored-prefix denylist.
         foreach (self::ENTRY_DENYLIST_PREFIXES as $prefix) {
             if (strncmp($normalized, $prefix, strlen($prefix)) === 0) {
                 return true;

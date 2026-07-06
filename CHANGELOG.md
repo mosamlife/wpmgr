@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.25] - 2026-07-06
+
+### Fixed
+
+- Restore could silently drop plugin or theme files whose path contained a reserved drop-in name (for example a plugin's own `class-db.php`), leaving the site with a fatal error while the restore reported success. The restore now matches its protected-file exclusions by exact path instead of substring, so only genuine WordPress root drop-ins (`db.php`, `object-cache.php`, `advanced-cache.php`) and config files are held back and every other file is restored. This also stops a nested `.htaccess` from being dropped on restore. Affected agent updated to 0.61.10. Sites already broken by an earlier restore can recover by re-restoring from the same snapshot with the updated agent, or by reinstalling the affected plugin.
+
 ## [0.61.23] - 2026-07-06
 
 ### Fixed
