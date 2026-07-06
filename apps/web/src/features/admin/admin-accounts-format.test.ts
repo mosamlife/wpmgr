@@ -105,10 +105,13 @@ describe("accountDisplayStatus", () => {
     );
   });
 
-  it("maps canceled/paused/none plan_status to 'canceled' (muted)", () => {
+  it("maps canceled/paused plan_status to 'canceled' (muted)", () => {
     expect(accountDisplayStatus({ plan_status: "canceled", suspended_at: null })).toBe("canceled");
     expect(accountDisplayStatus({ plan_status: "paused", suspended_at: null })).toBe("canceled");
-    expect(accountDisplayStatus({ plan_status: "none", suspended_at: null })).toBe("canceled");
+  });
+
+  it("maps never-subscribed (plan_status='none') to 'none', NOT 'canceled'", () => {
+    expect(accountDisplayStatus({ plan_status: "none", suspended_at: null })).toBe("none");
   });
 
   it("maps comped plan_status to 'comped'", () => {
