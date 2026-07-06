@@ -843,6 +843,71 @@ export type AuditRebaselineRequest = {
   broken_at?: string;
 };
 
+export type BillingSiteMeter = {
+  /**
+   * Current non-archived site count.
+   */
+  used: number;
+  /**
+   * The effective (status-gated) site cap for this tenant's plan.
+   */
+  limit: number;
+};
+
+export type BillingMeters = {
+  sites: BillingSiteMeter;
+};
+
+export type BillingSummary = {
+  /**
+   * The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free" (non-destructive downgrade — see plan_status).
+   */
+  plan: "free" | "starter" | "agency" | "scale";
+  plan_status:
+    | "none"
+    | "trialing"
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "paused"
+    | "comped";
+  current_period_end?: string;
+  /**
+   * The tenant's payment provider (e.g. "stripe"). Empty until the tenant's first checkout.
+   */
+  provider?: string;
+  /**
+   * Set only while plan_status is past_due: paid limits continue until this instant, after which the tenant falls back to free.
+   */
+  grace_until?: string;
+  meters: BillingMeters;
+  /**
+   * True once the tenant has a payment-provider customer id — i.e. POST /billing/portal will succeed rather than 409.
+   */
+  portal_available: boolean;
+};
+
+export type BillingCheckoutRequest = {
+  /**
+   * The ONLY caller-supplied selector. The server resolves this to a payment-provider price server-side; a request can never name a price directly.
+   */
+  tier: "starter" | "agency" | "scale";
+};
+
+export type BillingCheckoutResponse = {
+  /**
+   * Redirect the browser here to complete checkout.
+   */
+  url: string;
+};
+
+export type BillingPortalResponse = {
+  /**
+   * Redirect the browser here to the billing-management portal.
+   */
+  url: string;
+};
+
 /**
  * One thing to update on a site.
  */
@@ -6911,6 +6976,110 @@ export type RebaselineAuditIntegrityResponses = {
 
 export type RebaselineAuditIntegrityResponse =
   RebaselineAuditIntegrityResponses[keyof RebaselineAuditIntegrityResponses];
+
+export type GetBillingData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/billing";
+};
+
+export type GetBillingErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetBillingError = GetBillingErrors[keyof GetBillingErrors];
+
+export type GetBillingResponses = {
+  /**
+   * The tenant's billing summary
+   */
+  200: BillingSummary;
+};
+
+export type GetBillingResponse = GetBillingResponses[keyof GetBillingResponses];
+
+export type CreateBillingCheckoutData = {
+  body: BillingCheckoutRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/billing/checkout";
+};
+
+export type CreateBillingCheckoutErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * tier is not one of starter, agency, scale
+   */
+  422: Error;
+  /**
+   * No payment provider is configured on this instance yet
+   */
+  503: Error;
+};
+
+export type CreateBillingCheckoutError =
+  CreateBillingCheckoutErrors[keyof CreateBillingCheckoutErrors];
+
+export type CreateBillingCheckoutResponses = {
+  /**
+   * Checkout session created
+   */
+  200: BillingCheckoutResponse;
+};
+
+export type CreateBillingCheckoutResponse =
+  CreateBillingCheckoutResponses[keyof CreateBillingCheckoutResponses];
+
+export type CreateBillingPortalData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/billing/portal";
+};
+
+export type CreateBillingPortalErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * This workspace has no payment-provider customer yet — start a checkout first
+   *
+   */
+  409: Error;
+};
+
+export type CreateBillingPortalError =
+  CreateBillingPortalErrors[keyof CreateBillingPortalErrors];
+
+export type CreateBillingPortalResponses = {
+  /**
+   * Portal session created
+   */
+  200: BillingPortalResponse;
+};
+
+export type CreateBillingPortalResponse =
+  CreateBillingPortalResponses[keyof CreateBillingPortalResponses];
 
 export type ListTenantsData = {
   body?: never;

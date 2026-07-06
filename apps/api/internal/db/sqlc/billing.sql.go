@@ -7,10 +7,50 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const applyBillingSubscriptionState = `-- name: ApplyBillingSubscriptionState :exec
+UPDATE tenants
+SET plan                     = $1,
+    plan_status               = $2,
+    grace_until               = $3,
+    current_period_end        = $4,
+    provider_subscription_id  = $5,
+    provider_customer_id      = COALESCE(NULLIF($6::text, ''), provider_customer_id)
+WHERE id = $7
+`
+
+type ApplyBillingSubscriptionStateParams struct {
+	Plan                   string             `json:"plan"`
+	PlanStatus             string             `json:"plan_status"`
+	GraceUntil             pgtype.Timestamptz `json:"grace_until"`
+	CurrentPeriodEnd       pgtype.Timestamptz `json:"current_period_end"`
+	ProviderSubscriptionID *string            `json:"provider_subscription_id"`
+	ProviderCustomerID     string             `json:"provider_customer_id"`
+	TenantID               uuid.UUID          `json:"tenant_id"`
+}
+
+// Persists the state machine's resolved next tenantBillingProfile
+// (nextBillingState in state_machine.go). provider_customer_id is only
+// overwritten when a non-empty value is supplied (COALESCE over NULLIF)
+// so a caller that does not yet know the customer id (should not happen once
+// a subscription exists, but keeps this query safe to reuse) cannot blank it.
+func (q *Queries) ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error {
+	_, err := q.db.Exec(ctx, applyBillingSubscriptionState,
+		arg.Plan,
+		arg.PlanStatus,
+		arg.GraceUntil,
+		arg.CurrentPeriodEnd,
+		arg.ProviderSubscriptionID,
+		arg.ProviderCustomerID,
+		arg.TenantID,
+	)
+	return err
+}
 
 const countActiveSitesForBilling = `-- name: CountActiveSitesForBilling :one
 SELECT billing_count_active_sites($1)::bigint AS count
@@ -25,6 +65,29 @@ func (q *Queries) CountActiveSitesForBilling(ctx context.Context, tenantID uuid.
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const findTenantByProviderCustomer = `-- name: FindTenantByProviderCustomer :one
+SELECT id FROM tenants
+WHERE billing_provider = $1
+  AND provider_customer_id = $2
+`
+
+type FindTenantByProviderCustomerParams struct {
+	BillingProvider    *string `json:"billing_provider"`
+	ProviderCustomerID *string `json:"provider_customer_id"`
+}
+
+// The "unknown tenant" fallback attribution path: resolves a tenant from
+// (provider, provider_customer_id) when a webhook event's payload carries no
+// tenant metadata (e.g. an invoice/charge event whose subscription was not
+// expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
+// treats the event as "unknown customer" (record + warn, change nothing).
+func (q *Queries) FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findTenantByProviderCustomer, arg.BillingProvider, arg.ProviderCustomerID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getTenantBilling = `-- name: GetTenantBilling :one
@@ -57,4 +120,224 @@ func (q *Queries) GetTenantBilling(ctx context.Context, tenantID uuid.UUID) (Get
 		&i.CurrentPeriodEnd,
 	)
 	return i, err
+}
+
+const getTenantBillingProfile = `-- name: GetTenantBillingProfile :one
+
+SELECT plan, plan_status, plan_overrides, grace_until,
+       billing_provider, provider_customer_id, provider_subscription_id,
+       current_period_end
+FROM tenants
+WHERE id = $1
+`
+
+type GetTenantBillingProfileRow struct {
+	Plan                   string             `json:"plan"`
+	PlanStatus             string             `json:"plan_status"`
+	PlanOverrides          []byte             `json:"plan_overrides"`
+	GraceUntil             pgtype.Timestamptz `json:"grace_until"`
+	BillingProvider        *string            `json:"billing_provider"`
+	ProviderCustomerID     *string            `json:"provider_customer_id"`
+	ProviderSubscriptionID *string            `json:"provider_subscription_id"`
+	CurrentPeriodEnd       pgtype.Timestamptz `json:"current_period_end"`
+}
+
+// ---------------------------------------------------------------------------
+// M16 Phase B — payment-provider integration.
+//
+// tenants carries NO RLS (see schema.sql header), so every query below runs
+// against the plain pool/tx (no InTenantTx/InAgentTx GUC needed) — mirrors
+// internal/tenant's pgRepo, which does the same for its own tenant-row reads.
+// billing_events, by contrast, DOES carry RLS (the m91 tenant/system pairing)
+// and every query against it below is run under InAgentTx (a webhook is a
+// cross-tenant system write, exactly like the m91 comment documents).
+// ---------------------------------------------------------------------------
+// The full Phase-B billing profile for one tenant: checkout/portal/webhook
+// processing need the provider identity + external ids that Phase A's
+// GetTenantBilling (the tight entitlement-resolution hot path) does not
+// select.
+func (q *Queries) GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingProfileRow, error) {
+	row := q.db.QueryRow(ctx, getTenantBillingProfile, tenantID)
+	var i GetTenantBillingProfileRow
+	err := row.Scan(
+		&i.Plan,
+		&i.PlanStatus,
+		&i.PlanOverrides,
+		&i.GraceUntil,
+		&i.BillingProvider,
+		&i.ProviderCustomerID,
+		&i.ProviderSubscriptionID,
+		&i.CurrentPeriodEnd,
+	)
+	return i, err
+}
+
+const insertBillingEvent = `-- name: InsertBillingEvent :one
+
+INSERT INTO billing_events (
+    provider, provider_event_id, kind, tenant_id, payload, occurred_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6
+)
+ON CONFLICT (provider, provider_event_id) DO NOTHING
+RETURNING id
+`
+
+type InsertBillingEventParams struct {
+	Provider        string      `json:"provider"`
+	ProviderEventID string      `json:"provider_event_id"`
+	Kind            string      `json:"kind"`
+	TenantID        pgtype.UUID `json:"tenant_id"`
+	Payload         []byte      `json:"payload"`
+	OccurredAt      time.Time   `json:"occurred_at"`
+}
+
+// ---------------------------------------------------------------------------
+// billing_events (M91 ledger; M16 Phase B ingestion) — all queries below run
+// under InAgentTx (app.agent = 'on', the billing_events_system RLS policy).
+// ---------------------------------------------------------------------------
+// ON CONFLICT DO NOTHING makes a replayed webhook delivery a no-op insert
+// (Stripe, like most providers, retries on anything but a 2xx). tenant_id may
+// be NULL when attribution has not been resolved yet at insert time (the
+// caller backfills it via SetBillingEventTenant once resolved). A caller
+// distinguishes "inserted" from "duplicate" by checking for pgx.ErrNoRows,
+// exactly like email.Repo.InsertWebhookEventDedup.
+func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, insertBillingEvent,
+		arg.Provider,
+		arg.ProviderEventID,
+		arg.Kind,
+		arg.TenantID,
+		arg.Payload,
+		arg.OccurredAt,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lastProcessedBillingEventOccurredAtForTenant = `-- name: LastProcessedBillingEventOccurredAtForTenant :one
+SELECT occurred_at
+FROM billing_events
+WHERE tenant_id = $1
+  AND processed_at IS NOT NULL
+  AND id != $2
+ORDER BY occurred_at DESC
+LIMIT 1
+`
+
+type LastProcessedBillingEventOccurredAtForTenantParams struct {
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	ExcludeID uuid.UUID   `json:"exclude_id"`
+}
+
+// The out-of-order guard: the newest occurred_at among this tenant's ALREADY
+// APPLIED events (processed_at IS NOT NULL), excluding the event currently
+// being processed. A provider's webhook delivery order is not guaranteed to
+// match event creation order (Stripe documents this explicitly), so a fresh
+// event whose occurred_at is OLDER than this must be ledgered but must NOT be
+// allowed to overwrite a later state the tenant has already reached.
+//
+// Deliberately NOT a bare aggregate (SELECT max(occurred_at) ...): sqlc infers
+// an aggregate over occurred_at (a NOT NULL column) as itself NOT NULL, which
+// is wrong for the empty-result-set case (max() over zero rows is NULL) and
+// would panic the row.Scan on this tenant's very first processed event. A
+// plain ORDER BY ... LIMIT 1 instead returns zero rows in that case, which the
+// caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
+func (q *Queries) LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, lastProcessedBillingEventOccurredAtForTenant, arg.TenantID, arg.ExcludeID)
+	var occurred_at time.Time
+	err := row.Scan(&occurred_at)
+	return occurred_at, err
+}
+
+const listTenantsWithProviderSubscription = `-- name: ListTenantsWithProviderSubscription :many
+SELECT id, billing_provider, provider_subscription_id
+FROM tenants
+WHERE provider_subscription_id IS NOT NULL
+  AND billing_provider IS NOT NULL
+  AND plan_status <> 'comped'
+ORDER BY id
+`
+
+type ListTenantsWithProviderSubscriptionRow struct {
+	ID                     uuid.UUID `json:"id"`
+	BillingProvider        *string   `json:"billing_provider"`
+	ProviderSubscriptionID *string   `json:"provider_subscription_id"`
+}
+
+// The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
+// live provider subscription reference, excluding comped tenants (immune to
+// any provider-driven mutation, webhook or reconcile alike) and any tenant
+// with no provider wired at all. Not paginated: the expected tenant count for
+// this early-stage feature is small; a future pass can add keyset pagination
+// (ORDER BY id already supports it) without changing this query's shape.
+func (q *Queries) ListTenantsWithProviderSubscription(ctx context.Context) ([]ListTenantsWithProviderSubscriptionRow, error) {
+	rows, err := q.db.Query(ctx, listTenantsWithProviderSubscription)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTenantsWithProviderSubscriptionRow
+	for rows.Next() {
+		var i ListTenantsWithProviderSubscriptionRow
+		if err := rows.Scan(&i.ID, &i.BillingProvider, &i.ProviderSubscriptionID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markBillingEventProcessed = `-- name: MarkBillingEventProcessed :exec
+UPDATE billing_events SET processed_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkBillingEventProcessed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markBillingEventProcessed, id)
+	return err
+}
+
+const setBillingEventTenant = `-- name: SetBillingEventTenant :exec
+UPDATE billing_events
+SET tenant_id = $1
+WHERE id = $2 AND tenant_id IS NULL
+`
+
+type SetBillingEventTenantParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	ID       uuid.UUID   `json:"id"`
+}
+
+// Best-effort backfill once tenant attribution is resolved AFTER the initial
+// insert (the customer-id fallback lookup path). Guarded so it never
+// clobbers an already-attributed row.
+func (q *Queries) SetBillingEventTenant(ctx context.Context, arg SetBillingEventTenantParams) error {
+	_, err := q.db.Exec(ctx, setBillingEventTenant, arg.TenantID, arg.ID)
+	return err
+}
+
+const setTenantBillingProviderIfUnset = `-- name: SetTenantBillingProviderIfUnset :execrows
+UPDATE tenants
+SET billing_provider = $1
+WHERE id = $2 AND billing_provider IS NULL
+`
+
+type SetTenantBillingProviderIfUnsetParams struct {
+	BillingProvider *string   `json:"billing_provider"`
+	TenantID        uuid.UUID `json:"tenant_id"`
+}
+
+// "One tenant = one provider at a time (set at first checkout)": this only
+// ever writes when billing_provider is still NULL, so a tenant can never be
+// silently re-pointed at a different provider by a later checkout attempt.
+func (q *Queries) SetTenantBillingProviderIfUnset(ctx context.Context, arg SetTenantBillingProviderIfUnsetParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setTenantBillingProviderIfUnset, arg.BillingProvider, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

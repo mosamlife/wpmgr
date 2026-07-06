@@ -1648,6 +1648,118 @@ export const AuditRebaselineRequestSchema = {
   },
 } as const;
 
+export const BillingSiteMeterSchema = {
+  type: "object",
+  required: ["used", "limit"],
+  properties: {
+    used: {
+      type: "integer",
+      description: "Current non-archived site count.",
+    },
+    limit: {
+      type: "integer",
+      description:
+        "The effective (status-gated) site cap for this tenant's plan.",
+    },
+  },
+} as const;
+
+export const BillingMetersSchema = {
+  type: "object",
+  required: ["sites"],
+  properties: {
+    sites: {
+      $ref: "#/components/schemas/BillingSiteMeter",
+    },
+  },
+} as const;
+
+export const BillingSummarySchema = {
+  type: "object",
+  required: ["plan", "plan_status", "meters", "portal_available"],
+  properties: {
+    plan: {
+      type: "string",
+      enum: ["free", "starter", "agency", "scale"],
+      description:
+        'The tenant\'s SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free" (non-destructive downgrade — see plan_status).',
+    },
+    plan_status: {
+      type: "string",
+      enum: [
+        "none",
+        "trialing",
+        "active",
+        "past_due",
+        "canceled",
+        "paused",
+        "comped",
+      ],
+    },
+    current_period_end: {
+      type: "string",
+      format: "date-time",
+    },
+    provider: {
+      type: "string",
+      description:
+        "The tenant's payment provider (e.g. \"stripe\"). Empty until the tenant's first checkout.",
+    },
+    grace_until: {
+      type: "string",
+      format: "date-time",
+      description:
+        "Set only while plan_status is past_due: paid limits continue until this instant, after which the tenant falls back to free.",
+    },
+    meters: {
+      $ref: "#/components/schemas/BillingMeters",
+    },
+    portal_available: {
+      type: "boolean",
+      description:
+        "True once the tenant has a payment-provider customer id — i.e. POST /billing/portal will succeed rather than 409.",
+    },
+  },
+} as const;
+
+export const BillingCheckoutRequestSchema = {
+  type: "object",
+  required: ["tier"],
+  properties: {
+    tier: {
+      type: "string",
+      enum: ["starter", "agency", "scale"],
+      description:
+        "The ONLY caller-supplied selector. The server resolves this to a payment-provider price server-side; a request can never name a price directly.",
+    },
+  },
+} as const;
+
+export const BillingCheckoutResponseSchema = {
+  type: "object",
+  required: ["url"],
+  properties: {
+    url: {
+      type: "string",
+      format: "uri",
+      description: "Redirect the browser here to complete checkout.",
+    },
+  },
+} as const;
+
+export const BillingPortalResponseSchema = {
+  type: "object",
+  required: ["url"],
+  properties: {
+    url: {
+      type: "string",
+      format: "uri",
+      description:
+        "Redirect the browser here to the billing-management portal.",
+    },
+  },
+} as const;
+
 export const UpdateItemSchema = {
   type: "object",
   required: ["type"],

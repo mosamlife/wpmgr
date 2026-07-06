@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-query";
 import { client } from "@wpmgr/api";
 
+import { extractSiteLimitReached } from "@/lib/api";
 import { sitesKeys } from "./use-sites";
 import type { ConnectionState } from "./connection-state";
 
@@ -117,6 +118,12 @@ export function useCreateSiteFirst(): UseMutationResult<
         url: "/api/v1/sites",
         body: input,
       });
+      // 402 site_limit_reached (M16 Phase B): the tenant is at its hosted-
+      // billing site cap. Run through the shared interceptor so the Add Site
+      // dialog can swap to the consistent UpgradePrompt instead of a raw
+      // error string.
+      const limitReached = extractSiteLimitReached(response?.status, error);
+      if (limitReached) throw limitReached;
       if (response?.status === 409 && isApiErrorShape(error)) {
         if (
           error.code === "site_url_exists" &&

@@ -22,21 +22,22 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
+	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
-	portalpkg "github.com/mosamlife/wpmgr/apps/api/internal/portal"
-	reportpkg "github.com/mosamlife/wpmgr/apps/api/internal/report"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
+	"github.com/mosamlife/wpmgr/apps/api/internal/files"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/objectcache"
 	"github.com/mosamlife/wpmgr/apps/api/internal/org"
-	"github.com/mosamlife/wpmgr/apps/api/internal/files"
 	"github.com/mosamlife/wpmgr/apps/api/internal/perf"
+	portalpkg "github.com/mosamlife/wpmgr/apps/api/internal/portal"
+	reportpkg "github.com/mosamlife/wpmgr/apps/api/internal/report"
 	"github.com/mosamlife/wpmgr/apps/api/internal/rum"
 	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
 	"github.com/mosamlife/wpmgr/apps/api/internal/screenshot"
@@ -203,8 +204,16 @@ type Deps struct {
 	// PortalH serves the m66 read-only client portal routes under /api/v1/portal.
 	// nil ⇒ routes not mounted. All portal routes are gated by RequireClientPortal.
 	PortalH *portalpkg.Handler
-	ServiceName string
-	Version     string
+	// BillingH serves the M16 Phase B operator-facing billing routes under
+	// /api/v1/billing (summary, checkout, portal). nil ⇒ routes not mounted —
+	// wired only when WPMGR_HOSTED is enabled (see cmd/wpmgr/main.go); this is
+	// the routes-contract 404-when-unhosted guarantee.
+	BillingH *billing.Handler
+	// BillingWebhookH serves the M16 Phase B public payment-provider webhook
+	// endpoint at POST /webhooks/billing/:provider. nil ⇒ route not mounted.
+	BillingWebhookH *billing.WebhookHandler
+	ServiceName     string
+	Version         string
 }
 
 // Server bundles the HTTP server and its dependencies.
@@ -280,6 +289,16 @@ func New(deps Deps) *Server {
 	// without a session cookie. Must NOT use sessionAuthGroup (H2 note above).
 	if deps.EmailWebhookH != nil {
 		deps.EmailWebhookH.RegisterPublic(engine)
+	}
+
+	// M16 Phase B — public payment-provider webhook: POST
+	// /webhooks/billing/:provider. No session, no tenant gate — the
+	// provider's own request signature (verified inside
+	// billing.Service.ProcessWebhook) is the entire auth boundary. Mirrors the
+	// email webhook mounting immediately above. Intentionally does NOT use
+	// sessionAuthGroup (H2 note above).
+	if deps.BillingWebhookH != nil {
+		deps.BillingWebhookH.RegisterPublic(engine)
 	}
 
 	// Agent-authenticated endpoints: the agent authenticator verifies an Ed25519
@@ -500,6 +519,12 @@ func New(deps Deps) *Server {
 	// m33 — superadmin instance-management area (auth-only, not tenant-gated).
 	if deps.AdminH != nil {
 		deps.AdminH.Register(v1Auth)
+	}
+
+	// M16 Phase B — tenant-facing billing routes (summary/checkout/portal).
+	// nil ⇒ WPMGR_HOSTED is off; these three paths simply 404.
+	if deps.BillingH != nil {
+		deps.BillingH.Register(v1)
 	}
 
 	return s

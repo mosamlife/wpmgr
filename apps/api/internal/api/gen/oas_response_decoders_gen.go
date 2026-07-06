@@ -4144,6 +4144,333 @@ func decodeCreateBackupResponse(resp *http.Response) (res CreateBackupRes, _ err
 	return res, validate.UnexpectedStatusCodeWithResponse(resp)
 }
 
+func decodeCreateBillingCheckoutResponse(resp *http.Response) (res CreateBillingCheckoutRes, _ error) {
+	switch resp.StatusCode {
+	case 200:
+		// Code 200.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response BillingCheckoutResponse
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 401:
+		// Code 401.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response CreateBillingCheckoutUnauthorized
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 403:
+		// Code 403.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response CreateBillingCheckoutForbidden
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 422:
+		// Code 422.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response CreateBillingCheckoutUnprocessableEntity
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 503:
+		// Code 503.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response CreateBillingCheckoutServiceUnavailable
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	}
+	return res, validate.UnexpectedStatusCodeWithResponse(resp)
+}
+
+func decodeCreateBillingPortalResponse(resp *http.Response) (res CreateBillingPortalRes, _ error) {
+	switch resp.StatusCode {
+	case 200:
+		// Code 200.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response BillingPortalResponse
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 401:
+		// Code 401.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response CreateBillingPortalUnauthorized
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 403:
+		// Code 403.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response CreateBillingPortalForbidden
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 409:
+		// Code 409.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response CreateBillingPortalConflict
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	}
+	return res, validate.UnexpectedStatusCodeWithResponse(resp)
+}
+
 func decodeCreateClientResponse(resp *http.Response) (res CreateClientRes, _ error) {
 	switch resp.StatusCode {
 	case 201:
@@ -8800,6 +9127,126 @@ func decodeGetBackupSqlInspectionResponse(resp *http.Response) (res GetBackupSql
 			d := jx.DecodeBytes(buf)
 
 			var response Error
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	}
+	return res, validate.UnexpectedStatusCodeWithResponse(resp)
+}
+
+func decodeGetBillingResponse(resp *http.Response) (res GetBillingRes, _ error) {
+	switch resp.StatusCode {
+	case 200:
+		// Code 200.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response BillingSummary
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			// Validate response.
+			if err := func() error {
+				if err := response.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return res, errors.Wrap(err, "validate")
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 401:
+		// Code 401.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response GetBillingUnauthorized
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 403:
+		// Code 403.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response GetBillingForbidden
 			if err := func() error {
 				if err := response.Decode(d); err != nil {
 					return err

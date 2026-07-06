@@ -35,6 +35,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
+	billingstripe "github.com/mosamlife/wpmgr/apps/api/internal/billing/stripe"
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
@@ -456,6 +457,56 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// enricher in v0.49.1).
 	billingSvc := billing.New(pool, redisPool, cfg.Hosted.Enabled, clock, logger)
 	siteSvc.SetBillingGate(billingSvc)
+
+	// M16 Phase B — payment-provider integration. The registry is built from
+	// config REGARDLESS of WPMGR_HOSTED (an empty registry is harmless — every
+	// billing.Service method already treats "no providers configured" as a
+	// clean, documented no-op/503, never a crash). Stripe is registered ONLY
+	// when its five WPMGR_BILLING_STRIPE_* variables are ALL present
+	// (StripeConfig.Configured — config.Validate refuses a PARTIAL Stripe
+	// config at boot, so by the time we get here it is always all-or-nothing).
+	var billingProviders []billing.Provider
+	stripeCfg := billingstripe.Config{
+		SecretKey:       cfg.Billing.Stripe.SecretKey,
+		WebhookSecret:   cfg.Billing.Stripe.WebhookSecret,
+		PriceStarter:    cfg.Billing.Stripe.PriceStarter,
+		PriceAgency:     cfg.Billing.Stripe.PriceAgency,
+		PriceScale:      cfg.Billing.Stripe.PriceScale,
+		PortalReturnURL: strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/") + "/billing",
+	}
+	if stripeCfg.Configured() {
+		billingProviders = append(billingProviders, billingstripe.New(stripeCfg))
+		logger.Info("billing: Stripe provider registered")
+	} else if cfg.Hosted.Enabled {
+		logger.Warn("billing: hosted billing is enabled but no payment provider is configured — checkout/portal will return 503")
+	}
+	billingSvc.SetProviders(billing.NewRegistry(billingProviders...), "stripe")
+	billingSvc.SetAudit(auditRec)
+
+	// The billing HTTP handlers are always CONSTRUCTED (cheap, stateless) but
+	// only MOUNTED when hosted billing is enabled (see the server.Deps wiring
+	// near the bottom of this function) — that nil/non-nil split is the
+	// routes-contract 404-when-unhosted guarantee.
+	billingPublicBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+	billingH := billing.NewHandler(billingSvc, func(ctx context.Context, userID uuid.UUID) (string, error) {
+		u, err := authRepo.GetUserByID(ctx, userID)
+		if err != nil {
+			return "", err
+		}
+		return u.Email, nil
+	}, billingPublicBaseURL)
+	billingWebhookH := billing.NewWebhookHandler(billingSvc, logger)
+	billingReconcileWorker := billing.NewReconcileWorker(billingSvc, logger)
+
+	// Both handlers are mounted ONLY when hosted billing is enabled — this
+	// nil/non-nil split is the routes-contract 404-when-unhosted guarantee
+	// (see server.Deps.BillingH/BillingWebhookH's doc comments).
+	var billingHForRoutes *billing.Handler
+	var billingWebhookHForRoutes *billing.WebhookHandler
+	if cfg.Hosted.Enabled {
+		billingHForRoutes = billingH
+		billingWebhookHForRoutes = billingWebhookH
+	}
 
 	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc, pool)
 
@@ -1376,6 +1427,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		fileTransfersGCWorker: fileTransfersGCWorker,
 		// m85 — uptime-probe retention GC (always non-nil).
 		uptimeProbeGCWorker: uptimeProbeGCWorker,
+		// M16 Phase B — daily billing drift-repair sweep (always wired; the
+		// worker's own Reconcile call no-ops cleanly when hosted billing is
+		// disabled or no provider is registered).
+		billingReconcileWorker: billingReconcileWorker,
 	})
 	if err != nil {
 		return err
@@ -2005,9 +2060,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// ADR-059 Phase 3 — HIBP breach-password range proxy (agent-authenticated).
 		HIBPAgentH: hibpAgentH,
 		// m79 — vulnerability scanner: fleet rollup + per-site finding management.
-		VulnH:       vulnH,
-		ServiceName: cfg.OTel.ServiceName,
-		Version:     version,
+		VulnH: vulnH,
+		// M16 Phase B — hosted billing. Both nil unless WPMGR_HOSTED is
+		// enabled: this is the routes-contract 404-when-unhosted guarantee
+		// (the webhook path 404s the same way — ProcessWebhook would also
+		// refuse an unrecognized provider, but there is no reason to mount an
+		// unreachable public endpoint at all on a self-host/unhosted boot).
+		BillingH:        billingHForRoutes,
+		BillingWebhookH: billingWebhookHForRoutes,
+		ServiceName:     cfg.OTel.ServiceName,
+		Version:         version,
 	})
 
 	return srv.Run(ctx)
@@ -2389,6 +2451,11 @@ type riverDeps struct {
 	// 90 days once per day. Always wired; prevents the table from growing
 	// unbounded (the root reason the 30-day aggregate window becomes expensive).
 	uptimeProbeGCWorker *metrics.UptimeProbeGCWorker
+	// M16 Phase B — daily payment-provider drift-repair sweep. Always wired
+	// (like phpErrorsGCWorker/fileTransfersGCWorker above): Service.Reconcile
+	// itself no-ops cleanly when hosted billing is disabled or no provider is
+	// registered, so there is nothing to gate here.
+	billingReconcileWorker *billing.ReconcileWorker
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -2840,6 +2907,20 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return metrics.UptimeProbeGCArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: false},
+		))
+	}
+
+	// M16 Phase B — daily payment-provider drift-repair sweep. RunOnStart:
+	// true — a missed webhook could otherwise leave a tenant's plan wrong for
+	// up to a full 24h before the first sweep; running once immediately on
+	// boot closes that window without any real cost (the tenant set is small).
+	if d.billingReconcileWorker != nil {
+		river.AddWorker(workers, d.billingReconcileWorker)
+		queues[billing.ReconcileQueue] = river.QueueConfig{MaxWorkers: 1}
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(24*time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return billing.ReconcileArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}
 

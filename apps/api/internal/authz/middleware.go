@@ -135,14 +135,15 @@ func RequireRole(min Role) gin.HandlerFunc {
 // is the belt-and-braces guard at the permission layer; the RLS restrictive
 // policies on the underlying tables are the database-level guard.
 var orgLevelPerms = map[Permission]struct{}{
-	PermMemberManage: {},
-	PermMemberRead:   {},
-	PermAPIKeyRead:   {},
-	PermAPIKeyManage: {},
-	PermAuditRead:    {},
-	PermAuditManage:  {},
-	PermTenantManage: {},
-	PermSMTPManage:   {},
+	PermMemberManage:  {},
+	PermMemberRead:    {},
+	PermAPIKeyRead:    {},
+	PermAPIKeyManage:  {},
+	PermAuditRead:     {},
+	PermAuditManage:   {},
+	PermTenantManage:  {},
+	PermSMTPManage:    {},
+	PermBillingManage: {},
 }
 
 // RequirePermission aborts unless the principal's role holds the permission.

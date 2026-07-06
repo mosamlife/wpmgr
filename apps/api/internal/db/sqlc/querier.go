@@ -48,6 +48,12 @@ type Querier interface {
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
 	AdvanceBackupScheduleRun(ctx context.Context, arg AdvanceBackupScheduleRunParams) (BackupSchedule, error)
 	AllPluginSignatures(ctx context.Context) ([]PluginSignature, error)
+	// Persists the state machine's resolved next tenantBillingProfile
+	// (nextBillingState in state_machine.go). provider_customer_id is only
+	// overwritten when a non-empty value is supplied (COALESCE over NULLIF)
+	// so a caller that does not yet know the customer id (should not happen once
+	// a subscription exists, but keeps this query safe to reuse) cannot blank it.
+	ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error
 	// Soft-delete: sets archived_at without removing the row. Sites retain their
 	// client_id after archiving (they still show which client they were under).
 	ArchiveClient(ctx context.Context, arg ArchiveClientParams) (Client, error)
@@ -272,6 +278,12 @@ type Querier interface {
 	ExpireTwoFactorChallenge(ctx context.Context, id uuid.UUID) error
 	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (BackupSnapshot, error)
 	FailReport(ctx context.Context, arg FailReportParams) (GeneratedReport, error)
+	// The "unknown tenant" fallback attribution path: resolves a tenant from
+	// (provider, provider_customer_id) when a webhook event's payload carries no
+	// tenant metadata (e.g. an invoice/charge event whose subscription was not
+	// expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
+	// treats the event as "unknown customer" (record + warn, change nothing).
+	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
 	// Records a terminal task state (succeeded|failed|rolled_back|skipped) with the
 	// resolved versions and any detail/error. Tenant-scoped by id+tenant_id.
 	FinishUpdateTask(ctx context.Context, arg FinishUpdateTaskParams) (UpdateTask, error)
@@ -666,6 +678,21 @@ type Querier interface {
 	// acting tenant's own scope (operator paths) or the tenant_id resolved from a
 	// verified pairing code (the public /enroll path, InEnrollTx).
 	GetTenantBilling(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingRow, error)
+	// ---------------------------------------------------------------------------
+	// M16 Phase B — payment-provider integration.
+	//
+	// tenants carries NO RLS (see schema.sql header), so every query below runs
+	// against the plain pool/tx (no InTenantTx/InAgentTx GUC needed) — mirrors
+	// internal/tenant's pgRepo, which does the same for its own tenant-row reads.
+	// billing_events, by contrast, DOES carry RLS (the m91 tenant/system pairing)
+	// and every query against it below is run under InAgentTx (a webhook is a
+	// cross-tenant system write, exactly like the m91 comment documents).
+	// ---------------------------------------------------------------------------
+	// The full Phase-B billing profile for one tenant: checkout/portal/webhook
+	// processing need the provider identity + external ids that Phase A's
+	// GetTenantBilling (the tight entitlement-resolution hot path) does not
+	// select.
+	GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingProfileRow, error)
 	// GetTenantForUser returns a tenant by id only when the given user is a member.
 	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
 	// be run via InUserTx; a non-member (or unknown tenant) yields no rows.
@@ -745,6 +772,17 @@ type Querier interface {
 	// ============================================================================
 	// Mint path (app.tenant_id). The id is the JWT jti (base64url 32B random).
 	InsertAutologinToken(ctx context.Context, arg InsertAutologinTokenParams) (AutologinToken, error)
+	// ---------------------------------------------------------------------------
+	// billing_events (M91 ledger; M16 Phase B ingestion) — all queries below run
+	// under InAgentTx (app.agent = 'on', the billing_events_system RLS policy).
+	// ---------------------------------------------------------------------------
+	// ON CONFLICT DO NOTHING makes a replayed webhook delivery a no-op insert
+	// (Stripe, like most providers, retries on anything but a 2xx). tenant_id may
+	// be NULL when attribution has not been resolved yet at insert time (the
+	// caller backfills it via SetBillingEventTenant once resolved). A caller
+	// distinguishes "inserted" from "duplicate" by checking for pgx.ErrNoRows,
+	// exactly like email.Repo.InsertWebhookEventDedup.
+	InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) (uuid.UUID, error)
 	// ---------------------------------------------------------------------------
 	// site_cache_hit_ratio_history (M52 / #162)
 	// ---------------------------------------------------------------------------
@@ -847,6 +885,20 @@ type Querier interface {
 	// the fleet level (site_id IS NULL) or the specific site.
 	// Runs under InAgentTx (pre-send check from the delta-fetch query) or InTenantTx.
 	IsSuppressed(ctx context.Context, arg IsSuppressedParams) (bool, error)
+	// The out-of-order guard: the newest occurred_at among this tenant's ALREADY
+	// APPLIED events (processed_at IS NOT NULL), excluding the event currently
+	// being processed. A provider's webhook delivery order is not guaranteed to
+	// match event creation order (Stripe documents this explicitly), so a fresh
+	// event whose occurred_at is OLDER than this must be ledgered but must NOT be
+	// allowed to overwrite a later state the tenant has already reached.
+	//
+	// Deliberately NOT a bare aggregate (SELECT max(occurred_at) ...): sqlc infers
+	// an aggregate over occurred_at (a NOT NULL column) as itself NOT NULL, which
+	// is wrong for the empty-result-set case (max() over zero rows is NULL) and
+	// would panic the row.Scan on this tenant's very first processed event. A
+	// plain ORDER BY ... LIMIT 1 instead returns zero rows in that case, which the
+	// caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
+	LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
 	// All unused recovery codes for a user (used_at IS NULL).
@@ -1152,6 +1204,13 @@ type Querier interface {
 	// periodic retention GC. Runs cross-tenant under the app.agent GUC (the
 	// backup_snapshots_gc SELECT policy); the prune then runs per tenant.
 	ListTenantsWithCompletedSnapshots(ctx context.Context) ([]uuid.UUID, error)
+	// The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
+	// live provider subscription reference, excluding comped tenants (immune to
+	// any provider-driven mutation, webhook or reconcile alike) and any tenant
+	// with no provider wired at all. Not paginated: the expected tenant count for
+	// this early-stage feature is small; a future pass can add keyset pagination
+	// (ORDER BY id already supports it) without changing this query's shape.
+	ListTenantsWithProviderSubscription(ctx context.Context) ([]ListTenantsWithProviderSubscriptionRow, error)
 	// All active trusted devices for the Security settings UI.
 	// Ordered by created_at DESC, id DESC.
 	ListTrustedDevicesForUser(ctx context.Context, userID uuid.UUID) ([]TrustedDevice, error)
@@ -1190,6 +1249,7 @@ type Querier interface {
 	// Idempotent: returns 0 if another path already marked it (safe).
 	MarkAutologinTokenConsumed(ctx context.Context, arg MarkAutologinTokenConsumedParams) (int64, error)
 	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (BackupSnapshot, error)
+	MarkBillingEventProcessed(ctx context.Context, id uuid.UUID) error
 	// Stamp the last-purge gauge from the CONTROL PLANE when an operator purge runs
 	// (dashboard "Purge everything" / "Purge URL"). The agent's periodic stats push
 	// never reports a purge time, so without this the gauge sits at "Never" forever.
@@ -1297,6 +1357,10 @@ type Querier interface {
 	// Writes a new beacon_key_hash, rotating the previous one into beacon_key_hash_prev
 	// for the grace window. Operator write path (InTenantTx).
 	SetBeaconKeyHash(ctx context.Context, arg SetBeaconKeyHashParams) error
+	// Best-effort backfill once tenant attribution is resolved AFTER the initial
+	// insert (the customer-id fallback lookup path). Guarded so it never
+	// clobbers an already-attributed row.
+	SetBillingEventTenant(ctx context.Context, arg SetBillingEventTenantParams) error
 	// m61: write/rotate webhook security columns on a config row.
 	// Use set_signing_key flag (nil-sentinel) to preserve the existing encrypted key
 	// when rotating only the token or ARNs.
@@ -1319,6 +1383,10 @@ type Querier interface {
 	// app.agent GUC). Only writes when the value actually changes to avoid churn.
 	SetSiteHealthStatus(ctx context.Context, arg SetSiteHealthStatusParams) (int64, error)
 	SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site, error)
+	// "One tenant = one provider at a time (set at first checkout)": this only
+	// ever writes when billing_provider is still NULL, so a tenant can never be
+	// silently re-pointed at a different provider by a later checkout attempt.
+	SetTenantBillingProviderIfUnset(ctx context.Context, arg SetTenantBillingProviderIfUnsetParams) (int64, error)
 	SetUpdateRunStatus(ctx context.Context, arg SetUpdateRunStatusParams) (UpdateRun, error)
 	// Stamps password_changed_at so the Authenticator invalidates the user's other
 	// sessions (ADR-045 Phase 2).

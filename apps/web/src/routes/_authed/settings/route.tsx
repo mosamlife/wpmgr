@@ -1,6 +1,7 @@
 import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
 import {
   Building2,
+  CreditCard,
   KeyRound,
   Mail,
   ShieldCheck,
@@ -9,7 +10,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { useMe, isOrgScoped } from "@/features/auth/use-auth";
+import { useMe, isOrgScoped, activeRole } from "@/features/auth/use-auth";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authed/settings")({
@@ -26,12 +27,19 @@ interface SettingsNavItem {
   icon: LucideIcon;
   /** When true, only org-scoped members see this item. */
   orgOnly?: boolean;
+  /** When true, only the active tenant's owner sees this item. */
+  ownerOnly?: boolean;
+  /** When true, only a hosted instance (me.hosted) shows this item. */
+  hostedOnly?: boolean;
 }
 
 export const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { label: "Account",       to: "/settings/account",      icon: User },
   { label: "Security",      to: "/settings/security",     icon: ShieldCheck,  orgOnly: true },
   { label: "Organisation",  to: "/settings/organization", icon: Building2,    orgOnly: true },
+  // Billing is owner-only (like the audit re-baseline) AND only ever
+  // meaningful on a hosted instance — self-hosted installs never see it.
+  { label: "Billing",       to: "/settings/billing",      icon: CreditCard,   orgOnly: true, ownerOnly: true, hostedOnly: true },
   { label: "API keys",      to: "/settings/api-keys",     icon: KeyRound,     orgOnly: true },
   { label: "Email / SMTP",  to: "/settings/smtp",         icon: Mail,         orgOnly: true },
   { label: "Members",       to: "/settings/members",      icon: Users,        orgOnly: true },
@@ -44,13 +52,20 @@ export const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
 function SettingsLayout() {
   const { data: me } = useMe();
   const orgScoped = isOrgScoped(me);
+  const isOwner = activeRole(me) === "owner";
+  const hosted = me?.hosted === true;
   const location = useLocation();
   const pathname = location.pathname;
 
-  // Site-scoped collaborators only see Account.
-  const visibleItems = SETTINGS_NAV_ITEMS.filter(
-    (item) => !item.orgOnly || orgScoped,
-  );
+  // Site-scoped collaborators only see Account. Billing additionally hides
+  // behind ownerOnly + hostedOnly (self-hosted installs never see it, and
+  // only the tenant owner may manage it).
+  const visibleItems = SETTINGS_NAV_ITEMS.filter((item) => {
+    if (item.orgOnly && !orgScoped) return false;
+    if (item.ownerOnly && !isOwner) return false;
+    if (item.hostedOnly && !hosted) return false;
+    return true;
+  });
 
   return (
     // Constrain the entire settings area to a sensible max width so text

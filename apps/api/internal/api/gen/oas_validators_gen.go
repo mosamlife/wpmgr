@@ -1933,6 +1933,112 @@ func (s BackupSnapshotStatus) Validate() error {
 	}
 }
 
+func (s *BillingCheckoutRequest) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Tier.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "tier",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s BillingCheckoutRequestTier) Validate() error {
+	switch s {
+	case "starter":
+		return nil
+	case "agency":
+		return nil
+	case "scale":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *BillingSummary) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Plan.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "plan",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.PlanStatus.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "plan_status",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s BillingSummaryPlan) Validate() error {
+	switch s {
+	case "free":
+		return nil
+	case "starter":
+		return nil
+	case "agency":
+		return nil
+	case "scale":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s BillingSummaryPlanStatus) Validate() error {
+	switch s {
+	case "none":
+		return nil
+	case "trialing":
+		return nil
+	case "active":
+		return nil
+	case "past_due":
+		return nil
+	case "canceled":
+		return nil
+	case "paused":
+		return nil
+	case "comped":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *BulkConfigRequest) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer

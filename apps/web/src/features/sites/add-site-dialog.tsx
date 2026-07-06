@@ -23,10 +23,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { UpgradePrompt } from "@/components/dialogs/upgrade-prompt";
 import { fade, scaleIn } from "@/lib/motion-presets";
 import { AGENT_PLUGIN_DOWNLOAD_URL } from "@/lib/links";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
+import { SiteLimitReachedError } from "@/lib/api";
+import { useMe, activeRole } from "@/features/auth/use-auth";
 import {
   useCreateSiteFirst,
   useCreateEnrollmentCode,
@@ -113,6 +116,20 @@ export function AddSiteDialog({
     else setInternalOpen(false);
   }, [isControlled, controlledOnClose]);
 
+  // 402 site_limit_reached (M16 Phase B): closes this dialog and opens the
+  // shared UpgradePrompt instead — the two are never shown stacked.
+  const { data: me } = useMe();
+  const [limitError, setLimitError] = useState<SiteLimitReachedError | null>(
+    null,
+  );
+  const handleLimitReached = useCallback(
+    (err: SiteLimitReachedError) => {
+      setLimitError(err);
+      close();
+    },
+    [close],
+  );
+
   return (
     <>
       {isControlled ? null : (
@@ -126,11 +143,20 @@ export function AddSiteDialog({
           <AddSiteFlow
             key={initialSite?.siteId ?? "new"}
             onClose={close}
+            onLimitReached={handleLimitReached}
             initialSite={initialSite}
             initialUrl={initialUrl}
           />
         ) : null}
       </Dialog>
+      <UpgradePrompt
+        open={limitError !== null}
+        onClose={() => setLimitError(null)}
+        limit={limitError?.limit ?? 0}
+        usage={limitError?.usage ?? 0}
+        plan={limitError?.plan ?? "free"}
+        canUpgrade={Boolean(me?.hosted) && activeRole(me) === "owner"}
+      />
     </>
   );
 }
@@ -139,10 +165,12 @@ export function AddSiteDialog({
 // dialog opens — no stale step/code leaking between sessions.
 function AddSiteFlow({
   onClose,
+  onLimitReached,
   initialSite,
   initialUrl,
 }: {
   onClose: () => void;
+  onLimitReached: (err: SiteLimitReachedError) => void;
   initialSite?: AddSiteDialogProps["initialSite"];
   initialUrl?: string;
 }) {
@@ -239,6 +267,7 @@ function AddSiteFlow({
               onCreated={handleCreated}
               onCancel={onClose}
               onReconnectExisting={handleReconnectExisting}
+              onLimitReached={onLimitReached}
               initialUrl={initialUrl}
             />
           </motion.div>
@@ -290,11 +319,13 @@ function UrlStep({
   onCreated,
   onCancel,
   onReconnectExisting,
+  onLimitReached,
   initialUrl,
 }: {
   onCreated: (site: PendingSite) => void;
   onCancel: () => void;
   onReconnectExisting: (siteId: string, url: string) => void;
+  onLimitReached: (err: SiteLimitReachedError) => void;
   initialUrl?: string;
 }) {
   const create = useCreateSiteFirst();
@@ -326,9 +357,14 @@ function UrlStep({
             expiresAt: result.expires_at,
           });
         },
+        onError: (err) => {
+          // 402 site_limit_reached: swap to the shared UpgradePrompt instead
+          // of rendering it as a generic inline error below.
+          if (err instanceof SiteLimitReachedError) onLimitReached(err);
+        },
       },
     );
-  }, [url, name, tags, create, onCreated]);
+  }, [url, name, tags, create, onCreated, onLimitReached]);
 
   // Render a targeted affordance when the CP returns a structured 409 collision.
   const urlExistsError =
@@ -336,7 +372,9 @@ function UrlStep({
       ? create.error
       : null;
   const genericError =
-    create.isError && !(create.error instanceof SiteUrlExistsError)
+    create.isError &&
+    !(create.error instanceof SiteUrlExistsError) &&
+    !(create.error instanceof SiteLimitReachedError)
       ? create.error.message
       : null;
 

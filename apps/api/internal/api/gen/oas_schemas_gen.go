@@ -3952,6 +3952,375 @@ func (s *BackupSnapshotStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/BillingCheckoutRequest
+type BillingCheckoutRequest struct {
+	// The ONLY caller-supplied selector. The server resolves this to a payment-provider price
+	// server-side; a request can never name a price directly.
+	Tier BillingCheckoutRequestTier `json:"tier"`
+}
+
+// GetTier returns the value of Tier.
+func (s *BillingCheckoutRequest) GetTier() BillingCheckoutRequestTier {
+	return s.Tier
+}
+
+// SetTier sets the value of Tier.
+func (s *BillingCheckoutRequest) SetTier(val BillingCheckoutRequestTier) {
+	s.Tier = val
+}
+
+// The ONLY caller-supplied selector. The server resolves this to a payment-provider price
+// server-side; a request can never name a price directly.
+type BillingCheckoutRequestTier string
+
+const (
+	BillingCheckoutRequestTierStarter BillingCheckoutRequestTier = "starter"
+	BillingCheckoutRequestTierAgency  BillingCheckoutRequestTier = "agency"
+	BillingCheckoutRequestTierScale   BillingCheckoutRequestTier = "scale"
+)
+
+// AllValues returns all BillingCheckoutRequestTier values.
+func (BillingCheckoutRequestTier) AllValues() []BillingCheckoutRequestTier {
+	return []BillingCheckoutRequestTier{
+		BillingCheckoutRequestTierStarter,
+		BillingCheckoutRequestTierAgency,
+		BillingCheckoutRequestTierScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BillingCheckoutRequestTier) MarshalText() ([]byte, error) {
+	switch s {
+	case BillingCheckoutRequestTierStarter:
+		return []byte(s), nil
+	case BillingCheckoutRequestTierAgency:
+		return []byte(s), nil
+	case BillingCheckoutRequestTierScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BillingCheckoutRequestTier) UnmarshalText(data []byte) error {
+	switch BillingCheckoutRequestTier(data) {
+	case BillingCheckoutRequestTierStarter:
+		*s = BillingCheckoutRequestTierStarter
+		return nil
+	case BillingCheckoutRequestTierAgency:
+		*s = BillingCheckoutRequestTierAgency
+		return nil
+	case BillingCheckoutRequestTierScale:
+		*s = BillingCheckoutRequestTierScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/BillingCheckoutResponse
+type BillingCheckoutResponse struct {
+	// Redirect the browser here to complete checkout.
+	URL url.URL `json:"url"`
+}
+
+// GetURL returns the value of URL.
+func (s *BillingCheckoutResponse) GetURL() url.URL {
+	return s.URL
+}
+
+// SetURL sets the value of URL.
+func (s *BillingCheckoutResponse) SetURL(val url.URL) {
+	s.URL = val
+}
+
+func (*BillingCheckoutResponse) createBillingCheckoutRes() {}
+
+// Ref: #/components/schemas/BillingMeters
+type BillingMeters struct {
+	Sites BillingSiteMeter `json:"sites"`
+}
+
+// GetSites returns the value of Sites.
+func (s *BillingMeters) GetSites() BillingSiteMeter {
+	return s.Sites
+}
+
+// SetSites sets the value of Sites.
+func (s *BillingMeters) SetSites(val BillingSiteMeter) {
+	s.Sites = val
+}
+
+// Ref: #/components/schemas/BillingPortalResponse
+type BillingPortalResponse struct {
+	// Redirect the browser here to the billing-management portal.
+	URL url.URL `json:"url"`
+}
+
+// GetURL returns the value of URL.
+func (s *BillingPortalResponse) GetURL() url.URL {
+	return s.URL
+}
+
+// SetURL sets the value of URL.
+func (s *BillingPortalResponse) SetURL(val url.URL) {
+	s.URL = val
+}
+
+func (*BillingPortalResponse) createBillingPortalRes() {}
+
+// Ref: #/components/schemas/BillingSiteMeter
+type BillingSiteMeter struct {
+	// Current non-archived site count.
+	Used int `json:"used"`
+	// The effective (status-gated) site cap for this tenant's plan.
+	Limit int `json:"limit"`
+}
+
+// GetUsed returns the value of Used.
+func (s *BillingSiteMeter) GetUsed() int {
+	return s.Used
+}
+
+// GetLimit returns the value of Limit.
+func (s *BillingSiteMeter) GetLimit() int {
+	return s.Limit
+}
+
+// SetUsed sets the value of Used.
+func (s *BillingSiteMeter) SetUsed(val int) {
+	s.Used = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *BillingSiteMeter) SetLimit(val int) {
+	s.Limit = val
+}
+
+// Ref: #/components/schemas/BillingSummary
+type BillingSummary struct {
+	// The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free"
+	// (non-destructive downgrade — see plan_status).
+	Plan             BillingSummaryPlan       `json:"plan"`
+	PlanStatus       BillingSummaryPlanStatus `json:"plan_status"`
+	CurrentPeriodEnd OptDateTime              `json:"current_period_end"`
+	// The tenant's payment provider (e.g. "stripe"). Empty until the tenant's first checkout.
+	Provider OptString `json:"provider"`
+	// Set only while plan_status is past_due: paid limits continue until this instant, after which the
+	// tenant falls back to free.
+	GraceUntil OptDateTime   `json:"grace_until"`
+	Meters     BillingMeters `json:"meters"`
+	// True once the tenant has a payment-provider customer id — i.e. POST /billing/portal will succeed
+	// rather than 409.
+	PortalAvailable bool `json:"portal_available"`
+}
+
+// GetPlan returns the value of Plan.
+func (s *BillingSummary) GetPlan() BillingSummaryPlan {
+	return s.Plan
+}
+
+// GetPlanStatus returns the value of PlanStatus.
+func (s *BillingSummary) GetPlanStatus() BillingSummaryPlanStatus {
+	return s.PlanStatus
+}
+
+// GetCurrentPeriodEnd returns the value of CurrentPeriodEnd.
+func (s *BillingSummary) GetCurrentPeriodEnd() OptDateTime {
+	return s.CurrentPeriodEnd
+}
+
+// GetProvider returns the value of Provider.
+func (s *BillingSummary) GetProvider() OptString {
+	return s.Provider
+}
+
+// GetGraceUntil returns the value of GraceUntil.
+func (s *BillingSummary) GetGraceUntil() OptDateTime {
+	return s.GraceUntil
+}
+
+// GetMeters returns the value of Meters.
+func (s *BillingSummary) GetMeters() BillingMeters {
+	return s.Meters
+}
+
+// GetPortalAvailable returns the value of PortalAvailable.
+func (s *BillingSummary) GetPortalAvailable() bool {
+	return s.PortalAvailable
+}
+
+// SetPlan sets the value of Plan.
+func (s *BillingSummary) SetPlan(val BillingSummaryPlan) {
+	s.Plan = val
+}
+
+// SetPlanStatus sets the value of PlanStatus.
+func (s *BillingSummary) SetPlanStatus(val BillingSummaryPlanStatus) {
+	s.PlanStatus = val
+}
+
+// SetCurrentPeriodEnd sets the value of CurrentPeriodEnd.
+func (s *BillingSummary) SetCurrentPeriodEnd(val OptDateTime) {
+	s.CurrentPeriodEnd = val
+}
+
+// SetProvider sets the value of Provider.
+func (s *BillingSummary) SetProvider(val OptString) {
+	s.Provider = val
+}
+
+// SetGraceUntil sets the value of GraceUntil.
+func (s *BillingSummary) SetGraceUntil(val OptDateTime) {
+	s.GraceUntil = val
+}
+
+// SetMeters sets the value of Meters.
+func (s *BillingSummary) SetMeters(val BillingMeters) {
+	s.Meters = val
+}
+
+// SetPortalAvailable sets the value of PortalAvailable.
+func (s *BillingSummary) SetPortalAvailable(val bool) {
+	s.PortalAvailable = val
+}
+
+func (*BillingSummary) getBillingRes() {}
+
+// The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free"
+// (non-destructive downgrade — see plan_status).
+type BillingSummaryPlan string
+
+const (
+	BillingSummaryPlanFree    BillingSummaryPlan = "free"
+	BillingSummaryPlanStarter BillingSummaryPlan = "starter"
+	BillingSummaryPlanAgency  BillingSummaryPlan = "agency"
+	BillingSummaryPlanScale   BillingSummaryPlan = "scale"
+)
+
+// AllValues returns all BillingSummaryPlan values.
+func (BillingSummaryPlan) AllValues() []BillingSummaryPlan {
+	return []BillingSummaryPlan{
+		BillingSummaryPlanFree,
+		BillingSummaryPlanStarter,
+		BillingSummaryPlanAgency,
+		BillingSummaryPlanScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BillingSummaryPlan) MarshalText() ([]byte, error) {
+	switch s {
+	case BillingSummaryPlanFree:
+		return []byte(s), nil
+	case BillingSummaryPlanStarter:
+		return []byte(s), nil
+	case BillingSummaryPlanAgency:
+		return []byte(s), nil
+	case BillingSummaryPlanScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BillingSummaryPlan) UnmarshalText(data []byte) error {
+	switch BillingSummaryPlan(data) {
+	case BillingSummaryPlanFree:
+		*s = BillingSummaryPlanFree
+		return nil
+	case BillingSummaryPlanStarter:
+		*s = BillingSummaryPlanStarter
+		return nil
+	case BillingSummaryPlanAgency:
+		*s = BillingSummaryPlanAgency
+		return nil
+	case BillingSummaryPlanScale:
+		*s = BillingSummaryPlanScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type BillingSummaryPlanStatus string
+
+const (
+	BillingSummaryPlanStatusNone     BillingSummaryPlanStatus = "none"
+	BillingSummaryPlanStatusTrialing BillingSummaryPlanStatus = "trialing"
+	BillingSummaryPlanStatusActive   BillingSummaryPlanStatus = "active"
+	BillingSummaryPlanStatusPastDue  BillingSummaryPlanStatus = "past_due"
+	BillingSummaryPlanStatusCanceled BillingSummaryPlanStatus = "canceled"
+	BillingSummaryPlanStatusPaused   BillingSummaryPlanStatus = "paused"
+	BillingSummaryPlanStatusComped   BillingSummaryPlanStatus = "comped"
+)
+
+// AllValues returns all BillingSummaryPlanStatus values.
+func (BillingSummaryPlanStatus) AllValues() []BillingSummaryPlanStatus {
+	return []BillingSummaryPlanStatus{
+		BillingSummaryPlanStatusNone,
+		BillingSummaryPlanStatusTrialing,
+		BillingSummaryPlanStatusActive,
+		BillingSummaryPlanStatusPastDue,
+		BillingSummaryPlanStatusCanceled,
+		BillingSummaryPlanStatusPaused,
+		BillingSummaryPlanStatusComped,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BillingSummaryPlanStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case BillingSummaryPlanStatusNone:
+		return []byte(s), nil
+	case BillingSummaryPlanStatusTrialing:
+		return []byte(s), nil
+	case BillingSummaryPlanStatusActive:
+		return []byte(s), nil
+	case BillingSummaryPlanStatusPastDue:
+		return []byte(s), nil
+	case BillingSummaryPlanStatusCanceled:
+		return []byte(s), nil
+	case BillingSummaryPlanStatusPaused:
+		return []byte(s), nil
+	case BillingSummaryPlanStatusComped:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BillingSummaryPlanStatus) UnmarshalText(data []byte) error {
+	switch BillingSummaryPlanStatus(data) {
+	case BillingSummaryPlanStatusNone:
+		*s = BillingSummaryPlanStatusNone
+		return nil
+	case BillingSummaryPlanStatusTrialing:
+		*s = BillingSummaryPlanStatusTrialing
+		return nil
+	case BillingSummaryPlanStatusActive:
+		*s = BillingSummaryPlanStatusActive
+		return nil
+	case BillingSummaryPlanStatusPastDue:
+		*s = BillingSummaryPlanStatusPastDue
+		return nil
+	case BillingSummaryPlanStatusCanceled:
+		*s = BillingSummaryPlanStatusCanceled
+		return nil
+	case BillingSummaryPlanStatusPaused:
+		*s = BillingSummaryPlanStatusPaused
+		return nil
+	case BillingSummaryPlanStatusComped:
+		*s = BillingSummaryPlanStatusComped
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Ref: #/components/schemas/BulkConfigRequest
 type BulkConfigRequest struct {
 	SiteIds []uuid.UUID             `json:"site_ids"`
@@ -6043,6 +6412,34 @@ func (*CreateAutologinNotFound) createAutologinRes() {}
 type CreateAutologinUnprocessableEntity Error
 
 func (*CreateAutologinUnprocessableEntity) createAutologinRes() {}
+
+type CreateBillingCheckoutForbidden Error
+
+func (*CreateBillingCheckoutForbidden) createBillingCheckoutRes() {}
+
+type CreateBillingCheckoutServiceUnavailable Error
+
+func (*CreateBillingCheckoutServiceUnavailable) createBillingCheckoutRes() {}
+
+type CreateBillingCheckoutUnauthorized Error
+
+func (*CreateBillingCheckoutUnauthorized) createBillingCheckoutRes() {}
+
+type CreateBillingCheckoutUnprocessableEntity Error
+
+func (*CreateBillingCheckoutUnprocessableEntity) createBillingCheckoutRes() {}
+
+type CreateBillingPortalConflict Error
+
+func (*CreateBillingPortalConflict) createBillingPortalRes() {}
+
+type CreateBillingPortalForbidden Error
+
+func (*CreateBillingPortalForbidden) createBillingPortalRes() {}
+
+type CreateBillingPortalUnauthorized Error
+
+func (*CreateBillingPortalUnauthorized) createBillingPortalRes() {}
 
 type CreateClientBadRequest Error
 
@@ -11847,6 +12244,14 @@ func (s *GetBackupSqlInspectionAccepted) SetLocation(val OptString) {
 }
 
 func (*GetBackupSqlInspectionAccepted) getBackupSqlInspectionRes() {}
+
+type GetBillingForbidden Error
+
+func (*GetBillingForbidden) getBillingRes() {}
+
+type GetBillingUnauthorized Error
+
+func (*GetBillingUnauthorized) getBillingRes() {}
 
 type GetClientForbidden Error
 

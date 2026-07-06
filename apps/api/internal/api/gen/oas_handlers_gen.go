@@ -6250,6 +6250,277 @@ func (s *Server) handleCreateBackupRequest(args [1]string, argsEscaped bool, w h
 	}
 }
 
+// handleCreateBillingCheckoutRequest handles createBillingCheckout operation.
+//
+// Starts a payment-provider checkout session for the requested tier. The provider price is resolved
+// SERVER-SIDE from an internal tier-to-price mapping — the request body never names a price
+// directly. Returns a URL to redirect the browser to.
+//
+// POST /api/v1/billing/checkout
+func (s *Server) handleCreateBillingCheckoutRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createBillingCheckout"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/api/v1/billing/checkout"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), CreateBillingCheckoutOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: CreateBillingCheckoutOperation,
+			ID:   "createBillingCheckout",
+		}
+	)
+
+	var rawBody []byte
+	request, rawBody, close, err := s.decodeCreateBillingCheckoutRequest(r)
+	if err != nil {
+		err = &ogenerrors.DecodeRequestError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeRequest", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+	defer func() {
+		if err := close(); err != nil {
+			recordError("CloseRequest", err)
+		}
+	}()
+
+	var response CreateBillingCheckoutRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    CreateBillingCheckoutOperation,
+			OperationSummary: "Start a hosted checkout session for a paid tier (owner)",
+			OperationID:      "createBillingCheckout",
+			Body:             request,
+			RawBody:          rawBody,
+			Params:           middleware.Parameters{},
+			Raw:              r,
+		}
+
+		type (
+			Request  = *BillingCheckoutRequest
+			Params   = struct{}
+			Response = CreateBillingCheckoutRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			nil,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.CreateBillingCheckout(ctx, request)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.CreateBillingCheckout(ctx, request)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeCreateBillingCheckoutResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
+// handleCreateBillingPortalRequest handles createBillingPortal operation.
+//
+// Mints a short-lived billing-management portal session for the tenant's existing payment-provider
+// customer, routed via whichever provider the tenant's first checkout started with. Returns a URL to
+// redirect the browser to.
+//
+// POST /api/v1/billing/portal
+func (s *Server) handleCreateBillingPortalRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createBillingPortal"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/api/v1/billing/portal"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), CreateBillingPortalOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err error
+	)
+
+	var rawBody []byte
+
+	var response CreateBillingPortalRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    CreateBillingPortalOperation,
+			OperationSummary: "Open the payment provider's billing-management portal (owner)",
+			OperationID:      "createBillingPortal",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params:           middleware.Parameters{},
+			Raw:              r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = struct{}
+			Response = CreateBillingPortalRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			nil,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.CreateBillingPortal(ctx)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.CreateBillingPortal(ctx)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeCreateBillingPortalResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleCreateClientRequest handles createClient operation.
 //
 // Create an agency client.
@@ -12890,6 +13161,132 @@ func (s *Server) handleGetBackupSqlInspectionRequest(args [1]string, argsEscaped
 	}
 
 	if err := encodeGetBackupSqlInspectionResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
+// handleGetBillingRequest handles getBilling operation.
+//
+// Returns the tenant's current plan, payment-provider subscription status, and site-count meter.
+// Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
+// self-hosted or unhosted instance 404s this path (and the two below it) entirely.
+//
+// GET /api/v1/billing
+func (s *Server) handleGetBillingRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getBilling"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.HTTPRouteKey.String("/api/v1/billing"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), GetBillingOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err error
+	)
+
+	var rawBody []byte
+
+	var response GetBillingRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    GetBillingOperation,
+			OperationSummary: "Get the active tenant's hosted-billing summary (owner)",
+			OperationID:      "getBilling",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params:           middleware.Parameters{},
+			Raw:              r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = struct{}
+			Response = GetBillingRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			nil,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.GetBilling(ctx)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.GetBilling(ctx)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeGetBillingResponse(response, w, span); err != nil {
 		defer recordError("EncodeResponse", err)
 		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
 			s.cfg.ErrorHandler(ctx, w, r, err)
