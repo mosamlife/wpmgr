@@ -1,15 +1,30 @@
 name: Plugin Check — wp.org build
 
 on:
-  # Manual trigger: run the authoritative WordPress.org Plugin Check against
-  # the wp.org-identity build (fleet-agent-for-wpmgr) and publish the zip +
-  # report as artifacts for submission.
+  # Automatic gate: on every PR that touches the agent plugin or the check
+  # harness, run the authoritative WordPress.org Plugin Check on a real
+  # WordPress (Docker) and fail the PR on any ERROR row. This keeps a change
+  # that would break wp.org acceptance — or the restore/backup surface — from
+  # merging, instead of relying on someone running `make agent-plugincheck`
+  # by hand.
+  pull_request:
+    paths:
+      - "apps/agent/**"
+      - "tools/plugincheck/**"
+      - "Makefile"
+      - ".github/workflows/plugincheck.yml"
+  # Manual trigger: build the wp.org-identity submission zip at a specific
+  # version and publish the zip + report as artifacts for submission.
   workflow_dispatch:
     inputs:
       version:
         description: "Version to stamp into the wp.org zip (MAJOR.MINOR.PATCH)"
         required: true
         default: "1.0.0"
+
+concurrency:
+  group: plugincheck-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   plugincheck:
@@ -40,24 +55,29 @@ jobs:
         working-directory: apps/agent
 
       - name: Build wp.org zip
-        run: make agent-zip-wporg VERSION="${{ inputs.version }}"
+        # On workflow_dispatch use the supplied version; a pull_request run has
+        # no input, so stamp a placeholder. The gate is ERROR rows only — the
+        # readme Stable Tag and the plugin header version are both stamped from
+        # VERSION, so they stay consistent whatever the value is.
+        run: make agent-zip-wporg VERSION="${{ inputs.version || '1.0.0' }}"
 
       - name: Run Plugin Check
-        # Runs the check runner directly against the zip built in the previous
-        # step (make agent-plugincheck would rebuild the vendor tree, which
-        # fights the composer cache on CI runners).
-        # shell: bash enables pipefail so the tee cannot mask a failing check.
+        # Runs the check runner directly against the zip built above (make
+        # agent-plugincheck would rebuild the vendor tree, fighting the cache).
+        # run.sh derives the slug from the zip's top-level dir and exits
+        # non-zero on any ERROR row. shell: bash enables pipefail so the tee
+        # cannot mask a failing check.
         shell: bash
         run: |
           chmod +x tools/plugincheck/run.sh
-          PLUGIN_ZIP="$PWD/release/fleet-agent-for-wpmgr.zip" ./tools/plugincheck/run.sh | tee plugincheck-report.txt
+          PLUGIN_ZIP="$PWD/release/fleet-agent-site-manager.zip" ./tools/plugincheck/run.sh | tee plugincheck-report.txt
 
       - name: Upload zip and report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fleet-agent-for-wpmgr-${{ inputs.version }}
+          name: fleet-agent-site-manager-${{ inputs.version || github.sha }}
           path: |
-            release/fleet-agent-for-wpmgr.zip
+            release/fleet-agent-site-manager.zip
             plugincheck-report.txt
           if-no-files-found: warn
