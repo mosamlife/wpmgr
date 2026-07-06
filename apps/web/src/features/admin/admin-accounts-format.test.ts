@@ -620,7 +620,7 @@ describe("minimal (all-omitempty-absent) payload survival", () => {
     expect(() => accountDisplayStatus(MINIMAL_LIST_ITEM)).not.toThrow();
     expect(() => formatAccountMrr(MINIMAL_LIST_ITEM)).not.toThrow();
     expect(() => isIdle90d(MINIMAL_LIST_ITEM.last_activity)).not.toThrow();
-    expect(accountDisplayStatus(MINIMAL_LIST_ITEM)).toBe("canceled");
+    expect(accountDisplayStatus(MINIMAL_LIST_ITEM)).toBe("none");
   });
 
   const MINIMAL_USAGE: AdminAccountUsage = {
