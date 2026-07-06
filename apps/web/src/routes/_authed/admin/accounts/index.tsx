@@ -47,7 +47,7 @@ import {
   formatAccountMrr,
   formatCents,
   isIdle90d,
-  type AccountDisplayStatus,
+  type FilterableAccountStatus,
   type AdminAccountSort,
   type AdminAccountsFilters,
 } from "@/features/admin/admin-accounts-format";
@@ -123,7 +123,7 @@ function AdminAccountsPage() {
     });
   }
 
-  function toggleStatus(value: AccountDisplayStatus) {
+  function toggleStatus(value: FilterableAccountStatus) {
     const next = filters.status.includes(value)
       ? filters.status.filter((s) => s !== value)
       : [...filters.status, value];

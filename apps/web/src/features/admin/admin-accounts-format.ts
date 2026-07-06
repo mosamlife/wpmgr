@@ -312,7 +312,12 @@ export function isWebhookStale(
 // subscription is in any state).
 // ---------------------------------------------------------------------------
 
-export const ACCOUNT_STATUS_FILTER_OPTIONS: readonly AccountDisplayStatus[] = [
+// The status FILTER excludes the display-only "none" (never-subscribed): it is
+// not a filterable subscription state (the handler does not accept it), only a
+// display badge.
+export type FilterableAccountStatus = Exclude<AccountDisplayStatus, "none">;
+
+export const ACCOUNT_STATUS_FILTER_OPTIONS: readonly FilterableAccountStatus[] = [
   "active",
   "trialing",
   "past_due",
@@ -349,7 +354,7 @@ export const ACCOUNT_SORT_OPTIONS: ReadonlyArray<{
 
 export interface AdminAccountsFilters {
   search: string;
-  status: AccountDisplayStatus[];
+  status: FilterableAccountStatus[];
   plan: BillingPlanId[];
   nearLimit: boolean;
   hasOverrides: boolean;
