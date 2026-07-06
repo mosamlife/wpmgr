@@ -98,6 +98,9 @@ import type {
   CleanDatabaseResponses,
   ClearRucssData,
   ClearRucssResponses,
+  CompAdminAccountData,
+  CompAdminAccountErrors,
+  CompAdminAccountResponses,
   ComputeRucssData,
   ComputeRucssResponses,
   CreateApiKeyData,
@@ -207,16 +210,28 @@ import type {
   ExportSiteEmailLogData,
   ExportSiteEmailLogErrors,
   ExportSiteEmailLogResponses,
+  ExtendAdminAccountGraceData,
+  ExtendAdminAccountGraceErrors,
+  ExtendAdminAccountGraceResponses,
   ExtractSiteFileArchiveData,
   ExtractSiteFileArchiveErrors,
   ExtractSiteFileArchiveResponses,
   FlushObjectCacheData,
   FlushObjectCacheResponses,
+  ForceAdminAccountStateData,
+  ForceAdminAccountStateErrors,
+  ForceAdminAccountStateResponses,
   ForgotPasswordData,
   ForgotPasswordResponses,
   GenerateClientReportData,
   GenerateClientReportErrors,
   GenerateClientReportResponses,
+  GetAdminAccountData,
+  GetAdminAccountErrors,
+  GetAdminAccountResponses,
+  GetAdminRevenueData,
+  GetAdminRevenueErrors,
+  GetAdminRevenueResponses,
   GetAlertConfigData,
   GetAlertConfigResponses,
   GetBackupData,
@@ -358,6 +373,9 @@ import type {
   InviteMemberResponses,
   IsolateUnusedMediaData,
   IsolateUnusedMediaResponses,
+  ListAdminAccountsData,
+  ListAdminAccountsErrors,
+  ListAdminAccountsResponses,
   ListApiKeysData,
   ListApiKeysErrors,
   ListApiKeysResponses,
@@ -576,6 +594,9 @@ import type {
   ResetPasswordData,
   ResetPasswordErrors,
   ResetPasswordResponses,
+  RestoreAdminAccountData,
+  RestoreAdminAccountErrors,
+  RestoreAdminAccountResponses,
   RestoreIsolatedMediaData,
   RestoreIsolatedMediaResponses,
   RestoreMediaData,
@@ -588,6 +609,9 @@ import type {
   RestoreSiteResponses,
   RevertDbSnapshotData,
   RevertDbSnapshotResponses,
+  RevokeAdminAccountCompData,
+  RevokeAdminAccountCompErrors,
+  RevokeAdminAccountCompResponses,
   RevokeApiKeyData,
   RevokeApiKeyErrors,
   RevokeApiKeyResponses,
@@ -607,6 +631,9 @@ import type {
   SendTestEmailData,
   SendTestEmailErrors,
   SendTestEmailResponses,
+  SetAdminAccountOverridesData,
+  SetAdminAccountOverridesErrors,
+  SetAdminAccountOverridesResponses,
   SetSiteTagsData,
   SetSiteTagsErrors,
   SetSiteTagsResponses,
@@ -624,6 +651,9 @@ import type {
   StreamUpdateRunEventsErrors,
   StreamUpdateRunEventsResponse,
   StreamUpdateRunEventsResponses,
+  SuspendAdminAccountData,
+  SuspendAdminAccountErrors,
+  SuspendAdminAccountResponses,
   SyncMediaData,
   SyncMediaResponses,
   SyncSiteEmailConfigData,
@@ -1327,6 +1357,234 @@ export const createBillingPortal = <ThrowOnError extends boolean = false>(
     CreateBillingPortalErrors,
     ThrowOnError
   >({ url: "/api/v1/billing/portal", ...options });
+
+/**
+ * Paginated, filtered list of tenant accounts (superadmin)
+ *
+ * Superadmin-only accounts console: instance-wide header tiles (always
+ * unfiltered by the current query, so they read as a stable instance
+ * census) plus a filtered, sorted, paginated list of every tenant.
+ * Default order is a server-computed "needs attention" ranking:
+ * suspended first, then past_due (soonest-to-expire grace first), then
+ * active (MRR desc), then everything else (newest first). Requires
+ * is_superadmin=true.
+ *
+ */
+export const listAdminAccounts = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAdminAccountsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminAccountsResponses,
+    ListAdminAccountsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/accounts", ...options });
+
+/**
+ * Full account-detail page for one tenant (superadmin)
+ *
+ * Returns the account header, usage-vs-entitlement meters, subscription
+ * card, a merged billing_events+audit_log timeline (newest first), the
+ * member roster, and a compact site list. Requires is_superadmin=true.
+ *
+ */
+export const getAdminAccount = <ThrowOnError extends boolean = false>(
+  options: Options<GetAdminAccountData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetAdminAccountResponses,
+    GetAdminAccountErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/accounts/{tenantId}", ...options });
+
+/**
+ * Revoke a manual comp (superadmin)
+ *
+ * Adopts the tenant's live payment-provider subscription if one exists,
+ * else falls back to plan=free/plan_status=none. Requires
+ * is_superadmin=true.
+ *
+ */
+export const revokeAdminAccountComp = <ThrowOnError extends boolean = false>(
+  options: Options<RevokeAdminAccountCompData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    RevokeAdminAccountCompResponses,
+    RevokeAdminAccountCompErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{tenantId}/comp",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Grant a manual comp (superadmin)
+ *
+ * Sets plan_status=comped and plan=tier, bypassing the payment provider
+ * entirely. A comped tenant is immune to webhook-driven plan mutation.
+ * Requires is_superadmin=true.
+ *
+ */
+export const compAdminAccount = <ThrowOnError extends boolean = false>(
+  options: Options<CompAdminAccountData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CompAdminAccountResponses,
+    CompAdminAccountErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{tenantId}/comp",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Set manual limit overrides (superadmin)
+ *
+ * Each field is a signed delta applied on top of the tenant's CURRENT
+ * plan's ladder base (not accumulated with any prior override for that
+ * key — a second PUT replaces the delta). Omitting a key leaves that
+ * limit untouched; sending it as `null` (or `0`) clears it back to the
+ * pure ladder base. Requires is_superadmin=true.
+ *
+ */
+export const setAdminAccountOverrides = <ThrowOnError extends boolean = false>(
+  options: Options<SetAdminAccountOverridesData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    SetAdminAccountOverridesResponses,
+    SetAdminAccountOverridesErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{tenantId}/overrides",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Extend a past_due tenant's grace period (superadmin)
+ *
+ * Sets tenants.grace_until, clamped to at most 90 days out from now and
+ * forward-only (a new grace_until must extend further out than the
+ * current one). Requires is_superadmin=true.
+ *
+ */
+export const extendAdminAccountGrace = <ThrowOnError extends boolean = false>(
+  options: Options<ExtendAdminAccountGraceData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ExtendAdminAccountGraceResponses,
+    ExtendAdminAccountGraceErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{tenantId}/grace",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Suspend a tenant (superadmin)
+ *
+ * Sets tenants.suspended_at/suspended_reason — a field distinct from
+ * plan_status. Tenant data is never touched. Requires
+ * is_superadmin=true.
+ *
+ */
+export const suspendAdminAccount = <ThrowOnError extends boolean = false>(
+  options: Options<SuspendAdminAccountData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    SuspendAdminAccountResponses,
+    SuspendAdminAccountErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{tenantId}/suspend",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Un-suspend a tenant (superadmin)
+ *
+ * Clears tenants.suspended_at/suspended_reason, returning the tenant to
+ * whatever its underlying plan/plan_status already was. A missing or
+ * empty request body is tolerated (treated as an empty reason, which
+ * then fails the reason-required validation below) rather than a hard
+ * 400 — every other manual control on this page rejects a malformed
+ * body outright. Requires is_superadmin=true.
+ *
+ */
+export const restoreAdminAccount = <ThrowOnError extends boolean = false>(
+  options: Options<RestoreAdminAccountData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RestoreAdminAccountResponses,
+    RestoreAdminAccountErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{tenantId}/restore",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Force plan + plan_status directly (superadmin)
+ *
+ * The manual escape hatch for payment-provider webhook drift: sets
+ * plan and plan_status directly and clears grace_until. Never use this
+ * to grant service for free — use the comp endpoint instead. Requires
+ * is_superadmin=true.
+ *
+ */
+export const forceAdminAccountState = <ThrowOnError extends boolean = false>(
+  options: Options<ForceAdminAccountStateData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ForceAdminAccountStateResponses,
+    ForceAdminAccountStateErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{tenantId}/state",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Instance-wide revenue dashboard (superadmin)
+ *
+ * Local-state-only revenue view derived from tenants + billing_events —
+ * zero payment-provider API calls. Requires is_superadmin=true.
+ *
+ */
+export const getAdminRevenue = <ThrowOnError extends boolean = false>(
+  options?: Options<GetAdminRevenueData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetAdminRevenueResponses,
+    GetAdminRevenueErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/revenue", ...options });
 
 /**
  * List tenants

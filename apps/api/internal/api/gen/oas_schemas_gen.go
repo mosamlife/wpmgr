@@ -316,6 +316,2033 @@ func (s *AddSuppressionRequest) SetReason(val OptString) {
 	s.Reason = val
 }
 
+// The full GET /api/v1/admin/accounts/{tenantId} body.
+// Ref: #/components/schemas/AdminAccountDetail
+type AdminAccountDetail struct {
+	TenantID        uuid.UUID                    `json:"tenant_id"`
+	OrgName         string                       `json:"org_name"`
+	OrgSlug         string                       `json:"org_slug"`
+	OwnerEmail      OptString                    `json:"owner_email"`
+	Plan            AdminAccountDetailPlan       `json:"plan"`
+	PlanStatus      AdminAccountDetailPlanStatus `json:"plan_status"`
+	MrrCents        int64                        `json:"mrr_cents"`
+	CreatedAt       time.Time                    `json:"created_at"`
+	SuspendedAt     OptDateTime                  `json:"suspended_at"`
+	SuspendedReason OptString                    `json:"suspended_reason"`
+	Usage           AdminAccountUsage            `json:"usage"`
+	Subscription    AdminAccountSubscription     `json:"subscription"`
+	Timeline        []AdminAccountTimelineEntry  `json:"timeline"`
+	Members         []AdminAccountMember         `json:"members"`
+	Sites           []AdminAccountSite           `json:"sites"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminAccountDetail) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetOrgName returns the value of OrgName.
+func (s *AdminAccountDetail) GetOrgName() string {
+	return s.OrgName
+}
+
+// GetOrgSlug returns the value of OrgSlug.
+func (s *AdminAccountDetail) GetOrgSlug() string {
+	return s.OrgSlug
+}
+
+// GetOwnerEmail returns the value of OwnerEmail.
+func (s *AdminAccountDetail) GetOwnerEmail() OptString {
+	return s.OwnerEmail
+}
+
+// GetPlan returns the value of Plan.
+func (s *AdminAccountDetail) GetPlan() AdminAccountDetailPlan {
+	return s.Plan
+}
+
+// GetPlanStatus returns the value of PlanStatus.
+func (s *AdminAccountDetail) GetPlanStatus() AdminAccountDetailPlanStatus {
+	return s.PlanStatus
+}
+
+// GetMrrCents returns the value of MrrCents.
+func (s *AdminAccountDetail) GetMrrCents() int64 {
+	return s.MrrCents
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AdminAccountDetail) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetSuspendedAt returns the value of SuspendedAt.
+func (s *AdminAccountDetail) GetSuspendedAt() OptDateTime {
+	return s.SuspendedAt
+}
+
+// GetSuspendedReason returns the value of SuspendedReason.
+func (s *AdminAccountDetail) GetSuspendedReason() OptString {
+	return s.SuspendedReason
+}
+
+// GetUsage returns the value of Usage.
+func (s *AdminAccountDetail) GetUsage() AdminAccountUsage {
+	return s.Usage
+}
+
+// GetSubscription returns the value of Subscription.
+func (s *AdminAccountDetail) GetSubscription() AdminAccountSubscription {
+	return s.Subscription
+}
+
+// GetTimeline returns the value of Timeline.
+func (s *AdminAccountDetail) GetTimeline() []AdminAccountTimelineEntry {
+	return s.Timeline
+}
+
+// GetMembers returns the value of Members.
+func (s *AdminAccountDetail) GetMembers() []AdminAccountMember {
+	return s.Members
+}
+
+// GetSites returns the value of Sites.
+func (s *AdminAccountDetail) GetSites() []AdminAccountSite {
+	return s.Sites
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminAccountDetail) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetOrgName sets the value of OrgName.
+func (s *AdminAccountDetail) SetOrgName(val string) {
+	s.OrgName = val
+}
+
+// SetOrgSlug sets the value of OrgSlug.
+func (s *AdminAccountDetail) SetOrgSlug(val string) {
+	s.OrgSlug = val
+}
+
+// SetOwnerEmail sets the value of OwnerEmail.
+func (s *AdminAccountDetail) SetOwnerEmail(val OptString) {
+	s.OwnerEmail = val
+}
+
+// SetPlan sets the value of Plan.
+func (s *AdminAccountDetail) SetPlan(val AdminAccountDetailPlan) {
+	s.Plan = val
+}
+
+// SetPlanStatus sets the value of PlanStatus.
+func (s *AdminAccountDetail) SetPlanStatus(val AdminAccountDetailPlanStatus) {
+	s.PlanStatus = val
+}
+
+// SetMrrCents sets the value of MrrCents.
+func (s *AdminAccountDetail) SetMrrCents(val int64) {
+	s.MrrCents = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AdminAccountDetail) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetSuspendedAt sets the value of SuspendedAt.
+func (s *AdminAccountDetail) SetSuspendedAt(val OptDateTime) {
+	s.SuspendedAt = val
+}
+
+// SetSuspendedReason sets the value of SuspendedReason.
+func (s *AdminAccountDetail) SetSuspendedReason(val OptString) {
+	s.SuspendedReason = val
+}
+
+// SetUsage sets the value of Usage.
+func (s *AdminAccountDetail) SetUsage(val AdminAccountUsage) {
+	s.Usage = val
+}
+
+// SetSubscription sets the value of Subscription.
+func (s *AdminAccountDetail) SetSubscription(val AdminAccountSubscription) {
+	s.Subscription = val
+}
+
+// SetTimeline sets the value of Timeline.
+func (s *AdminAccountDetail) SetTimeline(val []AdminAccountTimelineEntry) {
+	s.Timeline = val
+}
+
+// SetMembers sets the value of Members.
+func (s *AdminAccountDetail) SetMembers(val []AdminAccountMember) {
+	s.Members = val
+}
+
+// SetSites sets the value of Sites.
+func (s *AdminAccountDetail) SetSites(val []AdminAccountSite) {
+	s.Sites = val
+}
+
+func (*AdminAccountDetail) getAdminAccountRes() {}
+
+type AdminAccountDetailPlan string
+
+const (
+	AdminAccountDetailPlanFree    AdminAccountDetailPlan = "free"
+	AdminAccountDetailPlanStarter AdminAccountDetailPlan = "starter"
+	AdminAccountDetailPlanAgency  AdminAccountDetailPlan = "agency"
+	AdminAccountDetailPlanScale   AdminAccountDetailPlan = "scale"
+)
+
+// AllValues returns all AdminAccountDetailPlan values.
+func (AdminAccountDetailPlan) AllValues() []AdminAccountDetailPlan {
+	return []AdminAccountDetailPlan{
+		AdminAccountDetailPlanFree,
+		AdminAccountDetailPlanStarter,
+		AdminAccountDetailPlanAgency,
+		AdminAccountDetailPlanScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminAccountDetailPlan) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminAccountDetailPlanFree:
+		return []byte(s), nil
+	case AdminAccountDetailPlanStarter:
+		return []byte(s), nil
+	case AdminAccountDetailPlanAgency:
+		return []byte(s), nil
+	case AdminAccountDetailPlanScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminAccountDetailPlan) UnmarshalText(data []byte) error {
+	switch AdminAccountDetailPlan(data) {
+	case AdminAccountDetailPlanFree:
+		*s = AdminAccountDetailPlanFree
+		return nil
+	case AdminAccountDetailPlanStarter:
+		*s = AdminAccountDetailPlanStarter
+		return nil
+	case AdminAccountDetailPlanAgency:
+		*s = AdminAccountDetailPlanAgency
+		return nil
+	case AdminAccountDetailPlanScale:
+		*s = AdminAccountDetailPlanScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AdminAccountDetailPlanStatus string
+
+const (
+	AdminAccountDetailPlanStatusNone     AdminAccountDetailPlanStatus = "none"
+	AdminAccountDetailPlanStatusTrialing AdminAccountDetailPlanStatus = "trialing"
+	AdminAccountDetailPlanStatusActive   AdminAccountDetailPlanStatus = "active"
+	AdminAccountDetailPlanStatusPastDue  AdminAccountDetailPlanStatus = "past_due"
+	AdminAccountDetailPlanStatusCanceled AdminAccountDetailPlanStatus = "canceled"
+	AdminAccountDetailPlanStatusPaused   AdminAccountDetailPlanStatus = "paused"
+	AdminAccountDetailPlanStatusComped   AdminAccountDetailPlanStatus = "comped"
+)
+
+// AllValues returns all AdminAccountDetailPlanStatus values.
+func (AdminAccountDetailPlanStatus) AllValues() []AdminAccountDetailPlanStatus {
+	return []AdminAccountDetailPlanStatus{
+		AdminAccountDetailPlanStatusNone,
+		AdminAccountDetailPlanStatusTrialing,
+		AdminAccountDetailPlanStatusActive,
+		AdminAccountDetailPlanStatusPastDue,
+		AdminAccountDetailPlanStatusCanceled,
+		AdminAccountDetailPlanStatusPaused,
+		AdminAccountDetailPlanStatusComped,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminAccountDetailPlanStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminAccountDetailPlanStatusNone:
+		return []byte(s), nil
+	case AdminAccountDetailPlanStatusTrialing:
+		return []byte(s), nil
+	case AdminAccountDetailPlanStatusActive:
+		return []byte(s), nil
+	case AdminAccountDetailPlanStatusPastDue:
+		return []byte(s), nil
+	case AdminAccountDetailPlanStatusCanceled:
+		return []byte(s), nil
+	case AdminAccountDetailPlanStatusPaused:
+		return []byte(s), nil
+	case AdminAccountDetailPlanStatusComped:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminAccountDetailPlanStatus) UnmarshalText(data []byte) error {
+	switch AdminAccountDetailPlanStatus(data) {
+	case AdminAccountDetailPlanStatusNone:
+		*s = AdminAccountDetailPlanStatusNone
+		return nil
+	case AdminAccountDetailPlanStatusTrialing:
+		*s = AdminAccountDetailPlanStatusTrialing
+		return nil
+	case AdminAccountDetailPlanStatusActive:
+		*s = AdminAccountDetailPlanStatusActive
+		return nil
+	case AdminAccountDetailPlanStatusPastDue:
+		*s = AdminAccountDetailPlanStatusPastDue
+		return nil
+	case AdminAccountDetailPlanStatusCanceled:
+		*s = AdminAccountDetailPlanStatusCanceled
+		return nil
+	case AdminAccountDetailPlanStatusPaused:
+		*s = AdminAccountDetailPlanStatusPaused
+		return nil
+	case AdminAccountDetailPlanStatusComped:
+		*s = AdminAccountDetailPlanStatusComped
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Display-only reference values for the account-detail "what this plan includes" rows — not
+// enforced anywhere.
+// Ref: #/components/schemas/AdminAccountEntitlementValues
+type AdminAccountEntitlementValues struct {
+	ProbeIntervalFloorSec     int  `json:"probe_interval_floor_sec"`
+	BackupCadenceFloorSeconds int  `json:"backup_cadence_floor_seconds"`
+	IncrementalBackups        bool `json:"incremental_backups"`
+	ClientPortal              bool `json:"client_portal"`
+}
+
+// GetProbeIntervalFloorSec returns the value of ProbeIntervalFloorSec.
+func (s *AdminAccountEntitlementValues) GetProbeIntervalFloorSec() int {
+	return s.ProbeIntervalFloorSec
+}
+
+// GetBackupCadenceFloorSeconds returns the value of BackupCadenceFloorSeconds.
+func (s *AdminAccountEntitlementValues) GetBackupCadenceFloorSeconds() int {
+	return s.BackupCadenceFloorSeconds
+}
+
+// GetIncrementalBackups returns the value of IncrementalBackups.
+func (s *AdminAccountEntitlementValues) GetIncrementalBackups() bool {
+	return s.IncrementalBackups
+}
+
+// GetClientPortal returns the value of ClientPortal.
+func (s *AdminAccountEntitlementValues) GetClientPortal() bool {
+	return s.ClientPortal
+}
+
+// SetProbeIntervalFloorSec sets the value of ProbeIntervalFloorSec.
+func (s *AdminAccountEntitlementValues) SetProbeIntervalFloorSec(val int) {
+	s.ProbeIntervalFloorSec = val
+}
+
+// SetBackupCadenceFloorSeconds sets the value of BackupCadenceFloorSeconds.
+func (s *AdminAccountEntitlementValues) SetBackupCadenceFloorSeconds(val int) {
+	s.BackupCadenceFloorSeconds = val
+}
+
+// SetIncrementalBackups sets the value of IncrementalBackups.
+func (s *AdminAccountEntitlementValues) SetIncrementalBackups(val bool) {
+	s.IncrementalBackups = val
+}
+
+// SetClientPortal sets the value of ClientPortal.
+func (s *AdminAccountEntitlementValues) SetClientPortal(val bool) {
+	s.ClientPortal = val
+}
+
+// One row of GET /api/v1/admin/accounts.
+// Ref: #/components/schemas/AdminAccountListItem
+type AdminAccountListItem struct {
+	TenantID     uuid.UUID                      `json:"tenant_id"`
+	OrgName      string                         `json:"org_name"`
+	OrgSlug      string                         `json:"org_slug"`
+	OwnerEmail   OptString                      `json:"owner_email"`
+	Plan         AdminAccountListItemPlan       `json:"plan"`
+	PlanStatus   AdminAccountListItemPlanStatus `json:"plan_status"`
+	SuspendedAt  OptDateTime                    `json:"suspended_at"`
+	HasOverrides bool                           `json:"has_overrides"`
+	MrrCents     int64                          `json:"mrr_cents"`
+	SitesUsed    int                            `json:"sites_used"`
+	SitesCap     int                            `json:"sites_cap"`
+	// A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant) — does not yet distinguish
+	// CP-managed from BYO-storage destinations.
+	StorageUsedBytesApprox int64 `json:"storage_used_bytes_approx"`
+	// 0 for the free tier (BYO-storage only; no CP-managed cap to approach).
+	StorageCapBytes int64       `json:"storage_cap_bytes"`
+	NearLimit       bool        `json:"near_limit"`
+	CreatedAt       time.Time   `json:"created_at"`
+	LastActivity    OptDateTime `json:"last_activity"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminAccountListItem) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetOrgName returns the value of OrgName.
+func (s *AdminAccountListItem) GetOrgName() string {
+	return s.OrgName
+}
+
+// GetOrgSlug returns the value of OrgSlug.
+func (s *AdminAccountListItem) GetOrgSlug() string {
+	return s.OrgSlug
+}
+
+// GetOwnerEmail returns the value of OwnerEmail.
+func (s *AdminAccountListItem) GetOwnerEmail() OptString {
+	return s.OwnerEmail
+}
+
+// GetPlan returns the value of Plan.
+func (s *AdminAccountListItem) GetPlan() AdminAccountListItemPlan {
+	return s.Plan
+}
+
+// GetPlanStatus returns the value of PlanStatus.
+func (s *AdminAccountListItem) GetPlanStatus() AdminAccountListItemPlanStatus {
+	return s.PlanStatus
+}
+
+// GetSuspendedAt returns the value of SuspendedAt.
+func (s *AdminAccountListItem) GetSuspendedAt() OptDateTime {
+	return s.SuspendedAt
+}
+
+// GetHasOverrides returns the value of HasOverrides.
+func (s *AdminAccountListItem) GetHasOverrides() bool {
+	return s.HasOverrides
+}
+
+// GetMrrCents returns the value of MrrCents.
+func (s *AdminAccountListItem) GetMrrCents() int64 {
+	return s.MrrCents
+}
+
+// GetSitesUsed returns the value of SitesUsed.
+func (s *AdminAccountListItem) GetSitesUsed() int {
+	return s.SitesUsed
+}
+
+// GetSitesCap returns the value of SitesCap.
+func (s *AdminAccountListItem) GetSitesCap() int {
+	return s.SitesCap
+}
+
+// GetStorageUsedBytesApprox returns the value of StorageUsedBytesApprox.
+func (s *AdminAccountListItem) GetStorageUsedBytesApprox() int64 {
+	return s.StorageUsedBytesApprox
+}
+
+// GetStorageCapBytes returns the value of StorageCapBytes.
+func (s *AdminAccountListItem) GetStorageCapBytes() int64 {
+	return s.StorageCapBytes
+}
+
+// GetNearLimit returns the value of NearLimit.
+func (s *AdminAccountListItem) GetNearLimit() bool {
+	return s.NearLimit
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AdminAccountListItem) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetLastActivity returns the value of LastActivity.
+func (s *AdminAccountListItem) GetLastActivity() OptDateTime {
+	return s.LastActivity
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminAccountListItem) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetOrgName sets the value of OrgName.
+func (s *AdminAccountListItem) SetOrgName(val string) {
+	s.OrgName = val
+}
+
+// SetOrgSlug sets the value of OrgSlug.
+func (s *AdminAccountListItem) SetOrgSlug(val string) {
+	s.OrgSlug = val
+}
+
+// SetOwnerEmail sets the value of OwnerEmail.
+func (s *AdminAccountListItem) SetOwnerEmail(val OptString) {
+	s.OwnerEmail = val
+}
+
+// SetPlan sets the value of Plan.
+func (s *AdminAccountListItem) SetPlan(val AdminAccountListItemPlan) {
+	s.Plan = val
+}
+
+// SetPlanStatus sets the value of PlanStatus.
+func (s *AdminAccountListItem) SetPlanStatus(val AdminAccountListItemPlanStatus) {
+	s.PlanStatus = val
+}
+
+// SetSuspendedAt sets the value of SuspendedAt.
+func (s *AdminAccountListItem) SetSuspendedAt(val OptDateTime) {
+	s.SuspendedAt = val
+}
+
+// SetHasOverrides sets the value of HasOverrides.
+func (s *AdminAccountListItem) SetHasOverrides(val bool) {
+	s.HasOverrides = val
+}
+
+// SetMrrCents sets the value of MrrCents.
+func (s *AdminAccountListItem) SetMrrCents(val int64) {
+	s.MrrCents = val
+}
+
+// SetSitesUsed sets the value of SitesUsed.
+func (s *AdminAccountListItem) SetSitesUsed(val int) {
+	s.SitesUsed = val
+}
+
+// SetSitesCap sets the value of SitesCap.
+func (s *AdminAccountListItem) SetSitesCap(val int) {
+	s.SitesCap = val
+}
+
+// SetStorageUsedBytesApprox sets the value of StorageUsedBytesApprox.
+func (s *AdminAccountListItem) SetStorageUsedBytesApprox(val int64) {
+	s.StorageUsedBytesApprox = val
+}
+
+// SetStorageCapBytes sets the value of StorageCapBytes.
+func (s *AdminAccountListItem) SetStorageCapBytes(val int64) {
+	s.StorageCapBytes = val
+}
+
+// SetNearLimit sets the value of NearLimit.
+func (s *AdminAccountListItem) SetNearLimit(val bool) {
+	s.NearLimit = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AdminAccountListItem) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetLastActivity sets the value of LastActivity.
+func (s *AdminAccountListItem) SetLastActivity(val OptDateTime) {
+	s.LastActivity = val
+}
+
+type AdminAccountListItemPlan string
+
+const (
+	AdminAccountListItemPlanFree    AdminAccountListItemPlan = "free"
+	AdminAccountListItemPlanStarter AdminAccountListItemPlan = "starter"
+	AdminAccountListItemPlanAgency  AdminAccountListItemPlan = "agency"
+	AdminAccountListItemPlanScale   AdminAccountListItemPlan = "scale"
+)
+
+// AllValues returns all AdminAccountListItemPlan values.
+func (AdminAccountListItemPlan) AllValues() []AdminAccountListItemPlan {
+	return []AdminAccountListItemPlan{
+		AdminAccountListItemPlanFree,
+		AdminAccountListItemPlanStarter,
+		AdminAccountListItemPlanAgency,
+		AdminAccountListItemPlanScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminAccountListItemPlan) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminAccountListItemPlanFree:
+		return []byte(s), nil
+	case AdminAccountListItemPlanStarter:
+		return []byte(s), nil
+	case AdminAccountListItemPlanAgency:
+		return []byte(s), nil
+	case AdminAccountListItemPlanScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminAccountListItemPlan) UnmarshalText(data []byte) error {
+	switch AdminAccountListItemPlan(data) {
+	case AdminAccountListItemPlanFree:
+		*s = AdminAccountListItemPlanFree
+		return nil
+	case AdminAccountListItemPlanStarter:
+		*s = AdminAccountListItemPlanStarter
+		return nil
+	case AdminAccountListItemPlanAgency:
+		*s = AdminAccountListItemPlanAgency
+		return nil
+	case AdminAccountListItemPlanScale:
+		*s = AdminAccountListItemPlanScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AdminAccountListItemPlanStatus string
+
+const (
+	AdminAccountListItemPlanStatusNone     AdminAccountListItemPlanStatus = "none"
+	AdminAccountListItemPlanStatusTrialing AdminAccountListItemPlanStatus = "trialing"
+	AdminAccountListItemPlanStatusActive   AdminAccountListItemPlanStatus = "active"
+	AdminAccountListItemPlanStatusPastDue  AdminAccountListItemPlanStatus = "past_due"
+	AdminAccountListItemPlanStatusCanceled AdminAccountListItemPlanStatus = "canceled"
+	AdminAccountListItemPlanStatusPaused   AdminAccountListItemPlanStatus = "paused"
+	AdminAccountListItemPlanStatusComped   AdminAccountListItemPlanStatus = "comped"
+)
+
+// AllValues returns all AdminAccountListItemPlanStatus values.
+func (AdminAccountListItemPlanStatus) AllValues() []AdminAccountListItemPlanStatus {
+	return []AdminAccountListItemPlanStatus{
+		AdminAccountListItemPlanStatusNone,
+		AdminAccountListItemPlanStatusTrialing,
+		AdminAccountListItemPlanStatusActive,
+		AdminAccountListItemPlanStatusPastDue,
+		AdminAccountListItemPlanStatusCanceled,
+		AdminAccountListItemPlanStatusPaused,
+		AdminAccountListItemPlanStatusComped,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminAccountListItemPlanStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminAccountListItemPlanStatusNone:
+		return []byte(s), nil
+	case AdminAccountListItemPlanStatusTrialing:
+		return []byte(s), nil
+	case AdminAccountListItemPlanStatusActive:
+		return []byte(s), nil
+	case AdminAccountListItemPlanStatusPastDue:
+		return []byte(s), nil
+	case AdminAccountListItemPlanStatusCanceled:
+		return []byte(s), nil
+	case AdminAccountListItemPlanStatusPaused:
+		return []byte(s), nil
+	case AdminAccountListItemPlanStatusComped:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminAccountListItemPlanStatus) UnmarshalText(data []byte) error {
+	switch AdminAccountListItemPlanStatus(data) {
+	case AdminAccountListItemPlanStatusNone:
+		*s = AdminAccountListItemPlanStatusNone
+		return nil
+	case AdminAccountListItemPlanStatusTrialing:
+		*s = AdminAccountListItemPlanStatusTrialing
+		return nil
+	case AdminAccountListItemPlanStatusActive:
+		*s = AdminAccountListItemPlanStatusActive
+		return nil
+	case AdminAccountListItemPlanStatusPastDue:
+		*s = AdminAccountListItemPlanStatusPastDue
+		return nil
+	case AdminAccountListItemPlanStatusCanceled:
+		*s = AdminAccountListItemPlanStatusCanceled
+		return nil
+	case AdminAccountListItemPlanStatusPaused:
+		*s = AdminAccountListItemPlanStatusPaused
+		return nil
+	case AdminAccountListItemPlanStatusComped:
+		*s = AdminAccountListItemPlanStatusComped
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One row in the account-detail member roster.
+// Ref: #/components/schemas/AdminAccountMember
+type AdminAccountMember struct {
+	ID            uuid.UUID   `json:"id"`
+	Email         string      `json:"email"`
+	Name          string      `json:"name"`
+	Role          string      `json:"role"`
+	Status        string      `json:"status"`
+	EmailVerified bool        `json:"email_verified"`
+	LastLoginAt   OptDateTime `json:"last_login_at"`
+	MemberSince   time.Time   `json:"member_since"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminAccountMember) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetEmail returns the value of Email.
+func (s *AdminAccountMember) GetEmail() string {
+	return s.Email
+}
+
+// GetName returns the value of Name.
+func (s *AdminAccountMember) GetName() string {
+	return s.Name
+}
+
+// GetRole returns the value of Role.
+func (s *AdminAccountMember) GetRole() string {
+	return s.Role
+}
+
+// GetStatus returns the value of Status.
+func (s *AdminAccountMember) GetStatus() string {
+	return s.Status
+}
+
+// GetEmailVerified returns the value of EmailVerified.
+func (s *AdminAccountMember) GetEmailVerified() bool {
+	return s.EmailVerified
+}
+
+// GetLastLoginAt returns the value of LastLoginAt.
+func (s *AdminAccountMember) GetLastLoginAt() OptDateTime {
+	return s.LastLoginAt
+}
+
+// GetMemberSince returns the value of MemberSince.
+func (s *AdminAccountMember) GetMemberSince() time.Time {
+	return s.MemberSince
+}
+
+// SetID sets the value of ID.
+func (s *AdminAccountMember) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetEmail sets the value of Email.
+func (s *AdminAccountMember) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetName sets the value of Name.
+func (s *AdminAccountMember) SetName(val string) {
+	s.Name = val
+}
+
+// SetRole sets the value of Role.
+func (s *AdminAccountMember) SetRole(val string) {
+	s.Role = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AdminAccountMember) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetEmailVerified sets the value of EmailVerified.
+func (s *AdminAccountMember) SetEmailVerified(val bool) {
+	s.EmailVerified = val
+}
+
+// SetLastLoginAt sets the value of LastLoginAt.
+func (s *AdminAccountMember) SetLastLoginAt(val OptDateTime) {
+	s.LastLoginAt = val
+}
+
+// SetMemberSince sets the value of MemberSince.
+func (s *AdminAccountMember) SetMemberSince(val time.Time) {
+	s.MemberSince = val
+}
+
+// One compact row in the account-detail site list.
+// Ref: #/components/schemas/AdminAccountSite
+type AdminAccountSite struct {
+	ID              uuid.UUID `json:"id"`
+	URL             string    `json:"url"`
+	ConnectionState string    `json:"connection_state"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminAccountSite) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetURL returns the value of URL.
+func (s *AdminAccountSite) GetURL() string {
+	return s.URL
+}
+
+// GetConnectionState returns the value of ConnectionState.
+func (s *AdminAccountSite) GetConnectionState() string {
+	return s.ConnectionState
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AdminAccountSite) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *AdminAccountSite) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetURL sets the value of URL.
+func (s *AdminAccountSite) SetURL(val string) {
+	s.URL = val
+}
+
+// SetConnectionState sets the value of ConnectionState.
+func (s *AdminAccountSite) SetConnectionState(val string) {
+	s.ConnectionState = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AdminAccountSite) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// The account-detail subscription card.
+// Ref: #/components/schemas/AdminAccountSubscription
+type AdminAccountSubscription struct {
+	Provider               OptString `json:"provider"`
+	ProviderCustomerID     OptString `json:"provider_customer_id"`
+	ProviderSubscriptionID OptString `json:"provider_subscription_id"`
+	// A Stripe-dashboard deep link. Empty when the provider is not Stripe, or there is no subscription
+	// id yet.
+	DashboardURL       OptString   `json:"dashboard_url"`
+	CurrentPeriodEnd   OptDateTime `json:"current_period_end"`
+	CancelAtPeriodEnd  bool        `json:"cancel_at_period_end"`
+	GraceUntil         OptDateTime `json:"grace_until"`
+	CompReason         OptString   `json:"comp_reason"`
+	LastBillingEventAt OptDateTime `json:"last_billing_event_at"`
+	// True when plan_status=="past_due" and last_billing_event_at is either unset or more than 25 hours
+	// old — a signal the webhook pipe may itself be stuck rather than the customer's card.
+	Stale bool `json:"stale"`
+}
+
+// GetProvider returns the value of Provider.
+func (s *AdminAccountSubscription) GetProvider() OptString {
+	return s.Provider
+}
+
+// GetProviderCustomerID returns the value of ProviderCustomerID.
+func (s *AdminAccountSubscription) GetProviderCustomerID() OptString {
+	return s.ProviderCustomerID
+}
+
+// GetProviderSubscriptionID returns the value of ProviderSubscriptionID.
+func (s *AdminAccountSubscription) GetProviderSubscriptionID() OptString {
+	return s.ProviderSubscriptionID
+}
+
+// GetDashboardURL returns the value of DashboardURL.
+func (s *AdminAccountSubscription) GetDashboardURL() OptString {
+	return s.DashboardURL
+}
+
+// GetCurrentPeriodEnd returns the value of CurrentPeriodEnd.
+func (s *AdminAccountSubscription) GetCurrentPeriodEnd() OptDateTime {
+	return s.CurrentPeriodEnd
+}
+
+// GetCancelAtPeriodEnd returns the value of CancelAtPeriodEnd.
+func (s *AdminAccountSubscription) GetCancelAtPeriodEnd() bool {
+	return s.CancelAtPeriodEnd
+}
+
+// GetGraceUntil returns the value of GraceUntil.
+func (s *AdminAccountSubscription) GetGraceUntil() OptDateTime {
+	return s.GraceUntil
+}
+
+// GetCompReason returns the value of CompReason.
+func (s *AdminAccountSubscription) GetCompReason() OptString {
+	return s.CompReason
+}
+
+// GetLastBillingEventAt returns the value of LastBillingEventAt.
+func (s *AdminAccountSubscription) GetLastBillingEventAt() OptDateTime {
+	return s.LastBillingEventAt
+}
+
+// GetStale returns the value of Stale.
+func (s *AdminAccountSubscription) GetStale() bool {
+	return s.Stale
+}
+
+// SetProvider sets the value of Provider.
+func (s *AdminAccountSubscription) SetProvider(val OptString) {
+	s.Provider = val
+}
+
+// SetProviderCustomerID sets the value of ProviderCustomerID.
+func (s *AdminAccountSubscription) SetProviderCustomerID(val OptString) {
+	s.ProviderCustomerID = val
+}
+
+// SetProviderSubscriptionID sets the value of ProviderSubscriptionID.
+func (s *AdminAccountSubscription) SetProviderSubscriptionID(val OptString) {
+	s.ProviderSubscriptionID = val
+}
+
+// SetDashboardURL sets the value of DashboardURL.
+func (s *AdminAccountSubscription) SetDashboardURL(val OptString) {
+	s.DashboardURL = val
+}
+
+// SetCurrentPeriodEnd sets the value of CurrentPeriodEnd.
+func (s *AdminAccountSubscription) SetCurrentPeriodEnd(val OptDateTime) {
+	s.CurrentPeriodEnd = val
+}
+
+// SetCancelAtPeriodEnd sets the value of CancelAtPeriodEnd.
+func (s *AdminAccountSubscription) SetCancelAtPeriodEnd(val bool) {
+	s.CancelAtPeriodEnd = val
+}
+
+// SetGraceUntil sets the value of GraceUntil.
+func (s *AdminAccountSubscription) SetGraceUntil(val OptDateTime) {
+	s.GraceUntil = val
+}
+
+// SetCompReason sets the value of CompReason.
+func (s *AdminAccountSubscription) SetCompReason(val OptString) {
+	s.CompReason = val
+}
+
+// SetLastBillingEventAt sets the value of LastBillingEventAt.
+func (s *AdminAccountSubscription) SetLastBillingEventAt(val OptDateTime) {
+	s.LastBillingEventAt = val
+}
+
+// SetStale sets the value of Stale.
+func (s *AdminAccountSubscription) SetStale(val bool) {
+	s.Stale = val
+}
+
+// Instance-wide accounts-page header tiles — unaffected by the current list filter.
+// Ref: #/components/schemas/AdminAccountTiles
+type AdminAccountTiles struct {
+	MrrCents      int64 `json:"mrr_cents"`
+	ActiveSubs    int64 `json:"active_subs"`
+	PastDueCount  int64 `json:"past_due_count"`
+	AccountsTotal int64 `json:"accounts_total"`
+}
+
+// GetMrrCents returns the value of MrrCents.
+func (s *AdminAccountTiles) GetMrrCents() int64 {
+	return s.MrrCents
+}
+
+// GetActiveSubs returns the value of ActiveSubs.
+func (s *AdminAccountTiles) GetActiveSubs() int64 {
+	return s.ActiveSubs
+}
+
+// GetPastDueCount returns the value of PastDueCount.
+func (s *AdminAccountTiles) GetPastDueCount() int64 {
+	return s.PastDueCount
+}
+
+// GetAccountsTotal returns the value of AccountsTotal.
+func (s *AdminAccountTiles) GetAccountsTotal() int64 {
+	return s.AccountsTotal
+}
+
+// SetMrrCents sets the value of MrrCents.
+func (s *AdminAccountTiles) SetMrrCents(val int64) {
+	s.MrrCents = val
+}
+
+// SetActiveSubs sets the value of ActiveSubs.
+func (s *AdminAccountTiles) SetActiveSubs(val int64) {
+	s.ActiveSubs = val
+}
+
+// SetPastDueCount sets the value of PastDueCount.
+func (s *AdminAccountTiles) SetPastDueCount(val int64) {
+	s.PastDueCount = val
+}
+
+// SetAccountsTotal sets the value of AccountsTotal.
+func (s *AdminAccountTiles) SetAccountsTotal(val int64) {
+	s.AccountsTotal = val
+}
+
+// One merged row in the account-detail timeline (billing_events + audit_log admin.billing.*/billing.
+// * actions), newest first.
+// Ref: #/components/schemas/AdminAccountTimelineEntry
+type AdminAccountTimelineEntry struct {
+	Source     AdminAccountTimelineEntrySource `json:"source"`
+	OccurredAt time.Time                       `json:"occurred_at"`
+	// Billing_events.kind, or audit_log.action.
+	Kind      string                               `json:"kind"`
+	ActorType OptString                            `json:"actor_type"`
+	ActorID   OptString                            `json:"actor_id"`
+	Metadata  OptAdminAccountTimelineEntryMetadata `json:"metadata"`
+}
+
+// GetSource returns the value of Source.
+func (s *AdminAccountTimelineEntry) GetSource() AdminAccountTimelineEntrySource {
+	return s.Source
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *AdminAccountTimelineEntry) GetOccurredAt() time.Time {
+	return s.OccurredAt
+}
+
+// GetKind returns the value of Kind.
+func (s *AdminAccountTimelineEntry) GetKind() string {
+	return s.Kind
+}
+
+// GetActorType returns the value of ActorType.
+func (s *AdminAccountTimelineEntry) GetActorType() OptString {
+	return s.ActorType
+}
+
+// GetActorID returns the value of ActorID.
+func (s *AdminAccountTimelineEntry) GetActorID() OptString {
+	return s.ActorID
+}
+
+// GetMetadata returns the value of Metadata.
+func (s *AdminAccountTimelineEntry) GetMetadata() OptAdminAccountTimelineEntryMetadata {
+	return s.Metadata
+}
+
+// SetSource sets the value of Source.
+func (s *AdminAccountTimelineEntry) SetSource(val AdminAccountTimelineEntrySource) {
+	s.Source = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *AdminAccountTimelineEntry) SetOccurredAt(val time.Time) {
+	s.OccurredAt = val
+}
+
+// SetKind sets the value of Kind.
+func (s *AdminAccountTimelineEntry) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetActorType sets the value of ActorType.
+func (s *AdminAccountTimelineEntry) SetActorType(val OptString) {
+	s.ActorType = val
+}
+
+// SetActorID sets the value of ActorID.
+func (s *AdminAccountTimelineEntry) SetActorID(val OptString) {
+	s.ActorID = val
+}
+
+// SetMetadata sets the value of Metadata.
+func (s *AdminAccountTimelineEntry) SetMetadata(val OptAdminAccountTimelineEntryMetadata) {
+	s.Metadata = val
+}
+
+type AdminAccountTimelineEntryMetadata map[string]jx.Raw
+
+func (s *AdminAccountTimelineEntryMetadata) init() AdminAccountTimelineEntryMetadata {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AdminAccountTimelineEntrySource string
+
+const (
+	AdminAccountTimelineEntrySourceBillingEvent AdminAccountTimelineEntrySource = "billing_event"
+	AdminAccountTimelineEntrySourceAudit        AdminAccountTimelineEntrySource = "audit"
+)
+
+// AllValues returns all AdminAccountTimelineEntrySource values.
+func (AdminAccountTimelineEntrySource) AllValues() []AdminAccountTimelineEntrySource {
+	return []AdminAccountTimelineEntrySource{
+		AdminAccountTimelineEntrySourceBillingEvent,
+		AdminAccountTimelineEntrySourceAudit,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminAccountTimelineEntrySource) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminAccountTimelineEntrySourceBillingEvent:
+		return []byte(s), nil
+	case AdminAccountTimelineEntrySourceAudit:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminAccountTimelineEntrySource) UnmarshalText(data []byte) error {
+	switch AdminAccountTimelineEntrySource(data) {
+	case AdminAccountTimelineEntrySourceBillingEvent:
+		*s = AdminAccountTimelineEntrySourceBillingEvent
+		return nil
+	case AdminAccountTimelineEntrySourceAudit:
+		*s = AdminAccountTimelineEntrySourceAudit
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// The account-detail usage-vs-limits block.
+// Ref: #/components/schemas/AdminAccountUsage
+type AdminAccountUsage struct {
+	Sites              AdminAccountUsageMeter `json:"sites"`
+	StorageBytesApprox AdminAccountUsageMeter `json:"storage_bytes_approx"`
+	SeatsUsed          int64                  `json:"seats_used"`
+	// An APPROXIMATION: SUM of restore_runs' snapshot sizes for this tenant since the current billing
+	// period started (or the last 30 days, when no period is on record yet).
+	RestoreVolumeBytesApprox int64                         `json:"restore_volume_bytes_approx"`
+	Entitlements             AdminAccountEntitlementValues `json:"entitlements"`
+}
+
+// GetSites returns the value of Sites.
+func (s *AdminAccountUsage) GetSites() AdminAccountUsageMeter {
+	return s.Sites
+}
+
+// GetStorageBytesApprox returns the value of StorageBytesApprox.
+func (s *AdminAccountUsage) GetStorageBytesApprox() AdminAccountUsageMeter {
+	return s.StorageBytesApprox
+}
+
+// GetSeatsUsed returns the value of SeatsUsed.
+func (s *AdminAccountUsage) GetSeatsUsed() int64 {
+	return s.SeatsUsed
+}
+
+// GetRestoreVolumeBytesApprox returns the value of RestoreVolumeBytesApprox.
+func (s *AdminAccountUsage) GetRestoreVolumeBytesApprox() int64 {
+	return s.RestoreVolumeBytesApprox
+}
+
+// GetEntitlements returns the value of Entitlements.
+func (s *AdminAccountUsage) GetEntitlements() AdminAccountEntitlementValues {
+	return s.Entitlements
+}
+
+// SetSites sets the value of Sites.
+func (s *AdminAccountUsage) SetSites(val AdminAccountUsageMeter) {
+	s.Sites = val
+}
+
+// SetStorageBytesApprox sets the value of StorageBytesApprox.
+func (s *AdminAccountUsage) SetStorageBytesApprox(val AdminAccountUsageMeter) {
+	s.StorageBytesApprox = val
+}
+
+// SetSeatsUsed sets the value of SeatsUsed.
+func (s *AdminAccountUsage) SetSeatsUsed(val int64) {
+	s.SeatsUsed = val
+}
+
+// SetRestoreVolumeBytesApprox sets the value of RestoreVolumeBytesApprox.
+func (s *AdminAccountUsage) SetRestoreVolumeBytesApprox(val int64) {
+	s.RestoreVolumeBytesApprox = val
+}
+
+// SetEntitlements sets the value of Entitlements.
+func (s *AdminAccountUsage) SetEntitlements(val AdminAccountEntitlementValues) {
+	s.Entitlements = val
+}
+
+// Ref: #/components/schemas/AdminAccountUsageMeter
+type AdminAccountUsageMeter struct {
+	Used int64 `json:"used"`
+	Cap  int64 `json:"cap"`
+}
+
+// GetUsed returns the value of Used.
+func (s *AdminAccountUsageMeter) GetUsed() int64 {
+	return s.Used
+}
+
+// GetCap returns the value of Cap.
+func (s *AdminAccountUsageMeter) GetCap() int64 {
+	return s.Cap
+}
+
+// SetUsed sets the value of Used.
+func (s *AdminAccountUsageMeter) SetUsed(val int64) {
+	s.Used = val
+}
+
+// SetCap sets the value of Cap.
+func (s *AdminAccountUsageMeter) SetCap(val int64) {
+	s.Cap = val
+}
+
+// The full GET /api/v1/admin/accounts body.
+// Ref: #/components/schemas/AdminAccountsResponse
+type AdminAccountsResponse struct {
+	Tiles AdminAccountTiles      `json:"tiles"`
+	Items []AdminAccountListItem `json:"items"`
+	// Count AFTER filtering (before limit/offset).
+	Total  int `json:"total"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+// GetTiles returns the value of Tiles.
+func (s *AdminAccountsResponse) GetTiles() AdminAccountTiles {
+	return s.Tiles
+}
+
+// GetItems returns the value of Items.
+func (s *AdminAccountsResponse) GetItems() []AdminAccountListItem {
+	return s.Items
+}
+
+// GetTotal returns the value of Total.
+func (s *AdminAccountsResponse) GetTotal() int {
+	return s.Total
+}
+
+// GetLimit returns the value of Limit.
+func (s *AdminAccountsResponse) GetLimit() int {
+	return s.Limit
+}
+
+// GetOffset returns the value of Offset.
+func (s *AdminAccountsResponse) GetOffset() int {
+	return s.Offset
+}
+
+// SetTiles sets the value of Tiles.
+func (s *AdminAccountsResponse) SetTiles(val AdminAccountTiles) {
+	s.Tiles = val
+}
+
+// SetItems sets the value of Items.
+func (s *AdminAccountsResponse) SetItems(val []AdminAccountListItem) {
+	s.Items = val
+}
+
+// SetTotal sets the value of Total.
+func (s *AdminAccountsResponse) SetTotal(val int) {
+	s.Total = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *AdminAccountsResponse) SetLimit(val int) {
+	s.Limit = val
+}
+
+// SetOffset sets the value of Offset.
+func (s *AdminAccountsResponse) SetOffset(val int) {
+	s.Offset = val
+}
+
+func (*AdminAccountsResponse) listAdminAccountsRes() {}
+
+// Shared success acknowledgement for the admin-billing manual controls.
+// Ref: #/components/schemas/AdminBillingAck
+type AdminBillingAck struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AdminBillingAck) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *AdminBillingAck) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*AdminBillingAck) compAdminAccountRes()         {}
+func (*AdminBillingAck) extendAdminAccountGraceRes()  {}
+func (*AdminBillingAck) forceAdminAccountStateRes()   {}
+func (*AdminBillingAck) restoreAdminAccountRes()      {}
+func (*AdminBillingAck) revokeAdminAccountCompRes()   {}
+func (*AdminBillingAck) setAdminAccountOverridesRes() {}
+func (*AdminBillingAck) suspendAdminAccountRes()      {}
+
+// Ref: #/components/schemas/AdminCompAccountRequest
+type AdminCompAccountRequest struct {
+	Tier   AdminCompAccountRequestTier `json:"tier"`
+	Reason string                      `json:"reason"`
+}
+
+// GetTier returns the value of Tier.
+func (s *AdminCompAccountRequest) GetTier() AdminCompAccountRequestTier {
+	return s.Tier
+}
+
+// GetReason returns the value of Reason.
+func (s *AdminCompAccountRequest) GetReason() string {
+	return s.Reason
+}
+
+// SetTier sets the value of Tier.
+func (s *AdminCompAccountRequest) SetTier(val AdminCompAccountRequestTier) {
+	s.Tier = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AdminCompAccountRequest) SetReason(val string) {
+	s.Reason = val
+}
+
+type AdminCompAccountRequestTier string
+
+const (
+	AdminCompAccountRequestTierFree    AdminCompAccountRequestTier = "free"
+	AdminCompAccountRequestTierStarter AdminCompAccountRequestTier = "starter"
+	AdminCompAccountRequestTierAgency  AdminCompAccountRequestTier = "agency"
+	AdminCompAccountRequestTierScale   AdminCompAccountRequestTier = "scale"
+)
+
+// AllValues returns all AdminCompAccountRequestTier values.
+func (AdminCompAccountRequestTier) AllValues() []AdminCompAccountRequestTier {
+	return []AdminCompAccountRequestTier{
+		AdminCompAccountRequestTierFree,
+		AdminCompAccountRequestTierStarter,
+		AdminCompAccountRequestTierAgency,
+		AdminCompAccountRequestTierScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminCompAccountRequestTier) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminCompAccountRequestTierFree:
+		return []byte(s), nil
+	case AdminCompAccountRequestTierStarter:
+		return []byte(s), nil
+	case AdminCompAccountRequestTierAgency:
+		return []byte(s), nil
+	case AdminCompAccountRequestTierScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminCompAccountRequestTier) UnmarshalText(data []byte) error {
+	switch AdminCompAccountRequestTier(data) {
+	case AdminCompAccountRequestTierFree:
+		*s = AdminCompAccountRequestTierFree
+		return nil
+	case AdminCompAccountRequestTierStarter:
+		*s = AdminCompAccountRequestTierStarter
+		return nil
+	case AdminCompAccountRequestTierAgency:
+		*s = AdminCompAccountRequestTierAgency
+		return nil
+	case AdminCompAccountRequestTierScale:
+		*s = AdminCompAccountRequestTierScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// The revenue page's "comped value" summary row — a hypothetical figure (what these tenants WOULD
+// pay), never real revenue.
+// Ref: #/components/schemas/AdminCompedRow
+type AdminCompedRow struct {
+	Count                  int64 `json:"count"`
+	HypotheticalValueCents int64 `json:"hypothetical_value_cents"`
+}
+
+// GetCount returns the value of Count.
+func (s *AdminCompedRow) GetCount() int64 {
+	return s.Count
+}
+
+// GetHypotheticalValueCents returns the value of HypotheticalValueCents.
+func (s *AdminCompedRow) GetHypotheticalValueCents() int64 {
+	return s.HypotheticalValueCents
+}
+
+// SetCount sets the value of Count.
+func (s *AdminCompedRow) SetCount(val int64) {
+	s.Count = val
+}
+
+// SetHypotheticalValueCents sets the value of HypotheticalValueCents.
+func (s *AdminCompedRow) SetHypotheticalValueCents(val int64) {
+	s.HypotheticalValueCents = val
+}
+
+// Ref: #/components/schemas/AdminExtendGraceRequest
+type AdminExtendGraceRequest struct {
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason"`
+}
+
+// GetUntil returns the value of Until.
+func (s *AdminExtendGraceRequest) GetUntil() time.Time {
+	return s.Until
+}
+
+// GetReason returns the value of Reason.
+func (s *AdminExtendGraceRequest) GetReason() string {
+	return s.Reason
+}
+
+// SetUntil sets the value of Until.
+func (s *AdminExtendGraceRequest) SetUntil(val time.Time) {
+	s.Until = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AdminExtendGraceRequest) SetReason(val string) {
+	s.Reason = val
+}
+
+// Ref: #/components/schemas/AdminForceStateRequest
+type AdminForceStateRequest struct {
+	Plan       AdminForceStateRequestPlan       `json:"plan"`
+	PlanStatus AdminForceStateRequestPlanStatus `json:"plan_status"`
+	Reason     string                           `json:"reason"`
+}
+
+// GetPlan returns the value of Plan.
+func (s *AdminForceStateRequest) GetPlan() AdminForceStateRequestPlan {
+	return s.Plan
+}
+
+// GetPlanStatus returns the value of PlanStatus.
+func (s *AdminForceStateRequest) GetPlanStatus() AdminForceStateRequestPlanStatus {
+	return s.PlanStatus
+}
+
+// GetReason returns the value of Reason.
+func (s *AdminForceStateRequest) GetReason() string {
+	return s.Reason
+}
+
+// SetPlan sets the value of Plan.
+func (s *AdminForceStateRequest) SetPlan(val AdminForceStateRequestPlan) {
+	s.Plan = val
+}
+
+// SetPlanStatus sets the value of PlanStatus.
+func (s *AdminForceStateRequest) SetPlanStatus(val AdminForceStateRequestPlanStatus) {
+	s.PlanStatus = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AdminForceStateRequest) SetReason(val string) {
+	s.Reason = val
+}
+
+type AdminForceStateRequestPlan string
+
+const (
+	AdminForceStateRequestPlanFree    AdminForceStateRequestPlan = "free"
+	AdminForceStateRequestPlanStarter AdminForceStateRequestPlan = "starter"
+	AdminForceStateRequestPlanAgency  AdminForceStateRequestPlan = "agency"
+	AdminForceStateRequestPlanScale   AdminForceStateRequestPlan = "scale"
+)
+
+// AllValues returns all AdminForceStateRequestPlan values.
+func (AdminForceStateRequestPlan) AllValues() []AdminForceStateRequestPlan {
+	return []AdminForceStateRequestPlan{
+		AdminForceStateRequestPlanFree,
+		AdminForceStateRequestPlanStarter,
+		AdminForceStateRequestPlanAgency,
+		AdminForceStateRequestPlanScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminForceStateRequestPlan) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminForceStateRequestPlanFree:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanStarter:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanAgency:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminForceStateRequestPlan) UnmarshalText(data []byte) error {
+	switch AdminForceStateRequestPlan(data) {
+	case AdminForceStateRequestPlanFree:
+		*s = AdminForceStateRequestPlanFree
+		return nil
+	case AdminForceStateRequestPlanStarter:
+		*s = AdminForceStateRequestPlanStarter
+		return nil
+	case AdminForceStateRequestPlanAgency:
+		*s = AdminForceStateRequestPlanAgency
+		return nil
+	case AdminForceStateRequestPlanScale:
+		*s = AdminForceStateRequestPlanScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AdminForceStateRequestPlanStatus string
+
+const (
+	AdminForceStateRequestPlanStatusNone     AdminForceStateRequestPlanStatus = "none"
+	AdminForceStateRequestPlanStatusTrialing AdminForceStateRequestPlanStatus = "trialing"
+	AdminForceStateRequestPlanStatusActive   AdminForceStateRequestPlanStatus = "active"
+	AdminForceStateRequestPlanStatusPastDue  AdminForceStateRequestPlanStatus = "past_due"
+	AdminForceStateRequestPlanStatusCanceled AdminForceStateRequestPlanStatus = "canceled"
+	AdminForceStateRequestPlanStatusPaused   AdminForceStateRequestPlanStatus = "paused"
+	AdminForceStateRequestPlanStatusComped   AdminForceStateRequestPlanStatus = "comped"
+)
+
+// AllValues returns all AdminForceStateRequestPlanStatus values.
+func (AdminForceStateRequestPlanStatus) AllValues() []AdminForceStateRequestPlanStatus {
+	return []AdminForceStateRequestPlanStatus{
+		AdminForceStateRequestPlanStatusNone,
+		AdminForceStateRequestPlanStatusTrialing,
+		AdminForceStateRequestPlanStatusActive,
+		AdminForceStateRequestPlanStatusPastDue,
+		AdminForceStateRequestPlanStatusCanceled,
+		AdminForceStateRequestPlanStatusPaused,
+		AdminForceStateRequestPlanStatusComped,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminForceStateRequestPlanStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminForceStateRequestPlanStatusNone:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanStatusTrialing:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanStatusActive:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanStatusPastDue:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanStatusCanceled:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanStatusPaused:
+		return []byte(s), nil
+	case AdminForceStateRequestPlanStatusComped:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminForceStateRequestPlanStatus) UnmarshalText(data []byte) error {
+	switch AdminForceStateRequestPlanStatus(data) {
+	case AdminForceStateRequestPlanStatusNone:
+		*s = AdminForceStateRequestPlanStatusNone
+		return nil
+	case AdminForceStateRequestPlanStatusTrialing:
+		*s = AdminForceStateRequestPlanStatusTrialing
+		return nil
+	case AdminForceStateRequestPlanStatusActive:
+		*s = AdminForceStateRequestPlanStatusActive
+		return nil
+	case AdminForceStateRequestPlanStatusPastDue:
+		*s = AdminForceStateRequestPlanStatusPastDue
+		return nil
+	case AdminForceStateRequestPlanStatusCanceled:
+		*s = AdminForceStateRequestPlanStatusCanceled
+		return nil
+	case AdminForceStateRequestPlanStatusPaused:
+		*s = AdminForceStateRequestPlanStatusPaused
+		return nil
+	case AdminForceStateRequestPlanStatusComped:
+		*s = AdminForceStateRequestPlanStatusComped
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One row of the revenue page's past-due list.
+// Ref: #/components/schemas/AdminPastDueRow
+type AdminPastDueRow struct {
+	TenantID            uuid.UUID   `json:"tenant_id"`
+	OrgName             string      `json:"org_name"`
+	OrgSlug             string      `json:"org_slug"`
+	OwnerEmail          OptString   `json:"owner_email"`
+	AmountCents         int64       `json:"amount_cents"`
+	DaysPastDue         int         `json:"days_past_due"`
+	GraceUntil          OptDateTime `json:"grace_until"`
+	LastPaymentFailedAt OptDateTime `json:"last_payment_failed_at"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminPastDueRow) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetOrgName returns the value of OrgName.
+func (s *AdminPastDueRow) GetOrgName() string {
+	return s.OrgName
+}
+
+// GetOrgSlug returns the value of OrgSlug.
+func (s *AdminPastDueRow) GetOrgSlug() string {
+	return s.OrgSlug
+}
+
+// GetOwnerEmail returns the value of OwnerEmail.
+func (s *AdminPastDueRow) GetOwnerEmail() OptString {
+	return s.OwnerEmail
+}
+
+// GetAmountCents returns the value of AmountCents.
+func (s *AdminPastDueRow) GetAmountCents() int64 {
+	return s.AmountCents
+}
+
+// GetDaysPastDue returns the value of DaysPastDue.
+func (s *AdminPastDueRow) GetDaysPastDue() int {
+	return s.DaysPastDue
+}
+
+// GetGraceUntil returns the value of GraceUntil.
+func (s *AdminPastDueRow) GetGraceUntil() OptDateTime {
+	return s.GraceUntil
+}
+
+// GetLastPaymentFailedAt returns the value of LastPaymentFailedAt.
+func (s *AdminPastDueRow) GetLastPaymentFailedAt() OptDateTime {
+	return s.LastPaymentFailedAt
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminPastDueRow) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetOrgName sets the value of OrgName.
+func (s *AdminPastDueRow) SetOrgName(val string) {
+	s.OrgName = val
+}
+
+// SetOrgSlug sets the value of OrgSlug.
+func (s *AdminPastDueRow) SetOrgSlug(val string) {
+	s.OrgSlug = val
+}
+
+// SetOwnerEmail sets the value of OwnerEmail.
+func (s *AdminPastDueRow) SetOwnerEmail(val OptString) {
+	s.OwnerEmail = val
+}
+
+// SetAmountCents sets the value of AmountCents.
+func (s *AdminPastDueRow) SetAmountCents(val int64) {
+	s.AmountCents = val
+}
+
+// SetDaysPastDue sets the value of DaysPastDue.
+func (s *AdminPastDueRow) SetDaysPastDue(val int) {
+	s.DaysPastDue = val
+}
+
+// SetGraceUntil sets the value of GraceUntil.
+func (s *AdminPastDueRow) SetGraceUntil(val OptDateTime) {
+	s.GraceUntil = val
+}
+
+// SetLastPaymentFailedAt sets the value of LastPaymentFailedAt.
+func (s *AdminPastDueRow) SetLastPaymentFailedAt(val OptDateTime) {
+	s.LastPaymentFailedAt = val
+}
+
+// One row of the revenue page's plan-distribution table.
+// Ref: #/components/schemas/AdminPlanDistributionRow
+type AdminPlanDistributionRow struct {
+	Plan     string `json:"plan"`
+	Count    int64  `json:"count"`
+	MrrCents int64  `json:"mrr_cents"`
+}
+
+// GetPlan returns the value of Plan.
+func (s *AdminPlanDistributionRow) GetPlan() string {
+	return s.Plan
+}
+
+// GetCount returns the value of Count.
+func (s *AdminPlanDistributionRow) GetCount() int64 {
+	return s.Count
+}
+
+// GetMrrCents returns the value of MrrCents.
+func (s *AdminPlanDistributionRow) GetMrrCents() int64 {
+	return s.MrrCents
+}
+
+// SetPlan sets the value of Plan.
+func (s *AdminPlanDistributionRow) SetPlan(val string) {
+	s.Plan = val
+}
+
+// SetCount sets the value of Count.
+func (s *AdminPlanDistributionRow) SetCount(val int64) {
+	s.Count = val
+}
+
+// SetMrrCents sets the value of MrrCents.
+func (s *AdminPlanDistributionRow) SetMrrCents(val int64) {
+	s.MrrCents = val
+}
+
+// Ref: #/components/schemas/AdminReasonRequest
+type AdminReasonRequest struct {
+	Reason string `json:"reason"`
+}
+
+// GetReason returns the value of Reason.
+func (s *AdminReasonRequest) GetReason() string {
+	return s.Reason
+}
+
+// SetReason sets the value of Reason.
+func (s *AdminReasonRequest) SetReason(val string) {
+	s.Reason = val
+}
+
+// One row of the revenue page's recent-activity feed.
+// Ref: #/components/schemas/AdminRecentBillingEvent
+type AdminRecentBillingEvent struct {
+	ID         uuid.UUID `json:"id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	OrgName    OptString `json:"org_name"`
+	OrgSlug    OptString `json:"org_slug"`
+	TenantID   OptUUID   `json:"tenant_id"`
+	Kind       string    `json:"kind"`
+	Provider   string    `json:"provider"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminRecentBillingEvent) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *AdminRecentBillingEvent) GetOccurredAt() time.Time {
+	return s.OccurredAt
+}
+
+// GetOrgName returns the value of OrgName.
+func (s *AdminRecentBillingEvent) GetOrgName() OptString {
+	return s.OrgName
+}
+
+// GetOrgSlug returns the value of OrgSlug.
+func (s *AdminRecentBillingEvent) GetOrgSlug() OptString {
+	return s.OrgSlug
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminRecentBillingEvent) GetTenantID() OptUUID {
+	return s.TenantID
+}
+
+// GetKind returns the value of Kind.
+func (s *AdminRecentBillingEvent) GetKind() string {
+	return s.Kind
+}
+
+// GetProvider returns the value of Provider.
+func (s *AdminRecentBillingEvent) GetProvider() string {
+	return s.Provider
+}
+
+// SetID sets the value of ID.
+func (s *AdminRecentBillingEvent) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *AdminRecentBillingEvent) SetOccurredAt(val time.Time) {
+	s.OccurredAt = val
+}
+
+// SetOrgName sets the value of OrgName.
+func (s *AdminRecentBillingEvent) SetOrgName(val OptString) {
+	s.OrgName = val
+}
+
+// SetOrgSlug sets the value of OrgSlug.
+func (s *AdminRecentBillingEvent) SetOrgSlug(val OptString) {
+	s.OrgSlug = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminRecentBillingEvent) SetTenantID(val OptUUID) {
+	s.TenantID = val
+}
+
+// SetKind sets the value of Kind.
+func (s *AdminRecentBillingEvent) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetProvider sets the value of Provider.
+func (s *AdminRecentBillingEvent) SetProvider(val string) {
+	s.Provider = val
+}
+
+// The full GET /api/v1/admin/revenue body.
+// Ref: #/components/schemas/AdminRevenueResponse
+type AdminRevenueResponse struct {
+	Tiles                 AdminRevenueTiles          `json:"tiles"`
+	PlanDistribution      []AdminPlanDistributionRow `json:"plan_distribution"`
+	Comped                AdminCompedRow             `json:"comped"`
+	PastDue               []AdminPastDueRow          `json:"past_due"`
+	RecentEvents          []AdminRecentBillingEvent  `json:"recent_events"`
+	LastWebhookReceivedAt OptDateTime                `json:"last_webhook_received_at"`
+}
+
+// GetTiles returns the value of Tiles.
+func (s *AdminRevenueResponse) GetTiles() AdminRevenueTiles {
+	return s.Tiles
+}
+
+// GetPlanDistribution returns the value of PlanDistribution.
+func (s *AdminRevenueResponse) GetPlanDistribution() []AdminPlanDistributionRow {
+	return s.PlanDistribution
+}
+
+// GetComped returns the value of Comped.
+func (s *AdminRevenueResponse) GetComped() AdminCompedRow {
+	return s.Comped
+}
+
+// GetPastDue returns the value of PastDue.
+func (s *AdminRevenueResponse) GetPastDue() []AdminPastDueRow {
+	return s.PastDue
+}
+
+// GetRecentEvents returns the value of RecentEvents.
+func (s *AdminRevenueResponse) GetRecentEvents() []AdminRecentBillingEvent {
+	return s.RecentEvents
+}
+
+// GetLastWebhookReceivedAt returns the value of LastWebhookReceivedAt.
+func (s *AdminRevenueResponse) GetLastWebhookReceivedAt() OptDateTime {
+	return s.LastWebhookReceivedAt
+}
+
+// SetTiles sets the value of Tiles.
+func (s *AdminRevenueResponse) SetTiles(val AdminRevenueTiles) {
+	s.Tiles = val
+}
+
+// SetPlanDistribution sets the value of PlanDistribution.
+func (s *AdminRevenueResponse) SetPlanDistribution(val []AdminPlanDistributionRow) {
+	s.PlanDistribution = val
+}
+
+// SetComped sets the value of Comped.
+func (s *AdminRevenueResponse) SetComped(val AdminCompedRow) {
+	s.Comped = val
+}
+
+// SetPastDue sets the value of PastDue.
+func (s *AdminRevenueResponse) SetPastDue(val []AdminPastDueRow) {
+	s.PastDue = val
+}
+
+// SetRecentEvents sets the value of RecentEvents.
+func (s *AdminRevenueResponse) SetRecentEvents(val []AdminRecentBillingEvent) {
+	s.RecentEvents = val
+}
+
+// SetLastWebhookReceivedAt sets the value of LastWebhookReceivedAt.
+func (s *AdminRevenueResponse) SetLastWebhookReceivedAt(val OptDateTime) {
+	s.LastWebhookReceivedAt = val
+}
+
+func (*AdminRevenueResponse) getAdminRevenueRes() {}
+
+// The revenue-page header tiles.
+// Ref: #/components/schemas/AdminRevenueTiles
+type AdminRevenueTiles struct {
+	MrrCents           int64 `json:"mrr_cents"`
+	MrrPastDueCents    int64 `json:"mrr_past_due_cents"`
+	ActiveSubs         int64 `json:"active_subs"`
+	TrialingSubs       int64 `json:"trialing_subs"`
+	PastDueCount       int64 `json:"past_due_count"`
+	PastDueAtRiskCents int64 `json:"past_due_at_risk_cents"`
+	NewThisMonth       int64 `json:"new_this_month"`
+	CanceledThisMonth  int64 `json:"canceled_this_month"`
+}
+
+// GetMrrCents returns the value of MrrCents.
+func (s *AdminRevenueTiles) GetMrrCents() int64 {
+	return s.MrrCents
+}
+
+// GetMrrPastDueCents returns the value of MrrPastDueCents.
+func (s *AdminRevenueTiles) GetMrrPastDueCents() int64 {
+	return s.MrrPastDueCents
+}
+
+// GetActiveSubs returns the value of ActiveSubs.
+func (s *AdminRevenueTiles) GetActiveSubs() int64 {
+	return s.ActiveSubs
+}
+
+// GetTrialingSubs returns the value of TrialingSubs.
+func (s *AdminRevenueTiles) GetTrialingSubs() int64 {
+	return s.TrialingSubs
+}
+
+// GetPastDueCount returns the value of PastDueCount.
+func (s *AdminRevenueTiles) GetPastDueCount() int64 {
+	return s.PastDueCount
+}
+
+// GetPastDueAtRiskCents returns the value of PastDueAtRiskCents.
+func (s *AdminRevenueTiles) GetPastDueAtRiskCents() int64 {
+	return s.PastDueAtRiskCents
+}
+
+// GetNewThisMonth returns the value of NewThisMonth.
+func (s *AdminRevenueTiles) GetNewThisMonth() int64 {
+	return s.NewThisMonth
+}
+
+// GetCanceledThisMonth returns the value of CanceledThisMonth.
+func (s *AdminRevenueTiles) GetCanceledThisMonth() int64 {
+	return s.CanceledThisMonth
+}
+
+// SetMrrCents sets the value of MrrCents.
+func (s *AdminRevenueTiles) SetMrrCents(val int64) {
+	s.MrrCents = val
+}
+
+// SetMrrPastDueCents sets the value of MrrPastDueCents.
+func (s *AdminRevenueTiles) SetMrrPastDueCents(val int64) {
+	s.MrrPastDueCents = val
+}
+
+// SetActiveSubs sets the value of ActiveSubs.
+func (s *AdminRevenueTiles) SetActiveSubs(val int64) {
+	s.ActiveSubs = val
+}
+
+// SetTrialingSubs sets the value of TrialingSubs.
+func (s *AdminRevenueTiles) SetTrialingSubs(val int64) {
+	s.TrialingSubs = val
+}
+
+// SetPastDueCount sets the value of PastDueCount.
+func (s *AdminRevenueTiles) SetPastDueCount(val int64) {
+	s.PastDueCount = val
+}
+
+// SetPastDueAtRiskCents sets the value of PastDueAtRiskCents.
+func (s *AdminRevenueTiles) SetPastDueAtRiskCents(val int64) {
+	s.PastDueAtRiskCents = val
+}
+
+// SetNewThisMonth sets the value of NewThisMonth.
+func (s *AdminRevenueTiles) SetNewThisMonth(val int64) {
+	s.NewThisMonth = val
+}
+
+// SetCanceledThisMonth sets the value of CanceledThisMonth.
+func (s *AdminRevenueTiles) SetCanceledThisMonth(val int64) {
+	s.CanceledThisMonth = val
+}
+
+// Each of sites/storage_gb/seats is a signed delta on top of the tenant's current plan's ladder base.
+//
+//	An omitted key leaves that limit untouched; `null` (or `0`) clears it.
+//
+// Ref: #/components/schemas/AdminSetOverridesRequest
+type AdminSetOverridesRequest struct {
+	Sites     OptNilInt `json:"sites"`
+	StorageGB OptNilInt `json:"storage_gb"`
+	Seats     OptNilInt `json:"seats"`
+	Reason    string    `json:"reason"`
+}
+
+// GetSites returns the value of Sites.
+func (s *AdminSetOverridesRequest) GetSites() OptNilInt {
+	return s.Sites
+}
+
+// GetStorageGB returns the value of StorageGB.
+func (s *AdminSetOverridesRequest) GetStorageGB() OptNilInt {
+	return s.StorageGB
+}
+
+// GetSeats returns the value of Seats.
+func (s *AdminSetOverridesRequest) GetSeats() OptNilInt {
+	return s.Seats
+}
+
+// GetReason returns the value of Reason.
+func (s *AdminSetOverridesRequest) GetReason() string {
+	return s.Reason
+}
+
+// SetSites sets the value of Sites.
+func (s *AdminSetOverridesRequest) SetSites(val OptNilInt) {
+	s.Sites = val
+}
+
+// SetStorageGB sets the value of StorageGB.
+func (s *AdminSetOverridesRequest) SetStorageGB(val OptNilInt) {
+	s.StorageGB = val
+}
+
+// SetSeats sets the value of Seats.
+func (s *AdminSetOverridesRequest) SetSeats(val OptNilInt) {
+	s.Seats = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AdminSetOverridesRequest) SetReason(val string) {
+	s.Reason = val
+}
+
 // An agency client record that groups sites under a customer entity.
 // Ref: #/components/schemas/AgencyClient
 type AgencyClient struct {
@@ -6276,6 +8303,26 @@ func (s *ClientReportStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+type CompAdminAccountForbidden Error
+
+func (*CompAdminAccountForbidden) compAdminAccountRes() {}
+
+type CompAdminAccountNotFound Error
+
+func (*CompAdminAccountNotFound) compAdminAccountRes() {}
+
+type CompAdminAccountServiceUnavailable Error
+
+func (*CompAdminAccountServiceUnavailable) compAdminAccountRes() {}
+
+type CompAdminAccountUnauthorized Error
+
+func (*CompAdminAccountUnauthorized) compAdminAccountRes() {}
+
+type CompAdminAccountUnprocessableEntity Error
+
+func (*CompAdminAccountUnprocessableEntity) compAdminAccountRes() {}
+
 type ComputeRucssReq struct {
 	// Same-host URLs to compute; empty computes the home page.
 	Urls []string `json:"urls"`
@@ -9555,6 +11602,26 @@ type ExportSiteEmailLogUnauthorized Error
 
 func (*ExportSiteEmailLogUnauthorized) exportSiteEmailLogRes() {}
 
+type ExtendAdminAccountGraceForbidden Error
+
+func (*ExtendAdminAccountGraceForbidden) extendAdminAccountGraceRes() {}
+
+type ExtendAdminAccountGraceNotFound Error
+
+func (*ExtendAdminAccountGraceNotFound) extendAdminAccountGraceRes() {}
+
+type ExtendAdminAccountGraceServiceUnavailable Error
+
+func (*ExtendAdminAccountGraceServiceUnavailable) extendAdminAccountGraceRes() {}
+
+type ExtendAdminAccountGraceUnauthorized Error
+
+func (*ExtendAdminAccountGraceUnauthorized) extendAdminAccountGraceRes() {}
+
+type ExtendAdminAccountGraceUnprocessableEntity Error
+
+func (*ExtendAdminAccountGraceUnprocessableEntity) extendAdminAccountGraceRes() {}
+
 type ExtractSiteFileArchiveBadRequest Error
 
 func (*ExtractSiteFileArchiveBadRequest) extractSiteFileArchiveRes() {}
@@ -12111,6 +14178,26 @@ func (s *FontTranscodeResponseState) UnmarshalText(data []byte) error {
 	}
 }
 
+type ForceAdminAccountStateForbidden Error
+
+func (*ForceAdminAccountStateForbidden) forceAdminAccountStateRes() {}
+
+type ForceAdminAccountStateNotFound Error
+
+func (*ForceAdminAccountStateNotFound) forceAdminAccountStateRes() {}
+
+type ForceAdminAccountStateServiceUnavailable Error
+
+func (*ForceAdminAccountStateServiceUnavailable) forceAdminAccountStateRes() {}
+
+type ForceAdminAccountStateUnauthorized Error
+
+func (*ForceAdminAccountStateUnauthorized) forceAdminAccountStateRes() {}
+
+type ForceAdminAccountStateUnprocessableEntity Error
+
+func (*ForceAdminAccountStateUnprocessableEntity) forceAdminAccountStateRes() {}
+
 type ForgotPasswordOK struct {
 	Ok bool `json:"ok"`
 }
@@ -12206,6 +14293,34 @@ func (s *GenerateClientReportRequest) SetNotify(val OptBool) {
 type GenerateClientReportUnauthorized Error
 
 func (*GenerateClientReportUnauthorized) generateClientReportRes() {}
+
+type GetAdminAccountForbidden Error
+
+func (*GetAdminAccountForbidden) getAdminAccountRes() {}
+
+type GetAdminAccountNotFound Error
+
+func (*GetAdminAccountNotFound) getAdminAccountRes() {}
+
+type GetAdminAccountServiceUnavailable Error
+
+func (*GetAdminAccountServiceUnavailable) getAdminAccountRes() {}
+
+type GetAdminAccountUnauthorized Error
+
+func (*GetAdminAccountUnauthorized) getAdminAccountRes() {}
+
+type GetAdminRevenueForbidden Error
+
+func (*GetAdminRevenueForbidden) getAdminRevenueRes() {}
+
+type GetAdminRevenueServiceUnavailable Error
+
+func (*GetAdminRevenueServiceUnavailable) getAdminRevenueRes() {}
+
+type GetAdminRevenueUnauthorized Error
+
+func (*GetAdminRevenueUnauthorized) getAdminRevenueRes() {}
 
 type GetBackupEnvironmentNotFound Error
 
@@ -12821,6 +14936,18 @@ func (s *InviteRequest) SetName(val OptString) {
 func (s *InviteRequest) SetRole(val Role) {
 	s.Role = val
 }
+
+type ListAdminAccountsForbidden Error
+
+func (*ListAdminAccountsForbidden) listAdminAccountsRes() {}
+
+type ListAdminAccountsServiceUnavailable Error
+
+func (*ListAdminAccountsServiceUnavailable) listAdminAccountsRes() {}
+
+type ListAdminAccountsUnauthorized Error
+
+func (*ListAdminAccountsUnauthorized) listAdminAccountsRes() {}
 
 type ListApiKeysForbidden Error
 
@@ -16997,6 +19124,98 @@ func (*OidcCallbackUnauthorized) oidcCallbackRes() {}
 type OidcLoginFound struct{}
 
 func (*OidcLoginFound) oidcLoginRes() {}
+
+// NewOptAdminAccountTimelineEntryMetadata returns new OptAdminAccountTimelineEntryMetadata with value set to v.
+func NewOptAdminAccountTimelineEntryMetadata(v AdminAccountTimelineEntryMetadata) OptAdminAccountTimelineEntryMetadata {
+	return OptAdminAccountTimelineEntryMetadata{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAdminAccountTimelineEntryMetadata is optional AdminAccountTimelineEntryMetadata.
+type OptAdminAccountTimelineEntryMetadata struct {
+	Value AdminAccountTimelineEntryMetadata
+	Set   bool
+}
+
+// IsSet returns true if OptAdminAccountTimelineEntryMetadata was set.
+func (o OptAdminAccountTimelineEntryMetadata) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAdminAccountTimelineEntryMetadata) Reset() {
+	var v AdminAccountTimelineEntryMetadata
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAdminAccountTimelineEntryMetadata) SetTo(v AdminAccountTimelineEntryMetadata) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAdminAccountTimelineEntryMetadata) Get() (v AdminAccountTimelineEntryMetadata, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAdminAccountTimelineEntryMetadata) Or(d AdminAccountTimelineEntryMetadata) AdminAccountTimelineEntryMetadata {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAdminReasonRequest returns new OptAdminReasonRequest with value set to v.
+func NewOptAdminReasonRequest(v AdminReasonRequest) OptAdminReasonRequest {
+	return OptAdminReasonRequest{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAdminReasonRequest is optional AdminReasonRequest.
+type OptAdminReasonRequest struct {
+	Value AdminReasonRequest
+	Set   bool
+}
+
+// IsSet returns true if OptAdminReasonRequest was set.
+func (o OptAdminReasonRequest) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAdminReasonRequest) Reset() {
+	var v AdminReasonRequest
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAdminReasonRequest) SetTo(v AdminReasonRequest) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAdminReasonRequest) Get() (v AdminReasonRequest, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAdminReasonRequest) Or(d AdminReasonRequest) AdminReasonRequest {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
 
 // NewOptAgentDisconnect returns new OptAgentDisconnect with value set to v.
 func NewOptAgentDisconnect(v AgentDisconnect) OptAgentDisconnect {
@@ -26988,6 +29207,26 @@ type ResetPasswordUnprocessableEntity Error
 
 func (*ResetPasswordUnprocessableEntity) resetPasswordRes() {}
 
+type RestoreAdminAccountForbidden Error
+
+func (*RestoreAdminAccountForbidden) restoreAdminAccountRes() {}
+
+type RestoreAdminAccountNotFound Error
+
+func (*RestoreAdminAccountNotFound) restoreAdminAccountRes() {}
+
+type RestoreAdminAccountServiceUnavailable Error
+
+func (*RestoreAdminAccountServiceUnavailable) restoreAdminAccountRes() {}
+
+type RestoreAdminAccountUnauthorized Error
+
+func (*RestoreAdminAccountUnauthorized) restoreAdminAccountRes() {}
+
+type RestoreAdminAccountUnprocessableEntity Error
+
+func (*RestoreAdminAccountUnprocessableEntity) restoreAdminAccountRes() {}
+
 // Restore selection. Omit both arrays (or set full=true) for a full
 // restore; provide paths for partial file restore, or db_tables for partial
 // db restore. `components` further restricts the operation to specific
@@ -27648,6 +29887,26 @@ func (*RestoreSiteFileVersionNotFound) restoreSiteFileVersionRes() {}
 type RestoreSiteFileVersionUnauthorized Error
 
 func (*RestoreSiteFileVersionUnauthorized) restoreSiteFileVersionRes() {}
+
+type RevokeAdminAccountCompForbidden Error
+
+func (*RevokeAdminAccountCompForbidden) revokeAdminAccountCompRes() {}
+
+type RevokeAdminAccountCompNotFound Error
+
+func (*RevokeAdminAccountCompNotFound) revokeAdminAccountCompRes() {}
+
+type RevokeAdminAccountCompServiceUnavailable Error
+
+func (*RevokeAdminAccountCompServiceUnavailable) revokeAdminAccountCompRes() {}
+
+type RevokeAdminAccountCompUnauthorized Error
+
+func (*RevokeAdminAccountCompUnauthorized) revokeAdminAccountCompRes() {}
+
+type RevokeAdminAccountCompUnprocessableEntity Error
+
+func (*RevokeAdminAccountCompUnprocessableEntity) revokeAdminAccountCompRes() {}
 
 type RevokeApiKeyForbidden Error
 
@@ -29106,6 +31365,26 @@ func (*SendTestEmailNotFound) sendTestEmailRes() {}
 type SendTestEmailUnauthorized Error
 
 func (*SendTestEmailUnauthorized) sendTestEmailRes() {}
+
+type SetAdminAccountOverridesForbidden Error
+
+func (*SetAdminAccountOverridesForbidden) setAdminAccountOverridesRes() {}
+
+type SetAdminAccountOverridesNotFound Error
+
+func (*SetAdminAccountOverridesNotFound) setAdminAccountOverridesRes() {}
+
+type SetAdminAccountOverridesServiceUnavailable Error
+
+func (*SetAdminAccountOverridesServiceUnavailable) setAdminAccountOverridesRes() {}
+
+type SetAdminAccountOverridesUnauthorized Error
+
+func (*SetAdminAccountOverridesUnauthorized) setAdminAccountOverridesRes() {}
+
+type SetAdminAccountOverridesUnprocessableEntity Error
+
+func (*SetAdminAccountOverridesUnprocessableEntity) setAdminAccountOverridesRes() {}
 
 // SilenceSitePHPErrorNoContent is response for SilenceSitePHPError operation.
 type SilenceSitePHPErrorNoContent struct{}
@@ -33746,6 +36025,26 @@ func (s StreamSiteEventsOK) Read(p []byte) (n int, err error) {
 	}
 	return s.Data.Read(p)
 }
+
+type SuspendAdminAccountForbidden Error
+
+func (*SuspendAdminAccountForbidden) suspendAdminAccountRes() {}
+
+type SuspendAdminAccountNotFound Error
+
+func (*SuspendAdminAccountNotFound) suspendAdminAccountRes() {}
+
+type SuspendAdminAccountServiceUnavailable Error
+
+func (*SuspendAdminAccountServiceUnavailable) suspendAdminAccountRes() {}
+
+type SuspendAdminAccountUnauthorized Error
+
+func (*SuspendAdminAccountUnauthorized) suspendAdminAccountRes() {}
+
+type SuspendAdminAccountUnprocessableEntity Error
+
+func (*SuspendAdminAccountUnprocessableEntity) suspendAdminAccountRes() {}
 
 type SyncMediaAccepted struct {
 	JobID     OptString   `json:"job_id"`

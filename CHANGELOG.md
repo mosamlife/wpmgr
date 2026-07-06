@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.23] - 2026-07-06
+
+### Fixed
+
+- The superadmin billing admin panel could still fail to load because its pages use tooltips but the admin area did not provide the tooltip context they require. The admin layout now provides it for every admin page. Also corrected the account list's idle filter so it takes effect. Superadmin-only; no customer impact.
+
+### Changed
+
+- The admin billing endpoints are now described in the API specification, so the dashboard's types are generated from it and checked against the server, preventing the shape mismatches that caused the earlier admin panel load failures.
+
 ## [0.61.22] - 2026-07-06
 
 ### Fixed

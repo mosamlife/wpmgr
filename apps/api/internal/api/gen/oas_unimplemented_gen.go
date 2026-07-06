@@ -471,6 +471,17 @@ func (UnimplementedHandler) ClearRucss(ctx context.Context, params ClearRucssPar
 	return r, ht.ErrNotImplemented
 }
 
+// CompAdminAccount implements compAdminAccount operation.
+//
+// Sets plan_status=comped and plan=tier, bypassing the payment provider
+// entirely. A comped tenant is immune to webhook-driven plan mutation.
+// Requires is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/comp
+func (UnimplementedHandler) CompAdminAccount(ctx context.Context, req *AdminCompAccountRequest, params CompAdminAccountParams) (r CompAdminAccountRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ComputeRucss implements computeRucss operation.
 //
 // Triggers the agent to compute Used-CSS for the given URLs (or the home
@@ -957,6 +968,17 @@ func (UnimplementedHandler) ExportSiteEmailLog(ctx context.Context, params Expor
 	return r, ht.ErrNotImplemented
 }
 
+// ExtendAdminAccountGrace implements extendAdminAccountGrace operation.
+//
+// Sets tenants.grace_until, clamped to at most 90 days out from now and
+// forward-only (a new grace_until must extend further out than the
+// current one). Requires is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/grace
+func (UnimplementedHandler) ExtendAdminAccountGrace(ctx context.Context, req *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (r ExtendAdminAccountGraceRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ExtractSiteFileArchive implements extractSiteFileArchive operation.
 //
 // Issues a `file_extract` command to the site's agent. The agent opens
@@ -998,6 +1020,18 @@ func (UnimplementedHandler) FlushObjectCache(ctx context.Context, req OptFlushOb
 	return r, ht.ErrNotImplemented
 }
 
+// ForceAdminAccountState implements forceAdminAccountState operation.
+//
+// The manual escape hatch for payment-provider webhook drift: sets
+// plan and plan_status directly and clears grace_until. Never use this
+// to grant service for free — use the comp endpoint instead. Requires
+// is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/state
+func (UnimplementedHandler) ForceAdminAccountState(ctx context.Context, req *AdminForceStateRequest, params ForceAdminAccountStateParams) (r ForceAdminAccountStateRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ForgotPassword implements forgotPassword operation.
 //
 // Always returns 200 {ok: true} whether or not the email maps to an
@@ -1016,6 +1050,27 @@ func (UnimplementedHandler) ForgotPassword(ctx context.Context, req *ForgotPassw
 //
 // POST /api/v1/clients/{clientId}/reports
 func (UnimplementedHandler) GenerateClientReport(ctx context.Context, req OptGenerateClientReportRequest, params GenerateClientReportParams) (r GenerateClientReportRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetAdminAccount implements getAdminAccount operation.
+//
+// Returns the account header, usage-vs-entitlement meters, subscription
+// card, a merged billing_events+audit_log timeline (newest first), the
+// member roster, and a compact site list. Requires is_superadmin=true.
+//
+// GET /api/v1/admin/accounts/{tenantId}
+func (UnimplementedHandler) GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (r GetAdminAccountRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetAdminRevenue implements getAdminRevenue operation.
+//
+// Local-state-only revenue view derived from tenants + billing_events —
+// zero payment-provider API calls. Requires is_superadmin=true.
+//
+// GET /api/v1/admin/revenue
+func (UnimplementedHandler) GetAdminRevenue(ctx context.Context) (r GetAdminRevenueRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1621,6 +1676,21 @@ func (UnimplementedHandler) InviteMember(ctx context.Context, req *InviteRequest
 //
 // POST /api/v1/sites/{siteId}/media/clean/isolate
 func (UnimplementedHandler) IsolateUnusedMedia(ctx context.Context, req *MediaCleanIsolateRequest, params IsolateUnusedMediaParams) (r *MediaCleanIsolateResult, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListAdminAccounts implements listAdminAccounts operation.
+//
+// Superadmin-only accounts console: instance-wide header tiles (always
+// unfiltered by the current query, so they read as a stable instance
+// census) plus a filtered, sorted, paginated list of every tenant.
+// Default order is a server-computed "needs attention" ranking:
+// suspended first, then past_due (soonest-to-expire grace first), then
+// active (MRR desc), then everything else (newest first). Requires
+// is_superadmin=true.
+//
+// GET /api/v1/admin/accounts
+func (UnimplementedHandler) ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (r ListAdminAccountsRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2616,6 +2686,20 @@ func (UnimplementedHandler) ResetPassword(ctx context.Context, req *ResetPasswor
 	return r, ht.ErrNotImplemented
 }
 
+// RestoreAdminAccount implements restoreAdminAccount operation.
+//
+// Clears tenants.suspended_at/suspended_reason, returning the tenant to
+// whatever its underlying plan/plan_status already was. A missing or
+// empty request body is tolerated (treated as an empty reason, which
+// then fails the reason-required validation below) rather than a hard
+// 400 — every other manual control on this page rejects a malformed
+// body outright. Requires is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/restore
+func (UnimplementedHandler) RestoreAdminAccount(ctx context.Context, req OptAdminReasonRequest, params RestoreAdminAccountParams) (r RestoreAdminAccountRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // RestoreIsolatedMedia implements restoreIsolatedMedia operation.
 //
 // Moves quarantined attachment files back to the WordPress uploads directory
@@ -2684,6 +2768,17 @@ func (UnimplementedHandler) RestoreSiteFileVersion(ctx context.Context, req *Fil
 //
 // POST /api/v1/sites/{siteId}/perf/db/snapshots/{snapshotId}/revert
 func (UnimplementedHandler) RevertDbSnapshot(ctx context.Context, req *DbSnapshotRevert, params RevertDbSnapshotParams) (r *DbSnapshotRevertResult, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RevokeAdminAccountComp implements revokeAdminAccountComp operation.
+//
+// Adopts the tenant's live payment-provider subscription if one exists,
+// else falls back to plan=free/plan_status=none. Requires
+// is_superadmin=true.
+//
+// DELETE /api/v1/admin/accounts/{tenantId}/comp
+func (UnimplementedHandler) RevokeAdminAccountComp(ctx context.Context, req *AdminReasonRequest, params RevokeAdminAccountCompParams) (r RevokeAdminAccountCompRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2792,6 +2887,19 @@ func (UnimplementedHandler) SendTestEmail(ctx context.Context, req *EmailTestReq
 	return r, ht.ErrNotImplemented
 }
 
+// SetAdminAccountOverrides implements setAdminAccountOverrides operation.
+//
+// Each field is a signed delta applied on top of the tenant's CURRENT
+// plan's ladder base (not accumulated with any prior override for that
+// key — a second PUT replaces the delta). Omitting a key leaves that
+// limit untouched; sending it as `null` (or `0`) clears it back to the
+// pure ladder base. Requires is_superadmin=true.
+//
+// PUT /api/v1/admin/accounts/{tenantId}/overrides
+func (UnimplementedHandler) SetAdminAccountOverrides(ctx context.Context, req *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (r SetAdminAccountOverridesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // SetSiteTags implements setSiteTags operation.
 //
 // Replace the tag set on a site.
@@ -2824,6 +2932,17 @@ func (UnimplementedHandler) SilenceSitePHPError(ctx context.Context, req OptPHPE
 //
 // GET /api/v1/sites/events
 func (UnimplementedHandler) StreamSiteEvents(ctx context.Context, params StreamSiteEventsParams) (r StreamSiteEventsOK, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// SuspendAdminAccount implements suspendAdminAccount operation.
+//
+// Sets tenants.suspended_at/suspended_reason — a field distinct from
+// plan_status. Tenant data is never touched. Requires
+// is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/suspend
+func (UnimplementedHandler) SuspendAdminAccount(ctx context.Context, req *AdminReasonRequest, params SuspendAdminAccountParams) (r SuspendAdminAccountRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

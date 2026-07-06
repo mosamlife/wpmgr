@@ -991,6 +991,71 @@ func decodeClearRucssParams(args [1]string, argsEscaped bool, r *http.Request) (
 	return params, nil
 }
 
+// CompAdminAccountParams is parameters of compAdminAccount operation.
+type CompAdminAccountParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackCompAdminAccountParams(packed middleware.Parameters) (params CompAdminAccountParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeCompAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params CompAdminAccountParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // ComputeRucssParams is parameters of computeRucss operation.
 type ComputeRucssParams struct {
 	SiteId uuid.UUID
@@ -3525,6 +3590,71 @@ func decodeExportSiteEmailLogParams(args [1]string, argsEscaped bool, r *http.Re
 	return params, nil
 }
 
+// ExtendAdminAccountGraceParams is parameters of extendAdminAccountGrace operation.
+type ExtendAdminAccountGraceParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackExtendAdminAccountGraceParams(packed middleware.Parameters) (params ExtendAdminAccountGraceParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeExtendAdminAccountGraceParams(args [1]string, argsEscaped bool, r *http.Request) (params ExtendAdminAccountGraceParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // ExtractSiteFileArchiveParams is parameters of extractSiteFileArchive operation.
 type ExtractSiteFileArchiveParams struct {
 	SiteId uuid.UUID
@@ -3655,6 +3785,71 @@ func decodeFlushObjectCacheParams(args [1]string, argsEscaped bool, r *http.Requ
 	return params, nil
 }
 
+// ForceAdminAccountStateParams is parameters of forceAdminAccountState operation.
+type ForceAdminAccountStateParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackForceAdminAccountStateParams(packed middleware.Parameters) (params ForceAdminAccountStateParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeForceAdminAccountStateParams(args [1]string, argsEscaped bool, r *http.Request) (params ForceAdminAccountStateParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GenerateClientReportParams is parameters of generateClientReport operation.
 type GenerateClientReportParams struct {
 	ClientId uuid.UUID
@@ -3713,6 +3908,71 @@ func decodeGenerateClientReportParams(args [1]string, argsEscaped bool, r *http.
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "clientId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetAdminAccountParams is parameters of getAdminAccount operation.
+type GetAdminAccountParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackGetAdminAccountParams(packed middleware.Parameters) (params GetAdminAccountParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params GetAdminAccountParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
 			In:   "path",
 			Err:  err,
 		}
@@ -7450,6 +7710,597 @@ func decodeIsolateUnusedMediaParams(args [1]string, argsEscaped bool, r *http.Re
 		return params, &ogenerrors.DecodeParamError{
 			Name: "siteId",
 			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ListAdminAccountsParams is parameters of listAdminAccounts operation.
+type ListAdminAccountsParams struct {
+	// Case-insensitive substring match against org name, org slug, or owner email.
+	Search OptString `json:",omitempty,omitzero"`
+	// Comma-separated tenants.plan_status values to filter by (e.g. "past_due,canceled").
+	Status OptString `json:",omitempty,omitzero"`
+	// Comma-separated plan tiers to filter by (e.g. "starter,agency").
+	Plan OptString `json:",omitempty,omitzero"`
+	// Restrict to accounts whose plan_status is past_due.
+	PastDue OptBool `json:",omitempty,omitzero"`
+	// Restrict to accounts at or above 80% of their site or storage cap.
+	NearLimit OptBool `json:",omitempty,omitzero"`
+	// Restrict to accounts with a non-empty tenants.plan_overrides.
+	HasOverrides OptBool `json:",omitempty,omitzero"`
+	// Restrict to accounts whose plan_status is comped.
+	Comped OptBool `json:",omitempty,omitzero"`
+	// Restrict to accounts with no recorded activity in the last 90 days.
+	Idle90d OptBool `json:",omitempty,omitzero"`
+	Limit   OptInt  `json:",omitempty,omitzero"`
+	Offset  OptInt  `json:",omitempty,omitzero"`
+}
+
+func unpackListAdminAccountsParams(packed middleware.Parameters) (params ListAdminAccountsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "search",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Search = v.(OptString)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "status",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Status = v.(OptString)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "plan",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Plan = v.(OptString)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "past_due",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.PastDue = v.(OptBool)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "near_limit",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.NearLimit = v.(OptBool)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "has_overrides",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.HasOverrides = v.(OptBool)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "comped",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Comped = v.(OptBool)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "idle_90d",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Idle90d = v.(OptBool)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "limit",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Limit = v.(OptInt)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "offset",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Offset = v.(OptInt)
+		}
+	}
+	return params
+}
+
+func decodeListAdminAccountsParams(args [0]string, argsEscaped bool, r *http.Request) (params ListAdminAccountsParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode query: search.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "search",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotSearchVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotSearchVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Search.SetTo(paramsDotSearchVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "search",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Decode query: status.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "status",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotStatusVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotStatusVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Status.SetTo(paramsDotStatusVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "status",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Decode query: plan.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "plan",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotPlanVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotPlanVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Plan.SetTo(paramsDotPlanVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "plan",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: past_due.
+	{
+		val := bool(false)
+		params.PastDue.SetTo(val)
+	}
+	// Decode query: past_due.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "past_due",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotPastDueVal bool
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToBool(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotPastDueVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.PastDue.SetTo(paramsDotPastDueVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "past_due",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: near_limit.
+	{
+		val := bool(false)
+		params.NearLimit.SetTo(val)
+	}
+	// Decode query: near_limit.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "near_limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotNearLimitVal bool
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToBool(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotNearLimitVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.NearLimit.SetTo(paramsDotNearLimitVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "near_limit",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: has_overrides.
+	{
+		val := bool(false)
+		params.HasOverrides.SetTo(val)
+	}
+	// Decode query: has_overrides.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "has_overrides",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotHasOverridesVal bool
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToBool(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotHasOverridesVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.HasOverrides.SetTo(paramsDotHasOverridesVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "has_overrides",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: comped.
+	{
+		val := bool(false)
+		params.Comped.SetTo(val)
+	}
+	// Decode query: comped.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "comped",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotCompedVal bool
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToBool(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotCompedVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Comped.SetTo(paramsDotCompedVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "comped",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: idle_90d.
+	{
+		val := bool(false)
+		params.Idle90d.SetTo(val)
+	}
+	// Decode query: idle_90d.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "idle_90d",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotIdle90dVal bool
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToBool(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotIdle90dVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Idle90d.SetTo(paramsDotIdle90dVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "idle_90d",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: limit.
+	{
+		val := int(50)
+		params.Limit.SetTo(val)
+	}
+	// Decode query: limit.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotLimitVal int
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotLimitVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Limit.SetTo(paramsDotLimitVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Limit.Get(); ok {
+					if err := func() error {
+						if err := (validate.Int{
+							MinSet:        false,
+							Min:           0,
+							MaxSet:        true,
+							Max:           200,
+							MinExclusive:  false,
+							MaxExclusive:  false,
+							MultipleOfSet: false,
+							MultipleOf:    0,
+							Pattern:       nil,
+						}).Validate(int64(value)); err != nil {
+							return errors.Wrap(err, "int")
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "limit",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: offset.
+	{
+		val := int(0)
+		params.Offset.SetTo(val)
+	}
+	// Decode query: offset.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotOffsetVal int
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotOffsetVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Offset.SetTo(paramsDotOffsetVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "offset",
+			In:   "query",
 			Err:  err,
 		}
 	}
@@ -17072,6 +17923,71 @@ func decodeResendEmailLogParams(args [2]string, argsEscaped bool, r *http.Reques
 	return params, nil
 }
 
+// RestoreAdminAccountParams is parameters of restoreAdminAccount operation.
+type RestoreAdminAccountParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackRestoreAdminAccountParams(packed middleware.Parameters) (params RestoreAdminAccountParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRestoreAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params RestoreAdminAccountParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // RestoreIsolatedMediaParams is parameters of restoreIsolatedMedia operation.
 type RestoreIsolatedMediaParams struct {
 	SiteId uuid.UUID
@@ -17443,6 +18359,71 @@ func decodeRevertDbSnapshotParams(args [2]string, argsEscaped bool, r *http.Requ
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "snapshotId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// RevokeAdminAccountCompParams is parameters of revokeAdminAccountComp operation.
+type RevokeAdminAccountCompParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackRevokeAdminAccountCompParams(packed middleware.Parameters) (params RevokeAdminAccountCompParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRevokeAdminAccountCompParams(args [1]string, argsEscaped bool, r *http.Request) (params RevokeAdminAccountCompParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
 			In:   "path",
 			Err:  err,
 		}
@@ -18351,6 +19332,71 @@ func decodeSendTestEmailParams(args [1]string, argsEscaped bool, r *http.Request
 	return params, nil
 }
 
+// SetAdminAccountOverridesParams is parameters of setAdminAccountOverrides operation.
+type SetAdminAccountOverridesParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackSetAdminAccountOverridesParams(packed middleware.Parameters) (params SetAdminAccountOverridesParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeSetAdminAccountOverridesParams(args [1]string, argsEscaped bool, r *http.Request) (params SetAdminAccountOverridesParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // SetSiteTagsParams is parameters of setSiteTags operation.
 type SetSiteTagsParams struct {
 	SiteId uuid.UUID
@@ -18594,6 +19640,71 @@ func decodeStreamSiteEventsParams(args [0]string, argsEscaped bool, r *http.Requ
 		return params, &ogenerrors.DecodeParamError{
 			Name: "since",
 			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// SuspendAdminAccountParams is parameters of suspendAdminAccount operation.
+type SuspendAdminAccountParams struct {
+	TenantId uuid.UUID
+}
+
+func unpackSuspendAdminAccountParams(packed middleware.Parameters) (params SuspendAdminAccountParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tenantId",
+			In:   "path",
+		}
+		params.TenantId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeSuspendAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params SuspendAdminAccountParams, _ error) {
+	// Decode path: tenantId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tenantId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TenantId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tenantId",
+			In:   "path",
 			Err:  err,
 		}
 	}

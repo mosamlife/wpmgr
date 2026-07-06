@@ -392,6 +392,20 @@ func encodeChmodSiteFileRequest(
 	return nil
 }
 
+func encodeCompAdminAccountRequest(
+	req *AdminCompAccountRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeComputeRucssRequest(
 	req OptComputeRucssReq,
 	r *http.Request,
@@ -716,6 +730,20 @@ func encodeEnrollRequest(
 	return nil
 }
 
+func encodeExtendAdminAccountGraceRequest(
+	req *AdminExtendGraceRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeExtractSiteFileArchiveRequest(
 	req *FileExtractRequest,
 	r *http.Request,
@@ -744,6 +772,20 @@ func encodeFlushObjectCacheRequest(
 		if req.Set {
 			req.Encode(e)
 		}
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeForceAdminAccountStateRequest(
+	req *AdminForceStateRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
 	}
 	encoded := e.Bytes()
 	ht.SetBody(r, bytes.NewReader(encoded), contentType)
@@ -1202,6 +1244,26 @@ func encodeResetPasswordRequest(
 	return nil
 }
 
+func encodeRestoreAdminAccountRequest(
+	req OptAdminReasonRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	if !req.Set {
+		// Keep request with empty body if value is not set.
+		return nil
+	}
+	e := new(jx.Encoder)
+	{
+		if req.Set {
+			req.Encode(e)
+		}
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeRestoreIsolatedMediaRequest(
 	req *MediaCleanRestoreRequest,
 	r *http.Request,
@@ -1264,6 +1326,20 @@ func encodeRevertDbSnapshotRequest(
 	return nil
 }
 
+func encodeRevokeAdminAccountCompRequest(
+	req *AdminReasonRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeRevokeSiteRequest(
 	req OptSiteLifecycleReason,
 	r *http.Request,
@@ -1312,6 +1388,20 @@ func encodeSendTestEmailRequest(
 	return nil
 }
 
+func encodeSetAdminAccountOverridesRequest(
+	req *AdminSetOverridesRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeSetSiteTagsRequest(
 	req *SiteTags,
 	r *http.Request,
@@ -1340,6 +1430,20 @@ func encodeSilenceSitePHPErrorRequest(
 		if req.Set {
 			req.Encode(e)
 		}
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeSuspendAdminAccountRequest(
+	req *AdminReasonRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
 	}
 	encoded := e.Bytes()
 	ht.SetBody(r, bytes.NewReader(encoded), contentType)

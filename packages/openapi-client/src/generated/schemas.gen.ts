@@ -1760,6 +1760,754 @@ export const BillingPortalResponseSchema = {
   },
 } as const;
 
+export const AdminAccountTilesSchema = {
+  type: "object",
+  description:
+    "Instance-wide accounts-page header tiles — unaffected by the current list filter.",
+  required: ["mrr_cents", "active_subs", "past_due_count", "accounts_total"],
+  properties: {
+    mrr_cents: {
+      type: "integer",
+      format: "int64",
+    },
+    active_subs: {
+      type: "integer",
+      format: "int64",
+    },
+    past_due_count: {
+      type: "integer",
+      format: "int64",
+    },
+    accounts_total: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminAccountListItemSchema = {
+  type: "object",
+  description: "One row of GET /api/v1/admin/accounts.",
+  required: [
+    "tenant_id",
+    "org_name",
+    "org_slug",
+    "plan",
+    "plan_status",
+    "has_overrides",
+    "mrr_cents",
+    "sites_used",
+    "sites_cap",
+    "storage_used_bytes_approx",
+    "storage_cap_bytes",
+    "near_limit",
+    "created_at",
+  ],
+  properties: {
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    org_name: {
+      type: "string",
+    },
+    org_slug: {
+      type: "string",
+    },
+    owner_email: {
+      type: "string",
+    },
+    plan: {
+      type: "string",
+      enum: ["free", "starter", "agency", "scale"],
+    },
+    plan_status: {
+      type: "string",
+      enum: [
+        "none",
+        "trialing",
+        "active",
+        "past_due",
+        "canceled",
+        "paused",
+        "comped",
+      ],
+    },
+    suspended_at: {
+      type: "string",
+      format: "date-time",
+    },
+    has_overrides: {
+      type: "boolean",
+    },
+    mrr_cents: {
+      type: "integer",
+      format: "int64",
+    },
+    sites_used: {
+      type: "integer",
+    },
+    sites_cap: {
+      type: "integer",
+    },
+    storage_used_bytes_approx: {
+      type: "integer",
+      format: "int64",
+      description:
+        "A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant) — does not yet distinguish CP-managed from BYO-storage destinations.",
+    },
+    storage_cap_bytes: {
+      type: "integer",
+      format: "int64",
+      description:
+        "0 for the free tier (BYO-storage only; no CP-managed cap to approach).",
+    },
+    near_limit: {
+      type: "boolean",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_activity: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AdminAccountsResponseSchema = {
+  type: "object",
+  description: "The full GET /api/v1/admin/accounts body.",
+  required: ["tiles", "items", "total", "limit", "offset"],
+  properties: {
+    tiles: {
+      $ref: "#/components/schemas/AdminAccountTiles",
+    },
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminAccountListItem",
+      },
+    },
+    total: {
+      type: "integer",
+      description: "Count AFTER filtering (before limit/offset).",
+    },
+    limit: {
+      type: "integer",
+    },
+    offset: {
+      type: "integer",
+    },
+  },
+} as const;
+
+export const AdminAccountUsageMeterSchema = {
+  type: "object",
+  required: ["used", "cap"],
+  properties: {
+    used: {
+      type: "integer",
+      format: "int64",
+    },
+    cap: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminAccountEntitlementValuesSchema = {
+  type: "object",
+  description:
+    'Display-only reference values for the account-detail "what this plan includes" rows — not enforced anywhere.',
+  required: [
+    "probe_interval_floor_sec",
+    "backup_cadence_floor_seconds",
+    "incremental_backups",
+    "client_portal",
+  ],
+  properties: {
+    probe_interval_floor_sec: {
+      type: "integer",
+    },
+    backup_cadence_floor_seconds: {
+      type: "integer",
+    },
+    incremental_backups: {
+      type: "boolean",
+    },
+    client_portal: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const AdminAccountUsageSchema = {
+  type: "object",
+  description: "The account-detail usage-vs-limits block.",
+  required: [
+    "sites",
+    "storage_bytes_approx",
+    "seats_used",
+    "restore_volume_bytes_approx",
+    "entitlements",
+  ],
+  properties: {
+    sites: {
+      $ref: "#/components/schemas/AdminAccountUsageMeter",
+    },
+    storage_bytes_approx: {
+      $ref: "#/components/schemas/AdminAccountUsageMeter",
+    },
+    seats_used: {
+      type: "integer",
+      format: "int64",
+    },
+    restore_volume_bytes_approx: {
+      type: "integer",
+      format: "int64",
+      description:
+        "An APPROXIMATION: SUM of restore_runs' snapshot sizes for this tenant since the current billing period started (or the last 30 days, when no period is on record yet).",
+    },
+    entitlements: {
+      $ref: "#/components/schemas/AdminAccountEntitlementValues",
+    },
+  },
+} as const;
+
+export const AdminAccountSubscriptionSchema = {
+  type: "object",
+  description: "The account-detail subscription card.",
+  required: ["cancel_at_period_end", "stale"],
+  properties: {
+    provider: {
+      type: "string",
+    },
+    provider_customer_id: {
+      type: "string",
+    },
+    provider_subscription_id: {
+      type: "string",
+    },
+    dashboard_url: {
+      type: "string",
+      description:
+        "A Stripe-dashboard deep link. Empty when the provider is not Stripe, or there is no subscription id yet.",
+    },
+    current_period_end: {
+      type: "string",
+      format: "date-time",
+    },
+    cancel_at_period_end: {
+      type: "boolean",
+    },
+    grace_until: {
+      type: "string",
+      format: "date-time",
+    },
+    comp_reason: {
+      type: "string",
+    },
+    last_billing_event_at: {
+      type: "string",
+      format: "date-time",
+    },
+    stale: {
+      type: "boolean",
+      description:
+        'True when plan_status=="past_due" and last_billing_event_at is either unset or more than 25 hours old — a signal the webhook pipe may itself be stuck rather than the customer\'s card.',
+    },
+  },
+} as const;
+
+export const AdminAccountTimelineEntrySchema = {
+  type: "object",
+  description:
+    "One merged row in the account-detail timeline (billing_events + audit_log admin.billing.*/billing.* actions), newest first.",
+  required: ["source", "occurred_at", "kind"],
+  properties: {
+    source: {
+      type: "string",
+      enum: ["billing_event", "audit"],
+    },
+    occurred_at: {
+      type: "string",
+      format: "date-time",
+    },
+    kind: {
+      type: "string",
+      description: "billing_events.kind, or audit_log.action.",
+    },
+    actor_type: {
+      type: "string",
+    },
+    actor_id: {
+      type: "string",
+    },
+    metadata: {
+      type: "object",
+      additionalProperties: true,
+    },
+  },
+} as const;
+
+export const AdminAccountMemberSchema = {
+  type: "object",
+  description: "One row in the account-detail member roster.",
+  required: [
+    "id",
+    "email",
+    "name",
+    "role",
+    "status",
+    "email_verified",
+    "member_since",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    email: {
+      type: "string",
+    },
+    name: {
+      type: "string",
+    },
+    role: {
+      type: "string",
+    },
+    status: {
+      type: "string",
+    },
+    email_verified: {
+      type: "boolean",
+    },
+    last_login_at: {
+      type: "string",
+      format: "date-time",
+    },
+    member_since: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AdminAccountSiteSchema = {
+  type: "object",
+  description: "One compact row in the account-detail site list.",
+  required: ["id", "url", "connection_state", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    url: {
+      type: "string",
+    },
+    connection_state: {
+      type: "string",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AdminAccountDetailSchema = {
+  type: "object",
+  description: "The full GET /api/v1/admin/accounts/{tenantId} body.",
+  required: [
+    "tenant_id",
+    "org_name",
+    "org_slug",
+    "plan",
+    "plan_status",
+    "mrr_cents",
+    "created_at",
+    "usage",
+    "subscription",
+    "timeline",
+    "members",
+    "sites",
+  ],
+  properties: {
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    org_name: {
+      type: "string",
+    },
+    org_slug: {
+      type: "string",
+    },
+    owner_email: {
+      type: "string",
+    },
+    plan: {
+      type: "string",
+      enum: ["free", "starter", "agency", "scale"],
+    },
+    plan_status: {
+      type: "string",
+      enum: [
+        "none",
+        "trialing",
+        "active",
+        "past_due",
+        "canceled",
+        "paused",
+        "comped",
+      ],
+    },
+    mrr_cents: {
+      type: "integer",
+      format: "int64",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    suspended_at: {
+      type: "string",
+      format: "date-time",
+    },
+    suspended_reason: {
+      type: "string",
+    },
+    usage: {
+      $ref: "#/components/schemas/AdminAccountUsage",
+    },
+    subscription: {
+      $ref: "#/components/schemas/AdminAccountSubscription",
+    },
+    timeline: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminAccountTimelineEntry",
+      },
+    },
+    members: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminAccountMember",
+      },
+    },
+    sites: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminAccountSite",
+      },
+    },
+  },
+} as const;
+
+export const AdminRevenueTilesSchema = {
+  type: "object",
+  description: "The revenue-page header tiles.",
+  required: [
+    "mrr_cents",
+    "mrr_past_due_cents",
+    "active_subs",
+    "trialing_subs",
+    "past_due_count",
+    "past_due_at_risk_cents",
+    "new_this_month",
+    "canceled_this_month",
+  ],
+  properties: {
+    mrr_cents: {
+      type: "integer",
+      format: "int64",
+    },
+    mrr_past_due_cents: {
+      type: "integer",
+      format: "int64",
+    },
+    active_subs: {
+      type: "integer",
+      format: "int64",
+    },
+    trialing_subs: {
+      type: "integer",
+      format: "int64",
+    },
+    past_due_count: {
+      type: "integer",
+      format: "int64",
+    },
+    past_due_at_risk_cents: {
+      type: "integer",
+      format: "int64",
+    },
+    new_this_month: {
+      type: "integer",
+      format: "int64",
+    },
+    canceled_this_month: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminPlanDistributionRowSchema = {
+  type: "object",
+  description: "One row of the revenue page's plan-distribution table.",
+  required: ["plan", "count", "mrr_cents"],
+  properties: {
+    plan: {
+      type: "string",
+    },
+    count: {
+      type: "integer",
+      format: "int64",
+    },
+    mrr_cents: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminCompedRowSchema = {
+  type: "object",
+  description:
+    'The revenue page\'s "comped value" summary row — a hypothetical figure (what these tenants WOULD pay), never real revenue.',
+  required: ["count", "hypothetical_value_cents"],
+  properties: {
+    count: {
+      type: "integer",
+      format: "int64",
+    },
+    hypothetical_value_cents: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminPastDueRowSchema = {
+  type: "object",
+  description: "One row of the revenue page's past-due list.",
+  required: [
+    "tenant_id",
+    "org_name",
+    "org_slug",
+    "amount_cents",
+    "days_past_due",
+  ],
+  properties: {
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    org_name: {
+      type: "string",
+    },
+    org_slug: {
+      type: "string",
+    },
+    owner_email: {
+      type: "string",
+    },
+    amount_cents: {
+      type: "integer",
+      format: "int64",
+    },
+    days_past_due: {
+      type: "integer",
+    },
+    grace_until: {
+      type: "string",
+      format: "date-time",
+    },
+    last_payment_failed_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AdminRecentBillingEventSchema = {
+  type: "object",
+  description: "One row of the revenue page's recent-activity feed.",
+  required: ["id", "occurred_at", "kind", "provider"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    occurred_at: {
+      type: "string",
+      format: "date-time",
+    },
+    org_name: {
+      type: "string",
+    },
+    org_slug: {
+      type: "string",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    kind: {
+      type: "string",
+    },
+    provider: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AdminRevenueResponseSchema = {
+  type: "object",
+  description: "The full GET /api/v1/admin/revenue body.",
+  required: [
+    "tiles",
+    "plan_distribution",
+    "comped",
+    "past_due",
+    "recent_events",
+  ],
+  properties: {
+    tiles: {
+      $ref: "#/components/schemas/AdminRevenueTiles",
+    },
+    plan_distribution: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminPlanDistributionRow",
+      },
+    },
+    comped: {
+      $ref: "#/components/schemas/AdminCompedRow",
+    },
+    past_due: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminPastDueRow",
+      },
+    },
+    recent_events: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminRecentBillingEvent",
+      },
+    },
+    last_webhook_received_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AdminBillingAckSchema = {
+  type: "object",
+  description:
+    "Shared success acknowledgement for the admin-billing manual controls.",
+  required: ["ok"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const AdminCompAccountRequestSchema = {
+  type: "object",
+  required: ["tier", "reason"],
+  properties: {
+    tier: {
+      type: "string",
+      enum: ["free", "starter", "agency", "scale"],
+    },
+    reason: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AdminReasonRequestSchema = {
+  type: "object",
+  required: ["reason"],
+  properties: {
+    reason: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AdminSetOverridesRequestSchema = {
+  type: "object",
+  description:
+    "Each of sites/storage_gb/seats is a signed delta on top of the tenant's current plan's ladder base. An omitted key leaves that limit untouched; `null` (or `0`) clears it.",
+  required: ["reason"],
+  properties: {
+    sites: {
+      type: "integer",
+      nullable: true,
+    },
+    storage_gb: {
+      type: "integer",
+      nullable: true,
+    },
+    seats: {
+      type: "integer",
+      nullable: true,
+    },
+    reason: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AdminExtendGraceRequestSchema = {
+  type: "object",
+  required: ["until", "reason"],
+  properties: {
+    until: {
+      type: "string",
+      format: "date-time",
+    },
+    reason: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AdminForceStateRequestSchema = {
+  type: "object",
+  required: ["plan", "plan_status", "reason"],
+  properties: {
+    plan: {
+      type: "string",
+      enum: ["free", "starter", "agency", "scale"],
+    },
+    plan_status: {
+      type: "string",
+      enum: [
+        "none",
+        "trialing",
+        "active",
+        "past_due",
+        "canceled",
+        "paused",
+        "comped",
+      ],
+    },
+    reason: {
+      type: "string",
+    },
+  },
+} as const;
+
 export const UpdateItemSchema = {
   type: "object",
   required: ["type"],

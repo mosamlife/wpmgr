@@ -367,6 +367,14 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/rucss/clear
 	ClearRucss(ctx context.Context, params ClearRucssParams) (*RucssClearResult, error)
+	// CompAdminAccount implements compAdminAccount operation.
+	//
+	// Sets plan_status=comped and plan=tier, bypassing the payment provider
+	// entirely. A comped tenant is immune to webhook-driven plan mutation.
+	// Requires is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/comp
+	CompAdminAccount(ctx context.Context, req *AdminCompAccountRequest, params CompAdminAccountParams) (CompAdminAccountRes, error)
 	// ComputeRucss implements computeRucss operation.
 	//
 	// Triggers the agent to compute Used-CSS for the given URLs (or the home
@@ -736,6 +744,14 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/email/log/export
 	ExportSiteEmailLog(ctx context.Context, params ExportSiteEmailLogParams) (ExportSiteEmailLogRes, error)
+	// ExtendAdminAccountGrace implements extendAdminAccountGrace operation.
+	//
+	// Sets tenants.grace_until, clamped to at most 90 days out from now and
+	// forward-only (a new grace_until must extend further out than the
+	// current one). Requires is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/grace
+	ExtendAdminAccountGrace(ctx context.Context, req *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (ExtendAdminAccountGraceRes, error)
 	// ExtractSiteFileArchive implements extractSiteFileArchive operation.
 	//
 	// Issues a `file_extract` command to the site's agent. The agent opens
@@ -771,6 +787,15 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/flush
 	FlushObjectCache(ctx context.Context, req OptFlushObjectCacheReq, params FlushObjectCacheParams) (*PerfActionResult, error)
+	// ForceAdminAccountState implements forceAdminAccountState operation.
+	//
+	// The manual escape hatch for payment-provider webhook drift: sets
+	// plan and plan_status directly and clears grace_until. Never use this
+	// to grant service for free — use the comp endpoint instead. Requires
+	// is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/state
+	ForceAdminAccountState(ctx context.Context, req *AdminForceStateRequest, params ForceAdminAccountStateParams) (ForceAdminAccountStateRes, error)
 	// ForgotPassword implements forgotPassword operation.
 	//
 	// Always returns 200 {ok: true} whether or not the email maps to an
@@ -786,6 +811,21 @@ type Handler interface {
 	//
 	// POST /api/v1/clients/{clientId}/reports
 	GenerateClientReport(ctx context.Context, req OptGenerateClientReportRequest, params GenerateClientReportParams) (GenerateClientReportRes, error)
+	// GetAdminAccount implements getAdminAccount operation.
+	//
+	// Returns the account header, usage-vs-entitlement meters, subscription
+	// card, a merged billing_events+audit_log timeline (newest first), the
+	// member roster, and a compact site list. Requires is_superadmin=true.
+	//
+	// GET /api/v1/admin/accounts/{tenantId}
+	GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (GetAdminAccountRes, error)
+	// GetAdminRevenue implements getAdminRevenue operation.
+	//
+	// Local-state-only revenue view derived from tenants + billing_events —
+	// zero payment-provider API calls. Requires is_superadmin=true.
+	//
+	// GET /api/v1/admin/revenue
+	GetAdminRevenue(ctx context.Context) (GetAdminRevenueRes, error)
 	// GetAlertConfig implements getAlertConfig operation.
 	//
 	// Returns the tenant's downtime/recovery alert channel: email recipients,
@@ -1232,6 +1272,18 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/isolate
 	IsolateUnusedMedia(ctx context.Context, req *MediaCleanIsolateRequest, params IsolateUnusedMediaParams) (*MediaCleanIsolateResult, error)
+	// ListAdminAccounts implements listAdminAccounts operation.
+	//
+	// Superadmin-only accounts console: instance-wide header tiles (always
+	// unfiltered by the current query, so they read as a stable instance
+	// census) plus a filtered, sorted, paginated list of every tenant.
+	// Default order is a server-computed "needs attention" ranking:
+	// suspended first, then past_due (soonest-to-expire grace first), then
+	// active (MRR desc), then everything else (newest first). Requires
+	// is_superadmin=true.
+	//
+	// GET /api/v1/admin/accounts
+	ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (ListAdminAccountsRes, error)
 	// ListApiKeys implements listApiKeys operation.
 	//
 	// List API keys for the active tenant (admin+).
@@ -1987,6 +2039,17 @@ type Handler interface {
 	//
 	// POST /auth/password/reset
 	ResetPassword(ctx context.Context, req *ResetPasswordReq) (ResetPasswordRes, error)
+	// RestoreAdminAccount implements restoreAdminAccount operation.
+	//
+	// Clears tenants.suspended_at/suspended_reason, returning the tenant to
+	// whatever its underlying plan/plan_status already was. A missing or
+	// empty request body is tolerated (treated as an empty reason, which
+	// then fails the reason-required validation below) rather than a hard
+	// 400 — every other manual control on this page rejects a malformed
+	// body outright. Requires is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/restore
+	RestoreAdminAccount(ctx context.Context, req OptAdminReasonRequest, params RestoreAdminAccountParams) (RestoreAdminAccountRes, error)
 	// RestoreIsolatedMedia implements restoreIsolatedMedia operation.
 	//
 	// Moves quarantined attachment files back to the WordPress uploads directory
@@ -2043,6 +2106,14 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/snapshots/{snapshotId}/revert
 	RevertDbSnapshot(ctx context.Context, req *DbSnapshotRevert, params RevertDbSnapshotParams) (*DbSnapshotRevertResult, error)
+	// RevokeAdminAccountComp implements revokeAdminAccountComp operation.
+	//
+	// Adopts the tenant's live payment-provider subscription if one exists,
+	// else falls back to plan=free/plan_status=none. Requires
+	// is_superadmin=true.
+	//
+	// DELETE /api/v1/admin/accounts/{tenantId}/comp
+	RevokeAdminAccountComp(ctx context.Context, req *AdminReasonRequest, params RevokeAdminAccountCompParams) (RevokeAdminAccountCompRes, error)
 	// RevokeApiKey implements revokeApiKey operation.
 	//
 	// Revoke an API key (admin+).
@@ -2127,6 +2198,16 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/email/test
 	SendTestEmail(ctx context.Context, req *EmailTestRequest, params SendTestEmailParams) (SendTestEmailRes, error)
+	// SetAdminAccountOverrides implements setAdminAccountOverrides operation.
+	//
+	// Each field is a signed delta applied on top of the tenant's CURRENT
+	// plan's ladder base (not accumulated with any prior override for that
+	// key — a second PUT replaces the delta). Omitting a key leaves that
+	// limit untouched; sending it as `null` (or `0`) clears it back to the
+	// pure ladder base. Requires is_superadmin=true.
+	//
+	// PUT /api/v1/admin/accounts/{tenantId}/overrides
+	SetAdminAccountOverrides(ctx context.Context, req *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (SetAdminAccountOverridesRes, error)
 	// SetSiteTags implements setSiteTags operation.
 	//
 	// Replace the tag set on a site.
@@ -2153,6 +2234,14 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/events
 	StreamSiteEvents(ctx context.Context, params StreamSiteEventsParams) (StreamSiteEventsOK, error)
+	// SuspendAdminAccount implements suspendAdminAccount operation.
+	//
+	// Sets tenants.suspended_at/suspended_reason — a field distinct from
+	// plan_status. Tenant data is never touched. Requires
+	// is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/suspend
+	SuspendAdminAccount(ctx context.Context, req *AdminReasonRequest, params SuspendAdminAccountParams) (SuspendAdminAccountRes, error)
 	// SyncMedia implements syncMedia operation.
 	//
 	// Tell the agent to enumerate the media library.

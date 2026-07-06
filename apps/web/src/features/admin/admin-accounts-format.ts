@@ -379,7 +379,7 @@ export function buildAccountsQuery(filters: AdminAccountsFilters): string {
   if (filters.nearLimit) params.set("near_limit", "true");
   if (filters.hasOverrides) params.set("has_overrides", "true");
   if (filters.comped) params.set("comped", "true");
-  if (filters.idle90d) params.set("idle", "true");
+  if (filters.idle90d) params.set("idle_90d", "true");
   params.set("sort", filters.sort);
   params.set("limit", String(filters.limit));
   params.set("offset", String(filters.offset));

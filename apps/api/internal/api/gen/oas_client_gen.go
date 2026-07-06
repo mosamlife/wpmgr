@@ -387,6 +387,14 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/rucss/clear
 	ClearRucss(ctx context.Context, params ClearRucssParams) (*RucssClearResult, error)
+	// CompAdminAccount invokes compAdminAccount operation.
+	//
+	// Sets plan_status=comped and plan=tier, bypassing the payment provider
+	// entirely. A comped tenant is immune to webhook-driven plan mutation.
+	// Requires is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/comp
+	CompAdminAccount(ctx context.Context, request *AdminCompAccountRequest, params CompAdminAccountParams) (CompAdminAccountRes, error)
 	// ComputeRucss invokes computeRucss operation.
 	//
 	// Triggers the agent to compute Used-CSS for the given URLs (or the home
@@ -756,6 +764,14 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/email/log/export
 	ExportSiteEmailLog(ctx context.Context, params ExportSiteEmailLogParams) (ExportSiteEmailLogRes, error)
+	// ExtendAdminAccountGrace invokes extendAdminAccountGrace operation.
+	//
+	// Sets tenants.grace_until, clamped to at most 90 days out from now and
+	// forward-only (a new grace_until must extend further out than the
+	// current one). Requires is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/grace
+	ExtendAdminAccountGrace(ctx context.Context, request *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (ExtendAdminAccountGraceRes, error)
 	// ExtractSiteFileArchive invokes extractSiteFileArchive operation.
 	//
 	// Issues a `file_extract` command to the site's agent. The agent opens
@@ -791,6 +807,15 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/flush
 	FlushObjectCache(ctx context.Context, request OptFlushObjectCacheReq, params FlushObjectCacheParams) (*PerfActionResult, error)
+	// ForceAdminAccountState invokes forceAdminAccountState operation.
+	//
+	// The manual escape hatch for payment-provider webhook drift: sets
+	// plan and plan_status directly and clears grace_until. Never use this
+	// to grant service for free — use the comp endpoint instead. Requires
+	// is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/state
+	ForceAdminAccountState(ctx context.Context, request *AdminForceStateRequest, params ForceAdminAccountStateParams) (ForceAdminAccountStateRes, error)
 	// ForgotPassword invokes forgotPassword operation.
 	//
 	// Always returns 200 {ok: true} whether or not the email maps to an
@@ -806,6 +831,21 @@ type Invoker interface {
 	//
 	// POST /api/v1/clients/{clientId}/reports
 	GenerateClientReport(ctx context.Context, request OptGenerateClientReportRequest, params GenerateClientReportParams) (GenerateClientReportRes, error)
+	// GetAdminAccount invokes getAdminAccount operation.
+	//
+	// Returns the account header, usage-vs-entitlement meters, subscription
+	// card, a merged billing_events+audit_log timeline (newest first), the
+	// member roster, and a compact site list. Requires is_superadmin=true.
+	//
+	// GET /api/v1/admin/accounts/{tenantId}
+	GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (GetAdminAccountRes, error)
+	// GetAdminRevenue invokes getAdminRevenue operation.
+	//
+	// Local-state-only revenue view derived from tenants + billing_events —
+	// zero payment-provider API calls. Requires is_superadmin=true.
+	//
+	// GET /api/v1/admin/revenue
+	GetAdminRevenue(ctx context.Context) (GetAdminRevenueRes, error)
 	// GetAlertConfig invokes getAlertConfig operation.
 	//
 	// Returns the tenant's downtime/recovery alert channel: email recipients,
@@ -1252,6 +1292,18 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/isolate
 	IsolateUnusedMedia(ctx context.Context, request *MediaCleanIsolateRequest, params IsolateUnusedMediaParams) (*MediaCleanIsolateResult, error)
+	// ListAdminAccounts invokes listAdminAccounts operation.
+	//
+	// Superadmin-only accounts console: instance-wide header tiles (always
+	// unfiltered by the current query, so they read as a stable instance
+	// census) plus a filtered, sorted, paginated list of every tenant.
+	// Default order is a server-computed "needs attention" ranking:
+	// suspended first, then past_due (soonest-to-expire grace first), then
+	// active (MRR desc), then everything else (newest first). Requires
+	// is_superadmin=true.
+	//
+	// GET /api/v1/admin/accounts
+	ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (ListAdminAccountsRes, error)
 	// ListApiKeys invokes listApiKeys operation.
 	//
 	// List API keys for the active tenant (admin+).
@@ -2007,6 +2059,17 @@ type Invoker interface {
 	//
 	// POST /auth/password/reset
 	ResetPassword(ctx context.Context, request *ResetPasswordReq) (ResetPasswordRes, error)
+	// RestoreAdminAccount invokes restoreAdminAccount operation.
+	//
+	// Clears tenants.suspended_at/suspended_reason, returning the tenant to
+	// whatever its underlying plan/plan_status already was. A missing or
+	// empty request body is tolerated (treated as an empty reason, which
+	// then fails the reason-required validation below) rather than a hard
+	// 400 — every other manual control on this page rejects a malformed
+	// body outright. Requires is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/restore
+	RestoreAdminAccount(ctx context.Context, request OptAdminReasonRequest, params RestoreAdminAccountParams) (RestoreAdminAccountRes, error)
 	// RestoreIsolatedMedia invokes restoreIsolatedMedia operation.
 	//
 	// Moves quarantined attachment files back to the WordPress uploads directory
@@ -2063,6 +2126,14 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/snapshots/{snapshotId}/revert
 	RevertDbSnapshot(ctx context.Context, request *DbSnapshotRevert, params RevertDbSnapshotParams) (*DbSnapshotRevertResult, error)
+	// RevokeAdminAccountComp invokes revokeAdminAccountComp operation.
+	//
+	// Adopts the tenant's live payment-provider subscription if one exists,
+	// else falls back to plan=free/plan_status=none. Requires
+	// is_superadmin=true.
+	//
+	// DELETE /api/v1/admin/accounts/{tenantId}/comp
+	RevokeAdminAccountComp(ctx context.Context, request *AdminReasonRequest, params RevokeAdminAccountCompParams) (RevokeAdminAccountCompRes, error)
 	// RevokeApiKey invokes revokeApiKey operation.
 	//
 	// Revoke an API key (admin+).
@@ -2147,6 +2218,16 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/email/test
 	SendTestEmail(ctx context.Context, request *EmailTestRequest, params SendTestEmailParams) (SendTestEmailRes, error)
+	// SetAdminAccountOverrides invokes setAdminAccountOverrides operation.
+	//
+	// Each field is a signed delta applied on top of the tenant's CURRENT
+	// plan's ladder base (not accumulated with any prior override for that
+	// key — a second PUT replaces the delta). Omitting a key leaves that
+	// limit untouched; sending it as `null` (or `0`) clears it back to the
+	// pure ladder base. Requires is_superadmin=true.
+	//
+	// PUT /api/v1/admin/accounts/{tenantId}/overrides
+	SetAdminAccountOverrides(ctx context.Context, request *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (SetAdminAccountOverridesRes, error)
 	// SetSiteTags invokes setSiteTags operation.
 	//
 	// Replace the tag set on a site.
@@ -2173,6 +2254,14 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/events
 	StreamSiteEvents(ctx context.Context, params StreamSiteEventsParams) (StreamSiteEventsOK, error)
+	// SuspendAdminAccount invokes suspendAdminAccount operation.
+	//
+	// Sets tenants.suspended_at/suspended_reason — a field distinct from
+	// plan_status. Tenant data is never touched. Requires
+	// is_superadmin=true.
+	//
+	// POST /api/v1/admin/accounts/{tenantId}/suspend
+	SuspendAdminAccount(ctx context.Context, request *AdminReasonRequest, params SuspendAdminAccountParams) (SuspendAdminAccountRes, error)
 	// SyncMedia invokes syncMedia operation.
 	//
 	// Tell the agent to enumerate the media library.
@@ -5744,6 +5833,104 @@ func (c *Client) sendClearRucss(ctx context.Context, params ClearRucssParams) (r
 
 	stage = "DecodeResponse"
 	result, err := decodeClearRucssResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CompAdminAccount invokes compAdminAccount operation.
+//
+// Sets plan_status=comped and plan=tier, bypassing the payment provider
+// entirely. A comped tenant is immune to webhook-driven plan mutation.
+// Requires is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/comp
+func (c *Client) CompAdminAccount(ctx context.Context, request *AdminCompAccountRequest, params CompAdminAccountParams) (CompAdminAccountRes, error) {
+	res, err := c.sendCompAdminAccount(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendCompAdminAccount(ctx context.Context, request *AdminCompAccountRequest, params CompAdminAccountParams) (res CompAdminAccountRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("compAdminAccount"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}/comp"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CompAdminAccountOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/comp"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCompAdminAccountRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCompAdminAccountResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -9596,6 +9783,104 @@ func (c *Client) sendExportSiteEmailLog(ctx context.Context, params ExportSiteEm
 	return result, nil
 }
 
+// ExtendAdminAccountGrace invokes extendAdminAccountGrace operation.
+//
+// Sets tenants.grace_until, clamped to at most 90 days out from now and
+// forward-only (a new grace_until must extend further out than the
+// current one). Requires is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/grace
+func (c *Client) ExtendAdminAccountGrace(ctx context.Context, request *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (ExtendAdminAccountGraceRes, error) {
+	res, err := c.sendExtendAdminAccountGrace(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendExtendAdminAccountGrace(ctx context.Context, request *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (res ExtendAdminAccountGraceRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("extendAdminAccountGrace"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}/grace"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ExtendAdminAccountGraceOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/grace"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeExtendAdminAccountGraceRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeExtendAdminAccountGraceResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ExtractSiteFileArchive invokes extractSiteFileArchive operation.
 //
 // Issues a `file_extract` command to the site's agent. The agent opens
@@ -9811,6 +10096,105 @@ func (c *Client) sendFlushObjectCache(ctx context.Context, request OptFlushObjec
 	return result, nil
 }
 
+// ForceAdminAccountState invokes forceAdminAccountState operation.
+//
+// The manual escape hatch for payment-provider webhook drift: sets
+// plan and plan_status directly and clears grace_until. Never use this
+// to grant service for free — use the comp endpoint instead. Requires
+// is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/state
+func (c *Client) ForceAdminAccountState(ctx context.Context, request *AdminForceStateRequest, params ForceAdminAccountStateParams) (ForceAdminAccountStateRes, error) {
+	res, err := c.sendForceAdminAccountState(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendForceAdminAccountState(ctx context.Context, request *AdminForceStateRequest, params ForceAdminAccountStateParams) (res ForceAdminAccountStateRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("forceAdminAccountState"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}/state"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ForceAdminAccountStateOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/state"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeForceAdminAccountStateRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeForceAdminAccountStateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ForgotPassword invokes forgotPassword operation.
 //
 // Always returns 200 {ok: true} whether or not the email maps to an
@@ -9980,6 +10364,175 @@ func (c *Client) sendGenerateClientReport(ctx context.Context, request OptGenera
 
 	stage = "DecodeResponse"
 	result, err := decodeGenerateClientReportResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetAdminAccount invokes getAdminAccount operation.
+//
+// Returns the account header, usage-vs-entitlement meters, subscription
+// card, a merged billing_events+audit_log timeline (newest first), the
+// member roster, and a compact site list. Requires is_superadmin=true.
+//
+// GET /api/v1/admin/accounts/{tenantId}
+func (c *Client) GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (GetAdminAccountRes, error) {
+	res, err := c.sendGetAdminAccount(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetAdminAccount(ctx context.Context, params GetAdminAccountParams) (res GetAdminAccountRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAdminAccount"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetAdminAccountOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetAdminAccountResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetAdminRevenue invokes getAdminRevenue operation.
+//
+// Local-state-only revenue view derived from tenants + billing_events —
+// zero payment-provider API calls. Requires is_superadmin=true.
+//
+// GET /api/v1/admin/revenue
+func (c *Client) GetAdminRevenue(ctx context.Context) (GetAdminRevenueRes, error) {
+	res, err := c.sendGetAdminRevenue(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetAdminRevenue(ctx context.Context) (res GetAdminRevenueRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAdminRevenue"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/admin/revenue"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetAdminRevenueOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/revenue"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetAdminRevenueResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -15107,6 +15660,260 @@ func (c *Client) sendIsolateUnusedMedia(ctx context.Context, request *MediaClean
 
 	stage = "DecodeResponse"
 	result, err := decodeIsolateUnusedMediaResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListAdminAccounts invokes listAdminAccounts operation.
+//
+// Superadmin-only accounts console: instance-wide header tiles (always
+// unfiltered by the current query, so they read as a stable instance
+// census) plus a filtered, sorted, paginated list of every tenant.
+// Default order is a server-computed "needs attention" ranking:
+// suspended first, then past_due (soonest-to-expire grace first), then
+// active (MRR desc), then everything else (newest first). Requires
+// is_superadmin=true.
+//
+// GET /api/v1/admin/accounts
+func (c *Client) ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (ListAdminAccountsRes, error) {
+	res, err := c.sendListAdminAccounts(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (res ListAdminAccountsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listAdminAccounts"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListAdminAccountsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/accounts"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "search" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "search",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Search.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "status" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "status",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Status.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "plan" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "plan",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Plan.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "past_due" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "past_due",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.PastDue.Get(); ok {
+				return e.EncodeValue(conv.BoolToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "near_limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "near_limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.NearLimit.Get(); ok {
+				return e.EncodeValue(conv.BoolToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "has_overrides" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "has_overrides",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.HasOverrides.Get(); ok {
+				return e.EncodeValue(conv.BoolToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "comped" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "comped",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Comped.Get(); ok {
+				return e.EncodeValue(conv.BoolToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "idle_90d" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "idle_90d",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Idle90d.Get(); ok {
+				return e.EncodeValue(conv.BoolToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.IntToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "offset" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Offset.Get(); ok {
+				return e.EncodeValue(conv.IntToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListAdminAccountsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -24033,6 +24840,107 @@ func (c *Client) sendResetPassword(ctx context.Context, request *ResetPasswordRe
 	return result, nil
 }
 
+// RestoreAdminAccount invokes restoreAdminAccount operation.
+//
+// Clears tenants.suspended_at/suspended_reason, returning the tenant to
+// whatever its underlying plan/plan_status already was. A missing or
+// empty request body is tolerated (treated as an empty reason, which
+// then fails the reason-required validation below) rather than a hard
+// 400 — every other manual control on this page rejects a malformed
+// body outright. Requires is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/restore
+func (c *Client) RestoreAdminAccount(ctx context.Context, request OptAdminReasonRequest, params RestoreAdminAccountParams) (RestoreAdminAccountRes, error) {
+	res, err := c.sendRestoreAdminAccount(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendRestoreAdminAccount(ctx context.Context, request OptAdminReasonRequest, params RestoreAdminAccountParams) (res RestoreAdminAccountRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("restoreAdminAccount"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}/restore"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RestoreAdminAccountOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/restore"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeRestoreAdminAccountRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeRestoreAdminAccountResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // RestoreIsolatedMedia invokes restoreIsolatedMedia operation.
 //
 // Moves quarantined attachment files back to the WordPress uploads directory
@@ -24548,6 +25456,104 @@ func (c *Client) sendRevertDbSnapshot(ctx context.Context, request *DbSnapshotRe
 
 	stage = "DecodeResponse"
 	result, err := decodeRevertDbSnapshotResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// RevokeAdminAccountComp invokes revokeAdminAccountComp operation.
+//
+// Adopts the tenant's live payment-provider subscription if one exists,
+// else falls back to plan=free/plan_status=none. Requires
+// is_superadmin=true.
+//
+// DELETE /api/v1/admin/accounts/{tenantId}/comp
+func (c *Client) RevokeAdminAccountComp(ctx context.Context, request *AdminReasonRequest, params RevokeAdminAccountCompParams) (RevokeAdminAccountCompRes, error) {
+	res, err := c.sendRevokeAdminAccountComp(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendRevokeAdminAccountComp(ctx context.Context, request *AdminReasonRequest, params RevokeAdminAccountCompParams) (res RevokeAdminAccountCompRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("revokeAdminAccountComp"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}/comp"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RevokeAdminAccountCompOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/comp"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeRevokeAdminAccountCompRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeRevokeAdminAccountCompResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -25381,6 +26387,106 @@ func (c *Client) sendSendTestEmail(ctx context.Context, request *EmailTestReques
 	return result, nil
 }
 
+// SetAdminAccountOverrides invokes setAdminAccountOverrides operation.
+//
+// Each field is a signed delta applied on top of the tenant's CURRENT
+// plan's ladder base (not accumulated with any prior override for that
+// key — a second PUT replaces the delta). Omitting a key leaves that
+// limit untouched; sending it as `null` (or `0`) clears it back to the
+// pure ladder base. Requires is_superadmin=true.
+//
+// PUT /api/v1/admin/accounts/{tenantId}/overrides
+func (c *Client) SetAdminAccountOverrides(ctx context.Context, request *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (SetAdminAccountOverridesRes, error) {
+	res, err := c.sendSetAdminAccountOverrides(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendSetAdminAccountOverrides(ctx context.Context, request *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (res SetAdminAccountOverridesRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("setAdminAccountOverrides"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}/overrides"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SetAdminAccountOverridesOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/overrides"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeSetAdminAccountOverridesRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSetAdminAccountOverridesResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // SetSiteTags invokes setSiteTags operation.
 //
 // Replace the tag set on a site.
@@ -25688,6 +26794,104 @@ func (c *Client) sendStreamSiteEvents(ctx context.Context, params StreamSiteEven
 
 	stage = "DecodeResponse"
 	result, err := decodeStreamSiteEventsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SuspendAdminAccount invokes suspendAdminAccount operation.
+//
+// Sets tenants.suspended_at/suspended_reason — a field distinct from
+// plan_status. Tenant data is never touched. Requires
+// is_superadmin=true.
+//
+// POST /api/v1/admin/accounts/{tenantId}/suspend
+func (c *Client) SuspendAdminAccount(ctx context.Context, request *AdminReasonRequest, params SuspendAdminAccountParams) (SuspendAdminAccountRes, error) {
+	res, err := c.sendSuspendAdminAccount(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendSuspendAdminAccount(ctx context.Context, request *AdminReasonRequest, params SuspendAdminAccountParams) (res SuspendAdminAccountRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("suspendAdminAccount"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{tenantId}/suspend"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SuspendAdminAccountOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/suspend"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeSuspendAdminAccountRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSuspendAdminAccountResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
