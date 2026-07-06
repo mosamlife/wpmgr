@@ -178,6 +178,15 @@ const (
 	// Owner only — executable writes can introduce code-execution paths; this is
 	// the highest-risk write operation in the manager.
 	PermSiteFilesWriteCode Permission = "site.files.write_code"
+
+	// PermBillingManage authorises the M16 Phase B hosted-billing routes:
+	// reading the tenant's billing summary, starting a checkout, and opening
+	// the payment-provider's billing-management portal. Owner-only, the same
+	// trust bar as PermAuditManage/PermTenantManage/PermSMTPManage — this is
+	// the tenant's payment-provider relationship, not an ordinary site-
+	// management action. Org-level (see orgLevelPerms): a site-scoped
+	// collaborator must never reach it regardless of role.
+	PermBillingManage Permission = "billing:manage"
 )
 
 // minRoleFor maps each permission to the minimum role that holds it. The matrix
@@ -233,6 +242,8 @@ var minRoleFor = map[Permission]Role{
 	PermSiteFilesWrite:     RoleAdmin,
 	PermSiteFilesDelete:    RoleOwner,
 	PermSiteFilesWriteCode: RoleOwner,
+	// Hosted billing (M16 Phase B). Owner-only.
+	PermBillingManage: RoleOwner,
 }
 
 // Allows reports whether role r is permitted to perform p.

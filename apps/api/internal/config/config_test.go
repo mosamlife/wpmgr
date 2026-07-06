@@ -175,6 +175,68 @@ func TestLoadHostedEnvOverride(t *testing.T) {
 	}
 }
 
+// TestValidateHostedWithNoBillingProviderIsLegal extends the Phase A boot-
+// green guard to M16 Phase B: WPMGR_HOSTED=true with ZERO
+// WPMGR_BILLING_STRIPE_* variables set must still boot green — "hosted with
+// no payment provider configured" degrades checkout/portal to a clean 503,
+// it is never a boot-time config error.
+func TestValidateHostedWithNoBillingProviderIsLegal(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = true
+	if issues := Validate(cfg); len(issues) != 0 {
+		t.Fatalf("Validate() with hosted=true and no Stripe config returned issues: %+v", issues)
+	}
+}
+
+// TestValidateHostedWithFullStripeConfigIsLegal proves a completely-filled-in
+// Stripe config passes cleanly.
+func TestValidateHostedWithFullStripeConfigIsLegal(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = true
+	cfg.Billing.Stripe = StripeConfig{
+		SecretKey: "sk_live_x", WebhookSecret: "whsec_x",
+		PriceStarter: "price_1", PriceAgency: "price_2", PriceScale: "price_3",
+	}
+	if issues := Validate(cfg); len(issues) != 0 {
+		t.Fatalf("Validate() with a fully-configured Stripe returned issues: %+v", issues)
+	}
+}
+
+// TestValidateHostedWithPartialStripeConfigIsRejected is the core Phase B
+// guard: an operator who has started configuring Stripe (ANY one field set)
+// but left the rest blank must be refused at boot — a half-wired provider
+// would otherwise register cleanly and fail confusingly on first
+// checkout/webhook instead of at boot, where the problem is obvious.
+func TestValidateHostedWithPartialStripeConfigIsRejected(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = true
+	cfg.Billing.Stripe = StripeConfig{SecretKey: "sk_live_x"} // only one of five fields set
+
+	issues := Validate(cfg)
+	if len(issues) != 4 {
+		t.Fatalf("Validate() with a partial Stripe config returned %d issues, want 4 (the four unset fields): %+v", len(issues), issues)
+	}
+	for _, is := range issues {
+		if is.Name == "WPMGR_BILLING_STRIPE_SECRET_KEY" {
+			t.Fatalf("the ONE field that IS set should not itself be reported as an issue: %+v", issues)
+		}
+	}
+}
+
+// TestValidateStripeConfig_NotHostedNeverValidated proves the Stripe checks
+// are skipped entirely when hosted billing is off, even with a partial
+// config present — an unhosted deployment's environment is none of this
+// package's business until WPMGR_HOSTED is turned on.
+func TestValidateStripeConfig_NotHostedNeverValidated(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = false
+	cfg.Billing.Stripe = StripeConfig{SecretKey: "sk_live_x"} // partial, but hosted is off
+
+	if issues := Validate(cfg); len(issues) != 0 {
+		t.Fatalf("Validate() should skip Stripe checks entirely when Hosted.Enabled is false, got: %+v", issues)
+	}
+}
+
 // TestPrivilegeProbeGate verifies that the two-DSN gate logic (MigrationDSN != "")
 // correctly identifies when the privilege probe should run. In single-DSN mode
 // (MigrationDSN empty) the app connects as the migration runner, so the probe is

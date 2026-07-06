@@ -36,6 +36,36 @@ type Config struct {
 	Autologin  AutologinConfig  `koanf:"autologin"`
 	Conn       ConnConfig       `koanf:"conn"`
 	Hosted     HostedConfig     `koanf:"hosted"`
+	Billing    BillingConfig    `koanf:"billing"`
+}
+
+// BillingConfig gates the M16 Phase B payment-provider integration
+// (internal/billing's Provider registry). Every field defaults to "": an
+// unhosted or hosted-but-unconfigured boot sees zero required env vars — the
+// registry simply registers no provider (see stripe.Config.Configured and
+// Validate's billing checks below), matching Phase A's "hosted with zero
+// providers is legal" behavior.
+type BillingConfig struct {
+	Stripe StripeConfig `koanf:"stripe"`
+}
+
+// StripeConfig holds the Stripe adapter's credentials and tier->price
+// mapping. All five fields are required TOGETHER once ANY one of them is
+// set (see Validate) — a partially-configured Stripe is refused at boot
+// rather than silently registering a broken provider.
+type StripeConfig struct {
+	// SecretKey is the Stripe secret API key. Env: WPMGR_BILLING_STRIPE_SECRET_KEY.
+	SecretKey string `koanf:"secret_key"`
+	// WebhookSecret is the Stripe webhook signing secret (whsec_...) used to
+	// verify POST /webhooks/billing/stripe. Env: WPMGR_BILLING_STRIPE_WEBHOOK_SECRET.
+	WebhookSecret string `koanf:"webhook_secret"`
+	// PriceStarter/PriceAgency/PriceScale are the Stripe recurring Price ids
+	// for the three paid tiers (created once in the Stripe Dashboard/API —
+	// this control plane never creates prices itself). Env:
+	// WPMGR_BILLING_STRIPE_PRICE_STARTER / _PRICE_AGENCY / _PRICE_SCALE.
+	PriceStarter string `koanf:"price_starter"`
+	PriceAgency  string `koanf:"price_agency"`
+	PriceScale   string `koanf:"price_scale"`
 }
 
 // HostedConfig gates the M16 Phase A hosted-billing entitlement substrate
@@ -474,6 +504,11 @@ func defaults() map[string]any {
 		"conn.verify_timeout":           "8s",
 		"conn.verify_concurrency":       8,
 		"hosted.enabled":                false,
+		"billing.stripe.secret_key":     "",
+		"billing.stripe.webhook_secret": "",
+		"billing.stripe.price_starter":  "",
+		"billing.stripe.price_agency":   "",
+		"billing.stripe.price_scale":    "",
 	}
 }
 
@@ -584,6 +619,9 @@ func mapEnvKey(k string) string {
 	// only knob this phase introduces.
 	case k == "hosted":
 		return "hosted.enabled"
+	// WPMGR_BILLING_STRIPE_* -> billing.stripe.* (M16 Phase B).
+	case strings.HasPrefix(k, "billing_stripe_"):
+		return "billing.stripe." + strings.TrimPrefix(k, "billing_stripe_")
 	default:
 		return k
 	}

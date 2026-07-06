@@ -129,6 +129,14 @@ type CreateBackupRes interface {
 	createBackupRes()
 }
 
+type CreateBillingCheckoutRes interface {
+	createBillingCheckoutRes()
+}
+
+type CreateBillingPortalRes interface {
+	createBillingPortalRes()
+}
+
 type CreateClientRes interface {
 	createClientRes()
 }
@@ -263,6 +271,10 @@ type GetBackupSettingsNotificationsRes interface {
 
 type GetBackupSqlInspectionRes interface {
 	getBackupSqlInspectionRes()
+}
+
+type GetBillingRes interface {
+	getBillingRes()
 }
 
 type GetClientReportRes interface {

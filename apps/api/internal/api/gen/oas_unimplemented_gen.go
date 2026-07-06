@@ -535,6 +535,28 @@ func (UnimplementedHandler) CreateBackup(ctx context.Context, req *BackupCreate,
 	return r, ht.ErrNotImplemented
 }
 
+// CreateBillingCheckout implements createBillingCheckout operation.
+//
+// Starts a payment-provider checkout session for the requested tier. The provider price is resolved
+// SERVER-SIDE from an internal tier-to-price mapping — the request body never names a price
+// directly. Returns a URL to redirect the browser to.
+//
+// POST /api/v1/billing/checkout
+func (UnimplementedHandler) CreateBillingCheckout(ctx context.Context, req *BillingCheckoutRequest) (r CreateBillingCheckoutRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// CreateBillingPortal implements createBillingPortal operation.
+//
+// Mints a short-lived billing-management portal session for the tenant's existing payment-provider
+// customer, routed via whichever provider the tenant's first checkout started with. Returns a URL to
+// redirect the browser to.
+//
+// POST /api/v1/billing/portal
+func (UnimplementedHandler) CreateBillingPortal(ctx context.Context) (r CreateBillingPortalRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // CreateClient implements createClient operation.
 //
 // Create an agency client.
@@ -1075,6 +1097,17 @@ func (UnimplementedHandler) GetBackupSettingsNotifications(ctx context.Context, 
 //
 // GET /api/v1/backups/{snapshotId}/sql-inspection
 func (UnimplementedHandler) GetBackupSqlInspection(ctx context.Context, params GetBackupSqlInspectionParams) (r GetBackupSqlInspectionRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetBilling implements getBilling operation.
+//
+// Returns the tenant's current plan, payment-provider subscription status, and site-count meter.
+// Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
+// self-hosted or unhosted instance 404s this path (and the two below it) entirely.
+//
+// GET /api/v1/billing
+func (UnimplementedHandler) GetBilling(ctx context.Context) (r GetBillingRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

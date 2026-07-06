@@ -57,6 +57,7 @@ require (
 	github.com/go-fonts/dejavu v0.3.4
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/pquerna/otp v1.5.0
+	github.com/stripe/stripe-go/v86 v86.1.0
 	github.com/tdewolff/font v0.0.0-20260527091451-1663e68cb8a4
 	golang.org/x/image v0.41.0
 )

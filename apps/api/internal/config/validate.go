@@ -142,5 +142,50 @@ func Validate(cfg Config) []Issue {
 		})
 	}
 
+	// 6. M16 Phase B Stripe config — required ONLY when hosted billing is on
+	// AND the operator has started configuring Stripe (signaled by ANY one of
+	// the five fields being set). Hosted-with-zero-billing-env (the Phase A
+	// behavior — every entitlement check no-ops) and hosted-with-a-fully-set
+	// Stripe config are both legal; a PARTIAL Stripe config is refused so an
+	// operator never boots into a half-wired provider that registers, then
+	// fails confusingly on first checkout/webhook.
+	if cfg.Hosted.Enabled {
+		issues = append(issues, validateStripeConfig(cfg.Billing.Stripe)...)
+	}
+
+	return issues
+}
+
+// validateStripeConfig checks internal consistency of the five Stripe
+// fields: either all empty (Stripe simply is not this instance's provider —
+// legal) or all five present.
+func validateStripeConfig(s StripeConfig) []Issue {
+	fields := map[string]string{
+		"WPMGR_BILLING_STRIPE_SECRET_KEY":     s.SecretKey,
+		"WPMGR_BILLING_STRIPE_WEBHOOK_SECRET": s.WebhookSecret,
+		"WPMGR_BILLING_STRIPE_PRICE_STARTER":  s.PriceStarter,
+		"WPMGR_BILLING_STRIPE_PRICE_AGENCY":   s.PriceAgency,
+		"WPMGR_BILLING_STRIPE_PRICE_SCALE":    s.PriceScale,
+	}
+	anySet := false
+	for _, v := range fields {
+		if v != "" {
+			anySet = true
+			break
+		}
+	}
+	if !anySet {
+		return nil
+	}
+
+	var issues []Issue
+	for name, v := range fields {
+		if v == "" {
+			issues = append(issues, Issue{
+				Name:   name,
+				Reason: "Stripe billing is partially configured — every WPMGR_BILLING_STRIPE_* variable is required once any one of them is set",
+			})
+		}
+	}
 	return issues
 }

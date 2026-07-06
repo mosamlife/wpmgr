@@ -47,6 +47,7 @@ import { Route as AuthedSettingsSmtpRouteImport } from './routes/_authed/setting
 import { Route as AuthedSettingsSecurityRouteImport } from './routes/_authed/settings/security'
 import { Route as AuthedSettingsOrganizationRouteImport } from './routes/_authed/settings/organization'
 import { Route as AuthedSettingsMembersRouteImport } from './routes/_authed/settings/members'
+import { Route as AuthedSettingsBillingRouteImport } from './routes/_authed/settings/billing'
 import { Route as AuthedSettingsApiKeysRouteImport } from './routes/_authed/settings/api-keys'
 import { Route as AuthedSettingsAccountRouteImport } from './routes/_authed/settings/account'
 import { Route as AuthedScheduleRunsRunIdRouteImport } from './routes/_authed/schedule-runs/$runId'
@@ -263,6 +264,11 @@ const AuthedSettingsMembersRoute = AuthedSettingsMembersRouteImport.update({
   path: '/members',
   getParentRoute: () => AuthedSettingsRouteRoute,
 } as any)
+const AuthedSettingsBillingRoute = AuthedSettingsBillingRouteImport.update({
+  id: '/billing',
+  path: '/billing',
+  getParentRoute: () => AuthedSettingsRouteRoute,
+} as any)
 const AuthedSettingsApiKeysRoute = AuthedSettingsApiKeysRouteImport.update({
   id: '/api-keys',
   path: '/api-keys',
@@ -430,6 +436,7 @@ export interface FileRoutesByFullPath {
   '/schedule-runs/$runId': typeof AuthedScheduleRunsRunIdRoute
   '/settings/account': typeof AuthedSettingsAccountRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
+  '/settings/billing': typeof AuthedSettingsBillingRoute
   '/settings/members': typeof AuthedSettingsMembersRoute
   '/settings/organization': typeof AuthedSettingsOrganizationRoute
   '/settings/security': typeof AuthedSettingsSecurityRoute
@@ -490,6 +497,7 @@ export interface FileRoutesByTo {
   '/schedule-runs/$runId': typeof AuthedScheduleRunsRunIdRoute
   '/settings/account': typeof AuthedSettingsAccountRoute
   '/settings/api-keys': typeof AuthedSettingsApiKeysRoute
+  '/settings/billing': typeof AuthedSettingsBillingRoute
   '/settings/members': typeof AuthedSettingsMembersRoute
   '/settings/organization': typeof AuthedSettingsOrganizationRoute
   '/settings/security': typeof AuthedSettingsSecurityRoute
@@ -555,6 +563,7 @@ export interface FileRoutesById {
   '/_authed/schedule-runs/$runId': typeof AuthedScheduleRunsRunIdRoute
   '/_authed/settings/account': typeof AuthedSettingsAccountRoute
   '/_authed/settings/api-keys': typeof AuthedSettingsApiKeysRoute
+  '/_authed/settings/billing': typeof AuthedSettingsBillingRoute
   '/_authed/settings/members': typeof AuthedSettingsMembersRoute
   '/_authed/settings/organization': typeof AuthedSettingsOrganizationRoute
   '/_authed/settings/security': typeof AuthedSettingsSecurityRoute
@@ -621,6 +630,7 @@ export interface FileRouteTypes {
     | '/schedule-runs/$runId'
     | '/settings/account'
     | '/settings/api-keys'
+    | '/settings/billing'
     | '/settings/members'
     | '/settings/organization'
     | '/settings/security'
@@ -681,6 +691,7 @@ export interface FileRouteTypes {
     | '/schedule-runs/$runId'
     | '/settings/account'
     | '/settings/api-keys'
+    | '/settings/billing'
     | '/settings/members'
     | '/settings/organization'
     | '/settings/security'
@@ -745,6 +756,7 @@ export interface FileRouteTypes {
     | '/_authed/schedule-runs/$runId'
     | '/_authed/settings/account'
     | '/_authed/settings/api-keys'
+    | '/_authed/settings/billing'
     | '/_authed/settings/members'
     | '/_authed/settings/organization'
     | '/_authed/settings/security'
@@ -1062,6 +1074,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSettingsMembersRouteImport
       parentRoute: typeof AuthedSettingsRouteRoute
     }
+    '/_authed/settings/billing': {
+      id: '/_authed/settings/billing'
+      path: '/billing'
+      fullPath: '/settings/billing'
+      preLoaderRoute: typeof AuthedSettingsBillingRouteImport
+      parentRoute: typeof AuthedSettingsRouteRoute
+    }
     '/_authed/settings/api-keys': {
       id: '/_authed/settings/api-keys'
       path: '/api-keys'
@@ -1272,6 +1291,7 @@ const AuthedAdminRouteRouteWithChildren =
 interface AuthedSettingsRouteRouteChildren {
   AuthedSettingsAccountRoute: typeof AuthedSettingsAccountRoute
   AuthedSettingsApiKeysRoute: typeof AuthedSettingsApiKeysRoute
+  AuthedSettingsBillingRoute: typeof AuthedSettingsBillingRoute
   AuthedSettingsMembersRoute: typeof AuthedSettingsMembersRoute
   AuthedSettingsOrganizationRoute: typeof AuthedSettingsOrganizationRoute
   AuthedSettingsSecurityRoute: typeof AuthedSettingsSecurityRoute
@@ -1282,6 +1302,7 @@ interface AuthedSettingsRouteRouteChildren {
 const AuthedSettingsRouteRouteChildren: AuthedSettingsRouteRouteChildren = {
   AuthedSettingsAccountRoute: AuthedSettingsAccountRoute,
   AuthedSettingsApiKeysRoute: AuthedSettingsApiKeysRoute,
+  AuthedSettingsBillingRoute: AuthedSettingsBillingRoute,
   AuthedSettingsMembersRoute: AuthedSettingsMembersRoute,
   AuthedSettingsOrganizationRoute: AuthedSettingsOrganizationRoute,
   AuthedSettingsSecurityRoute: AuthedSettingsSecurityRoute,

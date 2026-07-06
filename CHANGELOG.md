@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.20] - 2026-07-06
+
+### Changed
+
+- More hosted-plans groundwork landed behind the same off-by-default flag: subscription checkout, a billing management page, and payment-webhook handling, built to support more than one payment provider. Self-hosted installations are unaffected and remain unlimited; no user-facing change in this release.
+
 ## [0.61.19] - 2026-07-06
 
 ### Fixed

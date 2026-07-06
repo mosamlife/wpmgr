@@ -439,6 +439,22 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/backups
 	CreateBackup(ctx context.Context, request *BackupCreate, params CreateBackupParams) (CreateBackupRes, error)
+	// CreateBillingCheckout invokes createBillingCheckout operation.
+	//
+	// Starts a payment-provider checkout session for the requested tier. The provider price is resolved
+	// SERVER-SIDE from an internal tier-to-price mapping — the request body never names a price
+	// directly. Returns a URL to redirect the browser to.
+	//
+	// POST /api/v1/billing/checkout
+	CreateBillingCheckout(ctx context.Context, request *BillingCheckoutRequest) (CreateBillingCheckoutRes, error)
+	// CreateBillingPortal invokes createBillingPortal operation.
+	//
+	// Mints a short-lived billing-management portal session for the tenant's existing payment-provider
+	// customer, routed via whichever provider the tenant's first checkout started with. Returns a URL to
+	// redirect the browser to.
+	//
+	// POST /api/v1/billing/portal
+	CreateBillingPortal(ctx context.Context) (CreateBillingPortalRes, error)
 	// CreateClient invokes createClient operation.
 	//
 	// Create an agency client.
@@ -850,6 +866,14 @@ type Invoker interface {
 	//
 	// GET /api/v1/backups/{snapshotId}/sql-inspection
 	GetBackupSqlInspection(ctx context.Context, params GetBackupSqlInspectionParams) (GetBackupSqlInspectionRes, error)
+	// GetBilling invokes getBilling operation.
+	//
+	// Returns the tenant's current plan, payment-provider subscription status, and site-count meter.
+	// Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
+	// self-hosted or unhosted instance 404s this path (and the two below it) entirely.
+	//
+	// GET /api/v1/billing
+	GetBilling(ctx context.Context) (GetBillingRes, error)
 	// GetCacheStats invokes getCacheStats operation.
 	//
 	// Returns the most recent cache gauges the agent reported (cached page
@@ -6120,6 +6144,161 @@ func (c *Client) sendCreateBackup(ctx context.Context, request *BackupCreate, pa
 	return result, nil
 }
 
+// CreateBillingCheckout invokes createBillingCheckout operation.
+//
+// Starts a payment-provider checkout session for the requested tier. The provider price is resolved
+// SERVER-SIDE from an internal tier-to-price mapping — the request body never names a price
+// directly. Returns a URL to redirect the browser to.
+//
+// POST /api/v1/billing/checkout
+func (c *Client) CreateBillingCheckout(ctx context.Context, request *BillingCheckoutRequest) (CreateBillingCheckoutRes, error) {
+	res, err := c.sendCreateBillingCheckout(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendCreateBillingCheckout(ctx context.Context, request *BillingCheckoutRequest) (res CreateBillingCheckoutRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createBillingCheckout"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/billing/checkout"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateBillingCheckoutOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/billing/checkout"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateBillingCheckoutRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateBillingCheckoutResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CreateBillingPortal invokes createBillingPortal operation.
+//
+// Mints a short-lived billing-management portal session for the tenant's existing payment-provider
+// customer, routed via whichever provider the tenant's first checkout started with. Returns a URL to
+// redirect the browser to.
+//
+// POST /api/v1/billing/portal
+func (c *Client) CreateBillingPortal(ctx context.Context) (CreateBillingPortalRes, error) {
+	res, err := c.sendCreateBillingPortal(ctx)
+	return res, err
+}
+
+func (c *Client) sendCreateBillingPortal(ctx context.Context) (res CreateBillingPortalRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createBillingPortal"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/billing/portal"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateBillingPortalOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/billing/portal"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateBillingPortalResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // CreateClient invokes createClient operation.
 //
 // Create an agency client.
@@ -10450,6 +10629,82 @@ func (c *Client) sendGetBackupSqlInspection(ctx context.Context, params GetBacku
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBackupSqlInspectionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetBilling invokes getBilling operation.
+//
+// Returns the tenant's current plan, payment-provider subscription status, and site-count meter.
+// Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
+// self-hosted or unhosted instance 404s this path (and the two below it) entirely.
+//
+// GET /api/v1/billing
+func (c *Client) GetBilling(ctx context.Context) (GetBillingRes, error) {
+	res, err := c.sendGetBilling(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetBilling(ctx context.Context) (res GetBillingRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getBilling"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/billing"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetBillingOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/billing"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetBillingResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

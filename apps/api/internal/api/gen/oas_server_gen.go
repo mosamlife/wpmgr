@@ -419,6 +419,22 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/backups
 	CreateBackup(ctx context.Context, req *BackupCreate, params CreateBackupParams) (CreateBackupRes, error)
+	// CreateBillingCheckout implements createBillingCheckout operation.
+	//
+	// Starts a payment-provider checkout session for the requested tier. The provider price is resolved
+	// SERVER-SIDE from an internal tier-to-price mapping — the request body never names a price
+	// directly. Returns a URL to redirect the browser to.
+	//
+	// POST /api/v1/billing/checkout
+	CreateBillingCheckout(ctx context.Context, req *BillingCheckoutRequest) (CreateBillingCheckoutRes, error)
+	// CreateBillingPortal implements createBillingPortal operation.
+	//
+	// Mints a short-lived billing-management portal session for the tenant's existing payment-provider
+	// customer, routed via whichever provider the tenant's first checkout started with. Returns a URL to
+	// redirect the browser to.
+	//
+	// POST /api/v1/billing/portal
+	CreateBillingPortal(ctx context.Context) (CreateBillingPortalRes, error)
 	// CreateClient implements createClient operation.
 	//
 	// Create an agency client.
@@ -830,6 +846,14 @@ type Handler interface {
 	//
 	// GET /api/v1/backups/{snapshotId}/sql-inspection
 	GetBackupSqlInspection(ctx context.Context, params GetBackupSqlInspectionParams) (GetBackupSqlInspectionRes, error)
+	// GetBilling implements getBilling operation.
+	//
+	// Returns the tenant's current plan, payment-provider subscription status, and site-count meter.
+	// Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
+	// self-hosted or unhosted instance 404s this path (and the two below it) entirely.
+	//
+	// GET /api/v1/billing
+	GetBilling(ctx context.Context) (GetBillingRes, error)
 	// GetCacheStats implements getCacheStats operation.
 	//
 	// Returns the most recent cache gauges the agent reported (cached page

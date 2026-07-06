@@ -109,6 +109,12 @@ import type {
   CreateBackupData,
   CreateBackupErrors,
   CreateBackupResponses,
+  CreateBillingCheckoutData,
+  CreateBillingCheckoutErrors,
+  CreateBillingCheckoutResponses,
+  CreateBillingPortalData,
+  CreateBillingPortalErrors,
+  CreateBillingPortalResponses,
   CreateClientData,
   CreateClientErrors,
   CreateClientResponses,
@@ -231,6 +237,9 @@ import type {
   GetBackupSqlInspectionData,
   GetBackupSqlInspectionErrors,
   GetBackupSqlInspectionResponses,
+  GetBillingData,
+  GetBillingErrors,
+  GetBillingResponses,
   GetCacheStatsData,
   GetCacheStatsResponses,
   GetClientData,
@@ -1266,6 +1275,58 @@ export const rebaselineAuditIntegrity = <ThrowOnError extends boolean = false>(
       ...options?.headers,
     },
   });
+
+/**
+ * Get the active tenant's hosted-billing summary (owner)
+ *
+ * Returns the tenant's current plan, payment-provider subscription status, and site-count meter. Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a self-hosted or unhosted instance 404s this path (and the two below it) entirely.
+ *
+ */
+export const getBilling = <ThrowOnError extends boolean = false>(
+  options?: Options<GetBillingData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetBillingResponses,
+    GetBillingErrors,
+    ThrowOnError
+  >({ url: "/api/v1/billing", ...options });
+
+/**
+ * Start a hosted checkout session for a paid tier (owner)
+ *
+ * Starts a payment-provider checkout session for the requested tier. The provider price is resolved SERVER-SIDE from an internal tier-to-price mapping — the request body never names a price directly. Returns a URL to redirect the browser to.
+ *
+ */
+export const createBillingCheckout = <ThrowOnError extends boolean = false>(
+  options: Options<CreateBillingCheckoutData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateBillingCheckoutResponses,
+    CreateBillingCheckoutErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/billing/checkout",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Open the payment provider's billing-management portal (owner)
+ *
+ * Mints a short-lived billing-management portal session for the tenant's existing payment-provider customer, routed via whichever provider the tenant's first checkout started with. Returns a URL to redirect the browser to.
+ *
+ */
+export const createBillingPortal = <ThrowOnError extends boolean = false>(
+  options?: Options<CreateBillingPortalData, ThrowOnError>,
+) =>
+  (options?.client ?? client).post<
+    CreateBillingPortalResponses,
+    CreateBillingPortalErrors,
+    ThrowOnError
+  >({ url: "/api/v1/billing/portal", ...options });
 
 /**
  * List tenants

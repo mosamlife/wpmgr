@@ -389,6 +389,8 @@ github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXl
 github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+github.com/stripe/stripe-go/v86 v86.1.0 h1:xisqyg8BzooIEpaB74d8SD26d9JIPVQ1TkeB6t7gBKo=
+github.com/stripe/stripe-go/v86 v86.1.0/go.mod h1:Co7QRXCKGNOPTugAdvjgRo+KcMtd9hxy+pZMN0yThsQ=
 github.com/tdewolff/font v0.0.0-20260527091451-1663e68cb8a4 h1:QmSG/RtOlLPJDLJ24XHSDEu4iSgcG+s9sdRg7wTdfpk=
 github.com/tdewolff/font v0.0.0-20260527091451-1663e68cb8a4/go.mod h1:tQzLTuJVLs4Pp6Vxdn3PJ7sAe4gIuph3SBm/BmdlmR0=
 github.com/tdewolff/parse/v2 v2.8.13 h1:si/8rLw5BZZTWCCiMm9A3f6x+RmqYfrkEeXCgpX5ick=

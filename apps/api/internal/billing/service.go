@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -31,6 +32,55 @@ type Service struct {
 	enabled bool
 	clock   domain.Clock
 	logger  *slog.Logger
+
+	// M16 Phase B — payment-provider integration. All wired via setters AFTER
+	// construction (mirrors SetBillingGate/SetService elsewhere in this
+	// codebase), so New's signature — already called from cmd/wpmgr/main.go
+	// and every Phase A test — never has to change.
+	registry        *Registry
+	defaultProvider string
+	auditRec        *audit.Recorder
+}
+
+// SetProviders wires the payment-provider registry built at boot from config
+// (see cmd/wpmgr/main.go). defaultProvider is the provider name a tenant with
+// no billing_provider yet resolves to on its FIRST checkout (today always
+// "stripe" — a future second adapter, e.g. Razorpay for India, would pick
+// its default by locale/currency without this package changing). Safe to call
+// with registry=nil (checkout/portal then degrade to a clean
+// ServiceUnavailable, matching "hosted with zero providers configured is
+// legal").
+func (s *Service) SetProviders(registry *Registry, defaultProvider string) {
+	s.registry = registry
+	s.defaultProvider = defaultProvider
+}
+
+// SetAudit wires the audit Recorder used for billing.checkout.started,
+// billing.portal.opened, and billing.subscription.changed entries. A nil
+// Recorder (the zero value) makes every audit call a silent no-op — mirrors
+// every other domain's optional-audit pattern (e.g. perf.Handler.record).
+func (s *Service) SetAudit(rec *audit.Recorder) {
+	s.auditRec = rec
+}
+
+// recordAudit is a best-effort audit write: a failure is logged, never
+// returned, so an audit-recorder hiccup can never fail a billing operation
+// that itself succeeded.
+func (s *Service) recordAudit(ctx context.Context, tenantID uuid.UUID, actorType, actorID, action string, meta map[string]any) {
+	if s.auditRec == nil {
+		return
+	}
+	if _, err := s.auditRec.Record(ctx, audit.Event{
+		TenantID:   tenantID,
+		ActorType:  actorType,
+		ActorID:    actorID,
+		Action:     action,
+		TargetType: "tenant",
+		TargetID:   tenantID.String(),
+		Metadata:   meta,
+	}); err != nil {
+		s.logger.Warn("billing: audit record failed", slog.String("action", action), slog.Any("error", err))
+	}
 }
 
 // New builds a billing Service. redisPool may be nil (the cache is then
@@ -200,5 +250,27 @@ func (s *Service) setCached(ctx context.Context, tenantID uuid.UUID, ent Entitle
 	}
 	if _, err := conn.Do("SETEX", cacheKey(tenantID), cacheTTLSeconds, raw); err != nil {
 		s.logger.Warn("billing: redis SETEX failed", slog.Any("error", err))
+	}
+}
+
+// invalidateCache best-effort deletes a tenant's cached Entitlements so the
+// NEXT read resolves fresh from Postgres. Called after the Phase B webhook
+// state machine changes tenants.plan/plan_status — without this, a tenant
+// could keep observing a stale (pre-upgrade or pre-downgrade) entitlement for
+// up to the 5-minute cache TTL. A cache-delete failure is logged and
+// swallowed: the TTL is still a correctness backstop even if this best-effort
+// invalidation fails.
+func (s *Service) invalidateCache(ctx context.Context, tenantID uuid.UUID) {
+	if s.redis == nil {
+		return
+	}
+	conn, err := s.redis.GetContext(ctx)
+	if err != nil {
+		s.logger.Warn("billing: redis unavailable, skipping entitlements cache invalidation", slog.Any("error", err))
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.Do("DEL", cacheKey(tenantID)); err != nil {
+		s.logger.Warn("billing: redis DEL failed", slog.Any("error", err))
 	}
 }
