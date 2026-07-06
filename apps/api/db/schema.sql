@@ -43,6 +43,24 @@
 --                              this instant (internal/billing's status gate),
 --                              then falls back to free.
 --   current_period_end       — Phase-B webhook-consumer bookkeeping.
+--
+-- M92 (M16 Phase C1) — superadmin billing-admin panel. Four more manual-
+-- override fields, all superadmin-only (internal/admin), layered on top of
+-- Phase A/B without touching their vocabulary:
+--   comp_reason              — free-text reason recorded alongside a manual
+--                              plan_status='comped' grant (admin.billing.comp.*).
+--   suspended_at              — a SEPARATE hard-lockout flag, NOT a plan_status
+--                              value: a suspended tenant's underlying billing
+--                              state (plan/plan_status/grace_until) is left
+--                              completely untouched so "restore" is a clean,
+--                              lossless un-suspend. NULL = not suspended.
+--   suspended_reason          — free-text reason recorded alongside suspend.
+--   cancel_at_period_end      — mirrors the payment provider's own flag
+--                              (Stripe's subscription.cancel_at_period_end) so
+--                              the admin detail view can show "will cancel on
+--                              <date>" without an extra provider round-trip.
+--                              Defaults false; Phase B's webhook/reconcile
+--                              paths do not yet write it (display-only today).
 CREATE TABLE tenants (
     id                       uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     name                     text        NOT NULL,
@@ -57,6 +75,10 @@ CREATE TABLE tenants (
     provider_customer_id     text,
     provider_subscription_id text,
     current_period_end       timestamptz,
+    comp_reason              text,
+    suspended_at             timestamptz,
+    suspended_reason         text,
+    cancel_at_period_end     boolean     NOT NULL DEFAULT false,
     created_at               timestamptz NOT NULL DEFAULT now(),
     updated_at               timestamptz NOT NULL DEFAULT now()
 );
@@ -444,6 +466,15 @@ ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
 CREATE POLICY audit_log_tenant_isolation ON audit_log
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- M92 (M16 Phase C1): the superadmin accounts-list aggregate query
+-- (internal/admin) computes each tenant's last_activity (GREATEST across
+-- audit_log/sites/memberships) across ALL tenants in one query — mirrors
+-- memberships_agent/sites_agent exactly. SELECT-only: no cross-tenant writes,
+-- and this policy grants no bypass of the append-only privilege revocation
+-- (UPDATE/DELETE remain revoked from wpmgr_app regardless of RLS).
+CREATE POLICY audit_log_agent ON audit_log
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
 
 -- admin_delete_empty_tenant (m35): SECURITY DEFINER helper for the superadmin
 -- orphaned-org cleanup. Verified prod failure (Cloud SQL log): a direct
@@ -734,6 +765,13 @@ ALTER TABLE backup_chunks FORCE ROW LEVEL SECURITY;
 CREATE POLICY backup_chunks_tenant_isolation ON backup_chunks
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- M92 (M16 Phase C1): the superadmin accounts-list aggregate query
+-- (internal/admin) sums managed-storage bytes across ALL tenants in one
+-- query — mirrors memberships_agent/sites_agent exactly. SELECT-only: no
+-- cross-tenant writes.
+CREATE POLICY backup_chunks_agent ON backup_chunks
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- backup_snapshots  (M4)

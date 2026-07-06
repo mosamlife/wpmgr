@@ -274,3 +274,37 @@ func (s *Service) invalidateCache(ctx context.Context, tenantID uuid.UUID) {
 		s.logger.Warn("billing: redis DEL failed", slog.Any("error", err))
 	}
 }
+
+// InvalidateEntitlementsCache is the exported form of invalidateCache, for the
+// superadmin billing panel (internal/admin, M16 Phase C1): every manual
+// comp/override/grace/suspend/force-state mutation writes tenants.plan*
+// columns directly (bypassing this Service's own webhook/checkout write
+// paths), so it must explicitly invalidate the cached Entitlements afterward —
+// otherwise a tenant could keep observing a stale, pre-mutation entitlement
+// for up to the 5-minute cache TTL. Best-effort, like every other cache call
+// in this file: a failure here is logged and swallowed.
+func (s *Service) InvalidateEntitlementsCache(ctx context.Context, tenantID uuid.UUID) {
+	s.invalidateCache(ctx, tenantID)
+}
+
+// RecordAdminBillingEvent appends a billing_events ledger row for a
+// superadmin-initiated billing mutation (comp/override/grace/suspend/
+// force-state — see internal/admin's billing panel, M16 Phase C1). provider
+// is stamped "admin" — never a real payment-provider name — so these rows
+// are visibly distinguishable from genuine provider webhook deliveries in
+// the same ledger (see AdminRevenueLastWebhookReceivedAt's provider <>
+// 'admin' filter). provider_event_id is a fresh UUID per call: there is no
+// external event to dedup against here, every admin action is its own event.
+// Runs under InAgentTx via insertBillingEvent (a cross-tenant-shaped system
+// write, exactly like a webhook delivery).
+func (s *Service) RecordAdminBillingEvent(ctx context.Context, tenantID uuid.UUID, kind string, payload map[string]any) error {
+	_, _, err := s.insertBillingEvent(ctx, billingEventInsert{
+		Provider:        "admin",
+		ProviderEventID: uuid.NewString(),
+		Kind:            kind,
+		TenantID:        tenantID,
+		Payload:         payload,
+		OccurredAt:      s.clock.Now(),
+	})
+	return err
+}

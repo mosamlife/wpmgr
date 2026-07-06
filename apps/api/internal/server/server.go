@@ -212,8 +212,13 @@ type Deps struct {
 	// BillingWebhookH serves the M16 Phase B public payment-provider webhook
 	// endpoint at POST /webhooks/billing/:provider. nil ⇒ route not mounted.
 	BillingWebhookH *billing.WebhookHandler
-	ServiceName     string
-	Version         string
+	// BillingSuspensionGate is the M16 Phase C1 superadmin hard-lockout
+	// middleware (billing.Service.SuspensionGate) mounted on the tenant-scoped
+	// v1 group. nil ⇒ WPMGR_HOSTED is off; self-host never sees this check
+	// (mirrors BillingH/BillingWebhookH's nil-when-unhosted convention).
+	BillingSuspensionGate gin.HandlerFunc
+	ServiceName           string
+	Version               string
 }
 
 // Server bundles the HTTP server and its dependencies.
@@ -380,6 +385,17 @@ func New(deps Deps) *Server {
 	// Derive from sessionAuthGroup so session + auth middlewares are inherited.
 	v1 := sessionAuthGroup.Group("/api/v1")
 	v1.Use(authz.RequireAuth(), authz.RequireTenant())
+	// M16 Phase C1 — superadmin hard-lockout: 402 {code:"account_suspended"}
+	// for a suspended tenant's requests, EXCEPT its own /billing/* routes (so
+	// it can pay/fix — see billing.Service.SuspensionGate's exemption). Added
+	// before any handler below registers on v1 so it wraps the whole group,
+	// including sub-groups (e.g. BillingH's own "/billing" child group)
+	// registered later — the gate's own path check is what actually exempts
+	// them. nil on an unhosted boot: self-host never sees this middleware at
+	// all.
+	if deps.BillingSuspensionGate != nil {
+		v1.Use(deps.BillingSuspensionGate)
+	}
 
 	// Org routes require session + auth but NOT an active tenant: a user creates
 	// (or lists, or activates) their FIRST organisation precisely when they have

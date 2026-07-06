@@ -42,6 +42,19 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g.GET("/sites/:siteId/tenancy", h.siteTenancy)
 	g.POST("/sites/:siteId/grant-self-membership", h.grantSelfMembership)
 	g.GET("/accounts-tenancy", h.accountsTenancy)
+	// M16 Phase C1 — superadmin billing-admin panel (accounts / account
+	// detail / revenue / manual controls). See billing_handler.go +
+	// billing_dto.go for the full contract.
+	g.GET("/accounts", h.accountsList)
+	g.GET("/accounts/:id", h.accountDetail)
+	g.POST("/accounts/:id/comp", h.compAccount)
+	g.DELETE("/accounts/:id/comp", h.revokeComp)
+	g.PUT("/accounts/:id/overrides", h.setOverrides)
+	g.POST("/accounts/:id/grace", h.extendGrace)
+	g.POST("/accounts/:id/suspend", h.suspendAccount)
+	g.POST("/accounts/:id/restore", h.restoreAccount)
+	g.POST("/accounts/:id/state", h.forceState)
+	g.GET("/revenue", h.revenue)
 	// vuln-feed key management (optional; wired via RegisterVulnFeed after boot).
 	if h.vulnFeedH != nil {
 		vfg := g.Group("/vuln-feed")

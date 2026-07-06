@@ -1,6 +1,13 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { createFileRoute, Link, Outlet, redirect, useLocation } from "@tanstack/react-router";
-import { ArrowLeft, ShieldCheck, Users, type LucideIcon } from "lucide-react";
+import {
+  ArrowLeft,
+  Building2,
+  ShieldCheck,
+  TrendingUp,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 
 import { ensureMe, isSuperadmin } from "@/features/auth/use-auth";
 import { cn } from "@/lib/utils";
@@ -95,7 +102,11 @@ class AdminErrorBoundary extends Component<
 // Nav item definitions — add new admin sections here only.
 // ---------------------------------------------------------------------------
 
-type AdminNavPath = "/admin" | "/admin/vuln-feed";
+type AdminNavPath =
+  | "/admin"
+  | "/admin/accounts"
+  | "/admin/revenue"
+  | "/admin/vuln-feed";
 
 interface AdminNavItem {
   label: string;
@@ -105,6 +116,8 @@ interface AdminNavItem {
 
 const ADMIN_NAV_ITEMS: AdminNavItem[] = [
   { label: "Users", to: "/admin", icon: Users },
+  { label: "Accounts", to: "/admin/accounts", icon: Building2 },
+  { label: "Revenue", to: "/admin/revenue", icon: TrendingUp },
   { label: "Vulnerability feed", to: "/admin/vuln-feed", icon: ShieldCheck },
 ];
 

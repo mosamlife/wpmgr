@@ -19,6 +19,29 @@ type Querier interface {
 	// Upsert: increment failures_since_alert by @delta. Creates the row if absent.
 	// Runs under InAgentTx (called after IngestLogBatch for failed entries).
 	AccumulateAlertFailures(ctx context.Context, arg AccumulateAlertFailuresParams) error
+	// M16 Phase C1 — superadmin billing-admin panel (internal/admin). tenants
+	// carries no RLS (see schema.sql header), so every query below that touches
+	// ONLY tenants runs on the bare pool. Queries that join sites/memberships/
+	// backup_chunks/audit_log/billing_events must run under the tx wrapper noted
+	// on each query: InAgentTx for a query that spans MULTIPLE tenants in one
+	// pass (the *_agent SELECT-only policies — see m92 for backup_chunks_agent/
+	// audit_log_agent, which this feature adds; sites_agent/memberships_agent/
+	// billing_events_system already existed), InTenantTx(tenantID) for a query
+	// scoped to exactly one target tenant (the ordinary tenant_isolation policy
+	// already covers that — no agent scope needed).
+	// The instance-wide (plan, plan_status) census: source data for BOTH the
+	// accounts-page header tiles (MRR total via internal/billing's price ladder,
+	// active subs, past_due count, accounts total) and the revenue page's plan-
+	// distribution table + MRR tiles. tenants carries no RLS — bare pool.
+	// Deliberately NOT filtered by the accounts-list search/status/plan filters:
+	// these tiles always reflect the FULL instance regardless of what the
+	// operator is currently filtering the list by.
+	AdminAccountPlanStatusCounts(ctx context.Context) ([]AdminAccountPlanStatusCountsRow, error)
+	// Clears comp_reason only, leaving plan/plan_status exactly as just written
+	// by billing.Service.ReconcileOneNow (used when a live provider subscription
+	// was adopted instead of falling back to free).
+	AdminClearCompReason(ctx context.Context, tenantID uuid.UUID) error
+	AdminClearSuspended(ctx context.Context, tenantID uuid.UUID) error
 	// Deletes a tenant ONLY if it has no memberships and no sites, returning whether
 	// a row was removed. Delegates to the SECURITY DEFINER admin_delete_empty_tenant
 	// function: the tenant's ON DELETE CASCADE reaches audit_log, which wpmgr_app may
@@ -27,17 +50,128 @@ type Querier interface {
 	// emptiness checks see rows under FORCE RLS.
 	AdminDeleteEmptyTenant(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	AdminDeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
+	// The manual force-state escape hatch for webhook drift: sets plan +
+	// plan_status directly, clearing grace_until (a forced state is authoritative
+	// — it should not inherit a stale grace window from whatever state preceded
+	// it).
+	AdminForceState(ctx context.Context, arg AdminForceStateParams) error
+	// Account-detail header: org identity, plan/status, subscription card fields,
+	// comp/suspend state, + the first-owner email. Runs under
+	// InTenantTx(@tenant_id): tenants/users are unRLS'd; the owner-email join
+	// against memberships is covered by memberships_tenant_isolation once
+	// app.tenant_id = @tenant_id (no cross-tenant agent scope needed — this is a
+	// single target tenant). The "owner" CTE is joined via a plain LEFT JOIN
+	// (mirroring AdminListAccounts' "owners" CTE exactly) — sqlc only infers a
+	// LEFT-JOIN-ed column as nullable when the joined relation is a CTE, not an
+	// inline derived-table subquery, so this MUST stay a WITH ... AS () CTE.
+	AdminGetAccountHeader(ctx context.Context, tenantID uuid.UUID) (AdminGetAccountHeaderRow, error)
+	// Account-detail usage meters: sites/storage/seats. Runs under
+	// InTenantTx(@tenant_id) — billing_count_active_sites() is self-scoping
+	// (SECURITY DEFINER, see schema.sql) so it works under any tx context; the
+	// storage SUM and seats COUNT are covered by backup_chunks_tenant_isolation /
+	// memberships_tenant_isolation once app.tenant_id = @tenant_id.
+	AdminGetAccountUsage(ctx context.Context, tenantID uuid.UUID) (AdminGetAccountUsageRow, error)
+	// The account-detail subscription card's "last billing_events.occurred_at" +
+	// staleness flag input. Runs under InTenantTx(@tenant_id)
+	// (billing_events_tenant_isolation).
+	AdminGetLastBillingEventForTenant(ctx context.Context, tenantID pgtype.UUID) (time.Time, error)
 	// Lightweight superadmin fetch that includes is_superadmin.
 	AdminGetUserByID(ctx context.Context, id uuid.UUID) (AdminGetUserByIDRow, error)
 	AdminInstanceStats(ctx context.Context) (AdminInstanceStatsRow, error)
+	// Account-detail timeline (audit half): only the admin.billing.*/billing.*
+	// prefixed actions (per the spec's "merged" timeline — everything else in
+	// the tenant's full audit trail is already visible via the ordinary Audit
+	// Log page). Runs under InTenantTx(@tenant_id) (audit_log_tenant_isolation).
+	AdminListAccountAuditEvents(ctx context.Context, arg AdminListAccountAuditEventsParams) ([]AdminListAccountAuditEventsRow, error)
+	// Account-detail timeline (billing half). Runs under InTenantTx(@tenant_id)
+	// (billing_events_tenant_isolation).
+	AdminListAccountBillingEvents(ctx context.Context, arg AdminListAccountBillingEventsParams) ([]AdminListAccountBillingEventsRow, error)
+	// Account-detail member roster. Runs under InTenantTx(@tenant_id)
+	// (memberships_tenant_isolation).
+	AdminListAccountMembers(ctx context.Context, tenantID uuid.UUID) ([]AdminListAccountMembersRow, error)
+	// Account-detail compact site list. Runs under InTenantTx(@tenant_id)
+	// (sites_tenant_isolation).
+	AdminListAccountSites(ctx context.Context, tenantID uuid.UUID) ([]AdminListAccountSitesRow, error)
+	// The accounts-list aggregate: one row per tenant with every raw field the
+	// superadmin billing panel's list view needs, computed via LEFT JOIN LATERAL
+	// (NOT a query-per-tenant). MRR, effective caps, near-limit, and the
+	// needs-attention sort are computed in Go (internal/admin/billing_service.go)
+	// from internal/billing's price ladder / entitlement resolver — this query
+	// only returns the raw counts/timestamps/plan fields those computations need.
+	//
+	// DB-native filters (search/status/plan/past_due/comped/has_overrides) are
+	// applied here; idle-90d (which depends on the computed last_activity
+	// column) is applied in the outer SELECT over the "acct" CTE, since a
+	// LATERAL-computed alias cannot be referenced in the same query's own WHERE
+	// clause. near-limit is NOT filterable here (ladder-aware; computed in Go
+	// from MaxSites/ManagedStorageBytes, which are Go constants).
+	//
+	// LIMIT 5000 inside the CTE is a safety valve bounding how many tenants this
+	// single query will ever join/aggregate in one pass, independent of the
+	// caller's requested page size (which is applied AFTER Go-side sort/filter);
+	// add real keyset pagination here if an instance ever exceeds it.
+	//
+	// Runs under InAgentTx: sites_agent + memberships_agent + backup_chunks_agent
+	// (m92) + audit_log_agent (m92) all gate on app.agent='on'.
+	AdminListAccounts(ctx context.Context, arg AdminListAccountsParams) ([]AdminListAccountsRow, error)
 	// List all users across the instance with org_count (number of memberships).
 	// search filters email or name case-insensitively; pass NULL to list all.
 	// Ordered by created_at DESC, id DESC (stable keyset). Used only by the
 	// superadmin area; it bypasses the tenant-scoped InTenantTx path.
 	AdminListUsers(ctx context.Context, arg AdminListUsersParams) ([]AdminListUsersRow, error)
+	// "new-this-month" / "canceled-this-month": distinct tenants with an
+	// activation-shaped / cancellation-shaped billing event this calendar month.
+	// Reads payload->>'normalized_kind' (billing.EventActivated /
+	// billing.EventCanceled — the PROVIDER-AGNOSTIC normalized kind, not the raw
+	// provider event-type string) rather than a provider-specific literal, so
+	// this stays correct if a second provider adapter is ever wired. Runs under
+	// InAgentTx (billing_events_system spans all tenants).
+	AdminRevenueActivationCountsThisMonth(ctx context.Context) (AdminRevenueActivationCountsThisMonthRow, error)
+	// The revenue page's "last webhook received" staleness footer: the newest
+	// created_at (CP receipt time, not the provider's own occurred_at) among
+	// REAL provider deliveries — provider <> 'admin' excludes the superadmin's
+	// own manual billing_events rows (see RecordAdminBillingEvent), which are not
+	// webhook deliveries and would otherwise mask a genuinely stalled webhook
+	// pipe. Deliberately NOT a bare MAX() aggregate (see
+	// LastProcessedBillingEventOccurredAtForTenant's doc comment in billing.sql
+	// for why): an empty billing_events table must yield "no rows" rather than a
+	// NULL scan panic. Runs under InAgentTx (billing_events_system).
+	AdminRevenueLastWebhookReceivedAt(ctx context.Context) (time.Time, error)
+	// ---------------------------------------------------------------------------
+	// Revenue page (internal/admin) — local state only, zero provider API calls.
+	// ---------------------------------------------------------------------------
+	// The past-due list: org + owner email + amount (Go computes amount from the
+	// ladder price for t.plan) + grace_until (Go computes "days past due" from
+	// this using billing.PastDueGracePeriod()) + last payment-failed event. Both
+	// are CTEs joined via a plain LEFT JOIN (see AdminGetAccountHeader's "owner"
+	// CTE comment for why this must be a CTE, not an inline derived-table
+	// subquery, for sqlc to infer the columns nullable). Runs under InAgentTx:
+	// the owner join spans multiple tenants (memberships_agent) and the
+	// payment-failed join reads billing_events cross-tenant
+	// (billing_events_system, already existed pre-m92).
+	AdminRevenuePastDueList(ctx context.Context) ([]AdminRevenuePastDueListRow, error)
+	// The last 20 billing_events across every tenant, for the revenue page's
+	// recent-activity feed. Runs under InAgentTx (billing_events_system).
+	AdminRevenueRecentEvents(ctx context.Context) ([]AdminRevenueRecentEventsRow, error)
+	// Reverts a comp when the tenant has no live provider subscription to adopt
+	// instead: falls back to the same "never subscribed" resting state a brand
+	// new tenant starts in.
+	AdminRevokeCompToFree(ctx context.Context, tenantID uuid.UUID) error
+	AdminSetGrace(ctx context.Context, arg AdminSetGraceParams) error
+	// Persists the FULL resolved plan_overrides object (the caller has already
+	// merged the requested deltas onto the existing overrides in Go).
+	AdminSetOverrides(ctx context.Context, arg AdminSetOverridesParams) error
 	// Boot seeder only. Sets is_superadmin=true for an email if the user exists.
 	// No-op for unknown emails.
 	AdminSetSuperadminByEmail(ctx context.Context, email string) error
+	AdminSetSuspended(ctx context.Context, arg AdminSetSuspendedParams) error
+	// ---------------------------------------------------------------------------
+	// Mutations (all superadmin-only; internal/admin validates + audits around
+	// each of these). Every query below runs on the bare pool (tenants carries no
+	// RLS) except where noted.
+	// ---------------------------------------------------------------------------
+	// Grants a manual comp: plan_status='comped', plan=@plan, comp_reason set.
+	AdminSetTenantComp(ctx context.Context, arg AdminSetTenantCompParams) error
 	AdminSetUserStatus(ctx context.Context, arg AdminSetUserStatusParams) (AdminSetUserStatusRow, error)
 	// Tenants where @user_id is the ONLY member (so deleting them orphans the org),
 	// with each tenant's name + site count. Run under Pool.InAgentTx
@@ -706,6 +840,10 @@ type Querier interface {
 	// Shared tenant name lookup (used by the aggregator for agency branding).
 	// ---------------------------------------------------------------------------
 	GetTenantName(ctx context.Context, id uuid.UUID) (string, error)
+	// M16 Phase C1 — the per-request suspension gate's (internal/billing's
+	// SuspensionGate, wired on the tenant-scoped /api/v1 group) lightweight read.
+	// tenants carries no RLS — bare pool.
+	GetTenantSuspension(ctx context.Context, tenantID uuid.UUID) (GetTenantSuspensionRow, error)
 	// Verify a device trust cookie token (hashed before lookup comparison).
 	GetTrustedDeviceByTokenHash(ctx context.Context, tokenHash string) (TrustedDevice, error)
 	// Update section: succeeded/failed tasks grouped by target_type in [from, to).

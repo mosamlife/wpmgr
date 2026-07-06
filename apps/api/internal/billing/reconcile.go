@@ -61,6 +61,30 @@ func (s *Service) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	return out, nil
 }
 
+// ReconcileOneNow immediately re-derives tenantID's billing state from its
+// live provider subscription (see reconcileOne) — the same drift-repair
+// pipeline the daily sweep and webhook consumer use. Used by the superadmin
+// billing panel's (internal/admin, M16 Phase C1) "revoke comp" action to
+// adopt whatever the provider currently reports the instant a comp override
+// is lifted, rather than waiting for the next scheduled sweep.
+// hadSubscription=false means tenantID has no live provider subscription
+// reference to reconcile against — the caller should then fall back to
+// plan=free (see AdminRevokeCompToFree).
+func (s *Service) ReconcileOneNow(ctx context.Context, tenantID uuid.UUID) (repaired bool, hadSubscription bool, err error) {
+	if !s.enabled || s.registry == nil || !s.registry.Any() {
+		return false, false, nil
+	}
+	profile, err := s.getBillingProfile(ctx, tenantID)
+	if err != nil {
+		return false, false, err
+	}
+	if profile.BillingProvider == "" || profile.ProviderSubscriptionID == "" {
+		return false, false, nil
+	}
+	repaired, err = s.reconcileOne(ctx, tenantID, profile.BillingProvider, profile.ProviderSubscriptionID)
+	return repaired, true, err
+}
+
 // reconcileOne reconciles a single tenant. Returns repaired=true when a drift
 // was found and applied.
 func (s *Service) reconcileOne(ctx context.Context, tenantID uuid.UUID, providerName, providerSubscriptionID string) (bool, error) {

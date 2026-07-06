@@ -92,6 +92,21 @@ type Entitlements struct {
 	// ProbeRetentionDays is the forward-looking uptime-probe history
 	// retention window. Not yet enforced.
 	ProbeRetentionDays int
+
+	// MonthlyPriceCents is this tier's list price in USD cents (0 for free).
+	// This is the CONTRACTED price the superadmin billing panel's MRR figures
+	// (M16 Phase C1, internal/admin) are computed from — a single source of
+	// truth, never invented ad hoc at a call site. plan_overrides never
+	// touches price (overrides only ever adjust resource limits).
+	MonthlyPriceCents int
+
+	// IncrementalBackups and ClientPortal are display-only reference flags
+	// for the superadmin billing panel's "what this plan includes" rows
+	// (M16 Phase C1) — NOT enforced by any gate anywhere in the codebase
+	// today (unlike MaxSites/CheckSiteCreate). Adjusting these booleans later
+	// carries no functional risk until/unless an enforcement point is added.
+	IncrementalBackups bool
+	ClientPortal       bool
 }
 
 const (
@@ -115,6 +130,9 @@ var planLadder = map[Tier]Entitlements{
 		RestoreEgressAllowanceBytes: 0,
 		RUMEventsPerMonth:           10_000,
 		ProbeRetentionDays:          7,
+		MonthlyPriceCents:           0,
+		IncrementalBackups:          false,
+		ClientPortal:                false,
 	},
 	TierStarter: {
 		Plan:                        TierStarter,
@@ -127,6 +145,9 @@ var planLadder = map[Tier]Entitlements{
 		RestoreEgressAllowanceBytes: 25 * gb,
 		RUMEventsPerMonth:           100_000,
 		ProbeRetentionDays:          30,
+		MonthlyPriceCents:           1500,
+		IncrementalBackups:          true,
+		ClientPortal:                false,
 	},
 	TierAgency: {
 		Plan:                        TierAgency,
@@ -139,6 +160,9 @@ var planLadder = map[Tier]Entitlements{
 		RestoreEgressAllowanceBytes: 250 * gb,
 		RUMEventsPerMonth:           1_000_000,
 		ProbeRetentionDays:          90,
+		MonthlyPriceCents:           5900,
+		IncrementalBackups:          true,
+		ClientPortal:                true,
 	},
 	TierScale: {
 		Plan:                        TierScale,
@@ -151,7 +175,29 @@ var planLadder = map[Tier]Entitlements{
 		RestoreEgressAllowanceBytes: 1 * tb,
 		RUMEventsPerMonth:           10_000_000,
 		ProbeRetentionDays:          180,
+		MonthlyPriceCents:           16900,
+		IncrementalBackups:          true,
+		ClientPortal:                true,
 	},
+}
+
+// ValidTier reports whether t is one of the four tiers in the plan ladder
+// (free/starter/agency/scale). Used by the superadmin billing panel
+// (internal/admin, M16 Phase C1) to validate a manual comp/force-state's
+// requested tier without that package ever needing to spell out a tier name
+// itself — see the package doc comment + grep_guard_test.go for why only this
+// package may know the paid-tier vocabulary.
+func ValidTier(t Tier) bool {
+	_, ok := planLadder[t]
+	return ok
+}
+
+// MonthlyPriceCentsForTier returns the ladder's list price (USD cents) for
+// t, ignoring plan_overrides (overrides never touch price). Returns 0 for an
+// unrecognized tier — indistinguishable from free's legitimate 0, which is
+// intentional: an invalid tier should never inflate an MRR figure.
+func MonthlyPriceCentsForTier(t Tier) int {
+	return planLadder[t].MonthlyPriceCents
 }
 
 // Unlimited returns an Entitlements with every limit effectively infinite. It
@@ -266,4 +312,20 @@ func resolve(row tenantBillingRow, now time.Time) (Entitlements, error) {
 		ov.apply(&ent)
 	}
 	return ent, nil
+}
+
+// ResolveEntitlements is the exported form of resolve(), for a caller (the
+// superadmin billing panel, internal/admin, M16 Phase C1) that already has a
+// tenant's raw plan/plan_status/plan_overrides/grace_until in hand from its
+// OWN query (e.g. the accounts-list aggregate) and must not reach back into
+// Postgres per-tenant to compute effective caps — that would reintroduce the
+// exact N+1 pattern the accounts-list query is designed to avoid. Mirrors
+// resolve() exactly; planOverridesJSON may be nil/empty (no overrides).
+func ResolveEntitlements(plan, planStatus string, planOverridesJSON []byte, graceUntil *time.Time, now time.Time) (Entitlements, error) {
+	return resolve(tenantBillingRow{
+		Plan:          plan,
+		PlanStatus:    planStatus,
+		PlanOverrides: planOverridesJSON,
+		GraceUntil:    graceUntil,
+	}, now)
 }

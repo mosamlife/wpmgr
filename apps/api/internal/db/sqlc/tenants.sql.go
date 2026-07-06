@@ -15,7 +15,7 @@ import (
 const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (name, slug)
 VALUES ($1, $2)
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at
 `
 
 type CreateTenantParams struct {
@@ -38,6 +38,10 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.ProviderCustomerID,
 		&i.ProviderSubscriptionID,
 		&i.CurrentPeriodEnd,
+		&i.CompReason,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.CancelAtPeriodEnd,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -45,7 +49,7 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 }
 
 const getTenant = `-- name: GetTenant :one
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at FROM tenants
 WHERE id = $1
 `
 
@@ -64,6 +68,10 @@ func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 		&i.ProviderCustomerID,
 		&i.ProviderSubscriptionID,
 		&i.CurrentPeriodEnd,
+		&i.CompReason,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.CancelAtPeriodEnd,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -152,7 +160,7 @@ func (q *Queries) ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]List
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at FROM tenants
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -183,6 +191,10 @@ func (q *Queries) ListTenants(ctx context.Context, arg ListTenantsParams) ([]Ten
 			&i.ProviderCustomerID,
 			&i.ProviderSubscriptionID,
 			&i.CurrentPeriodEnd,
+			&i.CompReason,
+			&i.SuspendedAt,
+			&i.SuspendedReason,
+			&i.CancelAtPeriodEnd,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -253,7 +265,7 @@ const updateTenantName = `-- name: UpdateTenantName :one
 UPDATE tenants
 SET name = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at
 `
 
 type UpdateTenantNameParams struct {
@@ -278,6 +290,10 @@ func (q *Queries) UpdateTenantName(ctx context.Context, arg UpdateTenantNamePara
 		&i.ProviderCustomerID,
 		&i.ProviderSubscriptionID,
 		&i.CurrentPeriodEnd,
+		&i.CompReason,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.CancelAtPeriodEnd,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

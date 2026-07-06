@@ -24,22 +24,31 @@ const LEGAL_ITEMS = [
     cta: "Read the security policy",
   },
   {
-    icon: "FileText",
+    icon: "ScrollText",
     title: "Terms of Service",
     description:
-      "Terms governing use of the WPMgr hosted service at manage.wpmgr.app. The self-hosted control plane and MIT-licensed agent are governed by their respective open-source licenses (AGPL-3.0 / MIT).",
-    href: `${SITE_CONFIG.dashboard}/terms`,
-    external: true,
+      "Terms governing use of the WPMgr hosted service at manage.wpmgr.app, including subscription billing through Paddle. The self-hosted control plane and MIT-licensed agent are governed by their respective open-source licenses (AGPL-3.0 / MIT).",
+    href: "/terms/",
+    external: false,
     cta: "View terms",
   },
   {
-    icon: "Eye",
+    icon: "LockKeyhole",
     title: "Privacy Policy",
     description:
-      "How WPMgr collects, uses, and stores data from hosted service users. The agent is privacy-first and off-by-default: diagnostics are redacted and no data leaves your server without your explicit opt-in.",
-    href: `${SITE_CONFIG.dashboard}/privacy`,
-    external: true,
+      "How WPMgr collects, uses, and stores data from hosted service users, including our sub-processors, Google Cloud Platform and Paddle. The agent is privacy-first and off-by-default.",
+    href: "/privacy/",
+    external: false,
     cta: "View privacy policy",
+  },
+  {
+    icon: "Undo2",
+    title: "Refund Policy",
+    description:
+      "Cancel a monthly subscription anytime. First-time subscribers are covered by a 14-day money-back guarantee, refunded through Paddle to your original payment method.",
+    href: "/refunds/",
+    external: false,
+    cta: "View refund policy",
   },
   {
     icon: "Scale",

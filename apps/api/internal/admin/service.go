@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -56,11 +58,37 @@ func (s *Service) GrantSelfOwnerMembership(ctx context.Context, userID, siteID u
 type Service struct {
 	repo     userStore
 	resender VerificationResender
+
+	// M16 Phase C1 — superadmin billing-admin panel. All wired via setters
+	// AFTER construction (mirrors billing.Service's own SetProviders/SetAudit
+	// pattern), so NewService's signature — already called from
+	// cmd/wpmgr/main.go and every existing admin test — never has to change.
+	billingRepo    *BillingRepo
+	billingSvc     *billing.Service
+	billingAudit   *audit.Recorder
+	stripeTestMode bool
 }
 
 // NewService builds an admin Service.
 func NewService(repo *Repo, resender VerificationResender) *Service {
 	return &Service{repo: repo, resender: resender}
+}
+
+// SetBillingPanel wires the M16 Phase C1 superadmin billing-admin panel's
+// dependencies: its own BillingRepo, the billing.Service (for entitlement-
+// cache invalidation, tier validation, and comp-revoke's live-subscription
+// adoption — never duplicating its plan-ladder vocabulary, see
+// grep_guard_test.go), the audit Recorder (every mutation is recorded under
+// the TARGET tenant's own hash chain), and whether the configured Stripe key
+// is in test mode (for the account-detail subscription card's dashboard deep
+// link). A nil billingRepo leaves the whole panel unwired — every method
+// below degrades to a clean "not configured" error rather than a nil-pointer
+// panic, matching this package's every-optional-dependency convention.
+func (s *Service) SetBillingPanel(repo *BillingRepo, billingSvc *billing.Service, rec *audit.Recorder, stripeTestMode bool) {
+	s.billingRepo = repo
+	s.billingSvc = billingSvc
+	s.billingAudit = rec
+	s.stripeTestMode = stripeTestMode
 }
 
 // ListUsers returns users, optionally filtered by search string. An empty search
