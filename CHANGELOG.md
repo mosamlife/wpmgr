@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.22] - 2026-07-06
+
+### Fixed
+
+- The superadmin billing admin panel could crash on load because the frontend read some response fields under names that did not match what the server sent. Aligned every field to the server shape and guarded optional values so a missing value renders as a placeholder instead of failing. Superadmin-only; no customer impact.
+
 ## [0.61.21] - 2026-07-06
 
 ### Added

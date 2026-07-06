@@ -1,3 +1,4 @@
+import { formatBytes } from "@/lib/utils";
 import type { BillingPlanId } from "@/features/billing/use-billing";
 
 // M16 Phase C1 — pure derivation + formatting logic for the superadmin Billing
@@ -74,15 +75,16 @@ export const ACCOUNT_STATUS_BADGE_CLASS: Record<AccountDisplayStatus, string> = 
 
 /**
  * Derives the single display status from the raw account fields.
- * `suspended` always wins — an account can be suspended while its underlying
- * subscription is still `active` (e.g. a manual admin suspension), and the
- * operator needs that to be unmissable regardless of billing state.
+ * `suspended_at` (a non-null timestamp) always wins — an account can be
+ * suspended while its underlying subscription is still `active` (e.g. a
+ * manual admin suspension), and the operator needs that to be unmissable
+ * regardless of billing state.
  */
 export function accountDisplayStatus(account: {
   plan_status: string;
-  suspended: boolean;
+  suspended_at?: string | null;
 }): AccountDisplayStatus {
-  if (account.suspended) return "suspended";
+  if (account.suspended_at != null) return "suspended";
   switch (account.plan_status) {
     case "comped":
       return "comped";
@@ -141,15 +143,151 @@ export const METER_TONE_TEXT_CLASS: Record<MeterTone, string> = {
 
 const IDLE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000;
 
-/** True when `lastActivityAt` is null (never active) or more than 90 days old. */
+/** True when `lastActivityAt` is missing (omitempty on the wire — never active) or more than 90 days old. */
 export function isIdle90d(
-  lastActivityAt: string | null,
+  lastActivityAt: string | null | undefined,
   now: number = Date.now(),
 ): boolean {
   if (!lastActivityAt) return true;
   const then = Date.parse(lastActivityAt);
   if (Number.isNaN(then)) return true;
   return now - then > IDLE_THRESHOLD_MS;
+}
+
+// ---------------------------------------------------------------------------
+// Account detail — usage meters + entitlement rows, derived from the flat
+// `usage` block (AdminAccountUsage in use-admin-accounts.ts). There is no
+// `meters`/`entitlements` array on the wire — the pinned contract invented
+// those; this is view-model derivation, same pattern as accountDisplayStatus
+// above, kept dependency-free so it stays independently unit-testable.
+// ---------------------------------------------------------------------------
+
+export type AccountMeterUnit = "count" | "bytes";
+
+export interface AccountMeterRow {
+  key: string;
+  label: string;
+  used: number;
+  cap: number;
+  unit: AccountMeterUnit;
+  approximate?: boolean;
+}
+
+/** Formats a meter's used/cap value for its unit ("12" for a count, "1.2 GB" for bytes). */
+export function formatMeterValue(value: number, unit: AccountMeterUnit): string {
+  return unit === "bytes" ? formatBytes(value) : value.toLocaleString();
+}
+
+/** Builds the account-detail "Usage vs limits" meter rows from the flat `usage` block (usage.sites / usage.storage_bytes_approx). */
+export function buildAccountMeters(usage: {
+  sites: { used: number; cap: number };
+  storage_bytes_approx: { used: number; cap: number };
+}): AccountMeterRow[] {
+  return [
+    { key: "sites", label: "Sites", used: usage.sites.used, cap: usage.sites.cap, unit: "count" },
+    {
+      key: "storage",
+      label: "Storage",
+      used: usage.storage_bytes_approx.used,
+      cap: usage.storage_bytes_approx.cap,
+      unit: "bytes",
+      // storage_bytes_approx is ALWAYS an approximation on the wire (see
+      // AccountListItem.StorageUsedBytesApprox's doc comment in
+      // billing_dto.go) — not conditional on a per-account flag.
+      approximate: true,
+    },
+  ];
+}
+
+const BYTES_PER_GB = 1024 ** 3;
+
+/**
+ * Converts a byte count to whole GB, for display alongside the GB-denominated
+ * `storage_gb` override input (see SetOverridesInput) — the usage meter
+ * itself (usage.storage_bytes_approx) is bytes, a distinct unit from the
+ * override the operator types in.
+ */
+export function bytesToWholeGB(bytes: number): number {
+  return Math.round(bytes / BYTES_PER_GB);
+}
+
+function formatSecondsFloor(seconds: number): string {
+  if (seconds <= 0) return "–";
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
+/** Human display rows for the entitlement reference values (display-only; not enforced anywhere — see AccountEntitlementValues's doc comment in billing_dto.go). Empty string signals "not on this plan" to the caller. */
+export function buildEntitlementRows(entitlements: {
+  probe_interval_floor_sec: number;
+  backup_cadence_floor_seconds: number;
+  incremental_backups: boolean;
+  client_portal: boolean;
+}): Array<{ label: string; value: string }> {
+  return [
+    {
+      label: "Uptime probe interval",
+      value: formatSecondsFloor(entitlements.probe_interval_floor_sec),
+    },
+    {
+      label: "Backup cadence floor",
+      value: formatSecondsFloor(entitlements.backup_cadence_floor_seconds),
+    },
+    { label: "Incremental backups", value: entitlements.incremental_backups ? "Included" : "" },
+    { label: "Client portal", value: entitlements.client_portal ? "Included" : "" },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Account detail — timeline display derivation. The wire entry
+// (AdminAccountTimelineEntry) has no dedicated label/actor/reason fields —
+// those are derived here from kind/actor_type/actor_id/metadata.
+// ---------------------------------------------------------------------------
+
+/** Turns a raw billing_events.kind / audit_log.action string ("subscription_updated", "admin.billing.suspend") into a readable label. Falls back to a generalized transform for unknown kinds so a new backend event type never renders blank. */
+export function timelineEntryLabel(kind: string): string {
+  const words = kind.split(/[._]/).filter(Boolean);
+  if (words.length === 0) return kind;
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+/** "Who" performed a timeline entry, derived from actor_type/actor_id (no dedicated field on the wire). Returns null when neither is present. */
+export function timelineActorLabel(entry: {
+  actor_type?: string;
+  actor_id?: string;
+}): string | null {
+  if (entry.actor_type && entry.actor_id) return `${entry.actor_type} ${entry.actor_id}`;
+  if (entry.actor_type) return entry.actor_type;
+  if (entry.actor_id) return entry.actor_id;
+  return null;
+}
+
+/** Best-effort human "reason" pulled from a timeline entry's free-form metadata (no dedicated field on the wire). */
+export function timelineReason(entry: {
+  metadata?: Record<string, unknown>;
+}): string | undefined {
+  const reason = entry.metadata?.["reason"];
+  return typeof reason === "string" && reason.length > 0 ? reason : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Revenue page — webhook staleness. RevenueResponse only exposes the raw
+// `last_webhook_received_at` timestamp (no boolean flag) — derive staleness
+// client-side, mirroring the same 25h threshold AccountSubscription.Stale
+// uses server-side (see billing_dto.go).
+// ---------------------------------------------------------------------------
+
+const WEBHOOK_STALE_THRESHOLD_MS = 25 * 60 * 60 * 1000;
+
+export function isWebhookStale(
+  lastReceivedAt: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!lastReceivedAt) return true;
+  const then = Date.parse(lastReceivedAt);
+  if (Number.isNaN(then)) return true;
+  return now - then > WEBHOOK_STALE_THRESHOLD_MS;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,8 +414,8 @@ export function sortPastDueOldestFirst<T extends { days_past_due: number }>(
   return [...rows].sort((a, b) => b.days_past_due - a.days_past_due);
 }
 
-export function sortEventsNewestFirst<T extends { at: string }>(
+export function sortEventsNewestFirst<T extends { occurred_at: string }>(
   rows: readonly T[],
 ): T[] {
-  return [...rows].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  return [...rows].sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at));
 }
