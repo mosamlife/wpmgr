@@ -8,6 +8,13 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.26] - 2026-07-06
+
+### Fixed
+
+- Uptime downtime and recovery alert emails were silently skipped when SMTP was configured in the dashboard (Settings, Email/SMTP) but not also set as environment variables. The alert mailer only read the environment relay and ignored the saved dashboard relay that the "Send test email" button and backup notifications already use, so alerts were dropped even though a test email delivered. Uptime alerts now send through the same saved SMTP relay, resolved per send, with environment variables kept only as a fallback. This path is now SSRF-hardened like the rest of the mail system.
+- The audit log recorded "Emailed: Yes" for a downtime alert whenever recipients were configured, even when the send was skipped or failed, so operators could not tell that notifications were not being delivered. The audit entry now records the true outcome (Sent, Skipped, or Failed) with the reason, for both email and webhook delivery. Alert reasons never include SMTP hosts, credentials, or endpoint responses.
+
 ## [0.61.25] - 2026-07-06
 
 ### Fixed

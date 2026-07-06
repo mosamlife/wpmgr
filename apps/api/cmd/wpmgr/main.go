@@ -909,14 +909,15 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	uptimeRepo := uptime.NewRepo(pool)
 	uptimeSiteAdapter := newUptimeSiteAdapter(siteSvc)
 	uptimeProber := uptime.NewProber(ssrfClient, cfg.Uptime.ProbeTimeout)
-	var uptimeMailer uptime.Mailer
-	if cfg.SMTP.Enabled() {
-		uptimeMailer = uptime.NewSMTPMailer(cfg.SMTP, logger)
-		logger.Info("uptime alert email enabled", slog.String("smtp_host", cfg.SMTP.Host))
-	} else {
-		uptimeMailer = uptime.NewNoopMailer(logger)
-		logger.Warn("WPMGR_SMTP_HOST is empty: uptime alert emails disabled (webhooks still fire)")
-	}
+	// GH #144: uptime/security alert emails resolve their SMTP transport
+	// per-send from mailerSvc (built above) — the same DB-row-first/env-
+	// fallback resolution every other transactional email uses — instead of a
+	// boot-time snapshot of WPMGR_SMTP_* env. The old wiring picked
+	// uptime.NewSMTPMailer/NewNoopMailer ONCE at boot from that env var, so
+	// dashboard-configured SMTP (the norm) never reached alert emails and they
+	// silently no-op'd forever via NoopMailer.
+	uptimeMailer := uptimeMailerAdapter{svc: mailerSvc}
+	logger.Info("uptime/security alert email resolves SMTP per-send from the DB-configured transport (env fallback)")
 	webhookPoster := uptime.NewSSRFWebhookPoster(ssrfClient)
 	uptimeDispatcher := uptime.NewDispatcher(uptimeMailer, webhookPoster, auditRec, logger)
 	uptimeWorker := uptime.NewProbeWorker(uptimeRepo, uptimeProber, metricsStore, uptimeDispatcher, uptimeSiteAdapter, logger, cfg.Uptime.ProbeConcurrency, cfg.Uptime.DownThreshold)

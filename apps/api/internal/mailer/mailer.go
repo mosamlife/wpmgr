@@ -146,6 +146,63 @@ func (s *Service) Deliver(ctx context.Context, emailLogID uuid.UUID, recipients 
 	return nil
 }
 
+// SendStatus is the REAL outcome of a SendMessage call — as opposed to merely
+// "recipients were configured" (GH #144: the uptime alert dispatcher used to
+// record "emailed: true" in the audit log whenever recipients existed, even
+// though the send was never attempted — SMTP had been frozen to a boot-time
+// no-op mailer — or had failed).
+type SendStatus string
+
+const (
+	SendSent    SendStatus = "sent"
+	SendSkipped SendStatus = "skipped"
+	SendFailed  SendStatus = "failed"
+)
+
+// SendOutcome is the result of a SendMessage call: the real delivery status
+// plus a coarse, ALREADY-SCRUBBED reason set whenever Status != SendSent.
+type SendOutcome struct {
+	Status SendStatus
+	Reason string
+}
+
+// SendMessage sends a plain-text, unrendered message (no template) over the
+// resolved instance SMTP transport — the SAME per-send DB-first/env-fallback
+// resolution as Deliver/SendTest. It exists for callers that build their own
+// subject/body outside the template system (uptime/security alerts, GH #144)
+// and need the REAL delivery outcome instead of a fire-and-forget best-effort
+// send, so they can record an honest audit trail rather than "emailed:
+// configured". Logging to email_log is best-effort: a log-write failure never
+// blocks or fails the send.
+func (s *Service) SendMessage(ctx context.Context, recipients []string, subject, text string) (SendOutcome, error) {
+	if len(recipients) == 0 {
+		return SendOutcome{Status: SendSkipped, Reason: "no_recipients"}, nil
+	}
+	transport, ok, err := s.resolver.Resolve(ctx)
+	if err != nil {
+		s.logger.Error("mailer resolve failed", slog.String("err", err.Error()))
+		return SendOutcome{Status: SendFailed, Reason: "resolve_smtp"}, fmt.Errorf("resolve smtp transport: %w", err)
+	}
+	if !ok || !transport.Configured() {
+		s.logger.Warn("message skipped: smtp not configured", slog.String("subject", subject))
+		return SendOutcome{Status: SendSkipped, Reason: "smtp_not_configured"}, nil
+	}
+
+	logID := s.insertLog(ctx, uuid.Nil, recipients, subject, "uptime_alert")
+	if err := sendMail(ctx, transport, recipients, Email{Subject: subject, Text: text}); err != nil {
+		reason := scrubSMTPError(err)
+		if logID != uuid.Nil {
+			s.markFailed(ctx, logID, reason)
+		}
+		s.logger.Warn("message send failed", slog.String("subject", subject), slog.String("err", err.Error()))
+		return SendOutcome{Status: SendFailed, Reason: reason}, fmt.Errorf("send message: %w", err)
+	}
+	if logID != uuid.Nil {
+		s.markSent(ctx, logID)
+	}
+	return SendOutcome{Status: SendSent}, nil
+}
+
 // SendTest renders + sends the "test" template synchronously over an explicit
 // transport (the just-submitted or stored SMTP config). It returns a SCRUBBED
 // error suitable for showing the operator (no internal IPs/hostnames/timing),
@@ -243,9 +300,14 @@ func sendMail(ctx context.Context, t Transport, recipients []string, em Email) e
 	}
 	msg.Subject(em.Subject)
 	// Plaintext primary + HTML alternative -> multipart/alternative with the
-	// richer HTML part last, which is what clients prefer.
+	// richer HTML part last, which is what clients prefer. When there is no
+	// HTML part (e.g. SendMessage's unrendered alerts) skip the alternative
+	// entirely — an EMPTY HTML part would still be the "preferred" part of a
+	// multipart/alternative and could render blank in HTML-capable clients.
 	msg.SetBodyString(mail.TypeTextPlain, em.Text)
-	msg.AddAlternativeString(mail.TypeTextHTML, em.HTML)
+	if em.HTML != "" {
+		msg.AddAlternativeString(mail.TypeTextHTML, em.HTML)
+	}
 
 	port := t.Port
 	if port == 0 {

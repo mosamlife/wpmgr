@@ -25,13 +25,13 @@ type stubMailer struct {
 	subject    string
 }
 
-func (m *stubMailer) Send(_ context.Context, recipients []string, subject, _ string) error {
+func (m *stubMailer) Send(_ context.Context, recipients []string, subject, _ string) (SendResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
 	m.recipients = recipients
 	m.subject = subject
-	return nil
+	return SendResult{Status: SendResultSent}, nil
 }
 
 // TestDispatcherFiresBothChannels asserts the dispatcher calls the mailer with
