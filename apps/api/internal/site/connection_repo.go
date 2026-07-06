@@ -41,12 +41,20 @@ func (r *pgRepo) GetSiteByURL(ctx context.Context, tenantID uuid.UUID, url strin
 }
 
 // CreatePending creates a sites row in pending_enrollment (site-first flow).
+// M16 Phase A: this is where the site-first "Add site" flow's new row is
+// actually born (MintEnrollmentCode calls this before minting the code), so
+// the site-cap gate lives here, in the same tx as the INSERT.
 func (r *pgRepo) CreatePending(ctx context.Context, tenantID uuid.UUID, url, name string, tags []string) (Site, error) {
 	if tags == nil {
 		tags = []string{}
 	}
 	var out Site
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		if r.billing != nil {
+			if err := r.billing.CheckSiteCreate(ctx, tx, tenantID); err != nil {
+				return err
+			}
+		}
 		row, err := sqlc.New(tx).CreatePendingSite(ctx, sqlc.CreatePendingSiteParams{
 			TenantID: tenantID,
 			Url:      url,
@@ -121,6 +129,24 @@ func (r *pgRepo) Transition(ctx context.Context, in TransitionInput) (Transition
 		if from == in.To {
 			out = TransitionResult{Site: toModel(loaded), From: from}
 			return nil
+		}
+		// Security review Finding B: gate every archived-exit on the (from, to)
+		// STATE PAIR itself, not on a per-call opt-in flag. Un-archiving a site
+		// (any transition FROM archived TO a non-archived state) flips a row that
+		// was EXCLUDED from the active-site count back into it, so it must
+		// re-check the site cap here — in this same locked tx — exactly like a
+		// fresh INSERT would. The flag-based version of this check (CheckSiteQuota,
+		// set only by Restore) missed BeginReEnrollment's archived->
+		// pending_enrollment exit entirely, letting a free tenant already at cap
+		// reactivate an archived site past its limit. Deriving the check from
+		// `from`/`in.To` instead of a caller-supplied flag makes it impossible for
+		// any current or future archived-exit path to bypass the cap by simply
+		// not setting a flag. Every other transition leaves the active count
+		// unchanged and this predicate is false for all of them.
+		if from == StateArchived && in.To != StateArchived && r.billing != nil {
+			if err := r.billing.CheckSiteCreate(ctx, tx, in.TenantID); err != nil {
+				return err
+			}
 		}
 		updated, err := in.Apply(ctx, q, loaded)
 		if err != nil {

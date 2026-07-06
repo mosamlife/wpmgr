@@ -608,6 +608,11 @@ export type Me = {
   scope?: "org" | "site" | "";
   role?: PrincipalRole;
   portal?: MePortal;
+  /**
+   * Whether this instance runs with hosted-billing entitlements (WPMGR_HOSTED) turned on. False on every self-hosted deployment and on any hosted instance before M16 Phase B billing ships. The frontend uses this to gate billing/plan UI.
+   *
+   */
+  hosted?: boolean;
 };
 
 /**

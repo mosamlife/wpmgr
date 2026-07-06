@@ -35,6 +35,17 @@ type Config struct {
 	River      RiverConfig      `koanf:"river"`
 	Autologin  AutologinConfig  `koanf:"autologin"`
 	Conn       ConnConfig       `koanf:"conn"`
+	Hosted     HostedConfig     `koanf:"hosted"`
+}
+
+// HostedConfig gates the M16 Phase A hosted-billing entitlement substrate
+// (internal/billing). Enabled defaults to FALSE: self-host and current prod
+// see zero behavior change — every entitlement check no-ops (Unlimited()) —
+// until an operator explicitly sets WPMGR_HOSTED=true. There is no payment-
+// provider integration yet (Phase B); this phase is the plan/site-cap
+// substrate only.
+type HostedConfig struct {
+	Enabled bool `koanf:"enabled"`
 }
 
 // ConnConfig holds the M21 connection-lifecycle sweeper tunables (M58).
@@ -462,6 +473,7 @@ func defaults() map[string]any {
 		"conn.active_verify":            true,
 		"conn.verify_timeout":           "8s",
 		"conn.verify_concurrency":       8,
+		"hosted.enabled":                false,
 	}
 }
 
@@ -567,6 +579,11 @@ func mapEnvKey(k string) string {
 	// WPMGR_CRON_KICK_CONCURRENCY -> uptime.cron_kick_concurrency.
 	case k == "cron_kick_concurrency":
 		return "uptime.cron_kick_concurrency"
+	// WPMGR_HOSTED -> hosted.enabled (M16 Phase A: hosted-billing entitlement
+	// substrate). A single flat flag, not "hosted_enabled", since it is the
+	// only knob this phase introduces.
+	case k == "hosted":
+		return "hosted.enabled"
 	default:
 		return k
 	}

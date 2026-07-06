@@ -141,6 +141,40 @@ func TestOIDCEnabled(t *testing.T) {
 	}
 }
 
+// TestLoadHostedDefaultDisabled is the #131-class boot-regression guard for
+// M16 Phase A: with zero WPMGR_HOSTED* env configured (the state of every
+// self-host and current-prod deployment today), Load must succeed and
+// Hosted.Enabled must default to false, and Validate must report zero
+// issues — turning on the entitlement substrate must never require any new
+// env var to boot.
+func TestLoadHostedDefaultDisabled(t *testing.T) {
+	t.Setenv("WPMGR_HOSTED", "")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Hosted.Enabled {
+		t.Fatal("Hosted.Enabled should default to false")
+	}
+	cfg.Auth.SessionSecret = strings.Repeat("a", 32) // satisfy the unrelated session-secret check
+	if issues := Validate(cfg); len(issues) != 0 {
+		t.Fatalf("Validate() with hosted billing unconfigured returned issues: %+v", issues)
+	}
+}
+
+// TestLoadHostedEnvOverride verifies WPMGR_HOSTED=true is loaded into
+// Hosted.Enabled.
+func TestLoadHostedEnvOverride(t *testing.T) {
+	t.Setenv("WPMGR_HOSTED", "true")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Hosted.Enabled {
+		t.Fatal("Hosted.Enabled should be true when WPMGR_HOSTED=true")
+	}
+}
+
 // TestPrivilegeProbeGate verifies that the two-DSN gate logic (MigrationDSN != "")
 // correctly identifies when the privilege probe should run. In single-DSN mode
 // (MigrationDSN empty) the app connects as the migration runner, so the probe is

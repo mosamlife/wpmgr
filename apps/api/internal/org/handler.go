@@ -242,7 +242,7 @@ func (h *Handler) switchOrg(c *gin.Context) {
 	// GetTenantForUser runs under InUserTx (app.user_id GUC), which activates the
 	// memberships_self_read RLS policy. The query requires m.user_id = $2, so a
 	// non-member gets pgx.ErrNoRows → 403. A member gets the tenant row → 200.
-	var tenant sqlc.Tenant
+	var tenant sqlc.GetTenantForUserRow
 	err = h.pool.InUserTx(c.Request.Context(), p.UserID, func(tx pgx.Tx) error {
 		var qErr error
 		// MEMBERSHIP CHECK — handler.go switchOrg: this JOIN on memberships is the
