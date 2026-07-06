@@ -12985,6 +12985,10 @@ type Me struct {
 	Scope  OptMeScope       `json:"scope"`
 	Role   OptPrincipalRole `json:"role"`
 	Portal OptMePortal      `json:"portal"`
+	// Whether this instance runs with hosted-billing entitlements (WPMGR_HOSTED) turned on. False on
+	// every self-hosted deployment and on any hosted instance before M16 Phase B billing ships. The
+	// frontend uses this to gate billing/plan UI.
+	Hosted OptBool `json:"hosted"`
 }
 
 // GetUser returns the value of User.
@@ -13017,6 +13021,11 @@ func (s *Me) GetPortal() OptMePortal {
 	return s.Portal
 }
 
+// GetHosted returns the value of Hosted.
+func (s *Me) GetHosted() OptBool {
+	return s.Hosted
+}
+
 // SetUser sets the value of User.
 func (s *Me) SetUser(val User) {
 	s.User = val
@@ -13045,6 +13054,11 @@ func (s *Me) SetRole(val OptPrincipalRole) {
 // SetPortal sets the value of Portal.
 func (s *Me) SetPortal(val OptMePortal) {
 	s.Portal = val
+}
+
+// SetHosted sets the value of Hosted.
+func (s *Me) SetHosted(val OptBool) {
+	s.Hosted = val
 }
 
 func (*Me) getMeRes()        {}

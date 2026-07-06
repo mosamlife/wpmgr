@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.19] - 2026-07-06
+
+### Fixed
+
+- Hardened two internal database functions that could leave an elevated permission context active for the remainder of a transaction after being called. Not exploitable through any shipped code path, found by internal security review; fixed as defense in depth.
+
+### Changed
+
+- Groundwork for hosted plans landed behind a flag that is off by default. Self-hosted installations are unaffected and remain unlimited; no user-facing change in this release.
+
 ## [0.61.18] - 2026-07-05
 
 ### Fixed

@@ -145,6 +145,20 @@ type TransitionInput struct {
 	// meaningful from one — e.g. Restore (archived→disconnected) must NOT fire on
 	// a connected site even though connected→disconnected is otherwise legal.
 	RequireFrom ConnectionState
+	// CheckSiteQuota documents the caller's intent that this transition grows
+	// the active (non-archived) site count without a fresh INSERT (e.g. Restore,
+	// archived -> disconnected un-archive) and therefore re-enforces the M16
+	// Phase A hosted-plan site cap.
+	//
+	// Security review Finding B: the repo no longer TRUSTS this flag to decide
+	// whether to run the check — Transition derives that decision itself from
+	// the loaded from-state and in.To (any transition FROM archived TO a
+	// non-archived state always re-checks the cap, regardless of this field),
+	// because a caller-supplied flag is trivially forgettable (BeginReEnrollment
+	// didn't set it and bypassed the cap on every archived->pending_enrollment
+	// re-enroll). This field is kept only as caller-side documentation/intent
+	// and for the existing wiring test; it has no effect on enforcement.
+	CheckSiteQuota bool
 	// Apply performs the concrete state write (sqlc query) under the same tx as
 	// the FOR UPDATE load + the history insert. It receives the tx context, the
 	// loaded sqlc tx query handle, and the locked site.
@@ -193,12 +207,27 @@ type ScreenshotEnricher interface {
 	EnrichSites(ctx context.Context, tenantID uuid.UUID, sites []Site) error
 }
 
+// BillingGate gates new-site provisioning behind the M16 Phase A hosted-plan
+// site cap. Implemented by *internal/billing.Service (wired in cmd/wpmgr); a
+// nil value disables the gate entirely (self-host / back-compat / any test
+// that does not wire it) and every call site treats that exactly like an
+// unlimited plan. This local interface keeps the site package free of a
+// direct billing import.
+//
+// CheckSiteCreate MUST be called inside the SAME transaction as the site
+// row's INSERT (or the archived->active state flip that grows the active
+// count), which is why it takes the raw tx rather than a repo-level method.
+type BillingGate interface {
+	CheckSiteCreate(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error
+}
+
 // pgRepo runs every operation inside a transaction scoped by the appropriate
 // GUC (tenant, enroll, or agent) so RLS enforces isolation even if a query
 // omitted its filter.
 type pgRepo struct {
 	pool          *db.Pool
 	screenshotEnr ScreenshotEnricher // optional; nil disables screenshot enrichment
+	billing       BillingGate        // optional; nil disables the site-cap gate
 }
 
 // NewRepo builds a Repo backed by the pgx pool with RLS enforcement.
@@ -215,6 +244,23 @@ func SetScreenshotEnricher(repo Repo, e ScreenshotEnricher) {
 	}
 }
 
+// SetBillingGate wires the M16 Phase A billing gate on a Repo returned by
+// NewRepo. It is a no-op if repo is not a *pgRepo.
+//
+// IMPORTANT (mirrors the SetScreenshotEnricher wiring bug fixed in v0.49.1):
+// cmd/wpmgr constructs TWO distinct *pgRepo instances — one held inside
+// site.Service (serves Create/Enroll), one passed to
+// site.NewConnectionService (serves CreatePending/ConsumeEnrollmentCode/
+// Restore). Wiring the gate onto only one of them silently leaves the OTHER
+// site-birth paths uncapped. Call this on BOTH: once via
+// Service.SetBillingGate, and once directly on the repo instance handed to
+// NewConnectionService.
+func SetBillingGate(repo Repo, b BillingGate) {
+	if r, ok := repo.(*pgRepo); ok {
+		r.billing = b
+	}
+}
+
 func (r *pgRepo) Create(ctx context.Context, in CreateInput) (Site, error) {
 	status := in.Status
 	if status == "" {
@@ -222,6 +268,11 @@ func (r *pgRepo) Create(ctx context.Context, in CreateInput) (Site, error) {
 	}
 	var out Site
 	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+		if r.billing != nil {
+			if err := r.billing.CheckSiteCreate(ctx, tx, in.TenantID); err != nil {
+				return err
+			}
+		}
 		row, err := sqlc.New(tx).CreateSite(ctx, sqlc.CreateSiteParams{
 			TenantID:   in.TenantID,
 			Url:        in.URL,
@@ -516,6 +567,17 @@ func (r *pgRepo) Enroll(ctx context.Context, codeHash string, in EnrollInput) (S
 			}
 			out = toModel(row)
 		case errors.Is(err, pgx.ErrNoRows):
+			// A genuinely NEW site is about to be born (the re-enroll/attach
+			// branch above reuses an existing row and does not need this check).
+			// M16 Phase A: gate it behind the tenant's site cap, in this same
+			// enroll-scoped tx, using the tenant resolved from the verified
+			// pairing code (pc.TenantID) — this is the public /enroll endpoint,
+			// the #1 site-cap bypass risk if left unchecked.
+			if r.billing != nil {
+				if err := r.billing.CheckSiteCreate(ctx, tx, pc.TenantID); err != nil {
+					return err
+				}
+			}
 			row, cerr := q.CreateSiteForEnroll(ctx, sqlc.CreateSiteForEnrollParams{
 				TenantID:       pc.TenantID,
 				Url:            in.URL,

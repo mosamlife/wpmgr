@@ -25,7 +25,7 @@ The original Phase 0-6 plan is complete and in production:
 
 ## Next up (priority order)
 
-1. [ ] **M16 — Hosted SaaS monetization** (the critical gap: pricing designed, tiers defined, `WPMGR_HOSTED` open-core gating exists, superadmin console growing — but **no billing**). Stripe subscriptions, plan limits enforcement (sites/storage per tier), upgrade/downgrade flows, dunning. Billable entity = org.
+1. [ ] **M16 — Hosted SaaS monetization** (Phase A shipped: `WPMGR_HOSTED` entitlement substrate + site-cap enforcement — plan/plan_status/plan_overrides on tenants, `internal/billing` plan ladder, all six site-birth paths gated, non-destructive grandfather backfill; ships dark, default off, zero behavior change. Still **no payment provider / no billing** — that's Phase B). Remaining: a payment-provider integration (subscriptions, webhooks into the now-ready `billing_events` ledger), storage/backup-cadence/probe-interval enforcement (vocabulary already locked in `internal/billing.Entitlements`), upgrade/downgrade flows, dunning. Billable entity = org.
 2. [ ] **Per-site outgoing email (SMTP/API providers) + cross-site email log** — plan locked, 6-phase CP-first build not started (docs/per-site-email-smtp-plan-2026-06-10.md).
 3. [ ] **Font subsetting Phase 2** — per-font processing UI + WP Font Library discovery; media-encoder-first ordering (docs/adr/font-subsetting-phase2-plan.md).
 4. [ ] **Security suite P5/P6** — IP reputation + geo controls (docs/security/security-suite-plan.md).

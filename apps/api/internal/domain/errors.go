@@ -44,6 +44,10 @@ const (
 	// 413). Used by streaming ingest endpoints (e.g. the RUCSS multipart) that
 	// reject oversize parts BEFORE buffering them.
 	KindTooLarge
+	// KindPaymentRequired indicates the caller's tenant has exceeded a hosted-
+	// billing plan entitlement (HTTP 402). Used by internal/billing's site-cap
+	// gate (M16 Phase A); never returned when WPMGR_HOSTED is disabled.
+	KindPaymentRequired
 )
 
 // Error is a domain error carrying a Kind, a stable machine code, a
@@ -147,6 +151,13 @@ func TooLarge(code, msg string) *Error {
 	return &Error{Kind: KindTooLarge, Code: code, Message: msg}
 }
 
+// PaymentRequired builds a KindPaymentRequired error (HTTP 402). Use for
+// hosted-billing plan-entitlement gates (e.g. internal/billing's site cap);
+// never constructed when hosted billing is disabled.
+func PaymentRequired(code, msg string) *Error {
+	return &Error{Kind: KindPaymentRequired, Code: code, Message: msg}
+}
+
 // HTTPStatus maps an error to an HTTP status code. Non-domain errors are 500.
 func HTTPStatus(err error) int {
 	var de *Error
@@ -172,6 +183,8 @@ func HTTPStatus(err error) int {
 			return http.StatusTooManyRequests
 		case KindTooLarge:
 			return http.StatusRequestEntityTooLarge
+		case KindPaymentRequired:
+			return http.StatusPaymentRequired
 		default:
 			return http.StatusInternalServerError
 		}

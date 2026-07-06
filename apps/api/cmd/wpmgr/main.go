@@ -34,6 +34,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth/twofactor"
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
+	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
@@ -440,6 +441,21 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	redisPool := auth.NewRedisPool(cfg.Redis.Addr, cfg.Redis.Password)
 	sessions := auth.NewRedisSessionManager(redisPool, cfg.Auth.IdleTimeout, cfg.Auth.AbsoluteExpiry, cfg.IsProduction())
+
+	// M16 Phase A — hosted-billing entitlement substrate (WPMGR_HOSTED, default
+	// false: every check below no-ops until an operator turns it on). Reuses
+	// the session Redis pool for the 5-minute entitlements cache (a distinct
+	// "ent:" key prefix keeps it from colliding with session keys); a nil/down
+	// Redis still resolves correctly, just uncached, from Postgres.
+	//
+	// SetBillingGate is called TWICE — here on siteSvc's own repo, and again
+	// below (once siteRepo exists) on the SEPARATE repo instance handed to
+	// site.NewConnectionService — because cmd/wpmgr constructs two distinct
+	// *pgRepo instances (see BillingGate's doc comment in internal/site/repo.go
+	// for the exact wiring gotcha this mirrors, first hit by the screenshot
+	// enricher in v0.49.1).
+	billingSvc := billing.New(pool, redisPool, cfg.Hosted.Enabled, clock, logger)
+	siteSvc.SetBillingGate(billingSvc)
 
 	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc, pool)
 
@@ -891,6 +907,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// per-tenant queue shards so one tenant cannot starve another. Started below,
 	// stopped on shutdown.
 	siteRepo := site.NewRepo(pool)
+	// M16 Phase A — wire the billing gate onto THIS repo instance too (the one
+	// connSvc below is constructed with): CreatePending/ConsumeEnrollmentCode/
+	// Restore are served by siteRepo, not by siteSvc's own repo. See the
+	// SetBillingGate(billingSvc) call above for the full wiring-gotcha note.
+	site.SetBillingGate(siteRepo, billingSvc)
 	healthChecker := site.NewHealthChecker(siteRepo, cfg.Agent.StaleAfter, cfg.Agent.SignatureSkew)
 
 	// M21 — Live enrollment + connection lifecycle (ADR-038/039/040/041).
@@ -1902,6 +1923,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	authH := auth.NewHandler(authSvc, sessions, oidcProvider, newTenant)
 	authH.SetSecureCookies(cfg.IsProduction())
+	authH.SetHosted(cfg.Hosted.Enabled)
 
 	filesH := files.NewHandler(filesSvc, auditRec)
 

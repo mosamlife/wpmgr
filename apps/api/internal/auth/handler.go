@@ -32,6 +32,10 @@ type Handler struct {
 	// secureCookies mirrors cfg.IsProduction(). Controls the Secure flag on
 	// the trusted-device cookie. Set after construction via SetSecureCookies.
 	secureCookies bool
+	// hosted mirrors cfg.Hosted.Enabled (M16 Phase A). Surfaced on every Me
+	// response so the frontend can gate billing/plan UI. Set after
+	// construction via SetHosted.
+	hosted bool
 }
 
 // NewHandler builds an auth Handler.
@@ -44,6 +48,13 @@ func NewHandler(svc *Service, sessions *SessionManager, oidc *OIDCProvider, newT
 // Pass cfg.IsProduction() at startup.
 func (h *Handler) SetSecureCookies(secure bool) {
 	h.secureCookies = secure
+}
+
+// SetHosted configures the "hosted" flag returned on every Me response.
+// Call this after NewHandler, before serving. Pass cfg.Hosted.Enabled at
+// startup.
+func (h *Handler) SetHosted(hosted bool) {
+	h.hosted = hosted
 }
 
 // Register mounts the auth routes on the root engine group.
@@ -120,7 +131,7 @@ func (h *Handler) login(c *gin.Context) {
 					httpx.Error(c, domain.Internal("session_failed", "failed to establish session").WithCause(err))
 					return
 				}
-				out := toMe(res.User, res.Memberships, res.ActiveTenant)
+				out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
 				c.JSON(http.StatusOK, &out)
 				return
 			}
@@ -137,7 +148,7 @@ func (h *Handler) login(c *gin.Context) {
 	if !h.issueSessionOrChallenge(c, res, "") {
 		return
 	}
-	out := toMe(res.User, res.Memberships, res.ActiveTenant)
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -180,7 +191,7 @@ func (h *Handler) register(c *gin.Context) {
 		if !h.issueSessionOrChallenge(c, res, "") {
 			return
 		}
-		out := toMe(res.User, res.Memberships, res.ActiveTenant)
+		out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
 		c.JSON(http.StatusCreated, &out)
 		return
 	}
@@ -276,7 +287,7 @@ func (h *Handler) verifyEmail(c *gin.Context) {
 	if !h.issueSessionOrChallenge(c, res, "") {
 		return
 	}
-	out := toMe(res.User, res.Memberships, res.ActiveTenant)
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -333,7 +344,7 @@ func (h *Handler) me(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	out := toMe(u, memberships, p.TenantID)
+	out := toMe(u, memberships, p.TenantID, h.hosted)
 	// m66 — portal principal: enrich Me with scope, role, and portal branding.
 	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
 	c.JSON(http.StatusOK, &out)
@@ -362,7 +373,7 @@ func (h *Handler) updateProfile(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	out := toMe(u, memberships, p.TenantID)
+	out := toMe(u, memberships, p.TenantID, h.hosted)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -497,12 +508,12 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 		return
 	}
 	// Non-2FA path: session was issued; redirect the browser to the SPA home.
-	out := toMe(res.User, res.Memberships, res.ActiveTenant)
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
 	c.JSON(http.StatusOK, &out)
 }
 
-func toMe(u User, memberships []Membership, active uuid.UUID) gen.Me {
-	me := gen.Me{User: toAPIUser(u), Memberships: toAPIMemberships(memberships)}
+func toMe(u User, memberships []Membership, active uuid.UUID, hosted bool) gen.Me {
+	me := gen.Me{User: toAPIUser(u), Memberships: toAPIMemberships(memberships), Hosted: gen.NewOptBool(hosted)}
 	if active != uuid.Nil {
 		me.ActiveTenantID = gen.NewOptUUID(active)
 	}

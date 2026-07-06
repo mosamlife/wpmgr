@@ -19,13 +19,140 @@
 -- ---------------------------------------------------------------------------
 -- tenants
 -- ---------------------------------------------------------------------------
+-- M91 (M16 Phase A) — hosted-billing entitlement substrate. tenants is the
+-- billable root; it carries NO RLS (see the file header — it is gated by
+-- membership/ownership checks in the handler, not a row-level policy), so the
+-- new columns below are plain, ungated fields. Ships DARK behind WPMGR_HOSTED
+-- (default false): self-host and current prod see zero behavior change until
+-- the flag is turned on. Provider-agnostic on purpose — billing_provider /
+-- provider_customer_id / provider_subscription_id are generic so a future
+-- payment provider (Phase B) can be wired without another schema change; they
+-- are never provider-prefixed (e.g. never "stripe_...").
+--   plan                     — the tier: free/starter/agency/scale. Defaults
+--                              to 'free' so every existing tenant becomes free
+--                              at cutover (see the grandfather backfill below).
+--   plan_status              — none/trialing/active/past_due/canceled/paused/
+--                              comped. Defaults to 'none': a tenant that has
+--                              never seen a billing event is simply free, per
+--                              internal/billing's status gate.
+--   plan_overrides           — jsonb per-key delta overlay (e.g.
+--                              {"max_sites": 25}) resolved on top of the plan
+--                              ladder by internal/billing.Entitlements. Used by
+--                              the grandfather backfill and future manual comps.
+--   grace_until              — a past_due tenant keeps its paid limits until
+--                              this instant (internal/billing's status gate),
+--                              then falls back to free.
+--   current_period_end       — Phase-B webhook-consumer bookkeeping.
 CREATE TABLE tenants (
-    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    name       text        NOT NULL,
-    slug       text        NOT NULL UNIQUE,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    id                       uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                     text        NOT NULL,
+    slug                     text        NOT NULL UNIQUE,
+    plan                     text        NOT NULL DEFAULT 'free'
+        CHECK (plan IN ('free', 'starter', 'agency', 'scale')),
+    plan_status              text        NOT NULL DEFAULT 'none'
+        CHECK (plan_status IN ('none', 'trialing', 'active', 'past_due', 'canceled', 'paused', 'comped')),
+    plan_overrides           jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    grace_until              timestamptz,
+    billing_provider         text,
+    provider_customer_id     text,
+    provider_subscription_id text,
+    current_period_end       timestamptz,
+    created_at               timestamptz NOT NULL DEFAULT now(),
+    updated_at               timestamptz NOT NULL DEFAULT now()
 );
+
+-- billing_events (M91) — the Phase-B webhook/event ledger, created now so a
+-- future payment-provider integration has a home to land in immediately.
+-- UNIQUE(provider, provider_event_id) makes a replayed webhook a no-op insert
+-- (ON CONFLICT DO NOTHING at the call site). tenant_id is nullable because a
+-- provider event may arrive before it can be matched to a tenant (e.g. an
+-- unrecognized customer id).
+--
+-- RLS (security review Finding C): the standard tenant/system pairing already
+-- used by site_events and sites (m36 pattern) — billing_events_tenant_isolation
+-- scopes any future tenant-facing read (e.g. an operator billing-history view)
+-- to app.tenant_id (a NULL tenant_id row never matches, so an unmatched event
+-- stays invisible to every tenant); billing_events_system is the write path
+-- for the Phase-B webhook consumer, which processes events across many
+-- tenants in one pass and is NOT a single tenant's request scope, so it runs
+-- under InAgentTx (app.agent='on') — the same cross-tenant GUC every other
+-- system/worker write already uses. ENABLE + FORCE so the table owner is also
+-- subject to RLS.
+CREATE TABLE billing_events (
+    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider           text        NOT NULL,
+    provider_event_id  text        NOT NULL,
+    kind               text        NOT NULL,
+    tenant_id          uuid        REFERENCES tenants (id) ON DELETE CASCADE,
+    payload            jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    occurred_at        timestamptz NOT NULL,
+    processed_at       timestamptz,
+    created_at         timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX billing_events_provider_event_key ON billing_events (provider, provider_event_id);
+CREATE INDEX billing_events_tenant_id_idx ON billing_events (tenant_id);
+
+ALTER TABLE billing_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE billing_events FORCE ROW LEVEL SECURITY;
+CREATE POLICY billing_events_tenant_isolation ON billing_events
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY billing_events_system ON billing_events
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- billing_count_active_sites (M91): SECURITY DEFINER site-cap counter for
+-- internal/billing.CheckSiteCreate. "Active" mirrors the sites-list default
+-- filter exactly (ListSites/ListAllSiteIDs, ADR-041): every connection_state
+-- except 'archived'.
+--
+-- CheckSiteCreate is invoked from BOTH the operator path (app.tenant_id set,
+-- InTenantTx — CreatePending, site.Service.Create, the Restore un-archive
+-- pre-check) and the public /enroll path (app.enroll set, InEnrollTx —
+-- CreateSiteForEnroll), which activate different RLS policies on sites.
+-- Rather than depend on either policy's current shape to expose the right
+-- rows, this function sets app.agent='on' in its own body (mirrors
+-- admin_delete_empty_tenant's technique, m35) to activate the unconditionally
+-- tenant-agnostic sites_agent policy, then applies the same explicit
+-- tenant_id + connection_state filter a real caller would use — so the count
+-- is correct under FORCE ROW LEVEL SECURITY in every calling context, present
+-- or future. search_path is pinned; EXECUTE is granted only to wpmgr_app (the
+-- migration); the function is not otherwise privileged (a single explicit
+-- tenant_id in, a count out — no data exposure).
+--
+-- Security review Finding A: v_prev captures whatever app.agent was already
+-- set to in the CALLER's transaction and restores it before returning, on the
+-- function's single return path. set_config(...,true)'s in-body write is NOT
+-- rolled back at function exit (the "true"/is_local flag scopes the change to
+-- the transaction, not the function invocation) — an unrestored 'on' would
+-- otherwise leak into every statement that runs after this call in the same
+-- caller transaction (e.g. the rest of a CreatePending/Transition site-birth
+-- tx), silently disabling that transaction's tenant-isolation RLS check.
+CREATE OR REPLACE FUNCTION billing_count_active_sites(p_tenant uuid)
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_count bigint;
+    v_prev text := current_setting('app.agent', true);
+BEGIN
+    PERFORM set_config('app.agent', 'on', true);
+    SELECT count(*) INTO v_count
+    FROM sites
+    WHERE tenant_id = p_tenant
+      AND connection_state <> 'archived';
+    PERFORM set_config('app.agent', coalesce(v_prev, ''), true);
+    RETURN v_count;
+END;
+$$;
+-- Mirror the migration's grants so this reference stays faithful (the runtime
+-- DB is built from migrations, not this file): the function is NOT
+-- PUBLIC-callable.
+REVOKE ALL ON FUNCTION billing_count_active_sites(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION billing_count_active_sites(uuid) TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
 -- sites
@@ -343,6 +470,16 @@ CREATE POLICY audit_log_tenant_isolation ON audit_log
 -- acceptable, since the org's only member was just deleted. Guards: removes a
 -- tenant ONLY when it has zero memberships and zero sites. Returns whether a
 -- tenant row was deleted.
+--
+-- Security review Finding A (m91): the original body set app.agent='on' and
+-- returned on either branch WITHOUT restoring it — set_config(...,true) is
+-- NOT rolled back at function exit, so 'on' leaked into the rest of the
+-- caller's transaction for every call, disabling that transaction's
+-- tenant-isolation RLS check on every statement afterward. v_prev_agent now
+-- captures the caller's prior app.agent value and both branches fall through
+-- to a single RETURN that restores it first. (m35 already ran in prod before
+-- this fix existed; the corrected body is re-issued via CREATE OR REPLACE in
+-- m91 so prod actually receives it on next boot — see m91's migration file.)
 CREATE OR REPLACE FUNCTION admin_delete_empty_tenant(p_tenant_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -351,6 +488,8 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_count integer;
+    v_result boolean := false;
+    v_prev_agent text := current_setting('app.agent', true);
 BEGIN
     -- app.agent='on' makes the emptiness checks see rows across tenants under
     -- FORCE RLS. Set in-body (set_config needs no special privilege; InAgentTx
@@ -359,22 +498,28 @@ BEGIN
     -- PARAMETER, which the prod non-superuser owner lacks and which would abort
     -- this CREATE FUNCTION and roll back the migration.
     PERFORM set_config('app.agent', 'on', true);
-    IF EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = p_tenant_id)
-       OR EXISTS (SELECT 1 FROM sites s WHERE s.tenant_id = p_tenant_id) THEN
-        RETURN false;
+    IF NOT (
+        EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = p_tenant_id)
+        OR EXISTS (SELECT 1 FROM sites s WHERE s.tenant_id = p_tenant_id)
+    ) THEN
+        -- Explicitly remove the tenant's append-only audit rows as the function
+        -- owner (which keeps DELETE on audit_log). app.tenant_id is scoped to
+        -- this tenant so the FORCE-RLS USING clause matches; reset immediately
+        -- after. Doing this before the tenant delete keeps audit_log out of the
+        -- cascade entirely.
+        PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
+        DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
+        PERFORM set_config('app.tenant_id', '', true);
+        -- Now delete the tenant; remaining cascades hit only tables the owner
+        -- may delete and no longer include any audit_log rows.
+        DELETE FROM tenants t WHERE t.id = p_tenant_id;
+        GET DIAGNOSTICS v_count = ROW_COUNT;
+        v_result := v_count > 0;
     END IF;
-    -- Explicitly remove the tenant's append-only audit rows as the function owner
-    -- (which keeps DELETE on audit_log). app.tenant_id is scoped to this tenant so
-    -- the FORCE-RLS USING clause matches; reset immediately after. Doing this
-    -- before the tenant delete keeps audit_log out of the cascade entirely.
-    PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
-    DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
-    PERFORM set_config('app.tenant_id', '', true);
-    -- Now delete the tenant; remaining cascades hit only tables the owner may
-    -- delete and no longer include any audit_log rows.
-    DELETE FROM tenants t WHERE t.id = p_tenant_id;
-    GET DIAGNOSTICS v_count = ROW_COUNT;
-    RETURN v_count > 0;
+    -- Single return path: always restore app.agent to whatever the caller's
+    -- transaction had before this call, whether the tenant was empty or not.
+    PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
+    RETURN v_result;
 END;
 $$;
 -- Mirror the migration's grants so this reference stays faithful (the runtime DB

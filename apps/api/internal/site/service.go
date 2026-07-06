@@ -77,6 +77,15 @@ func (s *Service) SetConnectionService(cs ConnectionService) { s.conn = cs }
 // does not support enrichment.
 func (s *Service) SetScreenshotEnricher(e ScreenshotEnricher) { SetScreenshotEnricher(s.repo, e) }
 
+// SetBillingGate wires the M16 Phase A billing gate onto THIS service's
+// underlying repo, so Create() (the legacy/back-compat direct-create path)
+// enforces the hosted-plan site cap. Mirrors SetScreenshotEnricher's wiring
+// rule exactly: cmd/wpmgr must ALSO call the free site.SetBillingGate on the
+// separate repo instance handed to NewConnectionService, or the
+// CreatePending/Restore paths stay uncapped — see BillingGate's doc comment
+// in repo.go. No-op if the repo does not support the gate.
+func (s *Service) SetBillingGate(b BillingGate) { SetBillingGate(s.repo, b) }
+
 // Create validates and persists a new site under the given tenant.
 func (s *Service) Create(ctx context.Context, in CreateInput) (Site, error) {
 	if in.TenantID == uuid.Nil {

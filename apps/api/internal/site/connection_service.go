@@ -355,7 +355,10 @@ func (s *connService) Restore(ctx context.Context, in ActorSiteInput) (Site, err
 		ActorID:     in.ActorID,
 		Metadata:    map[string]any{"restored": true},
 		RequireFrom: StateArchived, // restore is only meaningful from archived
-		Apply:       applyRestored,
+		// M16 Phase A: un-archiving flips this site from excluded back into the
+		// active (non-archived) count, so it must re-check the site cap.
+		CheckSiteQuota: true,
+		Apply:          applyRestored,
 	})
 	if err != nil {
 		return Site{}, err
