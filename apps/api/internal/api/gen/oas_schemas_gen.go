@@ -15521,6 +15521,14 @@ type Me struct {
 	// every self-hosted deployment and on any hosted instance before M16 Phase B billing ships. The
 	// frontend uses this to gate billing/plan UI.
 	Hosted OptBool `json:"hosted"`
+	// Whether the active tenant's plan currently permits routing a NEW backup to CP-managed storage (M16
+	// Phase B). Always true on a self-hosted or hosted-billing-disabled instance, and true for every
+	// paid plan; false only for a free-plan tenant under WPMGR_HOSTED. This is a coarse, role-safe
+	// display signal for the operator-facing /destinations page (which any operator can view, unlike the
+	// owner-only /billing summary) — it is NOT the authoritative gate; the backup-run endpoints
+	// enforce the real check server-side and return 402 byo_destination_required when denied.
+	// Restoring/downloading an existing backup is never gated by this or any other check.
+	ManagedStorageAllowed OptBool `json:"managed_storage_allowed"`
 }
 
 // GetUser returns the value of User.
@@ -15558,6 +15566,11 @@ func (s *Me) GetHosted() OptBool {
 	return s.Hosted
 }
 
+// GetManagedStorageAllowed returns the value of ManagedStorageAllowed.
+func (s *Me) GetManagedStorageAllowed() OptBool {
+	return s.ManagedStorageAllowed
+}
+
 // SetUser sets the value of User.
 func (s *Me) SetUser(val User) {
 	s.User = val
@@ -15591,6 +15604,11 @@ func (s *Me) SetPortal(val OptMePortal) {
 // SetHosted sets the value of Hosted.
 func (s *Me) SetHosted(val OptBool) {
 	s.Hosted = val
+}
+
+// SetManagedStorageAllowed sets the value of ManagedStorageAllowed.
+func (s *Me) SetManagedStorageAllowed(val OptBool) {
+	s.ManagedStorageAllowed = val
 }
 
 func (*Me) getMeRes()        {}

@@ -4,6 +4,7 @@
 // form inline / destructive confirm dialog.
 
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { Trash2, Pencil, Plus, Server, HardDrive, Cloud, Database } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { PageError } from "@/components/feedback";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { StatusChip } from "@/components/status";
+import { useMe, activeRole } from "@/features/auth/use-auth";
 import type { SiteDestination, SiteDestinationKind } from "@wpmgr/api";
 
 import {
@@ -73,6 +75,15 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
     isRefetching,
   } = useDestinations(siteId);
   const del = useDeleteDestination(siteId);
+
+  // M16 Phase B backup-destinations Phase 2: `managed_storage_allowed` is
+  // `undefined` on an older API in front (fail-open) and `true` everywhere
+  // today; it only goes `false` for a free-plan tenant once hosted billing
+  // is on. Any operator can see this restriction; only an owner on a hosted
+  // instance can act on it (mirrors UpgradePrompt's canUpgrade gate).
+  const { data: me } = useMe();
+  const managedStorageAllowed = me?.managed_storage_allowed !== false;
+  const canUpgrade = Boolean(me?.hosted) && activeRole(me) === "owner";
 
   const [editing, setEditing] = useState<SiteDestination | null>(null);
   const [adding, setAdding] = useState(false);
@@ -136,7 +147,10 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
           isRetrying={isRefetching}
         />
       ) : data.length === 0 ? (
-        <EmptyState />
+        <EmptyState
+          managedStorageAllowed={managedStorageAllowed}
+          canUpgrade={canUpgrade}
+        />
       ) : (
         <div className="rounded-xl border border-[var(--color-border)]">
           <Table>
@@ -231,7 +245,13 @@ export function DestinationsList({ siteId }: DestinationsListProps) {
   );
 }
 
-function EmptyState() {
+function EmptyState({
+  managedStorageAllowed,
+  canUpgrade,
+}: {
+  managedStorageAllowed: boolean;
+  canUpgrade: boolean;
+}) {
   return (
     <div
       role="status"
@@ -247,10 +267,28 @@ function EmptyState() {
         <p className="text-balance text-sm font-medium text-[var(--color-foreground)]">
           No destinations configured.
         </p>
-        <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
-          WPMgr ships backups to managed storage by default. Add a destination
-          to send them elsewhere too.
-        </p>
+        {managedStorageAllowed ? (
+          <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
+            WPMgr ships backups to managed storage by default. Add a destination
+            to send them elsewhere too.
+          </p>
+        ) : (
+          <>
+            <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
+              Your plan does not include managed backup storage. Add a local
+              folder or your own S3-compatible bucket below to run backups on
+              this site.
+            </p>
+            {canUpgrade ? (
+              <Link
+                to="/settings/billing"
+                className="inline-block text-sm font-medium text-[var(--color-primary)] underline-offset-4 hover:underline"
+              >
+                View plans
+              </Link>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );

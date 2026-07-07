@@ -23,6 +23,19 @@ import (
 // the tenant package, keeping the dependency one-directional.
 type TenantCreator func(ctx context.Context, name, slug string) (uuid.UUID, error)
 
+// ManagedStorageResolver reports whether a tenant's CURRENT plan permits
+// routing a new backup to CP-managed storage (M16 Phase B). Implemented by
+// *internal/billing.Service (wired in cmd/wpmgr) via its ManagedStorageAllowed
+// accessor; a nil value disables the check and every Me response reports true
+// — mirrors billing.Service's own !enabled short-circuit (Unlimited().
+// ManagedBackupStorage) so self-host and any test that does not wire this
+// never see a spuriously-false signal. This local interface keeps the auth
+// package free of a direct billing import (mirrors site.BillingGate /
+// backup.BillingGate).
+type ManagedStorageResolver interface {
+	ManagedStorageAllowed(ctx context.Context, tenantID uuid.UUID) (bool, error)
+}
+
 // Handler serves the authentication endpoints (/auth/*).
 type Handler struct {
 	svc       *Service
@@ -36,6 +49,10 @@ type Handler struct {
 	// response so the frontend can gate billing/plan UI. Set after
 	// construction via SetHosted.
 	hosted bool
+	// managedStorage resolves Me.managed_storage_allowed (M16 Phase B).
+	// Optional: nil makes every Me response report true. Set after
+	// construction via SetManagedStorageResolver.
+	managedStorage ManagedStorageResolver
 }
 
 // NewHandler builds an auth Handler.
@@ -55,6 +72,33 @@ func (h *Handler) SetSecureCookies(secure bool) {
 // startup.
 func (h *Handler) SetHosted(hosted bool) {
 	h.hosted = hosted
+}
+
+// SetManagedStorageResolver wires the M16 Phase B managed_storage_allowed
+// signal on every Me response. Call this after NewHandler, before serving.
+// Optional: when never called, every Me response reports
+// managed_storage_allowed=true (matches the resolver-nil / hosted-disabled
+// default exactly).
+func (h *Handler) SetManagedStorageResolver(r ManagedStorageResolver) {
+	h.managedStorage = r
+}
+
+// managedStorageAllowed resolves Me.managed_storage_allowed for tenantID.
+// Fails OPEN (true) on a nil resolver, a nil tenant (unauthenticated/no
+// active org yet), or a resolution error — this is a coarse DISPLAY signal
+// only (see ManagedStorageResolver's doc comment); the authoritative gate is
+// internal/backup's server-side enforcement, which must never be bypassed by
+// a Me-response hiccup, and conversely a hiccup here must never wrongly show
+// an operator a blocked-storage banner they cannot act on correctly.
+func (h *Handler) managedStorageAllowed(ctx context.Context, tenantID uuid.UUID) bool {
+	if h.managedStorage == nil || tenantID == uuid.Nil {
+		return true
+	}
+	allowed, err := h.managedStorage.ManagedStorageAllowed(ctx, tenantID)
+	if err != nil {
+		return true
+	}
+	return allowed
 }
 
 // Register mounts the auth routes on the root engine group.
@@ -131,7 +175,7 @@ func (h *Handler) login(c *gin.Context) {
 					httpx.Error(c, domain.Internal("session_failed", "failed to establish session").WithCause(err))
 					return
 				}
-				out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
+				out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
 				c.JSON(http.StatusOK, &out)
 				return
 			}
@@ -148,7 +192,7 @@ func (h *Handler) login(c *gin.Context) {
 	if !h.issueSessionOrChallenge(c, res, "") {
 		return
 	}
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -191,7 +235,7 @@ func (h *Handler) register(c *gin.Context) {
 		if !h.issueSessionOrChallenge(c, res, "") {
 			return
 		}
-		out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
+		out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
 		c.JSON(http.StatusCreated, &out)
 		return
 	}
@@ -287,7 +331,7 @@ func (h *Handler) verifyEmail(c *gin.Context) {
 	if !h.issueSessionOrChallenge(c, res, "") {
 		return
 	}
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -344,7 +388,7 @@ func (h *Handler) me(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	out := toMe(u, memberships, p.TenantID, h.hosted)
+	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID))
 	// m66 — portal principal: enrich Me with scope, role, and portal branding.
 	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
 	c.JSON(http.StatusOK, &out)
@@ -373,7 +417,7 @@ func (h *Handler) updateProfile(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	out := toMe(u, memberships, p.TenantID, h.hosted)
+	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID))
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -508,12 +552,17 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 		return
 	}
 	// Non-2FA path: session was issued; redirect the browser to the SPA home.
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted)
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
 	c.JSON(http.StatusOK, &out)
 }
 
-func toMe(u User, memberships []Membership, active uuid.UUID, hosted bool) gen.Me {
-	me := gen.Me{User: toAPIUser(u), Memberships: toAPIMemberships(memberships), Hosted: gen.NewOptBool(hosted)}
+func toMe(u User, memberships []Membership, active uuid.UUID, hosted, managedStorageAllowed bool) gen.Me {
+	me := gen.Me{
+		User:                  toAPIUser(u),
+		Memberships:           toAPIMemberships(memberships),
+		Hosted:                gen.NewOptBool(hosted),
+		ManagedStorageAllowed: gen.NewOptBool(managedStorageAllowed),
+	}
 	if active != uuid.Nil {
 		me.ActiveTenantID = gen.NewOptUUID(active)
 	}

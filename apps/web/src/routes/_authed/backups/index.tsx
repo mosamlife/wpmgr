@@ -13,7 +13,7 @@
 //   NOTE: No download button — deferred per the spec.
 
 import { useMemo } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
 import {
   CheckCircle2,
@@ -55,6 +55,7 @@ import type {
 import { useCreateBackup } from "@/features/backups/use-backups";
 import { toast } from "@/components/toast";
 import { cn, relativeTime, formatBytes } from "@/lib/utils";
+import { ByoDestinationRequiredError } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Route
@@ -165,6 +166,7 @@ function countByStatus(items: BackupHealthItem[]): Record<BackupHealthStatus, nu
 
 function RunBackupAction({ siteId }: { siteId: string }) {
   const mutation = useCreateBackup(siteId);
+  const navigate = useNavigate();
   return (
     <button
       type="button"
@@ -175,7 +177,23 @@ function RunBackupAction({ siteId }: { siteId: string }) {
           { kind: "full" },
           {
             onSuccess: () => toast.success("Backup started"),
-            onError: (err) => toast.error(err.message),
+            onError: (err) => {
+              // 402 byo_destination_required (M16 Phase B backup-destinations
+              // Phase 2): point straight at Destinations instead of a bare
+              // error string — there's no room for the full
+              // BackupDestinationRequiredPrompt in a table row action.
+              if (err instanceof ByoDestinationRequiredError) {
+                toast.error("This plan needs your own backup storage", {
+                  description: err.message,
+                  action: {
+                    label: "Add destination",
+                    onClick: () => void navigate({ to: "/destinations" }),
+                  },
+                });
+                return;
+              }
+              toast.error(err.message);
+            },
           },
         );
       }}

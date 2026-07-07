@@ -1146,6 +1146,11 @@ export const MeSchema = {
       description:
         "Whether this instance runs with hosted-billing entitlements (WPMGR_HOSTED) turned on. False on every self-hosted deployment and on any hosted instance before M16 Phase B billing ships. The frontend uses this to gate billing/plan UI.\n",
     },
+    managed_storage_allowed: {
+      type: "boolean",
+      description:
+        "Whether the active tenant's plan currently permits routing a NEW backup to CP-managed storage (M16 Phase B). Always true on a self-hosted or hosted-billing-disabled instance, and true for every paid plan; false only for a free-plan tenant under WPMGR_HOSTED. This is a coarse, role-safe display signal for the operator-facing /destinations page (which any operator can view, unlike the owner-only /billing summary) — it is NOT the authoritative gate; the backup-run endpoints enforce the real check server-side and return 402 byo_destination_required when denied. Restoring/downloading an existing backup is never gated by this or any other check.\n",
+    },
   },
 } as const;
 

@@ -43304,9 +43304,15 @@ func (s *Me) encodeFields(e *jx.Encoder) {
 			s.Hosted.Encode(e)
 		}
 	}
+	{
+		if s.ManagedStorageAllowed.Set {
+			e.FieldStart("managed_storage_allowed")
+			s.ManagedStorageAllowed.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfMe = [7]string{
+var jsonFieldsNameOfMe = [8]string{
 	0: "user",
 	1: "memberships",
 	2: "active_tenant_id",
@@ -43314,6 +43320,7 @@ var jsonFieldsNameOfMe = [7]string{
 	4: "role",
 	5: "portal",
 	6: "hosted",
+	7: "managed_storage_allowed",
 }
 
 // Decode decodes Me from json.
@@ -43402,6 +43409,16 @@ func (s *Me) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"hosted\"")
+			}
+		case "managed_storage_allowed":
+			if err := func() error {
+				s.ManagedStorageAllowed.Reset()
+				if err := s.ManagedStorageAllowed.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"managed_storage_allowed\"")
 			}
 		default:
 			return d.Skip()

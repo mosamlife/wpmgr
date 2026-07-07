@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.34] - 2026-07-07
+
+### Added
+
+- Hosted service only: managed backup storage is now a paid-plan feature. On a paid plan, backups can use WPMgr's managed storage as before; on the free plan, backups must target your own storage (a local folder or your own S3-compatible bucket, configured under Destinations). This is inactive by default, ships behind the hosted-billing switch, and does not affect self-hosted installs, which always keep managed storage. Restoring an existing backup is never restricted, even after a plan change, and tenants that already exist when the gate is enabled keep their managed storage.
+
 ## [0.61.33] - 2026-07-07
 
 ### Fixed

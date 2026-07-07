@@ -3,6 +3,7 @@
 // affordance on the secret field once a destination is persisted.
 
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -12,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useMe, activeRole } from "@/features/auth/use-auth";
+import { cn } from "@/lib/utils";
 import type { SiteDestination, SiteDestinationKind } from "@wpmgr/api";
 
 import {
@@ -133,6 +136,14 @@ export function DestinationForm({
   const editing = !!initial;
   const hasStoredSecret = !!initial?.has_secret;
 
+  // M16 Phase B backup-destinations Phase 2: `managed_storage_allowed` is
+  // `undefined` on an older API in front (fail-open, no behavior change) and
+  // `true` everywhere today (self-host, paid, or hosted-billing-disabled).
+  // It only goes `false` for a free-plan tenant once hosted billing is on.
+  const { data: me } = useMe();
+  const managedStorageAllowed = me?.managed_storage_allowed !== false;
+  const canUpgrade = Boolean(me?.hosted) && activeRole(me) === "owner";
+
   const {
     register,
     handleSubmit,
@@ -144,7 +155,7 @@ export function DestinationForm({
   } = useForm<Values>({
     resolver: zodResolver(createSchema) as never,
     defaultValues: {
-      kind: initial?.kind ?? "cp",
+      kind: initial?.kind ?? (managedStorageAllowed ? "cp" : "s3_compat"),
       label: initial?.label ?? "",
       endpoint: initial?.endpoint ?? "",
       region: initial?.region ?? "",
@@ -242,30 +253,59 @@ export function DestinationForm({
         <div className="mt-2 grid gap-2 sm:grid-cols-3">
           {(
             [
-              { id: "cp", label: "CP storage", hint: "WPMgr-managed bucket (default)" },
+              {
+                id: "cp",
+                label: "CP storage",
+                hint: managedStorageAllowed
+                  ? "WPMgr-managed bucket (default)"
+                  : "WPMgr-managed bucket",
+              },
               { id: "local", label: "Local folder", hint: "wp-content/wpmgr-backups on this site" },
               { id: "s3_compat", label: "S3-compatible", hint: "Your bucket (AWS / Wasabi / B2 / ...)" },
             ] satisfies { id: SiteDestinationKind; label: string; hint: string }[]
-          ).map((opt) => (
-            <label
-              key={opt.id}
-              className="flex cursor-pointer items-start gap-3 rounded-md border border-[var(--color-border)] p-3 text-sm hover:bg-[var(--color-muted)]/50"
-            >
-              <input
-                type="radio"
-                value={opt.id}
-                {...register("kind")}
-                disabled={editing}
-                className="mt-0.5"
-              />
-              <span>
-                <span className="block font-medium">{opt.label}</span>
-                <span className="block text-xs text-[var(--color-muted-foreground)]">
-                  {opt.hint}
+          ).map((opt) => {
+            const managedDisabled = opt.id === "cp" && !managedStorageAllowed;
+            return (
+              <label
+                key={opt.id}
+                className={cn(
+                  "flex items-start gap-3 rounded-md border border-[var(--color-border)] p-3 text-sm",
+                  managedDisabled
+                    ? "cursor-not-allowed opacity-60"
+                    : "cursor-pointer hover:bg-[var(--color-muted)]/50",
+                )}
+              >
+                <input
+                  type="radio"
+                  value={opt.id}
+                  {...register("kind")}
+                  disabled={editing || managedDisabled}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block font-medium">{opt.label}</span>
+                  <span className="block text-xs text-[var(--color-muted-foreground)]">
+                    {opt.hint}
+                  </span>
+                  {managedDisabled ? (
+                    <span className="mt-1 block text-xs text-warning-subtle-fg">
+                      Managed storage needs a paid plan.{" "}
+                      {canUpgrade ? (
+                        <Link
+                          to="/settings/billing"
+                          className="underline underline-offset-4"
+                        >
+                          Upgrade
+                        </Link>
+                      ) : (
+                        "Ask your organisation owner to upgrade."
+                      )}
+                    </span>
+                  ) : null}
                 </span>
-              </span>
-            </label>
-          ))}
+              </label>
+            );
+          })}
         </div>
         {editing ? (
           <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">

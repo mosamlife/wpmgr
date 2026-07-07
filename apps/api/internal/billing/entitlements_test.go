@@ -155,6 +155,83 @@ func TestUnlimitedHasNoEffectiveCap(t *testing.T) {
 	}
 }
 
+// TestUnlimitedAllowsManagedBackupStorage is the CRITICAL regression guard
+// called out in ManagedBackupStorage's doc comment: unlike the other
+// display-only booleans, this field is enforced, so Unlimited() (what every
+// WPMGR_HOSTED-disabled/self-host Service resolves to) MUST report true —
+// otherwise self-host would wrongly deny managed backup storage.
+func TestUnlimitedAllowsManagedBackupStorage(t *testing.T) {
+	if !Unlimited().ManagedBackupStorage {
+		t.Fatal("Unlimited().ManagedBackupStorage must be true — self-host/hosted-disabled must never be denied managed storage")
+	}
+}
+
+// ---- ManagedBackupStorage ladder + override ------------------------------
+
+func TestManagedBackupStorageLadder(t *testing.T) {
+	tests := []struct {
+		plan string
+		want bool
+	}{
+		{"free", false},
+		{"starter", true},
+		{"agency", true},
+		{"scale", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.plan, func(t *testing.T) {
+			row := tenantBillingRow{Plan: tt.plan, PlanStatus: "active"}
+			ent, err := resolve(row, time.Now())
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if ent.ManagedBackupStorage != tt.want {
+				t.Fatalf("ManagedBackupStorage = %v, want %v for plan %q", ent.ManagedBackupStorage, tt.want, tt.plan)
+			}
+		})
+	}
+}
+
+// TestManagedBackupStorageOverrideOnFreeTenant is the grandfather-override
+// resolution test: an explicit plan_overrides.managed_backup_storage=true
+// must win over the free-tier ladder base of false.
+func TestManagedBackupStorageOverrideOnFreeTenant(t *testing.T) {
+	row := tenantBillingRow{
+		Plan:          "free",
+		PlanStatus:    "none",
+		PlanOverrides: []byte(`{"managed_backup_storage": true}`),
+	}
+	ent, err := resolve(row, time.Now())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !ent.ManagedBackupStorage {
+		t.Fatal("an explicit managed_backup_storage override must win over the free-tier ladder base")
+	}
+	// Untouched ladder fields survive the override unchanged.
+	if ent.MaxSites != 3 {
+		t.Fatalf("MaxSites = %d, want the untouched free-tier ladder value 3 (override must not clobber other fields)", ent.MaxSites)
+	}
+}
+
+// TestManagedBackupStorageOverrideCanDenyPaidTenant proves the override is a
+// true two-way delta, not a one-way "grant" special-case: false wins over a
+// paid tier's ladder true just as reliably as true wins over free's false.
+func TestManagedBackupStorageOverrideCanDenyPaidTenant(t *testing.T) {
+	row := tenantBillingRow{
+		Plan:          "starter",
+		PlanStatus:    "active",
+		PlanOverrides: []byte(`{"managed_backup_storage": false}`),
+	}
+	ent, err := resolve(row, time.Now())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if ent.ManagedBackupStorage {
+		t.Fatal("an explicit managed_backup_storage=false override must win over the starter-tier ladder base of true")
+	}
+}
+
 // ---- Entitlements()/CheckSiteCreate() no-op when hosted billing is off ---
 
 func TestServiceDisabledIsANoOpWithoutAnyIO(t *testing.T) {

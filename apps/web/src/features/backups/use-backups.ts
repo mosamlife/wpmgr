@@ -26,6 +26,7 @@ import {
   type BackupScheduleUpdate,
 } from "@wpmgr/api";
 
+import { extractByoDestinationRequired } from "@/lib/api";
 import { toError } from "@/features/auth/use-auth";
 import { isStreamLive, subscribeLiveStreams } from "./use-backup-stream";
 
@@ -187,6 +188,16 @@ export function useCreateBackup(
         path: { siteId },
         body,
       });
+      // 402 byo_destination_required (M16 Phase B backup-destinations Phase
+      // 2): the resolved destination is CP-managed storage and the tenant's
+      // plan does not permit it. Run through the shared interceptor so
+      // callers can swap to BackupDestinationRequiredPrompt instead of a raw
+      // error string.
+      const destinationRequired = extractByoDestinationRequired(
+        response?.status,
+        error,
+      );
+      if (destinationRequired) throw destinationRequired;
       if (response?.status === 422) {
         throw toError(error ?? { message: "Validation failed" });
       }

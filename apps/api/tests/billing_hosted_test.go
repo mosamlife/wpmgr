@@ -494,8 +494,17 @@ func TestGrandfatherBackfill_OverCapTenantKeepsOperating(t *testing.T) {
 }
 
 // TestGrandfatherBackfill_IsNoopUnderCap proves the common case (a tenant at
-// or under the free cap when m91 lands) is unaffected: no override is
-// written, so future growth is still gated by the real ladder cap (3).
+// or under the free cap when m91 lands) is unaffected: no max_sites override
+// is written, so future growth is still gated by the real ladder cap (3).
+//
+// pool.Migrate applies every embedded migration, not just m91 — including m95
+// (M16 Phase B), which unconditionally grandfathers
+// plan_overrides.managed_backup_storage=true onto EVERY tenant that exists at
+// migration time, regardless of site count. That is a deliberate, unrelated
+// backfill (see m95's own migration comment) and is asserted for explicitly
+// below; it does not make this tenant's max_sites backfill any less of a
+// no-op, so the assertion checks for the ABSENCE of a max_sites key rather
+// than requiring the whole plan_overrides document to be empty.
 func TestGrandfatherBackfill_IsNoopUnderCap(t *testing.T) {
 	pool := startPostgresBeforeM91(t)
 	ctx := context.Background()
@@ -511,14 +520,24 @@ func TestGrandfatherBackfill_IsNoopUnderCap(t *testing.T) {
 	}
 
 	if err := pool.Migrate(ctx); err != nil {
-		t.Fatalf("m91 migration failed: %v", err)
+		t.Fatalf("migrate failed: %v", err)
 	}
 
 	var overridesJSON []byte
 	if err := pool.QueryRow(ctx, `SELECT plan_overrides FROM tenants WHERE id = $1`, tenant).Scan(&overridesJSON); err != nil {
 		t.Fatalf("read plan_overrides: %v", err)
 	}
-	if string(overridesJSON) != "{}" {
-		t.Fatalf("plan_overrides = %s, want the untouched default {} for an under-cap tenant", overridesJSON)
+	var overrides map[string]any
+	if err := json.Unmarshal(overridesJSON, &overrides); err != nil {
+		t.Fatalf("unmarshal plan_overrides: %v", err)
+	}
+	if _, hasMaxSites := overrides["max_sites"]; hasMaxSites {
+		t.Fatalf("plan_overrides = %s, want no max_sites key for an under-cap tenant", overridesJSON)
+	}
+	// m95 (M16 Phase B) grandfather: every pre-existing tenant, capped or not,
+	// gets managed_backup_storage=true so nobody loses managed-storage access
+	// the instant the gate activates.
+	if managed, ok := overrides["managed_backup_storage"].(bool); !ok || !managed {
+		t.Fatalf("plan_overrides = %s, want managed_backup_storage=true (m95 grandfather)", overridesJSON)
 	}
 }

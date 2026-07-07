@@ -88,3 +88,68 @@ export function extractSiteLimitReached(
   }
   return new SiteLimitReachedError(details.limit, details.usage, details.plan);
 }
+
+// ---------------------------------------------------------------------------
+// 402 byo_destination_required interceptor (M16 Phase B backup-destinations
+// Phase 2) — sibling of the site-limit interceptor above. A manual backup
+// run that resolves to CP-managed storage on a tenant whose plan does not
+// permit it is rejected with this 402 shape instead of being enqueued.
+//
+// Contract (apps/api/internal/billing/service.go managedBackupStorageDecision):
+// a 402 with body { code: "byo_destination_required", message,
+// details: { plan, has_byo_destination } }. Only ever returned when hosted
+// billing is enabled AND the active tenant's plan does not include managed
+// backup storage; self-hosted installs and every paid plan never see this
+// shape. Restoring or downloading an existing backup is never gated.
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by a backup-create mutation when the resolved destination is
+ * CP-managed storage and the tenant's plan does not permit it. Carries the
+ * details `BackupDestinationRequiredPrompt` needs so no call site has to
+ * re-parse the error body itself.
+ */
+export class ByoDestinationRequiredError extends Error {
+  readonly code = "byo_destination_required" as const;
+  readonly plan: string;
+  readonly hasByoDestination: boolean;
+
+  constructor(plan: string, hasByoDestination: boolean) {
+    super(
+      "Free plan backups must go to your own storage. Add a local folder or S3 bucket under Destinations, or upgrade your plan.",
+    );
+    this.name = "ByoDestinationRequiredError";
+    this.plan = plan;
+    this.hasByoDestination = hasByoDestination;
+  }
+}
+
+/**
+ * Recognizes the 402 `byo_destination_required` shape from a backup-create
+ * error body and returns a typed `ByoDestinationRequiredError`, or `null`
+ * when the response doesn't match. Pure (no network, no React) so it is
+ * fully unit-testable in isolation — see lib/api.test.ts.
+ */
+export function extractByoDestinationRequired(
+  status: number | undefined,
+  error: unknown,
+): ByoDestinationRequiredError | null {
+  if (status !== 402) return null;
+  if (typeof error !== "object" || error === null) return null;
+  const body = error as Record<string, unknown>;
+  if (body.code !== "byo_destination_required") return null;
+  const details =
+    typeof body.details === "object" && body.details !== null
+      ? (body.details as Record<string, unknown>)
+      : null;
+  if (
+    typeof details?.plan !== "string" ||
+    typeof details?.has_byo_destination !== "boolean"
+  ) {
+    return null;
+  }
+  return new ByoDestinationRequiredError(
+    details.plan,
+    details.has_byo_destination,
+  );
+}

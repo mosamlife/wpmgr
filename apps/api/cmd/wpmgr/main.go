@@ -870,6 +870,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// local-path at dispatch/restore time. Wired alongside SetRegistry so
 		// the two never drift out of sync.
 		backupSvc.SetDestinationLookup(&destLookupAdapter{svc: siteDestSvc})
+		// M16 Phase B: gate a NEW run against the CP-managed destination
+		// behind the managed-backup-storage entitlement. billingSvc.Enabled()
+		// being false (WPMGR_HOSTED off) makes CheckManagedBackupStorage a
+		// permanent no-op, so this wiring is safe to leave on unconditionally
+		// exactly like siteSvc.SetBillingGate above.
+		backupSvc.SetBillingGate(billingSvc)
 		// M5.7 P4: wire the manifest index writer so SubmitManifest writes
 		// tenant/<tenantID>/site/<siteID>/backup/<snapshotID>/manifest.json
 		// via the same CP-global store used for presigning. Best-effort:
@@ -2043,6 +2049,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	authH := auth.NewHandler(authSvc, sessions, oidcProvider, newTenant)
 	authH.SetSecureCookies(cfg.IsProduction())
 	authH.SetHosted(cfg.Hosted.Enabled)
+	// M16 Phase B: Me.managed_storage_allowed. billingSvc.ManagedStorageAllowed
+	// no-ops to true when WPMGR_HOSTED is off, so this wiring is safe to leave
+	// on unconditionally, exactly like SetHosted above.
+	authH.SetManagedStorageResolver(billingSvc)
 
 	filesH := files.NewHandler(filesSvc, auditRec)
 

@@ -107,6 +107,17 @@ type Entitlements struct {
 	// carries no functional risk until/unless an enforcement point is added.
 	IncrementalBackups bool
 	ClientPortal       bool
+
+	// ManagedBackupStorage is ENFORCED (M16 Phase B, CheckManagedBackupStorage):
+	// false on the free tier means a tenant may not route a backup RUN to the
+	// CP-managed bucket — it must configure a local-folder or S3-compatible
+	// destination (internal/sitedestination) instead. Restore/download of a
+	// snapshot that already lives in managed storage is NEVER gated by this
+	// flag (a customer must always be able to get existing data back, even
+	// after losing the entitlement) — only the CREATE-time destination choice
+	// is enforced. true on every paid tier and on self-host/hosted-disabled
+	// (Unlimited()).
+	ManagedBackupStorage bool
 }
 
 const (
@@ -133,6 +144,7 @@ var planLadder = map[Tier]Entitlements{
 		MonthlyPriceCents:           0,
 		IncrementalBackups:          false,
 		ClientPortal:                false,
+		ManagedBackupStorage:        false, // BYO-storage only
 	},
 	TierStarter: {
 		Plan:                        TierStarter,
@@ -148,6 +160,7 @@ var planLadder = map[Tier]Entitlements{
 		MonthlyPriceCents:           1500,
 		IncrementalBackups:          true,
 		ClientPortal:                false,
+		ManagedBackupStorage:        true,
 	},
 	TierAgency: {
 		Plan:                        TierAgency,
@@ -163,6 +176,7 @@ var planLadder = map[Tier]Entitlements{
 		MonthlyPriceCents:           5900,
 		IncrementalBackups:          true,
 		ClientPortal:                true,
+		ManagedBackupStorage:        true,
 	},
 	TierScale: {
 		Plan:                        TierScale,
@@ -178,6 +192,7 @@ var planLadder = map[Tier]Entitlements{
 		MonthlyPriceCents:           16900,
 		IncrementalBackups:          true,
 		ClientPortal:                true,
+		ManagedBackupStorage:        true,
 	},
 }
 
@@ -215,6 +230,13 @@ func Unlimited() Entitlements {
 		RestoreEgressAllowanceBytes: math.MaxInt64,
 		RUMEventsPerMonth:           math.MaxInt64,
 		ProbeRetentionDays:          math.MaxInt32,
+		// ManagedBackupStorage is ENFORCED (unlike the display-only booleans
+		// above, which the omit-pattern here leaves at their zero value):
+		// Unlimited() is what a WPMGR_HOSTED-disabled Service resolves to, so
+		// self-host must NOT come back false here or it would wrongly deny
+		// managed backup storage on every self-hosted install. See
+		// TestUnlimitedAllowsManagedBackupStorage.
+		ManagedBackupStorage: true,
 	}
 }
 
@@ -239,6 +261,16 @@ type overrides struct {
 	RestoreEgressAllowanceBytes *int64 `json:"restore_egress_allowance_bytes"`
 	RUMEventsPerMonth           *int64 `json:"rum_events_per_month"`
 	ProbeRetentionDays          *int   `json:"probe_retention_days"`
+
+	// ManagedBackupStorage is the M16 Phase B grandfather override: a pointer
+	// (not a plain bool) so "absent" means "use the ladder base" rather than
+	// "force false" — a plain bool would be indistinguishable from an
+	// explicit false and could not express "no override" for an ENFORCED
+	// field. Written by the m95 grandfather migration for every tenant that
+	// existed before this gate shipped (see that migration's comment), and by
+	// the superadmin billing panel for a manual comp. Applied AFTER the
+	// ladder base in resolve(), so an explicit override always wins.
+	ManagedBackupStorage *bool `json:"managed_backup_storage"`
 }
 
 func (o overrides) apply(e *Entitlements) {
@@ -268,6 +300,9 @@ func (o overrides) apply(e *Entitlements) {
 	}
 	if o.ProbeRetentionDays != nil {
 		e.ProbeRetentionDays = *o.ProbeRetentionDays
+	}
+	if o.ManagedBackupStorage != nil {
+		e.ManagedBackupStorage = *o.ManagedBackupStorage
 	}
 }
 

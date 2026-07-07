@@ -121,6 +121,23 @@ type DestinationInfo struct {
 	PathPrefix string
 }
 
+// BillingGate gates a backup RUN (manual or scheduled) that resolves to the
+// CP-managed destination behind the M16 Phase B managed-backup-storage
+// entitlement. Implemented by *internal/billing.Service (wired in
+// cmd/wpmgr); a nil value disables the gate entirely (self-host / back-compat
+// / any test that does not wire it) and every call site treats that exactly
+// like an unlimited plan — mirrors site.BillingGate's nil-disables-the-gate
+// convention exactly. This local interface keeps the backup package free of a
+// direct billing import.
+//
+// It is deliberately NOT consulted on any restore/download path: a customer
+// must always be able to get existing data back, even after losing the
+// entitlement (see DestinationInfoForSnapshot's restore-routing callers,
+// which never call this gate).
+type BillingGate interface {
+	CheckManagedBackupStorage(ctx context.Context, tenantID uuid.UUID) error
+}
+
 // DestinationLookup bridges the ADR-036 P1 site-destination domain into the
 // backup service without an import cycle (sitedestination has no reason to
 // import backup, but keeping the dependency direction explicit and narrow
@@ -179,7 +196,17 @@ type Service struct {
 	// Optional: see DestinationLookup's doc for the graceful-degradation
 	// contract when nil.
 	destLookup DestinationLookup
+	// billing is the M16 Phase B managed-backup-storage gate. Optional: nil
+	// disables the gate (self-host / not-yet-wired tests), matching
+	// BillingGate's doc-comment contract exactly.
+	billing BillingGate
 }
+
+// SetBillingGate wires the M16 Phase B managed-backup-storage gate. Call once
+// at startup (after NewService), alongside SetDestinationLookup. Optional:
+// when never called, every backup run is ungated exactly as before this
+// feature existed.
+func (s *Service) SetBillingGate(b BillingGate) { s.billing = b }
 
 // SetRegistry wires the ADR-036 P1 storage-adapter router. Calling this AFTER
 // NewService routes every subsequent presign through the registry; callers
@@ -300,6 +327,55 @@ func (s *Service) resolveDefaultDestination(ctx context.Context, tenantID, siteI
 		return uuid.Nil
 	}
 	return id
+}
+
+// destinationIsManaged reports whether destinationID routes a NEW run to the
+// CP-managed bucket — either because no destination is configured (uuid.Nil,
+// the legacy default-fallback resolved by resolveDefaultDestination) or
+// because an explicitly-chosen destination is itself of kind "cp". Mirrors
+// DestinationInfoForSnapshot's resolution rule, but is called BEFORE a
+// snapshot exists (at run-creation time in CreateBackup/EnqueueScheduledBackup),
+// so it takes the destination id directly rather than a Snapshot.
+//
+// A destLookup failure degrades to "not managed" (the gate is skipped) rather
+// than "managed" (the gate would fire): mirrors resolveDefaultDestination's
+// identical fail-open rationale — a destination-routing hiccup must never
+// block a backup from being created. This is a soft billing gate, not a
+// security boundary, so failing open here is the right trade.
+func (s *Service) destinationIsManaged(ctx context.Context, tenantID, destinationID uuid.UUID) bool {
+	if destinationID == uuid.Nil {
+		return true
+	}
+	if s.destLookup == nil {
+		// A destination_id somehow resolved without a lookup wired — cannot
+		// happen operationally (SetDestinationLookup pairs with
+		// SetBillingGate), but degrade to "not managed" (gate skipped) per
+		// this function's fail-open rationale above.
+		return false
+	}
+	info, err := s.destLookup.DestinationInfo(ctx, tenantID, destinationID)
+	if err != nil {
+		slog.WarnContext(ctx, "backup: destination-kind lookup failed for the managed-storage billing gate; skipping the gate",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("destination_id", destinationID.String()),
+			slog.Any("error", err))
+		return false
+	}
+	return info.Kind == DestinationKindCP
+}
+
+// checkManagedBackupStorageGate enforces the M16 Phase B managed-storage
+// entitlement for a NEW run resolving to destinationID. No-op (nil error)
+// when no billing gate is wired, or when destinationID does not route to
+// managed storage (a BYO local/s3_compat destination is always plan-agnostic).
+func (s *Service) checkManagedBackupStorageGate(ctx context.Context, tenantID, destinationID uuid.UUID) error {
+	if s.billing == nil {
+		return nil
+	}
+	if !s.destinationIsManaged(ctx, tenantID, destinationID) {
+		return nil
+	}
+	return s.billing.CheckManagedBackupStorage(ctx, tenantID)
 }
 
 // DestinationInfoForSnapshot resolves the wire-facing destination kind (and,
@@ -445,6 +521,14 @@ func (s *Service) CreateBackup(ctx context.Context, tenantID, siteID, createdBy 
 	// uuid.Nil (destLookup unwired, no default configured, or a lookup
 	// failure) routes to the legacy CP-managed bucket — unchanged behaviour.
 	destinationID := s.resolveDefaultDestination(ctx, tenantID, siteID)
+
+	// M16 Phase B: a free-plan tenant may not create a NEW run against the
+	// CP-managed destination — no-op when unwired/self-host/BYO destination
+	// (see checkManagedBackupStorageGate). Checked before either CreateSnapshot
+	// branch below so a gated manual backup never mints a pending snapshot row.
+	if err := s.checkManagedBackupStorageGate(ctx, tenantID, destinationID); err != nil {
+		return Snapshot{}, err
+	}
 
 	// ADR-048 P5: run-now honours the same per-schedule incremental toggle as the
 	// scheduled path, so an operator can enable the toggle and then drive the
@@ -2997,6 +3081,31 @@ func (s *Service) EnqueueScheduledBackup(ctx context.Context, sched Schedule) er
 	// front so both branches below stamp it identically (see CreateBackup for
 	// the identical run-now-path rationale).
 	destinationID := s.resolveDefaultDestination(ctx, sched.TenantID, sched.SiteID)
+
+	// M16 Phase B: a free-plan tenant may not create a NEW run against the
+	// CP-managed destination. Unlike CreateBackup's manual path, a scheduled
+	// run must NEVER throw — the schedule's own advance already happened in
+	// ClaimAndAdvanceDueSchedules, so an error here would just look like an
+	// unexplained scheduler failure in logs. Instead flip the just-materialized
+	// 'queued' run row to 'skipped' with a caller-actionable reason, exactly
+	// like the un-enrollable/no-recipient skip path above, so the gap is
+	// visible in the site's run history rather than a silent no-op.
+	if gerr := s.checkManagedBackupStorageGate(ctx, sched.TenantID, destinationID); gerr != nil {
+		if s.scheduleRuns != nil && runID != uuid.Nil {
+			msg := "byo_destination_required: " + gerr.Error()
+			_, _ = s.scheduleRuns.SetScheduleRunStatusByID(ctx, SetScheduleRunStatusInput{
+				TenantID:    sched.TenantID,
+				RunID:       runID,
+				Status:      ScheduleRunStatusSkipped,
+				Error:       &msg,
+				SetFinished: true,
+			})
+		}
+		s.logger().Info("backup_scheduler skipping due schedule: managed backup storage requires a paid plan",
+			"schedule_id", sched.ID.String(),
+			"site_id", sched.SiteID.String())
+		return nil
+	}
 
 	// ADR-048 P5: when the schedule opts into incremental backups, consult the
 	// auto-base chain rule and stamp the snapshot's chain fields. When the toggle
