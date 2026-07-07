@@ -179,7 +179,7 @@ export type { FontResult } from "@wpmgr/api";
  * keyed by (metric, device, country). When suppressed=true on a row, render
  * "insufficient samples" rather than a p75 number.
  */
-export type { RumSummary, RumResult } from "@wpmgr/api";
+export type { RumSummary, RumResult, RumMetricSummary } from "@wpmgr/api";
 
 /**
  * Distribution of pageviews across the three CWV rating bands for one metric

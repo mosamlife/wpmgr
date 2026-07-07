@@ -346,6 +346,24 @@ export function countHighRisk(findings: VulnFinding[]): number {
   ).length;
 }
 
+/** Severity ranked worst-first, for picking the single worst severity to display. */
+const SEVERITY_RANK: VulnSeverity[] = ["critical", "high", "medium", "low"];
+
+/**
+ * Returns the worst (highest-priority) severity among the given findings, or
+ * `undefined` when the list is empty. Used by summary tiles (e.g. the Health
+ * tab's Vulnerabilities tile) that show one representative severity rather
+ * than the full findings table.
+ */
+export function worstSeverity(
+  findings: VulnFinding[],
+): VulnSeverity | undefined {
+  for (const severity of SEVERITY_RANK) {
+    if (findings.some((f) => f.severity === severity)) return severity;
+  }
+  return undefined;
+}
+
 /**
  * Validates a feed-supplied URL before it is placed in an <a href>.
  *

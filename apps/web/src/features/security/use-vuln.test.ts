@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   isHighRisk,
   countHighRisk,
+  worstSeverity,
   safeExternalHref,
   vulnKeys,
   type VulnFinding,
@@ -394,6 +395,46 @@ describe("countHighRisk", () => {
       status: "dismissed",
     };
     expect(countHighRisk([dismissed])).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// worstSeverity — used by the Health tab's Vulnerabilities tile
+// ---------------------------------------------------------------------------
+
+describe("worstSeverity", () => {
+  it("returns undefined for an empty list", () => {
+    expect(worstSeverity([])).toBeUndefined();
+  });
+
+  it("returns critical when a critical finding is present among mixed severities", () => {
+    const findings = [MEDIUM_CORE_FINDING, CRITICAL_PLUGIN_FINDING, HIGH_THEME_FINDING];
+    expect(worstSeverity(findings)).toBe("critical");
+  });
+
+  it("returns high when high is the worst present (no critical)", () => {
+    const findings = [MEDIUM_CORE_FINDING, HIGH_THEME_FINDING, LOW_DISMISSED_FINDING];
+    expect(worstSeverity(findings)).toBe("high");
+  });
+
+  it("returns medium when only medium and low are present", () => {
+    const low: VulnFinding = { ...LOW_DISMISSED_FINDING, status: "open" };
+    expect(worstSeverity([MEDIUM_CORE_FINDING, low])).toBe("medium");
+  });
+
+  it("returns low when only low findings are present", () => {
+    const low: VulnFinding = { ...LOW_DISMISSED_FINDING, status: "open" };
+    expect(worstSeverity([low])).toBe("low");
+  });
+
+  it("a single critical finding among all four severities still wins", () => {
+    const all = [
+      LOW_DISMISSED_FINDING,
+      MEDIUM_CORE_FINDING,
+      HIGH_THEME_FINDING,
+      CRITICAL_PLUGIN_FINDING,
+    ];
+    expect(worstSeverity(all)).toBe("critical");
   });
 });
 

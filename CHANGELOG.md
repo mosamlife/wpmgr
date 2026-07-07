@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.35] - 2026-07-07
+
+### Fixed
+
+- The Vulnerabilities and Performance tiles on a site's Health tab were placeholders that always read "Not scanned yet" and "Not measured yet" regardless of the real data. They now show live results: the Vulnerabilities tile shows the open-vulnerability count and worst severity (or that the feed is not configured, or that no known vulnerabilities were found), and the Performance tile shows the site's Core Web Vitals (LCP p75) from real-user monitoring. Each tile links through to the full view (the Security tab and the Performance dashboard). A site that has not been scanned yet, or has no visitor data yet, shows an honest empty state instead of a fabricated number.
+
 ## [0.61.34] - 2026-07-07
 
 ### Added
