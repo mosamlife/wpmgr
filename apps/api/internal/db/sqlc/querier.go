@@ -119,6 +119,12 @@ type Querier interface {
 	// Ordered by created_at DESC, id DESC (stable keyset). Used only by the
 	// superadmin area; it bypasses the tenant-scoped InTenantTx path.
 	AdminListUsers(ctx context.Context, arg AdminListUsersParams) ([]AdminListUsersRow, error)
+	// AdminPurgeTenant delegates to the SECURITY DEFINER admin_purge_tenant
+	// function (see its schema.sql doc comment for the full GUC-handling
+	// rationale). Unlike AdminDeleteEmptyTenant this has NO emptiness guard: call
+	// it ONLY from internal/org.PurgeWorker, after the grace window has elapsed
+	// on an org an owner already confirmed deleting.
+	AdminPurgeTenant(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	// "new-this-month" / "canceled-this-month": distinct tenants with an
 	// activation-shaped / cancellation-shaped billing event this calendar month.
 	// Reads payload->>'normalized_kind' (billing.EventActivated /
@@ -426,6 +432,11 @@ type Querier interface {
 	// portal-only users (mirrors FirstActiveShareTenant in auth/repo.go).
 	// Archived clients are excluded so a stale earliest membership cannot
 	// shadow a live one in another tenant.
+	//
+	// GH #152 LOW fast-follow: also joins tenants and excludes a soft-deleted
+	// tenant — mirrors ListSharesForUser's own fix (same login-time active-tenant
+	// hint, same 403-loop failure mode for a portal-only user whose only access
+	// was into a now-deleted org).
 	FirstClientMemberTenant(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
 	// Returns one row per site with the data needed for the backup health card:
 	// latest completed snapshot time, latest failed snapshot time, in-flight
@@ -453,6 +464,12 @@ type Querier interface {
 	// be executed via InAdminTx which sets app.tenant_id to the row's own tenant is
 	// impossible chicken/egg — instead this query is run with RLS disabled scope by
 	// using the prefix-unique lookup helper that sets the GUC after. See repo.
+	//
+	// GH #152: joins tenants and excludes t.deleted_at IS NOT NULL rows, so a
+	// bearer-key request bound to a soft-deleted org's tenant fails exactly like
+	// an unknown prefix (ErrNoRows -> apikey.Service.Authenticate's existing
+	// domain.Unauthorized("apikey_invalid", ...) path) rather than continuing to
+	// authenticate into an org every session/UI path has already hidden.
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	// Auth-time allowlist resolver: returns all non-expired site shares for a given
 	// (user, tenant) pair. The result is used to build the AllowedSiteIDs list for a
@@ -830,6 +847,10 @@ type Querier interface {
 	// GetTenantForUser returns a tenant by id only when the given user is a member.
 	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
 	// be run via InUserTx; a non-member (or unknown tenant) yields no rows.
+	// GH #152: t.deleted_at IS NULL means a soft-deleted org's own owner cannot
+	// switchOrg into it either (POST /orgs/switch uses this exact query as its
+	// sole membership gate) — restoring it first via POST /orgs/{orgId}/restore
+	// is required.
 	GetTenantForUser(ctx context.Context, arg GetTenantForUserParams) (GetTenantForUserRow, error)
 	// Client Reports queries (M64 — White-label client reports Phase 2).
 	// All queries are tenant-scoped both explicitly (tenant_id in WHERE/VALUES)
@@ -985,6 +1006,13 @@ type Querier interface {
 	// prune). The app mints the ULID event_id; NOTIFY carries only the id.
 	// ---------------------------------------------------------------------------
 	InsertSiteEvent(ctx context.Context, arg InsertSiteEventParams) (SiteEvent, error)
+	// GH #152 — a durable, tenant-INDEPENDENT record of an action whose subject
+	// tenant's own hash-chained audit_log is going away (org hard/soft-delete).
+	// system_audit_log carries no FK to tenants (see its schema.sql comment) so
+	// this row survives both the empty-org (Lane A) immediate hard delete AND the
+	// grace-window purge (Lane B) that eventually wipes the tenant + its own
+	// audit_log entirely. Called by internal/org.Handler.recordSystemAudit.
+	InsertSystemAuditEvent(ctx context.Context, arg InsertSystemAuditEventParams) error
 	// -----------------------------------------------------------------------
 	// trusted_devices
 	// -----------------------------------------------------------------------
@@ -1246,10 +1274,22 @@ type Querier interface {
 	// ListMembershipsForUser reads the caller's own memberships across all tenants.
 	// It relies on the memberships_self_read policy (app.user_id GUC), so it must be
 	// run via InUserTx, not InTenantTx.
+	//
+	// GH #152: joins tenants and excludes t.deleted_at IS NOT NULL rows. This is
+	// the SINGLE highest-leverage soft-delete read-path filter in the whole
+	// feature — every caller of authz-critical auth.Service.RoleInTenant (the
+	// session auth middleware's membership check, org activate/rename) and
+	// auth.Service.Me (/auth/me) is backed by this query, as is every login-time
+	// "which tenant should this session activate" resolution (password login,
+	// OIDC, 2FA challenge). A soft-deleted org's membership row therefore becomes
+	// invisible to ALL of those call sites in one place, the instant DELETE
+	// /orgs/{orgId} commits, without a per-call-site patch.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
 	// ListOrgsForUser returns the user's organisations with their role in each, for
 	// the org switcher + settings (real names, not bare ids). Joins memberships under
 	// the memberships_self_read policy (app.user_id GUC) so it MUST run via InUserTx.
+	// GH #152: t.deleted_at IS NULL excludes a soft-deleted org — it must vanish
+	// from the switcher/list the instant DELETE /orgs/{orgId} commits.
 	ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]ListOrgsForUserRow, error)
 	// Terminal runs (completed/failed/skipped/canceled) for a site, newest first.
 	ListPastScheduleRuns(ctx context.Context, arg ListPastScheduleRunsParams) ([]BackupScheduleRun, error)
@@ -1281,6 +1321,14 @@ type Querier interface {
 	ListSharesForSite(ctx context.Context, siteID uuid.UUID) ([]SiteShare, error)
 	// Self-read: returns the caller's own non-expired shares across all tenants.
 	// Must be run under a tx that sets app.user_id (site_shares_self_read policy).
+	//
+	// GH #152 LOW fast-follow: joins tenants and excludes a soft-deleted tenant's
+	// shares. This query backs auth.Repo.FirstActiveShareTenant, the login-time
+	// "which tenant should this session activate" pick for a site-scoped
+	// collaborator with no org membership — without this filter, a user whose
+	// ONLY access was a share into a now-soft-deleted tenant would have their
+	// session pinned to that (now-invisible) tenant on every login, landing in a
+	// permanent 403 loop instead of the no-access screen.
 	ListSharesForUser(ctx context.Context, userID uuid.UUID) ([]SiteShare, error)
 	// Lists all per-site config rows for a tenant (dashboard overview).
 	// Excludes the org-wide default row (site_id IS NULL).
@@ -1337,7 +1385,14 @@ type Querier interface {
 	// It joins memberships under the memberships_self_read policy (app.user_id GUC),
 	// so it MUST be run via InUserTx; the join itself restricts the result to the
 	// caller's own memberships, preventing cross-tenant enumeration.
+	// GH #152: t.deleted_at IS NULL — see ListOrgsForUser.
 	ListTenantsForUser(ctx context.Context, arg ListTenantsForUserParams) ([]ListTenantsForUserRow, error)
+	// ListTenantsPendingPurge returns tenants whose grace window has elapsed,
+	// ready for internal/org.PurgeWorker. tenants carries no RLS (see the schema
+	// file header), so this reads across every tenant directly; the caller is a
+	// trusted background job, never a per-request handler. Includes tenants whose
+	// purge_started_at is already set (a resumed, previously-interrupted purge).
+	ListTenantsPendingPurge(ctx context.Context, cutoff pgtype.Timestamptz) ([]Tenant, error)
 	// Distinct tenant IDs that have at least one completed snapshot, for the
 	// periodic retention GC. Runs cross-tenant under the app.agent GUC (the
 	// backup_snapshots_gc SELECT policy); the prune then runs per tenant.
@@ -1409,6 +1464,13 @@ type Querier interface {
 	MarkEmailLogBounced(ctx context.Context, arg MarkEmailLogBouncedParams) error
 	MarkEmailSent(ctx context.Context, id uuid.UUID) error
 	MarkInvitationAccepted(ctx context.Context, arg MarkInvitationAcceptedParams) (Invitation, error)
+	// MarkPurgeStarted sets the point-of-no-return marker (adversarial-review
+	// fast-follow M2). internal/org.PurgeWorker calls this BEFORE the first
+	// object-storage delete of its purge pass; RestoreTenant then refuses once
+	// this is set. Idempotent by design: 0 rows affected means a PRIOR purge
+	// attempt already set it (a resume after a crash) — the caller does not treat
+	// that as an error, it just proceeds with the purge.
+	MarkPurgeStarted(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	MarkReportGenerating(ctx context.Context, arg MarkReportGeneratingParams) (GeneratedReport, error)
 	// ---------------------------------------------------------------------------
 	// Connection-state transitions. Each writes connection_state plus the derived
@@ -1474,6 +1536,15 @@ type Querier interface {
 	ResetSiteMissedHeartbeats(ctx context.Context, arg ResetSiteMissedHeartbeatsParams) error
 	// archived → disconnected (operator un-archive). Clears archived_at.
 	RestoreSite(ctx context.Context, arg RestoreSiteParams) (Site, error)
+	// RestoreTenant clears deleted_at within the grace window (GH #152 undelete).
+	// Also requires purge_started_at IS NULL (adversarial-review fast-follow M2):
+	// once internal/org.PurgeWorker has begun deleting this tenant's object-storage
+	// prefixes, restore must be refused (409 purge_in_progress) rather than
+	// resurrecting a tenant whose backup_chunks/snapshot rows may now point at
+	// partially-deleted objects. 0 rows means one of: never soft-deleted, already
+	// hard-purged, or a purge is in progress — the caller distinguishes via a
+	// follow-up GetTenant (deleted_at/purge_started_at).
+	RestoreTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
 	// Revoke all active trusted devices for a user (e.g. on password change or 2FA disable).
 	RevokeAllTrustedDevicesForUser(ctx context.Context, userID uuid.UUID) error
@@ -1549,6 +1620,13 @@ type Querier interface {
 	// Toggle two_factor_enabled without touching the secret (disable path).
 	// The secret and confirmed_at are intentionally retained for audit purposes.
 	SetUserTwoFactorEnabled(ctx context.Context, arg SetUserTwoFactorEnabledParams) error
+	// SoftDeleteTenant sets deleted_at (GH #152 Lane B — populated org). The read-
+	// path filters above (plus ListMembershipsForUser / GetAPIKeyByPrefix) hide the
+	// org everywhere the instant this commits. The WHERE guard makes a concurrent
+	// double-delete attempt a no-op (0 rows) rather than a double-stamp; callers
+	// run this under the per-tenant org_lifecycle advisory lock (see
+	// internal/org/delete_handler.go) so the guard is authoritative, not racy.
+	SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error)
 	// Top failure samples for the digest (subject + truncated error, no bodies).
 	// Runs under InAgentTx.
 	TopFailureSamples(ctx context.Context, arg TopFailureSamplesParams) ([]TopFailureSamplesRow, error)

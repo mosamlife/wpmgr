@@ -10,12 +10,29 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const adminPurgeTenant = `-- name: AdminPurgeTenant :one
+SELECT admin_purge_tenant($1) AS purged
+`
+
+// AdminPurgeTenant delegates to the SECURITY DEFINER admin_purge_tenant
+// function (see its schema.sql doc comment for the full GUC-handling
+// rationale). Unlike AdminDeleteEmptyTenant this has NO emptiness guard: call
+// it ONLY from internal/org.PurgeWorker, after the grace window has elapsed
+// on an org an owner already confirmed deleting.
+func (q *Queries) AdminPurgeTenant(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, adminPurgeTenant, tenantID)
+	var purged bool
+	err := row.Scan(&purged)
+	return purged, err
+}
 
 const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (name, slug)
 VALUES ($1, $2)
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
 `
 
 type CreateTenantParams struct {
@@ -42,6 +59,8 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.DeletedAt,
+		&i.PurgeStartedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -49,7 +68,7 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 }
 
 const getTenant = `-- name: GetTenant :one
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at FROM tenants
 WHERE id = $1
 `
 
@@ -72,6 +91,8 @@ func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.DeletedAt,
+		&i.PurgeStartedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -82,7 +103,7 @@ const getTenantForUser = `-- name: GetTenantForUser :one
 SELECT t.id, t.name, t.slug, t.created_at, t.updated_at
 FROM tenants t
 JOIN memberships m ON m.tenant_id = t.id
-WHERE t.id = $1 AND m.user_id = $2
+WHERE t.id = $1 AND m.user_id = $2 AND t.deleted_at IS NULL
 `
 
 type GetTenantForUserParams struct {
@@ -101,6 +122,10 @@ type GetTenantForUserRow struct {
 // GetTenantForUser returns a tenant by id only when the given user is a member.
 // Like ListTenantsForUser it relies on the memberships_self_read policy and must
 // be run via InUserTx; a non-member (or unknown tenant) yields no rows.
+// GH #152: t.deleted_at IS NULL means a soft-deleted org's own owner cannot
+// switchOrg into it either (POST /orgs/switch uses this exact query as its
+// sole membership gate) — restoring it first via POST /orgs/{orgId}/restore
+// is required.
 func (q *Queries) GetTenantForUser(ctx context.Context, arg GetTenantForUserParams) (GetTenantForUserRow, error) {
 	row := q.db.QueryRow(ctx, getTenantForUser, arg.ID, arg.UserID)
 	var i GetTenantForUserRow
@@ -118,7 +143,7 @@ const listOrgsForUser = `-- name: ListOrgsForUser :many
 SELECT t.id, t.name, t.slug, m.role, t.created_at
 FROM tenants t
 JOIN memberships m ON m.tenant_id = t.id
-WHERE m.user_id = $1
+WHERE m.user_id = $1 AND t.deleted_at IS NULL
 ORDER BY t.created_at ASC
 `
 
@@ -133,6 +158,8 @@ type ListOrgsForUserRow struct {
 // ListOrgsForUser returns the user's organisations with their role in each, for
 // the org switcher + settings (real names, not bare ids). Joins memberships under
 // the memberships_self_read policy (app.user_id GUC) so it MUST run via InUserTx.
+// GH #152: t.deleted_at IS NULL excludes a soft-deleted org — it must vanish
+// from the switcher/list the instant DELETE /orgs/{orgId} commits.
 func (q *Queries) ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]ListOrgsForUserRow, error) {
 	rows, err := q.db.Query(ctx, listOrgsForUser, userID)
 	if err != nil {
@@ -160,7 +187,7 @@ func (q *Queries) ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]List
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at FROM tenants
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -195,6 +222,8 @@ func (q *Queries) ListTenants(ctx context.Context, arg ListTenantsParams) ([]Ten
 			&i.SuspendedAt,
 			&i.SuspendedReason,
 			&i.CancelAtPeriodEnd,
+			&i.DeletedAt,
+			&i.PurgeStartedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -212,7 +241,7 @@ const listTenantsForUser = `-- name: ListTenantsForUser :many
 SELECT t.id, t.name, t.slug, t.created_at, t.updated_at
 FROM tenants t
 JOIN memberships m ON m.tenant_id = t.id
-WHERE m.user_id = $1
+WHERE m.user_id = $1 AND t.deleted_at IS NULL
 ORDER BY t.created_at DESC
 LIMIT $2 OFFSET $3
 `
@@ -235,6 +264,7 @@ type ListTenantsForUserRow struct {
 // It joins memberships under the memberships_self_read policy (app.user_id GUC),
 // so it MUST be run via InUserTx; the join itself restricts the result to the
 // caller's own memberships, preventing cross-tenant enumeration.
+// GH #152: t.deleted_at IS NULL — see ListOrgsForUser.
 func (q *Queries) ListTenantsForUser(ctx context.Context, arg ListTenantsForUserParams) ([]ListTenantsForUserRow, error) {
 	rows, err := q.db.Query(ctx, listTenantsForUser, arg.UserID, arg.Limit, arg.Offset)
 	if err != nil {
@@ -261,11 +291,164 @@ func (q *Queries) ListTenantsForUser(ctx context.Context, arg ListTenantsForUser
 	return items, nil
 }
 
+const listTenantsPendingPurge = `-- name: ListTenantsPendingPurge :many
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at FROM tenants
+WHERE deleted_at IS NOT NULL AND deleted_at < $1
+ORDER BY deleted_at ASC
+`
+
+// ListTenantsPendingPurge returns tenants whose grace window has elapsed,
+// ready for internal/org.PurgeWorker. tenants carries no RLS (see the schema
+// file header), so this reads across every tenant directly; the caller is a
+// trusted background job, never a per-request handler. Includes tenants whose
+// purge_started_at is already set (a resumed, previously-interrupted purge).
+func (q *Queries) ListTenantsPendingPurge(ctx context.Context, cutoff pgtype.Timestamptz) ([]Tenant, error) {
+	rows, err := q.db.Query(ctx, listTenantsPendingPurge, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Tenant
+	for rows.Next() {
+		var i Tenant
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Slug,
+			&i.Plan,
+			&i.PlanStatus,
+			&i.PlanOverrides,
+			&i.GraceUntil,
+			&i.BillingProvider,
+			&i.ProviderCustomerID,
+			&i.ProviderSubscriptionID,
+			&i.CurrentPeriodEnd,
+			&i.CompReason,
+			&i.SuspendedAt,
+			&i.SuspendedReason,
+			&i.CancelAtPeriodEnd,
+			&i.DeletedAt,
+			&i.PurgeStartedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markPurgeStarted = `-- name: MarkPurgeStarted :execrows
+UPDATE tenants
+SET purge_started_at = now()
+WHERE id = $1 AND deleted_at IS NOT NULL AND purge_started_at IS NULL
+`
+
+// MarkPurgeStarted sets the point-of-no-return marker (adversarial-review
+// fast-follow M2). internal/org.PurgeWorker calls this BEFORE the first
+// object-storage delete of its purge pass; RestoreTenant then refuses once
+// this is set. Idempotent by design: 0 rows affected means a PRIOR purge
+// attempt already set it (a resume after a crash) — the caller does not treat
+// that as an error, it just proceeds with the purge.
+func (q *Queries) MarkPurgeStarted(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPurgeStarted, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const restoreTenant = `-- name: RestoreTenant :one
+UPDATE tenants
+SET deleted_at = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL AND purge_started_at IS NULL
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
+`
+
+// RestoreTenant clears deleted_at within the grace window (GH #152 undelete).
+// Also requires purge_started_at IS NULL (adversarial-review fast-follow M2):
+// once internal/org.PurgeWorker has begun deleting this tenant's object-storage
+// prefixes, restore must be refused (409 purge_in_progress) rather than
+// resurrecting a tenant whose backup_chunks/snapshot rows may now point at
+// partially-deleted objects. 0 rows means one of: never soft-deleted, already
+// hard-purged, or a purge is in progress — the caller distinguishes via a
+// follow-up GetTenant (deleted_at/purge_started_at).
+func (q *Queries) RestoreTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error) {
+	row := q.db.QueryRow(ctx, restoreTenant, tenantID)
+	var i Tenant
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Plan,
+		&i.PlanStatus,
+		&i.PlanOverrides,
+		&i.GraceUntil,
+		&i.BillingProvider,
+		&i.ProviderCustomerID,
+		&i.ProviderSubscriptionID,
+		&i.CurrentPeriodEnd,
+		&i.CompReason,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.CancelAtPeriodEnd,
+		&i.DeletedAt,
+		&i.PurgeStartedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const softDeleteTenant = `-- name: SoftDeleteTenant :one
+UPDATE tenants
+SET deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
+`
+
+// SoftDeleteTenant sets deleted_at (GH #152 Lane B — populated org). The read-
+// path filters above (plus ListMembershipsForUser / GetAPIKeyByPrefix) hide the
+// org everywhere the instant this commits. The WHERE guard makes a concurrent
+// double-delete attempt a no-op (0 rows) rather than a double-stamp; callers
+// run this under the per-tenant org_lifecycle advisory lock (see
+// internal/org/delete_handler.go) so the guard is authoritative, not racy.
+func (q *Queries) SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error) {
+	row := q.db.QueryRow(ctx, softDeleteTenant, tenantID)
+	var i Tenant
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Plan,
+		&i.PlanStatus,
+		&i.PlanOverrides,
+		&i.GraceUntil,
+		&i.BillingProvider,
+		&i.ProviderCustomerID,
+		&i.ProviderSubscriptionID,
+		&i.CurrentPeriodEnd,
+		&i.CompReason,
+		&i.SuspendedAt,
+		&i.SuspendedReason,
+		&i.CancelAtPeriodEnd,
+		&i.DeletedAt,
+		&i.PurgeStartedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateTenantName = `-- name: UpdateTenantName :one
 UPDATE tenants
 SET name = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
 `
 
 type UpdateTenantNameParams struct {
@@ -294,6 +477,8 @@ func (q *Queries) UpdateTenantName(ctx context.Context, arg UpdateTenantNamePara
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.DeletedAt,
+		&i.PurgeStartedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

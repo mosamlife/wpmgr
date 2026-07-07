@@ -46,6 +46,9 @@ type Handler struct {
 	sessions SessionManager
 	authSvc  AuthService
 	audit    *audit.Recorder
+	// hosted mirrors WPMGR_HOSTED (GH #152 delete guard); see SetHosted in
+	// delete_handler.go.
+	hosted bool
 }
 
 // NewHandler builds an org Handler.
@@ -64,6 +67,11 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/orgs/switch", h.switchOrg) // must be before /:orgId/activate
 	r.POST("/orgs/:orgId/activate", h.activate)
 	r.PATCH("/orgs/:orgId", h.rename)
+	// GH #152 — owner-facing organisation deletion (soft-delete + grace-window
+	// purge for a populated org; immediate hard delete for an empty one) and
+	// its undelete counterpart. See delete_handler.go.
+	r.DELETE("/orgs/:orgId", h.delete)
+	r.POST("/orgs/:orgId/restore", h.restore)
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +179,18 @@ func (h *Handler) activate(c *gin.Context) {
 	orgID, err := uuid.Parse(rawID)
 	if err != nil {
 		httpx.Error(c, domain.Validation("invalid_org_id", "orgId is not a valid UUID"))
+		return
+	}
+
+	// GH #152: a soft-deleted org must refuse activation OUTRIGHT, before either
+	// of the checks below. RoleInTenant already excludes a soft-deleted tenant's
+	// membership row (see db/query/memberships.sql), but hasActiveShare below
+	// queries site_shares directly and does NOT filter on tenant deleted_at —
+	// without this explicit gate, a user who is BOTH a former org member AND
+	// holds an unrelated site_shares grant into the SAME now-deleted tenant
+	// could still activate it via the share fallback.
+	if h.tenantSoftDeleted(c.Request.Context(), orgID) {
+		httpx.Error(c, domain.NotFound("org_not_found", "organisation not found"))
 		return
 	}
 
