@@ -73,6 +73,25 @@ func (r *chainFakeRepo) ListChainSnapshots(_ context.Context, _ uuid.UUID, chain
 	return out, nil
 }
 
+// ListCompletedChainSnapshots mirrors ListChainSnapshots filtered to
+// status==completed (GH #168), matching the real repo's hardened variant that
+// reachableChunks uses. Every fixture snapshot in this file's tests is built
+// via mkSnap (always StatusCompleted), so this is behaviourally identical to
+// ListChainSnapshots for the existing chain-restore suite; TC-6 deliberately
+// constructs a non-completed row but exercises PlanRestore's OWN separate
+// ListChainSnapshots call (CHECK 1/2), which runs and errors out BEFORE
+// reachableChunks (and therefore this method) is ever reached.
+func (r *chainFakeRepo) ListCompletedChainSnapshots(_ context.Context, _ uuid.UUID, chainID uuid.UUID, maxGeneration int) ([]Snapshot, error) {
+	all := r.chainSnaps[chainID]
+	var out []Snapshot
+	for _, s := range all {
+		if s.Generation <= maxGeneration && s.Status == StatusCompleted {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 // StreamChainEffectiveFileIndex mirrors the pgRepo merge over the fake's chain
 // bookkeeping: walk generations 0..maxGeneration ascending, apply
 // latest-version-wins (tombstone => delete), then emit surviving entries sorted

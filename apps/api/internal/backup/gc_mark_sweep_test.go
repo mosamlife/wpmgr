@@ -58,6 +58,12 @@ func (s *gcStore) Delete(_ context.Context, key string) error {
 type gcFakeRepo struct {
 	// snapshots by ID.
 	snaps map[uuid.UUID]Snapshot
+	// snapOrder records addSnap insertion order (a plain Go map has no stable
+	// iteration order, so ListCompletedChainSnapshots — GH #168 — replays THIS
+	// order for a chain's rows to give the P1a/P1b tests a deterministic,
+	// reproducible physical-scan-order stand-in, rather than depending on Go's
+	// randomized map iteration).
+	snapOrder []uuid.UUID
 	// chunks: blake3 -> (s3_key, created_at).
 	chunks map[string]gcChunk
 	// fileIndex: snapshotID -> rows.
@@ -104,7 +110,12 @@ func newGCFakeRepo(now time.Time) *gcFakeRepo {
 	}
 }
 
-func (r *gcFakeRepo) addSnap(s Snapshot) { r.snaps[s.ID] = s }
+func (r *gcFakeRepo) addSnap(s Snapshot) {
+	if _, exists := r.snaps[s.ID]; !exists {
+		r.snapOrder = append(r.snapOrder, s.ID)
+	}
+	r.snaps[s.ID] = s
+}
 func (r *gcFakeRepo) addChunk(hash string, created time.Time) {
 	// last_referenced_at defaults to created_at (the m47 backfill semantics): an
 	// untouched chunk's liveness boundary is just its creation time.
@@ -178,6 +189,45 @@ func (r *gcFakeRepo) ListChainSnapshots(_ context.Context, _ uuid.UUID, chainID 
 	return out, nil
 }
 
+// ListCompletedChainSnapshots is the GH #168 hardened variant real gc.go /
+// reachableChunks now call exclusively: status=='completed' only, replaying
+// snapOrder (insertion order) rather than Go's randomized map iteration so a
+// duplicate-generation regression test is reproducible instead of flaky.
+func (r *gcFakeRepo) ListCompletedChainSnapshots(_ context.Context, _ uuid.UUID, chainID uuid.UUID, maxGen int) ([]Snapshot, error) {
+	var out []Snapshot
+	for _, id := range r.snapOrder {
+		s := r.snaps[id]
+		if s.ChainID != nil && *s.ChainID == chainID && s.Generation <= maxGen && s.Status == StatusCompleted {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// chunkStillReferenced is the GH #168 P2 guard's ground truth in this fake:
+// mirrors the real repo exactly — r.manifest (backup_manifest_entries) ONLY,
+// for any snapshot still present in r.snaps (a metadata-pruned snapshot's
+// manifest rows are gone too, mirroring the real FK cascade). Deliberately
+// does NOT consult r.fileIndex (backup_file_index): see chunkStillReferencedOnTx
+// (repo.go) for why that table's per-file HISTORY rows (a still-retained
+// generation can legitimately carry a SUPERSEDED path version) would make the
+// guard unsound — TestGC_CarryForwardOrigin_KeepsOldChunk's "g0only" is
+// exactly such a superseded-but-still-present row, and must remain sweepable.
+// Called via the lazy closure SweepTenantChunks hands to del below, mirroring
+// how the real repo binds it to the pinned tx instead of a second connection.
+func (r *gcFakeRepo) chunkStillReferenced(blake3 string) (bool, error) {
+	for snapID := range r.snaps {
+		for _, e := range r.manifest[snapID] {
+			for _, h := range e.ChunkHashes {
+				if h == blake3 {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
 func (r *gcFakeRepo) GetSnapshot(_ context.Context, _, snapshotID uuid.UUID) (Snapshot, error) {
 	if s, ok := r.snaps[snapshotID]; ok {
 		return s, nil
@@ -223,7 +273,7 @@ func (r *gcFakeRepo) DeleteSnapshot(_ context.Context, _, snapshotID uuid.UUID) 
 	return nil
 }
 
-func (r *gcFakeRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, floor time.Time, acquired *bool, del func(SweepChunk) (bool, error)) error {
+func (r *gcFakeRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, floor time.Time, acquired *bool, del func(SweepChunk, func() (bool, error)) (bool, error)) error {
 	if r.lockHeld {
 		*acquired = false
 		return nil
@@ -265,9 +315,14 @@ func (r *gcFakeRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, floor tim
 		}
 		// Still deletable under the lock: del consults the live set + floor on the
 		// FRESH projection and does the object delete while the row is "locked".
+		// stillReferenced is a lazy closure (mirrors the real repo's pinned-tx
+		// binding — this fake has no connection to pin, but the CALL CONTRACT
+		// — evaluated only if/when del needs it — is what matters here).
+		hashCopy := hash
+		stillReferenced := func() (bool, error) { return r.chunkStillReferenced(hashCopy) }
 		remove, err := del(SweepChunk{
 			Blake3: hash, S3Key: c.s3Key, CreatedAt: c.createdAt, LastReferencedAt: c.lastReferencedAt,
-		})
+		}, stillReferenced)
 		if err != nil {
 			return err
 		}

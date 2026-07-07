@@ -1050,6 +1050,14 @@ CREATE UNIQUE INDEX backup_snapshots_one_inflight_per_site ON backup_snapshots (
 -- M7 / ADR-036 P1: presign routing + destination-CRUD cascade lookups.
 CREATE INDEX backup_snapshots_destination_id_idx ON backup_snapshots (destination_id)
     WHERE destination_id IS NOT NULL;
+-- m96 (GH #168): at most one COMPLETED row per (chain_id, generation). A
+-- failed/pending/running retry that reused a generation is unconstrained —
+-- only two COMPLETED rows at the same slot are rejected. Closes the
+-- duplicate-row gap that let a retention-GC reachability computation lose
+-- track of a within-retention chunk (see the m96 migration for the full
+-- root-cause writeup).
+CREATE UNIQUE INDEX backup_snapshots_chain_gen_completed_uidx ON backup_snapshots (chain_id, generation)
+    WHERE status = 'completed';
 
 ALTER TABLE backup_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_snapshots FORCE ROW LEVEL SECURITY;
@@ -1129,6 +1137,10 @@ CREATE TABLE backup_manifest_entries (
 
 CREATE INDEX backup_manifest_entries_snapshot_idx ON backup_manifest_entries (snapshot_id);
 CREATE INDEX backup_manifest_entries_tenant_id_idx ON backup_manifest_entries (tenant_id);
+-- m96 (GH #168 P2): serves the retention GC's ground-truth guard
+-- (ChunkStillReferenced: "is this hash still referenced by ANY manifest row
+-- for the tenant?") via an index scan instead of a sequential scan.
+CREATE INDEX backup_manifest_entries_chunk_hashes_gin ON backup_manifest_entries USING gin (chunk_hashes);
 
 ALTER TABLE backup_manifest_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_manifest_entries FORCE ROW LEVEL SECURITY;

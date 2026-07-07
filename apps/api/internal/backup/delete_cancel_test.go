@@ -63,6 +63,18 @@ func (r *deleteCancelFakeRepo) ListChainSnapshots(_ context.Context, _ uuid.UUID
 	return out, nil
 }
 
+// ListCompletedChainSnapshots mirrors ListChainSnapshots filtered to
+// status==completed, matching the real repo's GH #168 hardened variant.
+func (r *deleteCancelFakeRepo) ListCompletedChainSnapshots(_ context.Context, _ uuid.UUID, chainID uuid.UUID, maxGen int) ([]Snapshot, error) {
+	var out []Snapshot
+	for _, s := range r.chains[chainID] {
+		if s.Generation <= maxGen && s.Status == StatusCompleted {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (r *deleteCancelFakeRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UUID, msg string) (Snapshot, error) {
 	r.failed[snapshotID] = msg
 	s := r.snapshots[snapshotID]
@@ -135,7 +147,7 @@ func (r *deleteCancelFakeRepo) DBNow(_ context.Context, _ uuid.UUID) (time.Time,
 func (r *deleteCancelFakeRepo) ListInFlightSnapshotFloor(_ context.Context, _ uuid.UUID) (time.Time, error) {
 	return time.Time{}, nil
 }
-func (r *deleteCancelFakeRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, acquired *bool, _ func(SweepChunk) (bool, error)) error {
+func (r *deleteCancelFakeRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, acquired *bool, _ func(SweepChunk, func() (bool, error)) (bool, error)) error {
 	*acquired = true
 	return nil
 }

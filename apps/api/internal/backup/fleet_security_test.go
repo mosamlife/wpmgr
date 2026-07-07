@@ -136,7 +136,7 @@ func (r *secFleetRepo) ListInFlightSnapshotFloor(_ context.Context, _ uuid.UUID)
 func (r *secFleetRepo) DBNow(_ context.Context, _ uuid.UUID) (time.Time, error) {
 	panic("secFleetRepo.DBNow not implemented")
 }
-func (r *secFleetRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, _ *bool, _ func(SweepChunk) (bool, error)) error {
+func (r *secFleetRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, _ *bool, _ func(SweepChunk, func() (bool, error)) (bool, error)) error {
 	panic("secFleetRepo.SweepTenantChunks not implemented")
 }
 func (r *secFleetRepo) CompleteIncrementalManifest(_ context.Context, _ CompleteIncrementalInput) (int64, int64, error) {
@@ -144,6 +144,9 @@ func (r *secFleetRepo) CompleteIncrementalManifest(_ context.Context, _ Complete
 }
 func (r *secFleetRepo) ListChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
 	panic("secFleetRepo.ListChainSnapshots not implemented")
+}
+func (r *secFleetRepo) ListCompletedChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
+	panic("secFleetRepo.ListCompletedChainSnapshots not implemented")
 }
 func (r *secFleetRepo) InsertFileIndexBatch(_ context.Context, _, _ uuid.UUID, _ []FileIndexEntry) error {
 	panic("secFleetRepo.InsertFileIndexBatch not implemented")

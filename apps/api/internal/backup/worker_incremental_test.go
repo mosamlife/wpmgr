@@ -5,6 +5,8 @@ package backup
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -476,3 +478,179 @@ func TestBackupWorker_SelectiveComponents_IncludeDB(t *testing.T) {
 // ADR-051: the agent-facing GET /file-index NDJSON endpoint + its soft-cap are
 // RETIRED (change detection now rides on the parent's presigned files-list
 // chunks). The endpoint streaming tests that exercised them have been removed.
+
+// ---------------------------------------------------------------------------
+// GH #168 P4 — a chain-broken parent (missing files-list entry, or one of its
+// chunks no longer stored) must TERMINAL-FAIL the snapshot with an actionable
+// message via w.fail, NOT bubble up as a retryable error. Every OTHER
+// PresignParentFilesList failure (a transient infra error) must still stay
+// retryable so River keeps retrying it.
+// ---------------------------------------------------------------------------
+
+// missingChunkWorkerRepo overrides ExistingChunkHashes to report NO hashes as
+// existing, simulating a files-list chunk the retention GC already swept
+// (the "parent_files_list_chunk_missing" trigger).
+type missingChunkWorkerRepo struct {
+	*fakeWorkerRepo
+}
+
+func (r *missingChunkWorkerRepo) ExistingChunkHashes(_ context.Context, _ uuid.UUID, _ []string) (map[string]Chunk, error) {
+	return map[string]Chunk{}, nil
+}
+
+// buildChainBrokenJob wires the common fixture (a gen-1 increment with a
+// completed parent) both terminal-fail tests share, returning the pieces each
+// test asserts against.
+func buildChainBrokenJob(t *testing.T, repo *fakeWorkerRepo) (uuid.UUID, uuid.UUID, *river.Job[BackupArgs]) {
+	t.Helper()
+	tenantID := uuid.New()
+	snapshotID := uuid.New()
+	parentID := uuid.New()
+	baseID := uuid.New()
+	chainID := uuid.New()
+
+	snap := Snapshot{
+		ID:               snapshotID,
+		TenantID:         tenantID,
+		SiteID:           uuid.New(),
+		Kind:             KindFull,
+		Status:           StatusPending,
+		AgeRecipient:     "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+		IsIncremental:    true,
+		ParentSnapshotID: &parentID,
+		BaseSnapshotID:   &baseID,
+		ChainID:          &chainID,
+		Generation:       1,
+	}
+	repo.setSnapshot(snap)
+	repo.setSnapshot(Snapshot{
+		ID:           parentID,
+		TenantID:     tenantID,
+		SiteID:       snap.SiteID,
+		Kind:         KindFull,
+		Status:       StatusCompleted,
+		AgeRecipient: snap.AgeRecipient,
+	})
+
+	job := &river.Job[BackupArgs]{Args: BackupArgs{
+		TenantID:         tenantID,
+		SnapshotID:       snapshotID,
+		IsIncremental:    true,
+		ParentSnapshotID: parentID,
+		BaseSnapshotID:   baseID,
+		ChainID:          chainID,
+		Generation:       1,
+	}}
+	return tenantID, parentID, job
+}
+
+// TestBackupWorker_ParentFilesListMissing_TerminalFails: the parent carries NO
+// files-list manifest entry at all -> domain.Validation("parent_files_list_missing").
+func TestBackupWorker_ParentFilesListMissing_TerminalFails(t *testing.T) {
+	inner := &fakeWorkerRepo{fakeRepo: newFakeRepo(), workerManifests: map[uuid.UUID][]ManifestEntry{}}
+	cmd := &fakeCommander{ok: true}
+	tenantID, parentID, job := buildChainBrokenJob(t, inner)
+	inner.workerManifests[parentID] = nil // no files-list entry.
+
+	svc := &Service{
+		repo:       inner,
+		sites:      fakeWorkerSiteLookup{},
+		store:      &tenantPresigner{tenantID: tenantID, inner: &fakePresigner{}},
+		clock:      fakeClock{t: time.Now()},
+		presignTTL: time.Hour,
+	}
+	worker := NewBackupWorker(svc, cmd, nil, nil, "https://cp.example.com", 0)
+
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() returned an error (should terminal-fail via w.fail instead, so River does not retry forever): %v", err)
+	}
+	if cmd.lastIncrementalBackup != nil {
+		t.Error("the agent must never be dispatched once the chain is known to be broken")
+	}
+	got := inner.snapshots[job.Args.SnapshotID]
+	if got.Status != StatusFailed {
+		t.Fatalf("snapshot status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(got.Error, "incremental chain broken") {
+		t.Errorf("snapshot error = %q, want it to mention the broken chain", got.Error)
+	}
+}
+
+// TestBackupWorker_ParentFilesListChunkMissing_TerminalFails: the parent DOES
+// carry a files-list entry, but its chunk is no longer in object storage ->
+// domain.Internal("parent_files_list_chunk_missing").
+func TestBackupWorker_ParentFilesListChunkMissing_TerminalFails(t *testing.T) {
+	base := &fakeWorkerRepo{fakeRepo: newFakeRepo(), workerManifests: map[uuid.UUID][]ManifestEntry{}}
+	repo := &missingChunkWorkerRepo{fakeWorkerRepo: base}
+	cmd := &fakeCommander{ok: true}
+	tenantID, parentID, job := buildChainBrokenJob(t, base)
+
+	flHash := "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+	base.workerManifests[parentID] = []ManifestEntry{
+		{Path: "files.list", EntryKind: EntryKindFilesList, ChunkHashes: []string{flHash}, Size: 200},
+	}
+
+	svc := &Service{
+		repo:       repo,
+		sites:      fakeWorkerSiteLookup{},
+		store:      &tenantPresigner{tenantID: tenantID, inner: &fakePresigner{}},
+		clock:      fakeClock{t: time.Now()},
+		presignTTL: time.Hour,
+	}
+	worker := NewBackupWorker(svc, cmd, nil, nil, "https://cp.example.com", 0)
+
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() returned an error (should terminal-fail via w.fail instead, so River does not retry forever): %v", err)
+	}
+	if cmd.lastIncrementalBackup != nil {
+		t.Error("the agent must never be dispatched once the chain is known to be broken")
+	}
+	got := base.snapshots[job.Args.SnapshotID]
+	if got.Status != StatusFailed {
+		t.Fatalf("snapshot status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(got.Error, "incremental chain broken") {
+		t.Errorf("snapshot error = %q, want it to mention the broken chain", got.Error)
+	}
+}
+
+// TestBackupWorker_TransientPresignError_StaysRetryable proves a genuine infra
+// failure (ListManifest erroring with a plain, non-domain error) is NOT
+// mistaken for a broken chain: Work() must return the error (so River
+// retries) and must NOT terminal-fail the snapshot.
+type transientErrWorkerRepo struct {
+	*fakeWorkerRepo
+	errSnapshotID uuid.UUID
+}
+
+func (r *transientErrWorkerRepo) ListManifest(ctx context.Context, tenantID, snapshotID uuid.UUID) ([]ManifestEntry, error) {
+	if snapshotID == r.errSnapshotID {
+		return nil, errors.New("simulated transient database error")
+	}
+	return r.fakeWorkerRepo.ListManifest(ctx, tenantID, snapshotID)
+}
+
+func TestBackupWorker_TransientPresignError_StaysRetryable(t *testing.T) {
+	base := &fakeWorkerRepo{fakeRepo: newFakeRepo(), workerManifests: map[uuid.UUID][]ManifestEntry{}}
+	_, parentID, job := buildChainBrokenJob(t, base)
+	repo := &transientErrWorkerRepo{fakeWorkerRepo: base, errSnapshotID: parentID}
+	cmd := &fakeCommander{ok: true}
+
+	svc := &Service{repo: repo, sites: fakeWorkerSiteLookup{}, clock: fakeClock{t: time.Now()}}
+	worker := NewBackupWorker(svc, cmd, nil, nil, "https://cp.example.com", 0)
+
+	err := worker.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("expected a retryable error for a transient ListManifest failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "resolve parent files-list for increment") {
+		t.Errorf("error = %v, want it to wrap the retryable dispatch-resolution message", err)
+	}
+	if cmd.lastIncrementalBackup != nil {
+		t.Error("the agent must never be dispatched when parent resolution fails")
+	}
+	got := base.snapshots[job.Args.SnapshotID]
+	if got.Status == StatusFailed {
+		t.Error("a transient error must NOT terminal-fail the snapshot — River needs to retry it")
+	}
+}

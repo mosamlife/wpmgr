@@ -19,6 +19,18 @@ import (
 // SWEEP has its own, stricter grace floor (min(markStart, in-flight floor)).
 const gcSafetyHorizon = time.Hour
 
+// gcDetachTimeout bounds a delete-triggered RunRetentionGC call that has been
+// detached from the request context (GH #168 P3; see DeleteSnapshotForUser /
+// BulkDeleteSnapshots). RunRetentionGC pins a pooled connection for a
+// per-tenant advisory lock across the WHOLE chunk sweep (gc.go's sweepChunks
+// doc), so letting a client disconnect / request timeout cancel it mid-pass
+// could abort a full tenant-wide reclamation partway through. Detaching avoids
+// that, but a genuinely wedged sweep must still eventually give up rather than
+// leak the goroutine/connection forever — 10 minutes is comfortably above any
+// real tenant's sweep duration (the periodic GCWorker has no such bound and is
+// the authoritative backstop regardless).
+const gcDetachTimeout = 10 * time.Minute
+
 // RunRetentionGCAllTenants runs the retention GC for every tenant that has
 // completed snapshots. Used by the periodic GC job. Per-tenant errors are
 // returned aggregated as the first failure; the caller logs and continues on
@@ -60,17 +72,37 @@ func (s *Service) RunRetentionGCAllTenants(ctx context.Context) (totalSnapshots,
 //     generation stays reachable under a live tip.
 //  3. MARK — liveSet := union of reachableChunks(retainedMaxGen) over the
 //     retained set. FAIL-CLOSED: any error aborts the sweep (delete nothing).
-//  4. SWEEP — under a per-tenant SESSION advisory lock, stream every chunk
+//  4. METADATA PRUNE — delete the expired snapshot rows (cascade file_index +
+//     manifest); no object delete, no refcount decref. GH #168: this now runs
+//     BEFORE the chunk sweep (swapped from the original 4/5 order) DELIBERATELY
+//     so Phase 5's P2 ground-truth guard can trust backup_manifest_entries: by
+//     the time it queries that table, every remaining row genuinely belongs to
+//     a SURVIVING snapshot, because an expired-and-pruned snapshot's manifest
+//     rows are already gone via the FK cascade. Without this ordering, a
+//     not-yet-pruned expired snapshot's manifest row would make the P2 guard
+//     see a false "still referenced" positive and keep a genuinely dead chunk
+//     forever (this was caught by TestGC_CrossSiteSharedChunk during review).
+//     PRUNE's OWN inputs (expiredIDs + markSnaps from Phase 0/2) do not depend
+//     on SWEEP, so the swap is safe in that direction; it is SWEEP's P2 guard
+//     that now depends on PRUNE having already run.
+//  5. SWEEP — under a per-tenant SESSION advisory lock, stream every chunk
 //     (short per-page txns; object deletes outside any tx); delete (object
 //     FIRST, then row) each chunk NOT in liveSet AND
 //     GREATEST(created_at, last_referenced_at) < effectiveFloor. The
 //     last_referenced_at term protects an OLD chunk an in-flight backup
-//     re-references via tenant-global dedup (the dedup oracle bumped it).
-//  5. METADATA PRUNE — delete the expired snapshot rows (cascade file_index +
-//     manifest); no object delete, no refcount decref.
+//     re-references via tenant-global dedup (the dedup oracle bumped it). The
+//     P2 ground-truth guard (the stillReferenced closure sweepChunks receives
+//     per candidate) additionally re-checks every unreachable candidate
+//     against live backup_manifest_entries, on the SAME pinned connection,
+//     before ever deleting it — see sweepChunks' doc.
 //
 // Returns the number of snapshots deleted and chunk objects swept.
 func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snapshotsDeleted, chunksDeleted int, err error) {
+	// GH #168 P6: every pass gets a correlation id so a chunk deletion (or a P2
+	// guard trip) can be tied back to the specific run that made the decision —
+	// without this, a swept chunk left no trail explaining WHY it was gone.
+	gcRunID := uuid.NewString()
+
 	// --- Phase 0: SELECTION (per site) ----------------------------------------
 	siteIDs, err := s.repo.ListSiteIDsWithSnapshots(ctx, tenantID)
 	if err != nil {
@@ -180,7 +212,11 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 	// We collect the distinct snapshots to mark (by ID) to avoid double work.
 	markSnaps := map[uuid.UUID]Snapshot{}
 	for chainID, maxGen := range chainMaxRetainedGen {
-		chainSnaps, cerr := s.repo.ListChainSnapshots(ctx, tenantID, chainID, maxGen)
+		// GH #168 P1b: completed-only, same rationale as reachableChunks — a
+		// failed/aborted duplicate-generation row must never enter the mark set
+		// (it would otherwise trigger a redundant, and pre-fix misleading,
+		// reachableChunks call for that row's own generation).
+		chainSnaps, cerr := s.repo.ListCompletedChainSnapshots(ctx, tenantID, chainID, maxGen)
 		if cerr != nil {
 			slog.WarnContext(ctx, "backup gc: chain expansion failed — aborting sweep (delete nothing)",
 				slog.String("tenant_id", tenantID.String()),
@@ -231,14 +267,7 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 		}
 	}
 
-	// --- Phase 4: SWEEP (under per-tenant advisory lock) ----------------------
-	swept, swerr := s.sweepChunks(ctx, tenantID, liveSet, effectiveFloor)
-	chunksDeleted += swept
-	if swerr != nil {
-		return snapshotsDeleted, chunksDeleted, swerr
-	}
-
-	// --- Phase 5: METADATA PRUNE ----------------------------------------------
+	// --- Phase 4: METADATA PRUNE (GH #168: now runs BEFORE the chunk sweep) ---
 	// A generation that the chain-aware expansion pinned under a live tip must
 	// NOT be metadata-pruned: planRestoreChain requires every generation 0..tip
 	// to exist (CHECK 1), and deleting an older generation's file_index rows would
@@ -256,6 +285,22 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 		// row is already gone; an error or an absent object is logged and ignored.
 		s.deleteManifestIndex(ctx, tenantID, sid, id)
 	}
+
+	// --- Phase 5: SWEEP (under per-tenant advisory lock) ----------------------
+	swept, swerr := s.sweepChunks(ctx, tenantID, gcRunID, liveSet, effectiveFloor)
+	chunksDeleted += swept
+	if swerr != nil {
+		return snapshotsDeleted, chunksDeleted, swerr
+	}
+
+	// GH #168 P6: a per-tenant summary line ties the run id to its outcome —
+	// without this a swept chunk (or its absence) was undiagnosable after the
+	// fact.
+	slog.InfoContext(ctx, "backup gc: run complete",
+		slog.String("gc_run_id", gcRunID),
+		slog.String("tenant_id", tenantID.String()),
+		slog.Int("snapshots_deleted", snapshotsDeleted),
+		slog.Int("chunks_deleted", chunksDeleted))
 
 	return snapshotsDeleted, chunksDeleted, nil
 }
@@ -285,13 +330,61 @@ func (s *Service) RunRetentionGC(ctx context.Context, tenantID uuid.UUID) (snaps
 //
 // Returns the number of chunks swept; a false advisory-lock acquisition skips
 // the tenant (returns 0, nil).
-func (s *Service) sweepChunks(ctx context.Context, tenantID uuid.UUID, liveSet map[string]struct{}, floor time.Time) (int, error) {
+//
+// GH #168 P2: before consulting the caller-computed liveSet's absence as
+// grounds for deletion, this ALSO independently asks the repo's ground truth
+// (stillReferenced: does any backup_manifest_entries row for the tenant still
+// list this hash?) for every candidate the liveSet marked unreachable. If the
+// database itself still references the hash, the chunk is kept and a WARNING
+// is logged — this is the signal that the liveSet computation has a bug —
+// even though the caller's liveSet said "safe to delete". This converts any
+// future reachability-computation defect (of the same class as #168's byGen
+// last-wins bug) into a safe skip instead of a silent chunk/data loss: ground
+// truth (the manifest tables) always outranks the computed liveSet proxy.
+//
+// stillReferenced is called LAZILY — only when the (cheap, in-memory) liveSet
+// check didn't already decide — and it is a closure the repo binds to the
+// SAME pinned connection/tx sweepOneChunk already holds the chunk's row-level
+// FOR UPDATE lock under (repo.go), never a second pooled connection. An
+// earlier version of this guard called a standalone Repo.ChunkStillReferenced
+// method that opened its own InTenantTx (a SECOND pool connection) while del
+// ran INSIDE the pinned-connection critical section — under concurrent
+// cross-tenant sweeps (the advisory lock only serializes same-tenant) that
+// could exhaust a small connection pool (e.g. Cloud SQL db-g1-small) and
+// freeze the whole instance. The lazy-closure design (repo.go's sweepOneChunk)
+// eliminates the second acquire entirely.
+//
+// TOCTOU: any concurrent manifest submission that would reference this chunk
+// (RecordManifest / CompleteIncrementalManifest) ALWAYS increments the
+// chunk's refcount / last_referenced_at in the SAME transaction as its
+// manifest-entry insert — so that whole transaction is blocked from
+// committing until sweepOneChunk releases the row lock, which means it
+// cannot yet be visible to stillReferenced's read either (a same-tx read is
+// exactly as unable to see it as a separate-connection read would be — the
+// row lock, not the connection, is what closes the race). A concurrent
+// submission racing the sweep therefore fails safe (keep).
+func (s *Service) sweepChunks(ctx context.Context, tenantID uuid.UUID, gcRunID string, liveSet map[string]struct{}, floor time.Time) (int, error) {
 	var (
 		swept    int
 		acquired bool
 	)
-	err := s.repo.SweepTenantChunks(ctx, tenantID, floor, &acquired, func(c SweepChunk) (bool, error) {
+	err := s.repo.SweepTenantChunks(ctx, tenantID, floor, &acquired, func(c SweepChunk, stillReferenced func() (bool, error)) (bool, error) {
 		if _, live := liveSet[c.Blake3]; live {
+			return false, nil
+		}
+		// P2 ground-truth guard — independent of, and stronger than, the liveSet
+		// check above. Only evaluated here (lazily) since the liveSet check above
+		// didn't already decide to keep the chunk.
+		referenced, rerr := stillReferenced()
+		if rerr != nil {
+			return false, rerr
+		}
+		if referenced {
+			slog.WarnContext(ctx, "backup gc: P2 guard kept a chunk the computed live-set marked unreachable — a manifest still references it (the reachability computation likely has a bug)",
+				slog.String("gc_run_id", gcRunID),
+				slog.String("tenant_id", tenantID.String()),
+				slog.String("blake3", c.Blake3),
+				slog.String("s3_key", c.S3Key))
 			return false, nil
 		}
 		// Use the newest of created_at / last_referenced_at as the liveness
@@ -311,6 +404,14 @@ func (s *Service) sweepChunks(ctx context.Context, tenantID uuid.UUID, liveSet m
 			return false, derr
 		}
 		swept++
+		// GH #168 P6: log every deletion (not merely a sample) — the reported bug
+		// was undiagnosable precisely because nothing recorded which chunks the
+		// sweep removed.
+		slog.InfoContext(ctx, "backup gc: swept chunk",
+			slog.String("gc_run_id", gcRunID),
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("blake3", c.Blake3),
+			slog.String("s3_key", c.S3Key))
 		return true, nil
 	})
 	if !acquired {
