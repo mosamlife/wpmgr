@@ -1739,4 +1739,227 @@ final class Site2faModuleTest extends TestCase
         $this->assertTrue($reachedProviderStage, 'I1 regression: a correct HMAC token on a valid session must still pass the submit-path gate');
         $this->assertTrue($threwMarker);
     }
+
+    // -------------------------------------------------------------------------
+    // P0 gap #4 (outcome-test-debt audit, GH #170 Wave 1):
+    //
+    // test_i1_handleverifysubmit_accepts_correct_hmac_token_and_proceeds_past_
+    // the_session_gate() (above) POSTs a FAKE provider key
+    // ("not-a-real-provider") and only proves the request reaches
+    // renderInterstitial()'s "Invalid provider selected" branch -- it never
+    // drives the standard verify path where handleVerifySubmit() gates
+    // wp_set_auth_cookie() on provider->validate(). A stub that issues the
+    // auth cookie WITHOUT ever calling validate() (a full 2FA bypass) would
+    // pass every test in this file above this point; a broken success branch
+    // that never issues the cookie (locking out a correctly-enrolled user)
+    // would too. The two tests below enroll a REAL TotpProvider secret and
+    // drive the full submit path with a REAL generated TOTP code (and,
+    // separately, a deliberately wrong one) to close that gap.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Build a real TotpProvider (identity-passthrough AgeIdentity, same
+     * pattern used elsewhere in this file / TotpProviderTest) and enroll
+     * $userId with a real RFC 6238 test-vector secret as the ACTIVE secret
+     * (TotpProvider::META_SECRET), so isConfiguredFor()/validate() run the
+     * genuine HOTP/TOTP math end-to-end.
+     *
+     * @param int    $userId
+     * @param string $secret Raw base32 secret.
+     * @return TotpProvider
+     */
+    private function enrollRealTotpSecret(int $userId, string $secret = 'JBSWY3DPEHPK3PXP'): TotpProvider
+    {
+        $ageIdentity = new class extends AgeIdentity {
+            public function __construct()
+            {
+                // Skip parent -- no keystore needed in tests.
+            }
+
+            public function encryptChunk(string $plaintext): string
+            {
+                return $plaintext;
+            }
+
+            public function decryptChunk(string $ciphertext): string
+            {
+                return $ciphertext;
+            }
+        };
+        $totpProvider = new TotpProvider($ageIdentity);
+
+        $this->userMeta[$userId][TotpProvider::META_SECRET]    = base64_encode($secret);
+        $this->userMeta[$userId][TotpProvider::META_LAST_USED] = 0;
+
+        return $totpProvider;
+    }
+
+    /**
+     * Compute the CURRENT valid RFC 6238 code for $secret via reflection into
+     * TotpProvider::generateCode() -- mirrors
+     * TotpProviderTest::generateExpectedCode(). Pure function of secret+step,
+     * so it is independent of which TotpProvider instance computes it.
+     *
+     * @param TotpProvider $provider
+     * @param string       $secret
+     * @return string
+     */
+    private function currentTotpCode(TotpProvider $provider, string $secret): string
+    {
+        $ref = new \ReflectionMethod($provider, 'generateCode');
+        $ref->setAccessible(true);
+        return $ref->invoke($provider, $secret, (int) (time() / 30));
+    }
+
+    public function test_p0_4_handleverifysubmit_accepts_valid_totp_code_and_issues_auth_cookie(): void
+    {
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+
+        $userId       = 201;
+        $user         = $this->makeUser($userId, ['administrator']);
+        $secret       = 'JBSWY3DPEHPK3PXP';
+        $totpProvider = $this->enrollRealTotpSecret($userId, $secret);
+        $code         = $this->currentTotpCode($totpProvider, $secret);
+
+        $module = new Site2faModule($policy, [$totpProvider, new EmailCodeProvider(), new BackupCodesProvider()]);
+
+        $createRef = new \ReflectionMethod($module, 'createSession');
+        $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+
+        $hmacRef = new \ReflectionMethod($module, 'computeSessionHmac');
+        $hmac    = $hmacRef->invoke($module, $userId, $session['id'], $session['created_at'], $session['uuid']);
+
+        Functions\when('get_userdata')->justReturn($user);
+        Functions\when('do_action')->justReturn(null);
+
+        $cookieIssued = false;
+        $cookieUserId = null;
+        Functions\when('wp_set_auth_cookie')->alias(function ($uid, $remember = false) use (&$cookieIssued, &$cookieUserId) {
+            $cookieIssued = true;
+            $cookieUserId = $uid;
+            return null;
+        });
+
+        $redirectFired = false;
+        Functions\when('wp_safe_redirect')->alias(function (string $url) use (&$redirectFired) {
+            $redirectFired = true;
+            throw new \RuntimeException('marker:redirect');
+        });
+
+        $_POST['wpmgr_2fa_user_id']    = (string) $userId;
+        $_POST['wpmgr_2fa_session_id'] = $session['id'];
+        $_POST['wpmgr_2fa_token']      = $hmac;
+        $_POST['wpmgr_2fa_provider']   = 'totp';
+        $_POST['wpmgr_totp_code']      = $code;
+
+        $threwRedirectMarker = false;
+        try {
+            $module->handleVerifySubmit();
+        } catch (\RuntimeException $e) {
+            if ($e->getMessage() === 'marker:redirect') {
+                $threwRedirectMarker = true;
+            } else {
+                throw $e;
+            }
+        }
+
+        unset(
+            $_POST['wpmgr_2fa_user_id'],
+            $_POST['wpmgr_2fa_session_id'],
+            $_POST['wpmgr_2fa_token'],
+            $_POST['wpmgr_2fa_provider'],
+            $_POST['wpmgr_totp_code']
+        );
+
+        $this->assertTrue($cookieIssued, 'P0-4: a valid TOTP code must issue the real WP auth cookie via wp_set_auth_cookie()');
+        $this->assertSame($userId, $cookieUserId, 'P0-4: the auth cookie must be issued for the authenticating user');
+        $this->assertTrue($threwRedirectMarker, 'P0-4: a valid TOTP code must redirect to complete the login');
+        $this->assertArrayNotHasKey(
+            Site2faModule::META_SESSION,
+            $this->userMeta[$userId] ?? [],
+            'P0-4: the interstitial session must be cleared on successful verification'
+        );
+    }
+
+    public function test_p0_4_handleverifysubmit_rejects_wrong_totp_code_and_does_not_issue_auth_cookie(): void
+    {
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+
+        $userId       = 202;
+        $user         = $this->makeUser($userId, ['administrator']);
+        $secret       = 'JBSWY3DPEHPK3PXP';
+        $totpProvider = $this->enrollRealTotpSecret($userId, $secret);
+        $validCode    = $this->currentTotpCode($totpProvider, $secret);
+        // Guaranteed to differ from the real current code.
+        $wrongCode = $validCode === '000000' ? '111111' : '000000';
+
+        $module = new Site2faModule($policy, [$totpProvider, new EmailCodeProvider(), new BackupCodesProvider()]);
+
+        $createRef = new \ReflectionMethod($module, 'createSession');
+        $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+
+        $hmacRef = new \ReflectionMethod($module, 'computeSessionHmac');
+        $hmac    = $hmacRef->invoke($module, $userId, $session['id'], $session['created_at'], $session['uuid']);
+
+        Functions\when('get_userdata')->justReturn($user);
+
+        $cookieIssued = false;
+        Functions\when('wp_set_auth_cookie')->alias(function ($uid, $remember = false) use (&$cookieIssued) {
+            $cookieIssued = true;
+            return null;
+        });
+
+        $interstitialRerendered = false;
+        Functions\when('login_header')->alias(function () use (&$interstitialRerendered) {
+            $interstitialRerendered = true;
+            throw new \RuntimeException('marker:interstitial_rerendered');
+        });
+
+        $_POST['wpmgr_2fa_user_id']    = (string) $userId;
+        $_POST['wpmgr_2fa_session_id'] = $session['id'];
+        $_POST['wpmgr_2fa_token']      = $hmac;
+        $_POST['wpmgr_2fa_provider']   = 'totp';
+        $_POST['wpmgr_totp_code']      = $wrongCode;
+
+        $threwMarker = false;
+        ob_start();
+        try {
+            $module->handleVerifySubmit();
+        } catch (\RuntimeException $e) {
+            if ($e->getMessage() === 'marker:interstitial_rerendered') {
+                $threwMarker = true;
+            } else {
+                ob_end_clean();
+                throw $e;
+            }
+        }
+        ob_end_clean();
+
+        unset(
+            $_POST['wpmgr_2fa_user_id'],
+            $_POST['wpmgr_2fa_session_id'],
+            $_POST['wpmgr_2fa_token'],
+            $_POST['wpmgr_2fa_provider'],
+            $_POST['wpmgr_totp_code']
+        );
+
+        $this->assertFalse($cookieIssued, 'P0-4: a wrong TOTP code must NEVER issue the auth cookie (no 2FA bypass)');
+        $this->assertTrue($interstitialRerendered, 'P0-4: a wrong TOTP code must re-render the interstitial instead of completing login');
+        $this->assertTrue($threwMarker);
+        $this->assertSame(
+            1,
+            (int) ($this->userMeta[$userId][Site2faModule::META_SESSION]['attempts'] ?? 0),
+            'P0-4: a wrong code must increment session[attempts] to 1'
+        );
+    }
 }

@@ -2,18 +2,30 @@ package auth
 
 // twofa_security_test.go — Security-review gate tests for ADR-056 (2FA).
 //
-// Three test groups as required by the security review:
+// Two test groups remain here:
 //
 //  1. Enforcement tests (B2): every session-issuing path does NOT call
 //     sessions.Login when two_factor_enabled=true, and does issue a session
-//     when two_factor_enabled=false (via issueSessionOrChallenge).
+//     when two_factor_enabled=false (via issueSessionOrChallenge). These call
+//     the real issueSessionOrChallenge against a real SessionManager (in-memory
+//     SCS store) and assert on real session state, so they are not tautological.
 //
-//  2. B1 regression: a trusted-device cookie owned by user A, presented on
-//     user B's login, must NOT bypass B's 2FA challenge requirement.
+//  2. TestB1_VerifyTrustedDeviceNoTouch_NilTwofaSafe: calls the real
+//     VerifyTrustedDeviceNoTouch/TouchTrustedDevice with a nil twofa service and
+//     asserts the real nil-safety behavior.
 //
-//  3. RLS / cross-user isolation: the six 2FA table operations enforce the
-//     user_id constraint — data written for user A cannot be consumed or
-//     returned for queries scoped to user B.
+// The former "B1 regression" and "RLS / cross-user isolation" groups have been
+// REMOVED (2026-07-07, GH #170 outcome-test-debt audit): every test in those
+// groups re-implemented the guard condition inline against synthetic
+// uuid.New() values (e.g. `wouldConsume := (codeOwner == caller)`) and never
+// called the real handler, service, or SQL — a stub that deleted the actual
+// `AND user_id = $caller` scoping, the B1 device-ownership check, or the S4
+// WebAuthn ownership assertion would have stayed green. They are replaced by
+// real integration tests against a live, non-superuser-scoped Postgres in
+// apps/api/tests/twofa_rls_integration_test.go, which drive the actual login
+// handler / Service / generated SQL and were verified to fail when the
+// corresponding guard is removed. See that file's header comment for the
+// per-guard stub-kill notes.
 
 import (
 	"context"
@@ -215,87 +227,8 @@ func TestEnforcement_VerifyEmail_2FAGatePresent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Group 2 — B1 regression tests
+// Group 2 — B1 nil-safety
 // ---------------------------------------------------------------------------
-
-// TestB1_TrustedDeviceOwnershipCheck verifies the core binding guard in the
-// login handler: device.UserID must equal res.User.ID for the bypass to be granted.
-func TestB1_TrustedDeviceOwnershipCheck(t *testing.T) {
-	userA := uuid.New()
-	userB := uuid.New()
-
-	// Simulate the TrustedDevice returned by VerifyTrustedDeviceNoTouch for userA's cookie.
-	deviceForA := TrustedDevice{
-		ID:        uuid.New(),
-		UserID:    userA,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
-	}
-
-	loginUser := userB // attacker tries to log in as B using A's device cookie
-
-	// The handler's B1 binding guard:
-	//   device.ID != uuid.Nil && device.UserID == loginUser
-	bypassGranted := (deviceForA.ID != uuid.Nil && deviceForA.UserID == loginUser)
-	if bypassGranted {
-		t.Errorf("FAIL B1: device(owner=%v) would bypass 2FA for loginUser=%v", userA, loginUser)
-	}
-	t.Logf("B1 pass: device.UserID=%v, loginUser=%v → bypass correctly denied", userA, loginUser)
-
-	// Confirm the same device correctly bypasses for its own owner.
-	bypassForOwner := (deviceForA.ID != uuid.Nil && deviceForA.UserID == userA)
-	if !bypassForOwner {
-		t.Error("FAIL B1: device for userA did not bypass when userA is the login user")
-	}
-	t.Logf("B1 pass: device.UserID=%v, loginUser=%v (owner) → bypass correctly granted", userA, userA)
-}
-
-// TestB1_CrossUserDeviceCookieNoBypass verifies that presenting user A's
-// trusted-device cookie during user B's login does not bypass 2FA. We test
-// the exact condition from the handler code.
-func TestB1_CrossUserDeviceCookieNoBypass(t *testing.T) {
-	cases := []struct {
-		name        string
-		deviceOwner uuid.UUID
-		loginUser   uuid.UUID
-		wantBypass  bool
-	}{
-		{
-			name:        "same user — bypass granted",
-			deviceOwner: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-			loginUser:   uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-			wantBypass:  true,
-		},
-		{
-			name:        "different users — bypass denied",
-			deviceOwner: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-			loginUser:   uuid.MustParse("22222222-2222-2222-2222-222222222222"),
-			wantBypass:  false,
-		},
-		{
-			name:        "nil device ID — bypass denied",
-			deviceOwner: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-			loginUser:   uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-			wantBypass:  false, // device.ID == uuid.Nil
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			deviceID := uuid.New()
-			if tc.name == "nil device ID — bypass denied" {
-				deviceID = uuid.Nil
-			}
-			device := TrustedDevice{ID: deviceID, UserID: tc.deviceOwner}
-
-			// Exact handler condition (B1 fix):
-			bypass := (device.ID != uuid.Nil && device.UserID == tc.loginUser)
-			if bypass != tc.wantBypass {
-				t.Errorf("B1 condition: got bypass=%v, want %v (device.UserID=%v, loginUser=%v)",
-					bypass, tc.wantBypass, tc.deviceOwner, tc.loginUser)
-			}
-		})
-	}
-}
 
 // TestB1_VerifyTrustedDeviceNoTouch_NilTwofaSafe verifies that
 // VerifyTrustedDeviceNoTouch returns an error (not a bypass-able device) when
@@ -317,110 +250,6 @@ func TestB1_VerifyTrustedDeviceNoTouch_NilTwofaSafe(t *testing.T) {
 	if errTouch := svc.TouchTrustedDevice(context.Background(), uuid.New()); errTouch != nil {
 		t.Errorf("TouchTrustedDevice(nil twofa) should be a no-op, got: %v", errTouch)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Group 3 — RLS / cross-user isolation invariants
-// ---------------------------------------------------------------------------
-
-// TestRLSIsolation_ChallengeIsUserScoped verifies that the challenge model
-// carries a UserID that scopes all downstream operations.
-func TestRLSIsolation_ChallengeIsUserScoped(t *testing.T) {
-	userA := uuid.New()
-	userB := uuid.New()
-
-	challengeForA := TwoFactorChallenge{ID: uuid.New(), UserID: userA}
-
-	// The service uses challenge.UserID exclusively for all DB operations;
-	// there is no caller-supplied userID override.
-	if challengeForA.UserID == userB {
-		t.Error("FAIL RLS: challenge.UserID matches userB — cross-user isolation broken at model level")
-	}
-	t.Logf("challenge RLS: UserID=%v ≠ userB=%v — correctly isolated", challengeForA.UserID, userB)
-}
-
-// TestRLSIsolation_RecoveryCodeConsume_UserIDRequired verifies that the
-// ConsumeRecoveryCode SQL uses WHERE user_id = $caller, so user B's caller ID
-// cannot consume user A's code.
-func TestRLSIsolation_RecoveryCodeConsume_UserIDRequired(t *testing.T) {
-	userA := uuid.New()
-	userB := uuid.New()
-
-	// Simulated SQL: WHERE id = @code_id AND user_id = @user_id AND used_at IS NULL
-	codeOwner := userA
-	caller := userB
-	wouldConsume := (codeOwner == caller) // false → 0 rows → recovery_code_already_used
-	if wouldConsume {
-		t.Error("FAIL RLS: recovery code for userA can be consumed with userB caller ID")
-	}
-	t.Logf("recovery code RLS: owner=%v ≠ caller=%v → consume denied", codeOwner, caller)
-}
-
-// TestRLSIsolation_TrustedDeviceRevoke_UserIDRequired verifies that the revoke
-// operation scopes by user_id.
-func TestRLSIsolation_TrustedDeviceRevoke_UserIDRequired(t *testing.T) {
-	userA := uuid.New()
-	userB := uuid.New()
-
-	// SQL: WHERE id = $1 AND user_id = $2
-	deviceOwner := userA
-	caller := userB
-	wouldRevoke := (deviceOwner == caller)
-	if wouldRevoke {
-		t.Error("FAIL RLS: userB can revoke userA's trusted device")
-	}
-	t.Logf("trusted device revoke RLS: owner=%v ≠ caller=%v → revoke denied", deviceOwner, caller)
-}
-
-// TestRLSIsolation_WebAuthnCredentialDelete_UserIDRequired verifies that
-// DELETE scopes by user_id.
-func TestRLSIsolation_WebAuthnCredentialDelete_UserIDRequired(t *testing.T) {
-	userA := uuid.New()
-	userB := uuid.New()
-
-	// SQL: WHERE id = $1 AND user_id = $2
-	credOwner := userA
-	caller := userB
-	wouldDelete := (credOwner == caller)
-	if wouldDelete {
-		t.Error("FAIL RLS: userB can delete userA's WebAuthn credential")
-	}
-	t.Logf("WebAuthn cred delete RLS: owner=%v ≠ caller=%v → delete denied", credOwner, caller)
-}
-
-// TestRLSIsolation_WebAuthnCredentialByID_S4Assertion verifies the S4 fix:
-// the service's ownership assertion after GetWebAuthnCredentialByCredentialID
-// rejects credentials that belong to a different user than the challenge's user.
-func TestRLSIsolation_WebAuthnCredentialByID_S4Assertion(t *testing.T) {
-	userA := uuid.New()
-	userB := uuid.New()
-
-	// Credential registered to userA; challenge was issued for userB.
-	credRow := WebAuthnCredentialRow{ID: uuid.New(), UserID: userA}
-	challengeUserID := userB
-
-	// S4 check: if credRow.UserID != challengeUserID → reject.
-	ownershipOK := (credRow.UserID == challengeUserID)
-	if ownershipOK {
-		t.Error("FAIL S4: credential for userA accepted in userB's challenge context")
-	}
-	t.Logf("S4: cred.UserID=%v ≠ challenge.UserID=%v → assertion rejected", credRow.UserID, challengeUserID)
-}
-
-// TestRLSIsolation_TrustedDeviceBinding_B1_S4Combined tests the combined
-// B1 + RLS invariant end-to-end at the domain model level.
-func TestRLSIsolation_TrustedDeviceBinding_B1_S4Combined(t *testing.T) {
-	userA := uuid.New()
-	userB := uuid.New()
-
-	deviceRow := TrustedDevice{ID: uuid.New(), UserID: userA}
-	loginUser := userB
-
-	bypassAllowed := (deviceRow.UserID == loginUser)
-	if bypassAllowed {
-		t.Error("FAIL B1/RLS combined: stolen token for userA bypasses 2FA for userB login")
-	}
-	t.Logf("B1/RLS combined: device.UserID=%v ≠ loginUser=%v → bypass denied", userA, loginUser)
 }
 
 // ---------------------------------------------------------------------------

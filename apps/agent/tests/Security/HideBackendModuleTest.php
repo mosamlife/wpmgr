@@ -295,10 +295,25 @@ final class HideBackendModuleTest extends TestCase
 
     // -------------------------------------------------------------------------
     // interceptRequest() allows logged-in users through
+    //
+    // P0 gap #1 (outcome-test-debt audit, GH #170 Wave 1): previously this
+    // test only called getRequestPath()/isLoginOrAdminPath() separately and
+    // ended in assertTrue(true) -- interceptRequest() itself was never
+    // invoked, so a stub interceptRequest() that left /wp-login.php/wp-admin
+    // fully reachable to a logged-out visitor would have passed. It now
+    // drives interceptRequest() directly and proves no block fires.
     // -------------------------------------------------------------------------
 
     public function test_intercept_allows_logged_in_users(): void
     {
+        // shouldBail()'s first check is php_sapi_name() === 'cli', which is
+        // true for real under PHPUnit -- stub it to a real web SAPI name so
+        // interceptRequest() actually reaches its slug/block decision tree
+        // instead of bailing on the CLI check alone (see the P0 gap #1 block
+        // below for the full rationale; also required for every test in this
+        // section that must NOT trivially bail).
+        Functions\when('php_sapi_name')->justReturn('fpm-fcgi');
+
         $policy = $this->makePolicy();
         $mod    = $this->module($policy);
 
@@ -306,20 +321,156 @@ final class HideBackendModuleTest extends TestCase
 
         Functions\when('is_user_logged_in')->justReturn(true);
 
-        // interceptRequest() must not exit for logged-in users.
-        // We test the path check + logged-in bail without actually calling exit.
-        $getPath = new \ReflectionMethod($mod, 'getRequestPath');
-        $getPath->setAccessible(true);
-        $path = $getPath->invoke($mod);
-        $this->assertSame('/wp-admin', $path);
+        // A logged-in user must never reach the 404/redirect block.
+        Functions\expect('http_response_code')->never();
 
-        $isLogin = new \ReflectionMethod($mod, 'isLoginOrAdminPath');
-        $isLogin->setAccessible(true);
-        $this->assertTrue($isLogin->invoke($mod, $path));
+        // interceptRequest() must return normally here -- no exception, no exit.
+        $mod->interceptRequest();
 
-        // Verify that logged-in users would pass through (no exit).
-        // is_user_logged_in() is true, so the function returns before blocking.
-        $this->assertTrue(true, 'logged-in users must not be blocked');
+        $this->addToAssertionCount(1);
+    }
+
+    // -------------------------------------------------------------------------
+    // P0 gap #1 (outcome-test-debt audit, GH #170 Wave 1): interceptRequest()'s
+    // actual BLOCK branch (404 / redirect) was never driven end-to-end by any
+    // test in this file. A stub interceptRequest() that left /wp-login.php
+    // and /wp-admin fully reachable for a logged-out, un-tokened visitor would
+    // have passed every test above this point.
+    //
+    // `exit;` itself cannot be intercepted (Patchwork cannot redefine the
+    // language construct, and letting it actually fire would terminate the
+    // PHPUnit process) -- so, mirroring the established convention elsewhere
+    // in this test suite (see Site2faModuleTest's wp_die/login_header marker
+    // pattern), we stub a real function called on the same statement
+    // immediately before `exit` (esc_html__() for the 404 body, header() for
+    // the redirect) to throw a marker exception. Reaching that throw proves
+    // execution ran the full block branch up to the line before `exit`.
+    // -------------------------------------------------------------------------
+
+    public function test_intercept_blocks_wp_login_with_404_when_not_logged_in_and_no_access_cookie(): void
+    {
+        Functions\when('php_sapi_name')->justReturn('fpm-fcgi');
+
+        $policy = $this->makePolicy(true, 'my-secret-login', '');
+        $mod    = $this->module($policy);
+
+        $_SERVER['REQUEST_URI'] = '/wp-login.php';
+        // is_user_logged_in() defaults false (set_up); no access cookie is set.
+
+        Functions\expect('http_response_code')->once()->with(404);
+
+        Functions\when('esc_html__')->alias(function (string $text, string $domain = '') {
+            if ($text === 'Page not found.') {
+                throw new \RuntimeException('marker:blocked_404');
+            }
+            return $text;
+        });
+
+        $threw = false;
+        try {
+            $mod->interceptRequest();
+        } catch (\RuntimeException $e) {
+            $threw = ($e->getMessage() === 'marker:blocked_404');
+        }
+
+        $this->assertTrue(
+            $threw,
+            'interceptRequest() must reach the 404 body (immediately before exit) for an un-tokened /wp-login.php hit'
+        );
+        // Functions\expect('http_response_code')->once()->with(404) above is
+        // verified via Mockery::close() in tearDown(); record explicitly so
+        // this test is never flagged risky.
+        $this->addToAssertionCount(1);
+    }
+
+    public function test_intercept_blocks_wp_admin_with_404_when_not_logged_in_and_no_access_cookie(): void
+    {
+        Functions\when('php_sapi_name')->justReturn('fpm-fcgi');
+
+        $policy = $this->makePolicy(true, 'my-secret-login', '');
+        $mod    = $this->module($policy);
+
+        $_SERVER['REQUEST_URI'] = '/wp-admin';
+
+        Functions\expect('http_response_code')->once()->with(404);
+
+        Functions\when('esc_html__')->alias(function (string $text, string $domain = '') {
+            if ($text === 'Page not found.') {
+                throw new \RuntimeException('marker:blocked_404');
+            }
+            return $text;
+        });
+
+        $threw = false;
+        try {
+            $mod->interceptRequest();
+        } catch (\RuntimeException $e) {
+            $threw = ($e->getMessage() === 'marker:blocked_404');
+        }
+
+        $this->assertTrue(
+            $threw,
+            'interceptRequest() must reach the 404 body (immediately before exit) for an un-tokened /wp-admin hit'
+        );
+        $this->addToAssertionCount(1);
+    }
+
+    public function test_intercept_redirects_instead_of_404_when_hide_backend_redirect_configured(): void
+    {
+        Functions\when('php_sapi_name')->justReturn('fpm-fcgi');
+
+        $policy = $this->makePolicy(true, 'my-secret-login', 'https://example.com/blocked');
+        $mod    = $this->module($policy);
+
+        $_SERVER['REQUEST_URI'] = '/wp-login.php';
+
+        $capturedLocationHeader = null;
+        Functions\when('header')->alias(function (string $header, bool $replace = true, int $code = 0) use (&$capturedLocationHeader) {
+            if (str_starts_with($header, 'Location:')) {
+                $capturedLocationHeader = $header;
+                throw new \RuntimeException('marker:redirected');
+            }
+            return null;
+        });
+
+        $threw = false;
+        try {
+            $mod->interceptRequest();
+        } catch (\RuntimeException $e) {
+            $threw = ($e->getMessage() === 'marker:redirected');
+        }
+
+        $this->assertTrue(
+            $threw,
+            'interceptRequest() must send a Location redirect (immediately before exit) when hide_backend_redirect is configured'
+        );
+        $this->assertSame('Location: https://example.com/blocked', $capturedLocationHeader);
+    }
+
+    // -------------------------------------------------------------------------
+    // P0 gap #1 mirror cases: a valid access cookie -- or an already logged-in
+    // user (see test_intercept_allows_logged_in_users above) -- must let
+    // interceptRequest() return WITHOUT blocking (no 404, no redirect).
+    // -------------------------------------------------------------------------
+
+    public function test_intercept_allows_wp_login_through_with_valid_access_cookie(): void
+    {
+        Functions\when('php_sapi_name')->justReturn('fpm-fcgi');
+
+        $policy = $this->makePolicy(true, 'my-secret-login', '');
+        $mod    = $this->module($policy);
+
+        $_SERVER['REQUEST_URI']                    = '/wp-login.php';
+        $_COOKIE[HideBackendModule::COOKIE_ACCESS] = $this->cookieValueFor($mod);
+
+        Functions\expect('http_response_code')->never();
+
+        // Must return normally -- no exception, no exit -- once the access
+        // cookie (minted after a genuine slug visit) is presented.
+        $mod->interceptRequest();
+
+        $this->addToAssertionCount(1);
+        unset($_COOKIE[HideBackendModule::COOKIE_ACCESS]);
     }
 
     // -------------------------------------------------------------------------
@@ -440,24 +591,37 @@ final class HideBackendModuleTest extends TestCase
     public function test_bug2_serve_login_form_sets_pagenow_and_defers_require_without_exiting(): void
     {
         // serveLoginForm() only proceeds past its file_exists() guard when
-        // ABSPATH/wp-login.php exists; the file's contents never matter here
-        // because the require() lives inside the deferred wp_loaded closure,
-        // which this test never invokes.
+        // ABSPATH/wp-login.php exists. Unlike the placeholder used before the
+        // P0 gap #2 fix (a comment-only file whose contents were never
+        // exercised), this fixture DOES get require()'d -- by the captured
+        // wp_loaded closure below -- so it must prove the requiring code path
+        // actually ran: it flips a global flag then throws (standing in for
+        // the real require()'s eventual exit, which we cannot let fire inside
+        // PHPUnit). An EMPTY closure body (the exact #170 defect: the slug
+        // serves no form) would never set the flag and never throw.
         if (!is_dir(ABSPATH)) {
             mkdir(ABSPATH, 0755, true);
         }
         $loginFile = ABSPATH . 'wp-login.php';
-        file_put_contents($loginFile, "<?php\n// placeholder wp-login.php for HideBackendModuleTest\n");
+        file_put_contents(
+            $loginFile,
+            "<?php\n\$GLOBALS['__wpmgr_login_served'] = true;\nthrow new \\RuntimeException('marker:login_form_required');\n"
+        );
 
         $policy = $this->makePolicy(true, 'my-secret-login');
         $mod    = $this->module($policy);
 
-        unset($GLOBALS['pagenow']);
+        unset($GLOBALS['pagenow'], $GLOBALS['__wpmgr_login_served']);
         $_SERVER['SCRIPT_NAME'] = '/my-secret-login';
 
+        $capturedClosure = null;
         Functions\expect('add_action')
             ->once()
-            ->with('wp_loaded', \Mockery::type('callable'), 0);
+            ->with('wp_loaded', \Mockery::type('callable'), 0)
+            ->andReturnUsing(function ($hook, $callback, $priority) use (&$capturedClosure) {
+                $capturedClosure = $callback;
+                return true;
+            });
 
         $ref = new \ReflectionMethod($mod, 'serveLoginForm');
         $ref->setAccessible(true);
@@ -472,7 +636,40 @@ final class HideBackendModuleTest extends TestCase
             'serveLoginForm() must set $pagenow so WP treats this request as wp-login.php'
         );
 
-        unset($_SERVER['SCRIPT_NAME']);
+        // The SCRIPT_NAME/PHP_SELF rewrite must land BEFORE the deferred
+        // closure ever runs (it does not depend on invoking the closure).
+        $this->assertIsString($_SERVER['SCRIPT_NAME'] ?? null);
+        $this->assertStringEndsWith(
+            '/wp-login.php',
+            (string) $_SERVER['SCRIPT_NAME'],
+            'serveLoginForm() must rewrite SCRIPT_NAME to end in /wp-login.php'
+        );
+        $this->assertIsString($_SERVER['PHP_SELF'] ?? null);
+        $this->assertStringEndsWith(
+            '/wp-login.php',
+            (string) $_SERVER['PHP_SELF'],
+            'serveLoginForm() must rewrite PHP_SELF to end in /wp-login.php'
+        );
+
+        // P0 gap #2: actually INVOKE the captured wp_loaded closure and prove
+        // it requires ABSPATH/wp-login.php -- an empty closure body would
+        // never set the flag and never throw, and this assertion would fail.
+        $this->assertIsCallable($capturedClosure, 'add_action(wp_loaded, ...) must have been called with a callable');
+
+        $threw = false;
+        try {
+            ($capturedClosure)();
+        } catch (\RuntimeException $e) {
+            $threw = ($e->getMessage() === 'marker:login_form_required');
+        }
+
+        $this->assertTrue($threw, 'the deferred wp_loaded closure must actually require() ABSPATH/wp-login.php, not serve an empty form');
+        $this->assertTrue(
+            $GLOBALS['__wpmgr_login_served'] ?? false,
+            'the deferred closure must have executed the fixture wp-login.php body (proof the login form is actually served)'
+        );
+
+        unset($_SERVER['SCRIPT_NAME'], $_SERVER['PHP_SELF'], $GLOBALS['__wpmgr_login_served']);
         @unlink($loginFile);
     }
 
