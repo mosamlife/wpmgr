@@ -198,7 +198,11 @@ final class DbScanCommand implements CommandInterface
             'ok'            => true,
             'job_id'        => $jobId,
             'detail'        => '',
-            'categories'    => $wireCategories,
+            // Cast to object: an empty PHP array json_encodes as `[]`, which the
+            // CP cannot unmarshal into its Go map[string]CategoryResult field
+            // (categories is a keyed map on the wire; tables below is a slice
+            // and stays an array).
+            'categories'    => (object) $wireCategories,
             'db_size_bytes' => (int) ($scanResult['db_size_bytes'] ?? 0),
             'table_count'   => (int) ($scanResult['table_count'] ?? 0),
             'scanned_at'    => (int) ($scanResult['scanned_at'] ?? time()),

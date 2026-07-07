@@ -10,6 +10,17 @@
  *   - isLoginOrAdminPath() detects canonical wp-login and wp-admin paths
  *   - hasAccessCookie() detects the access cookie
  *   - interceptRequest() is a no-op for logged-in users
+ *   - BUG 2 (GH #170): serveLoginForm() sets $pagenow='wp-login.php' and
+ *     defers the actual require()/exit to a single wp_loaded action, WITHOUT
+ *     exiting itself (so the slug branch of interceptRequest() actually
+ *     serves a reachable login form instead of falling through to a 404)
+ *   - BUG 2: rewriteLoginLinkUrl()/rewriteSiteUrl() point login/logout/
+ *     lostpassword/site_url('wp-login.php...') links at the secret slug
+ *     WHILE the hidden login form is being served, and are a no-op on a
+ *     normal front-end request (security-review Finding 1: no slug leak)
+ *   - security-review Finding 2: hasAccessCookie() rejects a forged static
+ *     cookie value and a cookie minted for a different slug; only the HMAC
+ *     for the CURRENT slug is accepted
  *
  * @package WPMgr\Agent\Tests\Security
  */
@@ -35,20 +46,29 @@ final class HideBackendModuleTest extends TestCase
         Monkey\setUp();
 
         Functions\when('get_option')->justReturn('');
-        Functions\when('add_action')->justReturn(true);
-        Functions\when('add_filter')->justReturn(true);
+        // add_action()/add_filter() are deliberately NOT stubbed here with
+        // when() — Brain Monkey cannot route a real call to a later
+        // Functions\expect() on the same function name once when() has
+        // already bound a stub redefinition for it. Tests that need
+        // add_action()/add_filter() to be callable set up their own
+        // Functions\expect()/Functions\when() as needed.
         Functions\when('esc_url_raw')->alias(fn ($u) => $u);
         Functions\when('is_ssl')->justReturn(false);
         Functions\when('is_user_logged_in')->justReturn(false);
         Functions\when('esc_html__')->alias(fn ($t, $d = '') => $t);
         Functions\when('wp_unslash')->alias(fn ($v) => $v);
         Functions\when('sanitize_text_field')->alias(fn ($v) => $v);
+        Functions\when('wp_salt')->justReturn('test-fixed-auth-salt-value');
     }
 
     protected function tear_down(): void
     {
         unset($_SERVER['REQUEST_URI']);
         unset($_COOKIE[HideBackendModule::COOKIE_ACCESS]);
+        // $GLOBALS['pagenow'] is a real WordPress global some tests mutate to
+        // exercise isServingHiddenLoginForm()'s defensive secondary signal —
+        // never let it leak into a later test in this same process.
+        unset($GLOBALS['pagenow']);
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -69,9 +89,65 @@ final class HideBackendModuleTest extends TestCase
         return new HideBackendModule($policy);
     }
 
+    /** Force the private $servingLoginForm flag so rewrite tests can exercise the "serving" branch directly. */
+    private function setServing(HideBackendModule $mod, bool $value): void
+    {
+        $ref = new \ReflectionProperty($mod, 'servingLoginForm');
+        $ref->setAccessible(true);
+        $ref->setValue($mod, $value);
+    }
+
+    /** Compute the current expected access-cookie HMAC via reflection. */
+    private function cookieValueFor(HideBackendModule $mod): string
+    {
+        $ref = new \ReflectionMethod($mod, 'accessCookieValue');
+        $ref->setAccessible(true);
+        return $ref->invoke($mod);
+    }
+
     // -------------------------------------------------------------------------
     // install() no-op cases
     // -------------------------------------------------------------------------
+
+    /**
+     * install() uses a function-local `static $installed` idempotency latch
+     * (the same convention as every other security module's install()) that
+     * persists for the lifetime of the PHP process, not per-instance. Other
+     * tests in this file (and this file alone calls install() more than
+     * once) would otherwise silently short-circuit this test depending on
+     * execution order — run it in its own process so the latch starts fresh.
+     *
+     * @runInSeparateProcess
+     */
+    public function test_install_registers_intercept_and_url_filters_when_enabled(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+
+        Functions\expect('add_action')
+            ->once()
+            ->with('setup_theme', [$mod, 'interceptRequest']);
+
+        Functions\expect('add_filter')
+            ->once()
+            ->with('login_url', [$mod, 'rewriteLoginLinkUrl']);
+        Functions\expect('add_filter')
+            ->once()
+            ->with('logout_url', [$mod, 'rewriteLoginLinkUrl']);
+        Functions\expect('add_filter')
+            ->once()
+            ->with('lostpassword_url', [$mod, 'rewriteLoginLinkUrl']);
+        Functions\expect('add_filter')
+            ->once()
+            ->with('site_url', [$mod, 'rewriteSiteUrl'], 10, 2);
+
+        $mod->install();
+
+        // Brain Monkey's Functions\expect() assertions are verified in
+        // tearDown() via Mockery::close(), not via a PHPUnit assertion here —
+        // record one explicitly so this test isn't flagged risky.
+        $this->addToAssertionCount(1);
+    }
 
     public function test_install_noop_when_disabled(): void
     {
@@ -145,7 +221,7 @@ final class HideBackendModuleTest extends TestCase
         $policy = $this->makePolicy();
         $mod    = $this->module($policy);
 
-        $_COOKIE[HideBackendModule::COOKIE_ACCESS] = '1';
+        $_COOKIE[HideBackendModule::COOKIE_ACCESS] = $this->cookieValueFor($mod);
 
         $ref = new \ReflectionMethod($mod, 'hasAccessCookie');
         $ref->setAccessible(true);
@@ -163,6 +239,58 @@ final class HideBackendModuleTest extends TestCase
         $ref = new \ReflectionMethod($mod, 'hasAccessCookie');
         $ref->setAccessible(true);
         $this->assertFalse($ref->invoke($mod));
+    }
+
+    // -------------------------------------------------------------------------
+    // security-review Finding 2 (GH #170): the access cookie is an HMAC of
+    // the slug, not a guessable static value — a forged "1" cookie, or one
+    // minted for a different slug, must be rejected.
+    // -------------------------------------------------------------------------
+
+    public function test_has_access_cookie_rejects_forged_static_value(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+
+        // Pre-fix, the literal digit "1" was a valid cookie value — anyone
+        // reading the OSS source could forge it without knowing the slug.
+        $_COOKIE[HideBackendModule::COOKIE_ACCESS] = '1';
+
+        $ref = new \ReflectionMethod($mod, 'hasAccessCookie');
+        $ref->setAccessible(true);
+        $this->assertFalse($ref->invoke($mod), 'a forged static "1" cookie must be rejected');
+
+        unset($_COOKIE[HideBackendModule::COOKIE_ACCESS]);
+    }
+
+    public function test_has_access_cookie_accepts_hmac_for_current_slug(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+
+        $_COOKIE[HideBackendModule::COOKIE_ACCESS] = $this->cookieValueFor($mod);
+
+        $ref = new \ReflectionMethod($mod, 'hasAccessCookie');
+        $ref->setAccessible(true);
+        $this->assertTrue($ref->invoke($mod), 'the HMAC minted for the current slug must be accepted');
+
+        unset($_COOKIE[HideBackendModule::COOKIE_ACCESS]);
+    }
+
+    public function test_has_access_cookie_rejects_hmac_minted_for_a_different_slug(): void
+    {
+        $modForSlugA = $this->module($this->makePolicy(true, 'my-secret-login'));
+        $modForSlugB = $this->module($this->makePolicy(true, 'a-totally-different-slug'));
+
+        // A cookie minted while visiting slug A must not grant access under
+        // a policy configured with a different slug B.
+        $_COOKIE[HideBackendModule::COOKIE_ACCESS] = $this->cookieValueFor($modForSlugA);
+
+        $ref = new \ReflectionMethod($modForSlugB, 'hasAccessCookie');
+        $ref->setAccessible(true);
+        $this->assertFalse($ref->invoke($modForSlugB), 'a cookie minted for a different slug must be rejected');
+
+        unset($_COOKIE[HideBackendModule::COOKIE_ACCESS]);
     }
 
     // -------------------------------------------------------------------------
@@ -300,5 +428,175 @@ final class HideBackendModuleTest extends TestCase
         $this->assertFalse($ref->invoke($mod, '/some-page'), 'isLoginOrAdminPath: non-login page must not match');
         $this->assertFalse($ref->invoke($mod, '/my-secret-login'), 'isLoginOrAdminPath: custom slug must not match');
         $this->assertFalse($ref->invoke($mod, '/wp-content/uploads/file.php'), 'isLoginOrAdminPath: wp-content must not match');
+    }
+
+    // -------------------------------------------------------------------------
+    // BUG 2 (GH #170): the secret slug must actually serve a login form —
+    // serveLoginForm() presents the request AS wp-login.php and defers the
+    // real require()/exit to a single wp_loaded action so init/login_init/
+    // login_enqueue_scripts fire exactly as a real wp-login.php hit would.
+    // -------------------------------------------------------------------------
+
+    public function test_bug2_serve_login_form_sets_pagenow_and_defers_require_without_exiting(): void
+    {
+        // serveLoginForm() only proceeds past its file_exists() guard when
+        // ABSPATH/wp-login.php exists; the file's contents never matter here
+        // because the require() lives inside the deferred wp_loaded closure,
+        // which this test never invokes.
+        if (!is_dir(ABSPATH)) {
+            mkdir(ABSPATH, 0755, true);
+        }
+        $loginFile = ABSPATH . 'wp-login.php';
+        file_put_contents($loginFile, "<?php\n// placeholder wp-login.php for HideBackendModuleTest\n");
+
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+
+        unset($GLOBALS['pagenow']);
+        $_SERVER['SCRIPT_NAME'] = '/my-secret-login';
+
+        Functions\expect('add_action')
+            ->once()
+            ->with('wp_loaded', \Mockery::type('callable'), 0);
+
+        $ref = new \ReflectionMethod($mod, 'serveLoginForm');
+        $ref->setAccessible(true);
+        // If serveLoginForm() reached the require()/exit itself (instead of
+        // deferring it), PHPUnit's process would terminate here and this
+        // assertion would never run.
+        $ref->invoke($mod);
+
+        $this->assertSame(
+            'wp-login.php',
+            $GLOBALS['pagenow'] ?? null,
+            'serveLoginForm() must set $pagenow so WP treats this request as wp-login.php'
+        );
+
+        unset($_SERVER['SCRIPT_NAME']);
+        @unlink($loginFile);
+    }
+
+    public function test_bug2_serve_login_form_noop_when_wp_login_missing(): void
+    {
+        // Ensure no wp-login.php exists at ABSPATH (leftover from a previous
+        // test, or absent by default) so the file_exists() guard is hit.
+        @unlink(ABSPATH . 'wp-login.php');
+
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+
+        Functions\expect('add_action')->never();
+
+        $ref = new \ReflectionMethod($mod, 'serveLoginForm');
+        $ref->setAccessible(true);
+        $ref->invoke($mod);
+
+        $this->assertTrue(true, 'serveLoginForm() must return quietly when wp-login.php does not exist');
+    }
+
+    // -------------------------------------------------------------------------
+    // BUG 2: login/logout/lostpassword/site_url links point at the secret
+    // slug instead of the literal /wp-login.php path — but ONLY while the
+    // hidden login form is actually being served (security-review Finding 1).
+    // -------------------------------------------------------------------------
+
+    public function test_rewrite_login_link_url_swaps_wp_login_path_for_slug_while_serving_form(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+        $this->setServing($mod, true);
+
+        $this->assertSame(
+            'https://example.com/my-secret-login?action=lostpassword',
+            $mod->rewriteLoginLinkUrl('https://example.com/wp-login.php?action=lostpassword')
+        );
+    }
+
+    public function test_rewrite_login_link_url_is_noop_when_slug_empty(): void
+    {
+        $policy = $this->makePolicy(false, '');
+        $mod    = $this->module($policy);
+        $this->setServing($mod, true);
+
+        $url = 'https://example.com/wp-login.php';
+        $this->assertSame($url, $mod->rewriteLoginLinkUrl($url));
+    }
+
+    public function test_rewrite_site_url_only_touches_wp_login_paths_while_serving_form(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+        $this->setServing($mod, true);
+
+        $this->assertSame(
+            'https://example.com/my-secret-login',
+            $mod->rewriteSiteUrl('https://example.com/wp-login.php', 'wp-login.php')
+        );
+
+        $this->assertSame(
+            'https://example.com/my-secret-login?action=register',
+            $mod->rewriteSiteUrl('https://example.com/wp-login.php?action=register', 'wp-login.php?action=register')
+        );
+
+        // Unrelated site_url() calls must pass through untouched, even while serving.
+        $unrelated = 'https://example.com/wp-json/wpmgr/v1/ping';
+        $this->assertSame(
+            $unrelated,
+            $mod->rewriteSiteUrl($unrelated, 'wp-json/wpmgr/v1/ping')
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // security-review Finding 1 (GH #170, MEDIUM): a normal front-end request
+    // (NOT serving the hidden login form) must NEVER have its login/logout/
+    // lostpassword/site_url links rewritten to the secret slug — otherwise the
+    // Meta widget, a comment form, or a theme nav "Log in" link leaks the
+    // slug to every logged-out visitor, defeating hide-login entirely.
+    // -------------------------------------------------------------------------
+
+    public function test_rewrite_login_link_url_is_noop_on_normal_front_end_request(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+        // Not serving: $servingLoginForm defaults false, and pagenow reflects
+        // a normal front-end request (never 'wp-login.php').
+        $GLOBALS['pagenow'] = 'index.php';
+
+        $url = 'https://example.com/wp-login.php?action=lostpassword';
+        $this->assertSame(
+            $url,
+            $mod->rewriteLoginLinkUrl($url),
+            'a normal front-end render must not leak the secret slug via login_url/logout_url/lostpassword_url'
+        );
+    }
+
+    public function test_rewrite_site_url_is_noop_on_normal_front_end_request(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+        $GLOBALS['pagenow'] = 'index.php';
+
+        $url = 'https://example.com/wp-login.php';
+        $this->assertSame(
+            $url,
+            $mod->rewriteSiteUrl($url, 'wp-login.php'),
+            'a normal front-end render must not leak the secret slug via site_url()'
+        );
+    }
+
+    public function test_rewrite_login_link_url_applies_when_core_pagenow_is_wp_login_even_without_flag(): void
+    {
+        // Defensive secondary signal: a genuine, already-authorized direct
+        // hit on /wp-login.php has $pagenow set to 'wp-login.php' by
+        // WordPress core itself (not by serveLoginForm()) — the rewrite must
+        // still apply there so the login screen's own links stay consistent.
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+        $GLOBALS['pagenow'] = 'wp-login.php';
+
+        $this->assertSame(
+            'https://example.com/my-secret-login',
+            $mod->rewriteLoginLinkUrl('https://example.com/wp-login.php')
+        );
     }
 }

@@ -1,5 +1,10 @@
 package agentcmd
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // This file is the AUTHORITATIVE CP->agent command contract for the Performance
 // Suite (ADR-046, Phase 6). The wp-agent-engineer mirrors these shapes in the
 // agent's command handlers. Field names are JSON wire names; do not rename
@@ -323,13 +328,13 @@ type DBScanTableDetail struct {
 // compatibility — agents < 0.16.0 omit them and the zero value (nil slice)
 // is safe; the CP defaults the corresponding columns to '[]'.
 type DBScanResult struct {
-	OK          bool                            `json:"ok"`
-	JobID       string                          `json:"job_id"`
-	Detail      string                          `json:"detail,omitempty"`
-	Categories  map[string]DBScanCategoryResult `json:"categories,omitempty"`
-	DBSizeBytes int64                           `json:"db_size_bytes"`
-	TableCount  int                             `json:"table_count"`
-	ScannedAt   int64                           `json:"scanned_at"`
+	OK          bool                `json:"ok"`
+	JobID       string              `json:"job_id"`
+	Detail      string              `json:"detail,omitempty"`
+	Categories  dbScanCategoriesMap `json:"categories,omitempty"`
+	DBSizeBytes int64               `json:"db_size_bytes"`
+	TableCount  int                 `json:"table_count"`
+	ScannedAt   int64               `json:"scanned_at"`
 	// Tables is the full per-table inventory added in Phase 2.1.
 	// Each element is classified with owner_type: core|plugin|theme|orphan|unknown.
 	Tables []DBScanTableInventoryRow `json:"tables,omitempty"`
@@ -346,6 +351,27 @@ type DBScanResult struct {
 	// plugin at scan time. Foundation for the P3.8 safety gate.
 	// Omitted by agents < 0.16.0.
 	InstalledPlugins []InstalledPluginItem `json:"installed_plugins,omitempty"`
+}
+
+// dbScanCategoriesMap tolerates a JSON array [] (PHP json_encode of an empty
+// associative array) or null, decoding either as an empty map — same
+// defense-in-depth technique as agentcmd.perRoleMap (GH #170, same class as
+// #148). The agent-built categories map rarely empties in practice, but this
+// keeps the CP decode robust regardless of agent version.
+type dbScanCategoriesMap map[string]DBScanCategoryResult
+
+func (m *dbScanCategoriesMap) UnmarshalJSON(data []byte) error {
+	t := bytes.TrimSpace(data)
+	if len(t) == 0 || string(t) == "null" || string(t) == "[]" {
+		*m = dbScanCategoriesMap{}
+		return nil
+	}
+	var raw map[string]DBScanCategoryResult
+	if err := json.Unmarshal(t, &raw); err != nil {
+		return err
+	}
+	*m = raw
+	return nil
 }
 
 // ---------------------------------------------------------------------------

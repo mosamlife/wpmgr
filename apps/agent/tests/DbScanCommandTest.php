@@ -81,7 +81,10 @@ final class DbScanCommandTest extends TestCase
         $this->assertArrayHasKey('db_size_bytes', $result);
         $this->assertArrayHasKey('table_count', $result);
         $this->assertArrayHasKey('scanned_at', $result);
-        $this->assertIsArray($result['categories']);
+        // categories is cast to an object at the wire boundary so an empty
+        // result serializes as `{}` (not `[]`) — the CP decodes this field
+        // into a Go map[string]CategoryResult.
+        $this->assertIsObject($result['categories']);
         $this->assertIsInt($result['db_size_bytes']);
         $this->assertIsInt($result['table_count']);
         $this->assertIsInt($result['scanned_at']);
@@ -94,7 +97,8 @@ final class DbScanCommandTest extends TestCase
             'categories' => [],
         ]);
         $this->assertTrue($result['ok']);
-        $this->assertCount(14, $result['categories']);
+        $categories = (array) $result['categories'];
+        $this->assertCount(14, $categories);
     }
 
     public function test_categories_subset_filters_correctly(): void
@@ -104,9 +108,10 @@ final class DbScanCommandTest extends TestCase
             'categories' => ['revisions', 'trashed_posts'],
         ]);
         $this->assertTrue($result['ok']);
-        $this->assertCount(2, $result['categories']);
-        $this->assertArrayHasKey('revisions', $result['categories']);
-        $this->assertArrayHasKey('trashed_posts', $result['categories']);
+        $categories = (array) $result['categories'];
+        $this->assertCount(2, $categories);
+        $this->assertArrayHasKey('revisions', $categories);
+        $this->assertArrayHasKey('trashed_posts', $categories);
     }
 
     public function test_unknown_categories_are_ignored(): void
@@ -116,9 +121,10 @@ final class DbScanCommandTest extends TestCase
             'categories' => ['revisions', 'not_a_real_category'],
         ]);
         $this->assertTrue($result['ok']);
-        $this->assertCount(1, $result['categories']);
-        $this->assertArrayHasKey('revisions', $result['categories']);
-        $this->assertArrayNotHasKey('not_a_real_category', $result['categories']);
+        $categories = (array) $result['categories'];
+        $this->assertCount(1, $categories);
+        $this->assertArrayHasKey('revisions', $categories);
+        $this->assertArrayNotHasKey('not_a_real_category', $categories);
     }
 
     public function test_category_entries_have_count_and_bytes(): void
@@ -127,12 +133,34 @@ final class DbScanCommandTest extends TestCase
             'job_id'     => 'uuid-entries',
             'categories' => ['revisions', 'spam_comments'],
         ]);
-        foreach ($result['categories'] as $id => $entry) {
+        foreach ((array) $result['categories'] as $id => $entry) {
             $this->assertArrayHasKey('count', $entry, "Missing count for {$id}");
             $this->assertArrayHasKey('bytes', $entry, "Missing bytes for {$id}");
             $this->assertIsInt($entry['count']);
             $this->assertIsInt($entry['bytes']);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // BUG 1 sibling: categories must serialize as `{}` (object), never `[]`
+    // (array), when the engine produces no category entries at all — a Go
+    // map[string]CategoryResult field cannot be unmarshaled from a JSON array.
+    // -------------------------------------------------------------------------
+
+    public function test_wire_categories_serializes_as_object_when_engine_returns_no_categories(): void
+    {
+        // A DbCleanup constructed with no wpdb short-circuits scan() to the
+        // zero-result structure with categories=[] (see DbCleanup::scan()'s
+        // no-wpdb guard, exercised the same way in OptimizerDbScanTest).
+        $cleanup = new DbCleanup(new PerfConfig([]), null);
+        $cmd     = new DbScanCommand($cleanup);
+        $result  = $cmd->execute([], ['job_id' => 'uuid-empty-cats']);
+
+        $this->assertTrue($result['ok']);
+        $this->assertInstanceOf(\stdClass::class, $result['categories']);
+        $encoded = wp_json_encode($result);
+        $this->assertIsString($encoded);
+        $this->assertStringContainsString('"categories":{}', $encoded);
     }
 
     // -------------------------------------------------------------------------
@@ -174,7 +202,8 @@ final class DbScanCommandTest extends TestCase
             'categories' => ['optimize_tables'],
         ]);
         $this->assertTrue($result['ok']);
-        $entry = $result['categories']['optimize_tables'];
+        $categories = (array) $result['categories'];
+        $entry      = $categories['optimize_tables'];
         $this->assertArrayHasKey('tables', $entry);
         $this->assertCount(1, $entry['tables']);
         $this->assertSame('wp_posts', $entry['tables'][0]['name']);

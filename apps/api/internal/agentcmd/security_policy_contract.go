@@ -1,5 +1,10 @@
 package agentcmd
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // This file is the AUTHORITATIVE CP->agent command contract for the Security
 // Suite Phase 3 (ADR-059): per-site user 2FA + password policy + hide-backend.
 // The wp-agent-engineer mirrors these shapes in the agent's command handler.
@@ -137,7 +142,26 @@ type SecurityPolicyResult struct {
 // EnrollmentSummary carries per-role 2FA enrollment counts. No user identity or
 // secret leaves the site; only aggregate counts are transmitted.
 type EnrollmentSummary struct {
-	PerRole map[string]RoleEnrollment `json:"per_role"`
+	PerRole perRoleMap `json:"per_role"`
+}
+
+// perRoleMap tolerates a JSON array [] (PHP json_encode of an empty associative
+// array) or null, decoding either as an empty map — defense-in-depth alongside
+// the agent-side object-cast emitter fix (GH #170, same class as #148).
+type perRoleMap map[string]RoleEnrollment
+
+func (m *perRoleMap) UnmarshalJSON(data []byte) error {
+	t := bytes.TrimSpace(data)
+	if len(t) == 0 || string(t) == "null" || string(t) == "[]" {
+		*m = perRoleMap{}
+		return nil
+	}
+	var raw map[string]RoleEnrollment
+	if err := json.Unmarshal(t, &raw); err != nil {
+		return err
+	}
+	*m = raw
+	return nil
 }
 
 // RoleEnrollment is the 2FA enrollment count for one WP role.

@@ -693,6 +693,67 @@ func TestSecurityPolicyResultSerialization(t *testing.T) {
 	}
 }
 
+// TestSecurityPolicyResultPerRoleEmptyTolerance is the GH #170 regression: an
+// agent-serialized empty enrollment_summary.per_role can arrive as a JSON
+// array `[]` (PHP json_encode of an empty associative array), an empty
+// object `{}`, or be omitted entirely as `null`. All three must decode
+// cleanly to an empty (non-nil-panicking) map — same defense-in-depth class
+// as GH #148 — and a populated map must still decode unchanged.
+func TestSecurityPolicyResultPerRoleEmptyTolerance(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		wantLen int
+	}{
+		{
+			// The EXACT #170 payload: an older/pre-fix agent's PHP json_encode
+			// of an empty associative array for per_role.
+			name:    "per_role empty array (exact #170 payload)",
+			payload: `{"ok":true,"detail":"applied","enrollment_summary":{"per_role":[]}}`,
+			wantLen: 0,
+		},
+		{
+			name:    "per_role empty object",
+			payload: `{"ok":true,"detail":"applied","enrollment_summary":{"per_role":{}}}`,
+			wantLen: 0,
+		},
+		{
+			name:    "per_role null",
+			payload: `{"ok":true,"detail":"applied","enrollment_summary":{"per_role":null}}`,
+			wantLen: 0,
+		},
+		{
+			name:    "per_role populated (unchanged control)",
+			payload: `{"ok":true,"detail":"applied","enrollment_summary":{"per_role":{"administrator":{"enrolled":2,"required":2,"total":3}}}}`,
+			wantLen: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var decoded agentcmd.SecurityPolicyResult
+			if err := json.Unmarshal([]byte(tc.payload), &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if !decoded.OK {
+				t.Error("decoded ok should be true")
+			}
+			if decoded.EnrollmentSummary == nil {
+				t.Fatal("decoded enrollment_summary should not be nil")
+			}
+			if got := len(decoded.EnrollmentSummary.PerRole); got != tc.wantLen {
+				t.Errorf("PerRole len: want %d, got %d (%+v)", tc.wantLen, got, decoded.EnrollmentSummary.PerRole)
+			}
+			if tc.wantLen == 1 {
+				admin := decoded.EnrollmentSummary.PerRole["administrator"]
+				if admin.Enrolled != 2 || admin.Required != 2 || admin.Total != 3 {
+					t.Errorf("enrollment counts mismatch: %+v", admin)
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: HIBP proxy — cache hit/miss + fail-open + only-prefix-sent
 // ---------------------------------------------------------------------------
