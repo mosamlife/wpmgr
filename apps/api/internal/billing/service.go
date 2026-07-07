@@ -176,6 +176,87 @@ func (s *Service) CheckSiteCreate(ctx context.Context, tx pgx.Tx, tenantID uuid.
 	return nil
 }
 
+// CheckManagedBackupStorage enforces the M16 Phase B managed-backup-storage
+// entitlement: a FREE-plan tenant may not route a backup RUN to the CP-
+// managed bucket (restore-egress margin cost) — it must configure a
+// local-folder or S3-compatible destination instead (internal/sitedestination).
+// This is a plan-agnostic gate: it MUST only be called by the caller when the
+// run's resolved destination is actually the managed one; a BYO destination
+// never reaches this method at all (see internal/backup.Service's
+// destinationIsManaged routing check).
+//
+// Unlike CheckSiteCreate this is a boolean gate with no count to race, so no
+// advisory lock or in-tx read is needed — it resolves entitlements FRESH (not
+// through the Redis cache) so a stale cache entry can never let an
+// already-downgraded tenant slip a managed-storage run through the gate
+// during the up-to-5-minute cache TTL window (mirrors CheckSiteCreate's
+// stale-cache rationale exactly, just without the tx/lock machinery that
+// exists there only for the count race).
+//
+// Returns nil immediately when hosted billing is disabled (self-host / any
+// WPMGR_HOSTED-off deployment) — this is what makes the whole feature ship
+// dark. RESTORE/DOWNLOAD OF AN EXISTING SNAPSHOT IS NEVER GATED by this or any
+// other method: a customer must always be able to get their data back, even
+// after losing the entitlement — see internal/backup's restore paths, which
+// never call this method.
+func (s *Service) CheckManagedBackupStorage(ctx context.Context, tenantID uuid.UUID) error {
+	if !s.enabled {
+		return nil
+	}
+	row, err := fetchTenantBilling(ctx, s.pool, tenantID)
+	if err != nil {
+		return domain.Internal("billing_tenant_lookup_failed", "failed to load tenant billing state").WithCause(err)
+	}
+	ent, err := resolve(row, s.clock.Now())
+	if err != nil {
+		return err
+	}
+	return managedBackupStorageDecision(ent)
+}
+
+// managedBackupStorageDecision maps a resolved Entitlements to the
+// CheckManagedBackupStorage verdict: nil when the plan permits managed
+// storage, a 402 domain.Error (code "byo_destination_required") otherwise.
+// Kept DB-free (pure function of an already-resolved Entitlements, mirroring
+// resolve() itself) so it is directly unit-testable without a pool/tx — see
+// entitlements_test.go.
+func managedBackupStorageDecision(ent Entitlements) error {
+	if ent.ManagedBackupStorage {
+		return nil
+	}
+	return domain.PaymentRequired("byo_destination_required",
+		"Free plan backups must go to your own storage. Add a local folder or S3 bucket under Destinations, or upgrade your plan.").
+		WithDetails(map[string]any{
+			"plan":                string(ent.Plan),
+			"has_byo_destination": false,
+		})
+}
+
+// ManagedStorageAllowed is a coarse, non-authoritative accessor for the
+// operator-facing Me response (internal/auth): whether the tenant's CURRENT
+// plan permits managed backup storage at all, without the fresh-resolve /
+// stale-cache-avoidance guarantees CheckManagedBackupStorage provides (this is
+// a display signal for the /destinations UI, not a gate — the RUN-time check
+// in internal/backup is the only authoritative enforcement point). Uses the
+// cached Entitlements() path deliberately: a Me response is fetched far more
+// often than a backup is created, and a few minutes of staleness on a purely
+// informational banner is an acceptable trade against hitting Postgres on
+// every page load.
+//
+// Returns true, without touching the database, when hosted billing is
+// disabled — matching Unlimited().ManagedBackupStorage exactly, so self-host
+// and pre-Phase-B hosted deployments always see the unrestricted signal.
+func (s *Service) ManagedStorageAllowed(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	if !s.enabled {
+		return true, nil
+	}
+	ent, err := s.Entitlements(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return ent.ManagedBackupStorage, nil
+}
+
 // fetchTenantBilling loads the plan-resolution fields via any DBTX (the pool
 // for the uncached general path, or a tx for the locked CheckSiteCreate
 // path) and maps them to the DB-free tenantBillingRow shape.

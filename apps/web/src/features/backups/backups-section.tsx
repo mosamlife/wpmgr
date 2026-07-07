@@ -48,6 +48,7 @@ import { PageError } from "@/components/feedback";
 import { StatusChip } from "@/components/status/status-chip";
 import type { StatusTone } from "@/components/status/status-dot";
 import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
+import { BackupDestinationRequiredPrompt } from "@/components/dialogs/backup-destination-required-prompt";
 import {
   Dialog,
   DialogBody,
@@ -56,6 +57,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ByoDestinationRequiredError } from "@/lib/api";
+import { useMe, activeRole } from "@/features/auth/use-auth";
 import {
   useBackups,
   useCreateBackup,
@@ -178,8 +181,24 @@ function BackupNowControl({ siteId }: { siteId: string }) {
   // they are resolved server-side from site_backup_settings.
   const { data: contents } = useBackupSettingsContents(siteId);
 
+  // 402 byo_destination_required (M16 Phase B backup-destinations Phase 2):
+  // swap to the shared BackupDestinationRequiredPrompt instead of rendering
+  // it as a generic inline error below — the two are never shown stacked.
+  const { data: me } = useMe();
+  const [destinationRequired, setDestinationRequired] =
+    useState<ByoDestinationRequiredError | null>(null);
+
   function onBackup() {
-    create.mutate({}, { onError: () => {} });
+    create.mutate(
+      {},
+      {
+        onError: (err) => {
+          if (err instanceof ByoDestinationRequiredError) {
+            setDestinationRequired(err);
+          }
+        },
+      },
+    );
   }
 
   const hasComponents =
@@ -188,6 +207,11 @@ function BackupNowControl({ siteId }: { siteId: string }) {
   const contentsNote = hasComponents
     ? `Uses saved contents settings (${contents!.backup_components!.join(", ")}).`
     : "Uses your saved backup contents settings (full backup by default).";
+
+  const genericError =
+    create.isError && !(create.error instanceof ByoDestinationRequiredError)
+      ? create.error.message
+      : null;
 
   return (
     <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -198,9 +222,9 @@ function BackupNowControl({ siteId }: { siteId: string }) {
         <Info aria-hidden className="size-3 shrink-0" />
         {contentsNote}
       </p>
-      {create.isError ? (
+      {genericError ? (
         <p role="alert" className="text-xs text-destructive-subtle-fg">
-          {create.error.message}
+          {genericError}
         </p>
       ) : null}
       {create.isSuccess ? (
@@ -208,6 +232,12 @@ function BackupNowControl({ siteId }: { siteId: string }) {
           Backup started. It appears below as it progresses.
         </p>
       ) : null}
+      <BackupDestinationRequiredPrompt
+        open={destinationRequired !== null}
+        onClose={() => setDestinationRequired(null)}
+        plan={destinationRequired?.plan ?? "free"}
+        canUpgrade={Boolean(me?.hosted) && activeRole(me) === "owner"}
+      />
     </div>
   );
 }

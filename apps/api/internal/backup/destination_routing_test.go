@@ -239,6 +239,72 @@ func TestBackupWorker_ManagedDestination_EmitsCPKind(t *testing.T) {
 	}
 }
 
+// TestBackupWorker_DestinationLookupError_FailsClosed_NeverFallsBackToManaged
+// pins a load-bearing security invariant (M16 Phase B security review):
+// the CREATE-time managed-storage billing gate's destinationIsManaged fails
+// OPEN (skips the gate) when a destination lookup errors — see
+// billing_gate_test.go's "a lookup failure fails open" case — and that is
+// only safe because the EXECUTE-time path here fails CLOSED instead. For a
+// non-Nil destination_id, Work() calls DestinationInfoForSnapshot; if THAT
+// errors it must call w.fail (terminal FailSnapshot) and must NEVER fall
+// through to dispatching the backup to the agent at all — in particular it
+// must never silently default to the CP-managed destination kind. If a
+// future refactor ever made this path fall back to managed storage on a
+// lookup error, it would turn the create-time fail-open into a real
+// free-tier storage bypass. This test is non-vacuous: destLookup and the
+// commander are both wired so a CP fallback, if it ever happened, would be
+// directly observable (cmd.lastBackup would be non-nil with
+// DestinationKind=="cp").
+func TestBackupWorker_DestinationLookupError_FailsClosed_NeverFallsBackToManaged(t *testing.T) {
+	repo := &fakeWorkerRepo{fakeRepo: newFakeRepo()}
+	cmd := &fakeCommander{ok: true}
+	tenantID := uuid.New()
+	snapshotID := uuid.New()
+	destID := uuid.New()
+
+	snap := Snapshot{
+		ID:            snapshotID,
+		TenantID:      tenantID,
+		SiteID:        uuid.New(),
+		Kind:          KindFull,
+		Status:        StatusPending,
+		AgeRecipient:  "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+		DestinationID: destID, // non-Nil: DestinationInfoForSnapshot will actually consult destLookup.
+	}
+	repo.setSnapshot(snap)
+
+	// destLookup is wired but has NO entry for destID, so DestinationInfo
+	// errors (domain.NotFound) — mirrors a destination row deleted/corrupted
+	// between CreateBackup and dispatch.
+	dl := newFakeDestLookup()
+
+	svc := &Service{repo: repo, sites: fakeWorkerSiteLookup{}, clock: fakeClock{t: time.Now()}, destLookup: dl}
+	worker := NewBackupWorker(svc, cmd, nil, nil, "https://cp.example.com", 0)
+	job := &river.Job[BackupArgs]{Args: BackupArgs{TenantID: tenantID, SnapshotID: snapshotID}}
+
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v (fail() should record the terminal failure and return nil so River does not retry)", err)
+	}
+
+	// The run must end FAILED (w.fail -> FailSnapshot), not completed/running.
+	failed, ok := repo.snapshots[snapshotID]
+	if !ok {
+		t.Fatal("snapshot vanished from the fake repo")
+	}
+	if failed.Status != StatusFailed {
+		t.Fatalf("snapshot status = %q, want %q (destination lookup failure must fail the run, not proceed)", failed.Status, StatusFailed)
+	}
+
+	// The agent must NEVER have been dispatched — proves no fallback to the
+	// CP-managed default (or any destination) occurred.
+	if cmd.lastBackup != nil {
+		t.Fatalf("Backup must never be dispatched to the agent after a destination lookup failure, got %+v (DestinationKind=%q)", cmd.lastBackup, cmd.lastBackup.DestinationKind)
+	}
+	if cmd.lastIncrementalBackup != nil {
+		t.Fatalf("IncrementalBackup must never be dispatched to the agent after a destination lookup failure, got %+v", cmd.lastIncrementalBackup)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PlanRestore (non-chain path) — destination-aware chunk fetch.
 // ---------------------------------------------------------------------------

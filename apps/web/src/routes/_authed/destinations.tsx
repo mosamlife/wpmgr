@@ -45,7 +45,11 @@ function DestinationsSettingsPage() {
     >
       <PageHeader
         title="Backup destinations"
-        subline="Pick a site, then choose where its backup chunks should land — managed storage (default), a folder on the same server, or your own S3-compatible bucket."
+        subline={
+          me?.managed_storage_allowed !== false
+            ? "Pick a site, then choose where its backup chunks should land — managed storage (default), a folder on the same server, or your own S3-compatible bucket."
+            : "Pick a site, then choose where its backup chunks should land. Your plan does not include managed storage, so add a local folder or your own S3-compatible bucket to run backups."
+        }
       />
 
       {!operate ? (

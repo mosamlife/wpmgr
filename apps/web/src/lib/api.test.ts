@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 
-import { extractSiteLimitReached, SiteLimitReachedError } from "./api";
+import {
+  extractSiteLimitReached,
+  SiteLimitReachedError,
+  extractByoDestinationRequired,
+  ByoDestinationRequiredError,
+} from "./api";
 
 // Named test: "the 402 interceptor mapping". `extractSiteLimitReached` is the
 // shared handler every site-create mutation error path runs through (Add Site
@@ -76,5 +81,87 @@ describe("SiteLimitReachedError", () => {
     expect(err.limit).toBe(50);
     expect(err.usage).toBe(47);
     expect(err.plan).toBe("agency");
+  });
+});
+
+// Named test: "the 402 byo_destination_required interceptor mapping"
+// (backup-destinations Phase 2). `extractByoDestinationRequired` is the
+// shared handler a manual backup-create mutation error path runs through
+// before falling back to a generic error — see use-backups.ts's
+// useCreateBackup.
+
+describe("extractByoDestinationRequired", () => {
+  const validBody = {
+    code: "byo_destination_required",
+    message: "Free plan backups must go to your own storage.",
+    details: { plan: "free", has_byo_destination: false },
+  };
+
+  it("recognizes the 402 byo_destination_required shape and returns a typed error", () => {
+    const err = extractByoDestinationRequired(402, validBody);
+    expect(err).toBeInstanceOf(ByoDestinationRequiredError);
+    expect(err?.plan).toBe("free");
+    expect(err?.hasByoDestination).toBe(false);
+  });
+
+  it("returns null for a non-402 status even with a matching body (e.g. a 422)", () => {
+    expect(extractByoDestinationRequired(422, validBody)).toBeNull();
+  });
+
+  it("returns null for a 402 with a different error code", () => {
+    expect(
+      extractByoDestinationRequired(402, {
+        ...validBody,
+        code: "some_other_code",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when details are missing entirely", () => {
+    expect(
+      extractByoDestinationRequired(402, {
+        code: "byo_destination_required",
+        message: "x",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when a details field has the wrong type", () => {
+    expect(
+      extractByoDestinationRequired(402, {
+        code: "byo_destination_required",
+        message: "x",
+        details: { plan: "free", has_byo_destination: "false" },
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for a non-object error body", () => {
+    expect(extractByoDestinationRequired(402, "some string error")).toBeNull();
+    expect(extractByoDestinationRequired(402, null)).toBeNull();
+    expect(extractByoDestinationRequired(402, undefined)).toBeNull();
+  });
+
+  it("returns null when status is undefined (transport error, no response)", () => {
+    expect(extractByoDestinationRequired(undefined, validBody)).toBeNull();
+  });
+});
+
+describe("ByoDestinationRequiredError", () => {
+  it("is an instance of Error so it propagates through TanStack Query's onError", () => {
+    const err = new ByoDestinationRequiredError("free", false);
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("has a predictable name and code for narrowing", () => {
+    const err = new ByoDestinationRequiredError("free", false);
+    expect(err.name).toBe("ByoDestinationRequiredError");
+    expect(err.code).toBe("byo_destination_required");
+  });
+
+  it("carries the plan/has_byo_destination the prompt needs", () => {
+    const err = new ByoDestinationRequiredError("free", true);
+    expect(err.plan).toBe("free");
+    expect(err.hasByoDestination).toBe(true);
   });
 });
