@@ -21,11 +21,40 @@
  *                       -> post_hooks                 (kind == files)
  *   restore_db           -> swap_db                   (kind in {db, full})
  *   swap_db              -> post_hooks                (always)
- *   post_hooks           -> maintenance_off
- *   maintenance_off      -> cleanup
+ *   post_hooks           -> health_check               (always)
+ *   health_check         -> maintenance_off            (always, on a pass)
+ *   maintenance_off      -> health_check_live          (always)
+ *   health_check_live    -> cleanup                    (always, on a pass)
  *   cleanup              -> completed
  *
  *   completed | failed: terminal (re-entry is a no-op)
+ *
+ * GH #146 — TWO health-check gates, for two different reasons a restore can
+ * be broken:
+ *
+ *   Gate 1, `health_check` (Probe A / DB only) — runs right after
+ *   post_hooks, BEFORE maintenance_off, so a rollback it triggers happens
+ *   invisibly while the site is still in maintenance mode. Regardless of
+ *   kind — files-only, db-only, and full restores all converge on
+ *   post_hooks first, so this one gate covers all three.
+ *
+ *   Gate 2, `health_check_live` (Probe B / loopback WSOD) — runs right
+ *   AFTER maintenance_off, deliberately. A loopback probe run BEFORE
+ *   maintenance_off can only ever see WordPress's OWN `.maintenance` 503
+ *   page, which core renders before plugins are even loaded — it physically
+ *   CANNOT observe a files-side WSOD (a dropped required file fataling on
+ *   plugin load, the GitHub issue #147 class this feature exists to catch).
+ *   Gate 2 therefore runs the loopback probe against the REAL, live,
+ *   post-maintenance site. On a definitive fatal it re-enables maintenance
+ *   for the duration of the rollback (so visitors don't see the broken
+ *   site being reverted), then drops it again once the revert lands.
+ *
+ * Either gate's definitive fatal drives the same combined files+DB rollback
+ * and reports `failed` instead of ever reaching `completed`; see
+ * `RestoreHealthCheck` / `RestoreGuard` / `runHealthCheck()` /
+ * `runHealthCheckLive()`. The `RestoreGuard` shutdown backstop stays armed
+ * (not `markClean()`'d) across BOTH gates — only Gate 2 passing marks it
+ * clean, since Gate 2 is the last checkpoint before `completed`.
  *
  * V0 simplifications (deferred phases):
  *   - migrate_db (search-and-replace) is deferred. V0 is self-hosted single-
@@ -72,7 +101,13 @@ final class RestoreRunner
     public const PHASE_URL_REWRITE         = 'url_rewrite';
     public const PHASE_SWAP_DB             = 'swap_db';
     public const PHASE_POST_HOOKS          = 'post_hooks';
+    // GH #146: two-gate post-restore health check + auto-rollback — see
+    // class docblock. Gate 1 (DB-only) slots between post_hooks and
+    // maintenance_off; Gate 2 (loopback WSOD, on the real site) slots
+    // between maintenance_off and cleanup.
+    public const PHASE_HEALTH_CHECK        = 'health_check';
     public const PHASE_MAINTENANCE_OFF     = 'maintenance_off';
+    public const PHASE_HEALTH_CHECK_LIVE   = 'health_check_live';
     public const PHASE_CLEANUP             = 'cleanup';
     public const PHASE_COMPLETED           = 'completed';
     public const PHASE_FAILED              = 'failed';
@@ -132,6 +167,28 @@ final class RestoreRunner
     private const PREFLIGHT_ARTIFACT_MULTIPLIER = 1.5;
     private const PREFLIGHT_STAGING_MULTIPLIER  = 1.0;
 
+    /**
+     * GH #146 — third preflight leg: headroom for the forced pre-restore DB
+     * dump `runSwapDb()` captures before the destructive DROP. 1.2× the live
+     * DB's on-disk size (data_length + index_length) covers the gzip-
+     * compressed dump comfortably (SQL dumps compress well below 1×) with a
+     * margin for the INSERT statement overhead this dumper emits.
+     */
+    private const PREFLIGHT_DB_ROLLBACK_MULTIPLIER = 1.2;
+
+    /**
+     * GH #146 — default ceiling (bytes) above which the pre-restore DB dump
+     * is skipped rather than attempted. Overridable via the
+     * `WPMGR_RESTORE_DB_ROLLBACK_MAX_BYTES` constant. 2 GiB default: large
+     * enough that the vast majority of WP sites are covered, small enough
+     * that a genuinely huge DB doesn't turn every restore into a second full
+     * DB dump on top of the backup's own.
+     */
+    private const DEFAULT_DB_ROLLBACK_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
+    /** Filename of the forced pre-restore DB dump inside the restore's scratch dir. */
+    private const PRE_RESTORE_DB_DUMP_FILENAME = 'pre-restore-db.sql.gz';
+
     /** @var array<string,mixed> Runner params (see class docblock). */
     private array $params;
 
@@ -139,6 +196,16 @@ final class RestoreRunner
     private int $lastDbUpdate = 0;
 
     private ?ProgressClient $progressClient = null;
+
+    /**
+     * GH #146 — shutdown-time rollback backstop. Armed right before the
+     * first destructive rename (`swap_files`/`swap_db`), marked clean only
+     * once Gate 2 (`health_check_live`, the LAST health-check gate) passes
+     * — it stays armed across Gate 1 (`health_check`) too. Null until
+     * armed — a run that never reaches a destructive phase (e.g. a
+     * preflight failure) never arms one.
+     */
+    private ?RestoreGuard $guard = null;
 
     /**
      * Test seam: the sleeper invoked between download retry attempts. Tests
@@ -258,6 +325,10 @@ final class RestoreRunner
                         break;
 
                     case self::PHASE_SWAP_FILES:
+                        // GH #146: arm the shutdown-rollback backstop right
+                        // before the first destructive rename this run
+                        // performs.
+                        $this->armGuardOnce();
                         $subState = $this->runSwapFiles($subState);
                         $next     = $this->nextAfterSwapFiles();
                         $this->saveTaskState($next, $subState);
@@ -287,6 +358,11 @@ final class RestoreRunner
                         break;
 
                     case self::PHASE_SWAP_DB:
+                        // GH #146: arm the shutdown-rollback backstop right
+                        // before the first destructive rename this run
+                        // performs (idempotent — a no-op if swap_files
+                        // already armed it for a `full` restore).
+                        $this->armGuardOnce();
                         $subState = $this->runSwapDb($subState);
                         $next     = self::PHASE_POST_HOOKS;
                         $this->saveTaskState($next, $subState);
@@ -295,6 +371,21 @@ final class RestoreRunner
 
                     case self::PHASE_POST_HOOKS:
                         $subState = $this->runPostHooks($subState);
+                        $next     = self::PHASE_HEALTH_CHECK;
+                        $this->saveTaskState($next, $subState);
+                        $currentPhase = $next;
+                        break;
+
+                    case self::PHASE_HEALTH_CHECK:
+                        // GH #146 Gate 1: in-process DB probe, still under
+                        // maintenance. On a definitive fatal, runHealthCheck()
+                        // performs the combined files+DB rollback itself and
+                        // throws — caught by this method's own top-level
+                        // catch below, which reports `failed` with the
+                        // rollback detail. This phase NEVER falls through to
+                        // maintenance_off/health_check_live/cleanup/completed
+                        // on a fatal.
+                        $subState = $this->runHealthCheck($subState);
                         $next     = self::PHASE_MAINTENANCE_OFF;
                         $this->saveTaskState($next, $subState);
                         $currentPhase = $next;
@@ -302,6 +393,20 @@ final class RestoreRunner
 
                     case self::PHASE_MAINTENANCE_OFF:
                         $subState = $this->runMaintenanceOff($subState);
+                        $next     = self::PHASE_HEALTH_CHECK_LIVE;
+                        $this->saveTaskState($next, $subState);
+                        $currentPhase = $next;
+                        break;
+
+                    case self::PHASE_HEALTH_CHECK_LIVE:
+                        // GH #146 Gate 2: loopback WSOD probe against the
+                        // REAL, post-maintenance site (see class docblock for
+                        // why this can't run under maintenance). On a
+                        // definitive fatal, runHealthCheckLive() re-enables
+                        // maintenance, performs the combined rollback, drops
+                        // maintenance again, and throws — same top-level
+                        // catch handles it as Gate 1 does.
+                        $subState = $this->runHealthCheckLive($subState);
                         $next     = self::PHASE_CLEANUP;
                         $this->saveTaskState($next, $subState);
                         $currentPhase = $next;
@@ -319,7 +424,7 @@ final class RestoreRunner
             }
 
             // ---- Completion: cleanup + ack. ------------------------------
-            $this->cleanupOnCompleted();
+            $this->cleanupOnCompleted($subState);
             $this->postProgress(self::PHASE_COMPLETED, [
                 'ok'      => true,
                 'summary' => 'restore completed',
@@ -329,6 +434,13 @@ final class RestoreRunner
         } catch (\Throwable $e) {
             \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: phase ' . $currentPhase . ' failed: ' . $e->getMessage());
 
+            // GH #146: RestoreHealthCheckFailed carries which rollback legs
+            // already completed (runHealthCheck() performs the combined
+            // files+DB rollback BEFORE throwing) — surface it on the FAILED
+            // row/progress event so the operator sees the site was reverted,
+            // not just that the restore failed.
+            $rolledBack = $e instanceof RestoreHealthCheckFailed ? $e->rolledBack() : null;
+
             // Best-effort: mark failed, drop maintenance, try to clean up
             // tmp DB tables. Failures in the cleanup are swallowed.
             try {
@@ -337,17 +449,25 @@ final class RestoreRunner
             }
 
             try {
-                $this->saveTaskState(self::PHASE_FAILED, [
+                $failState = [
                     'last_error' => substr($e->getMessage(), 0, 240),
                     'failed_in'  => $currentPhase,
-                ]);
+                ];
+                if ($rolledBack !== null) {
+                    $failState['rolled_back'] = $rolledBack;
+                }
+                $this->saveTaskState(self::PHASE_FAILED, $failState);
             } catch (\Throwable $_) {
             }
             try {
-                $this->postProgress(self::PHASE_FAILED, [
+                $progressDetail = [
                     'stage'   => $currentPhase,
                     'message' => substr($e->getMessage(), 0, 240),
-                ]);
+                ];
+                if ($rolledBack !== null) {
+                    $progressDetail['rolled_back'] = $rolledBack;
+                }
+                $this->postProgress(self::PHASE_FAILED, $progressDetail);
             } catch (\Throwable $_) {
             }
 
@@ -395,7 +515,20 @@ final class RestoreRunner
         } else {
             $legStaging = (int) (FilesRestorer::estimateWpContentBytes($wpContent) * self::PREFLIGHT_STAGING_MULTIPLIER);
         }
-        $required    = max($legArtifact, $legStaging);
+        // GH #146 / §2 — Leg 3: headroom for the forced pre-restore DB dump
+        // `runSwapDb()` captures before the destructive DROP (see
+        // `capturePreRestoreDbDump()`). Only contributes to `$required` when
+        // it fits under the same ceiling that phase itself enforces — a DB
+        // over the ceiling skips the dump entirely, so no disk headroom is
+        // needed for it (and requiring it here would wrongly fail preflight
+        // for a large-DB restore that never attempts the dump at all).
+        $liveDbBytes = $this->estimateLiveDbBytes();
+        $dbRollbackCeiling = $this->dbRollbackMaxBytes();
+        $legDbRollback = ($liveDbBytes > 0 && $liveDbBytes <= $dbRollbackCeiling)
+            ? (int) ($liveDbBytes * self::PREFLIGHT_DB_ROLLBACK_MULTIPLIER)
+            : 0;
+
+        $required = max($legArtifact, $legStaging) + $legDbRollback;
 
         // Disk free on wp-content's volume. disk_free_space returns the
         // bytes free for the filesystem the path lives on.
@@ -1502,6 +1635,11 @@ final class RestoreRunner
 
     /**
      * swap_db: atomic per-table swap.
+     *
+     * GH #146: before the destructive DROP TABLE inside `DbRestorer::swap()`,
+     * captures a forced pre-restore DB dump — the rollback source a
+     * post-restore health-check failure (or the RestoreGuard shutdown
+     * backstop) replays to undo this swap. See `capturePreRestoreDbDump()`.
      */
     private function runSwapDb(array $subState): array
     {
@@ -1516,6 +1654,14 @@ final class RestoreRunner
         if ($tmpPrefix === '' || $targetPrefix === '') {
             throw new \RuntimeException('swap_db: missing tmp/target prefix');
         }
+
+        // GH #146 / §2: forced pre-restore DB dump, BEFORE the first DROP.
+        // Persisted immediately (not just returned) so a crash between the
+        // dump and the swap still leaves the rollback source recorded for a
+        // watchdog resume, the health-check rollback, or the RestoreGuard
+        // shutdown backstop to find.
+        $subState = $this->capturePreRestoreDbDump($subState, $targetPrefix);
+        $this->saveTaskState(self::PHASE_SWAP_DB, $subState);
 
         // Coerce to list<string>.
         $list = [];
@@ -1532,6 +1678,141 @@ final class RestoreRunner
 
         $subState['swap_db'] = ['done' => true, 'tables_swapped' => count($list)];
         return $subState;
+    }
+
+    /**
+     * GH #146 / §2: capture the live (pre-restore) database into a
+     * `pre-restore-db.sql.gz` dump inside this restore's scratch dir, using
+     * the same streaming `DbDumper` backups + Database Snapshots use.
+     * Idempotent — a watchdog resume that already captured (or already
+     * recorded as skipped/oversized) the dump does not redo it.
+     *
+     * ALWAYS-ON with a size ceiling (`WPMGR_RESTORE_DB_ROLLBACK_MAX_BYTES`,
+     * default 2 GiB): when the live DB exceeds it, the dump is skipped and
+     * `db_rollback.available=false` is recorded as a WARNING-carrying
+     * marker — never silently proceeding unprotected without a trace (S8,
+     * issue #131's discipline). A health-check failure downstream then
+     * rolls back files ONLY.
+     *
+     * @param array<string,mixed> $subState
+     * @return array<string,mixed>
+     */
+    private function capturePreRestoreDbDump(array $subState, string $targetPrefix): array
+    {
+        $existing = isset($subState['db_rollback']) && is_array($subState['db_rollback']) ? $subState['db_rollback'] : [];
+        if (!empty($existing['done'])) {
+            return $subState;
+        }
+
+        $scratch = $this->scratchDir();
+        if ($scratch === '' || !is_dir($scratch)) {
+            $subState['db_rollback'] = ['done' => true, 'available' => false, 'reason' => 'unavailable'];
+            $this->postProgress(self::PHASE_SWAP_DB, [
+                'db_rollback' => 'unavailable',
+                'reason'      => 'no scratch dir available for the pre-restore dump',
+            ]);
+            return $subState;
+        }
+
+        $maxBytes  = $this->dbRollbackMaxBytes();
+        $liveBytes = $this->estimateLiveDbBytes();
+        if ($maxBytes > 0 && $liveBytes > 0 && $liveBytes > $maxBytes) {
+            $subState['db_rollback'] = [
+                'done'       => true,
+                'available'  => false,
+                'reason'     => 'unavailable',
+                'live_bytes' => $liveBytes,
+                'max_bytes'  => $maxBytes,
+            ];
+            $this->postProgress(self::PHASE_SWAP_DB, [
+                'db_rollback' => 'unavailable',
+                'reason'      => 'live database exceeds WPMGR_RESTORE_DB_ROLLBACK_MAX_BYTES ceiling',
+                'live_bytes'  => $liveBytes,
+                'max_bytes'   => $maxBytes,
+            ]);
+            return $subState;
+        }
+
+        $dumpPath = $scratch . DIRECTORY_SEPARATOR . self::PRE_RESTORE_DB_DUMP_FILENAME;
+        try {
+            $dumper = new DbDumper($this->dbCreds());
+            // No incremental progress surfaced for this internal safety
+            // dump — it rides inside the swap_db phase's own progress
+            // budget; the noop callback keeps DbDumper's per-table
+            // checkpoint cheap.
+            $dumper->dump($dumpPath, [], static function (string $phase, array $detail): void {
+            });
+
+            $subState['db_rollback'] = [
+                'done'      => true,
+                'available' => true,
+                'dump_path' => $dumpPath,
+                'prefix'    => $targetPrefix,
+            ];
+            $this->postProgress(self::PHASE_SWAP_DB, [
+                'db_rollback' => 'captured',
+                'dump_bytes'  => @filesize($dumpPath) ?: 0,
+            ]);
+        } catch (\Throwable $e) {
+            // A failed safety dump must not block the restore itself — but
+            // it MUST be recorded (never silently proceed unprotected).
+            \WPMgr\Agent\Support\DebugLog::write(
+                'WPMgr RestoreRunner: pre-restore DB dump failed, proceeding without a DB rollback source: ' . $e->getMessage()
+            );
+            $subState['db_rollback'] = ['done' => true, 'available' => false, 'reason' => 'unavailable'];
+            $this->postProgress(self::PHASE_SWAP_DB, [
+                'db_rollback' => 'unavailable',
+                'reason'      => 'pre-restore dump failed: ' . substr($e->getMessage(), 0, 160),
+            ]);
+        }
+
+        return $subState;
+    }
+
+    /**
+     * GH #146: `WPMGR_RESTORE_DB_ROLLBACK_MAX_BYTES` override, else the
+     * 2 GiB default.
+     */
+    private function dbRollbackMaxBytes(): int
+    {
+        if (defined('WPMGR_RESTORE_DB_ROLLBACK_MAX_BYTES')) {
+            $configured = (int) constant('WPMGR_RESTORE_DB_ROLLBACK_MAX_BYTES');
+            if ($configured > 0) {
+                return $configured;
+            }
+        }
+        return self::DEFAULT_DB_ROLLBACK_MAX_BYTES;
+    }
+
+    /**
+     * GH #146: estimate the on-disk size (bytes) of the LIVE database via
+     * `information_schema.tables` — the same tables `capturePreRestoreDbDump()`
+     * is about to dump (swap_db hasn't renamed anything onto them yet).
+     * Returns 0 on any failure (conservative: treated as "small enough" by
+     * the caller so a broken size probe never blocks the safety dump).
+     */
+    private function estimateLiveDbBytes(): int
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return 0;
+        }
+        $dbName = $this->dbCreds()['name'] ?? '';
+        if ($dbName === '') {
+            return 0;
+        }
+        try {
+            /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
+            $prepared = $wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
+                'SELECT SUM(data_length + index_length) FROM information_schema.tables WHERE table_schema = %s',
+                $dbName
+            );
+            /** @phpstan-ignore-next-line */
+            $bytes = $wpdb->get_var($prepared); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- information_schema size probe; no core helper exists; not a cacheable value (must reflect live size right before the dump)
+            return is_numeric($bytes) ? (int) $bytes : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
     }
 
     /**
@@ -1559,6 +1840,303 @@ final class RestoreRunner
     }
 
     /**
+     * health_check (GH #146 Gate 1): in-process DB probe (Probe A ONLY —
+     * see class docblock for why Probe B/the loopback WSOD gate is deferred
+     * to Gate 2/`health_check_live`). Runs BEFORE maintenance_off, so a
+     * rollback it triggers happens invisibly while the site is still in
+     * maintenance mode. On a definitive fatal, performs the combined
+     * files+DB rollback (`performRollback()`, via `routeRollback()`) BEFORE
+     * throwing — this method must never return normally on a failing
+     * verdict, so the dispatch loop can never fall through to
+     * maintenance_off/health_check_live/cleanup/completed on an unhealthy
+     * restore.
+     *
+     * Does NOT call `markClean()` on a pass — Gate 2 (`health_check_live`)
+     * is the LAST checkpoint before `completed`, so the shutdown guard stays
+     * armed across both gates; only Gate 2 passing marks it clean.
+     *
+     * @param array<string,mixed> $subState
+     * @return array<string,mixed>
+     * @throws RestoreHealthCheckFailed On a definitive health failure,
+     *         AFTER the rollback has already been performed.
+     */
+    private function runHealthCheck(array $subState): array
+    {
+        $result = (new RestoreHealthCheck($this->wpRoot()))->checkDatabase();
+
+        $this->postProgress(self::PHASE_HEALTH_CHECK, [
+            'ok'       => $result['ok'],
+            'failures' => $result['failures'],
+        ]);
+
+        if ($result['ok']) {
+            $subState['health_check'] = ['done' => true, 'ok' => true];
+            return $subState;
+        }
+
+        // Definitive DB failure — roll back BEFORE throwing (invisibly,
+        // still under maintenance mode at this point in the phase order).
+        $rolledBack = $this->routeRollback($subState);
+        if ($rolledBack['reason'] === '') {
+            $rolledBack['reason'] = 'db_unhealthy_post_restore';
+        }
+
+        throw new RestoreHealthCheckFailed(
+            // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception message, goes to server log/SSE, never browser output
+            'post-restore health check failed: ' . implode('; ', $result['failures']) . ' (' . $rolledBack['reason'] . ')',
+            $rolledBack // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- not output at all; the rollback-legs array the top-level catch persists to the task row
+        );
+    }
+
+    /**
+     * health_check_live (GH #146 Gate 2): the loopback WSOD probe (Probe B
+     * ONLY — Probe A already passed in Gate 1) against the REAL,
+     * post-maintenance site. Runs right AFTER maintenance_off — see class
+     * docblock for why a loopback probe run any earlier physically cannot
+     * observe a files-side WSOD (WordPress's own `.maintenance` 503 page
+     * renders before plugins even load).
+     *
+     * On a definitive fatal: re-enables maintenance for the duration of the
+     * rollback (so visitors don't see the broken site being reverted — see
+     * `performRollback()`'s own maintenance-toggle wrapper, which covers
+     * this uniformly for both the synchronous path here and a real
+     * shutdown-triggered `RestoreGuard::fire()`), then throws.
+     *
+     * On ok/inconclusive: marks the guard clean (this IS the last gate
+     * before `completed`) and proceeds to cleanup. The brief window a
+     * genuinely-broken restore was visitor-visible on the real site before
+     * THIS phase caught it is an accepted trade-off — strictly better than
+     * leaving it broken forever, and it never happens for a good restore.
+     *
+     * @param array<string,mixed> $subState
+     * @return array<string,mixed>
+     * @throws RestoreHealthCheckFailed On a definitive WSOD, AFTER the
+     *         rollback has already been performed.
+     */
+    private function runHealthCheckLive(array $subState): array
+    {
+        $result = (new RestoreHealthCheck($this->wpRoot()))->checkLoopbackOnly();
+
+        $this->postProgress(self::PHASE_HEALTH_CHECK_LIVE, [
+            'ok'       => $result['ok'],
+            'failures' => $result['failures'],
+            'warnings' => $result['warnings'],
+        ]);
+
+        if ($result['ok']) {
+            // Verified-good on the REAL site — the LAST gate before
+            // completed. Never let a later, unrelated shutdown roll back a
+            // confirmed-healthy restore (mirrors UpdateGuard::markClean()'s
+            // rationale exactly).
+            if ($this->guard !== null) {
+                $this->guard->markClean();
+            }
+            $subState['health_check_live'] = [
+                'done'     => true,
+                'ok'       => true,
+                'warnings' => $result['warnings'],
+            ];
+            return $subState;
+        }
+
+        // Definitive WSOD on the real, post-maintenance site (the GH #147
+        // class this gate exists to catch). performRollback() itself wraps
+        // the actual revert in maintenanceOn()/maintenanceOff() so visitors
+        // never see the broken site mid-revert.
+        $rolledBack = $this->routeRollback($subState);
+        if ($rolledBack['reason'] === '') {
+            $rolledBack['reason'] = 'wsod_post_restore';
+        }
+
+        throw new RestoreHealthCheckFailed(
+            // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception message, goes to server log/SSE, never browser output
+            'post-restore health check failed: ' . implode('; ', $result['failures']) . ' (' . $rolledBack['reason'] . ')',
+            $rolledBack // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- not output at all; the rollback-legs array the top-level catch persists to the task row
+        );
+    }
+
+    /**
+     * GH #146 / Review MEDIUM-3: route a definitive health-check failure
+     * (from EITHER gate) through the shutdown-guard's `fire()` when one is
+     * armed, rather than calling `performRollback()` directly, so its
+     * documented `fired` idempotency actually engages. Without this, the
+     * guard's `fired` flag would stay false after a successful synchronous
+     * rollback, and a later REAL process-shutdown invocation of the same
+     * registered callback (`markClean()` is never called on a failing
+     * verdict) would attempt a SECOND, redundant rollback against
+     * already-consumed rollback material.
+     *
+     * @param array<string,mixed> $subState
+     * @return array{files:bool,db:bool,reason:string}
+     */
+    private function routeRollback(array $subState): array
+    {
+        if ($this->guard !== null) {
+            $fired = $this->guard->fire();
+            return ['files' => $fired['files'], 'db' => $fired['db'], 'reason' => $fired['reason']];
+        }
+        return $this->performRollback($subState);
+    }
+
+    /**
+     * GH #146 / §3+§4: combined files+DB rollback, shared by both gates'
+     * synchronous failure handling (via `routeRollback()`) and a real
+     * shutdown-triggered `RestoreGuard::fire()` (same closure,
+     * `armGuardOnce()`). Order: a mismatch guard first (see below), then
+     * DB, then files, then a quick Probe A re-check (informational only —
+     * its result is logged, never thrown). Never throws — every leg is
+     * independently try/catch-wrapped so one leg failing does not prevent
+     * the other from being attempted.
+     *
+     * Review MEDIUM-4: if the live DB WAS actually swapped as part of this
+     * restore (`swap_db` ran) but no rollback source is available (the dump
+     * was skipped over the size ceiling, or the dump itself failed),
+     * reverting FILES ALONE would run the pre-restore files against the
+     * NEW (post-restore) database — a worse, incoherent "Frankenstein"
+     * mismatch than simply leaving the as-restored (if unhealthy) site in
+     * place. In that specific case this method performs NEITHER leg (and
+     * skips the maintenance toggle below entirely — nothing is being
+     * mutated, so there is nothing to hide) and reports
+     * `reason: 'db_rollback_unavailable'` so the operator gets a coherent
+     * (if broken) site plus whatever rollback material does exist on disk
+     * to investigate by hand — never a mismatched one. This does NOT apply
+     * to a `files`-kind restore (no `swap_db` ever ran, so there is nothing
+     * for the files revert to mismatch against).
+     *
+     * GH #146 two-gate follow-up: the actual revert (DB + files) is wrapped
+     * in `maintenanceOn()` / `finally maintenanceOff()` UNCONDITIONALLY —
+     * this is what protects visitors during a Gate-2 (post-maintenance-off)
+     * rollback, and it's a harmless no-op re-enable/immediate-disable
+     * during a Gate-1 rollback (maintenance is already on there; the
+     * existing top-level `run()` catch drops it again regardless). Wrapping
+     * it HERE (rather than duplicating the toggle in both
+     * `runHealthCheckLive()` and `armGuardOnce()`'s closure) means a real
+     * shutdown-triggered `RestoreGuard::fire()` gets the SAME visitor
+     * protection as the synchronous path, with no separate handling needed.
+     *
+     * @param array<string,mixed> $subState Freshest known sub_state. The
+     *        synchronous health-check path passes the in-memory one;
+     *        `RestoreGuard`'s closure reloads fresh from the DB at
+     *        fire()-time since further phases may have run since arm().
+     * @return array{files:bool,db:bool,reason:string} Which legs actually
+     *         completed; `reason` is non-empty only when neither leg was
+     *         even attempted (the mismatch guard above).
+     */
+    private function performRollback(array $subState): array
+    {
+        $dbRollback   = isset($subState['db_rollback']) && is_array($subState['db_rollback']) ? $subState['db_rollback'] : [];
+        $dbWasSwapped = !empty($subState['swap_db']['done']);
+        $dumpPath     = (string) ($dbRollback['dump_path'] ?? '');
+        $dbRollbackAvailable = !empty($dbRollback['available']) && $dumpPath !== '' && is_file($dumpPath);
+
+        if ($dbWasSwapped && !$dbRollbackAvailable) {
+            \WPMgr\Agent\Support\DebugLog::write(
+                'WPMgr RestoreRunner: skipping rollback — the live DB was swapped but no rollback source is '
+                . 'available; reverting files alone would mismatch the pre-restore files against the new DB'
+            );
+            return ['files' => false, 'db' => false, 'reason' => 'db_rollback_unavailable'];
+        }
+
+        $dbOk    = false;
+        $filesOk = false;
+
+        // Protect visitors for the duration of the actual revert — dropped
+        // again in the finally below regardless of outcome. See method doc
+        // for why this is unconditional (both gates, sync AND async fire).
+        $this->maintenanceOn();
+        try {
+            // --- 1. DB revert ------------------------------------------------
+            if ($dbRollbackAvailable) {
+                $dbOk = $this->revertDb($dumpPath);
+            }
+
+            // --- 2. Files revert -----------------------------------------------
+            $swap = isset($subState['swap_files']) && is_array($subState['swap_files']) ? $subState['swap_files'] : [];
+            try {
+                $restorer = new FilesRestorer();
+                if (isset($swap['old_files_dir']) && is_string($swap['old_files_dir']) && $swap['old_files_dir'] !== '') {
+                    $restorer->revertSwap($this->wpContentPath(), $swap['old_files_dir'], $this->restoreId());
+                    $filesOk = true;
+                } elseif (isset($swap['old_dirs']) && is_array($swap['old_dirs']) && $swap['old_dirs'] !== []) {
+                    /** @var array<string,string> $oldDirs */
+                    $oldDirs = $swap['old_dirs'];
+                    $restorer->revertSwapComponents($this->wpContentPath(), $oldDirs, $this->restoreId());
+                    $filesOk = true;
+                }
+            } catch (\Throwable $e) {
+                \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: files rollback failed: ' . $e->getMessage());
+            }
+        } finally {
+            $this->maintenanceOff();
+        }
+
+        // --- 3. Quick Probe A re-check (informational only) ----------------
+        try {
+            $recheck = (new RestoreHealthCheck($this->wpRoot()))->checkDatabase();
+            if (!$recheck['ok']) {
+                \WPMgr\Agent\Support\DebugLog::write(
+                    'WPMgr RestoreRunner: post-rollback DB re-check still unhealthy: ' . implode('; ', $recheck['failures'])
+                );
+            }
+        } catch (\Throwable $_) {
+        }
+
+        return ['files' => $filesOk, 'db' => $dbOk, 'reason' => ''];
+    }
+
+    /**
+     * GH #146: replay the pre-restore dump exactly as
+     * `DbSnapshotCommand::actionRevert()` does — `new DbRestorer($creds)` ->
+     * `restore()` into a fresh tmp prefix -> `swap()` back onto the live
+     * prefix, `dropTmpTables()` on error. Same source/target prefix on
+     * purpose: the dump was taken FROM this site's own live tables, so
+     * reverting lands back onto those same tables.
+     */
+    private function revertDb(string $dumpPath): bool
+    {
+        $creds     = $this->dbCreds();
+        $srcPrefix = $this->targetPrefix();
+        $tmpPrefix = 'wpmrb' . substr(bin2hex(random_bytes(6)), 0, 10) . '_';
+        $restorer  = new DbRestorer($creds);
+        $noop      = static function (string $phase, array $detail): void {
+        };
+
+        try {
+            $tmpTables = $restorer->restore($dumpPath, $tmpPrefix, $srcPrefix, $noop);
+            $restorer->swap($tmpPrefix, $srcPrefix, $tmpTables, $noop);
+            return true;
+        } catch (\Throwable $e) {
+            \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: DB rollback failed: ' . $e->getMessage());
+            try {
+                $restorer->dropTmpTables($tmpPrefix);
+            } catch (\Throwable $_) {
+            }
+            return false;
+        }
+    }
+
+    /**
+     * GH #146 / §4: arm the RestoreGuard shutdown backstop exactly once per
+     * run() invocation, right before the first destructive rename
+     * (`swap_files`/`swap_db`). The rollback closure reloads sub_state
+     * fresh from the DB at fire()-time (not the value captured here) since
+     * later phases may have recorded MORE rollback material (e.g. the DB
+     * dump path, or the files old-dir) between arming and a crash.
+     */
+    private function armGuardOnce(): void
+    {
+        if ($this->guard !== null) {
+            return;
+        }
+        $this->guard = new RestoreGuard(function (): array {
+            $task     = $this->loadTask();
+            $subState = $task !== null ? $task['sub_state'] : [];
+            return $this->performRollback($subState);
+        });
+        $this->guard->arm();
+    }
+
+    /**
      * maintenance_off: drop the `.maintenance` file.
      */
     private function runMaintenanceOff(array $subState): array
@@ -1571,29 +2149,54 @@ final class RestoreRunner
 
     /**
      * cleanup: drop downloaded artifacts, then deal with the per-run
-     * `.wpmgr-old-files-<id>/` rollback tree.
+     * `.wpmgr-old-files-<id>/` rollback tree (+ the GH #146 pre-restore DB
+     * dump, if one was captured).
      *
      * The rollback tree is the live wp-content that swap_files moved aside.
      * Pre-0.9.5 we kept it for 24h on every restore, which routinely tipped
-     * small-VPS hosts into disk-red. 0.9.5 flips the default:
+     * small-VPS hosts into disk-red. 0.9.5 flipped the default to a
+     * synchronous immediate rrmdir. GH #146 flips it again — to DEFER:
      *
-     *   - `keep_old_files !== true` (DEFAULT): synchronously rrmdir the
-     *     exact dir recorded in sub_state during swap_files. No glob — two
-     *     concurrent restores on the same host would otherwise clobber each
-     *     other's rollback trees.
-     *   - `keep_old_files === true`: schedule the 24h GC the way pre-0.9.5
-     *     did, for operators who explicitly want a long manual-rollback
-     *     window.
+     *   - `keep_old_files !== true` (DEFAULT): defer via a `<path>.expires`
+     *     marker (`FilesRestorer::OLDFILES_GC_AGE_SECONDS`, ~1h) + a
+     *     `wpmgr_restore_oldfiles_gc` cron sweep, rather than synchronously
+     *     rrmdir-ing. The tree (and the pre-restore DB dump) must still
+     *     exist for a health-check-triggered rollback to act on in the few
+     *     minutes right after a restore reports its outcome — a synchronous
+     *     delete here would remove the ONLY rollback source before that
+     *     window even opens (health_check already runs BEFORE cleanup, so
+     *     in practice a health-check rollback always precedes this method,
+     *     but a manual/forensic revert shortly after `completed` needs the
+     *     same material).
+     *   - `keep_old_files === true`: unchanged — schedules the existing 24h
+     *     GC window for operators who explicitly want a long manual-
+     *     rollback window.
+     *
+     * Not a glob for the per-restore marker writes below — two concurrent
+     * restores on the same host each write their OWN `.expires` marker
+     * next to their OWN exact recorded path, so they never clobber each
+     * other.
      */
     private function runCleanup(array $subState): array
     {
-        // 1. Remove the downloaded artifacts from scratch.
+        // GH #146: the pre-restore DB dump (if captured) lives inside
+        // scratch — carve it (and its own `.expires` marker, written below)
+        // out of the artifact wipe so it survives the retention window.
+        $dbRollback = isset($subState['db_rollback']) && is_array($subState['db_rollback']) ? $subState['db_rollback'] : [];
+        $dumpPath   = (string) ($dbRollback['dump_path'] ?? '');
+        $dumpBase   = $dumpPath !== '' && is_file($dumpPath) ? basename($dumpPath) : '';
+
+        // 1. Remove the downloaded artifacts from scratch (keeping the
+        // pre-restore DB dump, if any).
         $scratch = $this->scratchDir();
         if ($scratch !== '' && is_dir($scratch)) {
             $items = @scandir($scratch);
             if ($items !== false) {
                 foreach ($items as $i) {
                     if ($i === '.' || $i === '..') {
+                        continue;
+                    }
+                    if ($dumpBase !== '' && ($i === $dumpBase || $i === $dumpBase . '.expires')) {
                         continue;
                     }
                     $p = $scratch . DIRECTORY_SEPARATOR . $i;
@@ -1604,7 +2207,11 @@ final class RestoreRunner
                     }
                 }
             }
-            @rmdir($scratch); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removes an empty server-derived scratch dir; WP_Filesystem not initialized
+            // Only remove the scratch dir itself when nothing is left in
+            // it — the dump, if kept, still lives here.
+            if ($dumpBase === '' || !is_file($scratch . DIRECTORY_SEPARATOR . $dumpBase)) {
+                @rmdir($scratch); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removes an empty server-derived scratch dir; WP_Filesystem not initialized
+            }
         }
 
         // 2. Old-files disposition. Track 5 — two shapes:
@@ -1617,50 +2224,35 @@ final class RestoreRunner
         $oldFilesDir = (string) ($swap['old_files_dir'] ?? '');
         $oldDirs     = isset($swap['old_dirs']) && is_array($swap['old_dirs']) ? $swap['old_dirs'] : [];
 
-        if ($keepOld) {
-            // Operator opted into the long-window manual-rollback path.
-            // Schedule a 24h GC + 60s grace to sweep the exact dir later.
-            if (function_exists('wp_next_scheduled') && function_exists('wp_schedule_single_event')) {
-                if (!wp_next_scheduled('wpmgr_restore_oldfiles_gc')) {
-                    wp_schedule_single_event(
-                        time() + FilesRestorer::OLDFILES_GC_AGE_SECONDS_LONG + 60,
-                        'wpmgr_restore_oldfiles_gc'
-                    );
-                }
+        $expiresAt = time() + ($keepOld ? FilesRestorer::OLDFILES_GC_AGE_SECONDS_LONG : FilesRestorer::OLDFILES_GC_AGE_SECONDS);
+
+        // GH #146: mark the files rollback tree(s) with an `.expires`
+        // sidecar recording exactly when `FilesRestorer::gcOldFiles()` may
+        // reclaim them, then leave them in place (DEFER — no synchronous
+        // rrmdir on either branch anymore).
+        if ($oldFilesDir !== '' && is_dir($oldFilesDir)) {
+            $this->writeGcExpiryMarker($oldFilesDir, $expiresAt);
+        }
+        foreach ($oldDirs as $comp => $abs) {
+            if (!is_string($abs) || $abs === '') {
+                continue;
             }
-        } else {
-            // Default path: synchronous rrmdir of the EXACT dirs recorded in
-            // sub_state. Not a glob — two concurrent restores on the same
-            // host would lose each other's rollback trees on a glob sweep.
-            if ($oldFilesDir !== '' && is_dir($oldFilesDir)) {
-                $this->rrmdir($oldFilesDir);
-            }
-            foreach ($oldDirs as $comp => $abs) {
-                if (!is_string($abs) || $abs === '') {
-                    continue;
-                }
-                if ($comp === 'wp-content') {
-                    // The catch-all component's rollback is a glob of
-                    // `.wpmgr-old-wpcontent-<short>-*` siblings — the marker
-                    // path recorded in sub_state is the common prefix; expand
-                    // it. This is the ONE place we use a glob, and it's
-                    // bounded to a per-restore prefix, so concurrent restores
-                    // don't clobber each other.
-                    $hits = @glob($abs . '-*');
-                    if (is_array($hits)) {
-                        foreach ($hits as $h) {
-                            if (is_dir($h)) {
-                                $this->rrmdir($h);
-                            } elseif (is_file($h) || is_link($h)) {
-                                wp_delete_file($h);
-                            }
-                        }
-                    }
-                    continue;
-                }
-                if (is_dir($abs)) {
-                    $this->rrmdir($abs);
-                }
+            // The 'wp-content' catch-all's $abs is a naming PREFIX (never a
+            // real directory itself — only its `-<name>` siblings are);
+            // gcOldFiles() detects this shape at sweep time and expands it.
+            $this->writeGcExpiryMarker($abs, $expiresAt);
+        }
+
+        // GH #146 / §5: keep the pre-restore DB dump for the SAME window as
+        // the files rollback tree, GC'd by the same cron sweep
+        // (RestoreRunner::gcPreRestoreDumps(), bound to the same hook).
+        if ($dumpBase !== '' && is_file($dumpPath)) {
+            $this->writeGcExpiryMarker($dumpPath, $expiresAt);
+        }
+
+        if (function_exists('wp_next_scheduled') && function_exists('wp_schedule_single_event')) {
+            if (!wp_next_scheduled('wpmgr_restore_oldfiles_gc')) {
+                wp_schedule_single_event($expiresAt + 60, 'wpmgr_restore_oldfiles_gc');
             }
         }
 
@@ -1992,11 +2584,42 @@ final class RestoreRunner
      * Best-effort cleanup of the per-run scratch dir + dedup row. Called on
      * COMPLETED.
      */
-    private function cleanupOnCompleted(): void
+    /**
+     * @param array<string,mixed> $subState Final sub_state, so the GH #146
+     *        pre-restore DB dump (deliberately kept for its retention
+     *        window by `runCleanup()`, which already ran as the preceding
+     *        phase) is not immediately wiped out again by this method's
+     *        own scratch-dir sweep.
+     */
+    private function cleanupOnCompleted(array $subState): void
     {
         $scratch = $this->scratchDir();
         if ($scratch !== '' && is_dir($scratch)) {
-            $this->rrmdir($scratch);
+            $dbRollback = isset($subState['db_rollback']) && is_array($subState['db_rollback']) ? $subState['db_rollback'] : [];
+            $dumpPath   = (string) ($dbRollback['dump_path'] ?? '');
+            if ($dumpPath !== '' && is_file($dumpPath)) {
+                // GH #146 / §5: the pre-restore dump (+ its `.expires`
+                // marker) was deliberately kept by runCleanup() for the
+                // retention window — leave the scratch dir (and just those
+                // two files) alone; the GC sweep reclaims both later.
+                $dumpBase = basename($dumpPath);
+                $items    = @scandir($scratch);
+                if ($items !== false) {
+                    foreach ($items as $i) {
+                        if ($i === '.' || $i === '..' || $i === $dumpBase || $i === $dumpBase . '.expires') {
+                            continue;
+                        }
+                        $p = $scratch . DIRECTORY_SEPARATOR . $i;
+                        if (is_file($p)) {
+                            wp_delete_file($p);
+                        } elseif (is_dir($p)) {
+                            $this->rrmdir($p);
+                        }
+                    }
+                }
+            } else {
+                $this->rrmdir($scratch);
+            }
         }
 
         global $wpdb;
@@ -2301,5 +2924,74 @@ final class RestoreRunner
             }
         }
         @rmdir($dir); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removes an empty server-derived scratch/snapshot dir; WP_Filesystem not initialized
+    }
+
+    /**
+     * GH #146 / §5: write a `<targetPath>.expires` sidecar recording the
+     * unix timestamp after which `FilesRestorer::gcOldFiles()` (files) or
+     * `self::gcPreRestoreDumps()` (the DB dump) may reclaim it. Best-effort
+     * — a failed write just means the legacy mtime-vs-LONG-threshold
+     * fallback applies instead, which is still safe (only ever LATER than
+     * intended, never earlier).
+     */
+    private function writeGcExpiryMarker(string $targetPath, int $expiresAt): void
+    {
+        @file_put_contents($targetPath . '.expires', (string) $expiresAt, LOCK_EX);
+    }
+
+    /**
+     * GH #146 / §5: GC pre-restore DB dumps (+ their `.expires` markers)
+     * once their retention window elapses. Bound to the SAME
+     * `wpmgr_restore_oldfiles_gc` cron hook `FilesRestorer::gcOldFiles()`
+     * uses, so both halves of the rollback material (files tree + DB dump)
+     * age out on the same sweep.
+     *
+     * @return void
+     */
+    public static function gcPreRestoreDumps(): void
+    {
+        if (!defined('WP_CONTENT_DIR')) {
+            return;
+        }
+        $base = rtrim((string) WP_CONTENT_DIR, '/\\') . '/wpmgr-agent/restores';
+        if (!is_dir($base)) {
+            return;
+        }
+
+        $now  = time();
+        $dirs = @glob($base . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR);
+        if (!is_array($dirs)) {
+            return;
+        }
+
+        foreach ($dirs as $dir) {
+            $markers = @glob($dir . DIRECTORY_SEPARATOR . '*.expires');
+            if (!is_array($markers) || $markers === []) {
+                continue;
+            }
+            foreach ($markers as $marker) {
+                $target = substr($marker, 0, -strlen('.expires'));
+                $raw    = @file_get_contents($marker);
+                $expiresAt = $raw !== false && trim($raw) !== '' ? (int) trim($raw) : 0;
+
+                if ($expiresAt <= 0) {
+                    wp_delete_file($marker);
+                    continue;
+                }
+                if ($now < $expiresAt) {
+                    continue;
+                }
+                if (is_file($target)) {
+                    wp_delete_file($target);
+                }
+                wp_delete_file($marker);
+            }
+
+            // Reclaim the now-empty per-restore scratch dir.
+            $remaining = @scandir($dir);
+            if (is_array($remaining) && count($remaining) <= 2) {
+                @rmdir($dir); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removes an empty server-derived scratch dir; WP_Filesystem not initialized
+            }
+        }
     }
 }
