@@ -3,6 +3,14 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* Tells the UA which palette native controls should render with (select
+     option popups, date/time pickers, scrollbars, form-field chrome). Theme
+     is driven by the `.dark` class on <html> (see lib/theme-store.ts), so
+     this must be set here AND overridden in `.dark` below - without it a
+     native <select>'s expanded option list falls back to the OS light
+     default even when the rest of the app is dark (GH #150). */
+  color-scheme: light;
+
   /* Surfaces - tinted neutrals at hue 195, chroma 0.008 */
   --background:         oklch(99%   0.004 195);
   --foreground:         oklch(18%   0.012 195);
@@ -59,6 +67,8 @@
 }
 
 .dark {
+  color-scheme: dark;
+
   --background:         oklch(15%   0.012 195);
   --foreground:         oklch(94%   0.008 195);
   --card:               oklch(19%   0.014 195);

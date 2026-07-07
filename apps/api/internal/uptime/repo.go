@@ -356,6 +356,7 @@ LIMIT $4
 			}
 			item := FleetIncidentItem{
 				SiteID:        siteID,
+				Kind:          string(AlertDown),
 				SiteName:      siteName,
 				SiteURL:       siteURL,
 				Ongoing:       inIncident,

@@ -129,6 +129,8 @@ export interface SiteCardProps {
   cardSize: CardSize;
   selectionCount: number;
   onOpenAutoLogin?: (site: Site) => void;
+  /** Opens the site's detail page — wired to the "Open site" menu action. */
+  onOpenDetail?: (site: Site) => void;
   onDisconnect?: (site: Site) => void;
   onReconnect?: (site: Site) => void;
 }
@@ -140,6 +142,7 @@ export function SiteCard({
   cardSize,
   selectionCount,
   onOpenAutoLogin,
+  onOpenDetail,
   onDisconnect,
   onReconnect,
 }: SiteCardProps) {
@@ -270,6 +273,7 @@ export function SiteCard({
               site={site}
               connectionState={connectionState}
               onOpenAutoLogin={onOpenAutoLogin}
+              onOpenDetail={onOpenDetail}
               onDisconnect={onDisconnect}
               onReconnect={onReconnect}
             />

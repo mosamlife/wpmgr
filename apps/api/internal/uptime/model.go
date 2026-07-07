@@ -88,18 +88,18 @@ type FleetStatusCounts struct {
 // apps/web/src/features/fleet/fleet-types.ts — do not rename without
 // updating both sides.
 type FleetStatusItem struct {
-	SiteID          uuid.UUID       `json:"site_id"`
-	Name            string          `json:"name"`
-	URL             string          `json:"url"`
-	ConnectionState string          `json:"connection_state"`
-	HealthStatus    string          `json:"health_status"`
-	Status          FleetSiteStatus `json:"status"`
-	Up              *bool           `json:"up"`
-	LastProbeAt     *time.Time      `json:"last_probe_at"`
-	UptimePct7d     float64         `json:"uptime_pct_7d"`
-	AvgLatencyMs    *float64        `json:"avg_latency_ms"`
-	TLSExpiry       *time.Time      `json:"tls_expiry"`
-	LatencySparkline []float64      `json:"latency_sparkline"`
+	SiteID           uuid.UUID       `json:"site_id"`
+	Name             string          `json:"name"`
+	URL              string          `json:"url"`
+	ConnectionState  string          `json:"connection_state"`
+	HealthStatus     string          `json:"health_status"`
+	Status           FleetSiteStatus `json:"status"`
+	Up               *bool           `json:"up"`
+	LastProbeAt      *time.Time      `json:"last_probe_at"`
+	UptimePct7d      float64         `json:"uptime_pct_7d"`
+	AvgLatencyMs     *float64        `json:"avg_latency_ms"`
+	TLSExpiry        *time.Time      `json:"tls_expiry"`
+	LatencySparkline []float64       `json:"latency_sparkline"`
 	// InIncident is kept for internal use (summary counting) but not needed
 	// by the frontend contract — retained for the service-layer logic.
 	InIncident bool `json:"in_incident"`
@@ -131,13 +131,26 @@ type FleetSiteInfo struct {
 // recently-alerted sites (last_alert_at >= since). Calling code must treat
 // ended_at / duration_seconds as estimates (derived from updated_at on the
 // alert-state row, not from a true incident-close timestamp).
+//
+// JSON field names are pinned to the frontend contract consumed by the fleet
+// incidents panel (GH #148) — do not rename without updating both sides.
+// EndedAt and DurationSeconds intentionally do NOT use `omitempty`: an open
+// incident must marshal them as explicit `null`, not omit the key, so the web
+// client's `=== null` check can distinguish "ongoing" from a missing field
+// (an omitted key deserializes to `undefined`, not `null`, and produced
+// "NaNh" duration on open incidents).
 type FleetIncidentItem struct {
-	SiteID          uuid.UUID  `json:"site_id"`
-	SiteName        string     `json:"site_name"`
-	SiteURL         string     `json:"site_url"`
+	SiteID uuid.UUID `json:"site_id"`
+	// Kind is always "down": the alert state machine (see Evaluate in
+	// alerts.go) opens an incident only on a down-threshold crossing —
+	// "degraded" is a live fleet-status derivation (deriveFleetStatus) and is
+	// never persisted as an incident state.
+	Kind            string     `json:"kind"`
+	SiteName        string     `json:"name"`
+	SiteURL         string     `json:"url"`
 	StartedAt       *time.Time `json:"started_at,omitempty"`
-	EndedAt         *time.Time `json:"ended_at,omitempty"`
-	DurationSeconds *int64     `json:"duration_seconds,omitempty"`
+	EndedAt         *time.Time `json:"ended_at"`
+	DurationSeconds *int64     `json:"duration_seconds"`
 	Ongoing         bool       `json:"ongoing"`
 	LatestTotalMs   *float64   `json:"latest_total_ms,omitempty"`
 }

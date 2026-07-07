@@ -23,6 +23,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { useShellState } from "@/components/layout/app-shell-context";
+import {
+  buildBreadcrumbCrumbs,
+  type Crumb,
+} from "@/components/layout/top-bar-helpers";
 import { useCommandPalette } from "@/features/command/use-command-palette";
 import { useLogout, useMe } from "@/features/auth/use-auth";
 import { useBulkAction } from "@/features/sites/use-bulk-action";
@@ -124,12 +128,8 @@ export function TopBar() {
 }
 
 // ── Breadcrumb ───────────────────────────────────────────────────────────────
-
-interface Crumb {
-  label: string;
-  /** Absolute pathname this crumb links to, or null for the leaf. */
-  to: string | null;
-}
+// Pure crumb-building logic (routeless-segment allowlist, humanize map) lives
+// in ./top-bar-helpers so it is unit-testable without mounting the router.
 
 /**
  * Derive a humanized breadcrumb from the current pathname. We don't (yet)
@@ -141,42 +141,7 @@ interface Crumb {
  * Separator is ">" (a `ChevronRight` icon), never an em dash.
  */
 function useBreadcrumb(pathname: string): Crumb[] {
-  return useMemo(() => {
-    const segments = pathname.split("/").filter(Boolean);
-    if (segments.length === 0) return [{ label: "Home", to: null }];
-    const crumbs: Crumb[] = [];
-    let acc = "";
-    segments.forEach((segment, i) => {
-      acc += `/${segment}`;
-      const isLast = i === segments.length - 1;
-      crumbs.push({
-        label: humanize(segment),
-        to: isLast ? null : acc,
-      });
-    });
-    return crumbs;
-  }, [pathname]);
-}
-
-const TITLES: Record<string, string> = {
-  sites: "Sites",
-  updates: "Updates",
-  backups: "Backups",
-  migrations: "Migrations",
-  uptime: "Uptime",
-  performance: "Performance",
-  vulnerabilities: "Vulnerabilities",
-  audit: "Audit",
-  settings: "Settings",
-  alerts: "Alerts",
-  "api-keys": "API keys",
-};
-
-function humanize(segment: string): string {
-  if (TITLES[segment]) return TITLES[segment];
-  // Path params arrive as raw values (e.g. an ID). Display them in mono via
-  // the consumer; here we just pass through.
-  return segment;
+  return useMemo(() => buildBreadcrumbCrumbs(pathname), [pathname]);
 }
 
 function Breadcrumb({ crumbs }: { crumbs: Crumb[] }) {
