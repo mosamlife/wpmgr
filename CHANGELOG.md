@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.32] - 2026-07-07
+
+### Fixed
+
+- The backup working directory (`wpmgr-agent/runs`) was only cleaned up after a successful backup, so a failed or interrupted backup run left its temporary files behind permanently, slowly consuming disk on the site (a small fleet had accumulated over a gigabyte this way). A daily janitor now removes the scratch directories of finished runs once they are safely past being active (older than six hours and not a currently-running backup), reclaiming that space. It never touches an in-progress backup and fails safe on anything it cannot read. Requires agent 0.61.13.
+
 ## [0.61.31] - 2026-07-07
 
 ### Added
