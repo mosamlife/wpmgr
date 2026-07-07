@@ -16,11 +16,17 @@
  *
  * Ingest contract (must match the Go control-plane POST /rum/ingest handler):
  *   key    string  plaintext public beacon key
- *   url    string  window.location.href
+ *   url    string  page URL with the query string AND hash stripped (origin +
+ *                  pathname only — see stripQuery() below)
  *   metric string  lowercase one of: lcp | inp | cls | ttfb | fcp
  *   value  number  integer milliseconds (CLS: Math.round(value * 1000))
  *   device string  desktop | mobile | tablet
  *   conn   string  4g | 3g | 2g | slow-2g | offline | unknown
+ *
+ * Privacy note: the query string and hash are deliberately dropped before the
+ * URL is sent. A query string can carry sensitive per-visit tokens (e.g. a
+ * WooCommerce order-received key on an anonymous order-confirmation page); the
+ * pathname alone still groups metrics per-page, which is all RUM needs.
  *
  * Transport: Blob("text/plain") keeps the request CORS-simple (no preflight).
  * Licensing note: web-vitals is Apache-2.0 (Google LLC). Bundled here under
@@ -95,6 +101,25 @@ function connType(): string {
     return 'unknown';
   } catch {
     return 'unknown';
+  }
+}
+
+/**
+ * Strip the query string and hash from the current page URL, keeping only
+ * origin + pathname. Query strings can carry sensitive per-visit tokens (a
+ * WooCommerce order-received key, a nonce, a session/cart identifier passed
+ * as a URL param by some checkout flows); the pathname alone is sufficient
+ * for RUM's per-page metric grouping and carries no such risk.
+ *
+ * Falls back to the raw href (best-effort) if the URL API is unavailable,
+ * which should not happen in any browser new enough to run this collector.
+ */
+function stripQuery(href: string): string {
+  try {
+    const u = new URL(href);
+    return u.origin + u.pathname;
+  } catch {
+    return href;
   }
 }
 
@@ -175,7 +200,9 @@ export function init(): void {
     }
 
     // Snapshot context once — these don't change during the page load.
-    const pageUrl = window.location.href;
+    // Query string + hash are stripped (see stripQuery() docblock) so no
+    // per-visit token ever leaves the browser.
+    const pageUrl = stripQuery(window.location.href);
     const device = deviceType();
     const conn = connType();
 

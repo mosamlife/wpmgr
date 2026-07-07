@@ -105,6 +105,8 @@ use WPMgr\Agent\Email\ProviderRouter;
 use WPMgr\Agent\Email\SuppressionCache;
 use WPMgr\Agent\Optimizer\Bloat;
 use WPMgr\Agent\Optimizer\DbCleanup;
+use WPMgr\Agent\Optimizer\PerfConfig;
+use WPMgr\Agent\Optimizer\RumInjector;
 use WPMgr\Agent\Diagnostics\SizeProbe;
 use WPMgr\Agent\Media\DiskWriter;
 use WPMgr\Agent\Media\HtaccessInstaller;
@@ -636,6 +638,20 @@ final class Plugin
         // inert site pays just a single option read. A real method (not a
         // closure) keeps the hook table serialization-safe.
         add_action('init', [$this, 'registerBloatHooks'], 0);
+
+        // RUM (Real User Monitoring) beacon injection (GH #154 fix). Like
+        // de-bloat, this must be registered INDEPENDENTLY of the cache-writer's
+        // ob_start pipeline — the collector was previously injected only inside
+        // that buffer, so a site with WPMgr page caching OFF (the norm when a
+        // third-party page cache serves the site) or served from a third-party
+        // cache HIT never received the collector and silently reported zero
+        // data. wp_head fires on every WordPress-rendered response regardless of
+        // any cache path, so binding there is the cache-independent fix. Bound
+        // on `init`; registerRumHooks() reads the perf config once and only adds
+        // the wp_head hook when rumEnabled is on, so an inert site pays just a
+        // single option read. A real method (not a closure) keeps the hook table
+        // serialization-safe.
+        add_action('init', [$this, 'registerRumHooks'], 0);
 
         // DB-classify source-scan cache busting. When a plugin is activated or
         // deactivated the plugin-to-table-name source-scan map (stored in the
@@ -2045,6 +2061,48 @@ final class Plugin
     public function registerBloatHooks(): void
     {
         (new Bloat())->register();
+    }
+
+    /**
+     * RUM (Real User Monitoring) — bind the wp_head beacon-injection callback.
+     *
+     * Cache-independent by design (GH #154): the RUM collector used to be
+     * injected only inside the page-cache/optimizer output buffer (Optimizer
+     * stage 11), so a site with WPMgr page caching OFF — the norm when a
+     * third-party page cache serves the site — or served from a third-party
+     * cache HIT never got the collector, and rum_rollup stayed empty with no
+     * warning. wp_head is independent of any cache path: it fires on every
+     * WordPress-rendered response, so binding the injector there (at a late
+     * priority so it never blocks other <head> output) fixes the gap. Reads
+     * the perf config once and only registers the wp_head hook when rumEnabled
+     * is on, so an inert site pays just a single option read.
+     *
+     * @return void
+     */
+    public function registerRumHooks(): void
+    {
+        $config = PerfConfig::load();
+        if (!$config->rumEnabled || !function_exists('add_action')) {
+            return;
+        }
+        // Priority 99: prints near the end of <head>, faithfully replacing the
+        // former splice-before-</head> position without depending on any output
+        // buffer being open.
+        add_action('wp_head', [$this, 'renderRumHead'], 99);
+    }
+
+    /**
+     * wp_head callback (priority 99, bound by {@see registerRumHooks()}).
+     * Builds a fresh RumInjector (it loads PerfConfig itself) and delegates to
+     * its per-request guard chain (anonymous/GET/200/CSP/etc — see
+     * RumInjector::renderHead()). A real method (not a closure) keeps the hook
+     * table serialization-safe.
+     *
+     * @return void
+     */
+    public function renderRumHead(): void
+    {
+        (new RumInjector())->renderHead();
     }
 
     /**

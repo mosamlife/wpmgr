@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.27] - 2026-07-07
+
+### Fixed
+
+- Real User Monitoring collected no data on sites served by a third-party page cache. The collector script was injected only inside WPMgr's own page-cache output, so when a different cache served the pages (the common setup when a dedicated caching plugin is active, or when WPMgr's own cache was off) the script was never delivered and the Performance dashboard stayed empty with no warning. The collector is now injected on a standard WordPress hook during page generation, so whichever cache serves the page captures it and RUM works independently of WPMgr's own cache. Requires agent 0.61.11. As part of this the beacon now sends the page path without its query string, so per-page metrics no longer carry query parameters.
+
 ## [0.61.26] - 2026-07-06
 
 ### Fixed
