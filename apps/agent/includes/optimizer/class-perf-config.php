@@ -322,6 +322,11 @@ final class PerfConfig
      * Whether ANY request-path transform is enabled. Lets the cache writer skip
      * the whole optimizer pipeline (and its DOM scans) on an inert site.
      *
+     * rumEnabled is deliberately EXCLUDED here (GH #154): RUM is injected via a
+     * standalone wp_head action (see RumInjector::renderHead() /
+     * Plugin::registerRumHooks()), not via this optimizer pipeline, so a
+     * RUM-only site must not force the optimizer buffer active.
+     *
      * @return bool
      */
     public function anyHtmlTransformEnabled(): bool
@@ -339,8 +344,7 @@ final class PerfConfig
             || $this->youtubePlaceholder
             || $this->selfHostGravatars
             || $this->cdn
-            || $this->cacheLinkPrefetch
-            || $this->rumEnabled;
+            || $this->cacheLinkPrefetch;
     }
 
     /**

@@ -18,7 +18,16 @@
  *   8. JS delay      data-src rewrite + inject the delay runtime
  *   9. Speculation   prefetch rules
  *  10. CDN rewrite   asset URLs -> CDN host
- *  11. RUM beacon    inject config snippet + collector <script> before </body>
+ *
+ * RUM (Real User Monitoring) beacon injection is NOT a stage in this pipeline
+ * (GH #154): it used to run here as a final stage, but that meant the collector
+ * was only ever injected inside THIS cache-writer output buffer — so a site
+ * with WPMgr page caching off (the norm when a third-party page cache serves
+ * the site), or a page served from a third-party cache HIT, never received the
+ * collector at all and RUM silently collected zero data. RUM is now injected
+ * by RumInjector::renderHead(), bound directly to the `wp_head` action
+ * (Plugin::registerRumHooks()), independent of this optimizer/cache pipeline
+ * entirely.
  *
  * Every transform is config-gated and a no-op when its flag is off. The whole
  * run() is wrapped so a transform failure can never corrupt or drop the page —
@@ -191,12 +200,9 @@ final class Optimizer
             $html = $this->stage($html, fn (string $h): string => (new CdnRewrite($this->config))->process($h));
         }
 
-        // 11. RUM beacon injection — MUST be last so the snippet is never
-        //     processed by any earlier transform (minify, CDN rewrite, etc.).
-        //     The stage() guard ensures a failure here can never break the page.
-        if ($this->config->rumEnabled) {
-            $html = $this->stage($html, fn (string $h): string => (new RumInjector($this->config))->process($h));
-        }
+        // RUM beacon injection is deliberately NOT a stage here — see the class
+        // docblock (GH #154). It is injected via a wp_head action instead, so it
+        // no longer requires this optimizer buffer to be active.
 
         return $html;
     }
