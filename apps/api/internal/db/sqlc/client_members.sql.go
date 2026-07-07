@@ -74,7 +74,8 @@ FROM client_members cm
 JOIN clients cl
   ON cl.id = cm.client_id AND cl.tenant_id = cm.tenant_id
  AND cl.archived_at IS NULL
-WHERE cm.user_id = $1
+JOIN tenants t ON t.id = cm.tenant_id
+WHERE cm.user_id = $1 AND t.deleted_at IS NULL
 ORDER BY cm.created_at ASC LIMIT 1
 `
 
@@ -83,6 +84,11 @@ ORDER BY cm.created_at ASC LIMIT 1
 // portal-only users (mirrors FirstActiveShareTenant in auth/repo.go).
 // Archived clients are excluded so a stale earliest membership cannot
 // shadow a live one in another tenant.
+//
+// GH #152 LOW fast-follow: also joins tenants and excludes a soft-deleted
+// tenant — mirrors ListSharesForUser's own fix (same login-time active-tenant
+// hint, same 403-loop failure mode for a portal-only user whose only access
+// was into a now-deleted org).
 func (q *Queries) FirstClientMemberTenant(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, firstClientMemberTenant, userID)
 	var tenant_id uuid.UUID

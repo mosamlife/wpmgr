@@ -76,8 +76,9 @@ func (q *Queries) GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (ApiKey, e
 }
 
 const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :one
-SELECT id, tenant_id, name, prefix, key_hash, role, created_at, last_used_at, revoked_at FROM api_keys
-WHERE prefix = $1
+SELECT api_keys.id, api_keys.tenant_id, api_keys.name, api_keys.prefix, api_keys.key_hash, api_keys.role, api_keys.created_at, api_keys.last_used_at, api_keys.revoked_at FROM api_keys
+JOIN tenants t ON t.id = api_keys.tenant_id
+WHERE api_keys.prefix = $1 AND t.deleted_at IS NULL
 `
 
 // GetAPIKeyByPrefix resolves a presented key by its unique prefix. This runs
@@ -85,6 +86,12 @@ WHERE prefix = $1
 // be executed via InAdminTx which sets app.tenant_id to the row's own tenant is
 // impossible chicken/egg — instead this query is run with RLS disabled scope by
 // using the prefix-unique lookup helper that sets the GUC after. See repo.
+//
+// GH #152: joins tenants and excludes t.deleted_at IS NOT NULL rows, so a
+// bearer-key request bound to a soft-deleted org's tenant fails exactly like
+// an unknown prefix (ErrNoRows -> apikey.Service.Authenticate's existing
+// domain.Unauthorized("apikey_invalid", ...) path) rather than continuing to
+// authenticate into an org every session/UI path has already hidden.
 func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error) {
 	row := q.db.QueryRow(ctx, getAPIKeyByPrefix, prefix)
 	var i ApiKey

@@ -18,10 +18,20 @@ ORDER BY created_at ASC;
 -- name: ListSharesForUser :many
 -- Self-read: returns the caller's own non-expired shares across all tenants.
 -- Must be run under a tx that sets app.user_id (site_shares_self_read policy).
-SELECT * FROM site_shares
-WHERE user_id = $1
-  AND (expires_at IS NULL OR expires_at > now())
-ORDER BY created_at ASC;
+--
+-- GH #152 LOW fast-follow: joins tenants and excludes a soft-deleted tenant's
+-- shares. This query backs auth.Repo.FirstActiveShareTenant, the login-time
+-- "which tenant should this session activate" pick for a site-scoped
+-- collaborator with no org membership — without this filter, a user whose
+-- ONLY access was a share into a now-soft-deleted tenant would have their
+-- session pinned to that (now-invisible) tenant on every login, landing in a
+-- permanent 403 loop instead of the no-access screen.
+SELECT site_shares.* FROM site_shares
+JOIN tenants t ON t.id = site_shares.tenant_id
+WHERE site_shares.user_id = $1
+  AND (site_shares.expires_at IS NULL OR site_shares.expires_at > now())
+  AND t.deleted_at IS NULL
+ORDER BY site_shares.created_at ASC;
 
 -- name: ListSharedSitesForUser :many
 -- Shared-with-me, ENRICHED with each site's url + name and the owning org's name.

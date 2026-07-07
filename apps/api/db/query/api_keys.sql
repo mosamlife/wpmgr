@@ -23,9 +23,16 @@ WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL;
 -- be executed via InAdminTx which sets app.tenant_id to the row's own tenant is
 -- impossible chicken/egg — instead this query is run with RLS disabled scope by
 -- using the prefix-unique lookup helper that sets the GUC after. See repo.
+--
+-- GH #152: joins tenants and excludes t.deleted_at IS NOT NULL rows, so a
+-- bearer-key request bound to a soft-deleted org's tenant fails exactly like
+-- an unknown prefix (ErrNoRows -> apikey.Service.Authenticate's existing
+-- domain.Unauthorized("apikey_invalid", ...) path) rather than continuing to
+-- authenticate into an org every session/UI path has already hidden.
 -- name: GetAPIKeyByPrefix :one
-SELECT * FROM api_keys
-WHERE prefix = $1;
+SELECT api_keys.* FROM api_keys
+JOIN tenants t ON t.id = api_keys.tenant_id
+WHERE api_keys.prefix = $1 AND t.deleted_at IS NULL;
 
 -- name: TouchAPIKey :exec
 UPDATE api_keys SET last_used_at = now() WHERE id = $1 AND tenant_id = $2;

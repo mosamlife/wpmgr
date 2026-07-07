@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.28] - 2026-07-07
+
+### Added
+
+- Organization owners can now delete an organization from Settings, Organization (a Danger Zone with a type-the-name confirmation). Deletion is scheduled with a grace window: the organization is hidden immediately and permanently removed after the window passes, during which it can still be recovered. Removing an organization disconnects its sites' agents and deletes its backups and all stored data. An empty organization is removed immediately.
+
+### Fixed
+
+- Switching the active organization did not refresh live data. The dashboard's real-time event stream stayed connected to the previously active organization, so live updates for the newly active one did not arrive until a full page reload. Switching organizations now reconnects the live stream to the new organization (the cached data was already refreshed correctly; the live stream was the missing piece).
+
 ## [0.61.27] - 2026-07-07
 
 ### Fixed

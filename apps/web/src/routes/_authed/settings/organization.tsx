@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,8 +14,15 @@ import {
 import { PageError } from "@/components/feedback";
 import { PageHeader } from "@/components/shared/page-header";
 import { CopyableMono } from "@/components/shared/copyable-mono";
+import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { useMe } from "@/features/auth/use-auth";
-import { useOrgs, useRenameOrg, type Org } from "@/features/orgs/use-orgs";
+import {
+  useOrgs,
+  useRenameOrg,
+  useDeleteOrg,
+  useActivateOrg,
+  type Org,
+} from "@/features/orgs/use-orgs";
 
 export const Route = createFileRoute("/_authed/settings/organization")({
   component: OrganizationSettingsPage,
@@ -68,7 +75,16 @@ function OrganizationSettingsPage() {
         subline="Manage your organisation's name and details."
       />
       {activeOrg ? (
-        <OrgCard key={activeOrg.id} org={activeOrg} />
+        <>
+          <OrgCard key={activeOrg.id} org={activeOrg} />
+          {activeOrg.role === "owner" ? (
+            <DangerZoneCard
+              key={`${activeOrg.id}-danger`}
+              org={activeOrg}
+              orgs={orgs ?? []}
+            />
+          ) : null}
+        </>
       ) : (
         <Card>
           <CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -166,6 +182,107 @@ function OrgCard({ org }: { org: Org }) {
           </div>
         ) : null}
       </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DangerZoneCard: owner-only organisation deletion (GH #152 part 2).
+//
+// Only rendered for org.role === "owner" (stricter than rename's admin+
+// gate, matching the server's own owner-only check). Deletion is soft with a
+// grace window: the org disappears from GET /orgs immediately but stays
+// recoverable server-side until a background job purges it, so the copy
+// below never says "deleted immediately".
+//
+// This page only ever shows the caller's ACTIVE organisation, so a
+// successful delete here always means the org just deleted was the one the
+// session was operating in. Staying on this page would leave it pointing at
+// an org that no longer resolves, so on success we switch the session to
+// another organisation the caller belongs to (if any) and navigate to
+// /sites; with none left, /sites itself falls back to the no-org onboarding
+// screen once `me` reflects zero memberships (see _authed.tsx's useHasNoOrg).
+// ---------------------------------------------------------------------------
+
+function DangerZoneCard({ org, orgs }: { org: Org; orgs: Org[] }) {
+  const navigate = useNavigate();
+  const deleteOrg = useDeleteOrg();
+  const activateOrg = useActivateOrg();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  async function performDelete() {
+    try {
+      await deleteOrg.mutateAsync({ orgId: org.id, confirmName: org.name });
+      setConfirmOpen(false);
+      const nextOrg = orgs.find((o) => o.id !== org.id);
+      if (nextOrg) {
+        try {
+          await activateOrg.mutateAsync(nextOrg.id);
+        } catch {
+          // Best effort: still navigate away below either way regardless.
+        }
+      }
+      void navigate({ to: "/sites" });
+    } catch {
+      // Error surfaces inside the dialog body via deleteOrg's mutation state.
+    }
+  }
+
+  return (
+    <Card className="border-destructive/30">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-medium text-destructive">
+          Danger zone
+        </CardTitle>
+        <CardDescription>
+          Permanently remove this organisation and everything in it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-wrap items-center gap-3">
+        <p className="flex-1 min-w-[16rem] text-sm text-muted-foreground">
+          Disconnects every site in this organisation and schedules all data,
+          including backups, for permanent deletion. Recoverable during a
+          grace window before it&apos;s purged for good.
+        </p>
+        <Button
+          type="button"
+          variant="destructive"
+          onClick={() => setConfirmOpen(true)}
+        >
+          Delete organisation
+        </Button>
+      </CardContent>
+
+      <DestructiveConfirm
+        open={confirmOpen}
+        onClose={() => {
+          setConfirmOpen(false);
+          deleteOrg.reset();
+        }}
+        onConfirm={performDelete}
+        title={`Delete "${org.name}"`}
+        consequencesBody={
+          <div className="space-y-2">
+            <p>Deleting this organisation will:</p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>Disconnect every site in this organisation from WPMgr</li>
+              <li>
+                Schedule all data, including backups, for permanent deletion
+              </li>
+              <li>Remove access for every member of this organisation</li>
+            </ul>
+            <p>
+              This organisation stays recoverable for about 7 days (the grace
+              window) before it&apos;s purged for good.
+            </p>
+          </div>
+        }
+        resourceName={org.name}
+        confirmLabel="Delete organisation"
+        cancelLabel="Keep organisation"
+        isPending={deleteOrg.isPending}
+        errorMessage={deleteOrg.isError ? deleteOrg.error.message : null}
+      />
     </Card>
   );
 }

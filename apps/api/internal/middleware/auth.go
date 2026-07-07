@@ -120,6 +120,18 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 				// Full org member: Scope="org", unchanged behaviour.
 				p.Role = string(role)
 				p.Scope = domain.ScopeOrg
+			} else if a.tenantSoftDeleted(ctx, activeTenant) {
+				// GH #152: the active tenant has been soft-deleted (or no longer
+				// exists at all). RoleInTenant's backing query (ListMembershipsForUser)
+				// already excludes a soft-deleted tenant's membership rows, so a
+				// FORMER org member lands here too, not just a genuine non-member —
+				// without this explicit check they could still fall through to the
+				// site_shares/client_members branches below and regain ScopeSite
+				// access via an unrelated collaborator/portal grant into the SAME
+				// now-deleted tenant. Fail closed exactly like the "no shares, no
+				// client memberships" case: clear TenantID (RequireTenant -> 403)
+				// but keep UserID so /auth/me still works.
+				p.TenantID = uuid.Nil
 			} else {
 				// No membership row. Check site_shares for collaborator access.
 				// Run under InUserTx so the site_shares_self_read RLS policy
@@ -182,6 +194,20 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), p))
 		c.Next()
 	}
+}
+
+// tenantSoftDeleted reports whether tenantID has been soft-deleted (GH #152)
+// or no longer exists at all. tenants carries no RLS (see db/schema.sql's
+// file header), so this is a plain, unscoped read directly on the pool — no
+// tx/GUC wrapper needed. Fail-closed on a lookup error: treat as deleted so a
+// transient DB error can never leave a torn-down tenant's collaborator/portal
+// grants reachable.
+func (a *Authenticator) tenantSoftDeleted(ctx context.Context, tenantID uuid.UUID) bool {
+	t, err := sqlc.New(a.pool.Pool).GetTenant(ctx, tenantID)
+	if err != nil {
+		return true
+	}
+	return t.DeletedAt.Valid
 }
 
 // resolveActiveShares loads non-expired site_shares for (userID, tenantID).

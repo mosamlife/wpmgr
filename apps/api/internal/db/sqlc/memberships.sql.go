@@ -120,14 +120,25 @@ func (q *Queries) ListMembershipsForTenant(ctx context.Context, arg ListMembersh
 }
 
 const listMembershipsForUser = `-- name: ListMembershipsForUser :many
-SELECT id, user_id, tenant_id, role, created_at, updated_at FROM memberships
-WHERE user_id = $1
-ORDER BY created_at ASC
+SELECT m.id, m.user_id, m.tenant_id, m.role, m.created_at, m.updated_at FROM memberships m
+JOIN tenants t ON t.id = m.tenant_id
+WHERE m.user_id = $1 AND t.deleted_at IS NULL
+ORDER BY m.created_at ASC
 `
 
 // ListMembershipsForUser reads the caller's own memberships across all tenants.
 // It relies on the memberships_self_read policy (app.user_id GUC), so it must be
 // run via InUserTx, not InTenantTx.
+//
+// GH #152: joins tenants and excludes t.deleted_at IS NOT NULL rows. This is
+// the SINGLE highest-leverage soft-delete read-path filter in the whole
+// feature — every caller of authz-critical auth.Service.RoleInTenant (the
+// session auth middleware's membership check, org activate/rename) and
+// auth.Service.Me (/auth/me) is backed by this query, as is every login-time
+// "which tenant should this session activate" resolution (password login,
+// OIDC, 2FA challenge). A soft-deleted org's membership row therefore becomes
+// invisible to ALL of those call sites in one place, the instant DELETE
+// /orgs/{orgId} commits, without a per-call-site patch.
 func (q *Queries) ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
 	rows, err := q.db.Query(ctx, listMembershipsForUser, userID)
 	if err != nil {

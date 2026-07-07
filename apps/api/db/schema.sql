@@ -61,6 +61,39 @@
 --                              <date>" without an extra provider round-trip.
 --                              Defaults false; Phase B's webhook/reconcile
 --                              paths do not yet write it (display-only today).
+--
+-- M93 (GH #152 part 2) — owner-facing organisation deletion.
+--   deleted_at               — nullable; NULL = live (the default). Set by
+--                              DELETE /api/v1/orgs/{orgId}'s Lane B (populated
+--                              org, internal/org) to soft-delete: the org
+--                              becomes invisible everywhere the instant this
+--                              is set (every membership/org-list/tenant-
+--                              lookup read path filters deleted_at IS NULL —
+--                              see db/query/tenants.sql, memberships.sql,
+--                              api_keys.sql). Cleared by
+--                              POST /orgs/{orgId}/restore within the grace
+--                              window; the row itself is destroyed by
+--                              internal/org.PurgeWorker (admin_purge_tenant,
+--                              below) once the grace window elapses. An empty
+--                              org (Lane A) never sets this — it is
+--                              hard-deleted immediately via the existing
+--                              admin_delete_empty_tenant.
+--   purge_started_at         — nullable point-of-no-return marker, distinct
+--                              from deleted_at (adversarial-review fast-follow
+--                              M2). internal/org.PurgeWorker sets it
+--                              (MarkPurgeStarted) BEFORE the FIRST
+--                              object-storage delete of its 7 tenant prefixes
+--                              — object deletion is irreversible, but a
+--                              DB-only soft-delete is not, so without this
+--                              marker a transient storage fault mid-purge
+--                              (deleted_at still set, some-but-not-all
+--                              objects gone) leaves a window where restore
+--                              would resurrect a tenant whose
+--                              backup_chunks/snapshot rows now point at
+--                              partially-missing objects. RestoreTenant's
+--                              WHERE clause also requires this to be NULL, so
+--                              a purge already touching object storage
+--                              refuses restore (409 purge_in_progress).
 CREATE TABLE tenants (
     id                       uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     name                     text        NOT NULL,
@@ -79,6 +112,8 @@ CREATE TABLE tenants (
     suspended_at             timestamptz,
     suspended_reason         text,
     cancel_at_period_end     boolean     NOT NULL DEFAULT false,
+    deleted_at               timestamptz,
+    purge_started_at         timestamptz,
     created_at               timestamptz NOT NULL DEFAULT now(),
     updated_at               timestamptz NOT NULL DEFAULT now()
 );
@@ -557,6 +592,88 @@ $$;
 -- is built from migrations, not this file): the function is NOT PUBLIC-callable.
 REVOKE ALL ON FUNCTION admin_delete_empty_tenant(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION admin_delete_empty_tenant(uuid) TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- system_audit_log  (M93 — GH #152 part 2)
+-- ---------------------------------------------------------------------------
+-- A durable, tenant-INDEPENDENT audit trail for actions whose subject tenant's
+-- own hash-chained audit_log is going away — org deletion being the first
+-- (and, today, only) writer. tenant_id carries NO FK to tenants (a plain
+-- column) and tenant_name is denormalized, so a row here survives BOTH the
+-- Lane-A empty-org immediate hard-delete (which wipes that tenant's own
+-- audit_log outright, via admin_delete_empty_tenant) and the Lane-B
+-- grace-window purge (admin_purge_tenant, below, which eventually does the
+-- same). No RLS: mirrors `tenants` itself (see the file header) — this is not
+-- tenant-scoped data, has no per-tenant reader today, and is written only by
+-- trusted CP code (internal/org.Handler.recordSystemAudit), never exposed to
+-- a tenant-scoped request.
+CREATE TABLE system_audit_log (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    occurred_at timestamptz NOT NULL DEFAULT now(),
+    actor_type  text        NOT NULL,
+    actor_id    uuid,
+    action      text        NOT NULL,
+    tenant_id   uuid        NOT NULL,
+    tenant_name text        NOT NULL,
+    metadata    jsonb       NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX system_audit_log_tenant_id_idx ON system_audit_log (tenant_id, occurred_at);
+
+-- admin_purge_tenant (M93): SECURITY DEFINER helper for internal/org.PurgeWorker
+-- — the grace-window destructive purge of a POPULATED tenant (Lane B). Modeled
+-- on admin_delete_empty_tenant above but WITHOUT the emptiness guard: it is
+-- called only after an owner already confirmed deletion via
+-- DELETE /api/v1/orgs/{orgId} and the grace window has elapsed. Like
+-- admin_delete_empty_tenant it explicitly clears audit_log first (wpmgr_app
+-- has no DELETE grant on the append-only trail — see that function's comment
+-- for the full 42501 story), as the function OWNER, before the tenant delete;
+-- every other row cascades from that single DELETE FROM tenants.
+--
+-- GUC handling is DELIBERATELY DIFFERENT from admin_delete_empty_tenant, and
+-- the difference matters: that function only ever purges an EMPTY tenant (its
+-- guard proves zero memberships/sites), so it is safe for it to blank
+-- app.tenant_id back to '' before its own tenant delete — no child-table
+-- cascade rows exist there to protect. This function purges a POPULATED
+-- tenant: every tenant-scoped table's baseline permissive
+-- "<table>_tenant_isolation" policy (USING tenant_id = app.tenant_id) must see
+-- p_tenant_id for the ENTIRE cascade the final DELETE triggers — exactly as it
+-- would if ordinary application code ran the same cascade under InTenantTx
+-- (itself just a transaction-scoped SET of this same GUC). So app.tenant_id is
+-- set ONCE at the top and is NEVER blanked before the tenants delete — only
+-- restored, once, on the single return path (M91 Finding A GUC-leak lesson:
+-- set_config(...,true) is NOT rolled back at function exit — the "true"/
+-- is_local flag scopes the change to the CALLER's transaction, not the
+-- function invocation — so an unrestored value would leak into every
+-- statement the caller's transaction runs afterward). Blanking it early here,
+-- as admin_delete_empty_tenant safely does for its always-empty target, would
+-- make every cascaded child-table DELETE see zero visible rows under FORCE
+-- ROW LEVEL SECURITY — silently leaving every one of that tenant's rows
+-- behind (an orphan leak, not a hard failure) while `tenants` itself still
+-- gets removed. No app.agent is needed here at all (unlike
+-- admin_delete_empty_tenant, which uses it for its own cross-tenant emptiness
+-- EXISTS checks) — this function only ever touches rows scoped to the single
+-- p_tenant_id it is given.
+CREATE OR REPLACE FUNCTION admin_purge_tenant(p_tenant_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_count integer;
+    v_prev_tenant text := current_setting('app.tenant_id', true);
+BEGIN
+    PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
+    DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
+    DELETE FROM tenants t WHERE t.id = p_tenant_id;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
+    RETURN v_count > 0;
+END;
+$$;
+REVOKE ALL ON FUNCTION admin_purge_tenant(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admin_purge_tenant(uuid) TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
 -- pairing_codes  (M2 — agent enrollment)

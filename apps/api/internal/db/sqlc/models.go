@@ -1020,6 +1020,17 @@ type SmtpSetting struct {
 	UpdatedAt        time.Time   `json:"updated_at"`
 }
 
+type SystemAuditLog struct {
+	ID         uuid.UUID   `json:"id"`
+	OccurredAt time.Time   `json:"occurred_at"`
+	ActorType  string      `json:"actor_type"`
+	ActorID    pgtype.UUID `json:"actor_id"`
+	Action     string      `json:"action"`
+	TenantID   uuid.UUID   `json:"tenant_id"`
+	TenantName string      `json:"tenant_name"`
+	Metadata   []byte      `json:"metadata"`
+}
+
 type Tenant struct {
 	ID                     uuid.UUID          `json:"id"`
 	Name                   string             `json:"name"`
@@ -1036,6 +1047,8 @@ type Tenant struct {
 	SuspendedAt            pgtype.Timestamptz `json:"suspended_at"`
 	SuspendedReason        *string            `json:"suspended_reason"`
 	CancelAtPeriodEnd      bool               `json:"cancel_at_period_end"`
+	DeletedAt              pgtype.Timestamptz `json:"deleted_at"`
+	PurgeStartedAt         pgtype.Timestamptz `json:"purge_started_at"`
 	CreatedAt              time.Time          `json:"created_at"`
 	UpdatedAt              time.Time          `json:"updated_at"`
 }

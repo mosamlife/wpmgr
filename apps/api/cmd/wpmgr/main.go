@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -1000,6 +1001,37 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// and the agent heartbeat/disconnect handler.
 	siteSvc.SetConnectionService(connSvc)
 	agentH.SetLifecycleSink(site.NewAgentLifecycleAdapter(connSvc))
+
+	// GH #152 part 2 — the async grace-window org-purge worker. Built here
+	// (before startRiver below, which needs it in its riverDeps{} literal) now
+	// that connSvc/siteSvc exist. Wired unconditionally — the object-storage
+	// purge step degrades gracefully to a no-op when S3 is not configured
+	// (orgPurgeStore stays nil), matching self-host installs with no
+	// backups/object storage at all. Grace window defaults to 7 days;
+	// override via WPMGR_ORG_PURGE_GRACE_DAYS.
+	orgPurgeGraceDays := 7
+	if raw := os.Getenv("WPMGR_ORG_PURGE_GRACE_DAYS"); raw != "" {
+		if n, perr := strconv.Atoi(raw); perr == nil && n > 0 {
+			orgPurgeGraceDays = n
+		}
+	}
+	var orgPurgeStore org.ObjectPurger
+	if cfg.S3.Enabled() {
+		ops, operr := blobstore.New(blobstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			Region:         cfg.S3.Region,
+			Bucket:         cfg.S3.Bucket,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			ForcePathStyle: cfg.S3.ForcePathStyle,
+		})
+		if operr != nil {
+			return fmt.Errorf("org purge blobstore init: %w", operr)
+		}
+		orgPurgeStore = ops
+	}
+	orgPurgeWorker := org.NewPurgeWorker(pool, siteSvc, connSvc, orgPurgeStore,
+		time.Duration(orgPurgeGraceDays)*24*time.Hour, logger)
 	// Timeout sweeper (every 15s) + site_events prune (every minute).
 	// M58: wire env-configurable thresholds (WPMGR_CONN_DEGRADE_AFTER,
 	// WPMGR_CONN_DISCONNECT_AFTER, WPMGR_CONN_DEGRADE_MISS_THRESHOLD) and the
@@ -1440,6 +1472,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// worker's own Reconcile call no-ops cleanly when hosted billing is
 		// disabled or no provider is registered).
 		billingReconcileWorker: billingReconcileWorker,
+		// GH #152 part 2 — daily org grace-window purge sweep (always wired).
+		orgPurgeWorker: orgPurgeWorker,
 	})
 	if err != nil {
 		return err
@@ -1877,6 +1911,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Org handler: create org + activate.
 	orgTenantCreator := &orgTenantAdapter{svc: tenantSvc}
 	orgH := org.NewHandler(pool, orgTenantCreator, sessions, authSvc, auditRec)
+	// GH #152 — DELETE /orgs/{orgId} refuses to delete a tenant with
+	// plan_status='active' while hosted billing is enabled (self-host has no
+	// subscription to protect, so this is a no-op there).
+	orgH.SetHosted(cfg.Hosted.Enabled)
 
 	// Invitation service + handler.
 	var invitationMailer invitation.Mailer
@@ -2477,6 +2515,10 @@ type riverDeps struct {
 	// itself no-ops cleanly when hosted billing is disabled or no provider is
 	// registered, so there is nothing to gate here.
 	billingReconcileWorker *billing.ReconcileWorker
+	// GH #152 part 2 — daily org grace-window purge sweep. Always wired (like
+	// billingReconcileWorker above): PurgeWorker.Work no-ops cleanly when
+	// there are zero tenants past their grace window.
+	orgPurgeWorker *org.PurgeWorker
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -2942,6 +2984,22 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return billing.ReconcileArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+
+	// GH #152 part 2 — daily org grace-window purge sweep. RunOnStart: false —
+	// unlike the billing reconcile above, missing one day here has no user-
+	// visible cost (the org is already fully hidden from every read path the
+	// instant it was soft-deleted; only the destructive purge is delayed by
+	// up to ~24h past the configured grace window), so there is no reason to
+	// run it eagerly on every boot/rolling-deploy.
+	if d.orgPurgeWorker != nil {
+		river.AddWorker(workers, d.orgPurgeWorker)
+		queues[org.PurgeQueue] = river.QueueConfig{MaxWorkers: 1}
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(24*time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return org.PurgeArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: false},
 		))
 	}
 

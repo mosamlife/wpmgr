@@ -366,6 +366,32 @@ function maybeStop(): void {
 }
 
 /**
+ * Reset the shared Sites SSE stream for a tenant-context change (e.g. the
+ * active-org switch in `useActivateOrg`). The CP resolves the stream's tenant
+ * ONCE at connect time and holds that resolution for the life of the
+ * connection (up to the ~15 min stream lifetime), so an already-open stream
+ * keeps delivering the OLD tenant's events after `queryClient.clear()` — the
+ * React Query cache half of a tenant switch isn't enough for the live (push)
+ * half.
+ *
+ * This closes the current connection, cancels any pending reconnect timer,
+ * and drops the replay cursor: `lastEventId` MUST be nulled so a fresh
+ * connection never resumes against the old tenant's cursor position (a stale
+ * cursor from tenant A must never be replayed against tenant B). If
+ * subscribers are still mounted it reopens immediately so the very next
+ * frames arrive under the new tenant with no gap; if nobody is subscribed
+ * this is a no-op.
+ */
+export function resetSiteStream(): void {
+  closeSource();
+  clearReconnectTimer();
+  lastEventId = null;
+  hasOpenedOnce = false;
+  retryCount = 0;
+  if (handlers.size > 0) openSource();
+}
+
+/**
  * Subscribe to the shared, tenant-level Sites SSE stream. The first subscriber
  * opens the single EventSource; the last unsubscribe tears it down. The handler
  * identity is captured in a ref-free way: we register the latest closure on
