@@ -25,6 +25,8 @@
  *     "restore_id":        "uuid",      // CP-generated; unique per restore run
  *     "kind":              "files"|"db"|"full",
  *     "progress_endpoint": "https://cp/.../progress",
+ *     "destination_kind":   "cp"|"local"|"s3_compat",  // ADR-036 P1; absent/empty = "cp"
+ *     "destination_config": { "local_path_prefix": "..." },  // only for "local"; omitempty
  *     "manifest": {
  *       "entries": [
  *         { "logical_path": "database.sql.gz",
@@ -36,6 +38,12 @@
  *     "chunk_bytes": 4194304   // hint only (presented in preflight telemetry)
  *   }
  *   response: { "ok": bool, "detail": string }
+ *
+ * ADR-036 P1 storage adapter: a `destination_kind=local` snapshot's chunks
+ * carry Hash + Size but NO presigned_url in the manifest above — they live on
+ * this same webserver's disk (written by the matching local-destination
+ * backup) and RestoreRunner reads them by content hash instead of an HTTP
+ * GET. `cp`/`s3_compat` chunks are unchanged: presigned GET, same as today.
  *
  * The agent's REPLY means "accepted & runner started". Completion happens
  * when RestoreRunner posts the `completed` progress event to /progress.
@@ -99,6 +107,17 @@ final class RestoreCommand implements CommandInterface
             ? (int) $params['chunk_bytes']
             : self::DEFAULT_CHUNK_BYTES;
 
+        // ADR-036 P1 storage adapter: mirrors BackupCommand's destination_kind
+        // / destination_config wiring. Absent/empty destination_kind means
+        // 'cp' — the existing presigned-URL restore path, bit-for-bit
+        // unchanged for every CP build that predates this feature.
+        $destinationKind = isset($params['destination_kind']) && is_string($params['destination_kind']) && $params['destination_kind'] !== ''
+            ? $params['destination_kind']
+            : 'cp';
+        $destinationConfig = isset($params['destination_config']) && is_array($params['destination_config'])
+            ? $params['destination_config']
+            : [];
+
         // --- 1. Input validation -------------------------------------------
         if ($snapshotId === '' || $restoreId === '') {
             return $this->refuse('missing snapshot_id or restore_id');
@@ -113,7 +132,7 @@ final class RestoreCommand implements CommandInterface
             return $this->refuse('invalid kind');
         }
 
-        $chunkDownloads = $this->parseChunkDownloads($params);
+        $chunkDownloads = $this->parseChunkDownloads($params, $destinationKind);
         if ($chunkDownloads === []) {
             return $this->refuse('no chunk_downloads / manifest entries supplied');
         }
@@ -183,6 +202,12 @@ final class RestoreCommand implements CommandInterface
             'wp_content_path'   => defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : '',
             'wp_root'           => defined('ABSPATH') ? ABSPATH : '',
             'db'                => $this->dbCreds(),
+            // ADR-036 P1 storage adapter: which destination RestoreRunner
+            // reads chunks from. 'local' chunks carry no presigned_url (see
+            // parseChunkDownloads) — the runner reads them off local disk by
+            // hash instead of an HTTP GET.
+            'destination_kind'   => $destinationKind,
+            'destination_config' => $destinationConfig,
             // P0 URL rewriter: target/source URLs for cross-env restore.
             'target_site_url'    => $targetSiteUrl,
             'target_home_url'    => $targetHomeUrl,
@@ -225,9 +250,14 @@ final class RestoreCommand implements CommandInterface
      *   - nested "manifest": { "entries": [ ... ] } per the wire contract
      *
      * @param array<string,mixed> $params
+     * @param string              $destinationKind 'cp' | 'local' | 's3_compat'
+     *                                              (already defaulted by the
+     *                                              caller). Only 'local' chunk
+     *                                              entries are allowed to omit
+     *                                              presigned_url.
      * @return list<array<string,mixed>>
      */
-    private function parseChunkDownloads(array $params): array
+    private function parseChunkDownloads(array $params, string $destinationKind): array
     {
         $candidates = [];
         if (isset($params['chunk_downloads']) && is_array($params['chunk_downloads'])) {
@@ -254,6 +284,12 @@ final class RestoreCommand implements CommandInterface
             // (`hash`, `presigned_url`). Accept either {hash, presigned_url}
             // or {blake3, url}/{blake3, get_url} for compatibility with the
             // M4 manifest shape.
+            //
+            // ADR-036 P1: a `destination_kind=local` snapshot's chunks live
+            // on this webserver's own disk (RestoreRunner reads them by
+            // hash — see fetchLocalChunk), so the CP never mints a
+            // presigned_url for them. Every other destination kind still
+            // requires one — a cp/s3_compat chunk with no URL is malformed.
             $norm = [];
             foreach ($chunks as $c) {
                 if (!is_array($c)) {
@@ -261,10 +297,16 @@ final class RestoreCommand implements CommandInterface
                 }
                 $hash = (string) ($c['hash'] ?? $c['blake3'] ?? '');
                 $url  = (string) ($c['presigned_url'] ?? $c['url'] ?? $c['get_url'] ?? '');
-                if ($hash === '' || $url === '') {
+                if ($hash === '') {
                     continue;
                 }
-                $row = ['hash' => $hash, 'presigned_url' => $url];
+                if ($url === '' && $destinationKind !== 'local') {
+                    continue;
+                }
+                $row = ['hash' => $hash];
+                if ($url !== '') {
+                    $row['presigned_url'] = $url;
+                }
                 if (isset($c['size']) && is_numeric($c['size'])) {
                     $row['size'] = (int) $c['size'];
                 }

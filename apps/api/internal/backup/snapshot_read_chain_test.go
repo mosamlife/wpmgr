@@ -111,6 +111,7 @@ func TestIncrementalSnapshotReadRoundTrip(t *testing.T) {
 		int64(1),                                  // cycle_files_deleted
 		int64(2048),                               // cycle_bytes_uploaded
 		false,                                     // locked (m49 Track C)
+		pgtype.UUID{},                             // destination_id (null; M7/ADR-036 P1)
 	}}
 
 	snap, err := scanSnapshotWithChainFields(row)
@@ -191,6 +192,7 @@ func TestFullSnapshotReadRoundTrip(t *testing.T) {
 		int64(0),             // cycle_files_deleted
 		int64(0),             // cycle_bytes_uploaded
 		false,                // locked (m49 Track C)
+		pgtype.UUID{},        // destination_id (null; M7/ADR-036 P1)
 	}}
 
 	snap, err := scanSnapshotWithChainFields(row)

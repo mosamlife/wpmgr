@@ -6,8 +6,11 @@
 -- ---------------------------------------------------------------------------
 
 -- name: CreateBackupSnapshot :one
-INSERT INTO backup_snapshots (tenant_id, site_id, created_by, kind, status, age_recipient)
-VALUES ($1, $2, $3, $4, 'pending', $5)
+-- destination_id (M7 / ADR-036 P1): NULL routes to the legacy CP-managed
+-- bucket; a non-null value is the site_destinations row the caller already
+-- resolved (the site's configured default) before creating the snapshot.
+INSERT INTO backup_snapshots (tenant_id, site_id, created_by, kind, status, age_recipient, destination_id)
+VALUES ($1, $2, $3, $4, 'pending', $5, $6)
 RETURNING *;
 
 -- name: GetBackupSnapshot :one

@@ -312,6 +312,9 @@ type Querier interface {
 	// ---------------------------------------------------------------------------
 	// backup_snapshots
 	// ---------------------------------------------------------------------------
+	// destination_id (M7 / ADR-036 P1): NULL routes to the legacy CP-managed
+	// bucket; a non-null value is the site_destinations row the caller already
+	// resolved (the site's configured default) before creating the snapshot.
 	CreateBackupSnapshot(ctx context.Context, arg CreateBackupSnapshotParams) (BackupSnapshot, error)
 	CreateClient(ctx context.Context, arg CreateClientParams) (Client, error)
 	// Upsert: ON CONFLICT DO NOTHING so the caller detects "already a member" by

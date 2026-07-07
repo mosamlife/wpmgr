@@ -184,6 +184,18 @@ func TestBackupWorker_DispatchesIncrementalRequest(t *testing.T) {
 		Generation:       1,
 	}
 	repo.setSnapshot(snap)
+	// ADR-036 P1 (GH #146): PresignParentFilesList now loads the parent
+	// snapshot's own row to resolve ITS destination routing — register a
+	// completed parent (DestinationID zero == managed/cp, same as the
+	// increment above) so the lookup succeeds.
+	repo.setSnapshot(Snapshot{
+		ID:           parentID,
+		TenantID:     tenantID,
+		SiteID:       snap.SiteID,
+		Kind:         KindFull,
+		Status:       StatusCompleted,
+		AgeRecipient: snap.AgeRecipient,
+	})
 	// ADR-051: the parent must carry a files-list manifest entry so the dispatch
 	// can presign its chunks for the agent's prev-map.
 	flHash := "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"

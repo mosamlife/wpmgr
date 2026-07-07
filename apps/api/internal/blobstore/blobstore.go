@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -38,13 +39,22 @@ type Config struct {
 	AccessKey      string
 	SecretKey      string
 	ForcePathStyle bool
+	// PathPrefix, when set, is applied to every object key this Store
+	// touches (Put/Get/Head/Delete/List/PresignPut/PresignGet) — ADR-036 P1
+	// (GH #146): an operator-configured s3_compat destination may set a key
+	// prefix so multiple sites/tenants can share one customer bucket under
+	// separate namespaces. Leading/trailing slashes are normalised; empty
+	// (the default) means "bucket root", the pre-existing behaviour for the
+	// CP-global Store.
+	PathPrefix string
 }
 
 // Store is the S3-compatible object-store handle.
 type Store struct {
-	client    *s3.Client
-	presigner *s3.PresignClient
-	bucket    string
+	client     *s3.Client
+	presigner  *s3.PresignClient
+	bucket     string
+	pathPrefix string
 }
 
 // New builds a Store from static credentials and a (possibly custom) endpoint.
@@ -80,14 +90,43 @@ func New(cfg Config) (*Store, error) {
 	}
 	client := s3.New(s3.Options{}, opts...)
 	return &Store{
-		client:    client,
-		presigner: s3.NewPresignClient(client),
-		bucket:    cfg.Bucket,
+		client:     client,
+		presigner:  s3.NewPresignClient(client),
+		bucket:     cfg.Bucket,
+		pathPrefix: strings.Trim(cfg.PathPrefix, "/"),
 	}, nil
 }
 
 // Bucket returns the configured bucket name.
 func (s *Store) Bucket() string { return s.bucket }
+
+// PathPrefix returns the configured (normalised, no leading/trailing slash)
+// key prefix, or "" when this Store addresses the bucket root.
+func (s *Store) PathPrefix() string { return s.pathPrefix }
+
+// prefixedKey returns the key this Store actually addresses in the bucket:
+// PathPrefix (if any) + key. EVERY S3 API call this Store makes MUST route
+// its key through this method so a destination's configured prefix applies
+// consistently across Put/Get/Head/Delete/List/PresignPut/PresignGet — a
+// backup PUT and its matching restore GET always agree on the same
+// effective key.
+func (s *Store) prefixedKey(key string) string {
+	if s.pathPrefix == "" {
+		return key
+	}
+	return s.pathPrefix + "/" + strings.TrimPrefix(key, "/")
+}
+
+// unprefixedKey strips this Store's PathPrefix (if any) back off a key
+// returned by the S3 API (List/ListWithModified), so callers always see the
+// same logical/canonical key they would pass to Head/Get/Delete — regardless
+// of whether this Store has a configured PathPrefix.
+func (s *Store) unprefixedKey(key string) string {
+	if s.pathPrefix == "" {
+		return key
+	}
+	return strings.TrimPrefix(key, s.pathPrefix+"/")
+}
 
 // EnsureBucket attempts to create the configured bucket if it doesn't exist.
 // Best-effort + non-fatal: an error here does NOT abort startup. The bucket
@@ -229,7 +268,7 @@ func (s *Store) GetViaPresign(ctx context.Context, key string) (io.ReadCloser, e
 func (s *Store) Head(ctx context.Context, key string) (exists bool, size int64, err error) {
 	out, herr := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(s.prefixedKey(key)),
 	})
 	if herr != nil {
 		if isNotFound(herr) {
@@ -254,7 +293,7 @@ func (s *Store) Head(ctx context.Context, key string) (exists bool, size int64, 
 func (s *Store) Delete(ctx context.Context, key string) error {
 	url, err := s.presigner.PresignDeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(s.prefixedKey(key)),
 	}, s3.WithPresignExpires(60*time.Second))
 	if err != nil {
 		return fmt.Errorf("blobstore: presign delete %q: %w", key, err)
@@ -281,7 +320,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 	var keys []string
 	p := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(prefix),
+		Prefix: aws.String(s.prefixedKey(prefix)),
 	})
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
@@ -290,7 +329,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 		}
 		for _, o := range page.Contents {
 			if o.Key != nil {
-				keys = append(keys, *o.Key)
+				keys = append(keys, s.unprefixedKey(*o.Key))
 			}
 		}
 	}
@@ -312,7 +351,7 @@ func (s *Store) ListWithModified(ctx context.Context, prefix string) ([]ObjectIn
 	var out []ObjectInfo
 	p := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(prefix),
+		Prefix: aws.String(s.prefixedKey(prefix)),
 	})
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
@@ -323,7 +362,7 @@ func (s *Store) ListWithModified(ctx context.Context, prefix string) ([]ObjectIn
 			if o.Key == nil {
 				continue
 			}
-			info := ObjectInfo{Key: *o.Key}
+			info := ObjectInfo{Key: s.unprefixedKey(*o.Key)}
 			if o.LastModified != nil {
 				info.LastModified = *o.LastModified
 			}
@@ -339,7 +378,7 @@ func (s *Store) ListWithModified(ctx context.Context, prefix string) ([]ObjectIn
 func (s *Store) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	req, err := s.presigner.PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(s.prefixedKey(key)),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("blobstore: presign put %q: %w", key, err)
@@ -353,7 +392,7 @@ func (s *Store) PresignPut(ctx context.Context, key string, ttl time.Duration) (
 func (s *Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(s.prefixedKey(key)),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("blobstore: presign get %q: %w", key, err)

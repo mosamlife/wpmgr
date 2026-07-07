@@ -139,6 +139,24 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 	// new fields are omitempty on the wire).
 	scope := w.svc.scheduleBackupScope(ctx, a.TenantID, snap.SiteID)
 
+	// ADR-036 P1 storage adapter (GH #146): resolve which backend the agent
+	// should land this snapshot's chunks against. snap.DestinationID == Nil
+	// (the overwhelming common case) short-circuits inside
+	// DestinationInfoForSnapshot to {Kind: "cp"} without touching destLookup —
+	// see its doc for the invariant this preserves.
+	destInfo, derr := w.svc.DestinationInfoForSnapshot(ctx, snap)
+	if derr != nil {
+		return w.fail(ctx, snap, "destination unresolved: "+derr.Error())
+	}
+	destKind := destInfo.Kind
+	if destKind == "" {
+		destKind = DestinationKindCP
+	}
+	var destCfg agentcmd.DestinationConfig
+	if destKind == DestinationKindLocal {
+		destCfg.LocalPathPrefix = destInfo.PathPrefix
+	}
+
 	// ADR-048/ADR-051: when the job was enqueued as incremental, build an
 	// IncrementalBackupRequest; otherwise use the existing BackupRequest.
 	// A no-parent gen-0 base-increment also takes the incremental path: its
@@ -184,6 +202,9 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 			ExcludePaths:      scope.ExcludePaths,
 			ExcludeExtensions: scope.ExcludeExtensions,
 			ExcludeFileSizeMB: scope.ExcludeFileSizeMB,
+			// ADR-036 P1 storage adapter (GH #146).
+			DestinationKind:   destKind,
+			DestinationConfig: destCfg,
 		}
 		resp, err = w.cmd.IncrementalBackup(ctx, snap.SiteID, si.URL, incReq)
 	} else {
@@ -203,6 +224,9 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 			ExcludePaths:      scope.ExcludePaths,
 			ExcludeExtensions: scope.ExcludeExtensions,
 			ExcludeFileSizeMB: scope.ExcludeFileSizeMB,
+			// ADR-036 P1 storage adapter (GH #146).
+			DestinationKind:   destKind,
+			DestinationConfig: destCfg,
 		}
 		resp, err = w.cmd.Backup(ctx, snap.SiteID, si.URL, req)
 	}

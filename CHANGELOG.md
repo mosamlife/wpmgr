@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.33] - 2026-07-07
+
+### Fixed
+
+- Backup destinations other than managed storage now actually work. You could configure a local folder or your own S3-compatible bucket as a backup destination and the "Test connection" check passed, but every backup still went to managed storage, because the control plane never told the site which destination to use. Backups (full and incremental) now run to the configured destination and restore reads back from it, for all three types: managed storage, a local folder on the server, and your own S3-compatible bucket. For your own bucket the control plane signs the uploads and downloads, so the site never holds your storage credentials. Requires agent 0.61.14.
+
 ## [0.61.32] - 2026-07-07
 
 ### Fixed

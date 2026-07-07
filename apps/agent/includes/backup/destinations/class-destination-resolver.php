@@ -51,13 +51,24 @@ final class DestinationResolver
             ? $params['presign_endpoint']
             : '';
 
-        $kind = isset($params['destination_kind']) && is_string($params['destination_kind'])
+        $kind = isset($params['destination_kind']) && is_string($params['destination_kind']) && $params['destination_kind'] !== ''
             ? $params['destination_kind']
             : 'cp';
 
+        $config = isset($params['destination_config']) && is_array($params['destination_config'])
+            ? $params['destination_config']
+            : [];
+        // The only field the wire contract defines today: an operator-chosen
+        // on-disk path (relative to wp-content) for the 'local' kind. Empty/
+        // absent means "use the agent's own uploads-first default" — see
+        // LocalDestination::resolveBaseDir().
+        $localPathPrefix = isset($config['local_path_prefix']) && is_string($config['local_path_prefix'])
+            ? $config['local_path_prefix']
+            : '';
+
         switch ($kind) {
             case 'local':
-                return new LocalDestination($transport, $snapshotId, $manifestEp);
+                return new LocalDestination($transport, $snapshotId, $manifestEp, $localPathPrefix);
             case 'cp':
             case 's3_compat':
                 // s3_compat reuses the CP transport because CP-issued presigned

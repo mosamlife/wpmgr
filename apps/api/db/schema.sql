@@ -891,6 +891,82 @@ CREATE POLICY backup_chunks_agent ON backup_chunks
     USING (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
+-- site_destinations  (M7 / ADR-036 P1 storage adapter)
+-- ---------------------------------------------------------------------------
+-- Where a site's backup chunks should land: the WPMgr-managed CP bucket
+-- (kind=cp, the historical default), a per-site Local folder on the agent host
+-- (kind=local), or a customer-owned S3-compatible bucket (kind=s3_compat).
+-- backup_snapshots.destination_id (below) references the row a given snapshot
+-- was taken against; NULL means the legacy CP-global bucket.
+--
+-- Threat model: secret_key_enc is age-encrypted at rest with the CP's shared
+-- identity (internal/cryptbox); the plaintext customer S3 secret never sits on
+-- disk in clear. RLS isolates rows per tenant; the partial unique index
+-- enforces at most one default destination per (tenant_id, site_id).
+CREATE TABLE site_destinations (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    -- site_id is nullable so a future flow can introduce tenant-wide defaults;
+    -- V1 always writes a non-null site_id.
+    site_id          uuid        REFERENCES sites (id) ON DELETE CASCADE,
+    kind             text        NOT NULL CHECK (kind IN ('cp', 'local', 's3_compat')),
+    label            text        NOT NULL,
+    endpoint         text        NOT NULL DEFAULT '',
+    region           text        NOT NULL DEFAULT '',
+    bucket           text        NOT NULL DEFAULT '',
+    path_prefix      text        NOT NULL DEFAULT '',
+    access_key_id    text        NOT NULL DEFAULT '',
+    secret_key_enc   bytea,
+    force_path_style boolean     NOT NULL DEFAULT false,
+    is_default       boolean     NOT NULL DEFAULT false,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_destinations_site_idx ON site_destinations (site_id)
+    WHERE site_id IS NOT NULL;
+
+-- Exactly one default per (tenant, site). NULL site_id rows can't have a
+-- default yet (and V1 never creates any) — the partial filter scopes the
+-- uniqueness correctly.
+CREATE UNIQUE INDEX site_destinations_default_idx ON site_destinations (tenant_id, site_id)
+    WHERE is_default = true AND site_id IS NOT NULL;
+
+ALTER TABLE site_destinations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_destinations FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_destinations_tenant_isolation ON site_destinations
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The agent-facing presign routing reads destinations under the agent GUC when
+-- no tenant is set; the agent path always knows the tenant from the verified
+-- Ed25519 identity though, so this stays SELECT-only defence-in-depth for
+-- cross-tenant maintenance jobs (mirrors backup_chunks_agent).
+CREATE POLICY site_destinations_agent ON site_destinations
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
+
+-- m19 AS RESTRICTIVE collaborator site-scope policy (per-site sharing): a
+-- site-scoped principal may only see destinations for a site they were
+-- explicitly granted. site_id is nullable so the ANY check is skipped safely
+-- for a (V1-unused) tenant-wide NULL-site_id row.
+CREATE POLICY site_destinations_site_scope ON site_destinations
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
 -- backup_snapshots  (M4)
 -- ---------------------------------------------------------------------------
 -- One backup of a site: files, db, or full. The manifest (ordered per-path
@@ -919,6 +995,11 @@ CREATE TABLE backup_snapshots (
     -- locked: operator pin (m49). When true, the retention GC MUST skip this
     -- snapshot regardless of retention_days/keep_last. Explicit unlock required.
     locked        boolean     NOT NULL DEFAULT false,
+    -- destination_id (M7 / ADR-036 P1): which site_destinations row this
+    -- snapshot's chunks were stored against. NULL = the legacy CP-managed
+    -- bucket — the value every pre-P1 snapshot carries and still the default
+    -- for a site with no configured destination.
+    destination_id uuid       REFERENCES site_destinations (id) ON DELETE SET NULL,
     -- progress: phpbu-engine real-time progress (M5.6 / ADR-032). Latest phase
     -- payload posted by the agent runner. Shape:
     --   {"phase": "uploading", "phase_detail": {"chunks_done": 17, ...}}
@@ -966,6 +1047,9 @@ CREATE INDEX backup_snapshots_locked_idx ON backup_snapshots (tenant_id, locked)
 -- completed/failed rows are unconstrained and retention GC is unaffected.
 CREATE UNIQUE INDEX backup_snapshots_one_inflight_per_site ON backup_snapshots (site_id)
     WHERE status IN ('pending', 'running');
+-- M7 / ADR-036 P1: presign routing + destination-CRUD cascade lookups.
+CREATE INDEX backup_snapshots_destination_id_idx ON backup_snapshots (destination_id)
+    WHERE destination_id IS NOT NULL;
 
 ALTER TABLE backup_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_snapshots FORCE ROW LEVEL SECURITY;

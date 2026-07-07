@@ -8,6 +8,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -864,6 +865,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		registry = blobstore.NewRegistry(defStore, siteDestSvc)
 		backupSvc.SetRegistry(&registryAdapter{r: registry})
+		// ADR-036 P1 (GH #146): resolve a site's default destination at
+		// backup-creation time, and an already-chosen destination's kind/
+		// local-path at dispatch/restore time. Wired alongside SetRegistry so
+		// the two never drift out of sync.
+		backupSvc.SetDestinationLookup(&destLookupAdapter{svc: siteDestSvc})
 		// M5.7 P4: wire the manifest index writer so SubmitManifest writes
 		// tenant/<tenantID>/site/<siteID>/backup/<snapshotID>/manifest.json
 		// via the same CP-global store used for presigning. Best-effort:
@@ -2173,6 +2179,42 @@ func (a *registryAdapter) PresignerForSnapshot(ctx context.Context, snap backup.
 		return nil, nil
 	}
 	return store, nil
+}
+
+// destLookupAdapter bridges sitedestination.Service into the backup.
+// DestinationLookup interface so CreateBackup/EnqueueScheduledBackup can
+// resolve a site's default destination, and the backup worker/restore planner
+// can resolve an already-chosen destination's kind + local-path metadata,
+// without the backup package importing sitedestination directly (ADR-036 P1
+// wiring; mirrors registryAdapter).
+type destLookupAdapter struct {
+	svc *sitedestination.Service
+}
+
+// DefaultDestinationForSite resolves the site's default destination id, or
+// uuid.Nil (no error) when none is configured — the overwhelmingly common
+// case for any site that hasn't opted into a destination.
+func (a *destLookupAdapter) DefaultDestinationForSite(ctx context.Context, tenantID, siteID uuid.UUID) (uuid.UUID, error) {
+	d, err := a.svc.GetDefaultForSite(ctx, tenantID, siteID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, nil
+		}
+		return uuid.Nil, err
+	}
+	return d.ID, nil
+}
+
+// DestinationInfo resolves the kind + local-path metadata for an already-
+// chosen (non-nil) destination id. backup.Service never calls this for
+// snap.DestinationID == uuid.Nil (the managed/legacy path short-circuits
+// before ever reaching destLookup — see backup.Service.DestinationInfoForSnapshot).
+func (a *destLookupAdapter) DestinationInfo(ctx context.Context, tenantID, destinationID uuid.UUID) (backup.DestinationInfo, error) {
+	d, err := a.svc.GetByID(ctx, tenantID, destinationID)
+	if err != nil {
+		return backup.DestinationInfo{}, err
+	}
+	return backup.DestinationInfo{ID: d.ID, Kind: string(d.Kind), PathPrefix: d.PathPrefix}, nil
 }
 
 // disabledAutologinSigner refuses to mint when no CP signing key is

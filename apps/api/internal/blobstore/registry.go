@@ -30,16 +30,32 @@ type DestinationLookup interface {
 	DecryptSecret(d sitedestination.SiteDestination) (string, error)
 }
 
+// storeCacheKey scopes the Store cache by BOTH tenant and destination id.
+// Defense-in-depth (security review, GH #146 Phase 1): destination_id is
+// globally unique and every row is always same-tenant today, so keying by
+// destination id alone was not exploitable — but a future feature that let a
+// snapshot carry a cross-tenant destination_id (e.g. a snapshot clone/copy, or
+// an admin re-point) would otherwise let a cache HIT hand back the WRONG
+// tenant's bucket Store, since only the cache-MISS path re-validates the
+// tenant via GetByID's InTenantTx + tenant_id filter. Keying by (tenantID,
+// destID) makes a cross-tenant hit structurally impossible: it can only ever
+// be a miss, which re-runs the tenant-scoped lookup.
+type storeCacheKey struct {
+	tenantID uuid.UUID
+	destID   uuid.UUID
+}
+
 // Registry caches per-destination Stores so each customer-owned S3 bucket gets
-// exactly one *Store across the process. The cache is keyed by destination ID
-// (a stable UUID) and built lazily on first use.
+// exactly one *Store across the process. The cache is keyed by
+// (tenantID, destinationID) — see storeCacheKey — and built lazily on first
+// use.
 //
 // The default Store is the CP-global bucket the API was booted with — every
 // snapshot whose destination_id is uuid.Nil routes there, matching the legacy
 // 0.9.6 behaviour.
 type Registry struct {
 	mu     sync.RWMutex
-	stores map[uuid.UUID]*Store
+	stores map[storeCacheKey]*Store
 
 	repo         DestinationLookup
 	defaultStore *Store
@@ -51,7 +67,7 @@ type Registry struct {
 // DestinationID or StoreForSnapshot will error.
 func NewRegistry(defaultStore *Store, repo DestinationLookup) *Registry {
 	return &Registry{
-		stores:       make(map[uuid.UUID]*Store),
+		stores:       make(map[storeCacheKey]*Store),
 		repo:         repo,
 		defaultStore: defaultStore,
 	}
@@ -77,9 +93,13 @@ func (r *Registry) StoreForSnapshot(ctx context.Context, snap SnapshotLike) (*St
 	}
 
 	// Cached path: avoid the DB round-trip + S3 client construction on every
-	// presign. We hold a RWMutex so concurrent reads don't serialise.
+	// presign. We hold a RWMutex so concurrent reads don't serialise. Keyed by
+	// (tenantID, destinationID) — see storeCacheKey — so a cache HIT can never
+	// cross a tenant boundary; only a cache MISS reaches GetByID, which is the
+	// tenant-scoped re-validation.
+	cacheKey := storeCacheKey{tenantID: snap.TenantID, destID: snap.DestinationID}
 	r.mu.RLock()
-	if store, ok := r.stores[snap.DestinationID]; ok {
+	if store, ok := r.stores[cacheKey]; ok {
 		r.mu.RUnlock()
 		return store, nil
 	}
@@ -112,6 +132,14 @@ func (r *Registry) StoreForSnapshot(ctx context.Context, snap SnapshotLike) (*St
 		return nil, fmt.Errorf("blobstore registry: decrypt secret: %w", err)
 	}
 
+	// PathPrefix (GH #146 security review, functional gap): apply the
+	// operator-configured key prefix to the Store itself so every PUT/GET
+	// this Store mints — backup upload AND restore download alike — lands
+	// under the SAME <path_prefix>/chunks/<tenant>/<hash> key, consistently.
+	// backup_chunks.s3_key stays the bare canonical key regardless (dedup +
+	// the tenant-scope assertion in mintRestoreChunks operate on that
+	// unprefixed layer); the Store applies its prefix transparently at the
+	// object-storage transport layer, so no caller needs to know about it.
 	store, err := New(Config{
 		Endpoint:       d.Endpoint,
 		Region:         d.Region,
@@ -119,6 +147,7 @@ func (r *Registry) StoreForSnapshot(ctx context.Context, snap SnapshotLike) (*St
 		AccessKey:      d.AccessKeyID,
 		SecretKey:      secret,
 		ForcePathStyle: d.ForcePathStyle,
+		PathPrefix:     d.PathPrefix,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("blobstore registry: build store: %w", err)
@@ -128,19 +157,21 @@ func (r *Registry) StoreForSnapshot(ctx context.Context, snap SnapshotLike) (*St
 	// between our read-unlock and this write-lock; resolve that by checking
 	// once more under the write lock and reusing whichever Store landed first.
 	r.mu.Lock()
-	if existing, ok := r.stores[d.ID]; ok {
+	if existing, ok := r.stores[cacheKey]; ok {
 		r.mu.Unlock()
 		return existing, nil
 	}
-	r.stores[d.ID] = store
+	r.stores[cacheKey] = store
 	r.mu.Unlock()
 	return store, nil
 }
 
 // Invalidate evicts a destination's cached Store. Called after the operator
 // updates the credentials so the next presign re-fetches with the new key.
-func (r *Registry) Invalidate(id uuid.UUID) {
+// tenantID must be the destination's own tenant — the cache is keyed by
+// (tenantID, destinationID), see storeCacheKey.
+func (r *Registry) Invalidate(tenantID, id uuid.UUID) {
 	r.mu.Lock()
-	delete(r.stores, id)
+	delete(r.stores, storeCacheKey{tenantID: tenantID, destID: id})
 	r.mu.Unlock()
 }

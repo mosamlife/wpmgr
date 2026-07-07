@@ -187,6 +187,7 @@ type BackupSnapshot struct {
 	Error              string             `json:"error"`
 	Archived           bool               `json:"archived"`
 	Locked             bool               `json:"locked"`
+	DestinationID      pgtype.UUID        `json:"destination_id"`
 	Progress           []byte             `json:"progress"`
 	ProgressUpdatedAt  pgtype.Timestamptz `json:"progress_updated_at"`
 	StartedAt          pgtype.Timestamptz `json:"started_at"`
@@ -674,6 +675,24 @@ type SiteDbSizeHistory struct {
 	TableCount  int32     `json:"table_count"`
 	ScannedAt   time.Time `json:"scanned_at"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type SiteDestination struct {
+	ID             uuid.UUID   `json:"id"`
+	TenantID       uuid.UUID   `json:"tenant_id"`
+	SiteID         pgtype.UUID `json:"site_id"`
+	Kind           string      `json:"kind"`
+	Label          string      `json:"label"`
+	Endpoint       string      `json:"endpoint"`
+	Region         string      `json:"region"`
+	Bucket         string      `json:"bucket"`
+	PathPrefix     string      `json:"path_prefix"`
+	AccessKeyID    string      `json:"access_key_id"`
+	SecretKeyEnc   []byte      `json:"secret_key_enc"`
+	ForcePathStyle bool        `json:"force_path_style"`
+	IsDefault      bool        `json:"is_default"`
+	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
 }
 
 type SiteEmailConfig struct {

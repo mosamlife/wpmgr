@@ -72,6 +72,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Backup\Destinations\BackupDestination;
+use WPMgr\Agent\Backup\Destinations\DestinationResolver;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Phpbu\ProgressClient;
 use WPMgr\Agent\Schema;
@@ -566,30 +568,48 @@ final class RestoreRunner
     }
 
     /**
-     * download_artifacts: pull every chunk from its presigned URL into the
-     * per-artifact `<scratch>/<logical_path>` file. Idempotent — already
-     * downloaded artifacts are skipped on watchdog re-entry, and an artifact
-     * partially downloaded before a stall resumes at the first unwritten
-     * chunk (not chunk 0).
+     * download_artifacts: pull every chunk into the per-artifact
+     * `<scratch>/<logical_path>` file. Idempotent — already downloaded
+     * artifacts are skipped on watchdog re-entry, and an artifact partially
+     * downloaded before a stall resumes at the first unwritten chunk (not
+     * chunk 0).
      *
-     * Per-chunk GETs use the v0.8.6 retry-with-backoff policy: up to
-     * DOWNLOAD_CHUNK_MAX_ATTEMPTS attempts with exponential backoff. Network
-     * errors and 5xx/408/425/429 are retried; terminal 4xx (404, 403, 400)
-     * are not — they're fatal-by-construction (the URL is the same on every
-     * attempt). The error message attached on terminal failure carries the
-     * HTTP status, the host of the presigned URL, the body excerpt, and the
-     * attempt count, so the SSE `phase_detail.message` + the WP error_log are
-     * actually grep-able by the operator.
+     * ADR-036 P1 storage adapter: HOW a chunk's bytes are fetched depends on
+     * this restore's `destination_kind`. `local` chunks live on this same
+     * webserver's disk (no presigned_url in the manifest — see
+     * fetchLocalChunk() / LocalDestination::getChunk()); every other kind
+     * (`cp`, `s3_compat`, or absent = older CP builds) is unchanged: a
+     * presigned GET, same as today. A pure `local` restore never constructs
+     * the network transport at all (see the lazy `$transport` below).
+     *
+     * Per-chunk GETs (cp/s3_compat only) use the v0.8.6 retry-with-backoff
+     * policy: up to DOWNLOAD_CHUNK_MAX_ATTEMPTS attempts with exponential
+     * backoff. Network errors and 5xx/408/425/429 are retried; terminal 4xx
+     * (404, 403, 400) are not — they're fatal-by-construction (the URL is the
+     * same on every attempt). The error message attached on terminal failure
+     * carries the HTTP status, the host of the presigned URL, the body
+     * excerpt, and the attempt count, so the SSE `phase_detail.message` + the
+     * WP error_log are actually grep-able by the operator. Local disk reads
+     * have no such retry policy — none of the transient-network failure
+     * modes a presigned-URL GET over a tunnel has apply to a local fread.
      *
      * @param array<string,mixed> $subState
      * @return array<string,mixed>
      */
     private function runDownloadArtifacts(array $subState): array
     {
-        $transport = new BackupTransport(new Signer(new Keystore()));
-        $age       = new AgeIdentity(new Keystore());
-        $entries   = $this->chunkDownloads();
-        $total     = count($entries);
+        $destinationKind  = $this->destinationKind();
+        $localDestination = $destinationKind === 'local' ? $this->buildLocalDestination() : null;
+
+        // Presigned-URL transport + age-decrypt identity are only needed
+        // when at least one chunk is NOT served by the local destination —
+        // constructed lazily (on first use) so a pure `local` restore never
+        // pays for Keystore/Signer setup or touches the network.
+        $transport = null;
+        $age       = null;
+
+        $entries = $this->chunkDownloads();
+        $total   = count($entries);
         if ($total === 0) {
             throw new \RuntimeException('download_artifacts: no chunk_downloads supplied');
         }
@@ -680,16 +700,31 @@ final class RestoreRunner
                     if (!is_array($chunk)) {
                         throw new \RuntimeException('download_artifacts: malformed chunk at ' . $logical . '[' . $chunkIdx . ']');
                     }
-                    $url   = (string) ($chunk['presigned_url'] ?? $chunk['url'] ?? $chunk['get_url'] ?? '');
-                    $hash  = (string) ($chunk['hash'] ?? $chunk['blake3'] ?? '');
-                    if ($url === '' || $hash === '') {
-                        throw new \RuntimeException('download_artifacts: chunk missing url/hash at ' . $logical . '[' . $chunkIdx . ']');
+                    $hash = (string) ($chunk['hash'] ?? $chunk['blake3'] ?? '');
+                    if ($hash === '') {
+                        throw new \RuntimeException('download_artifacts: chunk missing hash at ' . $logical . '[' . $chunkIdx . ']');
                     }
 
-                    $bytes = $this->fetchChunkWithRetries($transport, $url, $hash, $logical, $chunkIdx);
+                    // ADR-036 P1: a 'local' snapshot's chunks live on this
+                    // same webserver's disk — read them by content hash
+                    // instead of an HTTP GET. cp/s3_compat chunks are
+                    // unchanged: presigned GET, same as today.
+                    if ($localDestination !== null) {
+                        $bytes = $this->fetchLocalChunk($localDestination, $hash, $logical, $chunkIdx);
+                    } else {
+                        $url = (string) ($chunk['presigned_url'] ?? $chunk['url'] ?? $chunk['get_url'] ?? '');
+                        if ($url === '') {
+                            throw new \RuntimeException('download_artifacts: chunk missing url at ' . $logical . '[' . $chunkIdx . ']');
+                        }
+                        if ($transport === null) {
+                            $transport = new BackupTransport(new Signer(new Keystore()));
+                        }
+                        $bytes = $this->fetchChunkWithRetries($transport, $url, $hash, $logical, $chunkIdx);
+                    }
 
                     // Verify blake3 over the CIPHERTEXT (matches the upload
-                    // pipeline's content-addressing scheme).
+                    // pipeline's content-addressing scheme) regardless of
+                    // which path the bytes came from.
                     $actual = Blake3::hashHex($bytes);
                     if (!hash_equals($hash, $actual)) {
                         throw new \RuntimeException('download_artifacts: blake3 mismatch on chunk ' . $hash);
@@ -700,7 +735,7 @@ final class RestoreRunner
                     // canonical signal — match it here so the .bin
                     // plaintext path (V0 default) just writes bytes.
                     $plain = EncryptAndUpload::ENCRYPT_CHUNKS
-                        ? $age->decryptChunk($bytes)
+                        ? ($age ??= new AgeIdentity(new Keystore()))->decryptChunk($bytes)
                         : $bytes;
 
                     $w = @fwrite($handle, $plain); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- incremental write into a streaming handle; WP_Filesystem put_contents is whole-buffer only
@@ -2366,6 +2401,87 @@ final class RestoreRunner
         // Cap at 240 chars to match the saveTaskState last_error column limit
         // and the postProgress phase_detail message budget.
         throw new \RuntimeException(esc_html(substr($msg, 0, 240)));
+    }
+
+    // ==================================================================
+    // ADR-036 P1 storage adapter — local destination chunk reads
+    // ==================================================================
+
+    /**
+     * This restore's `destination_kind` — 'cp' | 'local' | 's3_compat'.
+     * Defaults to 'cp' when absent/empty, matching BackupCommand /
+     * DestinationResolver's default (older CP builds never send the field).
+     */
+    private function destinationKind(): string
+    {
+        $kind = isset($this->params['destination_kind']) && is_string($this->params['destination_kind'])
+            ? $this->params['destination_kind']
+            : '';
+        return $kind === '' ? 'cp' : $kind;
+    }
+
+    /**
+     * Build the LocalDestination this restore reads chunks from. Only
+     * called once, when destinationKind() === 'local'.
+     *
+     * Constructs a real BackupTransport to satisfy DestinationResolver's
+     * factory signature (kept uniform with the backup-side wiring in
+     * EncryptAndUpload) — LocalDestination::getChunk()/prepare() never
+     * actually use it; only submitManifest() (a backup-only call) does.
+     *
+     * prepare() resolves (and, if the guard files are missing, re-hardens)
+     * the exact snapshot directory the matching backup wrote to. It is
+     * idempotent — every write it performs is file_exists()-guarded — so
+     * calling it here, on a read-only restore path, is safe.
+     */
+    private function buildLocalDestination(): BackupDestination
+    {
+        $config = isset($this->params['destination_config']) && is_array($this->params['destination_config'])
+            ? $this->params['destination_config']
+            : [];
+
+        $transport   = new BackupTransport(new Signer(new Keystore()));
+        $destination = DestinationResolver::resolve([
+            'snapshot_id'        => $this->snapshotId(),
+            'destination_kind'   => 'local',
+            'destination_config' => $config,
+            'manifest_endpoint'  => '',
+            'presign_endpoint'   => '',
+        ], $transport);
+        $destination->prepare($this->snapshotId());
+
+        return $destination;
+    }
+
+    /**
+     * Read one chunk from the local destination by content hash, instead of
+     * an HTTP GET against a presigned URL. Local snapshot chunks carry no
+     * presigned_url (they never leave the webserver) — the manifest only
+     * guarantees hash (+ size) for them.
+     *
+     * No retry-with-backoff policy here (unlike fetchChunkWithRetries): a
+     * local disk read has none of the transient-network failure modes a
+     * presigned-URL GET over a tunnel does. LocalDestination::getChunk()
+     * itself rejects a malformed hash (path-traversal defense) and returns
+     * null on any other failure (missing file, unreadable file), which we
+     * surface here as a structured, operator-grep-able message.
+     */
+    private function fetchLocalChunk(
+        BackupDestination $destination,
+        string $hash,
+        string $logical,
+        int $chunkIdx
+    ): string {
+        $bytes = $destination->getChunk($hash);
+        if ($bytes === null) {
+            throw new \RuntimeException(esc_html(sprintf(
+                'download_artifacts: local chunk %s[%d] hash=%s not found on local disk (destination_kind=local)',
+                $logical,
+                $chunkIdx,
+                substr($hash, 0, 12)
+            )));
+        }
+        return $bytes;
     }
 
     // ==================================================================
