@@ -230,9 +230,13 @@ final class SyncSecurityPolicyCommandTest extends TestCase
         $this->assertTrue($result['ok']);
         $summary = $result['enrollment_summary'] ?? [];
         $this->assertArrayHasKey('per_role', $summary);
-        $this->assertArrayHasKey('administrator', $summary['per_role']);
+        // per_role is cast to an object on the way out (see BUG 1 fix) so it
+        // serializes as `{}` rather than `[]` when empty; convert back to an
+        // array here to inspect the populated case.
+        $perRole = (array) $summary['per_role'];
+        $this->assertArrayHasKey('administrator', $perRole);
 
-        $roleData = $summary['per_role']['administrator'];
+        $roleData = $perRole['administrator'];
         $this->assertSame(1, $roleData['total']);
         $this->assertSame(0, $roleData['enrolled'], 'user with no 2FA meta is not enrolled');
     }
@@ -263,8 +267,79 @@ final class SyncSecurityPolicyCommandTest extends TestCase
         $result = $this->command()->execute([], $params);
         $this->assertTrue($result['ok']);
 
-        $summary = $result['enrollment_summary']['per_role']['administrator'] ?? [];
+        $perRole = (array) $result['enrollment_summary']['per_role'];
+        $summary = $perRole['administrator'] ?? [];
         $this->assertSame(1, $summary['enrolled'], 'user with totp secret is enrolled');
+    }
+
+    // -------------------------------------------------------------------------
+    // BUG 1: per_role must serialize as `{}` (object), never `[]` (array),
+    // when it has no entries — a Go map[string]RoleEnrollment field cannot be
+    // unmarshaled from a JSON array. Both the 2FA-off case and the 2FA-on but
+    // zero-required-roles case must round-trip through wp_json_encode as `{}`.
+    // -------------------------------------------------------------------------
+
+    public function test_build_enrollment_summary_serializes_empty_per_role_as_object_when_2fa_off(): void
+    {
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled' => false,
+                'hide_backend_enabled' => true,
+                'hide_backend_slug' => 'secret-login',
+            ],
+        ]);
+
+        $ref = new \ReflectionMethod($this->command(), 'buildEnrollmentSummary');
+        $ref->setAccessible(true);
+        $result = $ref->invoke($this->command(), $policy);
+
+        $this->assertInstanceOf(\stdClass::class, $result['per_role']);
+        $this->assertSame('{"per_role":{}}', wp_json_encode($result));
+    }
+
+    public function test_build_enrollment_summary_serializes_empty_per_role_as_object_when_2fa_on_no_roles(): void
+    {
+        // 2FA is enabled but hide_backend toggled alone in the real bug —
+        // here we exercise the "2FA on, zero required roles" branch directly:
+        // no required roles and no groups with require_2fa=true.
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => [],
+            ],
+            'groups' => [],
+        ]);
+
+        $ref = new \ReflectionMethod($this->command(), 'buildEnrollmentSummary');
+        $ref->setAccessible(true);
+        $result = $ref->invoke($this->command(), $policy);
+
+        $this->assertInstanceOf(\stdClass::class, $result['per_role']);
+        $this->assertSame('{"per_role":{}}', wp_json_encode($result));
+    }
+
+    public function test_build_enrollment_summary_populated_case_serializes_as_nested_object(): void
+    {
+        $adminRow     = new \stdClass();
+        $adminRow->ID = 5;
+
+        Functions\when('get_users')->alias(function (array $args) use ($adminRow) {
+            return $args['role'] === 'administrator' ? [$adminRow] : [];
+        });
+
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+
+        $ref = new \ReflectionMethod($this->command(), 'buildEnrollmentSummary');
+        $ref->setAccessible(true);
+        $result = $ref->invoke($this->command(), $policy);
+
+        $encoded = wp_json_encode($result);
+        $this->assertStringContainsString('"administrator":{"enrolled":0,"required":1,"total":1}', $encoded);
     }
 
     // -------------------------------------------------------------------------

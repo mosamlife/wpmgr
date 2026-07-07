@@ -40,6 +40,9 @@
  *       }
  *     }
  *   }
+ *   per_role serializes as {} (a JSON object, never a bare []) when there is
+ *   nothing to report — e.g. 2FA is off — so the CP can always unmarshal it
+ *   into map[string]RoleEnrollment.
  *
  * Auth: Router's permission_callback enforces Ed25519 + anti-replay JWT
  * before execute() is called (Connector::verifyCommand).
@@ -177,57 +180,56 @@ final class SyncSecurityPolicyCommand implements CommandInterface
      */
     private function buildEnrollmentSummary(SecurityPolicy $policy): array
     {
-        $summary = ['per_role' => []];
+        $perRole = [];
 
-        if (!$policy->twoFactorEnabled || !function_exists('get_users')) {
-            return $summary;
-        }
-
-        // Collect all roles that appear in the required list or in groups with require_2fa=true.
-        $requiredRoles = $policy->twoFactorRequiredRoles;
-        foreach ($policy->groups as $group) {
-            if ($group['require_2fa'] === true && !in_array($group['role'], $requiredRoles, true)) {
-                $requiredRoles[] = $group['role'];
-            }
-        }
-
-        if ($requiredRoles === []) {
-            return $summary;
-        }
-
-        foreach ($requiredRoles as $role) {
-            // Fetch users with this role (bounded by WordPress default limit).
-            $users = get_users([
-                'role'   => $role,
-                'fields' => ['ID'],
-                'number' => 500, // cap for performance
-            ]);
-
-            if (!is_array($users)) {
-                continue;
-            }
-
-            $total    = count($users);
-            $enrolled = 0;
-
-            foreach ($users as $userRow) {
-                $uid = is_object($userRow) && isset($userRow->ID)
-                    ? (int) $userRow->ID
-                    : (int) $userRow;
-
-                if ($this->isEnrolled($uid)) {
-                    $enrolled++;
+        if ($policy->twoFactorEnabled && function_exists('get_users')) {
+            // Collect all roles that appear in the required list or in groups with require_2fa=true.
+            $requiredRoles = $policy->twoFactorRequiredRoles;
+            foreach ($policy->groups as $group) {
+                if ($group['require_2fa'] === true && !in_array($group['role'], $requiredRoles, true)) {
+                    $requiredRoles[] = $group['role'];
                 }
             }
 
-            $summary['per_role'][$role] = [
-                'enrolled' => $enrolled,
-                'required' => $total,
-                'total'    => $total,
-            ];
+            foreach ($requiredRoles as $role) {
+                // Fetch users with this role (bounded by WordPress default limit).
+                $users = get_users([
+                    'role'   => $role,
+                    'fields' => ['ID'],
+                    'number' => 500, // cap for performance
+                ]);
+
+                if (!is_array($users)) {
+                    continue;
+                }
+
+                $total    = count($users);
+                $enrolled = 0;
+
+                foreach ($users as $userRow) {
+                    $uid = is_object($userRow) && isset($userRow->ID)
+                        ? (int) $userRow->ID
+                        : (int) $userRow;
+
+                    if ($this->isEnrolled($uid)) {
+                        $enrolled++;
+                    }
+                }
+
+                $perRole[$role] = [
+                    'enrolled' => $enrolled,
+                    'required' => $total,
+                    'total'    => $total,
+                ];
+            }
         }
 
-        return $summary;
+        // Cast to object: an empty PHP array json_encodes as `[]`, which the CP
+        // cannot unmarshal into its Go map[string]RoleEnrollment field. Casting
+        // makes the empty case serialize as `{}` while the populated case is
+        // unaffected (the inner per-role arrays are always non-empty assoc
+        // arrays and already encode as JSON objects).
+        return ['per_role' => (object) $perRole];
     }
 
     /**

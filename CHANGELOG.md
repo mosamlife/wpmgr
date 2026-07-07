@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.37] - 2026-07-07
+
+### Fixed
+
+- Fixed the "hide login" security feature, which had two bugs. First, turning it on showed a scary "policy stored but agent push failed" error even though the policy was actually saved and applied correctly. That error was a harmless mismatch (an empty value was sent as an array instead of an object) and is now gone; the control plane also tolerates both shapes so an older agent can't trip it. Second, and more seriously, the secret login URL did not actually show a login form (it bounced to the home page), which could leave you unable to log in through the browser. The secret URL now serves the login form correctly while the default wp-login.php stays hidden (returns 404). The fix also closes two smaller security gaps found in review: the secret URL is no longer exposed in ordinary page links to logged-out visitors, and the internal access cookie is now signed so it can't be forged. Requires agent 0.61.15.
+
 ## [0.61.36] - 2026-07-07
 
 ### Fixed
