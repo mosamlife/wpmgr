@@ -99,6 +99,46 @@ type PresignerForSnapshot interface {
 	PresignerForSnapshot(ctx context.Context, snap Snapshot) (Presigner, error)
 }
 
+// Destination kind wire values (GH #146 / ADR-036 P1). Mirrored from
+// sitedestination.Kind as plain strings so this package does not import
+// sitedestination directly — see DestinationLookup.
+const (
+	DestinationKindCP       = "cp"
+	DestinationKindLocal    = "local"
+	DestinationKindS3Compat = "s3_compat"
+)
+
+// DestinationInfo is the destination-routing metadata resolved for an
+// already-chosen (non-nil) destination id: the wire Kind ("cp" | "local" |
+// "s3_compat") and, for "local", the operator-configured on-disk path prefix
+// the agent should write/read chunks under. cp/s3_compat destinations leave
+// PathPrefix empty on the wire — the CP still presigns PUT/GET for both via
+// the registry, so the agent needs no extra config for them (and, critically,
+// never sees the s3_compat customer's credentials).
+type DestinationInfo struct {
+	ID         uuid.UUID
+	Kind       string
+	PathPrefix string
+}
+
+// DestinationLookup bridges the ADR-036 P1 site-destination domain into the
+// backup service without an import cycle (sitedestination has no reason to
+// import backup, but keeping the dependency direction explicit and narrow
+// keeps both packages independently testable — mirrors PresignerForSnapshot).
+// Wired via SetDestinationLookup; nil is a fully supported, tested state:
+// every call site treats a nil destLookup exactly like "no destination
+// configured", i.e. every new snapshot's DestinationID stays uuid.Nil and
+// every backup/restore dispatch reports DestinationKind="cp" — the
+// pre-existing, always-managed-storage behaviour, byte for byte.
+type DestinationLookup interface {
+	// DefaultDestinationForSite resolves the site's default destination id, or
+	// uuid.Nil (no error) when the site has none configured — the common case.
+	DefaultDestinationForSite(ctx context.Context, tenantID, siteID uuid.UUID) (uuid.UUID, error)
+	// DestinationInfo resolves the kind + local-path metadata for an already-
+	// chosen (non-nil) destination id.
+	DestinationInfo(ctx context.Context, tenantID, destinationID uuid.UUID) (DestinationInfo, error)
+}
+
 // Service holds the backup orchestration logic.
 type Service struct {
 	repo     Repo
@@ -133,6 +173,12 @@ type Service struct {
 	// mailer sends backup-completion/failure notification emails (Track B, m49).
 	// Optional: when nil, notification emails are silently suppressed.
 	mailer BackupMailer
+	// destLookup resolves ADR-036 P1 site-destination routing metadata: the
+	// site's configured default destination at backup-creation time, and an
+	// already-chosen destination's kind/local-path at dispatch/restore time.
+	// Optional: see DestinationLookup's doc for the graceful-degradation
+	// contract when nil.
+	destLookup DestinationLookup
 }
 
 // SetRegistry wires the ADR-036 P1 storage-adapter router. Calling this AFTER
@@ -160,6 +206,13 @@ func (s *Service) SetIndexDeleter(d IndexDeleter) { s.indexDeleter = d }
 // notifications (Track B, m49). Call once at startup after River is started.
 // When not called, backup email notifications are silently suppressed.
 func (s *Service) SetMailer(m BackupMailer) { s.mailer = m }
+
+// SetDestinationLookup wires the ADR-036 P1 site-destination resolver. Call
+// once at startup (after NewService), before serving traffic — alongside
+// SetRegistry, which routes the actual presigns once a destination is chosen.
+// Optional: when never called, every backup/restore uses the managed (cp)
+// destination exactly as before this feature existed.
+func (s *Service) SetDestinationLookup(d DestinationLookup) { s.destLookup = d }
 
 // Config tunes the service.
 type Config struct {
@@ -227,6 +280,128 @@ func NewService(repo Repo, sites SiteLookup, enqueuer Enqueuer, store Presigner,
 	}
 }
 
+// resolveDefaultDestination resolves the site's default destination id for a
+// NEW backup run. Returns uuid.Nil (never an error) when destLookup is not
+// wired, the site has no default configured, or the lookup itself fails — a
+// destination-routing hiccup must never block a backup from being created; it
+// simply falls back to the managed bucket exactly as every snapshot did
+// before this feature existed. A lookup failure is logged so the degrade is
+// visible to operators.
+func (s *Service) resolveDefaultDestination(ctx context.Context, tenantID, siteID uuid.UUID) uuid.UUID {
+	if s.destLookup == nil {
+		return uuid.Nil
+	}
+	id, err := s.destLookup.DefaultDestinationForSite(ctx, tenantID, siteID)
+	if err != nil {
+		slog.WarnContext(ctx, "backup: default destination lookup failed; falling back to managed storage",
+			slog.String("tenant_id", tenantID.String()),
+			slog.String("site_id", siteID.String()),
+			slog.Any("error", err))
+		return uuid.Nil
+	}
+	return id
+}
+
+// DestinationInfoForSnapshot resolves the wire-facing destination kind (and,
+// for "local", the path-prefix config) for an ALREADY-CREATED snapshot.
+//
+// CRITICAL INVARIANT: snap.DestinationID == uuid.Nil short-circuits to
+// {Kind: DestinationKindCP} WITHOUT ever calling destLookup. This is what
+// keeps the managed backup/restore path completely ungated by destLookup
+// wiring or errors — every snapshot created before this feature, and every
+// snapshot for a site with no configured destination, always takes this
+// branch and behaves exactly as it did before ADR-036 P1 shipped.
+func (s *Service) DestinationInfoForSnapshot(ctx context.Context, snap Snapshot) (DestinationInfo, error) {
+	if snap.DestinationID == uuid.Nil {
+		return DestinationInfo{Kind: DestinationKindCP}, nil
+	}
+	if s.destLookup == nil {
+		// A destination_id is stamped on the row but no resolver is wired. This
+		// should not happen operationally (SetDestinationLookup is wired
+		// alongside SetRegistry) — degrade to the managed kind rather than error.
+		return DestinationInfo{Kind: DestinationKindCP}, nil
+	}
+	return s.destLookup.DestinationInfo(ctx, snap.TenantID, snap.DestinationID)
+}
+
+// presignerForSnapshot resolves the Presigner that should mint URLs for a
+// snapshot's chunks: the ADR-036 P1 per-destination registry route when
+// wired, falling back to the legacy single CP-global Store. Shared by the
+// backup-upload path (PresignChunks) and every restore-download path so a
+// destination-routed snapshot presigns consistently on both sides — an
+// s3_compat snapshot always presigns against ITS OWN bucket, never the CP's.
+func (s *Service) presignerForSnapshot(ctx context.Context, snap Snapshot) (Presigner, error) {
+	presigner := s.store
+	if s.registry != nil {
+		p, err := s.registry.PresignerForSnapshot(ctx, snap)
+		if err != nil {
+			return nil, domain.Internal("backup_presign_route_failed", "failed to resolve presigner for snapshot").WithCause(err)
+		}
+		if p != nil {
+			presigner = p
+		}
+	}
+	return presigner, nil
+}
+
+// restoreDestinationRoute resolves how a restore should fetch a snapshot's
+// chunks: the wire DestinationKind to report to the agent, the local path
+// prefix (kind=="local" only — empty otherwise), and the Presigner to mint GET
+// URLs with (nil for kind=="local": the agent reads its own local disk
+// instead, so no GET is ever minted for those chunks).
+//
+// CRITICAL INVARIANT: snap.DestinationID == uuid.Nil is the managed/legacy
+// path — DestinationInfoForSnapshot short-circuits for it without touching
+// destLookup, so this function's behaviour for every snapshot created before
+// this feature (and every site with no configured destination) is IDENTICAL
+// to calling presignerForSnapshot alone: kind="cp", no local prefix, a
+// registry-or-store presigner. destLookup being unwired or erroring can never
+// gate that path.
+func (s *Service) restoreDestinationRoute(ctx context.Context, snap Snapshot) (kind, localPathPrefix string, presigner Presigner, err error) {
+	info, ierr := s.DestinationInfoForSnapshot(ctx, snap)
+	if ierr != nil {
+		return "", "", nil, ierr
+	}
+	kind = info.Kind
+	if kind == "" {
+		kind = DestinationKindCP
+	}
+	if kind == DestinationKindLocal {
+		// The agent reads its own local disk; no presign is possible (or
+		// needed) for a local destination.
+		return kind, info.PathPrefix, nil, nil
+	}
+	presigner, err = s.presignerForSnapshot(ctx, snap)
+	return kind, "", presigner, err
+}
+
+// mintRestoreChunks resolves the GET-able agentcmd.RestoreChunk for every
+// stored chunk in `chunks`. When presigner is nil (destination kind ==
+// "local") no presign is attempted at all — the agent reads the chunk from
+// its own local disk keyed by hash, so only Hash+Size are populated and URL
+// stays empty. Otherwise a presigned GET is minted after verifying the stored
+// s3_key sits inside this tenant's content-addressed prefix (defense-in-
+// depth: a presign can never address another tenant's chunk).
+func (s *Service) mintRestoreChunks(ctx context.Context, tenantID uuid.UUID, presigner Presigner, chunks map[string]Chunk) (map[string]agentcmd.RestoreChunk, error) {
+	out := make(map[string]agentcmd.RestoreChunk, len(chunks))
+	for h, c := range chunks {
+		if presigner == nil {
+			out[h] = agentcmd.RestoreChunk{Hash: h, Size: c.Size}
+			continue
+		}
+		expected := chunkS3Key(tenantID, h)
+		if c.S3Key != expected {
+			return nil, domain.Internal("backup_chunk_key_mismatch", "stored chunk key is outside the tenant prefix")
+		}
+		url, perr := presigner.PresignGet(ctx, c.S3Key, s.presignTTL)
+		if perr != nil {
+			return nil, domain.Internal("backup_presign_get_failed", "failed to presign chunk").WithCause(perr)
+		}
+		out[h] = agentcmd.RestoreChunk{Hash: h, URL: url, Size: c.Size}
+	}
+	return out, nil
+}
+
 // CreateBackup validates the request, records a pending snapshot, and enqueues a
 // background backup job. The site MUST be enrolled and have an age recipient set
 // (a backup the operator could never decrypt is useless).
@@ -265,6 +440,12 @@ func (s *Service) CreateBackup(ctx context.Context, tenantID, siteID, createdBy 
 			"a backup is already pending or running for this site; wait for it to complete before starting another")
 	}
 
+	// ADR-036 P1: resolve the site's configured default destination ONCE up
+	// front so both the incremental and full paths below stamp it identically.
+	// uuid.Nil (destLookup unwired, no default configured, or a lookup
+	// failure) routes to the legacy CP-managed bucket — unchanged behaviour.
+	destinationID := s.resolveDefaultDestination(ctx, tenantID, siteID)
+
 	// ADR-048 P5: run-now honours the same per-schedule incremental toggle as the
 	// scheduled path, so an operator can enable the toggle and then drive the
 	// base→increment→restore QA flow via run-now. A site with no schedule row (or
@@ -287,6 +468,7 @@ func (s *Service) CreateBackup(ctx context.Context, tenantID, siteID, createdBy 
 			BaseSnapshotID:   res.BaseSnapshotID,
 			ChainID:          res.ChainID,
 			Generation:       res.Generation,
+			DestinationID:    destinationID,
 		})
 		if err != nil {
 			if isUniqueViolation(err) {
@@ -302,11 +484,12 @@ func (s *Service) CreateBackup(ctx context.Context, tenantID, siteID, createdBy 
 	}
 
 	snap, err := s.repo.CreateSnapshot(ctx, CreateSnapshotInput{
-		TenantID:     tenantID,
-		SiteID:       siteID,
-		CreatedBy:    createdBy,
-		Kind:         kind,
-		AgeRecipient: si.AgeRecipient,
+		TenantID:      tenantID,
+		SiteID:        siteID,
+		CreatedBy:     createdBy,
+		Kind:          kind,
+		AgeRecipient:  si.AgeRecipient,
+		DestinationID: destinationID,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -558,21 +741,18 @@ func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUI
 		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, err
 	}
 
-	// Mint a presigned GET per distinct chunk (deduped across entries).
-	getURLs := make(map[string]agentcmd.RestoreChunk, len(chunks))
-	for h, c := range chunks {
-		// Defense-in-depth: the s3 key MUST be namespaced to this tenant. The
-		// content-addressed key the repo stored is chunks/<tenant>/<blake3>;
-		// never presign a key outside this tenant's prefix.
-		expected := chunkS3Key(tenantID, h)
-		if c.S3Key != expected {
-			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_chunk_key_mismatch", "stored chunk key is outside the tenant prefix")
-		}
-		url, perr := s.store.PresignGet(ctx, c.S3Key, s.presignTTL)
-		if perr != nil {
-			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_presign_get_failed", "failed to presign chunk").WithCause(perr)
-		}
-		getURLs[h] = agentcmd.RestoreChunk{Hash: h, URL: url, Size: c.Size}
+	// ADR-036 P1: resolve destination routing BEFORE minting any chunk URL.
+	// destKind=="local" skips presigning entirely (the agent reads its own
+	// local disk instead); every other kind (cp — the pre-existing default —
+	// or s3_compat) mints a GET exactly as before, routed to the CUSTOMER
+	// bucket for s3_compat via the registry.
+	destKind, destLocalPrefix, presigner, drerr := s.restoreDestinationRoute(ctx, snap)
+	if drerr != nil {
+		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, drerr
+	}
+	getURLs, err := s.mintRestoreChunks(ctx, tenantID, presigner, chunks)
+	if err != nil {
+		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, err
 	}
 
 	// Derive the agent-wire `kind` from the requested components (M6 / Track 2).
@@ -609,6 +789,11 @@ func (s *Service) PlanRestore(ctx context.Context, tenantID, snapshotID uuid.UUI
 		SourceHomeURL:    snap.SourceHomeURL,
 		SourceContentURL: snap.SourceContentURL,
 		SourceUploadURL:  snap.SourceUploadURL,
+		// ADR-036 P1 storage adapter (GH #146): tells the agent which backend
+		// to read chunks from. "local" carries no chunk URLs (see
+		// mintRestoreChunks) — the agent reads its own disk instead.
+		DestinationKind:   destKind,
+		DestinationConfig: agentcmd.DestinationConfig{LocalPathPrefix: destLocalPrefix},
 	}
 	for _, e := range selected {
 		re := agentcmd.RestoreEntry{LogicalPath: e.Path}
@@ -966,18 +1151,15 @@ func (s *Service) planRestoreChainOverlay(ctx context.Context, tenantID uuid.UUI
 		}
 	}
 
-	// STEP 6 — presign chunk GET URLs.
-	getURLs := make(map[string]agentcmd.RestoreChunk, len(chunks))
-	for h, c := range chunks {
-		expected := chunkS3Key(tenantID, h)
-		if c.S3Key != expected {
-			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_chunk_key_mismatch", "stored chunk key is outside the tenant prefix")
-		}
-		url, perr := s.store.PresignGet(ctx, c.S3Key, s.presignTTL)
-		if perr != nil {
-			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_presign_get_failed", "failed to presign chunk").WithCause(perr)
-		}
-		getURLs[h] = agentcmd.RestoreChunk{Hash: h, URL: url, Size: c.Size}
+	// STEP 6 — ADR-036 P1 destination routing + chunk GET URLs (skipped for a
+	// local destination — the agent reads its own local disk instead).
+	destKind, destLocalPrefix, presigner, drerr := s.restoreDestinationRoute(ctx, snap)
+	if drerr != nil {
+		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, drerr
+	}
+	getURLs, err := s.mintRestoreChunks(ctx, tenantID, presigner, chunks)
+	if err != nil {
+		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, err
 	}
 
 	// CP-side tombstone path sanitization (defense-in-depth; agent re-sanitizes).
@@ -1020,6 +1202,10 @@ func (s *Service) planRestoreChainOverlay(ctx context.Context, tenantID uuid.UUI
 		TargetGeneration: targetGen,
 		EstimatedBytes:   estimatedBytes,
 		TombstonePaths:   tombstonePaths,
+		// ADR-036 P1 storage adapter (GH #146): see PlanRestore's non-chain
+		// path for the field contract.
+		DestinationKind:   destKind,
+		DestinationConfig: agentcmd.DestinationConfig{LocalPathPrefix: destLocalPrefix},
 	}
 
 	// OVERLAY ORDER — append each generation's parts ASCENDING by generation so a
@@ -1158,18 +1344,15 @@ func (s *Service) planRestoreChainFileIndex(ctx context.Context, tenantID uuid.U
 		}
 	}
 
-	// STEP 7 — presign chunk GET URLs.
-	getURLs := make(map[string]agentcmd.RestoreChunk, len(chunks))
-	for h, c := range chunks {
-		expected := chunkS3Key(tenantID, h)
-		if c.S3Key != expected {
-			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_chunk_key_mismatch", "stored chunk key is outside the tenant prefix")
-		}
-		url, perr := s.store.PresignGet(ctx, c.S3Key, s.presignTTL)
-		if perr != nil {
-			return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, domain.Internal("backup_presign_get_failed", "failed to presign chunk").WithCause(perr)
-		}
-		getURLs[h] = agentcmd.RestoreChunk{Hash: h, URL: url, Size: c.Size}
+	// STEP 7 — ADR-036 P1 destination routing + chunk GET URLs (skipped for a
+	// local destination — the agent reads its own local disk instead).
+	destKind, destLocalPrefix, presigner, drerr := s.restoreDestinationRoute(ctx, snap)
+	if drerr != nil {
+		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, drerr
+	}
+	getURLs, err := s.mintRestoreChunks(ctx, tenantID, presigner, chunks)
+	if err != nil {
+		return agentcmd.RestoreRequest{}, Snapshot{}, SiteInfo{}, err
 	}
 
 	// STEP 8 — assemble RestoreRequest.
@@ -1212,6 +1395,10 @@ func (s *Service) planRestoreChainFileIndex(ctx context.Context, tenantID uuid.U
 		TargetGeneration: targetGen,
 		EstimatedBytes:   estimatedBytes,
 		TombstonePaths:   tombstonePaths,
+		// ADR-036 P1 storage adapter (GH #146): see PlanRestore's non-chain
+		// path for the field contract.
+		DestinationKind:   destKind,
+		DestinationConfig: agentcmd.DestinationConfig{LocalPathPrefix: destLocalPrefix},
 	}
 
 	// File entries from winMap (non-tombstone, each as a RestoreEntry).
@@ -1341,15 +1528,9 @@ func (s *Service) PresignChunks(ctx context.Context, tenantID, snapshotID uuid.U
 	// the per-destination Store when the snapshot carries a non-nil
 	// DestinationID; otherwise it falls back to the CP-global Store. When no
 	// registry is wired we keep the legacy single-store path verbatim.
-	presigner := s.store
-	if s.registry != nil {
-		p, perr := s.registry.PresignerForSnapshot(ctx, snap)
-		if perr != nil {
-			return nil, domain.Internal("backup_presign_route_failed", "failed to resolve presigner for snapshot").WithCause(perr)
-		}
-		if p != nil {
-			presigner = p
-		}
+	presigner, perr := s.presignerForSnapshot(ctx, snap)
+	if perr != nil {
+		return nil, perr
 	}
 	uploads := map[string]string{}
 	for _, h := range hashes {
@@ -1473,6 +1654,17 @@ func (s *Service) SubmitManifest(ctx context.Context, tenantID, snapshotID uuid.
 // route. Returns an error when the parent carries no files-list (a chain that
 // can't be diffed) or a chunk is no longer stored, so the worker can surface a
 // retryable infra failure rather than silently re-pack the whole tree.
+//
+// ADR-036 P1 (GH #146): the files-list chunks were stored under the PARENT
+// snapshot's OWN destination — routing must key off the PARENT's
+// destination_id, not the increment currently being dispatched (in practice a
+// chain shares one destination, but this is correct even if it doesn't).
+// restoreDestinationRoute is reused here even though this isn't a restore: it
+// is exactly the same operation — reading already-stored chunks back — so the
+// same cp/local/s3_compat routing decision applies. For a "local" parent no
+// presign is minted (mirrors the restore path): the agent reads the parent's
+// files-list from its own local disk, keyed by hash, using the returned
+// Hash/Size (URL empty).
 func (s *Service) PresignParentFilesList(ctx context.Context, tenantID, parentSnapshotID uuid.UUID) ([]agentcmd.RestoreChunk, error) {
 	entries, err := s.repo.ListManifest(ctx, tenantID, parentSnapshotID)
 	if err != nil {
@@ -1492,23 +1684,29 @@ func (s *Service) PresignParentFilesList(ctx context.Context, tenantID, parentSn
 	if err != nil {
 		return nil, err
 	}
+
+	parentSnap, err := s.repo.GetSnapshot(ctx, tenantID, parentSnapshotID)
+	if err != nil {
+		return nil, err
+	}
+	_, _, presigner, drerr := s.restoreDestinationRoute(ctx, parentSnap)
+	if drerr != nil {
+		return nil, drerr
+	}
+	urls, err := s.mintRestoreChunks(ctx, tenantID, presigner, chunks)
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]agentcmd.RestoreChunk, 0, len(hashes))
 	// Preserve chunk order (a files.list is a stream; concat order matters).
 	for _, h := range hashes {
-		c, ok := chunks[h]
+		rc, ok := urls[h]
 		if !ok {
 			return nil, domain.Internal("parent_files_list_chunk_missing",
 				"a files-list chunk for the parent snapshot is no longer stored")
 		}
-		expected := chunkS3Key(tenantID, h)
-		if c.S3Key != expected {
-			return nil, domain.Internal("backup_chunk_key_mismatch", "stored chunk key is outside the tenant prefix")
-		}
-		url, perr := s.store.PresignGet(ctx, c.S3Key, s.presignTTL)
-		if perr != nil {
-			return nil, domain.Internal("backup_presign_get_failed", "failed to presign files-list chunk").WithCause(perr)
-		}
-		out = append(out, agentcmd.RestoreChunk{Hash: h, URL: url, Size: c.Size})
+		out = append(out, rc)
 	}
 	return out, nil
 }
@@ -2795,6 +2993,11 @@ func (s *Service) EnqueueScheduledBackup(ctx context.Context, sched Schedule) er
 		runID = run.ID
 	}
 
+	// ADR-036 P1: resolve the site's configured default destination ONCE up
+	// front so both branches below stamp it identically (see CreateBackup for
+	// the identical run-now-path rationale).
+	destinationID := s.resolveDefaultDestination(ctx, sched.TenantID, sched.SiteID)
+
 	// ADR-048 P5: when the schedule opts into incremental backups, consult the
 	// auto-base chain rule and stamp the snapshot's chain fields. When the toggle
 	// is OFF this takes the existing full path (zero-value CreateSnapshotInput +
@@ -2818,13 +3021,15 @@ func (s *Service) EnqueueScheduledBackup(ctx context.Context, sched Schedule) er
 			BaseSnapshotID:   res.BaseSnapshotID,
 			ChainID:          res.ChainID,
 			Generation:       res.Generation,
+			DestinationID:    destinationID,
 		})
 	} else {
 		snap, err = s.repo.CreateSnapshot(ctx, CreateSnapshotInput{
-			TenantID:     sched.TenantID,
-			SiteID:       sched.SiteID,
-			Kind:         sched.Kind,
-			AgeRecipient: si.AgeRecipient,
+			TenantID:      sched.TenantID,
+			SiteID:        sched.SiteID,
+			Kind:          sched.Kind,
+			AgeRecipient:  si.AgeRecipient,
+			DestinationID: destinationID,
 		})
 	}
 	if err != nil {

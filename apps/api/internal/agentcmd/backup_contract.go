@@ -98,6 +98,52 @@ const (
 // and stored.
 const ChunkBytes = 4 << 20
 
+// ============================================================================
+// ADR-036 P1 storage adapter (GH #146) — destination-routing wire contract.
+// The CP decides WHERE a snapshot's chunks live and tells the agent via
+// DestinationKind + DestinationConfig on BackupRequest/IncrementalBackupRequest
+// (backup) and RestoreRequest (restore). Both sides (Go CP + PHP agent) use
+// these field names and values verbatim. DO NOT rename without bumping both.
+// ============================================================================
+
+// Destination kind wire values.
+const (
+	// DestinationKindCP is the WPMgr-managed CP-global bucket — the historical
+	// default. Absent/empty DestinationKind on an older CP build (or a
+	// snapshot with no destination configured) means "cp".
+	DestinationKindCP = "cp"
+	// DestinationKindLocal means the agent writes ciphertext chunks straight
+	// to disk (wp-content/wpmgr-backups by default, or DestinationConfig.
+	// local_path_prefix when set) instead of uploading anywhere. The CP mints
+	// NO presigned URLs for a local-kind backup/restore.
+	DestinationKindLocal = "local"
+	// DestinationKindS3Compat is a customer-owned S3-compatible bucket (AWS
+	// S3, Wasabi, B2, DO Spaces, MinIO, …). The CP still presigns PUT/GET URLs
+	// via the EXACT SAME PresignEndpoint/ManifestEndpoint/chunk-URL transport
+	// as "cp" — just against the customer's bucket instead of the CP's — so
+	// the agent needs no extra config for it and NEVER sees the customer's S3
+	// credentials (the CP holds them, age-encrypted at rest).
+	DestinationKindS3Compat = "s3_compat"
+)
+
+// DestinationConfig carries the per-destination-kind data the agent needs
+// beyond DestinationKind itself. Only the fields relevant to the kind are
+// populated; every other field stays zero/empty.
+//
+//   - DestinationKind == "cp" or "s3_compat": DestinationConfig is entirely
+//     empty. The CP presigns PUT/GET (against the CP bucket or the customer's
+//     bucket respectively) via the same transport as always; the agent needs
+//     no additional configuration and, for s3_compat, never sees the
+//     customer's credentials.
+//   - DestinationKind == "local": LocalPathPrefix carries the on-disk path
+//     (relative to the site's wp-content directory) the agent writes
+//     ciphertext chunks under / reads them back from, instead of uploading
+//     them anywhere. Empty means the agent's own default
+//     ("wp-content/wpmgr-backups").
+type DestinationConfig struct {
+	LocalPathPrefix string `json:"local_path_prefix,omitempty"`
+}
+
 // BackupRequest is the POST body for the `backup` command.
 //
 //	snapshot_id   the CP-assigned snapshot UUID the agent reports the manifest
@@ -157,6 +203,14 @@ type BackupRequest struct {
 	// ExcludeFileSizeMB, when > 0, instructs the agent to skip files strictly
 	// larger than this value (MiB). 0 = no filter (agent default).
 	ExcludeFileSizeMB int32 `json:"exclude_file_size_mb,omitempty"`
+
+	// DestinationKind + DestinationConfig (ADR-036 P1 storage adapter, GH
+	// #146): which backend the agent should land ciphertext chunks against.
+	// Absent/empty DestinationKind means "cp" — an older CP build, or a
+	// snapshot with no destination configured, behaves exactly as before this
+	// field existed.
+	DestinationKind   string            `json:"destination_kind,omitempty"`
+	DestinationConfig DestinationConfig `json:"destination_config,omitempty"`
 }
 
 // BackupResponse is the agent's immediate ack of the `backup` command. The
@@ -363,6 +417,17 @@ type RestoreRequest struct {
 	// any syscall (see tombstone-path-safety rules). Empty when IsChainRestore is
 	// false OR when no files were deleted across the chain.
 	TombstonePaths []string `json:"tombstone_paths,omitempty"`
+
+	// DestinationKind + DestinationConfig (ADR-036 P1 storage adapter, GH
+	// #146): which backend the agent should READ chunks from. "local" carries
+	// NO chunk URLs in Manifest — RestoreChunk.Hash/Size are still populated
+	// (so the agent can locate + verify the chunk file) but URL is empty; the
+	// agent reads the chunk from its own local disk (DestinationConfig.
+	// local_path_prefix) instead. Absent/empty DestinationKind means "cp" —
+	// an older CP build, or a snapshot with no destination configured,
+	// behaves exactly as before this field existed.
+	DestinationKind   string            `json:"destination_kind,omitempty"`
+	DestinationConfig DestinationConfig `json:"destination_config,omitempty"`
 }
 
 // RestoreResponse is the agent's response to the `restore` command.
@@ -425,4 +490,9 @@ type IncrementalBackupRequest struct {
 	ExcludePaths      []string `json:"exclude_paths,omitempty"`
 	ExcludeExtensions []string `json:"exclude_extensions,omitempty"`
 	ExcludeFileSizeMB int32    `json:"exclude_file_size_mb,omitempty"`
+
+	// DestinationKind + DestinationConfig (ADR-036 P1 storage adapter, GH
+	// #146) — same semantics as BackupRequest.
+	DestinationKind   string            `json:"destination_kind,omitempty"`
+	DestinationConfig DestinationConfig `json:"destination_config,omitempty"`
 }

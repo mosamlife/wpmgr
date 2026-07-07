@@ -57,21 +57,35 @@ final class LocalDestination implements BackupDestination
     private string $snapshotDir = '';
 
     /**
+     * Sanitized `destination_config.local_path_prefix` (operator-configured
+     * on-disk path, relative to WP_CONTENT_DIR). Empty when the CP sent none
+     * (or sent a value that sanitized down to nothing) — resolveBaseDir()
+     * then falls back to the agent's own uploads-first default.
+     */
+    private string $localPathPrefix;
+
+    /**
      * @param BackupTransport $transport        For the metadata-only manifest POST
      *                                          (the agent still signs it with the
      *                                          existing Ed25519 transport so the
      *                                          CP authenticates the caller).
      * @param string          $snapshotId       In-flight snapshot UUID.
      * @param string          $manifestEndpoint CP /manifest URL (metadata only).
+     * @param string          $localPathPrefix  Optional operator-configured on-disk
+     *                                          path (relative to WP_CONTENT_DIR) from
+     *                                          `destination_config.local_path_prefix`.
+     *                                          Empty string = agent default.
      */
     public function __construct(
         BackupTransport $transport,
         string $snapshotId,
-        string $manifestEndpoint
+        string $manifestEndpoint,
+        string $localPathPrefix = ''
     ) {
         $this->transport        = $transport;
         $this->snapshotId       = $snapshotId;
         $this->manifestEndpoint = $manifestEndpoint;
+        $this->localPathPrefix  = self::sanitizePrefix($localPathPrefix);
     }
 
     /**
@@ -115,6 +129,9 @@ final class LocalDestination implements BackupDestination
      */
     public function putChunk(string $hash, string $ciphertext): bool
     {
+        if (!self::isValidHash($hash)) {
+            return false;
+        }
         $path = $this->chunkPath($hash);
         if (is_file($path)) {
             return true;
@@ -128,8 +145,22 @@ final class LocalDestination implements BackupDestination
         return true;
     }
 
+    /**
+     * Read one stored chunk back by content hash — used by the restore path
+     * (RestoreRunner::fetchLocalChunk) for a `destination_kind=local`
+     * snapshot, whose manifest chunks carry no presigned URL.
+     *
+     * Validates the hash shape BEFORE building a filesystem path from it
+     * (defense in depth: the hash arrives over the wire in a RestoreRequest,
+     * so — unlike the backup-side putChunk, whose hash is always this
+     * process's own Blake3::hashHex() output — it must be treated as
+     * untrusted input here).
+     */
     public function getChunk(string $hash): ?string
     {
+        if (!self::isValidHash($hash)) {
+            return null;
+        }
         $path = $this->chunkPath($hash);
         if (!is_file($path)) {
             return null;
@@ -173,10 +204,14 @@ final class LocalDestination implements BackupDestination
         @file_put_contents($manifestPath, $manifestJson, LOCK_EX);
         @chmod($manifestPath, self::CHUNK_MODE); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- explicit security perms (0640); WP_Filesystem would coerce to wider FS_CHMOD_FILE
 
-        // POST the SAME manifest shape to the CP. The CP records the snapshot
-        // as completed with `destination_kind='local'` (the destination_id
-        // travels in BackupRequest so the CP already knows). This is the
-        // metadata-only shipment: we send the manifest, not the chunks.
+        // POST the SAME manifest shape to the CP. The CP already knows this
+        // snapshot's destination_kind='local' + destination_config — it
+        // recorded them on the snapshot row when it enqueued the
+        // BackupRequest, and DestinationResolver used those exact same
+        // fields (from runner params) to build THIS LocalDestination
+        // instance. So this POST doesn't need to repeat the destination
+        // choice; it is purely the metadata-only shipment: we send the
+        // manifest (paths, chunk hashes/sizes), never the chunk bytes.
         return $this->transport->submitManifest(
             $this->manifestEndpoint,
             $this->snapshotId,
@@ -197,7 +232,7 @@ final class LocalDestination implements BackupDestination
             }
         }
         foreach ($hashes as $hash) {
-            if (!is_string($hash) || $hash === '') {
+            if (!is_string($hash) || !self::isValidHash($hash)) {
                 continue;
             }
             $path = $this->chunkPath($hash);
@@ -215,9 +250,13 @@ final class LocalDestination implements BackupDestination
     /**
      * Pick the base dir for wpmgr-backups/.
      *
-     * Delegates to StoragePaths::dataBase('backups') for uploads-first resolution
-     * (wp.org Guideline compliance). Web-access guard files (.htaccess + index.php)
-     * are written by StoragePaths::ensureHardened() because uploads/ is web-accessible.
+     * When the operator configured an explicit `local_path_prefix`
+     * (destination_config), that path wins outright — see
+     * resolveConfiguredBaseDir(). Otherwise this delegates to
+     * StoragePaths::dataBase('backups') for uploads-first resolution
+     * (wp.org Guideline compliance). Web-access guard files (.htaccess +
+     * index.php) are written by StoragePaths::ensureHardened() because
+     * uploads/ is web-accessible.
      *
      * Best-effort migration: if the legacy wp-content/wpmgr-backups directory exists
      * and the new uploads-based location does not yet exist, we atomically rename it
@@ -228,6 +267,10 @@ final class LocalDestination implements BackupDestination
      */
     private function resolveBaseDir(): string
     {
+        if ($this->localPathPrefix !== '') {
+            return $this->resolveConfiguredBaseDir();
+        }
+
         // Primary candidate: uploads-first via StoragePaths.
         $primary = StoragePaths::dataBase('backups');
         $legacy  = StoragePaths::legacyBase('backups');
@@ -264,6 +307,94 @@ final class LocalDestination implements BackupDestination
             }
         }
         throw new \RuntimeException('WPMgr Local Destination: no writable base dir under uploads or wp-content');
+    }
+
+    /**
+     * Resolve the operator-configured base dir: `WP_CONTENT_DIR/<localPathPrefix>`.
+     *
+     * Unlike resolveBaseDir()'s uploads-first default, an explicit
+     * local_path_prefix is an operator choice — we honor it outright rather
+     * than falling back to a different candidate on a writability failure
+     * (a silent fallback would mean "the operator picked path X but their
+     * backup landed on path Y", which is exactly the kind of surprise a
+     * storage-destination feature must not produce).
+     *
+     * $this->localPathPrefix was already sanitized in the constructor (no
+     * `..`, no absolute-path leader, no traversal-capable characters), so
+     * the join below cannot escape WP_CONTENT_DIR.
+     */
+    private function resolveConfiguredBaseDir(): string
+    {
+        if (!defined('WP_CONTENT_DIR') || !is_string(WP_CONTENT_DIR) || WP_CONTENT_DIR === '') {
+            throw new \RuntimeException('WPMgr Local Destination: WP_CONTENT_DIR is unavailable for the configured local_path_prefix');
+        }
+
+        $wpContent = rtrim(WP_CONTENT_DIR, '/\\');
+        $relative  = str_replace('/', DIRECTORY_SEPARATOR, $this->localPathPrefix);
+        $base      = $wpContent . DIRECTORY_SEPARATOR . $relative;
+
+        if (!is_dir($base)) {
+            if (!@mkdir($base, self::DIR_MODE, true) && !is_dir($base)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- explicit 0700 perms on operator-configured backup dir; wp_mkdir_p would apply the wider FS_CHMOD_DIR
+                throw new \RuntimeException('WPMgr Local Destination: cannot create configured local_path_prefix dir at ' . esc_html($base));
+            }
+            @chmod($base, self::DIR_MODE); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- explicit security perms (0700); WP_Filesystem would coerce to wider FS_CHMOD_DIR
+        }
+        if (!is_writable($base)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized; direct writability probe is the only option
+            throw new \RuntimeException('WPMgr Local Destination: configured local_path_prefix dir not writable: ' . esc_html($base));
+        }
+
+        return $base;
+    }
+
+    /**
+     * Sanitize `destination_config.local_path_prefix` into a traversal-safe
+     * relative path. The CP is expected to validate this operator input
+     * before it ever reaches the agent, but the agent treats every wire
+     * field as untrusted (VALIDATE-early / SANITIZE-before-use) — especially
+     * one that is about to become part of a filesystem path.
+     *
+     * Splits on both `/` and `\`, drops empty/`.`/`..` segments outright
+     * (no traversal is possible even if every other segment were hostile),
+     * and strips each remaining segment down to a conservative
+     * `[A-Za-z0-9_.-]` charset (defeats NUL-byte injection, drive letters,
+     * and stray control characters). Returns '' — meaning "use the agent's
+     * own default" — when nothing safe survives.
+     */
+    private static function sanitizePrefix(string $prefix): string
+    {
+        $prefix = trim($prefix);
+        if ($prefix === '') {
+            return '';
+        }
+
+        $normalized = str_replace('\\', '/', $prefix);
+        $segments   = explode('/', $normalized);
+        $safe       = [];
+        foreach ($segments as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                continue;
+            }
+            $clean = preg_replace('/[^A-Za-z0-9_.\-]/', '', $segment) ?? '';
+            if ($clean === '' || $clean === '.' || $clean === '..') {
+                continue;
+            }
+            $safe[] = $clean;
+        }
+
+        return implode('/', $safe);
+    }
+
+    /**
+     * Validate that $hash is shaped like a BLAKE3 hex digest (32 bytes ->
+     * 64 lowercase/uppercase hex chars) BEFORE it is used to build a
+     * filesystem path (chunkPath()). Guards putChunk/getChunk/deleteChunks
+     * against path traversal via a malformed hash — this matters most for
+     * getChunk(), whose $hash comes from a RestoreRequest chunk entry (wire
+     * input), not from this process's own Blake3::hashHex() output.
+     */
+    private static function isValidHash(string $hash): bool
+    {
+        return preg_match('/^[a-f0-9]{64}$/i', $hash) === 1;
     }
 
     /**

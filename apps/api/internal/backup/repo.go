@@ -267,6 +267,11 @@ type CreateSnapshotInput struct {
 	BaseSnapshotID   *uuid.UUID
 	ChainID          *uuid.UUID
 	Generation       int
+	// DestinationID (M7 / ADR-036 P1): the site_destinations row this snapshot's
+	// chunks should be stored against. uuid.Nil (the zero value) routes to the
+	// legacy CP-managed bucket — the pre-existing, always-managed-storage
+	// behaviour for every caller that does not resolve a destination.
+	DestinationID uuid.UUID
 }
 
 // CycleStatsInput is the set of incremental telemetry counters stamped at
@@ -403,12 +408,17 @@ func (r *pgRepo) CreateSnapshot(ctx context.Context, in CreateSnapshotInput) (Sn
 		if in.CreatedBy != uuid.Nil {
 			createdBy = pgtype.UUID{Bytes: in.CreatedBy, Valid: true}
 		}
+		var destinationID pgtype.UUID
+		if in.DestinationID != uuid.Nil {
+			destinationID = pgtype.UUID{Bytes: in.DestinationID, Valid: true}
+		}
 		row, err := sqlc.New(tx).CreateBackupSnapshot(ctx, sqlc.CreateBackupSnapshotParams{
-			TenantID:     in.TenantID,
-			SiteID:       in.SiteID,
-			CreatedBy:    createdBy,
-			Kind:         in.Kind,
-			AgeRecipient: in.AgeRecipient,
+			TenantID:      in.TenantID,
+			SiteID:        in.SiteID,
+			CreatedBy:     createdBy,
+			Kind:          in.Kind,
+			AgeRecipient:  in.AgeRecipient,
+			DestinationID: destinationID,
 		})
 		if err != nil {
 			return domain.Internal("backup_snapshot_create_failed", "failed to create snapshot").WithCause(err)
@@ -1642,6 +1652,9 @@ func toSnapshot(s sqlc.BackupSnapshot) Snapshot {
 		id := uuid.UUID(s.CreatedBy.Bytes)
 		out.CreatedBy = &id
 	}
+	if s.DestinationID.Valid {
+		out.DestinationID = uuid.UUID(s.DestinationID.Bytes)
+	}
 	if s.StartedAt.Valid {
 		t := s.StartedAt.Time
 		out.StartedAt = &t
@@ -1797,13 +1810,13 @@ const snapshotSelectColumns = `SELECT id, tenant_id, site_id, created_by, kind, 
         started_at, finished_at, created_at, updated_at,
         is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation,
         cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded,
-        locked`
+        locked, destination_id`
 
 // scanSnapshotWithChainFields scans a row that includes the ADR-048 chain
-// columns (is_incremental … cycle_bytes_uploaded) plus the m49 locked column.
-// The SELECT must project all standard snapshot columns plus the four chain UUID
-// columns, the four cycle counter columns, and locked — in the exact order
-// listed here.
+// columns (is_incremental … cycle_bytes_uploaded) plus the m49 locked column
+// and the M7 / ADR-036 P1 destination_id column. The SELECT must project all
+// standard snapshot columns plus the four chain UUID columns, the four cycle
+// counter columns, locked, and destination_id — in the exact order listed here.
 func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 	var (
 		s               Snapshot
@@ -1814,6 +1827,7 @@ func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 		parentID        pgtype.UUID
 		baseID          pgtype.UUID
 		chainID         pgtype.UUID
+		destinationID   pgtype.UUID
 	)
 	err := row.Scan(
 		&s.ID, &s.TenantID, &s.SiteID, &createdBy, &s.Kind, &s.Status,
@@ -1822,7 +1836,7 @@ func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 		&s.CreatedAt, &s.UpdatedAt,
 		&s.IsIncremental, &parentID, &baseID, &chainID, &s.Generation,
 		&s.CycleFilesScanned, &s.CycleFilesChanged, &s.CycleFilesDeleted, &s.CycleBytesUploaded,
-		&s.Locked,
+		&s.Locked, &destinationID,
 	)
 	if err != nil {
 		return Snapshot{}, err
@@ -1830,6 +1844,9 @@ func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 	if createdBy.Valid {
 		id := uuid.UUID(createdBy.Bytes)
 		s.CreatedBy = &id
+	}
+	if destinationID.Valid {
+		s.DestinationID = uuid.UUID(destinationID.Bytes)
 	}
 	if startedAt.Valid {
 		t := startedAt.Time
