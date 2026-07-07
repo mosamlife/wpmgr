@@ -179,12 +179,27 @@ type Repo interface {
 	// and streams every chunk keyset-paged by (created_at, blake3) using SHORT
 	// per-page transactions, so no pooled connection is pinned across object-store
 	// I/O (avoiding Cloud SQL's idle_in_transaction_session_timeout). For each
-	// chunk it invokes del(SweepChunk) OUTSIDE any transaction — del does the
-	// object-FIRST delete and returns true when the row should now be removed; the
-	// repo then removes those rows in a SHORT delete tx, re-checking
-	// GREATEST(created_at, last_referenced_at) < floor at the DB. The session lock
-	// keeps the per-tenant sweep exclusive across the whole pass. Tenant-scoped.
-	SweepTenantChunks(ctx context.Context, tenantID uuid.UUID, floor time.Time, acquired *bool, del func(c SweepChunk) (bool, error)) error
+	// chunk it invokes del(SweepChunk, stillReferenced) INSIDE the per-chunk
+	// FOR UPDATE critical section (on the SAME pinned connection) — del does the
+	// object-FIRST delete and returns true when the row should now be removed;
+	// the repo then removes those rows in the SAME short-lived tx, re-checking
+	// GREATEST(created_at, last_referenced_at) < floor at the DB. The session
+	// lock keeps the per-tenant sweep exclusive across the whole pass.
+	//
+	// stillReferenced is the GH #168 P2 ground-truth guard, LAZILY evaluated:
+	// calling it runs "does any backup_manifest_entries row for the tenant still
+	// list this hash?" on the SAME pinned connection/tx sweepOneChunk already
+	// holds the row's FOR UPDATE lock under — never a second pooled connection
+	// (a second Acquire from inside an already-pinned-connection critical
+	// section risks pool exhaustion under concurrent sweeps; see gc.go's
+	// sweepChunks for why del calls it only when the liveSet check didn't
+	// already decide). Deliberately scoped to backup_manifest_entries only (NOT
+	// backup_file_index — see chunkStillReferencedOnTx's doc for why that
+	// table's per-file HISTORY rows would make the check unsound). If it
+	// reports true, del should skip the delete regardless of what the
+	// (possibly buggy) liveSet computation concluded — ground truth always
+	// outranks the computed liveSet proxy. Tenant-scoped.
+	SweepTenantChunks(ctx context.Context, tenantID uuid.UUID, floor time.Time, acquired *bool, del func(c SweepChunk, stillReferenced func() (bool, error)) (bool, error)) error
 
 	// CompleteIncrementalManifest atomically records an incremental submission:
 	// it inserts the backup_file_index rows, optionally records the DB-dump
@@ -225,6 +240,21 @@ type Repo interface {
 	// its own ID. Tenant-scoped. Returns an empty slice (not an error) when no
 	// rows match.
 	ListChainSnapshots(ctx context.Context, tenantID uuid.UUID, chainID uuid.UUID, maxGeneration int) ([]Snapshot, error)
+
+	// ListCompletedChainSnapshots is the GH #168 hardened variant of
+	// ListChainSnapshots: it applies "AND status='completed'" IN SQL so a
+	// failed/aborted retry that reused a (chain_id, generation) pair (no unique
+	// constraint covers terminal rows pre-m96) can never be returned in place of
+	// the real completed row for that generation. reachableChunks (the shared
+	// GC-mark/restore reachability oracle) uses this instead of ListChainSnapshots
+	// so a duplicate-generation row is filtered at the SQL layer, independent of
+	// the Go-side byGen dedup (chainGenWinner) — two independent layers protecting
+	// the same invariant. Ordered by generation ASC, id ASC: the id tiebreak
+	// makes the (rare, pre-migration-only) case of two genuinely completed rows
+	// at the same generation deterministic rather than depending on physical scan
+	// order. Tenant-scoped. Returns an empty slice (not an error) when no rows
+	// match.
+	ListCompletedChainSnapshots(ctx context.Context, tenantID uuid.UUID, chainID uuid.UUID, maxGeneration int) ([]Snapshot, error)
 
 	// ADR-048 incremental backup file index.
 
@@ -1267,7 +1297,7 @@ func (r *pgRepo) DBNow(ctx context.Context, tenantID uuid.UUID) (time.Time, erro
 	return out, err
 }
 
-func (r *pgRepo) SweepTenantChunks(ctx context.Context, tenantID uuid.UUID, floor time.Time, acquired *bool, del func(c SweepChunk) (bool, error)) (err error) {
+func (r *pgRepo) SweepTenantChunks(ctx context.Context, tenantID uuid.UUID, floor time.Time, acquired *bool, del func(c SweepChunk, stillReferenced func() (bool, error)) (bool, error)) (err error) {
 	*acquired = false
 
 	// 1. PIN ONE pooled connection for the WHOLE sweep pass. The per-tenant GC
@@ -1409,7 +1439,7 @@ func (r *pgRepo) SweepTenantChunks(ctx context.Context, tenantID uuid.UUID, floo
 // crash after the object delete but before COMMIT rolls the tx back, leaving the
 // row present with its object gone — the dangling-row case the next sweep heals
 // idempotently. A missing row (already swept by a prior partial pass) is a no-op.
-func (r *pgRepo) sweepOneChunk(ctx context.Context, conn sweepConn, tenantID uuid.UUID, c SweepChunk, floor time.Time, del func(SweepChunk) (bool, error)) error {
+func (r *pgRepo) sweepOneChunk(ctx context.Context, conn sweepConn, tenantID uuid.UUID, c SweepChunk, floor time.Time, del func(SweepChunk, func() (bool, error)) (bool, error)) error {
 	return r.inTenantTxOnConn(ctx, conn, tenantID, func(tx pgx.Tx) error {
 		// 1. Lock the row and re-read the fresh liveness boundary.
 		fresh := SweepChunk{Blake3: c.Blake3}
@@ -1440,18 +1470,64 @@ func (r *pgRepo) sweepOneChunk(ctx context.Context, conn sweepConn, tenantID uui
 
 		// 3. del consults the live set + floor on the FRESH projection and, when the
 		//    chunk is still deletable, deletes the OBJECT while we hold the lock.
-		remove, ferr := del(fresh)
+		//    stillReferenced (GH #168 P2) is a LAZY closure bound to THIS pinned tx
+		//    — del calls it only if it needs to (the liveSet check is cheap and
+		//    usually short-circuits first), and when called it runs the EXISTS
+		//    query on the SAME connection/tx already holding the FOR UPDATE lock,
+		//    never acquiring a second pooled connection.
+		stillReferenced := func() (bool, error) {
+			return chunkStillReferencedOnTx(ctx, tx, tenantID, c.Blake3)
+		}
+		remove, ferr := del(fresh, stillReferenced)
 		if ferr != nil {
 			return ferr
 		}
 		if !remove {
-			return nil // del decided to keep (live, or re-checked floor).
+			return nil // del decided to keep (live, still-referenced, or re-checked floor).
 		}
 
 		// 4. Row-SECOND: delete the row, still under the held lock and re-checking
 		//    GREATEST(...) < floor at the DB (defense-in-depth).
 		return r.deleteSweptChunkOnTx(ctx, tx, tenantID, c.Blake3, floor)
 	})
+}
+
+// chunkStillReferencedOnTx is the GH #168 P2 ground-truth guard's query,
+// runnable on ANY transaction (the pinned sweep tx, via sweepOneChunk's lazy
+// closure). It checks backup_manifest_entries ONLY — deliberately NOT
+// backup_file_index. backup_manifest_entries rows are per-generation, and for
+// every model that writes them (ADR-051 archive-delta parts/files-list/
+// tombstones, and legacy full/DB-dump manifests) every row belonging to a
+// still-retained (non-metadata-pruned) snapshot is, by construction, part of
+// what a retained generation needs — there is no "superseded-but-still-
+// present" row in that table. backup_file_index is different: it is an
+// ADR-048 per-file HISTORY table, and a still-retained (e.g. carry-forward-
+// pinned) generation's rows can legitimately include paths that were later
+// SUPERSEDED by a newer generation's version of the same path — those rows'
+// chunk_hashes are genuinely dead even though the row itself persists. Treating
+// "any backup_file_index row mentions this hash" as ground truth would make
+// GC permanently retain every historical version of every file for as long as
+// its owning generation survives, defeating retention for the legacy model
+// entirely — the opposite failure mode from #168 (leak, not loss). Uses the
+// array-containment operator (`@>`) rather than `= ANY(...)` so the m96 GIN
+// index on chunk_hashes can serve the lookup instead of a sequential scan; the
+// tenant_id index narrows the row set either way. The caller is responsible
+// for tenant scoping (the query includes an explicit tenant_id filter, but —
+// unlike the rest of this package — this does NOT run inside InTenantTx/RLS,
+// since it executes on a caller-supplied tx that is already tenant-scoped).
+func chunkStillReferencedOnTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, blake3 string) (bool, error) {
+	var referenced bool
+	row := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM backup_manifest_entries
+		    WHERE tenant_id = $1 AND chunk_hashes @> ARRAY[$2]::text[]
+		 )`,
+		tenantID, blake3,
+	)
+	if err := row.Scan(&referenced); err != nil {
+		return false, domain.Internal("backup_chunk_still_referenced_failed", "failed to check whether a chunk is still manifest-referenced").WithCause(err)
+	}
+	return referenced, nil
 }
 
 // sweepConn is the minimal pinned-connection surface the sweep needs: just the
@@ -2329,6 +2405,41 @@ func (r *pgRepo) ListChainSnapshots(ctx context.Context, tenantID uuid.UUID, cha
 		)
 		if err != nil {
 			return domain.Internal("backup_chain_snapshots_list_failed", "failed to list chain snapshots").WithCause(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			s, serr := scanSnapshotWithChainFields(rows)
+			if serr != nil {
+				return domain.Internal("backup_chain_snapshots_scan_failed", "failed to scan chain snapshot row").WithCause(serr)
+			}
+			out = append(out, s)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// ListCompletedChainSnapshots is the GH #168 hardened variant of
+// ListChainSnapshots: identical predicate plus "AND status='completed'", so a
+// failed/aborted retry that reused a (chain_id, generation) pair is never
+// returned. `, id ASC` is an additional deterministic tiebreak (belt-and-
+// suspenders alongside the m96 partial unique index) for the narrow window
+// before that index exists / on a not-yet-migrated self-host database where two
+// completed rows could still share a generation.
+func (r *pgRepo) ListCompletedChainSnapshots(ctx context.Context, tenantID uuid.UUID, chainID uuid.UUID, maxGeneration int) ([]Snapshot, error) {
+	var out []Snapshot
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			snapshotSelectColumns+` FROM backup_snapshots
+			  WHERE tenant_id = $1
+			    AND chain_id  = $2
+			    AND generation <= $3
+			    AND status = 'completed'
+			  ORDER BY generation ASC, id ASC`,
+			tenantID, chainID, maxGeneration,
+		)
+		if err != nil {
+			return domain.Internal("backup_chain_snapshots_list_failed", "failed to list completed chain snapshots").WithCause(err)
 		}
 		defer rows.Close()
 		for rows.Next() {

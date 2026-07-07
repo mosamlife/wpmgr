@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.36] - 2026-07-07
+
+### Fixed
+
+- Fixed a backup-integrity bug where an incremental backup could fail with a "stalled" error because retention cleanup had deleted a parent snapshot's file-list data chunk while it was still well within the retention window, permanently breaking the incremental chain. The cause was that the internal reachability check which decides what to keep could be confused by duplicate snapshot rows at the same chain position (left behind by failed retries), letting a failed attempt shadow the real completed snapshot and drop its chunk from the "keep" set. Retention now always protects the completed snapshot at each chain position, and as a ground-truth safety net it never deletes a data chunk that any surviving snapshot still references, so a reachability mistake can never again cause silent data loss. A broken incremental chain now fails fast with a clear "run a full backup" message instead of stalling silently for two minutes. A migration de-duplicates any existing same-position snapshots and adds a constraint that prevents recurrence.
+
 ## [0.61.35] - 2026-07-07
 
 ### Fixed

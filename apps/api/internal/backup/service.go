@@ -934,7 +934,15 @@ func (s *Service) reachableChunks(ctx context.Context, tenantID uuid.UUID, snap 
 	if retainedMaxGen < 0 {
 		retainedMaxGen = 0
 	}
-	chainSnaps, err := s.repo.ListChainSnapshots(ctx, tenantID, chainID, retainedMaxGen)
+	// GH #168 P1b: fetch COMPLETED rows only. A failed/aborted incremental retry
+	// can reuse a (chain_id, generation) pair (generation is derived from
+	// GetLatestCompletedSnapshot, so a retry after a failure doesn't know the
+	// failed attempt already claimed that generation — see the m96 migration
+	// doc), leaving more than one row per generation with no unique constraint
+	// covering terminal statuses pre-m96. Filtering in SQL means the byGen walk
+	// below never even SEES a non-completed duplicate, independent of the P1a
+	// Go-side tiebreak (chainGenWinner) two paragraphs down.
+	chainSnaps, err := s.repo.ListCompletedChainSnapshots(ctx, tenantID, chainID, retainedMaxGen)
 	if err != nil {
 		return nil, err
 	}
@@ -942,12 +950,25 @@ func (s *Service) reachableChunks(ctx context.Context, tenantID uuid.UUID, snap 
 	// Index by generation so the walk is robust to gaps (the GC may have already
 	// pruned an older non-pinned generation; the mark pass only needs the
 	// generations that survive). We walk in ascending generation order.
+	//
+	// GH #168 P1a: chainGenWinner is a defense-in-depth tiebreak for the (now
+	// rare, SQL-filtered-out-in-the-common-case) event that MORE THAN ONE
+	// completed row still shares a generation — a legacy pre-m96 duplicate, or a
+	// narrow race window before the m96 partial unique index applies. Without
+	// this, whichever row happened to be LAST in the (unordered-by-tiebreak)
+	// scan would silently win byGen[gen], and if that loser's manifest were
+	// empty/partial, every hash the REAL generation's files-list/parts reference
+	// would be missing from the reachable set — exactly the #168 data-loss bug.
 	byGen := map[int]Snapshot{}
 	maxGen := -1
 	for _, cs := range chainSnaps {
-		byGen[cs.Generation] = cs
 		if cs.Generation > maxGen {
 			maxGen = cs.Generation
+		}
+		if existing, ok := byGen[cs.Generation]; ok {
+			byGen[cs.Generation] = chainGenWinner(existing, cs)
+		} else {
+			byGen[cs.Generation] = cs
 		}
 	}
 
@@ -1064,6 +1085,31 @@ func (s *Service) reachableChunks(ctx context.Context, tenantID uuid.UUID, snap 
 	}
 
 	return out, nil
+}
+
+// chainGenWinner is the GH #168 P1a deterministic tiebreak for two snapshot
+// rows sharing one (chain_id, generation): a completed row ALWAYS wins over a
+// non-completed one (only a completed snapshot's manifest/file-index is a
+// real, fully-written artifact — a failed/aborted retry's manifest may be
+// empty or partial). Between two completed rows (the narrow legacy/race case
+// the m96 partial unique index closes going forward) the LOWEST snapshot ID
+// wins, so the choice is stable and reproducible regardless of which order the
+// caller's query happened to return them in — never a function of physical
+// scan/iteration order. A completed snapshot must never be shadowed by a
+// non-completed one.
+func chainGenWinner(existing, candidate Snapshot) Snapshot {
+	existingDone := existing.Status == StatusCompleted
+	candidateDone := candidate.Status == StatusCompleted
+	if existingDone != candidateDone {
+		if candidateDone {
+			return candidate
+		}
+		return existing
+	}
+	if bytes.Compare(candidate.ID[:], existing.ID[:]) < 0 {
+		return candidate
+	}
+	return existing
 }
 
 // planRestoreChain is the ADR-049 chain-planner path for PlanRestore. It runs
@@ -2065,7 +2111,15 @@ func (s *Service) DeleteSnapshotForUser(ctx context.Context, tenantID, snapshotI
 
 	// Reclaim orphaned chunks via the reachability-based GC over the survivors.
 	// Best-effort: the row is already gone; a sweep error is logged, not fatal.
-	if _, _, gerr := s.RunRetentionGC(ctx, tenantID); gerr != nil {
+	//
+	// GH #168 P3: detach from the request context. RunRetentionGC pins a pooled
+	// connection under a per-tenant advisory lock for the WHOLE sweep pass; a
+	// client disconnect or request timeout cancelling ctx mid-pass would abort a
+	// full tenant-wide reclamation partway through instead of merely failing this
+	// one HTTP response. Bounded so a genuinely wedged sweep still gives up.
+	gcCtx, gcCancel := context.WithTimeout(context.WithoutCancel(ctx), gcDetachTimeout)
+	defer gcCancel()
+	if _, _, gerr := s.RunRetentionGC(gcCtx, tenantID); gerr != nil {
 		slog.WarnContext(ctx, "backup delete: post-delete GC sweep failed (orphans reclaimed on next periodic GC)",
 			slog.String("tenant_id", tenantID.String()),
 			slog.String("snapshot_id", snapshotID.String()), slog.Any("error", gerr))
@@ -2407,8 +2461,14 @@ func (s *Service) BulkDeleteSnapshots(ctx context.Context, tenantID, siteID uuid
 
 	// Retention GC runs exactly ONCE for the whole batch, and only when the
 	// batch actually deleted something and we are NOT in dry-run mode.
+	//
+	// GH #168 P3: detach from the request context — see DeleteSnapshotForUser's
+	// identical rationale. A bulk delete's sweep is at least as long-running as
+	// the single-delete case, so the same protection applies here.
 	if !dryRun && out.Deleted > 0 {
-		if _, _, gerr := s.RunRetentionGC(ctx, tenantID); gerr != nil {
+		gcCtx, gcCancel := context.WithTimeout(context.WithoutCancel(ctx), gcDetachTimeout)
+		defer gcCancel()
+		if _, _, gerr := s.RunRetentionGC(gcCtx, tenantID); gerr != nil {
 			slog.WarnContext(ctx, "bulk backup delete: post-delete GC sweep failed (orphans reclaimed on next periodic GC)",
 				slog.String("tenant_id", tenantID.String()),
 				slog.Int("deleted", out.Deleted), slog.Any("error", gerr))

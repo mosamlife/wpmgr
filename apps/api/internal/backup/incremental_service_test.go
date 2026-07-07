@@ -229,7 +229,7 @@ func (r *fakeRepo) ListInFlightSnapshotFloor(_ context.Context, _ uuid.UUID) (ti
 func (r *fakeRepo) DBNow(_ context.Context, _ uuid.UUID) (time.Time, error) {
 	panic("fakeRepo.DBNow not implemented")
 }
-func (r *fakeRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, _ *bool, _ func(SweepChunk) (bool, error)) error {
+func (r *fakeRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, _ *bool, _ func(SweepChunk, func() (bool, error)) (bool, error)) error {
 	panic("fakeRepo.SweepTenantChunks not implemented")
 }
 func (r *fakeRepo) CompleteIncrementalManifest(_ context.Context, in CompleteIncrementalInput) (int64, int64, error) {
@@ -255,6 +255,9 @@ func (r *fakeRepo) CompleteIncrementalManifest(_ context.Context, in CompleteInc
 }
 func (r *fakeRepo) ListChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
 	panic("fakeRepo.ListChainSnapshots not implemented")
+}
+func (r *fakeRepo) ListCompletedChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
+	panic("fakeRepo.ListCompletedChainSnapshots not implemented")
 }
 func (r *fakeRepo) SetSnapshotLocked(_ context.Context, _, id uuid.UUID, locked bool) (Snapshot, error) {
 	r.mu.Lock()

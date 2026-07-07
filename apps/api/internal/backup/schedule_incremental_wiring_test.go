@@ -151,7 +151,7 @@ func (r *wiringRepo) ListInFlightSnapshotFloor(_ context.Context, _ uuid.UUID) (
 	panic("unused")
 }
 func (r *wiringRepo) DBNow(_ context.Context, _ uuid.UUID) (time.Time, error) { panic("unused") }
-func (r *wiringRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, _ *bool, _ func(SweepChunk) (bool, error)) error {
+func (r *wiringRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, _ *bool, _ func(SweepChunk, func() (bool, error)) (bool, error)) error {
 	panic("unused")
 }
 func (r *wiringRepo) InsertFileIndexBatch(_ context.Context, _, _ uuid.UUID, _ []FileIndexEntry) error {
@@ -170,6 +170,9 @@ func (r *wiringRepo) CompleteIncrementalManifest(_ context.Context, _ CompleteIn
 	panic("unused")
 }
 func (r *wiringRepo) ListChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
+	panic("unused")
+}
+func (r *wiringRepo) ListCompletedChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
 	panic("unused")
 }
 func (r *wiringRepo) SetSnapshotLocked(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ bool) (Snapshot, error) {

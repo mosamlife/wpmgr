@@ -285,7 +285,7 @@ func (r *schedulerTestRepo) ListInFlightSnapshotFloor(_ context.Context, _ uuid.
 func (r *schedulerTestRepo) DBNow(_ context.Context, _ uuid.UUID) (time.Time, error) {
 	return time.Now(), nil
 }
-func (r *schedulerTestRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, acquired *bool, _ func(SweepChunk) (bool, error)) error {
+func (r *schedulerTestRepo) SweepTenantChunks(_ context.Context, _ uuid.UUID, _ time.Time, acquired *bool, _ func(SweepChunk, func() (bool, error)) (bool, error)) error {
 	*acquired = false
 	return nil
 }
@@ -308,6 +308,9 @@ func (r *schedulerTestRepo) CompleteIncrementalManifest(_ context.Context, _ Com
 	panic("schedulerTestRepo.CompleteIncrementalManifest not expected")
 }
 func (r *schedulerTestRepo) ListChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
+	return nil, nil
+}
+func (r *schedulerTestRepo) ListCompletedChainSnapshots(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int) ([]Snapshot, error) {
 	return nil, nil
 }
 func (r *schedulerTestRepo) HealOverdueSchedules(_ context.Context, _ time.Time, _ func(Schedule, time.Time) time.Time) (int, error) {

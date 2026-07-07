@@ -16,8 +16,21 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/restore/sqlinspect"
 )
+
+// chainBrokenErrorCodes are the two domain codes PresignParentFilesList
+// returns when the incremental chain itself is broken (the parent's
+// files-list manifest entry is missing, or one of its chunks is no longer in
+// object storage — GH #168) rather than when some transient infra call
+// failed. These are the ONLY codes BackupWorker.Work treats as terminal for a
+// dispatch failure; every other error (ListManifest/GetSnapshot/
+// ExistingChunkHashes/mint/restoreDestinationRoute failures) stays retryable.
+var chainBrokenErrorCodes = map[string]bool{
+	"parent_files_list_missing":       true,
+	"parent_files_list_chunk_missing": true,
+}
 
 // Audit action names for the backup/restore lifecycle.
 const (
@@ -172,6 +185,20 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		if a.ParentSnapshotID != uuid.Nil {
 			prevChunks, err = w.svc.PresignParentFilesList(ctx, a.TenantID, a.ParentSnapshotID)
 			if err != nil {
+				// GH #168 P4: a chain-broken parent (its files-list manifest entry is
+				// missing, or one of its chunks is no longer stored) is a TERMINAL
+				// failure, not a retryable one. Pre-fix this fell through to the
+				// generic retryable branch below: River retried forever, the
+				// snapshot sat "running" until the watchdog eventually stamped a
+				// generic "stalled — no progress" error, giving the operator no
+				// actionable signal. Every OTHER PresignParentFilesList error
+				// (ListManifest/GetSnapshot/ExistingChunkHashes/mint/destination-route
+				// failures) is transient infra and MUST stay retryable — narrowly
+				// gating on these two codes is what keeps a genuine infra blip from
+				// being mistaken for a broken chain.
+				if de, ok := domain.AsDomain(err); ok && chainBrokenErrorCodes[de.Code] {
+					return w.fail(ctx, snap, "incremental chain broken: parent files-list chunk missing — run a full backup")
+				}
 				// A missing/un-presignable parent files-list is a retryable infra
 				// error: the agent can't diff without it, so don't silently fall
 				// back to a full re-pack (which would be the 24-min QA bug).
