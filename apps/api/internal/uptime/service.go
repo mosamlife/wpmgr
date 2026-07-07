@@ -251,6 +251,80 @@ func (s *Service) GetFleetIncidents(ctx context.Context, tenantID uuid.UUID, sit
 	return s.repo.GetFleetIncidents(ctx, tenantID, siteIDs, since, limit)
 }
 
+// incidentProbeWindowLimit bounds the number of raw probe rows the
+// incident-detail endpoint renders in its timeline.
+const incidentProbeWindowLimit = 40
+
+// GetIncidentSummary returns the tenant-scoped incident row (without the
+// probe timeline). The handler calls this FIRST so it can authorize a
+// site-scoped principal against SiteID before spending a metrics-store
+// round-trip on a request that may end up denied.
+func (s *Service) GetIncidentSummary(ctx context.Context, tenantID, incidentID uuid.UUID) (IncidentSummary, error) {
+	summary, found, err := s.repo.GetIncidentByID(ctx, tenantID, incidentID)
+	if err != nil {
+		return IncidentSummary{}, err
+	}
+	if !found {
+		return IncidentSummary{}, domain.NotFound("incident_not_found", "incident not found")
+	}
+	return summary, nil
+}
+
+// GetIncidentDetail assembles the full incident-detail DTO from an
+// already-authorized IncidentSummary: a probe timeline over the incident's
+// window (metrics.Store — degrades gracefully to an empty slice when the
+// window has no data) and the 30-day flapping count.
+func (s *Service) GetIncidentDetail(ctx context.Context, tenantID uuid.UUID, summary IncidentSummary) (IncidentDetail, error) {
+	to := time.Now()
+	if summary.EndedAt != nil {
+		to = *summary.EndedAt
+	}
+	samples, err := s.store.QueryProbeWindow(ctx, tenantID, summary.SiteID, summary.StartedAt, to, incidentProbeWindowLimit)
+	if err != nil {
+		return IncidentDetail{}, domain.Internal("incident_probe_window_failed", "failed to query incident probe timeline").WithCause(err)
+	}
+
+	count, err := s.repo.CountRecentIncidents(ctx, tenantID, summary.SiteID)
+	if err != nil {
+		return IncidentDetail{}, err
+	}
+
+	det := IncidentDetail{
+		ID:               summary.ID,
+		SiteID:           summary.SiteID,
+		Name:             summary.SiteName,
+		URL:              summary.SiteURL,
+		StartedAt:        summary.StartedAt,
+		EndedAt:          summary.EndedAt,
+		Ongoing:          summary.EndedAt == nil,
+		PeakStatus:       summary.PeakStatus,
+		LastHTTPStatus:   summary.LastHTTPStatus,
+		Reason:           summary.Reason,
+		IncidentCount30d: int(count),
+		Probes:           make([]IncidentProbe, 0, len(samples)),
+		// ProbesTruncated is set when the store returned a FULL page — there
+		// may be more probes in the window than we asked for/rendered.
+		ProbesTruncated: len(samples) >= incidentProbeWindowLimit,
+	}
+	if summary.EndedAt != nil {
+		dur := int64(summary.EndedAt.Sub(summary.StartedAt).Seconds())
+		if dur < 0 {
+			dur = 0
+		}
+		det.DurationSeconds = &dur
+	}
+	for _, p := range samples {
+		det.Probes = append(det.Probes, IncidentProbe{
+			ProbedAt:   p.ProbedAt,
+			Up:         p.Up,
+			HTTPStatus: int(p.HTTPStatus),
+			TotalMs:    p.TotalMs,
+			Error:      p.Error,
+		})
+	}
+	return det, nil
+}
+
 // SaveAlertConfig validates and upserts the tenant's alert config.
 func (s *Service) SaveAlertConfig(ctx context.Context, cfg AlertConfig) (AlertConfig, error) {
 	if len(cfg.EmailRecipients) > 50 {

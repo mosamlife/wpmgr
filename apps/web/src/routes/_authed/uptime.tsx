@@ -46,10 +46,15 @@ import {
   isIncidentOngoing,
   formatIncidentDuration,
 } from "@/features/fleet/incident-format";
+import {
+  STATUS_ICON,
+  STATUS_LABEL,
+  STATUS_COLOR_CLASS,
+} from "@/features/fleet/uptime-status";
+import { IncidentDetailDialog } from "@/features/fleet/incident-detail-dialog";
 import type {
   FleetStatusItem,
   FleetIncident,
-  UptimeStatusKind,
 } from "@/features/fleet/fleet-types";
 import { cn, relativeTime } from "@/lib/utils";
 import { useNow } from "@/lib/use-now";
@@ -57,31 +62,6 @@ import { useNow } from "@/lib/use-now";
 export const Route = createFileRoute("/_authed/uptime")({
   component: UptimePage,
 });
-
-// ---------------------------------------------------------------------------
-// Status colour helpers — status by colour AND label AND icon (a11y)
-// ---------------------------------------------------------------------------
-
-const STATUS_ICON: Record<UptimeStatusKind, typeof CheckCircle2> = {
-  up: CheckCircle2,
-  degraded: AlertTriangle,
-  down: XCircle,
-  unknown: HelpCircle,
-};
-
-const STATUS_LABEL: Record<UptimeStatusKind, string> = {
-  up: "Up",
-  degraded: "Degraded",
-  down: "Down",
-  unknown: "Unknown",
-};
-
-const STATUS_COLOR_CLASS: Record<UptimeStatusKind, string> = {
-  up: "text-[var(--color-success-subtle-fg)]",
-  degraded: "text-[var(--color-warning-subtle-fg)]",
-  down: "text-[var(--color-destructive-subtle-fg)]",
-  unknown: "text-[var(--color-muted-foreground)]",
-};
 
 // ---------------------------------------------------------------------------
 // Tile definitions
@@ -354,10 +334,12 @@ function IncidentsPanel({
   loading,
   isError,
   incidents,
+  onSelect,
 }: {
   loading: boolean;
   isError: boolean;
   incidents: FleetIncident[];
+  onSelect: (incident: FleetIncident) => void;
 }) {
   const open = incidents.filter((i) => isIncidentOngoing(i));
   const closed = incidents.filter((i) => !isIncidentOngoing(i)).slice(0, 10);
@@ -399,7 +381,7 @@ function IncidentsPanel({
               <p className="mb-2 text-xs font-medium text-[var(--color-destructive-subtle-fg)]">
                 Ongoing ({open.length})
               </p>
-              <IncidentList incidents={open} />
+              <IncidentList incidents={open} onSelect={onSelect} />
             </div>
           )}
           {closed.length > 0 && (
@@ -407,7 +389,7 @@ function IncidentsPanel({
               <p className="mb-2 text-xs font-medium text-[var(--color-muted-foreground)]">
                 Recent resolved
               </p>
-              <IncidentList incidents={closed} />
+              <IncidentList incidents={closed} onSelect={onSelect} />
             </div>
           )}
         </div>
@@ -416,7 +398,13 @@ function IncidentsPanel({
   );
 }
 
-function IncidentList({ incidents }: { incidents: FleetIncident[] }) {
+function IncidentList({
+  incidents,
+  onSelect,
+}: {
+  incidents: FleetIncident[];
+  onSelect: (incident: FleetIncident) => void;
+}) {
   return (
     <div
       role="list"
@@ -433,51 +421,49 @@ function IncidentList({ incidents }: { incidents: FleetIncident[] }) {
         const startedLabel = `started ${relativeTime(inc.started_at) ?? inc.started_at}`;
 
         return (
-          <div
-            key={`${inc.site_id}-${inc.started_at}`}
-            role="listitem"
-            className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-xs"
-          >
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 font-medium",
-                ongoing
-                  ? "text-[var(--color-destructive-subtle-fg)]"
-                  : "text-[var(--color-muted-foreground)]",
-              )}
+          <div key={inc.id} role="listitem">
+            {/* Each row opens the incident detail dialog (GH #148 drill-in).
+                Direct site navigation is still reachable via the header link
+                inside that dialog, so this row no longer needs its own
+                <Link> to the site page. */}
+            <button
+              type="button"
+              onClick={() => onSelect(inc)}
+              aria-label={`View incident detail for ${inc.name || inc.url}`}
+              className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-left text-xs hover:bg-[var(--color-accent)]/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-ring)]"
             >
-              {ongoing ? (
-                <XCircle aria-hidden="true" className="size-3.5 shrink-0" />
-              ) : (
-                <CheckCircle2 aria-hidden="true" className="size-3.5 shrink-0" />
-              )}
-              {inc.kind === "down" ? "Down" : "Degraded"}
-            </span>
-            {/* Lightweight drill-in: reuse the same Link-to-detail pattern as
-                the fleet Sites table's "Site" column (see buildColumns above)
-                so the name/url stays the click target and is keyboard/a11y
-                navigable — no modal (there's no persisted incident history
-                to show one). */}
-            <Link
-              to="/sites/$siteId"
-              params={{ siteId: inc.site_id }}
-              className="font-medium text-[var(--color-foreground)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
-            >
-              {inc.name || inc.url}
-            </Link>
-            {/* Both time values are labeled so they never read as two bare
-                unlabeled timestamps (GH #148): "started X ago[, ongoing]"
-                and, for resolved incidents only, "for Xh/Xm/Xs". */}
-            <span className="inline-flex items-center gap-1 text-[var(--color-muted-foreground)]">
-              <Clock aria-hidden="true" className="size-3 shrink-0" />
-              {ongoing ? `${startedLabel}, ongoing` : startedLabel}
-            </span>
-            {!ongoing && durationLabel ? (
-              <span className="ml-auto inline-flex items-center gap-1 tabular-nums text-[var(--color-muted-foreground)]">
-                <Timer aria-hidden="true" className="size-3 shrink-0" />
-                for {durationLabel}
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 font-medium",
+                  ongoing
+                    ? "text-[var(--color-destructive-subtle-fg)]"
+                    : "text-[var(--color-muted-foreground)]",
+                )}
+              >
+                {ongoing ? (
+                  <XCircle aria-hidden="true" className="size-3.5 shrink-0" />
+                ) : (
+                  <CheckCircle2 aria-hidden="true" className="size-3.5 shrink-0" />
+                )}
+                {inc.kind === "down" ? "Down" : "Degraded"}
               </span>
-            ) : null}
+              <span className="font-medium text-[var(--color-foreground)]">
+                {inc.name || inc.url}
+              </span>
+              {/* Both time values are labeled so they never read as two bare
+                  unlabeled timestamps (GH #148): "started X ago[, ongoing]"
+                  and, for resolved incidents only, "for Xh/Xm/Xs". */}
+              <span className="inline-flex items-center gap-1 text-[var(--color-muted-foreground)]">
+                <Clock aria-hidden="true" className="size-3 shrink-0" />
+                {ongoing ? `${startedLabel}, ongoing` : startedLabel}
+              </span>
+              {!ongoing && durationLabel ? (
+                <span className="ml-auto inline-flex items-center gap-1 tabular-nums text-[var(--color-muted-foreground)]">
+                  <Timer aria-hidden="true" className="size-3 shrink-0" />
+                  for {durationLabel}
+                </span>
+              ) : null}
+            </button>
           </div>
         );
       })}
@@ -535,6 +521,13 @@ function UptimePage() {
 
   // Matrix cells — always show all sites (unfiltered), highlight selection.
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
+
+  // Incident detail dialog (GH #148) — separate from the matrix's
+  // `selectedSiteId` filter state; opening a row's detail must never also
+  // filter the fleet table to that site.
+  const [detailIncident, setDetailIncident] = useState<FleetIncident | null>(
+    null,
+  );
 
   const matrixCells: MatrixCell[] = useMemo(
     () =>
@@ -707,6 +700,12 @@ function UptimePage() {
         loading={incidentsPending}
         isError={incidentsError}
         incidents={incidentsData?.items ?? []}
+        onSelect={setDetailIncident}
+      />
+
+      <IncidentDetailDialog
+        incident={detailIncident}
+        onClose={() => setDetailIncident(null)}
       />
     </section>
   );

@@ -58,6 +58,62 @@ SET tenant_id        = EXCLUDED.tenant_id,
 RETURNING *;
 
 -- ---------------------------------------------------------------------------
+-- site_incidents (M94 — GH #148: persisted incident history, written
+-- alongside site_alert_state inside TransitionAlertState).
+-- ---------------------------------------------------------------------------
+
+-- name: OpenIncident :exec
+-- Opens a new incident row for a site. Called from TransitionAlertState
+-- (app.agent GUC) on a FireDown transition (started_at = now()), and
+-- defensively on the "adopt" path when the alert state is already in_incident
+-- but no open site_incidents row exists yet — e.g. a site that was already
+-- down when m94 shipped and is not covered by the migration's day-1 seed, or
+-- a lost FireDown (started_at = the state's last_alert_at in that case). The
+-- partial unique index site_incidents_one_open_per_site makes this
+-- idempotent: if an incident is already open for the site, the insert is a
+-- silent no-op.
+INSERT INTO site_incidents (tenant_id, site_id, started_at, peak_status, last_http_status, reason, opened_by)
+VALUES (@tenant_id, @site_id, @started_at, 'down', @last_http_status, @reason, 'probe')
+ON CONFLICT (site_id) WHERE ended_at IS NULL DO NOTHING;
+
+-- name: CloseIncident :exec
+-- Closes the open incident for a site on a FireRecovery transition
+-- (app.agent GUC, called from the same TransitionAlertState transaction as
+-- OpenIncident above). A no-op (0 rows affected) if no incident is open,
+-- which is defensive only — FireRecovery only ever fires when prev.InIncident
+-- was true, so a matching open row should already exist.
+UPDATE site_incidents
+SET ended_at = now(), last_http_status = @last_http_status, updated_at = now()
+WHERE site_id = @site_id AND ended_at IS NULL;
+
+-- name: GetIncidentByID :one
+-- Tenant-scoped read of one incident, joined with its site's name/url, for
+-- GET /api/v1/fleet/incidents/:incidentId (InTenantTx). RLS additionally
+-- scopes this by tenant_id; the explicit predicate here is defense-in-depth +
+-- index use (site_incidents_tenant_started_idx), matching project convention.
+SELECT
+    si.id,
+    si.site_id,
+    si.started_at,
+    si.ended_at,
+    si.peak_status,
+    si.last_http_status,
+    si.reason,
+    s.name AS site_name,
+    s.url  AS site_url
+FROM site_incidents si
+JOIN sites s ON s.id = si.site_id AND s.tenant_id = si.tenant_id
+WHERE si.id = @id AND si.tenant_id = @tenant_id;
+
+-- name: CountRecentIncidents :one
+-- 30-day flapping count for the incident-detail endpoint: how many incidents
+-- (open or closed) have STARTED for this site in the last 30 days, including
+-- the incident being viewed itself.
+SELECT count(*) FROM site_incidents
+WHERE site_id = @site_id AND tenant_id = @tenant_id
+  AND started_at >= now() - interval '30 days';
+
+-- ---------------------------------------------------------------------------
 -- Fleet uptime queries (implemented as raw SQL in uptime/repo.go because the
 -- LEFT JOIN LATERAL probe columns are nullable and sqlc cannot model that
 -- correctly for the bool/time.Time scalar columns; follows the GetFleetDbHealth
@@ -75,12 +131,15 @@ RETURNING *;
 --   WHERE s.tenant_id = $1 AND s.id = ANY($2::uuid[])
 --   ORDER BY s.name ASC;
 --
--- FleetUptimeIncidents (InTenantTx, tenant-scoped):
---   SELECT s.id, s.name, s.url, ast.last_status, ast.last_alert_at, ast.updated_at, p.total_ms
---   FROM site_alert_state ast
---   JOIN sites s ON s.id = ast.site_id AND s.tenant_id = ast.tenant_id
+-- GetFleetIncidents (InTenantTx, tenant-scoped) — reads site_incidents
+-- directly (M94), not site_alert_state: real persisted incident rows instead
+-- of an estimate derived from a single mutable transition-memory row.
+--   SELECT si.id, si.site_id, s.name, s.url, si.started_at, si.ended_at,
+--          si.last_http_status, (si.ended_at IS NULL) AS ongoing, p.total_ms
+--   FROM site_incidents si
+--   JOIN sites s ON s.id = si.site_id AND s.tenant_id = si.tenant_id
 --   LEFT JOIN LATERAL (latest probe) p ON true
---   WHERE ast.tenant_id = $1 AND s.id = ANY($2::uuid[])
---     AND (ast.in_incident = true OR ast.last_alert_at >= $3)
---   ORDER BY ast.last_alert_at DESC NULLS LAST LIMIT $4;
+--   WHERE si.tenant_id = $1 AND si.site_id = ANY($2::uuid[])
+--     AND (si.ended_at IS NULL OR si.started_at >= $3)
+--   ORDER BY si.started_at DESC LIMIT $4;
 -- ---------------------------------------------------------------------------

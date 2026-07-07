@@ -33,7 +33,7 @@ func (r *fakeCronRepo) GetAlertState(_ context.Context, _ uuid.UUID) (AlertState
 func (r *fakeCronRepo) UpsertAlertState(_ context.Context, _ AlertState) error {
 	panic("CronKicker must not call UpsertAlertState")
 }
-func (r *fakeCronRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time) (Transition, error) {
+func (r *fakeCronRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time, _ int, _ string) (Transition, error) {
 	panic("CronKicker must not call TransitionAlertState")
 }
 func (r *fakeCronRepo) ListAlertConfigsAllTenants(_ context.Context) ([]AlertConfig, error) {
@@ -50,6 +50,12 @@ func (r *fakeCronRepo) GetFleetSiteInfo(_ context.Context, _ uuid.UUID, _ []uuid
 }
 func (r *fakeCronRepo) GetFleetIncidents(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Time, _ int) ([]FleetIncidentItem, error) {
 	panic("CronKicker must not call GetFleetIncidents")
+}
+func (r *fakeCronRepo) GetIncidentByID(_ context.Context, _, _ uuid.UUID) (IncidentSummary, bool, error) {
+	panic("CronKicker must not call GetIncidentByID")
+}
+func (r *fakeCronRepo) CountRecentIncidents(_ context.Context, _, _ uuid.UUID) (int64, error) {
+	panic("CronKicker must not call CountRecentIncidents")
 }
 
 // TestCronKickFiresWPCronEndpoint verifies that the kicker fires a GET to

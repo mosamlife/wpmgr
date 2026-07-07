@@ -1307,6 +1307,85 @@ CREATE POLICY site_uptime_probes_agent ON site_uptime_probes
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
+-- site_incidents  (M94 — GH #148: persisted incident history)
+-- ---------------------------------------------------------------------------
+-- One row PER INCIDENT (open or closed), keyed by its own uuid id — unlike
+-- site_alert_state above (which stores only the CURRENT transition memory),
+-- this table lets the fleet incidents list and the per-incident detail
+-- endpoint read real history instead of estimating ended_at/duration from a
+-- single mutable row. Written ALONGSIDE site_alert_state inside the same
+-- TransitionAlertState transaction (internal/uptime/repo.go); the state
+-- machine's de-dupe logic (Evaluate in alerts.go) is unchanged.
+--
+-- ended_at IS NULL means the incident is open/ongoing. tenant_id is
+-- denormalized (mirrors site_alert_state) for a join-free RLS policy and
+-- join-free tenant-scoped queries.
+CREATE TABLE site_incidents (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id          uuid        NOT NULL REFERENCES sites   (id) ON DELETE CASCADE,
+    started_at       timestamptz NOT NULL DEFAULT now(),
+    ended_at         timestamptz,
+    -- peak_status is reserved for a future degraded-vs-down incident severity
+    -- distinction; the alert state machine only ever opens a 'down' incident
+    -- today, so this is always 'down' for now.
+    peak_status      text        NOT NULL DEFAULT 'down',
+    last_http_status integer     NOT NULL DEFAULT 0,
+    -- probe_count/down_count are reserved rollup counters, not yet populated.
+    probe_count      integer     NOT NULL DEFAULT 0,
+    down_count       integer     NOT NULL DEFAULT 0,
+    -- opened_by distinguishes a real probe-detected incident ('probe') from
+    -- the m94 day-1 backfill of already-open incidents ('seed').
+    opened_by        text        NOT NULL DEFAULT 'probe',
+    reason           text        NOT NULL DEFAULT '',
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_incidents_site_started_idx ON site_incidents (site_id, started_at DESC);
+CREATE INDEX site_incidents_tenant_started_idx ON site_incidents (tenant_id, started_at DESC);
+
+-- Race-safety guard: at most one OPEN incident per site (mirrors m75's
+-- backup_snapshots_one_inflight_per_site). The state machine only ever
+-- transitions one site's alert state under a row lock, so this is
+-- belt-and-suspenders, not the primary defense.
+CREATE UNIQUE INDEX site_incidents_one_open_per_site ON site_incidents (site_id)
+    WHERE ended_at IS NULL;
+
+ALTER TABLE site_incidents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_incidents FORCE ROW LEVEL SECURITY;
+CREATE POLICY site_incidents_tenant_isolation ON site_incidents
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The probe worker opens/closes incidents cross-tenant inside the same
+-- TransitionAlertState transaction that writes site_alert_state (app.agent).
+CREATE POLICY site_incidents_agent ON site_incidents
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- m19 AS RESTRICTIVE collaborator site-scope policy (mirrors
+-- site_alert_state_site_scope verbatim — site_id is a direct column here too).
+CREATE POLICY site_incidents_site_scope ON site_incidents
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
 -- autologin_tokens  (Phase 5.5 — One-Click Login)
 -- ---------------------------------------------------------------------------
 -- An operator-minted, single-use, short-TTL nonce that materializes as an

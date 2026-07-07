@@ -248,6 +248,52 @@ LEFT JOIN LATERAL (
 	return out, err
 }
 
+// QueryProbeWindow returns up to limitN raw probe rows for one site within
+// [from, to], most-recent-first (tenant-scoped, InAgentTx with an explicit
+// tenant_id predicate — same convention as every other pgStore method).
+// Returns an empty, non-nil slice (no error) when the window has no rows —
+// this is a plain SELECT, so zero matching rows is never a Postgres error;
+// the incident-detail service layer relies on this for graceful degradation.
+func (s *pgStore) QueryProbeWindow(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limitN int) ([]ProbeSample, error) {
+	if limitN <= 0 {
+		limitN = 40
+	}
+	out := make([]ProbeSample, 0, limitN)
+	err := s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+SELECT probed_at, up, http_status, total_ms, error_text
+FROM site_uptime_probes
+WHERE tenant_id = $1 AND site_id = $2 AND probed_at BETWEEN $3 AND $4
+ORDER BY probed_at DESC
+LIMIT $5`, tenantID, siteID, from, to, limitN)
+		if err != nil {
+			return fmt.Errorf("postgres probe window query: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				probedAt   time.Time
+				up         bool
+				httpStatus int32
+				totalMs    float64
+				errText    string
+			)
+			if err := rows.Scan(&probedAt, &up, &httpStatus, &totalMs, &errText); err != nil {
+				return fmt.Errorf("postgres probe window scan: %w", err)
+			}
+			out = append(out, ProbeSample{
+				ProbedAt:   probedAt,
+				Up:         up,
+				HTTPStatus: uint16(httpStatus),
+				TotalMs:    totalMs,
+				Error:      errText,
+			})
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // QuerySeries returns a downsampled per-bucket series for one site over the
 // window. Buckets are date_trunc-aligned: width = window/buckets rounded to
 // whole seconds (min 60s). We use to_timestamp(floor(extract(epoch))/W*W) to

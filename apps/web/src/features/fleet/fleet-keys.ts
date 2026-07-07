@@ -6,6 +6,8 @@ export const fleetKeys = {
   status: () => [...fleetKeys.all, "status"] as const,
   incidents: (since?: string) =>
     [...fleetKeys.all, "incidents", since ?? ""] as const,
+  incidentDetail: (incidentId: string) =>
+    [...fleetKeys.all, "incidentDetail", incidentId] as const,
   // Backups
   backupHealth: (sites?: string) =>
     [...fleetKeys.all, "backupHealth", sites ?? "all"] as const,

@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.30] - 2026-07-07
+
+### Added
+
+- Uptime incidents are now recorded and kept, so the Incidents panel shows real history: past incidents with accurate durations and a flapping indicator for sites that go down repeatedly. Previously the panel was derived from current state only and forgot an incident the moment a site recovered. Clicking an incident opens a detail view with the site's live status, the probe result sequence over the incident window, a timeline of what else happened on the site around that time (recent updates, backups, activity, and PHP errors), uptime over 7 and 30 days, and quick actions (log in to the site, re-check the connection, run diagnostics, and links to the site's Health, Backups, Updates, Activity, and Errors tabs). Incident history starts accruing from this release.
+
 ## [0.61.29] - 2026-07-07
 
 ### Fixed

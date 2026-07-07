@@ -30,6 +30,7 @@ func TestFleetIncidentItemJSONContract(t *testing.T) {
 	totalMs := 842.5
 
 	open := FleetIncidentItem{
+		ID:              uuid.New(),
 		SiteID:          uuid.New(),
 		Kind:            "down",
 		SiteName:        "Example Site",
@@ -42,6 +43,7 @@ func TestFleetIncidentItemJSONContract(t *testing.T) {
 	}
 	ended := now.Add(2 * time.Minute)
 	closed := FleetIncidentItem{
+		ID:              uuid.New(),
 		SiteID:          uuid.New(),
 		Kind:            "down",
 		SiteName:        "Example Site",
@@ -54,7 +56,7 @@ func TestFleetIncidentItemJSONContract(t *testing.T) {
 	}
 
 	requiredKeys := []string{
-		"site_id", "kind", "name", "url", "started_at", "ended_at",
+		"id", "site_id", "kind", "name", "url", "started_at", "ended_at",
 		"duration_seconds", "ongoing",
 	}
 

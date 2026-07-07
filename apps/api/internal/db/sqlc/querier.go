@@ -250,6 +250,12 @@ type Querier interface {
 	// two_factor_enabled is recomputed by the service after this call (it may
 	// remain true if WebAuthn credentials still exist).
 	ClearUserTOTPSecret(ctx context.Context, userID uuid.UUID) error
+	// Closes the open incident for a site on a FireRecovery transition
+	// (app.agent GUC, called from the same TransitionAlertState transaction as
+	// OpenIncident above). A no-op (0 rows affected) if no incident is open,
+	// which is defensive only — FireRecovery only ever fires when prev.InIncident
+	// was true, so a matching open row should already exist.
+	CloseIncident(ctx context.Context, arg CloseIncidentParams) error
 	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (BackupSnapshot, error)
 	CompleteReport(ctx context.Context, arg CompleteReportParams) (GeneratedReport, error)
 	// Consume path (app.agent). Atomic single-shot UPDATE that wins exactly once
@@ -284,6 +290,10 @@ type Querier interface {
 	// (operator app.tenant_id OR public-enroll app.enroll) — see the function's
 	// own comment in schema.sql for the full rationale.
 	CountActiveSitesForBilling(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// 30-day flapping count for the incident-detail endpoint: how many incidents
+	// (open or closed) have STARTED for this site in the last 30 days, including
+	// the incident being viewed itself.
+	CountRecentIncidents(ctx context.Context, arg CountRecentIncidentsParams) (int64, error)
 	// Best-effort per-tenant in-flight task count, used by the parallelism guard so
 	// one tenant cannot saturate the worker pool. Runs in the tenant's RLS scope.
 	CountRunningTasksForTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
@@ -648,6 +658,11 @@ type Querier interface {
 	// Per-site stats for the digest [from, to] window. Returns top sites by failure
 	// count. Runs under InAgentTx.
 	GetFleetStatsBySite(ctx context.Context, arg GetFleetStatsBySiteParams) ([]GetFleetStatsBySiteRow, error)
+	// Tenant-scoped read of one incident, joined with its site's name/url, for
+	// GET /api/v1/fleet/incidents/:incidentId (InTenantTx). RLS additionally
+	// scopes this by tenant_id; the explicit predicate here is defense-in-depth +
+	// index use (site_incidents_tenant_started_idx), matching project convention.
+	GetIncidentByID(ctx context.Context, arg GetIncidentByIDParams) (GetIncidentByIDRow, error)
 	// By-id load for the per-site invitation management routes (revoke/regenerate).
 	// Tenant isolation is enforced by RLS; the handler additionally verifies
 	// site_id + scope against the path before mutating.
@@ -1498,6 +1513,20 @@ type Querier interface {
 	MarkUpdateTaskRunning(ctx context.Context, arg MarkUpdateTaskRunningParams) (UpdateTask, error)
 	// Activate + mark verified (used on self-serve activation and trusted bootstrap).
 	MarkUserEmailVerified(ctx context.Context, id uuid.UUID) error
+	// ---------------------------------------------------------------------------
+	// site_incidents (M94 — GH #148: persisted incident history, written
+	// alongside site_alert_state inside TransitionAlertState).
+	// ---------------------------------------------------------------------------
+	// Opens a new incident row for a site. Called from TransitionAlertState
+	// (app.agent GUC) on a FireDown transition (started_at = now()), and
+	// defensively on the "adopt" path when the alert state is already in_incident
+	// but no open site_incidents row exists yet — e.g. a site that was already
+	// down when m94 shipped and is not covered by the migration's day-1 seed, or
+	// a lost FireDown (started_at = the state's last_alert_at in that case). The
+	// partial unique index site_incidents_one_open_per_site makes this
+	// idempotent: if an incident is already open for the site, the insert is a
+	// silent no-op.
+	OpenIncident(ctx context.Context, arg OpenIncidentParams) error
 	// Enroll path (app.enroll GUC): resolve whether a presented code is site-bound
 	// (returns its site_id) WITHOUT consuming it, so /enroll can route between the
 	// site-first consume and the legacy create-at-enroll flow. Does not leak: only

@@ -89,6 +89,17 @@ type Latest struct {
 	Found      bool
 }
 
+// ProbeSample is one raw probe result returned by QueryProbeWindow — the
+// per-incident probe timeline consumed by the fleet incident-detail endpoint
+// (GH #148 part 1).
+type ProbeSample struct {
+	ProbedAt   time.Time
+	Up         bool
+	HTTPStatus uint16
+	TotalMs    float64
+	Error      string
+}
+
 // FleetUptimeRow is the per-site aggregate returned by QueryFleetUptime.
 // All pointer fields are nil when the site has no probe data in the window.
 type FleetUptimeRow struct {
@@ -119,6 +130,15 @@ type Store interface {
 	// Always scoped to tenantID; siteIDs must belong to that tenant (the caller
 	// verifies ownership in Postgres before reaching this).
 	QueryFleetUptime(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, window time.Duration) (map[uuid.UUID]FleetUptimeRow, error)
+	// QueryProbeWindow returns up to limitN raw probe rows for one site within
+	// [from, to], most-recent-first — the probe timeline for the fleet
+	// incident-detail endpoint (GH #148 part 1). GRACEFUL DEGRADATION:
+	// returns an empty, non-nil slice (never an error) when the window has no
+	// data — retention-aged rows, a disabled ClickHouse backend, or a site
+	// with no probes in range — so the incident summary can still render
+	// without a timeline. Always scoped to tenantID; the caller verifies site
+	// ownership in Postgres before reaching this.
+	QueryProbeWindow(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limitN int) ([]ProbeSample, error)
 }
 
 // chStore is the ClickHouse-backed metrics store (ADR-028). The original M5
@@ -405,6 +425,50 @@ GROUP BY site_id`, s.db),
 			row.AvgLatencyMs = avgLatency
 		}
 		out[siteID] = row
+	}
+	return out, rows.Err()
+}
+
+// QueryProbeWindow returns up to limitN raw probe rows for one site within
+// [from, to], most-recent-first (tenant-scoped). Returns an empty slice (no
+// error) when the store is disabled or the window has no data.
+func (s *chStore) QueryProbeWindow(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limitN int) ([]ProbeSample, error) {
+	if !s.Enabled() {
+		return []ProbeSample{}, nil
+	}
+	if limitN <= 0 {
+		limitN = 40
+	}
+	rows, err := s.conn.Query(ctx, fmt.Sprintf(`
+SELECT checked_at, up, http_status, total_ms, error
+FROM %s.uptime_checks
+WHERE tenant_id = ? AND site_id = ? AND checked_at BETWEEN ? AND ?
+ORDER BY checked_at DESC
+LIMIT ?`, s.db), tenantID, siteID, chTime(from), chTime(to), limitN)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse probe window query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ProbeSample, 0, limitN)
+	for rows.Next() {
+		var (
+			checkedAt  time.Time
+			upU        uint8
+			httpStatus uint16
+			totalMs    float64
+			errStr     string
+		)
+		if err := rows.Scan(&checkedAt, &upU, &httpStatus, &totalMs, &errStr); err != nil {
+			return nil, fmt.Errorf("clickhouse probe window scan: %w", err)
+		}
+		out = append(out, ProbeSample{
+			ProbedAt:   checkedAt,
+			Up:         upU == 1,
+			HTTPStatus: httpStatus,
+			TotalMs:    totalMs,
+			Error:      errStr,
+		})
 	}
 	return out, rows.Err()
 }

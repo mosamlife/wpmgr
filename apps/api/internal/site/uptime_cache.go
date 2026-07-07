@@ -167,3 +167,10 @@ func (s *cachedMetricsStore) QueryFleetUptime(ctx context.Context, tenantID uuid
 	s.cache.set(key, result)
 	return result, nil
 }
+
+// QueryProbeWindow delegates unchanged (not cached — the incident-detail
+// endpoint is a low-traffic, single-incident lookup, not a repeated
+// dashboard-refresh path like QueryFleetUptime).
+func (s *cachedMetricsStore) QueryProbeWindow(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limitN int) ([]metrics.ProbeSample, error) {
+	return s.inner.QueryProbeWindow(ctx, tenantID, siteID, from, to, limitN)
+}

@@ -31,7 +31,7 @@ func (r *stubRepo) GetAlertState(_ context.Context, _ uuid.UUID) (AlertState, bo
 	panic("not called")
 }
 func (r *stubRepo) UpsertAlertState(_ context.Context, _ AlertState) error { panic("not called") }
-func (r *stubRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time) (Transition, error) {
+func (r *stubRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time, _ int, _ string) (Transition, error) {
 	panic("not called")
 }
 func (r *stubRepo) ListAlertConfigsAllTenants(_ context.Context) ([]AlertConfig, error) {
@@ -47,6 +47,12 @@ func (r *stubRepo) GetFleetSiteInfo(_ context.Context, _ uuid.UUID, _ []uuid.UUI
 	return r.infos, nil
 }
 func (r *stubRepo) GetFleetIncidents(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Time, _ int) ([]FleetIncidentItem, error) {
+	panic("not called")
+}
+func (r *stubRepo) GetIncidentByID(_ context.Context, _, _ uuid.UUID) (IncidentSummary, bool, error) {
+	panic("not called")
+}
+func (r *stubRepo) CountRecentIncidents(_ context.Context, _, _ uuid.UUID) (int64, error) {
 	panic("not called")
 }
 
@@ -72,6 +78,9 @@ func (s *stubStore) QuerySeries(_ context.Context, _, _ uuid.UUID, _ time.Durati
 }
 func (s *stubStore) QueryFleetUptime(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Duration) (map[uuid.UUID]metrics.FleetUptimeRow, error) {
 	return s.uptimeMap, nil
+}
+func (s *stubStore) QueryProbeWindow(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int) ([]metrics.ProbeSample, error) {
+	panic("not called")
 }
 
 // ---------------------------------------------------------------------------
