@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.31] - 2026-07-07
+
+### Added
+
+- Restore now verifies the site actually loads afterward and automatically rolls back if it does not, instead of reporting a broken restore as complete. After the files and database are swapped, a first check confirms the restored database is intact while the site is still in maintenance mode (so a bad database restore is reverted before anyone sees it); then, once the site is live again, a second check confirms it is not serving a fatal error. If either check finds a genuine failure, the restore reverts both the files and the database to their pre-restore state and reports the run as failed with the reason, rather than leaving the site down. A pre-restore database snapshot is captured before the swap and, together with the pre-restore files, is kept for the retention window so a manual rollback stays possible. The checks fail open on an unreachable or ambiguous response so a network blip can never roll back a good restore. Requires agent 0.61.12.
+
 ## [0.61.30] - 2026-07-07
 
 ### Added

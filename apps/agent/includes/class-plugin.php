@@ -13,6 +13,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent;
 
 use WPMgr\Agent\Backup\FilesRestorer;
+use WPMgr\Agent\Backup\RestoreRunner;
 use WPMgr\Agent\Backup\RestoreWatchdog;
 use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Commands\AutologinCommand;
@@ -568,6 +569,12 @@ final class Plugin
         // operator has a manual-rollback window. Scheduled by RestoreRunner
         // on cleanup; the handler sweeps anything older than 24 h.
         add_action('wpmgr_restore_oldfiles_gc', [FilesRestorer::class, 'gcOldFiles']);
+
+        // GH #146 — same cron event also GCs the forced pre-restore DB dump
+        // (see RestoreRunner::capturePreRestoreDbDump()/runCleanup()) once
+        // its retention window elapses, so both halves of the health-check
+        // rollback material age out together.
+        add_action('wpmgr_restore_oldfiles_gc', [RestoreRunner::class, 'gcPreRestoreDumps']);
 
         // M1 (issue #131 adversarial review) — recurring GC backstop for the
         // wpmgr-snapshots/ store UpdateCommand's pre-update snapshots live

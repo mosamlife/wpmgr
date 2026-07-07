@@ -653,17 +653,181 @@ final class FilesRestorer
     }
 
     /**
-     * Garbage-collect `.wpmgr-old-files-*` dirs older than the GC age.
-     * Bound to the `wpmgr_restore_oldfiles_gc` cron action.
+     * GH #146 — reverse the whole-wp-content swap performed by `swap()`.
+     * Used by RestoreRunner's post-restore health-check rollback (and the
+     * RestoreGuard shutdown backstop) to undo a files swap that produced an
+     * unhealthy site.
      *
-     * Threshold note: under the 0.9.5 default policy the synchronous cleanup
-     * path in `RestoreRunner::runCleanup()` removes the rollback tree at the
-     * end of the restore, so this cron sweep is only relevant for the opt-in
-     * `keep_old_files=true` path (or for leftovers from a crashed run that
-     * never reached cleanup). We therefore sweep against the LONG threshold —
-     * the operator who opted in explicitly asked for a 24h rollback window,
-     * and we don't want to GC their rollback tree out from under them at the
-     * 1h SHORT threshold.
+     * Mirrors the same rename PRIMITIVE `swap()` itself uses for its own
+     * inline best-effort rollback (see `swap()`'s catch around the
+     * staging->target rename), but this variant runs AFTER a swap has
+     * already fully completed — so the live target dir is non-empty (it
+     * holds the just-restored, unhealthy tree) and must be moved aside
+     * first rather than rmdir'd.
+     *
+     * @param string $targetDir   Live wp-content dir (currently holds the
+     *                             unhealthy just-restored tree).
+     * @param string $oldFilesDir Absolute path recorded in
+     *                             `sub_state['swap_files']['old_files_dir']`.
+     * @param string $restoreId   Restore UUID (names the aside-moved bad tree).
+     * @return void
+     * @throws \RuntimeException When the rollback itself cannot complete —
+     *         the caller is expected to catch this and report it, never let
+     *         it propagate un-handled from a shutdown-function context.
+     */
+    public function revertSwap(string $targetDir, string $oldFilesDir, string $restoreId): void
+    {
+        $targetDir = rtrim($targetDir, DIRECTORY_SEPARATOR);
+        if ($oldFilesDir === '' || !is_dir($oldFilesDir)) {
+            throw new \RuntimeException('FilesRestorer::revertSwap: old_files_dir missing or not recorded: ' . esc_html($oldFilesDir)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to log/SSE, not browser
+        }
+
+        if (!is_dir($targetDir)) {
+            // Nothing live to move aside — promote the old tree directly.
+            if (!@rename($oldFilesDir, $targetDir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem rollback swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+                throw new \RuntimeException('FilesRestorer::revertSwap: cannot restore old tree: ' . esc_html($oldFilesDir) . ' -> ' . esc_html($targetDir)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to log/SSE, not browser
+            }
+            return;
+        }
+
+        $parent = dirname($targetDir);
+        $short  = self::shortId($restoreId);
+        $failed = $parent . DIRECTORY_SEPARATOR . '.wpmgr-failed-files-' . $short;
+
+        // Move the bad, just-restored tree aside (never clobber an existing
+        // failed-tree dir from a previous rollback attempt on a watchdog
+        // re-entry of this same revert).
+        if (!is_dir($failed)) {
+            if (!@rename($targetDir, $failed)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+                throw new \RuntimeException('FilesRestorer::revertSwap: cannot move bad tree aside: ' . esc_html($targetDir) . ' -> ' . esc_html($failed)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to log/SSE, not browser
+            }
+        }
+
+        if (is_dir($targetDir) && @rmdir($targetDir) === false) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removes an empty server-derived scratch dir; WP_Filesystem not initialized
+            throw new \RuntimeException('FilesRestorer::revertSwap: target dir reappeared and is not empty: ' . esc_html($targetDir)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to log/SSE, not browser
+        }
+
+        if (!@rename($oldFilesDir, $targetDir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem rollback swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+            // Best-effort: put the bad tree back rather than leave the site
+            // with NEITHER tree in place.
+            @rename($failed, $targetDir); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem rollback swap; WP_Filesystem::move() is non-atomic
+            throw new \RuntimeException('FilesRestorer::revertSwap: cannot restore old tree: ' . esc_html($oldFilesDir) . ' -> ' . esc_html($targetDir)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to log/SSE, not browser
+        }
+
+        // The abandoned bad tree is confirmed unhealthy (that's WHY we're
+        // here) — no forensic value in keeping it around like the
+        // retention-window `.wpmgr-old-files-*` dir, so reclaim it now.
+        self::rrmdir($failed);
+    }
+
+    /**
+     * GH #146 — reverse a per-component swap performed by
+     * `swapComponents()`. For each recorded component, moves the
+     * just-restored (bad) live subdir aside and renames the old-* dir back
+     * into place. The `wp-content` catch-all component reverses every
+     * `.wpmgr-old-wpcontent-<short>-*` sibling recorded during
+     * `swapComponents()`.
+     *
+     * @param string                $targetDir Live wp-content dir.
+     * @param array<string,string>  $oldDirs   `sub_state['swap_files']['old_dirs']`.
+     * @param string                $restoreId Restore UUID.
+     * @return void
+     */
+    public function revertSwapComponents(string $targetDir, array $oldDirs, string $restoreId): void
+    {
+        $targetDir = rtrim($targetDir, DIRECTORY_SEPARATOR);
+        $short     = self::shortId($restoreId);
+
+        foreach ($oldDirs as $comp => $oldAbs) {
+            if (!is_string($oldAbs) || $oldAbs === '') {
+                continue;
+            }
+
+            if ($comp === 'wp-content') {
+                // Catch-all: $oldAbs is the common NAMING PREFIX (never a
+                // real directory itself — only its `-<name>` siblings are).
+                $expectedPrefix = $targetDir . DIRECTORY_SEPARATOR . '.wpmgr-old-wpcontent-' . $short;
+                if ($oldAbs !== $expectedPrefix) {
+                    // Recorded prefix doesn't match this target dir/restore
+                    // id — refuse to glob-expand an unrelated/attacker-
+                    // controlled prefix.
+                    continue;
+                }
+                $hits = @glob($oldAbs . '-*');
+                if (!is_array($hits)) {
+                    continue;
+                }
+                foreach ($hits as $oldItem) {
+                    $name = substr(basename($oldItem), strlen(basename($oldAbs)) + 1);
+                    if ($name === '') {
+                        continue;
+                    }
+                    $liveItem = $targetDir . DIRECTORY_SEPARATOR . $name;
+                    $this->revertSingleItem($liveItem, $oldItem);
+                }
+                continue;
+            }
+
+            $subdir = self::COMPONENT_SUBDIRS[$comp] ?? '';
+            if ($subdir === '') {
+                continue;
+            }
+            $liveSub = $targetDir . DIRECTORY_SEPARATOR . $subdir;
+            $this->revertSingleItem($liveSub, $oldAbs);
+        }
+    }
+
+    /**
+     * Shared single-item reversal used by `revertSwapComponents()`: move
+     * whatever now lives at `$live` aside (best-effort discard — it's
+     * confirmed unhealthy), then rename `$old` back into `$live`'s place.
+     * Handles both directories and files (the wp-content catch-all can
+     * carry top-level files, e.g. `index.php`).
+     *
+     * Never throws — a single component failing to revert must not abort
+     * reverting the rest; failures are logged for the operator.
+     */
+    private function revertSingleItem(string $live, string $old): void
+    {
+        if (!is_dir($old) && !is_file($old) && !is_link($old)) {
+            // Nothing recorded to roll back to — leave live as-is.
+            return;
+        }
+
+        if (file_exists($live) || is_link($live)) {
+            $failed = $live . '.wpmgr-failed-' . bin2hex(random_bytes(4));
+            if (!@rename($live, $failed)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+                \WPMgr\Agent\Support\DebugLog::write('WPMgr FilesRestorer: revert could not move aside: ' . $live);
+                return;
+            }
+            if (is_dir($failed)) {
+                self::rrmdir($failed);
+            } elseif (is_file($failed) || is_link($failed)) {
+                wp_delete_file($failed);
+            }
+        }
+
+        if (!@rename($old, $live)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem rollback swap; WP_Filesystem::move() is non-atomic
+            \WPMgr\Agent\Support\DebugLog::write('WPMgr FilesRestorer: revert could not restore: ' . $old . ' -> ' . $live);
+        }
+    }
+
+    /**
+     * Garbage-collect deferred restore rollback material: `.wpmgr-old-*`
+     * trees (whole-swap AND per-component), `.wpmgr-staging-*` leftovers,
+     * and their `.expires` markers. Bound to the `wpmgr_restore_oldfiles_gc`
+     * cron action.
+     *
+     * GH #146 changed `RestoreRunner::runCleanup()`'s DEFAULT
+     * (`keep_old_files=false`) path from a synchronous `rrmdir()` to a
+     * DEFERRED one: the rollback tree is left in place with a `<path>.expires`
+     * sidecar marker recording exactly when it becomes safe to remove
+     * (`OLDFILES_GC_AGE_SECONDS` from the default path, `_LONG` from the
+     * opt-in `keep_old_files=true` path) — this closes the window a
+     * post-restore health-check rollback needs the tree to still exist in.
+     * A dir WITHOUT a marker predates this scheme, or is a leftover from a
+     * run that crashed before ever reaching `runCleanup()` — those fall back
+     * to the original unconditional LONG-threshold mtime check.
      *
      * @return void
      */
@@ -682,42 +846,112 @@ final class FilesRestorer
             dirname(WP_CONTENT_DIR),
             WP_CONTENT_DIR,
         ]);
-        $now       = time();
-        $threshold = self::OLDFILES_GC_AGE_SECONDS_LONG;
+        $now = time();
+
         foreach ($candidates as $dir) {
             if (!is_dir($dir)) {
                 continue;
             }
-            $hits = @glob($dir . DIRECTORY_SEPARATOR . '.wpmgr-old-files-*');
-            if (!is_array($hits)) {
-                continue;
+
+            // GH #146: sweep every `.expires` marker found — its target may
+            // be a real directory (whole-swap or per-subdir-component old
+            // dir) or, for the wp-content catch-all, a naming PREFIX whose
+            // actual `-<name>` sibling dirs/files need a further glob
+            // expansion (detected at sweep time: the prefix itself is never
+            // a real directory).
+            $markers = @glob($dir . DIRECTORY_SEPARATOR . '.wpmgr-old-*.expires');
+            $markedTargets = [];
+            if (is_array($markers)) {
+                foreach ($markers as $marker) {
+                    $markedTargets[] = substr($marker, 0, -strlen('.expires'));
+                    self::sweepExpiryMarker($marker, $now);
+                }
             }
-            foreach ($hits as $old) {
-                if (!is_dir($old)) {
+
+            // Legacy fallback: dirs from before the marker scheme (or a
+            // crashed run that never reached runCleanup() at all) — sweep
+            // anything past the LONG threshold by raw mtime. Skip anything
+            // that HAS (or had) a marker; that's handled above.
+            foreach (['.wpmgr-old-files-*', '.wpmgr-old-plugins-*', '.wpmgr-old-themes-*', '.wpmgr-old-uploads-*'] as $pattern) {
+                $hits = @glob($dir . DIRECTORY_SEPARATOR . $pattern);
+                if (!is_array($hits)) {
                     continue;
                 }
-                $mtime = @filemtime($old);
-                if ($mtime === false || ($now - (int) $mtime) < $threshold) {
-                    continue;
+                foreach ($hits as $old) {
+                    if (!is_dir($old) || in_array($old, $markedTargets, true)) {
+                        continue;
+                    }
+                    self::gcByMtimeLongThreshold($old, $now);
                 }
-                self::rrmdir($old);
             }
-            // Same sweep for any leftover staging dirs from a crashed run.
+
+            // Same legacy sweep for any leftover staging dirs from a
+            // crashed run (never marker-based — staging dirs are only ever
+            // crash leftovers, not a recorded rollback source).
             $stages = @glob($dir . DIRECTORY_SEPARATOR . '.wpmgr-staging-*');
-            if (!is_array($stages)) {
-                continue;
-            }
-            foreach ($stages as $stage) {
-                if (!is_dir($stage)) {
-                    continue;
+            if (is_array($stages)) {
+                foreach ($stages as $stage) {
+                    if (!is_dir($stage)) {
+                        continue;
+                    }
+                    self::gcByMtimeLongThreshold($stage, $now);
                 }
-                $mtime = @filemtime($stage);
-                if ($mtime === false || ($now - (int) $mtime) < $threshold) {
-                    continue;
-                }
-                self::rrmdir($stage);
             }
         }
+    }
+
+    /**
+     * Reclaim a single `.expires`-marked rollback path once its window has
+     * elapsed. The marker's target may be a real directory or (the
+     * wp-content catch-all case) a naming prefix whose actual siblings are
+     * found via a `-*` glob expansion.
+     */
+    private static function sweepExpiryMarker(string $marker, int $now): void
+    {
+        $target = substr($marker, 0, -strlen('.expires'));
+        $raw    = @file_get_contents($marker);
+        $expiresAt = $raw !== false && trim($raw) !== '' ? (int) trim($raw) : 0;
+
+        if ($expiresAt <= 0) {
+            // Corrupt/unreadable marker — drop it so we don't retry forever,
+            // but leave the target alone (fail safe: never delete on
+            // ambiguity about WHEN it's safe to).
+            wp_delete_file($marker);
+            return;
+        }
+        if ($now < $expiresAt) {
+            return; // Not due yet.
+        }
+
+        if (is_dir($target)) {
+            self::rrmdir($target);
+        } else {
+            // Catch-all prefix: expand + remove its `-<name>` siblings.
+            $items = @glob($target . '-*');
+            if (is_array($items)) {
+                foreach ($items as $item) {
+                    if (is_dir($item)) {
+                        self::rrmdir($item);
+                    } elseif (is_file($item) || is_link($item)) {
+                        wp_delete_file($item);
+                    }
+                }
+            }
+        }
+        wp_delete_file($marker);
+    }
+
+    /**
+     * Legacy (marker-less) reclaim path: remove a dir once it is older than
+     * the LONG GC threshold.
+     */
+    private static function gcByMtimeLongThreshold(string $dir, int $now): void
+    {
+        $mtime = @filemtime($dir);
+        if ($mtime === false || ($now - (int) $mtime) < self::OLDFILES_GC_AGE_SECONDS_LONG) {
+            return;
+        }
+        self::rrmdir($dir);
     }
 
     // ==================================================================
