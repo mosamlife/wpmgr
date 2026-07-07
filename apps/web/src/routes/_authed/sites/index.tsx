@@ -368,6 +368,16 @@ function SitesPage() {
     openAutoLoginRef.current = handleOpenAutoLogin;
   }, [handleOpenAutoLogin]);
 
+  // "Open site" menu action — navigates to the site's detail page. Wired here
+  // (rather than left as a prop the caller forgets to pass) so it works
+  // identically in both the grid (card) and table views (GH #150).
+  const handleOpenDetail = useCallback(
+    (site: Site) => {
+      void navigate({ to: "/sites/$siteId", params: { siteId: site.id } });
+    },
+    [navigate],
+  );
+
   // ── Disconnect / Undo / Reconnect ─────────────────────────────────────────
 
   const revoke = useRevokeSite();
@@ -643,6 +653,7 @@ function SitesPage() {
           {disconnectedSites ? (
             <DisconnectedSitesPanel
               sites={disconnectedSites}
+              onOpenDetail={handleOpenDetail}
               onReconnect={operate ? handleReconnect : undefined}
               onRemove={operate ? handleRemove : undefined}
             />
@@ -758,6 +769,7 @@ function SitesPage() {
               sites={visibleSites}
               cardSize={cardSize}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
+              onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
               onReconnect={operate ? handleReconnect : undefined}
             />
@@ -768,6 +780,7 @@ function SitesPage() {
               selection={operate ? selection : undefined}
               densityState={densityState}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
+              onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
               onReconnect={operate ? handleReconnect : undefined}
             />
@@ -969,10 +982,12 @@ function AddSitePlaceholder() {
  */
 function DisconnectedSitesPanel({
   sites,
+  onOpenDetail,
   onReconnect,
   onRemove,
 }: {
   sites: Site[];
+  onOpenDetail?: (site: Site) => void;
   onReconnect?: (site: Site) => void;
   onRemove?: (site: Site) => void;
 }) {
@@ -990,6 +1005,7 @@ function DisconnectedSitesPanel({
       <SitesTable
         sites={sites}
         isLoading={false}
+        onOpenDetail={onOpenDetail}
         onReconnect={onReconnect}
         onRemove={onRemove}
       />

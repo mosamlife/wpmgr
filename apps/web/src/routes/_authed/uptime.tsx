@@ -17,6 +17,8 @@ import {
   Globe,
   ShieldCheck,
   AlertCircle,
+  Clock,
+  Timer,
 } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -40,6 +42,10 @@ import {
   useFleetStatus,
   useFleetIncidents,
 } from "@/features/fleet/use-fleet-uptime";
+import {
+  isIncidentOngoing,
+  formatIncidentDuration,
+} from "@/features/fleet/incident-format";
 import type {
   FleetStatusItem,
   FleetIncident,
@@ -353,8 +359,8 @@ function IncidentsPanel({
   isError: boolean;
   incidents: FleetIncident[];
 }) {
-  const open = incidents.filter((i) => i.ongoing);
-  const closed = incidents.filter((i) => !i.ongoing).slice(0, 10);
+  const open = incidents.filter((i) => isIncidentOngoing(i));
+  const closed = incidents.filter((i) => !isIncidentOngoing(i)).slice(0, 10);
 
   return (
     <section aria-labelledby="incidents-heading" className="space-y-3">
@@ -418,15 +424,13 @@ function IncidentList({ incidents }: { incidents: FleetIncident[] }) {
       className="divide-y divide-[var(--color-border)] rounded-lg border border-[var(--color-border)]"
     >
       {incidents.map((inc) => {
-        const durSeconds = inc.duration_seconds;
-        const durLabel =
-          durSeconds === null
-            ? "ongoing"
-            : durSeconds < 60
-              ? `${durSeconds}s`
-              : durSeconds < 3600
-                ? `${Math.round(durSeconds / 60)}m`
-                : `${(durSeconds / 3600).toFixed(1)}h`;
+        // Ongoing decision is hardened off the reliable `ongoing` boolean
+        // (falling back to a finite-duration check), NEVER off
+        // `duration_seconds === null` alone — a missing/malformed duration
+        // must never render as a fabricated "NaNh" (GH #148).
+        const ongoing = isIncidentOngoing(inc);
+        const durationLabel = formatIncidentDuration(inc.duration_seconds, ongoing);
+        const startedLabel = `started ${relativeTime(inc.started_at) ?? inc.started_at}`;
 
         return (
           <div
@@ -437,27 +441,43 @@ function IncidentList({ incidents }: { incidents: FleetIncident[] }) {
             <span
               className={cn(
                 "inline-flex items-center gap-1 font-medium",
-                inc.ongoing
+                ongoing
                   ? "text-[var(--color-destructive-subtle-fg)]"
                   : "text-[var(--color-muted-foreground)]",
               )}
             >
-              {inc.ongoing ? (
+              {ongoing ? (
                 <XCircle aria-hidden="true" className="size-3.5 shrink-0" />
               ) : (
                 <CheckCircle2 aria-hidden="true" className="size-3.5 shrink-0" />
               )}
               {inc.kind === "down" ? "Down" : "Degraded"}
             </span>
-            <span className="font-medium text-[var(--color-foreground)]">
+            {/* Lightweight drill-in: reuse the same Link-to-detail pattern as
+                the fleet Sites table's "Site" column (see buildColumns above)
+                so the name/url stays the click target and is keyboard/a11y
+                navigable — no modal (there's no persisted incident history
+                to show one). */}
+            <Link
+              to="/sites/$siteId"
+              params={{ siteId: inc.site_id }}
+              className="font-medium text-[var(--color-foreground)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+            >
               {inc.name || inc.url}
+            </Link>
+            {/* Both time values are labeled so they never read as two bare
+                unlabeled timestamps (GH #148): "started X ago[, ongoing]"
+                and, for resolved incidents only, "for Xh/Xm/Xs". */}
+            <span className="inline-flex items-center gap-1 text-[var(--color-muted-foreground)]">
+              <Clock aria-hidden="true" className="size-3 shrink-0" />
+              {ongoing ? `${startedLabel}, ongoing` : startedLabel}
             </span>
-            <span className="text-[var(--color-muted-foreground)]">
-              {relativeTime(inc.started_at) ?? inc.started_at}
-            </span>
-            <span className="ml-auto tabular-nums text-[var(--color-muted-foreground)]">
-              {durLabel}
-            </span>
+            {!ongoing && durationLabel ? (
+              <span className="ml-auto inline-flex items-center gap-1 tabular-nums text-[var(--color-muted-foreground)]">
+                <Timer aria-hidden="true" className="size-3 shrink-0" />
+                for {durationLabel}
+              </span>
+            ) : null}
           </div>
         );
       })}

@@ -8,6 +8,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.29] - 2026-07-07
+
+### Fixed
+
+- The Uptime page Incidents panel showed wrong information for an ongoing incident: a site that was down was labeled "Degraded", its duration read "NaNh", and the site name was blank. Incident rows now show the correct severity ("Down"), read "ongoing" while an incident is open, and always show the site name. Each row is also now labeled ("started ... ago", "for ...h") and links to the site so you can drill in.
+- Native dropdown menus were unreadable in dark mode because the expanded option list rendered on a light background. Native controls now follow the app theme in both light and dark mode.
+- Two breadcrumb links (Restores, Schedule runs) pointed at pages that do not exist and returned a 404 when clicked. Those segments are no longer clickable.
+- The "Open site" action in a site's row menu did nothing. It now opens the site's detail page, from both the list and grid views.
+
 ## [0.61.28] - 2026-07-07
 
 ### Added

@@ -14,7 +14,15 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
     <select
       ref={ref}
       className={cn(
-        "h-9 w-full appearance-none rounded-md border border-[var(--color-input)] bg-transparent px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] disabled:cursor-not-allowed disabled:opacity-50",
+        // Explicit bg/text (not "transparent") so the native option popup -
+        // which several browsers paint using the <select>'s own computed
+        // background/color rather than the ancestor surface - matches the
+        // app's popover surface in both themes instead of falling back to an
+        // unreadable OS default (GH #150). `color-scheme` itself (set on
+        // :root/.dark in globals.css, following the .dark class) is what
+        // makes Chromium/WebKit render the popup chrome as dark to begin
+        // with; this covers the browsers that also key off background/color.
+        "h-9 w-full appearance-none rounded-md border border-[var(--color-input)] bg-[var(--color-popover)] px-3 text-sm text-[var(--color-popover-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)] disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}
       {...props}

@@ -29,6 +29,8 @@ export interface SitesGridProps {
   sites: Site[];
   cardSize: CardSize;
   onOpenAutoLogin?: (site: Site) => void;
+  /** Opens the site's detail page — wired to the "Open site" menu action. */
+  onOpenDetail?: (site: Site) => void;
   onDisconnect?: (site: Site) => void;
   onReconnect?: (site: Site) => void;
 }
@@ -39,6 +41,7 @@ export function SitesGrid({
   sites,
   cardSize,
   onOpenAutoLogin,
+  onOpenDetail,
   onDisconnect,
   onReconnect,
 }: SitesGridProps) {
@@ -70,6 +73,7 @@ export function SitesGrid({
             cardSize={cardSize}
             selectionCount={selection.count}
             onOpenAutoLogin={onOpenAutoLogin}
+            onOpenDetail={onOpenDetail}
             onDisconnect={onDisconnect}
             onReconnect={onReconnect}
           />
