@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 
-import { isIncidentOngoing, formatIncidentDuration } from "./incident-format";
+import {
+  isIncidentOngoing,
+  formatIncidentDuration,
+  humanizeIncidentReason,
+} from "./incident-format";
 
 // ---------------------------------------------------------------------------
 // GH #148 — incidents panel hardening
@@ -70,5 +74,74 @@ describe("formatIncidentDuration", () => {
 
   it("formats a zero-second duration as 0s, not falsy-empty", () => {
     expect(formatIncidentDuration(0, false)).toBe("0s");
+  });
+});
+
+describe("humanizeIncidentReason", () => {
+  it("maps the two fixed fatal-detection codes to readable copy", () => {
+    expect(humanizeIncidentReason("wp_fatal_error")).toBe(
+      "WordPress fatal error page",
+    );
+    expect(humanizeIncidentReason("wp_db_error")).toBe(
+      "Database connection error page",
+    );
+  });
+
+  it("is case-insensitive on the fixed codes", () => {
+    expect(humanizeIncidentReason("WP_FATAL_ERROR")).toBe(
+      "WordPress fatal error page",
+    );
+  });
+
+  it("extracts the status code from an 'http status NNN' reason", () => {
+    expect(humanizeIncidentReason("http status 500")).toBe(
+      "Site returned HTTP 500",
+    );
+    expect(humanizeIncidentReason("http status 503")).toBe(
+      "Site returned HTTP 503",
+    );
+  });
+
+  it("recognizes an ssrf_blocked prefix", () => {
+    expect(humanizeIncidentReason("ssrf_blocked: dial tcp 10.0.0.1:443")).toBe(
+      "Blocked by outbound security policy",
+    );
+  });
+
+  it("recognizes a timeout / deadline-exceeded transport error", () => {
+    expect(
+      humanizeIncidentReason("context deadline exceeded (Client.Timeout)"),
+    ).toBe("Connection timed out");
+    expect(humanizeIncidentReason("i/o timeout")).toBe("Connection timed out");
+  });
+
+  it("recognizes a connection-refused transport error", () => {
+    expect(
+      humanizeIncidentReason("dial tcp 127.0.0.1:443: connection refused"),
+    ).toBe("Connection refused");
+  });
+
+  it("recognizes a DNS failure", () => {
+    expect(
+      humanizeIncidentReason("dial tcp: lookup example.com: no such host"),
+    ).toBe("DNS lookup failed");
+  });
+
+  it("recognizes a TLS/certificate error", () => {
+    expect(
+      humanizeIncidentReason("x509: certificate has expired or is not yet valid"),
+    ).toBe("TLS certificate error");
+  });
+
+  it("falls back to the raw reason for anything unrecognized (never drops the signal)", () => {
+    expect(humanizeIncidentReason("some brand-new prober reason")).toBe(
+      "some brand-new prober reason",
+    );
+  });
+
+  it("returns a calm default for an empty/absent reason", () => {
+    expect(humanizeIncidentReason("")).toBe("No specific cause recorded");
+    expect(humanizeIncidentReason(null)).toBe("No specific cause recorded");
+    expect(humanizeIncidentReason(undefined)).toBe("No specific cause recorded");
   });
 });

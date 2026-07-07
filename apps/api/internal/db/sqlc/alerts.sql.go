@@ -7,10 +7,53 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const closeIncident = `-- name: CloseIncident :exec
+UPDATE site_incidents
+SET ended_at = now(), last_http_status = $1, updated_at = now()
+WHERE site_id = $2 AND ended_at IS NULL
+`
+
+type CloseIncidentParams struct {
+	LastHttpStatus int32     `json:"last_http_status"`
+	SiteID         uuid.UUID `json:"site_id"`
+}
+
+// Closes the open incident for a site on a FireRecovery transition
+// (app.agent GUC, called from the same TransitionAlertState transaction as
+// OpenIncident above). A no-op (0 rows affected) if no incident is open,
+// which is defensive only — FireRecovery only ever fires when prev.InIncident
+// was true, so a matching open row should already exist.
+func (q *Queries) CloseIncident(ctx context.Context, arg CloseIncidentParams) error {
+	_, err := q.db.Exec(ctx, closeIncident, arg.LastHttpStatus, arg.SiteID)
+	return err
+}
+
+const countRecentIncidents = `-- name: CountRecentIncidents :one
+SELECT count(*) FROM site_incidents
+WHERE site_id = $1 AND tenant_id = $2
+  AND started_at >= now() - interval '30 days'
+`
+
+type CountRecentIncidentsParams struct {
+	SiteID   uuid.UUID `json:"site_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// 30-day flapping count for the incident-detail endpoint: how many incidents
+// (open or closed) have STARTED for this site in the last 30 days, including
+// the incident being viewed itself.
+func (q *Queries) CountRecentIncidents(ctx context.Context, arg CountRecentIncidentsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentIncidents, arg.SiteID, arg.TenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const getAlertConfig = `-- name: GetAlertConfig :one
 
@@ -33,6 +76,60 @@ func (q *Queries) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (Alert
 		&i.NotifySecurity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getIncidentByID = `-- name: GetIncidentByID :one
+SELECT
+    si.id,
+    si.site_id,
+    si.started_at,
+    si.ended_at,
+    si.peak_status,
+    si.last_http_status,
+    si.reason,
+    s.name AS site_name,
+    s.url  AS site_url
+FROM site_incidents si
+JOIN sites s ON s.id = si.site_id AND s.tenant_id = si.tenant_id
+WHERE si.id = $1 AND si.tenant_id = $2
+`
+
+type GetIncidentByIDParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+type GetIncidentByIDRow struct {
+	ID             uuid.UUID          `json:"id"`
+	SiteID         uuid.UUID          `json:"site_id"`
+	StartedAt      time.Time          `json:"started_at"`
+	EndedAt        pgtype.Timestamptz `json:"ended_at"`
+	PeakStatus     string             `json:"peak_status"`
+	LastHttpStatus int32              `json:"last_http_status"`
+	Reason         string             `json:"reason"`
+	SiteName       string             `json:"site_name"`
+	SiteUrl        string             `json:"site_url"`
+}
+
+// Tenant-scoped read of one incident, joined with its site's name/url, for
+// GET /api/v1/fleet/incidents/:incidentId (InTenantTx). RLS additionally
+// scopes this by tenant_id; the explicit predicate here is defense-in-depth +
+// index use (site_incidents_tenant_started_idx), matching project convention.
+func (q *Queries) GetIncidentByID(ctx context.Context, arg GetIncidentByIDParams) (GetIncidentByIDRow, error) {
+	row := q.db.QueryRow(ctx, getIncidentByID, arg.ID, arg.TenantID)
+	var i GetIncidentByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.PeakStatus,
+		&i.LastHttpStatus,
+		&i.Reason,
+		&i.SiteName,
+		&i.SiteUrl,
 	)
 	return i, err
 }
@@ -123,6 +220,45 @@ func (q *Queries) ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig
 		return nil, err
 	}
 	return items, nil
+}
+
+const openIncident = `-- name: OpenIncident :exec
+
+INSERT INTO site_incidents (tenant_id, site_id, started_at, peak_status, last_http_status, reason, opened_by)
+VALUES ($1, $2, $3, 'down', $4, $5, 'probe')
+ON CONFLICT (site_id) WHERE ended_at IS NULL DO NOTHING
+`
+
+type OpenIncidentParams struct {
+	TenantID       uuid.UUID `json:"tenant_id"`
+	SiteID         uuid.UUID `json:"site_id"`
+	StartedAt      time.Time `json:"started_at"`
+	LastHttpStatus int32     `json:"last_http_status"`
+	Reason         string    `json:"reason"`
+}
+
+// ---------------------------------------------------------------------------
+// site_incidents (M94 — GH #148: persisted incident history, written
+// alongside site_alert_state inside TransitionAlertState).
+// ---------------------------------------------------------------------------
+// Opens a new incident row for a site. Called from TransitionAlertState
+// (app.agent GUC) on a FireDown transition (started_at = now()), and
+// defensively on the "adopt" path when the alert state is already in_incident
+// but no open site_incidents row exists yet — e.g. a site that was already
+// down when m94 shipped and is not covered by the migration's day-1 seed, or
+// a lost FireDown (started_at = the state's last_alert_at in that case). The
+// partial unique index site_incidents_one_open_per_site makes this
+// idempotent: if an incident is already open for the site, the insert is a
+// silent no-op.
+func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) error {
+	_, err := q.db.Exec(ctx, openIncident,
+		arg.TenantID,
+		arg.SiteID,
+		arg.StartedAt,
+		arg.LastHttpStatus,
+		arg.Reason,
+	)
+	return err
 }
 
 const upsertAlertConfig = `-- name: UpsertAlertConfig :one

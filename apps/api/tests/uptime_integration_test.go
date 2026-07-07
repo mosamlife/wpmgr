@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -201,7 +204,7 @@ func TestUptimeAlertStateTransitionRace(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			defer wg.Done()
-			tr, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now())
+			tr, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500")
 			if err != nil {
 				t.Errorf("transition: %v", err)
 				return
@@ -259,7 +262,7 @@ func TestUptimeAlertStateTransitionRaceDeterministic(t *testing.T) {
 	// racing transactions increment an EXISTING row — the case a bare read +
 	// separate write can lose (the very-first insert is already race-safe via
 	// plain ON CONFLICT DO UPDATE).
-	if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, 100, time.Now()); err != nil {
+	if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, 100, time.Now(), 500, "http status 500"); err != nil {
 		t.Fatalf("seed transition: %v", err)
 	}
 
@@ -337,6 +340,296 @@ func TestUptimeAlertStateTransitionRaceDeterministic(t *testing.T) {
 	// update); the lock forces tx2 to read tx1's committed 2 and land on 3.
 	if final.ConsecutiveDown != 3 {
 		t.Fatalf("consecutive_down = %d, want 3 (FOR UPDATE failed to serialize the two transitions — lost update)", final.ConsecutiveDown)
+	}
+}
+
+// TestUptimeIncidentPersistedOnTransition proves the M94 (GH #148 part 1)
+// state-machine write points end to end against a real Postgres: a FireDown
+// transition opens a site_incidents row (ended_at NULL, last_http_status the
+// triggering probe's status), steady-state down probes do not create
+// duplicate rows (the de-duped Evaluate transitions plus OpenIncident's ON
+// CONFLICT DO NOTHING), and a FireRecovery transition closes that SAME row
+// (ended_at set, last_http_status refreshed to the recovery probe's status).
+func TestUptimeIncidentPersistedOnTransition(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	tenant := seedTenant(t, pool, "uptime-incident")
+
+	var status int32 = http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(int(atomic.LoadInt32(&status)))
+	}))
+	defer srv.Close()
+	s := enrollFakeSite(t, pool, tenant, srv.URL)
+
+	repo := uptime.NewRepo(pool)
+	prober := uptime.NewProber(loopbackClient(), 5*time.Second)
+	disabledStore, _ := metrics.New(ctx, metrics.Config{Addr: ""}, nil)
+	// threshold=2, no dispatcher (alert delivery is not under test here).
+	w := uptime.NewProbeWorker(repo, prober, disabledStore, nil, nil, nil, 5, 2)
+
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+
+	// Bring the site DOWN. Sweep 1: below threshold, no incident yet.
+	atomic.StoreInt32(&status, http.StatusInternalServerError)
+	if _, err := w.Sweep(ctx, time.Now()); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	var preCount int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM site_incidents WHERE site_id = $1`, s.ID).Scan(&preCount); err != nil {
+		t.Fatalf("count incidents after sweep 1: %v", err)
+	}
+	if preCount != 0 {
+		t.Fatalf("expected 0 site_incidents rows before the threshold crossing, got %d", preCount)
+	}
+
+	// Sweep 2: crosses the threshold — opens the incident.
+	if _, err := w.Sweep(ctx, time.Now()); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	// Sweep 3: steady-state down (already in incident) — must NOT create a
+	// second row (the "adopt" path's OpenIncident call is a no-op here).
+	if _, err := w.Sweep(ctx, time.Now()); err != nil {
+		t.Fatalf("sweep 3: %v", err)
+	}
+
+	var (
+		incidentID     uuid.UUID
+		endedAt        *time.Time
+		lastHTTPStatus int
+	)
+	if err := admin.QueryRow(ctx,
+		`SELECT id, ended_at, last_http_status FROM site_incidents WHERE site_id = $1`, s.ID,
+	).Scan(&incidentID, &endedAt, &lastHTTPStatus); err != nil {
+		t.Fatalf("read open incident: %v", err)
+	}
+	if endedAt != nil {
+		t.Fatalf("incident should be OPEN (ended_at NULL) while the site is still down, got %v", endedAt)
+	}
+	if lastHTTPStatus != http.StatusInternalServerError {
+		t.Fatalf("last_http_status = %d, want %d", lastHTTPStatus, http.StatusInternalServerError)
+	}
+	var openRowCount int
+	if err := admin.QueryRow(ctx,
+		`SELECT count(*) FROM site_incidents WHERE site_id = $1`, s.ID,
+	).Scan(&openRowCount); err != nil {
+		t.Fatalf("count incidents after steady-down: %v", err)
+	}
+	if openRowCount != 1 {
+		t.Fatalf("expected exactly 1 site_incidents row after 2 down + 1 steady-down sweep, got %d (adopt path must be idempotent)", openRowCount)
+	}
+
+	// Recover: the SAME row must close, not a new one.
+	atomic.StoreInt32(&status, http.StatusOK)
+	if _, err := w.Sweep(ctx, time.Now()); err != nil {
+		t.Fatalf("recovery sweep: %v", err)
+	}
+
+	var (
+		closedEndedAt  *time.Time
+		closedID       uuid.UUID
+		closedHTTPCode int
+	)
+	if err := admin.QueryRow(ctx,
+		`SELECT id, ended_at, last_http_status FROM site_incidents WHERE site_id = $1`, s.ID,
+	).Scan(&closedID, &closedEndedAt, &closedHTTPCode); err != nil {
+		t.Fatalf("read closed incident: %v", err)
+	}
+	if closedID != incidentID {
+		t.Fatalf("recovery closed a DIFFERENT incident row (got %s, want %s) — expected the same row to be reused", closedID, incidentID)
+	}
+	if closedEndedAt == nil {
+		t.Fatal("incident should be CLOSED (ended_at set) after recovery")
+	}
+	if closedHTTPCode != http.StatusOK {
+		t.Fatalf("last_http_status after recovery = %d, want %d", closedHTTPCode, http.StatusOK)
+	}
+
+	var finalCount int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM site_incidents WHERE site_id = $1`, s.ID).Scan(&finalCount); err != nil {
+		t.Fatalf("final incident count: %v", err)
+	}
+	if finalCount != 1 {
+		t.Fatalf("expected exactly 1 total site_incidents row for the whole down->recovery cycle, got %d", finalCount)
+	}
+}
+
+// TestSiteIncidentsOneOpenPerSite proves the site_incidents_one_open_per_site
+// partial unique index is a REAL database-level guard, not merely an
+// application-logic invariant: repeated steady-state down transitions for an
+// already-open incident never create a second open row (the repo's own
+// ON CONFLICT DO NOTHING path), AND a raw INSERT that bypasses the
+// application entirely is rejected by Postgres with a unique_violation.
+func TestSiteIncidentsOneOpenPerSite(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	tenant := seedTenant(t, pool, "incident-unique")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	s := enrollFakeSite(t, pool, tenant, srv.URL)
+
+	repo := uptime.NewRepo(pool)
+	const threshold = 1 // fire the down alert immediately
+
+	if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500"); err != nil {
+		t.Fatalf("opening transition: %v", err)
+	}
+	// Several more down probes while already in incident: the "adopt" branch
+	// runs OpenIncident again each time; it must stay a no-op.
+	for i := 0; i < 3; i++ {
+		if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500"); err != nil {
+			t.Fatalf("steady-down transition %d: %v", i, err)
+		}
+	}
+
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	var openCount int
+	if err := admin.QueryRow(ctx,
+		`SELECT count(*) FROM site_incidents WHERE site_id = $1 AND ended_at IS NULL`, s.ID,
+	).Scan(&openCount); err != nil {
+		t.Fatalf("count open incidents: %v", err)
+	}
+	if openCount != 1 {
+		t.Fatalf("open incident count = %d, want 1 (repo-level idempotency)", openCount)
+	}
+
+	// Direct proof the DB-level constraint exists, independent of the repo's
+	// own ON CONFLICT clause: a raw second-open INSERT must be rejected.
+	_, err := admin.Exec(ctx,
+		`INSERT INTO site_incidents (tenant_id, site_id, started_at, ended_at) VALUES ($1, $2, now(), NULL)`,
+		tenant, s.ID)
+	if err == nil {
+		t.Fatal("expected a unique_violation inserting a second OPEN incident for the same site, got no error")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Fatalf("expected Postgres unique_violation (23505) from site_incidents_one_open_per_site, got: %v", err)
+	}
+}
+
+// TestIncidentByIDTenantIsolation is IDOR gate (a) from the security review
+// (GH #148): a foreign tenant guessing/enumerating another tenant's incident
+// id must get a not-found, never the row. GetIncidentByID is the exact repo
+// method the GET /api/v1/fleet/incidents/:incidentId handler calls first
+// (before any site-scope check), and it maps found=false straight to the
+// handler's domain.NotFound("incident_not_found", ...) 404 — so this test
+// proves that mapping at the source: RLS (site_incidents_tenant_isolation)
+// PLUS the explicit tenant_id predicate in the query both agree that tenant
+// B simply has no such row.
+func TestIncidentByIDTenantIsolation(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, pool, "incident-idor-tenant-a")
+	tenantB := seedTenant(t, pool, "incident-idor-tenant-b")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	s := enrollFakeSite(t, pool, tenantA, srv.URL)
+
+	repo := uptime.NewRepo(pool)
+	if _, err := repo.TransitionAlertState(ctx, s.ID, tenantA, false, 1, time.Now(), 500, "http status 500"); err != nil {
+		t.Fatalf("opening transition: %v", err)
+	}
+
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	var incidentID uuid.UUID
+	if err := admin.QueryRow(ctx, `SELECT id FROM site_incidents WHERE site_id = $1`, s.ID).Scan(&incidentID); err != nil {
+		t.Fatalf("read seeded incident id: %v", err)
+	}
+
+	// Tenant A (the owner) can read its own incident.
+	summary, found, err := repo.GetIncidentByID(ctx, tenantA, incidentID)
+	if err != nil {
+		t.Fatalf("tenant A get incident: %v", err)
+	}
+	if !found || summary.SiteID != s.ID {
+		t.Fatalf("tenant A should see its own incident: found=%v summary=%+v", found, summary)
+	}
+
+	// Tenant B — a wholly unrelated tenant, not a collaborator — must get
+	// found=false for tenant A's incident id, exactly the not-found the
+	// handler needs to 404 without leaking existence.
+	_, foundB, err := repo.GetIncidentByID(ctx, tenantB, incidentID)
+	if err != nil {
+		t.Fatalf("tenant B get incident: %v", err)
+	}
+	if foundB {
+		t.Fatal("tenant B must NOT see tenant A's incident by id (RLS/tenant-scope IDOR)")
+	}
+}
+
+// TestIncidentSiteScopeRestrictivePolicy is IDOR gate (b) from the security
+// review (Finding 1 + Finding 2, GH #148): it directly exercises the new
+// site_incidents_site_scope RESTRICTIVE policy under InScopedTenantTx (the
+// real GUC path a site-scoped collaborator's request runs under), proving it
+// actually filters — not just that application code (CanAccessSite) happens
+// to gate the handler today. Repo.GetIncidentByID always uses plain
+// InTenantTx (never sets app.site_scope), so this test intentionally goes
+// around the Repo interface and queries site_incidents directly under
+// InScopedTenantTx, mirroring the tests/portal_rls_integration_test.go style.
+func TestIncidentSiteScopeRestrictivePolicy(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	tenant := seedTenant(t, pool, "incident-idor-site-scope")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	// Distinct URLs so these are genuinely two different site rows: Enroll is
+	// idempotent-by-URL (GetSiteByURLForEnroll/AttachAgentToSite) — the SAME
+	// URL under the same tenant re-attaches to the EXISTING row instead of
+	// creating a second one, which would silently collapse siteA/siteB into
+	// one site and make this test pass for the wrong reason.
+	siteA := enrollFakeSite(t, pool, tenant, srv.URL+"/site-a")
+	siteB := enrollFakeSite(t, pool, tenant, srv.URL+"/site-b") // same tenant, a DIFFERENT site
+
+	repo := uptime.NewRepo(pool)
+	if _, err := repo.TransitionAlertState(ctx, siteA.ID, tenant, false, 1, time.Now(), 500, "http status 500"); err != nil {
+		t.Fatalf("opening transition: %v", err)
+	}
+
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	var incidentID uuid.UUID
+	if err := admin.QueryRow(ctx, `SELECT id FROM site_incidents WHERE site_id = $1`, siteA.ID).Scan(&incidentID); err != nil {
+		t.Fatalf("read seeded incident id: %v", err)
+	}
+
+	// A collaborator scoped ONLY to siteB (not siteA, the incident's own
+	// site) must not see siteA's incident row — this is the RESTRICTIVE
+	// site_scope policy doing the filtering.
+	var deniedCount int
+	err := pool.InScopedTenantTx(ctx, tenant, uuid.Nil, []uuid.UUID{siteB.ID}, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM site_incidents WHERE id = $1`, incidentID).Scan(&deniedCount)
+	})
+	if err != nil {
+		t.Fatalf("scoped read (siteB only): %v", err)
+	}
+	if deniedCount != 0 {
+		t.Fatalf("collaborator scoped to a different site must not see this incident via RLS, got count=%d", deniedCount)
+	}
+
+	// Sanity check: the SAME collaborator, scoped to siteA (the incident's
+	// own site), DOES see it — proving the policy filters by site rather than
+	// blocking everything under app.site_scope='on'.
+	var allowedCount int
+	err = pool.InScopedTenantTx(ctx, tenant, uuid.Nil, []uuid.UUID{siteA.ID}, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM site_incidents WHERE id = $1`, incidentID).Scan(&allowedCount)
+	})
+	if err != nil {
+		t.Fatalf("scoped read (siteA allowed): %v", err)
+	}
+	if allowedCount != 1 {
+		t.Fatalf("collaborator scoped to the incident's own site should see it, got count=%d", allowedCount)
 	}
 }
 

@@ -51,6 +51,9 @@ func (s *uptimeStubStore) QuerySeries(_ context.Context, _, _ uuid.UUID, _ time.
 func (s *uptimeStubStore) QueryFleetUptime(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Duration) (map[uuid.UUID]metrics.FleetUptimeRow, error) {
 	return s.uptimeMap, nil
 }
+func (s *uptimeStubStore) QueryProbeWindow(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int) ([]metrics.ProbeSample, error) {
+	panic("site list must not call QueryProbeWindow")
+}
 
 // ---------------------------------------------------------------------------
 // Tests

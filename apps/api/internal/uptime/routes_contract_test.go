@@ -22,6 +22,7 @@ var canonicalUptimeRoutes = []string{
 	// Fleet uptime status + incidents.
 	"GET    /api/v1/fleet/status",
 	"GET    /api/v1/fleet/incidents",
+	"GET    /api/v1/fleet/incidents/:incidentId",
 }
 
 func TestUptimeRoutesContract(t *testing.T) {

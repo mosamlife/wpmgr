@@ -36,6 +36,7 @@ export interface FleetStatusResponse {
 }
 
 export interface FleetIncident {
+  id: string;
   site_id: string;
   name: string;
   url: string;
@@ -48,6 +49,41 @@ export interface FleetIncident {
 
 export interface FleetIncidentsResponse {
   items: FleetIncident[];
+}
+
+// ---------------------------------------------------------------------------
+// Incident detail (GH #148) — GET /api/v1/fleet/incidents/:incidentId
+// ---------------------------------------------------------------------------
+
+/**
+ * One probe result in an incident's probe window (`IncidentDetail.probes`).
+ * Named to match the pinned contract; despite the name this is a probe
+ * RECORD (timestamp + outcome), not an enum of status codes.
+ */
+export interface ProbeCode {
+  probed_at: string;
+  up: boolean;
+  http_status: number;
+  total_ms: number;
+  error?: string;
+}
+
+export interface IncidentDetail {
+  id: string;
+  site_id: string;
+  name: string;
+  url: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  ongoing: boolean;
+  peak_status: string;
+  last_http_status: number;
+  reason: string;
+  incident_count_30d: number;
+  /** Newest-first. May be `[]` when the incident is older than probe retention. */
+  probes: ProbeCode[];
+  probes_truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------

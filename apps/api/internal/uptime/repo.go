@@ -35,7 +35,15 @@ type Repo interface {
 	// the same site would each read the same stale ConsecutiveDown and never
 	// let it accumulate past 1, so the down threshold is never crossed and no
 	// alert ever fires — silently, with no error to log.
-	TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time) (Transition, error)
+	//
+	// It ALSO opens/closes the site's site_incidents row (M94, GH #148) in the
+	// SAME transaction as the alert-state write: a FireDown transition opens
+	// an incident, a FireRecovery transition closes it, and — defensively — a
+	// probe that observes the site already in_incident with neither flag set
+	// "adopts" (idempotently opens, a no-op if already open) an incident row
+	// in case one was somehow missed. httpStatus/reason carry the triggering
+	// probe's HTTP status and error text onto the incident row.
+	TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time, httpStatus int, reason string) (Transition, error)
 
 	// Evaluator path (app.agent GUC, cross-tenant).
 	ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error)
@@ -53,9 +61,22 @@ type Repo interface {
 	// metrics.Store so both ClickHouse and Postgres deployments work correctly.
 	GetFleetSiteInfo(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID) ([]FleetSiteInfo, error)
 
-	// GetFleetIncidents returns open incidents and recently-alerted sites.
-	// NOTE: full historical reconstruction is not possible — see FleetIncidentItem.
+	// GetFleetIncidents returns open incidents and incidents that started at or
+	// after `since`, read from the persisted site_incidents table (M94).
 	GetFleetIncidents(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, since time.Time, limit int) ([]FleetIncidentItem, error)
+
+	// GetIncidentByID returns one tenant-scoped incident (joined with its
+	// site's name/url) for the GET /api/v1/fleet/incidents/:incidentId detail
+	// endpoint. found=false (no error) when the id does not exist or belongs
+	// to another tenant (RLS + the explicit tenant_id predicate both enforce
+	// this — a foreign incident id reads as not-found, never a different
+	// tenant's data).
+	GetIncidentByID(ctx context.Context, tenantID, incidentID uuid.UUID) (IncidentSummary, bool, error)
+
+	// CountRecentIncidents returns how many incidents (open or closed) have
+	// started for siteID in the last 30 days — the "flapping" count surfaced
+	// on the incident-detail endpoint.
+	CountRecentIncidents(ctx context.Context, tenantID, siteID uuid.UUID) (int64, error)
 }
 
 type pgRepo struct {
@@ -136,7 +157,7 @@ func (r *pgRepo) UpsertAlertState(ctx context.Context, st AlertState) error {
 // transaction — so an overlapping sweep for the same site blocks on the SELECT
 // FOR UPDATE until this one commits, then observes the fresh state instead of
 // a stale one.
-func (r *pgRepo) TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time) (Transition, error) {
+func (r *pgRepo) TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time, httpStatus int, reason string) (Transition, error) {
 	var tr Transition
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
@@ -170,6 +191,52 @@ func (r *pgRepo) TransitionAlertState(ctx context.Context, siteID, tenantID uuid
 			LastAlertAt:     toTimestamptz(tr.NewState.LastAlertAt),
 		}); err != nil {
 			return domain.Internal("uptime_upsert_state_failed", "failed to upsert site alert state").WithCause(err)
+		}
+
+		// M94 (GH #148): open/close the persisted site_incidents row in the
+		// SAME transaction as the alert-state write above, keyed off the
+		// Transition Evaluate already computed — never re-derive it here.
+		switch {
+		case tr.FireDown:
+			if err := q.OpenIncident(ctx, sqlc.OpenIncidentParams{
+				TenantID:       tenantID,
+				SiteID:         siteID,
+				StartedAt:      now,
+				LastHttpStatus: int32(httpStatus),
+				Reason:         reason,
+			}); err != nil {
+				return domain.Internal("uptime_open_incident_failed", "failed to open incident").WithCause(err)
+			}
+		case tr.FireRecovery:
+			if err := q.CloseIncident(ctx, sqlc.CloseIncidentParams{
+				SiteID:         siteID,
+				LastHttpStatus: int32(httpStatus),
+			}); err != nil {
+				return domain.Internal("uptime_close_incident_failed", "failed to close incident").WithCause(err)
+			}
+		case tr.NewState.InIncident:
+			// Adopt path: the state is already in_incident but neither flag
+			// fired on THIS probe (a steady-state down heartbeat, or a state
+			// this code never itself opened an incident row for — e.g. an
+			// alert-state row that predates m94 and fell outside the
+			// migration's day-1 seed window). started_at falls back to the
+			// state's LastAlertAt (the original down-alert timestamp) so an
+			// adopted incident's duration is accurate, not reset to now().
+			// OpenIncident's ON CONFLICT DO NOTHING makes this a safe no-op
+			// on every steady-state down probe once a row is already open.
+			startedAt := now
+			if tr.NewState.LastAlertAt != nil {
+				startedAt = *tr.NewState.LastAlertAt
+			}
+			if err := q.OpenIncident(ctx, sqlc.OpenIncidentParams{
+				TenantID:       tenantID,
+				SiteID:         siteID,
+				StartedAt:      startedAt,
+				LastHttpStatus: int32(httpStatus),
+				Reason:         reason,
+			}); err != nil {
+				return domain.Internal("uptime_adopt_incident_failed", "failed to adopt open incident").WithCause(err)
+			}
 		}
 		return nil
 	})
@@ -305,22 +372,23 @@ func deriveFleetStatus(up *bool, totalMs *float64, connectionState string) Fleet
 	return FleetStatusUp
 }
 
-// GetFleetIncidents returns open incidents and recently-alerted sites.
-// Open incidents: in_incident=true. Derivable recoveries: in_incident=false
-// AND last_alert_at >= since. Full historical incident logs are NOT stored;
-// ended_at is estimated from alert-state updated_at for closed incidents.
+// GetFleetIncidents returns open incidents (ended_at IS NULL) and incidents
+// that started at or after `since`, read directly from the persisted
+// site_incidents table (M94, GH #148) — real incident rows, not an estimate
+// derived from site_alert_state's single mutable transition-memory row.
 func (r *pgRepo) GetFleetIncidents(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, since time.Time, limit int) ([]FleetIncidentItem, error) {
 	const q = `
 SELECT
-    s.id,
+    si.id,
+    si.site_id,
     s.name,
     s.url,
-    ast.last_alert_at,
-    ast.updated_at,
-    ast.in_incident,
+    si.started_at,
+    si.ended_at,
+    (si.ended_at IS NULL) AS ongoing,
     p.total_ms
-FROM site_alert_state ast
-JOIN sites s ON s.id = ast.site_id AND s.tenant_id = ast.tenant_id
+FROM site_incidents si
+JOIN sites s ON s.id = si.site_id AND s.tenant_id = si.tenant_id
 LEFT JOIN LATERAL (
     SELECT total_ms
     FROM site_uptime_probes
@@ -328,10 +396,10 @@ LEFT JOIN LATERAL (
     ORDER BY probed_at DESC
     LIMIT 1
 ) p ON true
-WHERE ast.tenant_id = $1
-  AND s.id = ANY($2::uuid[])
-  AND (ast.in_incident = true OR ast.last_alert_at >= $3)
-ORDER BY ast.last_alert_at DESC NULLS LAST
+WHERE si.tenant_id = $1
+  AND si.site_id = ANY($2::uuid[])
+  AND (si.ended_at IS NULL OR si.started_at >= $3)
+ORDER BY si.started_at DESC
 LIMIT $4
 `
 	var out []FleetIncidentItem
@@ -343,39 +411,37 @@ LIMIT $4
 		defer rows.Close()
 		for rows.Next() {
 			var (
-				siteID      uuid.UUID
-				siteName    string
-				siteURL     string
-				lastAlertAt pgtype.Timestamptz
-				updatedAt   pgtype.Timestamptz
-				inIncident  bool
-				totalMs     *float64
+				id        uuid.UUID
+				siteID    uuid.UUID
+				siteName  string
+				siteURL   string
+				startedAt time.Time
+				endedAt   pgtype.Timestamptz
+				ongoing   bool
+				totalMs   *float64
 			)
-			if err := rows.Scan(&siteID, &siteName, &siteURL, &lastAlertAt, &updatedAt, &inIncident, &totalMs); err != nil {
+			if err := rows.Scan(&id, &siteID, &siteName, &siteURL, &startedAt, &endedAt, &ongoing, &totalMs); err != nil {
 				return domain.Internal("fleet_incidents_scan_failed", "failed to scan incident row").WithCause(err)
 			}
+			started := startedAt
 			item := FleetIncidentItem{
+				ID:            id,
 				SiteID:        siteID,
 				Kind:          string(AlertDown),
 				SiteName:      siteName,
 				SiteURL:       siteURL,
-				Ongoing:       inIncident,
+				StartedAt:     &started,
+				Ongoing:       ongoing,
 				LatestTotalMs: totalMs,
 			}
-			if lastAlertAt.Valid {
-				t := lastAlertAt.Time
-				item.StartedAt = &t
-			}
-			// For closed incidents, estimate ended_at from state updated_at.
-			if !inIncident && updatedAt.Valid {
-				t := updatedAt.Time
+			if !ongoing && endedAt.Valid {
+				t := endedAt.Time
 				item.EndedAt = &t
-				if item.StartedAt != nil {
-					dur := int64(t.Sub(*item.StartedAt).Seconds())
-					if dur >= 0 {
-						item.DurationSeconds = &dur
-					}
+				dur := int64(t.Sub(started).Seconds())
+				if dur < 0 {
+					dur = 0
 				}
+				item.DurationSeconds = &dur
 			}
 			out = append(out, item)
 		}
@@ -388,6 +454,63 @@ LIMIT $4
 		out = []FleetIncidentItem{}
 	}
 	return out, nil
+}
+
+// GetIncidentByID returns one tenant-scoped incident (joined with its site's
+// name/url) for the incident-detail endpoint. found=false when the id does
+// not exist, belongs to another tenant (RLS + the explicit tenant_id
+// predicate both enforce this), or was hard-deleted along with its site.
+func (r *pgRepo) GetIncidentByID(ctx context.Context, tenantID, incidentID uuid.UUID) (IncidentSummary, bool, error) {
+	var out IncidentSummary
+	var found bool
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).GetIncidentByID(ctx, sqlc.GetIncidentByIDParams{ID: incidentID, TenantID: tenantID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return domain.Internal("incident_get_failed", "failed to read incident").WithCause(err)
+		}
+		out = incidentSummaryFromRow(row)
+		found = true
+		return nil
+	})
+	return out, found, err
+}
+
+// CountRecentIncidents returns how many incidents (open or closed) have
+// started for siteID in the last 30 days — the incident-detail endpoint's
+// flapping count.
+func (r *pgRepo) CountRecentIncidents(ctx context.Context, tenantID, siteID uuid.UUID) (int64, error) {
+	var count int64
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		n, err := sqlc.New(tx).CountRecentIncidents(ctx, sqlc.CountRecentIncidentsParams{SiteID: siteID, TenantID: tenantID})
+		if err != nil {
+			return domain.Internal("incident_count_recent_failed", "failed to count recent incidents").WithCause(err)
+		}
+		count = n
+		return nil
+	})
+	return count, err
+}
+
+// incidentSummaryFromRow maps the sqlc join row to the domain type.
+func incidentSummaryFromRow(row sqlc.GetIncidentByIDRow) IncidentSummary {
+	out := IncidentSummary{
+		ID:             row.ID,
+		SiteID:         row.SiteID,
+		SiteName:       row.SiteName,
+		SiteURL:        row.SiteUrl,
+		StartedAt:      row.StartedAt,
+		PeakStatus:     row.PeakStatus,
+		LastHTTPStatus: int(row.LastHttpStatus),
+		Reason:         row.Reason,
+	}
+	if row.EndedAt.Valid {
+		t := row.EndedAt.Time
+		out.EndedAt = &t
+	}
+	return out
 }
 
 func alertConfigFromRow(row sqlc.AlertConfig) AlertConfig {

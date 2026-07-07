@@ -148,7 +148,7 @@ func (w *ProbeWorker) processSite(ctx context.Context, s EnrolledSite, res Probe
 	// transition in one transaction — see TransitionAlertState for why this
 	// must NOT be split into a separate get + upsert (lost-update race under
 	// overlapping sweeps).
-	tr, err := w.repo.TransitionAlertState(ctx, s.ID, s.TenantID, res.Up, w.threshold, now)
+	tr, err := w.repo.TransitionAlertState(ctx, s.ID, s.TenantID, res.Up, w.threshold, now, res.HTTPStatus, res.Error)
 	if err != nil {
 		w.logger.Warn("uptime: transition alert state failed", slog.String("site_id", s.ID.String()), slog.Any("error", err))
 		return

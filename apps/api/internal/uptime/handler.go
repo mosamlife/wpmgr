@@ -48,6 +48,10 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// because site-scoped collaborators get a filtered view, not an error.
 	r.GET("/fleet/status", authz.RequirePermission(authz.PermSiteRead), h.fleetStatus)
 	r.GET("/fleet/incidents", authz.RequirePermission(authz.PermSiteRead), h.fleetIncidents)
+	// Incident detail: no :siteId param to gate via RequireSiteAccess, so a
+	// site-scoped principal's access is checked explicitly inside the handler
+	// (see incidentDetail) once the incident's site is known.
+	r.GET("/fleet/incidents/:incidentId", authz.RequirePermission(authz.PermSiteRead), h.incidentDetail)
 }
 
 func windowDuration(w string) (time.Duration, gen.UptimeStatusWindow) {
@@ -268,19 +272,14 @@ func (h *Handler) fleetStatus(c *gin.Context) {
 }
 
 // fleetIncidents handles GET /api/v1/fleet/incidents.
-// Returns open incidents and recently-alerted sites.
+// Returns open incidents and incidents that started within the requested
+// window, read from the persisted site_incidents table (M94, GH #148).
 //
 // Query params:
 //
 //	since — RFC 3339 timestamp; defaults to 7 days ago. Controls the
-//	         "recently-alerted" window for closed incidents.
+//	         "recently started" window for closed incidents.
 //	limit — max 100, default 100.
-//
-// NOTE: Full historical incident reconstruction is NOT possible from
-// site_alert_state, which stores only current transition memory. This endpoint
-// returns open incidents (in_incident=true) and derivable recoveries
-// (last_alert_at >= since). ended_at/duration_seconds are estimated from
-// updated_at, not from a true incident-close record.
 func (h *Handler) fleetIncidents(c *gin.Context) {
 	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
 	if !ok {
@@ -317,6 +316,49 @@ func (h *Handler) fleetIncidents(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// incidentDetail handles GET /api/v1/fleet/incidents/:incidentId (M94, GH
+// #148 part 1): the incident summary, a probe timeline over its window, and
+// its 30-day flapping count. The incident summary is fetched FIRST so a
+// site-scoped principal can be denied (404, to avoid leaking existence —
+// mirrors RequireSiteAccess's own not-found response) before any metrics-
+// store round-trip is spent building the rest of the response.
+func (h *Handler) incidentDetail(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	incidentID, err := uuid.Parse(c.Param("incidentId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_incident_id", "incidentId is not a valid UUID"))
+		return
+	}
+
+	summary, err := h.svc.GetIncidentSummary(c.Request.Context(), tenantID, incidentID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+
+	// Site-scoped collaborators only see incidents for their granted sites
+	// (mirrors the summary handler's allowlist filter above); a denied lookup
+	// reads as not-found, never a different-error signal that would confirm
+	// the incident's existence.
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok && p.Scope == domain.ScopeSite {
+		if !p.CanAccessSite(summary.SiteID) {
+			httpx.Error(c, domain.NotFound("incident_not_found", "incident not found"))
+			return
+		}
+	}
+
+	detail, err := h.svc.GetIncidentDetail(c.Request.Context(), tenantID, summary)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, detail)
 }
 
 // parseInt is a minimal helper for query-param int parsing in handler methods

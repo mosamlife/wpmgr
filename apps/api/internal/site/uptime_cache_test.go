@@ -37,6 +37,9 @@ func (s *countingStore) QueryFleetUptime(_ context.Context, _ uuid.UUID, _ []uui
 	s.calls.Add(1)
 	return s.result, nil
 }
+func (s *countingStore) QueryProbeWindow(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int) ([]metrics.ProbeSample, error) {
+	return nil, nil
+}
 
 func TestUptimeCache_Hit(t *testing.T) {
 	inner := &countingStore{result: map[uuid.UUID]metrics.FleetUptimeRow{}}

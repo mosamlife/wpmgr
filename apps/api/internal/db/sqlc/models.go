@@ -760,6 +760,22 @@ type SiteFileManager struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+type SiteIncident struct {
+	ID             uuid.UUID          `json:"id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	SiteID         uuid.UUID          `json:"site_id"`
+	StartedAt      time.Time          `json:"started_at"`
+	EndedAt        pgtype.Timestamptz `json:"ended_at"`
+	PeakStatus     string             `json:"peak_status"`
+	LastHttpStatus int32              `json:"last_http_status"`
+	ProbeCount     int32              `json:"probe_count"`
+	DownCount      int32              `json:"down_count"`
+	OpenedBy       string             `json:"opened_by"`
+	Reason         string             `json:"reason"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+}
+
 type SiteObjectCacheConfig struct {
 	SiteID             uuid.UUID          `json:"site_id"`
 	TenantID           uuid.UUID          `json:"tenant_id"`

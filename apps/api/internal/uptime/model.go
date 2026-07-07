@@ -123,14 +123,10 @@ type FleetSiteInfo struct {
 	InIncident      bool
 }
 
-// FleetIncidentItem is one open or recently-closed incident for the incidents endpoint.
-// NOTE: Full historical incident reconstruction is NOT possible from site_alert_state:
-// site_alert_state stores only the CURRENT transition memory (last_status,
-// consecutive_down, in_incident, last_alert_at). Past closed incidents are not
-// persisted. This endpoint returns open incidents (in_incident=true) and
-// recently-alerted sites (last_alert_at >= since). Calling code must treat
-// ended_at / duration_seconds as estimates (derived from updated_at on the
-// alert-state row, not from a true incident-close timestamp).
+// FleetIncidentItem is one open or recently-started incident for the fleet
+// incidents endpoint, read from the persisted site_incidents table (M94, GH
+// #148) — real incident rows, not an estimate derived from site_alert_state's
+// single mutable transition-memory row.
 //
 // JSON field names are pinned to the frontend contract consumed by the fleet
 // incidents panel (GH #148) — do not rename without updating both sides.
@@ -140,6 +136,9 @@ type FleetSiteInfo struct {
 // (an omitted key deserializes to `undefined`, not `null`, and produced
 // "NaNh" duration on open incidents).
 type FleetIncidentItem struct {
+	// ID is the site_incidents row id — the web uses it to open the
+	// incident-detail modal (GET /api/v1/fleet/incidents/:incidentId).
+	ID     uuid.UUID `json:"id"`
 	SiteID uuid.UUID `json:"site_id"`
 	// Kind is always "down": the alert state machine (see Evaluate in
 	// alerts.go) opens an incident only on a down-threshold crossing —
@@ -153,6 +152,65 @@ type FleetIncidentItem struct {
 	DurationSeconds *int64     `json:"duration_seconds"`
 	Ongoing         bool       `json:"ongoing"`
 	LatestTotalMs   *float64   `json:"latest_total_ms,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Incident detail (GET /api/v1/fleet/incidents/:incidentId, GH #148 part 1)
+// ---------------------------------------------------------------------------
+
+// IncidentSummary is the tenant-scoped site_incidents row (joined with its
+// site's name/url) returned by Repo.GetIncidentByID, WITHOUT the probe
+// timeline. The handler authorizes a site-scoped principal against
+// SiteID BEFORE spending a metrics-store round-trip building the full detail.
+type IncidentSummary struct {
+	ID             uuid.UUID
+	SiteID         uuid.UUID
+	SiteName       string
+	SiteURL        string
+	StartedAt      time.Time
+	EndedAt        *time.Time
+	PeakStatus     string
+	LastHTTPStatus int
+	Reason         string
+}
+
+// IncidentProbe is one raw probe result in the incident-detail timeline
+// (sourced from metrics.Store.QueryProbeWindow). JSON field names are PINNED
+// to the frontend incident-detail contract (GH #148) — do not rename without
+// updating both sides. Error omits when empty (a healthy probe carries none).
+type IncidentProbe struct {
+	ProbedAt   time.Time `json:"probed_at"`
+	Up         bool      `json:"up"`
+	HTTPStatus int       `json:"http_status"`
+	TotalMs    float64   `json:"total_ms"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// IncidentDetail is the response body for
+// GET /api/v1/fleet/incidents/:incidentId. JSON field names are PINNED to the
+// frontend incident-detail contract (GH #148) — do not rename without
+// updating both sides. EndedAt/DurationSeconds do NOT use `omitempty`,
+// mirroring FleetIncidentItem: an ongoing incident must marshal explicit
+// `null`, not an omitted key (see FleetIncidentItem's doc comment for the
+// client-side bug class this avoids). Probes is never nil — a metrics-store
+// window with no data (retention-aged, disabled backend, or a site with no
+// probes yet) still yields an empty slice, not an omitted/null key, and the
+// incident summary is always present regardless (graceful degradation).
+type IncidentDetail struct {
+	ID               uuid.UUID       `json:"id"`
+	SiteID           uuid.UUID       `json:"site_id"`
+	Name             string          `json:"name"`
+	URL              string          `json:"url"`
+	StartedAt        time.Time       `json:"started_at"`
+	EndedAt          *time.Time      `json:"ended_at"`
+	DurationSeconds  *int64          `json:"duration_seconds"`
+	Ongoing          bool            `json:"ongoing"`
+	PeakStatus       string          `json:"peak_status"`
+	LastHTTPStatus   int             `json:"last_http_status"`
+	Reason           string          `json:"reason"`
+	IncidentCount30d int             `json:"incident_count_30d"`
+	Probes           []IncidentProbe `json:"probes"`
+	ProbesTruncated  bool            `json:"probes_truncated"`
 }
 
 // AlertKind distinguishes a downtime alert from a recovery alert.
