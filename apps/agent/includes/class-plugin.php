@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent;
 
+use WPMgr\Agent\Backup\BackupJanitor;
 use WPMgr\Agent\Backup\FilesRestorer;
 use WPMgr\Agent\Backup\RestoreRunner;
 use WPMgr\Agent\Backup\RestoreWatchdog;
@@ -594,6 +595,15 @@ final class Plugin
         // doc for the full design.
         add_action(UpdateInFlight::HOOK_GC, [UpdateInFlight::class, 'gcSweep']);
 
+        // GH #151 — recurring GC backstop for the backup pipeline's
+        // wpmgr-agent/runs/ scratch directory. TaskRunner's success path
+        // cleans this up on `completed`, but the failure path deletes the
+        // task row WITHOUT cleaning scratch — see BackupJanitor's class doc
+        // for the full leak + age-gate/task-row-veto design. Scheduled daily
+        // by BackupJanitor::scheduleGc() (activate() below + maybeRescheduleCron()'s
+        // self-heal).
+        add_action(BackupJanitor::HOOK_GC, [BackupJanitor::class, 'gcRuns']);
+
         // Media Optimizer — WP attachment-deletion cleanup. When an attachment
         // is deleted (wp-admin, programmatic, WP-CLI, or REST), WordPress purges
         // ONLY the files it tracks in _wp_attachment_metadata; WPMgr's own
@@ -913,6 +923,10 @@ final class Plugin
         // reached UpdateGuard's own shutdown-function backstop).
         UpdateInFlight::scheduleGc($now);
 
+        // GH #151 — daily GC backstop for the backup wpmgr-agent/runs/
+        // scratch directory (reclaims scratch a failed backup run leaks).
+        BackupJanitor::scheduleGc($now);
+
         // v0.9.13 — push diagnostics within ~30s of activation rather than
         // waiting out the jittered daily cron's 0..4h first-fire offset
         // (Scheduler::diagnosticsJitter). The single-event below fires the
@@ -1042,6 +1056,8 @@ final class Plugin
             // backstop + update-in-flight reconcile sweep.
             wp_clear_scheduled_hook(SnapshotManager::HOOK_GC);
             wp_clear_scheduled_hook(UpdateInFlight::HOOK_GC);
+            // GH #151 — backup runs/ scratch-dir GC backstop.
+            wp_clear_scheduled_hook(BackupJanitor::HOOK_GC);
         }
 
         // Phase 3 — page-cache teardown. Cleanly reverse every server-side
@@ -1343,6 +1359,9 @@ final class Plugin
         // S4 (issue #131 adversarial review) — update-in-flight reconcile
         // sweep — re-arm when missing.
         UpdateInFlight::scheduleGc($now);
+
+        // GH #151 — backup runs/ scratch-dir GC backstop — re-arm when missing.
+        BackupJanitor::scheduleGc($now);
     }
 
     /**
