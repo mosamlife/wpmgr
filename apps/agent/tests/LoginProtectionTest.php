@@ -47,6 +47,9 @@ final class LoginProtectionTest extends TestCase
 
     protected function tear_down(): void
     {
+        // Defensive: a test that throws mid-assertion (e.g. the wp_die marker
+        // exception) must never leak $wpdb or REMOTE_ADDR into a later test.
+        unset($GLOBALS['wpdb'], $_SERVER['REMOTE_ADDR']);
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -549,5 +552,327 @@ final class LoginProtectionTest extends TestCase
 
         $this->assertSame(7, $count);
         unset($GLOBALS['wpdb']);
+    }
+
+    // =========================================================================
+    // P0 gap #3 (outcome-test-debt audit, GH #170 Wave 1):
+    //
+    // Everything above this point tests the CIDR/config/plumbing primitives in
+    // isolation; LoginProtection::onAuthenticate() -- the actual enforcement
+    // gate that returns a WP_Error to block a login -- was never invoked. A
+    // stub that always `return $user` (never blocks an attacker) would pass
+    // every test above; a broken bypass that drops the allow-CIDR/private/
+    // known-good short-circuits (locking out legitimate admins) would too.
+    // The tests below drive onAuthenticate() directly with a scripted wpdb
+    // double standing in for the sliding-window event counts.
+    // =========================================================================
+
+    /**
+     * Seed get_option() so loadConfig() returns a fully-defaulted config with
+     * the given mode/thresholds/CIDR lists. Any threshold key omitted from
+     * $thresholds falls back to LoginProtection's own class defaults via
+     * buildConfig() -- exactly as a partial CP push would behave in production.
+     *
+     * @param string              $mode
+     * @param array<string,int>   $thresholds
+     * @param list<string>        $allowCidrs
+     * @param list<string>        $denyCidrs
+     * @return void
+     */
+    private function configureProtection(
+        string $mode,
+        array $thresholds = [],
+        array $allowCidrs = [],
+        array $denyCidrs = []
+    ): void {
+        $config = [
+            'mode'        => $mode,
+            'thresholds'  => $thresholds,
+            'ip_header'   => 'REMOTE_ADDR',
+            'allow_cidrs' => $allowCidrs,
+            'deny_cidrs'  => $denyCidrs,
+        ];
+        Functions\when('get_option')->justReturn((string) json_encode($config));
+    }
+
+    /**
+     * Build a wpdb double whose get_var() returns a SCRIPTED count depending
+     * on which getLoginCount() call is in flight -- distinguished by
+     * (status, per-IP vs global) rather than by the literal SQL text (which
+     * embeds a time()-derived cutoff we don't want to hardcode). Mirrors the
+     * three query shapes onAuthenticate() actually issues:
+     *   - status=STATUS_SUCCESS, per-IP        -> known-good bypass count
+     *   - status=STATUS_FAILURE, global (no ip) -> all_blocked count
+     *   - status=STATUS_FAILURE, per-IP         -> temp_block / captcha count
+     *
+     * A bare `SELECT COUNT(*) FROM {table}` (no WHERE -- enforceRowCap()'s
+     * row-cap probe, fired after every insert()) always answers '0' so the
+     * row-cap eviction path is never spuriously triggered by a scripted count.
+     *
+     * @param int $successPerIp Recent STATUS_SUCCESS count for this IP.
+     * @param int $failureGlobal Site-wide STATUS_FAILURE count.
+     * @param int $failurePerIp Per-IP STATUS_FAILURE count.
+     * @return object
+     */
+    private function makeScriptedLoginEventsWpdb(int $successPerIp = 0, int $failureGlobal = 0, int $failurePerIp = 0): object
+    {
+        return new class ($successPerIp, $failureGlobal, $failurePerIp) {
+            public string $prefix = 'wp_';
+
+            /** @var array<int,mixed> */
+            private array $lastArgs = [];
+
+            public function __construct(
+                private readonly int $successPerIp,
+                private readonly int $failureGlobal,
+                private readonly int $failurePerIp
+            ) {
+            }
+
+            /** @return string */
+            public function prepare(string $query, mixed ...$args): string
+            {
+                $this->lastArgs = $args;
+                return $query;
+            }
+
+            /** @return string */
+            public function get_var(string $query): string
+            {
+                if (!str_contains($query, 'WHERE')) {
+                    // enforceRowCap()'s bare COUNT(*) probe.
+                    return '0';
+                }
+
+                $status  = (int) ($this->lastArgs[0] ?? 0);
+                $isPerIp = str_contains($query, 'AND ip = %s');
+
+                if ($status === LoginProtection::STATUS_SUCCESS && $isPerIp) {
+                    return (string) $this->successPerIp;
+                }
+                if ($status === LoginProtection::STATUS_FAILURE && !$isPerIp) {
+                    return (string) $this->failureGlobal;
+                }
+                if ($status === LoginProtection::STATUS_FAILURE && $isPerIp) {
+                    return (string) $this->failurePerIp;
+                }
+                return '0';
+            }
+
+            /** @return int */
+            public function insert(string $table, array $data, array $format = []): int
+            {
+                return 1;
+            }
+
+            /** @return int */
+            public function query(string $query): int
+            {
+                return 0;
+            }
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Escalating block tiers (each triggered independently)
+    // -------------------------------------------------------------------------
+
+    public function test_onauthenticate_blocks_when_perip_failures_at_temp_block_limit(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 5, failurePerIp: 10);
+
+        $lp           = $this->makeProtection();
+        $originalUser = new \stdClass();
+        $result       = $lp->onAuthenticate($originalUser, 'admin', 'wrongpass');
+
+        $this->assertInstanceOf(\WP_Error::class, $result, 'temp-block tier must return a WP_Error');
+        $this->assertSame('wpmgr_temp_blocked', $result->get_error_code());
+    }
+
+    public function test_onauthenticate_blocks_with_captcha_when_perip_failures_at_captcha_limit_below_temp(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 5, failurePerIp: 3);
+
+        $lp     = $this->makeProtection();
+        $result = $lp->onAuthenticate(new \stdClass(), 'admin', 'wrongpass');
+
+        $this->assertInstanceOf(\WP_Error::class, $result, 'captcha tier must return a WP_Error');
+        $this->assertSame('wpmgr_captcha_block', $result->get_error_code());
+    }
+
+    public function test_onauthenticate_blocks_all_when_global_failures_at_block_all_limit(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        // Global count already at the limit; per-IP count would only reach
+        // captcha tier, proving the GLOBAL check is evaluated first (most
+        // severe tier wins) regardless of the per-IP count.
+        $GLOBALS['wpdb'] = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 100, failurePerIp: 1);
+
+        $lp     = $this->makeProtection();
+        $result = $lp->onAuthenticate(new \stdClass(), 'admin', 'wrongpass');
+
+        $this->assertInstanceOf(\WP_Error::class, $result, 'all-blocked tier must return a WP_Error');
+        $this->assertSame('wpmgr_all_blocked', $result->get_error_code());
+    }
+
+    public function test_onauthenticate_blocks_ip_on_deny_cidrs_match(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            [],
+            [],
+            ['203.0.113.0/24']
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb();
+
+        $lp     = $this->makeProtection();
+        $result = $lp->onAuthenticate(new \stdClass(), 'admin', 'wrongpass');
+
+        $this->assertInstanceOf(\WP_Error::class, $result, 'a deny_cidrs match must return a WP_Error');
+        $this->assertSame('wpmgr_ip_blocked', $result->get_error_code());
+    }
+
+    // -------------------------------------------------------------------------
+    // Pass-through paths (must NEVER lock out a legitimate admin)
+    // -------------------------------------------------------------------------
+
+    public function test_onauthenticate_passes_through_unchanged_for_allow_cidrs_match(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100],
+            ['203.0.113.0/24']
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        // Even with failure counts far past every threshold, the allow-CIDR
+        // bypass must short-circuit before any count is even consulted.
+        $GLOBALS['wpdb'] = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 999, failurePerIp: 999);
+
+        $lp           = $this->makeProtection();
+        $originalUser = new \stdClass();
+        $result       = $lp->onAuthenticate($originalUser, 'admin', 'anything');
+
+        $this->assertSame($originalUser, $result, 'allow_cidrs match must return $user unchanged, never a WP_Error');
+    }
+
+    public function test_onauthenticate_passes_through_unchanged_for_private_ip(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '10.0.0.5';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 999, failurePerIp: 999);
+
+        $lp           = $this->makeProtection();
+        $originalUser = new \stdClass();
+        $result       = $lp->onAuthenticate($originalUser, 'admin', 'anything');
+
+        $this->assertSame($originalUser, $result, 'a private/LAN IP must never be blocked, regardless of failure counts');
+    }
+
+    public function test_onauthenticate_passes_through_unchanged_for_recent_known_good_success(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        // A recent successful login from this IP bypasses the check even
+        // though the failure counts alone would otherwise trigger every tier.
+        $GLOBALS['wpdb'] = $this->makeScriptedLoginEventsWpdb(successPerIp: 1, failureGlobal: 999, failurePerIp: 999);
+
+        $lp           = $this->makeProtection();
+        $originalUser = new \stdClass();
+        $result       = $lp->onAuthenticate($originalUser, 'admin', 'anything');
+
+        $this->assertSame($originalUser, $result, 'a recent known-good success from this IP must bypass all block tiers');
+    }
+
+    public function test_onauthenticate_passes_through_unchanged_when_counts_are_below_every_threshold(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 1, failurePerIp: 1);
+
+        $lp           = $this->makeProtection();
+        $originalUser = new \stdClass();
+        $result       = $lp->onAuthenticate($originalUser, 'admin', 'anything');
+
+        $this->assertSame($originalUser, $result, 'sub-threshold counts must return $user unchanged');
+    }
+
+    // -------------------------------------------------------------------------
+    // PROTECT mode terminates the request; AUDIT mode only records + returns.
+    // -------------------------------------------------------------------------
+
+    public function test_onauthenticate_protect_mode_calls_wp_die_with_403_on_block(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_PROTECT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 5, failurePerIp: 10);
+
+        $wpDieArgs = null;
+        Functions\when('wp_die')->alias(function ($message, $title = '', $args = []) use (&$wpDieArgs) {
+            $wpDieArgs = $args;
+            throw new \RuntimeException('wp_die called');
+        });
+
+        $lp = $this->makeProtection();
+
+        $threw = false;
+        try {
+            $lp->onAuthenticate(new \stdClass(), 'admin', 'wrongpass');
+        } catch (\RuntimeException $e) {
+            $threw = $e->getMessage() === 'wp_die called';
+        }
+
+        $this->assertTrue($threw, 'PROTECT mode must call wp_die() on a block');
+        $this->assertIsArray($wpDieArgs);
+        $this->assertSame(403, $wpDieArgs['response'] ?? null, 'PROTECT mode must terminate with a 403 response');
+    }
+
+    public function test_onauthenticate_audit_mode_never_calls_wp_die_on_block(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_AUDIT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 5, failurePerIp: 10);
+
+        $wpDieCalled = false;
+        Functions\when('wp_die')->alias(function ($message, $title = '', $args = []) use (&$wpDieCalled) {
+            $wpDieCalled = true;
+            throw new \RuntimeException('wp_die called');
+        });
+
+        $lp     = $this->makeProtection();
+        $result = $lp->onAuthenticate(new \stdClass(), 'admin', 'wrongpass');
+
+        $this->assertFalse($wpDieCalled, 'AUDIT mode must never call wp_die()');
+        $this->assertInstanceOf(\WP_Error::class, $result, 'AUDIT mode must still return a WP_Error as a safety net');
+        $this->assertSame('wpmgr_temp_blocked', $result->get_error_code());
     }
 }

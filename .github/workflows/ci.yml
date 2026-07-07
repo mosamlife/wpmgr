@@ -93,6 +93,9 @@ jobs:
       - name: Build
         run: pnpm --filter @wpmgr/web build
 
+      - name: Test
+        run: pnpm --filter @wpmgr/web test
+
   # ---- Dependency vulnerability scanning ----
   security:
     name: Security audit
