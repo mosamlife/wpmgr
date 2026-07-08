@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.26.5"
           cache-dependency-path: apps/api/go.sum
 
       # Build the api module on its own (workspace disabled) so it does not
@@ -119,7 +119,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.26.5"
           cache-dependency-path: apps/api/go.sum
 
       # govulncheck does call-graph reachability analysis, so it only fails on
