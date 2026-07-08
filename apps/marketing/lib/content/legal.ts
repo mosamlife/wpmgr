@@ -22,14 +22,42 @@ export const LEGAL_EFFECTIVE_DATE = "June 1, 2026";
 export const LEGAL_CONTACT_HREF = `mailto:${COMPANY.supportEmail}`;
 
 /**
- * Paddle.com Market Ltd is the Merchant of Record for every paid WPMgr
- * subscription. Paddle is the seller on the customer's card statement and
- * handles billing, invoicing, tax collection and remittance, and refunds.
- * WPMgr is the merchant of record for nothing billing-related; Paddle is.
+ * WPMgr offers three payment providers, chosen by the customer at checkout:
+ * Razorpay, Stripe, and Paddle. The merchant-of-record role differs by
+ * provider:
+ *
+ * - Stripe and Razorpay process payments on behalf of {@link COMPANY}, which
+ *   is the seller and merchant of record for those sales. WPMgr handles its
+ *   own tax collection and invoicing for these payments (Razorpay covers
+ *   Indian GST and INR billing; Stripe covers international card payments)
+ *   and issues refunds directly to the original payment method.
+ * - Paddle.com Market Ltd remains the merchant of record for sales it
+ *   processes. Paddle is the seller on the customer's card statement for
+ *   those sales and handles billing, invoicing, tax collection and
+ *   remittance, and refunds for them.
+ *
+ * Stripe and Razorpay are payment processors only; they are not merchants of
+ * record.
  */
 export const PADDLE = {
   legalName: "Paddle.com Market Ltd",
   shortName: "Paddle",
   role: "Merchant of Record",
   website: "https://www.paddle.com",
+} as const;
+
+/** Payment processor for Stripe-processed sales; not the merchant of record. */
+export const STRIPE = {
+  legalName: "Stripe, Inc.",
+  shortName: "Stripe",
+  role: "Payment processor",
+  website: "https://stripe.com",
+} as const;
+
+/** Payment processor for Razorpay-processed sales; not the merchant of record. */
+export const RAZORPAY = {
+  legalName: "Razorpay Software Private Limited",
+  shortName: "Razorpay",
+  role: "Payment processor",
+  website: "https://razorpay.com",
 } as const;

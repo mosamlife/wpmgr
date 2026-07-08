@@ -27,7 +27,7 @@ const LEGAL_ITEMS = [
     icon: "ScrollText",
     title: "Terms of Service",
     description:
-      "Terms governing use of the WPMgr hosted service at manage.wpmgr.app, including subscription billing through Paddle. The self-hosted control plane and MIT-licensed agent are governed by their respective open-source licenses (AGPL-3.0 / MIT).",
+      "Terms governing use of the WPMgr hosted service at manage.wpmgr.app, including subscription billing through your chosen provider. The self-hosted control plane and MIT-licensed agent are governed by their respective open-source licenses (AGPL-3.0 / MIT).",
     href: "/terms/",
     external: false,
     cta: "View terms",
@@ -36,7 +36,7 @@ const LEGAL_ITEMS = [
     icon: "LockKeyhole",
     title: "Privacy Policy",
     description:
-      "How WPMgr collects, uses, and stores data from hosted service users, including our sub-processors, Google Cloud Platform and Paddle. The agent is privacy-first and off-by-default.",
+      "How WPMgr collects, uses, and stores data from hosted service users, including our sub-processors, Google Cloud Platform, Stripe, Razorpay, and Paddle. The agent is privacy-first and off-by-default.",
     href: "/privacy/",
     external: false,
     cta: "View privacy policy",
@@ -45,7 +45,7 @@ const LEGAL_ITEMS = [
     icon: "Undo2",
     title: "Refund Policy",
     description:
-      "Cancel a monthly subscription anytime. First-time subscribers are covered by a 14-day money-back guarantee, refunded through Paddle to your original payment method.",
+      "Cancel a monthly subscription anytime. First-time subscribers are covered by a 14-day money-back guarantee, refunded through your original payment provider.",
     href: "/refunds/",
     external: false,
     cta: "View refund policy",

@@ -72,7 +72,8 @@ export default function PricingPage() {
             <p className="mt-6 text-lg leading-relaxed text-[var(--muted-foreground)]">
               Start free with 3 sites, forever. Upgrade when you need more sites, more managed
               backup storage, or more frequent backups. Every plan gets the full feature set, no
-              tier locks a capability behind a higher price. Billed monthly through Paddle.
+              tier locks a capability behind a higher price. Choose Razorpay, Stripe, or Paddle at
+              checkout; billed monthly.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link
@@ -211,13 +212,13 @@ export default function PricingPage() {
       <FAQ
         eyebrow="FAQ"
         heading="Pricing questions answered"
-        subhead="Common questions about plans, billing through Paddle, and self-hosting."
+        subhead="Common questions about plans, billing, and self-hosting."
         items={PRICING_FAQ}
       />
 
       <CTABand
         heading="Start free today. Upgrade only when you need to."
-        subhead="No credit card required for the Free plan. Paid plans are billed monthly through Paddle and can be cancelled anytime."
+        subhead="No credit card required for the Free plan. Paid plans are billed monthly through your chosen payment provider and can be cancelled anytime."
         ctas={PRICING_CTAS}
       />
 

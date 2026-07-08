@@ -108,7 +108,7 @@ export const PRICING_FAQ: FaqItem[] = [
   },
   {
     q: "What payment methods do you accept?",
-    a: "All paid plans are billed through Paddle, our payment processor and merchant of record. Paddle accepts major credit and debit cards and a range of local payment methods depending on your country, and it handles invoicing and tax automatically.",
+    a: "You choose your payment provider at checkout: Razorpay, Stripe, or Paddle. For Razorpay and Stripe, WPMgr is the seller and handles its own invoicing and tax directly (Razorpay covers Indian GST and INR, Stripe covers international cards). For Paddle, Paddle is the merchant of record and handles invoicing and tax for that sale. All three accept major credit and debit cards, and Razorpay and Paddle also support a range of local payment methods.",
   },
   {
     q: "What is your refund policy?",
