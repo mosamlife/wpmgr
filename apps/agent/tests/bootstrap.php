@@ -75,6 +75,26 @@ if (!defined('OBJECT')) {
     define('OBJECT', 'OBJECT');
 }
 
+// WP core's trivial always-same-answer callbacks. Several production files
+// register these BY NAME as a literal hook callback (e.g.
+// add_filter('xmlrpc_enabled', '__return_false')) rather than a closure —
+// tests that capture the registered callback and actually invoke it (proving
+// the hook's real OUTCOME, not just that some callback got registered) need
+// the real function present. Semantics are fixed and identical to WP core's,
+// so no Brain Monkey override seam is needed.
+if (!function_exists('__return_false')) {
+    function __return_false(): bool
+    {
+        return false;
+    }
+}
+if (!function_exists('__return_true')) {
+    function __return_true(): bool
+    {
+        return true;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Minimal WP runtime class doubles used by AutologinCommandTest.
 //
