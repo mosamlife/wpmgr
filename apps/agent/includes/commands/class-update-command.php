@@ -45,10 +45,28 @@
  *     clears) any marker left stale by exactly that kill, both at the start
  *     of the next `update` command and via a recurring cron sweep — see its
  *     class doc for the full design and the staleness-margin reasoning.
- *   - Unprotected-apply refusal (S8, adversarial review): a plugin/theme item
- *     whose pre-update snapshot capture FAILED is never applied unguarded —
- *     execute() refuses the item outright (`failed`) rather than proceeding
- *     without a guard, an in-flight marker, or anything to roll back to.
+ *   - Unprotected-apply refusal, superseded by a graceful degraded-mode
+ *     proceed (S8, adversarial review; revised by the agent-only regression
+ *     fix below): S8 originally refused (`failed`) any plugin/theme item
+ *     whose pre-update snapshot capture failed, rather than ever applying it
+ *     unguarded. That over-fired on a healthy site whenever
+ *     SnapshotManager::liveDir()'s realpath()-based containment check
+ *     itself failed — open_basedir excluding a parent, or a
+ *     symlinked/relocated wp-content tree — making EVERY plugin/theme
+ *     update fail with a snapshot error while core (exempt from S8) kept
+ *     working. SnapshotManager::liveDir() now has a safe, anchored fallback
+ *     for that exact case (see its own class doc), which closes off the
+ *     most common trigger; capture() can still legitimately fail for other
+ *     reasons (a disk-constrained host, a genuinely missing source
+ *     directory), and for those S8 now PROCEEDS with a best-effort,
+ *     unprotected apply — matching capture()'s own "...proceeding without
+ *     snapshot" log intent — rather than refusing the item outright. No
+ *     guard is armed and no in-flight marker is written in this case (both
+ *     remain gated on a non-empty `$snapshotId`, unchanged); the apply
+ *     instead relies on WordPress core's own Plugin_Upgrader/Theme_Upgrader
+ *     temp-backup/rollback (WP 6.3+), the post-apply isComplete() verify
+ *     below, and the control plane's post-update health-probe +
+ *     auto-rollback.
  *   - Final-hardening round (issue #131 final-hardening review): the
  *     UpdateInFlight marker written before each guarded apply is now paired
  *     with an flock() liveness lock held for the apply's whole duration (B)
@@ -309,32 +327,41 @@ final class UpdateCommand implements CommandInterface
                     $log        .= $snap['log'];
                 }
 
-                // --- S8 (issue #131 adversarial review): refuse an
-                // unprotected apply --------------------------------------
+                // --- S8, revised (agent-only regression fix): degrade
+                // gracefully instead of refusing the apply -----------------
                 // plugin/theme ALWAYS expects a snapshot (shouldSnapshot is
-                // unconditionally true above); a capture failure here (e.g.
-                // a disk-constrained host) previously fell straight through
-                // to an UNGUARDED apply() — no UpdateGuard armed, no
-                // in-flight marker, nothing to roll back to if the copy dies
-                // mid-write. Refuse the item instead: a host that cannot
-                // hold one snapshot copy is not a host we should risk an
-                // unrecoverable half-write on. `core` is exempt — D3 already
-                // gives it no directory-level snapshot/restore protection by
-                // design (it relies on B1 + WordPress's own Core_Upgrader
-                // temp-backup mechanism instead), so a core snapshot
-                // capture failure (only reachable when `snapshot=true` was
-                // requested at all) must not block a core apply that never
-                // depended on it.
+                // unconditionally true above). S8 originally REFUSED
+                // (`failed`) the item outright when capture failed here,
+                // rather than ever falling through to an unguarded apply().
+                // That refusal itself became the bug: on a healthy site
+                // where SnapshotManager::liveDir()'s realpath()-based
+                // containment check failed (open_basedir excluding a
+                // parent, or a symlinked/relocated wp-content tree —
+                // liveDir() now has a safe anchored fallback for exactly
+                // this, see its class doc), EVERY plugin/theme update
+                // refused here while core (exempt from S8) kept applying
+                // fine. capture() can still legitimately fail for other
+                // reasons (a disk-constrained host, a genuinely missing
+                // source directory); for those, PROCEED with a best-effort,
+                // unprotected apply rather than block it — this matches
+                // capture()'s own "...proceeding without snapshot" log
+                // intent below, which this refusal previously contradicted.
+                // No guard is armed and no in-flight marker is written for
+                // this item (both remain gated on `$snapshotId !== ''`
+                // below) — there is nothing to roll back to — so this apply
+                // instead relies on WordPress core's own
+                // Plugin_Upgrader/Theme_Upgrader temp-backup/rollback (WP
+                // 6.3+), the post-apply isComplete() verify further down,
+                // and the control plane's post-update health-probe +
+                // auto-rollback. `core` was already exempt from this gate —
+                // D3 gives it no directory-level snapshot/restore
+                // protection by design (it relies on B1 + WordPress's own
+                // Core_Upgrader temp-backup mechanism instead), so a core
+                // snapshot capture failure (only reachable when
+                // `snapshot=true` was requested at all) never blocked a
+                // core apply that never depended on it, and still doesn't.
                 if ($type !== 'core' && $snapshotId === '') {
-                    return $this->result(
-                        $type,
-                        $slug,
-                        $fromVersion,
-                        $fromVersion,
-                        'failed',
-                        '',
-                        $log . "\nCould not capture a pre-update snapshot; refusing to apply unprotected."
-                    );
+                    $log .= "\nApplied without a pre-update snapshot (host could not capture one).";
                 }
 
                 // --- Arm the shutdown-time restore backstop (D2) -----------

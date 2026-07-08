@@ -804,14 +804,22 @@ final class UpdateCommandTest extends TestCase
         );
     }
 
-    // ---- S8: unprotected-apply refusal on a failed snapshot capture (GitHub issue #131 adversarial review) ----
+    // ---- S8, revised: graceful degraded-mode proceed on a failed snapshot capture ----
+    // (originally a hard refusal — GitHub issue #131 adversarial review;
+    // downgraded to a best-effort proceed by an agent-only regression fix:
+    // that refusal was itself the root cause of GH report "all plugin/theme
+    // updates fail with a snapshot error" on any open_basedir/symlinked-
+    // wp-content host whose realpath()-based containment check failed.)
 
-    public function test_snapshot_capture_failure_refuses_the_apply_for_plugin_theme(): void
+    public function test_snapshot_capture_failure_still_applies_unprotected_for_plugin_theme(): void
     {
-        // S8 — a plugin/theme item whose pre-update snapshot capture FAILED
-        // must never fall through to an UNGUARDED apply(): no UpdateGuard
-        // armed, no in-flight marker, nothing to roll back to. execute()
-        // must refuse the item outright rather than attempt the apply.
+        // INVERTS the old S8 "refuses the apply" test, which encoded the
+        // now-fixed regression as intended behavior: a plugin/theme item
+        // whose pre-update snapshot capture FAILED must no longer be
+        // refused outright. It must PROCEED with a best-effort, unprotected
+        // apply — no UpdateGuard armed, no in-flight marker, nothing to roll
+        // back to, but the apply itself must run and a genuinely successful
+        // result must be reported succeeded, not failed.
         $runner = $this->spyRunner();
         $runner->versions['plugin:akismet/akismet.php']  = '5.0';
         $runner->available['plugin:akismet/akismet.php'] = '5.3';
@@ -839,17 +847,94 @@ final class UpdateCommandTest extends TestCase
         ]);
 
         $r = $out['results'][0];
-        $this->assertSame('failed', $r['status']);
-        $this->assertStringContainsString('refusing to apply unprotected', $r['log']);
         $this->assertSame(
-            [],
+            'succeeded',
+            $r['status'],
+            'a failed snapshot capture must no longer refuse the apply — the item must still succeed'
+        );
+        $this->assertStringContainsString('Applied without a pre-update snapshot', $r['log']);
+        $this->assertCount(
+            1,
             $runner->applied,
-            'S8: a snapshot capture failure must refuse the item outright — apply() must never be invoked unguarded'
+            'a snapshot capture failure must no longer block apply() from ever being invoked'
         );
         $this->assertSame(
             [],
             $snapshots->restored,
             'without a captured snapshot id there is nothing to restore from — the guard must never arm'
+        );
+    }
+
+    public function test_normal_update_still_applies_when_snapshot_cannot_be_captured(): void
+    {
+        // Faithful regression test for the reported symptom: "after updating
+        // to the latest agent, ALL plugin AND theme updates fail with a
+        // snapshot error, while core updates still work." Simulates a
+        // SnapshotManager whose capture() always fails (mirroring
+        // liveDir()'s realpath()-containment false-negative on an
+        // open_basedir/symlinked-wp-content host) across an ACTIVE plugin,
+        // an INACTIVE plugin, a theme, and core, all in one batch. Every
+        // plugin/theme item must now actually apply() and report succeeded
+        // (previously 'failed' with "refusing to apply unprotected"); core
+        // is unaffected either way (D3 exemption, unchanged).
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:active-plugin/active-plugin.php']    = '1.0';
+        $runner->available['plugin:active-plugin/active-plugin.php']   = '1.1';
+        $runner->versions['plugin:inactive-plugin/inactive-plugin.php'] = '2.0';
+        $runner->available['plugin:inactive-plugin/inactive-plugin.php'] = '2.1';
+        $runner->versions['theme:twentytwentyfour']  = '1.0';
+        $runner->available['theme:twentytwentyfour'] = '1.1';
+        $runner->versions['core:core']  = '6.4';
+        $runner->available['core:core'] = '6.5';
+
+        $neverCaptures = new class extends SnapshotManager {
+            /** @var array<int,array{string,string,string}> */
+            public array $restored = [];
+
+            public function capture(string $type, string $slug, string $fromVersion): array
+            {
+                return ['snapshot_id' => '', 'log' => 'Source directory not found; proceeding without snapshot.'];
+            }
+
+            public function restore(string $type, string $slug, string $snapshotId): array
+            {
+                $this->restored[] = [$type, $slug, $snapshotId];
+
+                return ['ok' => false, 'log' => 'unreachable'];
+            }
+        };
+        $cmd = new UpdateCommand($neverCaptures, $runner);
+
+        $out = $cmd->execute([], [
+            'snapshot' => true,
+            'items'    => [
+                ['type' => 'plugin', 'slug' => 'active-plugin/active-plugin.php', 'version' => 'latest'],
+                ['type' => 'plugin', 'slug' => 'inactive-plugin/inactive-plugin.php', 'version' => 'latest'],
+                ['type' => 'theme', 'slug' => 'twentytwentyfour', 'version' => 'latest'],
+                ['type' => 'core', 'slug' => '', 'version' => 'latest'],
+            ],
+        ]);
+
+        $this->assertTrue($out['ok'], 'a snapshot-capture-unavailable host must not fail an otherwise-good batch');
+        $this->assertCount(4, $out['results']);
+
+        foreach ($out['results'] as $r) {
+            $this->assertSame(
+                'succeeded',
+                $r['status'],
+                $r['type'] . ':' . $r['slug'] . ' must apply successfully even though its snapshot could not be captured'
+            );
+        }
+
+        $this->assertCount(
+            4,
+            $runner->applied,
+            'every item — active plugin, inactive plugin, theme, and core — must reach apply()'
+        );
+        $this->assertSame(
+            [],
+            $neverCaptures->restored,
+            'no restore may ever be attempted when no snapshot was captured to begin with'
         );
     }
 

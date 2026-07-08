@@ -9,7 +9,12 @@
  * not copied); rollback is then a downgrade-by-version.
  *
  * All paths derived from request input are bounded to wp-content via realpath
- * containment checks, and slugs are sanitized upstream by UpdateCommand.
+ * containment checks, and slugs are sanitized upstream by UpdateCommand. When
+ * `realpath()` itself cannot confirm containment (open_basedir excluding a
+ * parent, or a symlinked/relocated wp-content tree), `liveDir()` falls back to
+ * a string/segment-anchored containment check against the trusted,
+ * WP-native root (WP_PLUGIN_DIR / get_theme_root()) — see its own doc for why
+ * that fallback can never itself become a path-escape.
  *
  * @package WPMgr\Agent\Support
  */
@@ -746,6 +751,21 @@ class SnapshotManager
     /**
      * Resolve the live directory for a plugin/theme, bounded to wp-content.
      *
+     * Agent-only regression fix (open_basedir / symlinked-relocated
+     * wp-content, follow-up to GitHub issue #131): the primary containment
+     * check below (`containedRealpath()`) rejects a path whenever either
+     * side's `realpath()` returns false OR the two resolved paths diverge.
+     * That is exactly what happens on a perfectly HEALTHY site when
+     * `open_basedir` excludes a parent of the real, resolved path, or when
+     * wp-content/the plugin or theme root is a symlink or bind mount whose
+     * `realpath()`'d target textually diverges from wp-content's own
+     * `realpath()`'d target even though both point at the same logical
+     * tree. Before this fix, that false negative propagated all the way up
+     * through `capture()` returning `''` and UpdateCommand's S8 gate then
+     * REFUSING the whole apply — the root cause of every plugin/theme
+     * update failing with a snapshot error while core (exempt from S8)
+     * kept working.
+     *
      * @param string $type plugin|theme.
      * @param string $slug Sanitized slug.
      * @return string Absolute path, or '' when it cannot be safely resolved.
@@ -772,13 +792,78 @@ class SnapshotManager
             return '';
         }
 
-        // Containment: the resolved path's parent must sit under wp-content.
-        $parent = dirname($path);
-        if ($this->containedRealpath($parent, $contentDir) === '') {
+        if ($root === '') {
             return '';
         }
 
-        return $path;
+        // Containment: the resolved path's parent must sit under wp-content.
+        $parent = dirname($path);
+        if ($this->containedRealpath($parent, $contentDir) !== '') {
+            return $path;
+        }
+
+        // Fallback: realpath()-based containment could not confirm this
+        // path, which on a healthy host is most often open_basedir or a
+        // symlinked/relocated wp-content tree defeating realpath() itself
+        // (see this method's class doc above) rather than a genuine escape
+        // attempt. Re-check containment with a STRING/SEGMENT-ANCHORED
+        // comparison against $root directly instead of realpath()'ing
+        // either side. This is safe here specifically because $root is
+        // NEVER attacker-controlled — it is WP_PLUGIN_DIR (a core-defined
+        // constant) or get_theme_root()'s return (a core API), never a
+        // value derived from request input — and $folder/$slug were already
+        // rejected upstream by UpdateCommand::sanitizeSlug() for `..`, null
+        // bytes, absolute paths, and drive letters before ever reaching
+        // here. anchoredContainment() additionally re-validates that no
+        // residual traversal segment survived, and `is_dir()` confirms a
+        // real, on-disk directory — a path that is merely wrong (not just
+        // realpath()-hostile) still resolves to '' here exactly as before.
+        if ($this->anchoredContainment($root, $path) && is_dir($path)) {
+            return $path;
+        }
+
+        return '';
+    }
+
+    /**
+     * String/segment-anchored containment check: is $path exactly $root, or
+     * a descendant of $root, with no residual traversal segment (`.`/`..`)
+     * in the remainder? Used by liveDir() as the open_basedir/symlink
+     * fallback when `realpath()`-based containment cannot resolve a
+     * genuinely valid path — see liveDir()'s class doc for why that fallback
+     * is safe (both inputs here are WP-native/already-sanitized, never raw
+     * request input).
+     *
+     * @param string $root Trusted root directory (never attacker-controlled).
+     * @param string $path Candidate path, expected to be "$root/<segment...>".
+     * @return bool
+     */
+    private function anchoredContainment(string $root, string $path): bool
+    {
+        $root = rtrim($root, '/\\');
+        if ($root === '' || $path === '') {
+            return false;
+        }
+
+        $normalizedRoot = str_replace('\\', '/', $root);
+        $normalizedPath = str_replace('\\', '/', $path);
+
+        if ($normalizedPath !== $normalizedRoot && !str_starts_with($normalizedPath, $normalizedRoot . '/')) {
+            return false;
+        }
+
+        $relative = ltrim(substr($normalizedPath, strlen($normalizedRoot)), '/');
+        if ($relative === '') {
+            return true;
+        }
+
+        foreach (explode('/', $relative) as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
