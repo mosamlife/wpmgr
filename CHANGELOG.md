@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.44] - 2026-07-08
+
+### Fixed
+
+- Plugin and theme updates failing with a snapshot error on some hosts (agent 0.61.17). A hardening change had made a pre-update safety snapshot mandatory and refused the update outright when the snapshot could not be captured, which broke every plugin and theme update on hosts where the snapshot path could not be resolved (for example open_basedir or symlinked wp-content setups); core updates were unaffected. The agent now resolves the snapshot source correctly on those hosts, and if a snapshot still cannot be taken it proceeds with the update anyway (relying on WordPress's own rollback plus the post-update health check) instead of blocking it. The full snapshot-and-auto-restore protection is unchanged on hosts that can take a snapshot.
+
 ## [0.61.43] - 2026-07-08
 
 ### Added

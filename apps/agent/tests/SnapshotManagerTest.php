@@ -399,6 +399,148 @@ final class SnapshotManagerTest extends TestCase
     }
 
     // =========================================================================
+    // Prong A (agent-only regression fix, follow-up to GitHub issue #131) —
+    // liveDir()'s open_basedir / symlinked-wp-content anchored-containment
+    // fallback. Drives the REAL (unoverridden) liveDir() via reflection —
+    // deliberately NOT the `manager()`/`managerWithNoLiveSource()` doubles
+    // above, which override liveDir() itself and so could never exercise
+    // this fix. WP_CONTENT_DIR/WP_PLUGIN_DIR are guard-defined per the same
+    // "may already be a frozen global PHP constant from another test file in
+    // this suite" idiom used elsewhere (e.g. RestoreRunnerLocalDestinationTest)
+    // — every path resolved under them here uses a fresh, unique per-test
+    // subdirectory, so whichever directory the constants already point at is
+    // fine.
+    // =========================================================================
+
+    /**
+     * Invoke the REAL, protected `liveDir()` via reflection — no test double
+     * involved — so `realpath()` mocked false below actually exercises
+     * liveDir()'s own fallback logic rather than an overridden stand-in.
+     */
+    private function realLiveDir(SnapshotManager $mgr, string $type, string $slug): string
+    {
+        // No setAccessible() call needed — ReflectionMethod::invoke() has
+        // been able to call non-public methods directly since PHP 8.1.
+        $method = new \ReflectionMethod(SnapshotManager::class, 'liveDir');
+
+        return (string) $method->invoke($mgr, $type, $slug);
+    }
+
+    /**
+     * Guard-define WP_CONTENT_DIR/WP_PLUGIN_DIR (may already be frozen by an
+     * earlier test file in this same PHPUnit process) and ensure both exist
+     * on disk, returning the resolved plugin root so the caller can create a
+     * live plugin folder under it.
+     */
+    private function ensurePluginRootConstants(): string
+    {
+        if (!defined('WP_CONTENT_DIR')) {
+            define('WP_CONTENT_DIR', sys_get_temp_dir() . '/wpmgr-shared-wp-content');
+        }
+        if (!is_dir(WP_CONTENT_DIR)) {
+            mkdir(WP_CONTENT_DIR, 0755, true);
+        }
+        if (!defined('WP_PLUGIN_DIR')) {
+            define('WP_PLUGIN_DIR', rtrim((string) WP_CONTENT_DIR, '/\\') . '/plugins');
+        }
+        if (!is_dir(WP_PLUGIN_DIR)) {
+            mkdir(WP_PLUGIN_DIR, 0755, true);
+        }
+
+        return rtrim((string) WP_PLUGIN_DIR, '/\\');
+    }
+
+    public function test_live_dir_resolves_a_valid_plugin_source_when_realpath_containment_fails(): void
+    {
+        $pluginRoot = $this->ensurePluginRootConstants();
+
+        $slug   = 'prong-a-plugin-' . bin2hex(random_bytes(6));
+        $folder = $pluginRoot . '/' . $slug;
+        mkdir($folder, 0755, true);
+        file_put_contents($folder . '/' . $slug . '.php', "<?php\n// live plugin file\n");
+
+        // Force EVERY realpath() call to fail, deterministically simulating
+        // the open_basedir / symlinked-wp-content case that made
+        // containedRealpath() reject a perfectly real, on-disk directory.
+        Functions\when('realpath')->justReturn(false);
+
+        $mgr    = new SnapshotManager();
+        $result = $this->realLiveDir($mgr, 'plugin', $slug . '/' . $slug . '.php');
+
+        $this->assertSame(
+            $folder,
+            $result,
+            'Prong A: a real, on-disk plugin directory must still resolve when realpath()-based containment fails'
+        );
+    }
+
+    public function test_live_dir_resolves_a_valid_theme_source_when_realpath_containment_fails(): void
+    {
+        $this->ensurePluginRootConstants();
+        $themeRoot = rtrim((string) WP_CONTENT_DIR, '/\\') . '/themes';
+        if (!is_dir($themeRoot)) {
+            mkdir($themeRoot, 0755, true);
+        }
+
+        $slug   = 'prong-a-theme-' . bin2hex(random_bytes(6));
+        $folder = $themeRoot . '/' . $slug;
+        mkdir($folder, 0755, true);
+        file_put_contents($folder . '/style.css', "/*\nTheme Name: Prong A Test Theme\n*/\n");
+
+        Functions\when('realpath')->justReturn(false);
+
+        $mgr    = new SnapshotManager();
+        $result = $this->realLiveDir($mgr, 'theme', $slug);
+
+        $this->assertSame(
+            $folder,
+            $result,
+            'Prong A: a real, on-disk theme directory must still resolve when realpath()-based containment fails'
+        );
+    }
+
+    public function test_live_dir_still_rejects_a_path_escape_even_when_realpath_containment_fails(): void
+    {
+        // Defense-in-depth: even with the anchored-containment fallback
+        // active, a traversal slug fed DIRECTLY to liveDir() (bypassing
+        // UpdateCommand::sanitizeSlug(), which would already reject it
+        // upstream in production) must never resolve outside wp-content.
+        $this->ensurePluginRootConstants();
+
+        Functions\when('realpath')->justReturn(false);
+
+        $mgr = new SnapshotManager();
+
+        $this->assertSame(
+            '',
+            $this->realLiveDir($mgr, 'theme', '../../etc/passwd'),
+            'Prong A: the anchored-containment fallback must still reject a traversal slug, never resolve it'
+        );
+        $this->assertSame(
+            '',
+            $this->realLiveDir($mgr, 'plugin', '../escape/escape.php'),
+            'Prong A: a plugin folder derived as ".." must still be rejected by the fallback, never resolved'
+        );
+    }
+
+    public function test_live_dir_returns_empty_for_a_source_that_genuinely_does_not_exist_even_with_the_fallback(): void
+    {
+        // The fallback must not turn a genuinely WRONG/missing path into a
+        // false positive — only a real, on-disk directory may resolve.
+        $this->ensurePluginRootConstants();
+
+        Functions\when('realpath')->justReturn(false);
+
+        $mgr = new SnapshotManager();
+
+        $this->assertSame(
+            '',
+            $this->realLiveDir($mgr, 'plugin', 'never-installed-' . bin2hex(random_bytes(6))),
+            'Prong A: a plugin folder that does not exist on disk must still resolve to \'\', fallback or not'
+        );
+    }
+
+    // =========================================================================
     // F4 — stranded `.wpmgr-old-<id>` aside sweep (gcExpired())
     // =========================================================================
 
