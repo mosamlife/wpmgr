@@ -691,7 +691,7 @@ class UpdateRunner
             Maintenance::clear($upgrader);
         }
 
-        return $this->upgraderOutcome($result);
+        return $this->upgraderOutcome($result, $upgrader);
     }
 
     // ---------------------------------------------------------------------
@@ -790,9 +790,11 @@ class UpdateRunner
     {
         $this->loadUpgraderApi();
 
-        // B3 (GitHub issue #131), revised (agent-only regression fix, 0.61.20
-        // — GitHub issue #131 follow-up): see pinTempDirForUnpack()'s doc for
-        // why this is now conditional on WRITABILITY, not merely existence.
+        // B3 (GitHub issue #131), superseded (agent-only regression fix,
+        // 0.61.21 — GitHub issue #131 second follow-up): see
+        // pinTempDirForUnpack()'s doc for why the pin is now a FALLBACK only,
+        // applied when WordPress's own default temp dir is not usable, rather
+        // than something attempted unconditionally.
         $tempDirNote = $this->pinTempDirForUnpack();
         DebugLog::write('WPMgr Agent: applyViaUpgrader() ' . $tempDirNote);
 
@@ -850,7 +852,7 @@ class UpdateRunner
                         // succeeded, returned a WP_Error, or threw.
                         Maintenance::clear($upgrader);
                     }
-                    $outcome  = $this->upgraderOutcome($result);
+                    $outcome  = $this->upgraderOutcome($result, $upgrader);
 
                     if ($outcome['ok'] && ($wasActive || $wasNetworkActive) && function_exists('activate_plugin')) {
                         // Refresh plugin caches before reactivating: the upgrade
@@ -881,7 +883,7 @@ class UpdateRunner
                         Maintenance::clear($upgrader);
                     }
 
-                    $outcome = $this->upgraderOutcome($result);
+                    $outcome = $this->upgraderOutcome($result, $upgrader);
                     break;
 
                 case 'core':
@@ -909,41 +911,81 @@ class UpdateRunner
     }
 
     /**
-     * Decide whether to pin WP_TEMP_DIR to wp-content/upgrade for THIS
-     * apply, and do so only when that directory is actually usable in this
-     * request's execution context.
+     * Decide whether WP_TEMP_DIR needs to be pinned for THIS apply, and if
+     * so, to WHERE — preferring to leave it undefined entirely (WordPress's
+     * own default) whenever that default already works in this request's
+     * execution context.
      *
-     * B3 (GitHub issue #131) pinned WP_TEMP_DIR to wp-content/upgrade
-     * unconditionally (guarded only by is_dir()) to keep WordPress's own
-     * temp-directory resolution (get_temp_dir(), used by
-     * WP_Filesystem_*::unzip_file()/wp_tempnam()) from falling through to
-     * sys_get_temp_dir()/upload_tmp_dir — a location that can sit OUTSIDE
-     * open_basedir on a locked-down host and fail silently there.
+     * HISTORY — B3 (GitHub issue #131) pinned WP_TEMP_DIR to
+     * wp-content/upgrade unconditionally (guarded only by is_dir()) so that
+     * WordPress's own temp-directory resolution (get_temp_dir(), used by
+     * download_url()/wp_tempnam() when downloading the update package) could
+     * never fall through to sys_get_temp_dir()/upload_tmp_dir — a location
+     * that can sit OUTSIDE open_basedir on a locked-down host (RunCloud-style)
+     * and fail there. 0.61.20 added a writability check (is_dir() +
+     * is_writable()) on top of that, since wp-content/upgrade merely
+     * EXISTING was not enough evidence it was writable in this request's
+     * context — but the pin itself was still attempted FIRST, unconditionally,
+     * on every host where that check passed.
      *
-     * That pin itself became a REGRESSION (agent-only, 0.61.20 — GitHub
-     * issue #131 follow-up): on a host where wp-content/upgrade EXISTS but
-     * is NOT writable in this request's execution context (open_basedir/
-     * RunCloud-style restrictions, a permissions layout that differs from
-     * what the request user can write to) while the PRE-#131 fallback
-     * (sys_get_temp_dir()/upload_tmp_dir) WAS writable, forcing the pin
-     * broke every plugin/theme update on that host — the download/unpack
-     * that used to succeed now fails, and the #131 isComplete() guard
-     * correctly (but unhelpfully) rolls the failed apply back.
+     * REGRESSION (agent-only, 0.61.21 — GitHub issue #131 second follow-up):
+     * pinning WP_TEMP_DIR to wp-content/upgrade breaks updates on a STANDARD
+     * host where wp-content/upgrade IS writable, because that directory is
+     * not just a convenient writable location — it is the EXACT working
+     * directory WP_Upgrader::unpack_package() itself uses
+     * (wp-admin/includes/class-wp-upgrader.php), and that method
+     * unconditionally DELETES every existing entry directly under
+     * wp-content/upgrade/ as its very first step, before unzipping:
      *
-     * The fix: pin ONLY when wp-content/upgrade is both present (creating
-     * it on demand) AND writable. When it is not, leave WP_TEMP_DIR
-     * undefined entirely so WordPress's own get_temp_dir() resolves the
-     * next-best writable location itself — the exact pre-#131 behaviour
-     * that worked on this class of host. This never weakens the #131 intent
-     * on a host where wp-content/upgrade IS writable: the pin still applies
-     * there, unchanged.
+     *     $upgrade_folder = $wp_filesystem->wp_content_dir() . 'upgrade/';
+     *     $upgrade_files = $wp_filesystem->dirlist( $upgrade_folder );
+     *     foreach ( $upgrade_files as $file ) {
+     *         $wp_filesystem->delete( $upgrade_folder . $file['name'], true );
+     *     }
+     *     ...
+     *     $result = unzip_file( $package, $working_dir );
      *
-     * All filesystem probes are @-suppressed: on an open_basedir-restricted
-     * host a path outside the allowed set can make is_dir()/is_writable()
-     * emit a warning (never a fatal), and this method must never surface
-     * that noise — "can't tell" is treated the same as "not writable" by
-     * construction, so suppressing the warning changes nothing about the
-     * decision.
+     * With WP_TEMP_DIR pinned to wp-content/upgrade, the package
+     * download_package()/wp_tempnam() wrote a few lines earlier in the SAME
+     * upgrade() call is itself a file sitting directly inside
+     * wp-content/upgrade/ — so this cleanup step deletes the just-downloaded
+     * package (recursively, for ANY path underneath wp-content/upgrade/ too —
+     * a dedicated subdirectory nested under it does not avoid the collision)
+     * before unzip_file() ever runs. unzip_file() then fails against a source
+     * file that no longer exists, upgrade() returns false/a WP_Error with no
+     * directory copy ever having started, and the #131 isComplete() guard
+     * correctly (but unhelpfully) rolls the never-applied "apply" back —
+     * exactly the reported bare "Update failed." with no downstream Reason,
+     * on a host where the writability check itself passed.
+     *
+     * THE FIX: never pin unconditionally. First check whether WordPress's own
+     * DEFAULT temp dir (what get_temp_dir() resolves to while WP_TEMP_DIR is
+     * undefined — normally sys_get_temp_dir(), falling back through
+     * upload_tmp_dir/WP_CONTENT_DIR per WP core) is ACTUALLY usable in this
+     * execution context, proven with a real create+write+delete of a small
+     * file rather than trusting is_dir()/is_writable() alone. If it is, do
+     * NOT define WP_TEMP_DIR at all: WordPress's own default temp file
+     * location is completely disjoint from wp-content/upgrade, so no
+     * collision with unpack_package()'s cleanup is possible — this is exactly
+     * the pre-#131 behaviour that worked on this class of (standard) host.
+     * Only when the default is NOT usable (the #131 RunCloud/open_basedir
+     * case) do we pin — and even then, to a dedicated directory that is NOT
+     * wp-content/upgrade or any path underneath it: see
+     * fallbackTempDirCandidate()'s doc. This preserves the #131 intent (a
+     * writable, open_basedir-safe temp location) while eliminating the
+     * collision that caused this regression.
+     *
+     * Never redefines an already-defined WP_TEMP_DIR (an operator's
+     * wp-config.php override, or an earlier call in this same request) —
+     * that would be a fatal error, and it is also never our place to
+     * second-guess an explicit choice made elsewhere.
+     *
+     * All filesystem probes (resolveDefaultTempDir(), isDirWritableByProbe(),
+     * fallbackTempDirCandidate()) are @-suppressed: on an open_basedir-
+     * restricted host, touching a disallowed path can emit a PHP warning
+     * (never a fatal), and none of this decision logic may let that noise
+     * surface — "can't tell" is treated the same as "not writable" by
+     * construction.
      *
      * @return string A short, log-safe (no secrets) description of the
      *                decision, suitable for both DebugLog and the
@@ -959,29 +1001,146 @@ class UpdateRunner
             return 'temp dir: WP_TEMP_DIR already defined; leaving as-is.';
         }
 
-        $upgradeDir = defined('WP_CONTENT_DIR') ? rtrim((string) WP_CONTENT_DIR, '/\\') . '/upgrade' : '';
-        if ($upgradeDir === '') {
-            return 'temp dir: WP_CONTENT_DIR unavailable; using WordPress\'s own default temp dir.';
+        $default = $this->resolveDefaultTempDir();
+        if ($default !== '' && $this->isDirWritableByProbe($default)) {
+            // The fix: WordPress's own default already works here — never
+            // define WP_TEMP_DIR, so it stays completely disjoint from
+            // wp-content/upgrade and the collision described in this
+            // method's doc can never occur. This is the pre-#131 behaviour.
+            return 'temp dir: WordPress\'s own default (' . $default . ') is writable here; leaving WP_TEMP_DIR unset.';
         }
 
-        if (!@is_dir($upgradeDir) && function_exists('wp_mkdir_p')) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort existence probe; must never warn/fatal under open_basedir, see method doc
-            @wp_mkdir_p($upgradeDir); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort directory creation; a failure here is caught by the writability check right below, not by this return value
+        [$fallbackDir, $fallbackLabel] = $this->fallbackTempDirCandidate();
+        if ($fallbackDir === '') {
+            return 'temp dir: WordPress\'s own default (' . ($default !== '' ? $default : 'unresolved')
+                . ') is not writable here and no fallback directory is available; leaving WP_TEMP_DIR unset.';
         }
 
-        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized (no interactive/FTP context); direct writability probe is the only option, must never warn/fatal under open_basedir
-        $writable = @is_dir($upgradeDir) && @is_writable($upgradeDir);
-        if (!$writable) {
-            // Do NOT force a broken pin — fall through with WP_TEMP_DIR left
-            // undefined so WordPress's own get_temp_dir() picks the
-            // next-best writable location itself. This is the fix.
-            return 'temp dir: ' . $upgradeDir . ' exists but is not writable here; '
-                . 'pin skipped, falling back to WordPress\'s own default temp dir.';
+        if (!@is_dir($fallbackDir) && function_exists('wp_mkdir_p')) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort existence probe; must never warn/fatal under open_basedir, see method doc
+            @wp_mkdir_p($fallbackDir); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort directory creation; a failure here is caught by the write-probe right below, not by this return value
+        }
+
+        if (!$this->isDirWritableByProbe($fallbackDir)) {
+            return 'temp dir: WordPress\'s own default (' . ($default !== '' ? $default : 'unresolved')
+                . ') is not writable here, and the fallback directory ' . $fallbackDir
+                . ' could not be created/written either; leaving WP_TEMP_DIR unset.';
         }
 
         // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- WP_TEMP_DIR is a documented, overridable WordPress core constant (wp-admin/includes/file.php get_temp_dir()), not a constant of our own; it is simply missing from this sniff's hardcoded allowed_core_constants list
-        define('WP_TEMP_DIR', $upgradeDir);
+        define('WP_TEMP_DIR', $fallbackDir);
 
-        return 'temp dir: pinned to ' . $upgradeDir;
+        return 'temp dir: WordPress\'s own default was not writable here; pinned to a dedicated fallback dir '
+            . $fallbackDir . ' (' . $fallbackLabel . ').';
+    }
+
+    /**
+     * Resolve the directory WordPress's OWN get_temp_dir() would choose right
+     * now, given the caller has already confirmed WP_TEMP_DIR is undefined.
+     * Falls back to sys_get_temp_dir() directly on the — never expected in a
+     * real WordPress load, where get_temp_dir() is always available — chance
+     * get_temp_dir() itself is not.
+     *
+     * @return string Absolute path with no trailing slash, or '' when
+     *                undeterminable.
+     */
+    private function resolveDefaultTempDir(): string
+    {
+        if (function_exists('get_temp_dir')) {
+            $dir = (string) get_temp_dir();
+            if ($dir !== '') {
+                return rtrim($dir, '/\\');
+            }
+        }
+
+        return rtrim(sys_get_temp_dir(), '/\\');
+    }
+
+    /**
+     * Prove a directory is genuinely writable in THIS execution context by
+     * actually creating, writing to, and deleting a small probe file inside
+     * it — rather than trusting is_dir()/is_writable() alone. is_writable()
+     * can disagree with what an actual write syscall does, and
+     * get_temp_dir()'s own hard-coded last-resort return is never checked for
+     * writability at all by WordPress itself. This is the same headless,
+     * direct-I/O posture the rest of this class uses: WP_Filesystem is never
+     * initialized in this runtime (no interactive/FTP context to prompt for
+     * credentials in), so a real, contained file write is the only reliable
+     * signal available.
+     *
+     * Every filesystem touch is @-suppressed: on an open_basedir-restricted
+     * host, touching a disallowed path can emit a PHP warning (never a
+     * fatal), and this probe must never let that warning surface — "can't
+     * tell" is treated identically to "not writable" by construction.
+     *
+     * @param string $dir Absolute directory path to probe.
+     * @return bool True only when a real file could be created, written to,
+     *              and removed inside $dir.
+     */
+    private function isDirWritableByProbe(string $dir): bool
+    {
+        if ($dir === '' || !@is_dir($dir)) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort existence probe; must never warn/fatal under open_basedir, see method doc
+            return false;
+        }
+
+        $probe = rtrim($dir, '/\\') . '/.wpmgr-tempdir-probe-' . bin2hex(random_bytes(6));
+
+        $written = @file_put_contents($probe, '.'); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- must PROVE writability with a real write rather than trust is_writable(), must never warn/fatal under open_basedir; file_put_contents() itself is allowed by Plugin Check
+        if ($written === false) {
+            return false;
+        }
+
+        if (function_exists('wp_delete_file')) {
+            wp_delete_file($probe);
+        } else {
+            @unlink($probe); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.unlink_unlink -- headless-agent probe-file cleanup; wp_delete_file() is unavailable only in a constrained runtime that never loaded wp-includes/functions.php, must never warn/fatal under open_basedir
+        }
+
+        return true;
+    }
+
+    /**
+     * The dedicated fallback temp directory to pin WP_TEMP_DIR to when
+     * WordPress's own default is not usable — deliberately NOT
+     * wp-content/upgrade or any path underneath it (see
+     * pinTempDirForUnpack()'s doc for why that collides with
+     * WP_Upgrader::unpack_package()'s own cleanup of that exact directory).
+     * wp_upload_dir()'s basedir is a WordPress-blessed writable location that
+     * sits entirely outside wp-content/upgrade, so WP_Upgrader never touches
+     * it — this also keeps the write inside wp_upload_dir(), matching Plugin
+     * Check's write-location expectations for this plugin's own writes.
+     *
+     * @return array{0:string,1:string} Tuple of [absolute directory path (''
+     *                when undeterminable), a short human label for the log].
+     */
+    private function fallbackTempDirCandidate(): array
+    {
+        if (function_exists('wp_upload_dir')) {
+            $uploads = wp_upload_dir();
+            if (
+                is_array($uploads)
+                && empty($uploads['error'])
+                && isset($uploads['basedir'])
+                && is_string($uploads['basedir'])
+                && $uploads['basedir'] !== ''
+            ) {
+                return [rtrim($uploads['basedir'], '/\\') . '/.wpmgr-tmp', 'uploads-dir fallback'];
+            }
+        }
+
+        // wp_upload_dir() unavailable/erroring — fall back to a subdirectory
+        // of WP_CONTENT_DIR ITSELF (a SIBLING of wp-content/upgrade, never
+        // underneath it, so unpack_package()'s cleanup of wp-content/upgrade/
+        // still never touches it). Guarded against an empty base: never use
+        // an empty WP_CONTENT_DIR, which would resolve to a bare
+        // '/.wpmgr-tmp' at the filesystem root.
+        if (defined('WP_CONTENT_DIR')) {
+            $contentDir = rtrim((string) WP_CONTENT_DIR, '/\\');
+            if ($contentDir !== '') {
+                return [$contentDir . '/.wpmgr-tmp', 'wp-content fallback (wp_upload_dir() unavailable)'];
+            }
+        }
+
+        return ['', ''];
     }
 
     /**
@@ -1032,27 +1191,125 @@ class UpdateRunner
             Maintenance::clear($upgrader);
         }
 
-        return $this->upgraderOutcome($result);
+        return $this->upgraderOutcome($result, $upgrader);
     }
 
     /**
-     * Normalize an upgrader return value into the ok/log shape.
+     * Normalize an upgrader return value into the ok/log shape, enriched
+     * (agent-only, 0.61.21) with WHY a false/null result failed.
      *
-     * @param mixed $result Upgrader result (bool|array|WP_Error|null).
+     * Before this fix, a false or null upgrade() return produced only the
+     * bare "Update failed." — accurate but useless for diagnosing the real
+     * cause (a download failure, a corrupt/incompatible archive, a
+     * directory-creation failure, ...). That bare message is exactly what a
+     * real production failure looked like (GitHub issue #131 second
+     * follow-up): a false/null result with no downstream isComplete()
+     * "Reason:" suffix, meaning the failure happened INSIDE the upgrader
+     * itself — before any file was ever copied into place — with nothing in
+     * the CP-visible log to say why.
+     *
+     * Two independent sources are now captured, both best-effort and never
+     * fatal if the shape is unexpected:
+     *   - $result itself, when it is a WP_Error: its code + message (as
+     *     before, now also code-prefixed).
+     *   - $upgrader->skin's collected messages
+     *     (Automatic_Upgrader_Skin::get_upgrade_messages(), inherited by the
+     *     WP_Ajax_Upgrader_Skin used throughout this class — see
+     *     applyViaUpgrader()/forceCoreViaUpgrader()/applyCoreUpgrade()) — the
+     *     exact strings WP core's own upgrade UI would have shown (e.g.
+     *     "Downloading update from …", "Unpacking the update…", "The package
+     *     could not be installed.", a PCLZIP error). Captured for BOTH a
+     *     WP_Error result and a bare false/null result, since either can hide
+     *     more specific detail than the WP_Error's own get_error_message()
+     *     alone (which is not always populated — see collectSkinMessages()'s
+     *     doc for why the skin's own messages are the richer source).
+     *
+     * @param mixed       $result   Upgrader result (bool|array|WP_Error|null).
+     * @param object|null $upgrader The WP_Upgrader instance that produced
+     *                              $result, when available, so its skin's
+     *                              collected messages can be captured. Never
+     *                              required — a null value degrades to using
+     *                              $result alone (the pre-0.61.21 behaviour).
      * @return array{ok:bool,log:string}
      */
-    private function upgraderOutcome($result): array
+    private function upgraderOutcome($result, ?object $upgrader = null): array
     {
+        $skinMessages = $this->collectSkinMessages($upgrader);
+
         if (is_object($result) && method_exists($result, 'get_error_message')) {
             /** @var \WP_Error $result */
-            return ['ok' => false, 'log' => (string) $result->get_error_message()];
+            $code = method_exists($result, 'get_error_code') ? (string) $result->get_error_code() : '';
+            $log  = 'WP_Error' . ($code !== '' ? ' (' . $code . ')' : '') . ': ' . $result->get_error_message();
+            if ($skinMessages !== '') {
+                $log .= "\n" . $skinMessages;
+            }
+
+            return ['ok' => false, 'log' => $log];
         }
 
         if ($result === false || $result === null) {
-            return ['ok' => false, 'log' => 'Update failed.'];
+            $log = $skinMessages !== '' ? 'Update failed: ' . $skinMessages : 'Update failed.';
+
+            return ['ok' => false, 'log' => $log];
         }
 
         return ['ok' => true, 'log' => 'Update applied via upgrader.'];
+    }
+
+    /**
+     * Best-effort capture of the messages a WP_Ajax_Upgrader_Skin (or any
+     * Automatic_Upgrader_Skin descendant) collected during this upgrade()
+     * call — WordPress's own progress/error strings, the same ones its admin
+     * UI would render. Never throws: an unexpected shape (a skin without
+     * get_upgrade_messages(), or a non-array return) degrades to an empty
+     * string rather than affecting the outcome above.
+     *
+     * @param object|null $upgrader The WP_Upgrader instance, or null.
+     * @return string A single, condensed, log-safe line with any HTML tags
+     *                 stripped (the skin's own messages allow basic markup —
+     *                 a/br/em/strong — which has no place in a plain-text CP
+     *                 log line), or '' when nothing could be collected.
+     */
+    private function collectSkinMessages(?object $upgrader): string
+    {
+        if ($upgrader === null || !isset($upgrader->skin) || !is_object($upgrader->skin)) {
+            return '';
+        }
+
+        $skin = $upgrader->skin;
+        if (!method_exists($skin, 'get_upgrade_messages')) {
+            return '';
+        }
+
+        $messages = $skin->get_upgrade_messages();
+        if (!is_array($messages) || $messages === []) {
+            return '';
+        }
+
+        $clean = [];
+        foreach ($messages as $message) {
+            if (!is_string($message) || $message === '') {
+                continue;
+            }
+            $text = $message;
+            if (function_exists('wp_strip_all_tags')) {
+                $text = wp_strip_all_tags($text);
+            }
+            $text = trim($text);
+            if ($text !== '') {
+                $clean[] = $text;
+            }
+        }
+
+        if ($clean === []) {
+            return '';
+        }
+
+        // Cap to the last 5 lines — the failure context is almost always at
+        // or near the end of the collected messages; earlier entries are
+        // routine "Downloading…"/"Unpacking…" progress noise that would
+        // otherwise dominate a short CP-visible log line.
+        return implode(' | ', array_slice($clean, -5));
     }
 
     /**

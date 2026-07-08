@@ -114,6 +114,28 @@ if (!function_exists('wp_rand')) {
 }
 
 // ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+if (!function_exists('wp_strip_all_tags')) {
+    /**
+     * Strips all HTML tags — mirrors the real WP implementation closely
+     * enough for the test surface (script/style contents are dropped
+     * entirely, same as core; whitespace normalization is skipped since no
+     * caller here relies on it).
+     *
+     * @param string $text Text to strip tags from.
+     * @return string
+     */
+    function wp_strip_all_tags(string $text): string
+    {
+        $text = preg_replace('@<(script|style)[^>]*?>.*?</\\1>@si', '', $text) ?? $text;
+        $text = strip_tags($text); // phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags -- test stub only, mirrors wp_strip_all_tags()'s own internal implementation
+        return trim($text);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Input sanitization
 // ---------------------------------------------------------------------------
 
