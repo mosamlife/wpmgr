@@ -11,6 +11,7 @@
     "is_readable",
     "is_dir",
     "is_writable",
-    "opcache_invalidate"
+    "opcache_invalidate",
+    "file_put_contents"
   ]
 }

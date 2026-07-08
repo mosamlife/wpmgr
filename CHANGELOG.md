@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.48] - 2026-07-09
+
+### Fixed
+
+- Plugin and theme updates could still fail and automatically roll back on ordinary hosts, even after the previous fix in this area (agent 0.61.20, GitHub issue #131). That release pinned WordPress's temporary download/unpack directory to a folder inside wp-content whenever that folder was confirmed writable, but on a standard host the folder it pinned to is also the exact working directory WordPress itself uses to unpack an update, and the pin caused the two to collide: WordPress cleared that folder as its first unpacking step, wiping out the update package the agent had just told it to download there, so the update failed before any files were ever copied. The agent no longer pins that directory unless WordPress's own default temporary location is confirmed unusable in this hosting environment (proven with a real write test, not just a permissions check); when the default already works, which is the case on most hosts, it is left completely alone. On the small number of restricted hosts (for example open_basedir or certain managed-hosting setups) where the default genuinely does not work, the agent still falls back to a writable location inside the site, but now a dedicated one that WordPress's own unpacking step never touches, so the collision cannot recur. Separately, when an update does fail, the agent-reported log now includes WordPress's own explanation of what went wrong (for example a download or unpacking problem) instead of a generic "Update failed" message, making any future occurrence of this class of issue immediately diagnosable from the control plane's logs.
+
 ## [0.61.47] - 2026-07-08
 
 ### Fixed
