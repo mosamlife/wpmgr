@@ -1,8 +1,14 @@
 import type { ReactElement, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, type RenderOptions } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 
-// Shared render helper for component-render tests (Wave 4 outcome-test-debt,
+// Shared render helper for component-render tests (Wave 4/5 outcome-test-debt,
 // GH #170). Every domain feature test should import `renderWithProviders`
 // from here rather than reaching for `@testing-library/react`'s bare
 // `render` directly, so the provider stack stays in one place.
@@ -11,18 +17,42 @@ import { render, type RenderOptions } from "@testing-library/react";
 //   - QueryClientProvider — REQUIRED. Every domain hook in `features/**`
 //     (see `use-vuln.ts`, `use-backups.ts`, ...) is a TanStack Query hook;
 //     rendering one outside a QueryClientProvider throws immediately.
+//   - TanStack Router (RouterProvider) — OPT-IN via `{ withRouter: true }`.
+//     Most feature panels/dialogs take their identifiers as props (siteId,
+//     snapshotId, ...) and never call `useNavigate`/`useParams`/`<Link>`
+//     themselves, so they render fine with no router context at all (this is
+//     true for both P0 targets: VulnPanel and RestoreDialog) — leave
+//     `withRouter` unset for those. A component that DOES render `<Link>` or
+//     call `useNavigate()` (e.g. `features/health/card-plugins.tsx`,
+//     `components/dialogs/upgrade-prompt.tsx`) throws immediately without a
+//     router context (`Link`/`useNavigate` read it via React context), so
+//     opt in with `{ withRouter: true }`.
 //
+//     The test router is a MINIMAL ad hoc tree (a bare root route whose
+//     component renders exactly `ui`, mounted at `initialPath` via
+//     `createMemoryHistory`) — never the app's real generated `routeTree`.
+//     That is deliberate: the app's route tree drags in every route file's
+//     loaders/`beforeLoad`s (including the `_authed` session guard), which
+//     the render tests explicitly do NOT want to execute. This means
+//     `<Link to="/settings/billing">` resolves to a real anchor with a real
+//     `href` (so `getByRole("link", { name: ... })` assertions work exactly
+//     like production) but actually clicking it won't match a real route —
+//     fine, because no test here asserts on post-navigation content; they
+//     only assert the link/nav affordance is present (or absent) and wired.
+//     If a future test needs to assert ON a navigation outcome, extend
+//     `initialPath`/add a second route rather than reaching for a full
+//     app router.
+//
+//     GOTCHA: `RouterProvider`'s first paint is NOT synchronous — the router
+//     resolves its initial match on mount (a microtask), so `ui` is not yet
+//     in the DOM the instant `renderWithProviders(..., { withRouter: true })`
+//     returns. Assert the FIRST thing you look for with `findBy*`/`waitFor`
+//     (not a bare `getBy*`), exactly like an async data fetch; every
+//     `getBy*`/`fireEvent` after that first resolved assertion is safe to use
+//     synchronously as usual.
+//
+
 // Providers intentionally NOT wired here:
-//   - TanStack Router (RouterProvider) — most feature panels/dialogs take
-//     their identifiers as props (siteId, snapshotId, ...) and never call
-//     `useNavigate`/`useParams`/`<Link>` themselves, so they render fine with
-//     no router context at all (this is true for both P0 targets: VulnPanel
-//     and RestoreDialog). A component that DOES render `<Link>` (e.g.
-//     `features/health/card-plugins.tsx`) needs a router context or a mock
-//     of `@tanstack/react-router`'s `Link`/`useNavigate` — add that
-//     per-test-file rather than forcing every render test through a router,
-//     matching how the app itself only mounts the router-consuming layout
-//     under `_authed/` (see routes/__root.tsx + lib/router.tsx).
 //   - Theme provider — the app reflects theme via a `.dark` class on
 //     `<html>` (lib/theme-store.ts) driven by a Zustand store, not a React
 //     context provider, so there is nothing to wrap. Tests that care about
@@ -57,10 +87,30 @@ export function createTestQueryClient(): QueryClient {
   });
 }
 
+/**
+ * Builds a minimal ad hoc memory router whose ENTIRE tree is a single root
+ * route rendering `ui` verbatim — see the module doc above for why this is
+ * deliberately not the app's real `routeTree.gen.ts`.
+ */
+function buildTestRouter(ui: ReactElement, initialPath: string) {
+  const rootRoute = createRootRoute({
+    component: () => ui,
+  });
+  return createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: [initialPath] }),
+  });
+}
+
 export interface RenderWithProvidersOptions extends Omit<RenderOptions, "wrapper"> {
   /** Supply a pre-seeded QueryClient (e.g. to assert cache state after a
    *  mutation) instead of a fresh default one. */
   queryClient?: QueryClient;
+  /** Mount `ui` under a TanStack Router memory context — see module doc. */
+  withRouter?: boolean;
+  /** Starting location for the test router. Defaults to "/". Only used when
+   *  `withRouter` is true. */
+  initialPath?: string;
 }
 
 export interface RenderWithProvidersResult extends ReturnType<typeof render> {
@@ -78,7 +128,18 @@ export function renderWithProviders(
   ui: ReactElement,
   options: RenderWithProvidersOptions = {},
 ): RenderWithProvidersResult {
-  const { queryClient = createTestQueryClient(), ...rest } = options;
+  const {
+    queryClient = createTestQueryClient(),
+    withRouter = false,
+    initialPath = "/",
+    ...rest
+  } = options;
+
+  const content = withRouter ? (
+    <RouterProvider router={buildTestRouter(ui, initialPath)} />
+  ) : (
+    ui
+  );
 
   function Providers({ children }: { children: ReactNode }) {
     return (
@@ -90,7 +151,7 @@ export function renderWithProviders(
 
   return {
     queryClient,
-    ...render(ui, { wrapper: Providers, ...rest }),
+    ...render(content, { wrapper: Providers, ...rest }),
   };
 }
 
