@@ -790,22 +790,11 @@ class UpdateRunner
     {
         $this->loadUpgraderApi();
 
-        // B3 (GitHub issue #131) — harden the unpack directory. WordPress's
-        // own temp-directory resolution (get_temp_dir(), used by
-        // WP_Filesystem_*::unzip_file()/wp_tempnam() when WP_TEMP_DIR is
-        // undefined) falls through to sys_get_temp_dir() / upload_tmp_dir on
-        // a locked-down host, which can sit OUTSIDE open_basedir and fail
-        // silently there. wp-content/upgrade is always inside the site's own
-        // writable tree, so pin WP_TEMP_DIR to it explicitly rather than
-        // trusting that fallback.
-        $upgradeDir = defined('WP_CONTENT_DIR') ? rtrim((string) WP_CONTENT_DIR, '/\\') . '/upgrade' : '';
-        if ($upgradeDir !== '' && !is_dir($upgradeDir) && function_exists('wp_mkdir_p')) {
-            wp_mkdir_p($upgradeDir);
-        }
-        if ($upgradeDir !== '' && is_dir($upgradeDir) && !defined('WP_TEMP_DIR')) {
-            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- WP_TEMP_DIR is a documented, overridable WordPress core constant (wp-admin/includes/file.php get_temp_dir()), not a constant of our own; it is simply missing from this sniff's hardcoded allowed_core_constants list
-            define('WP_TEMP_DIR', $upgradeDir);
-        }
+        // B3 (GitHub issue #131), revised (agent-only regression fix, 0.61.20
+        // — GitHub issue #131 follow-up): see pinTempDirForUnpack()'s doc for
+        // why this is now conditional on WRITABILITY, not merely existence.
+        $tempDirNote = $this->pinTempDirForUnpack();
+        DebugLog::write('WPMgr Agent: applyViaUpgrader() ' . $tempDirNote);
 
         if (function_exists('wp_update_plugins') && $type === 'plugin') {
             wp_update_plugins();
@@ -829,6 +818,12 @@ class UpdateRunner
         add_filter('upgrader_package_options', $forceCleanWorking);
 
         try {
+            // Set by whichever case below actually ran an upgrade; used after
+            // the switch to prefix the CP-visible log with $tempDirNote
+            // (agent-only, 0.61.20) and as the switch's fallthrough guard —
+            // stays null only when $type matched none of the cases.
+            $outcome = null;
+
             switch ($type) {
                 case 'plugin':
                     if (!class_exists('\Plugin_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
@@ -873,7 +868,7 @@ class UpdateRunner
                         }
                     }
 
-                    return $outcome;
+                    break;
 
                 case 'theme':
                     if (!class_exists('\Theme_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
@@ -886,16 +881,107 @@ class UpdateRunner
                         Maintenance::clear($upgrader);
                     }
 
-                    return $this->upgraderOutcome($result);
+                    $outcome = $this->upgraderOutcome($result);
+                    break;
 
                 case 'core':
-                    return $this->applyCoreUpgrade($version);
+                    $outcome = $this->applyCoreUpgrade($version);
+                    break;
             }
 
-            return ['ok' => false, 'log' => 'Unsupported type.'];
+            if ($outcome === null) {
+                return ['ok' => false, 'log' => 'Unsupported type.'];
+            }
+
+            // Agent-only, 0.61.20 — surface the temp-dir decision in the
+            // SAME log the CP shows for this item, not just DebugLog (which
+            // is silent unless WPMGR_DEBUG/WP_DEBUG_LOG is on). Prefixed so
+            // it reads first, ahead of whatever the upgrade itself logged.
+            if ($tempDirNote !== '') {
+                $outcome['log'] = '[wpmgr] ' . $tempDirNote
+                    . ($outcome['log'] !== '' ? "\n" . $outcome['log'] : '');
+            }
+
+            return $outcome;
         } finally {
             remove_filter('upgrader_package_options', $forceCleanWorking);
         }
+    }
+
+    /**
+     * Decide whether to pin WP_TEMP_DIR to wp-content/upgrade for THIS
+     * apply, and do so only when that directory is actually usable in this
+     * request's execution context.
+     *
+     * B3 (GitHub issue #131) pinned WP_TEMP_DIR to wp-content/upgrade
+     * unconditionally (guarded only by is_dir()) to keep WordPress's own
+     * temp-directory resolution (get_temp_dir(), used by
+     * WP_Filesystem_*::unzip_file()/wp_tempnam()) from falling through to
+     * sys_get_temp_dir()/upload_tmp_dir — a location that can sit OUTSIDE
+     * open_basedir on a locked-down host and fail silently there.
+     *
+     * That pin itself became a REGRESSION (agent-only, 0.61.20 — GitHub
+     * issue #131 follow-up): on a host where wp-content/upgrade EXISTS but
+     * is NOT writable in this request's execution context (open_basedir/
+     * RunCloud-style restrictions, a permissions layout that differs from
+     * what the request user can write to) while the PRE-#131 fallback
+     * (sys_get_temp_dir()/upload_tmp_dir) WAS writable, forcing the pin
+     * broke every plugin/theme update on that host — the download/unpack
+     * that used to succeed now fails, and the #131 isComplete() guard
+     * correctly (but unhelpfully) rolls the failed apply back.
+     *
+     * The fix: pin ONLY when wp-content/upgrade is both present (creating
+     * it on demand) AND writable. When it is not, leave WP_TEMP_DIR
+     * undefined entirely so WordPress's own get_temp_dir() resolves the
+     * next-best writable location itself — the exact pre-#131 behaviour
+     * that worked on this class of host. This never weakens the #131 intent
+     * on a host where wp-content/upgrade IS writable: the pin still applies
+     * there, unchanged.
+     *
+     * All filesystem probes are @-suppressed: on an open_basedir-restricted
+     * host a path outside the allowed set can make is_dir()/is_writable()
+     * emit a warning (never a fatal), and this method must never surface
+     * that noise — "can't tell" is treated the same as "not writable" by
+     * construction, so suppressing the warning changes nothing about the
+     * decision.
+     *
+     * @return string A short, log-safe (no secrets) description of the
+     *                decision, suitable for both DebugLog and the
+     *                CP-visible item log.
+     */
+    private function pinTempDirForUnpack(): string
+    {
+        if (defined('WP_TEMP_DIR')) {
+            // Respect whatever already defined it (an operator's
+            // wp-config.php override, or an earlier call in this same
+            // request) — never redefine a PHP constant (fatal) and never
+            // second-guess an explicit choice made elsewhere.
+            return 'temp dir: WP_TEMP_DIR already defined; leaving as-is.';
+        }
+
+        $upgradeDir = defined('WP_CONTENT_DIR') ? rtrim((string) WP_CONTENT_DIR, '/\\') . '/upgrade' : '';
+        if ($upgradeDir === '') {
+            return 'temp dir: WP_CONTENT_DIR unavailable; using WordPress\'s own default temp dir.';
+        }
+
+        if (!@is_dir($upgradeDir) && function_exists('wp_mkdir_p')) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort existence probe; must never warn/fatal under open_basedir, see method doc
+            @wp_mkdir_p($upgradeDir); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort directory creation; a failure here is caught by the writability check right below, not by this return value
+        }
+
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized (no interactive/FTP context); direct writability probe is the only option, must never warn/fatal under open_basedir
+        $writable = @is_dir($upgradeDir) && @is_writable($upgradeDir);
+        if (!$writable) {
+            // Do NOT force a broken pin — fall through with WP_TEMP_DIR left
+            // undefined so WordPress's own get_temp_dir() picks the
+            // next-best writable location itself. This is the fix.
+            return 'temp dir: ' . $upgradeDir . ' exists but is not writable here; '
+                . 'pin skipped, falling back to WordPress\'s own default temp dir.';
+        }
+
+        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- WP_TEMP_DIR is a documented, overridable WordPress core constant (wp-admin/includes/file.php get_temp_dir()), not a constant of our own; it is simply missing from this sniff's hardcoded allowed_core_constants list
+        define('WP_TEMP_DIR', $upgradeDir);
+
+        return 'temp dir: pinned to ' . $upgradeDir;
     }
 
     /**
