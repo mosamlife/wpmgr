@@ -75,6 +75,21 @@ final class UpdateCommandTest extends TestCase
             public array $completeOverride = [];
             /** @var array<int,array{string,string}> Args of each isComplete() call. */
             public array $completeChecked = [];
+            /**
+             * @var array<string,string> Explicit lastIncompleteReason()
+             *     overrides, keyed "type:slug" — agent-only, 0.61.19 (GitHub
+             *     issue #182's sibling visibility fix). Absent = '' (matches
+             *     the real UpdateRunner's default when isComplete() returned
+             *     true, or was never called).
+             */
+            public array $incompleteReasonOverride = [];
+            /**
+             * The "type:slug" key of the MOST RECENT isComplete() call, so
+             * lastIncompleteReason() mirrors the real UpdateRunner's
+             * single-mutable-property semantics (the reason belongs to
+             * whichever call happened last, not to every key ever checked).
+             */
+            private string $lastCompleteCheckedKey = '';
 
             public function currentVersion(string $type, string $slug): string
             {
@@ -124,9 +139,16 @@ final class UpdateCommandTest extends TestCase
 
             public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
             {
-                $this->completeChecked[] = [$type, $slug];
+                $this->completeChecked[]      = [$type, $slug];
+                $this->lastCompleteCheckedKey = $type . ':' . $slug;
 
                 return $this->completeOverride[$type . ':' . $slug] ?? true;
+            }
+
+            /** Agent-only, 0.61.19 (GitHub issue #182's sibling visibility fix). */
+            public function lastIncompleteReason(): string
+            {
+                return $this->incompleteReasonOverride[$this->lastCompleteCheckedKey] ?? '';
             }
         };
     }
@@ -750,6 +772,90 @@ final class UpdateCommandTest extends TestCase
         );
         $this->assertCount(1, $runner->completeChecked, 'the completeness check must run for an ok:true apply');
         $this->assertCount(1, $snapshots->restored, 'a half-written apply must be auto-restored');
+    }
+
+    // ---- failure-reason visibility (agent-only, 0.61.19, GitHub issue #182's sibling fix) ----
+
+    public function test_rollback_log_surfaces_the_validate_plugin_error_reason(): void
+    {
+        // The "digits 9.1.0.5 -> 9.1.0.5 Failed + rollback" class of report:
+        // the reason UpdateRunner::isComplete() decided `false` (here, a
+        // validate_plugin() WP_Error — the new package genuinely did not
+        // land) must now reach the CP-visible item log, not just DebugLog.
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:digits/digits.php']  = '9.1.0.4';
+        $runner->available['plugin:digits/digits.php'] = '9.1.0.5';
+        $runner->completeOverride['plugin:digits/digits.php']         = false;
+        $runner->incompleteReasonOverride['plugin:digits/digits.php'] =
+            'validate_plugin: plugin file does not exist; on-disk main file present, raw Version 9.1.0.4 (expected 9.1.0.5)';
+
+        $snapshots = $this->spySnapshots();
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'digits/digits.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString(
+            'Reason: validate_plugin: plugin file does not exist',
+            $r['log'],
+            'the concrete isComplete() reason must appear in the CP-visible item log, not only DebugLog'
+        );
+        $this->assertStringContainsString('9.1.0.4', $r['log'], 'the on-disk-vs-expected diagnostic must be included');
+        $this->assertStringContainsString('9.1.0.5', $r['log']);
+    }
+
+    public function test_rollback_log_surfaces_the_basename_unresolved_reason(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:ghost-plugin/ghost-plugin.php']  = '1.0.0';
+        $runner->available['plugin:ghost-plugin/ghost-plugin.php'] = '1.1.0';
+        $runner->completeOverride['plugin:ghost-plugin/ghost-plugin.php']         = false;
+        $runner->incompleteReasonOverride['plugin:ghost-plugin/ghost-plugin.php'] =
+            'basename-unresolved (no installed plugin found for this slug); on-disk main file NOT found at "ghost-plugin/ghost-plugin.php" (expected version 1.1.0)';
+
+        $snapshots = $this->spySnapshots();
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'ghost-plugin/ghost-plugin.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString(
+            'Reason: basename-unresolved',
+            $r['log'],
+            'the basename-unresolved reason must appear in the CP-visible item log'
+        );
+    }
+
+    public function test_rollback_log_has_no_reason_suffix_when_apply_itself_reported_failure(): void
+    {
+        // isComplete() is never invoked when $applied['ok'] is already false
+        // (short-circuit, unchanged) — there is no reason to surface here;
+        // $applied['log'] (already appended above) is the real explanation.
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php']  = '5.0';
+        $runner->available['plugin:akismet/akismet.php'] = '5.3';
+        $runner->applySucceeds                           = false;
+
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertSame('failed', $r['status']);
+        $this->assertSame([], $runner->completeChecked, 'isComplete() must never be invoked after an ok:false apply');
+        $this->assertStringNotContainsString(
+            'Reason:',
+            $r['log'],
+            'no isComplete() reason exists for a genuine upgrader-reported failure'
+        );
     }
 
     public function test_verified_good_apply_is_never_rolled_back(): void

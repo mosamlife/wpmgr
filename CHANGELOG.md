@@ -8,6 +8,13 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.46] - 2026-07-08
+
+### Fixed
+
+- A WordPress dashboard bulk update could fatal error and strand the whole site in maintenance mode when it included a premium plugin that manages its own updates (agent 0.61.19, GitHub issue #182). The agent's self-update integration hooks into a shared WordPress filter that runs for every plugin and theme download, and some premium plugins legitimately leave that download's package location empty until their own license check succeeds; the agent's code was not written to expect that and crashed instead of skipping the download. It now recognizes and skips any download that is not its own, leaving WordPress to continue handling the other plugin normally. The agent's own signed, verified self-update path is unaffected.
+- When a plugin or theme update is applied but then detected as incomplete and automatically rolled back, the control plane's "View logs" now shows the specific reason (for example, the installed files did not validate, or the update package never actually landed) instead of only recording it in a debug log most users never see.
+
 ## [0.61.45] - 2026-07-08
 
 ### Fixed
