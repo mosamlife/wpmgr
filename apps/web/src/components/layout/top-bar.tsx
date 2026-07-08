@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Search,
+  ShieldCheck,
   UserRound,
 } from "lucide-react";
 
@@ -257,7 +258,10 @@ function NotificationsBell() {
 
 // ── User menu ────────────────────────────────────────────────────────────────
 
-function UserMenu() {
+// Exported (not just used locally) so a render test can mount it in
+// isolation without pulling in the rest of TopBar's provider surface
+// (command palette, bulk-action context, org switcher, etc).
+export function UserMenu() {
   const { data: me } = useMe();
   const logout = useLogout();
   const navigate = useNavigate();
@@ -298,6 +302,16 @@ function UserMenu() {
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link to="/settings/account">Account settings</Link>
+        </DropdownMenuItem>
+        {/* Two-factor auth / passkeys lives at /settings/security. It's a
+            per-user setting (no org guard), so it belongs here — one click
+            from anywhere, including the superadmin's /admin console, which
+            has no Settings entry in the primary sidebar. */}
+        <DropdownMenuItem asChild>
+          <Link to="/settings/security">
+            <ShieldCheck aria-hidden="true" className="size-4" />
+            <span>Security</span>
+          </Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
