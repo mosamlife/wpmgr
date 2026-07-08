@@ -88,6 +88,19 @@
  *     apply targeted) through as an optional third argument purely so a
  *     `false` verdict's DebugLog line can report the expected-vs-on-disk
  *     version — it never influences the verdict.
+ *   - Failure-reason visibility fix (agent-only, 0.61.19, GitHub issue #182's
+ *     sibling fix): the concrete reason UpdateRunner::isComplete() decided
+ *     `false` (validate_plugin() error / basename-unresolved / empty-style-
+ *     name, plus the raw on-disk-version-vs-expected diagnostic) used to be
+ *     written ONLY to DebugLog, which is a silent no-op without WPMGR_DEBUG —
+ *     an operator watching the control plane's "View logs" for a rolled-back
+ *     item saw nothing more specific than "Update incomplete; auto-restored
+ *     the pre-update snapshot." UpdateRunner::lastIncompleteReason() now
+ *     exposes that same text; this method appends it (read ONLY immediately
+ *     after an isComplete() call that itself returned false — never
+ *     unconditionally, so a stale reason from an earlier item can never leak)
+ *     to the rollback log line below. Concise and non-secret (slug/version/WP
+ *     error message only); never changes the boolean gate semantics above.
  *
  * Every input is treated as untrusted: type is whitelisted, slug is sanitized to
  * reject path traversal, and snapshot paths are bounded to wp-content.
@@ -422,18 +435,31 @@ final class UpdateCommand implements CommandInterface
                 // The CP's own post-update health probe remains the backstop
                 // for a genuinely bad apply that happens to also break
                 // verification.
-                $toVersion = $fromVersion;
-                $complete  = false;
+                $toVersion        = $fromVersion;
+                $complete         = false;
+                // GitHub issue #182's sibling visibility fix (agent-only,
+                // 0.61.19): the concrete reason isComplete() decided `false`,
+                // read ONLY immediately after a call that itself returned
+                // false — see UpdateRunner::lastIncompleteReason()'s doc for
+                // why this must never be read unconditionally.
+                $incompleteReason = '';
                 try {
                     $toVersion = $this->runner->currentVersion($type, $slug);
-                    // Short-circuits on $applied['ok'] === false, matching
-                    // the original intent: a genuine upgrader failure never
-                    // pays for the extra WP API round trip isComplete() costs.
+                    // Preserves the original short-circuit intent (a genuine
+                    // upgrader failure never pays for the extra WP API round
+                    // trip isComplete() costs), but as an explicit `if` rather
+                    // than `&&` so lastIncompleteReason() is only ever read
+                    // right after an isComplete() call that actually ran.
                     // $available (the version this apply targeted) is passed
-                    // through only to enrich isComplete()'s DebugLog
-                    // diagnostic on a `false` verdict (agent-only regression
-                    // fix, 0.61.18) — it never affects the verdict itself.
-                    $complete = $applied['ok'] && $this->runner->isComplete($type, $slug, $available);
+                    // through only to enrich isComplete()'s diagnostic on a
+                    // `false` verdict (agent-only regression fix, 0.61.18) —
+                    // it never affects the verdict itself.
+                    if ($applied['ok']) {
+                        $complete = $this->runner->isComplete($type, $slug, $available);
+                        if (!$complete) {
+                            $incompleteReason = $this->runner->lastIncompleteReason();
+                        }
+                    }
                 } catch (\Throwable $verifyError) {
                     DebugLog::write(
                         'WPMgr Agent: post-apply verification threw for ' . $type . ':' . $slug
@@ -473,6 +499,17 @@ final class UpdateCommand implements CommandInterface
                     return $this->result($type, $slug, $fromVersion, $toVersion, $status, $snapshotId, $log);
                 }
 
+                // GitHub issue #182's sibling visibility fix (agent-only,
+                // 0.61.19): append the concrete isComplete() reason — the same
+                // facts UpdateRunner already writes to DebugLog — to the
+                // CP-visible item log below, so "View logs" explains WHY an
+                // apply that reported success was still rolled back, without
+                // requiring WPMGR_DEBUG. Empty when the incompleteness came
+                // from $applied['ok'] === false instead (that case already has
+                // its own descriptive $applied['log'] appended above) or when
+                // isComplete() itself threw (S7; never treated as incomplete).
+                $reasonSuffix = $incompleteReason !== '' ? ' Reason: ' . $incompleteReason . '.' : '';
+
                 // Incomplete or failed apply: roll back synchronously right
                 // now rather than waiting on the shutdown backstop, so the
                 // directory is restored before we even respond to the
@@ -483,15 +520,15 @@ final class UpdateCommand implements CommandInterface
                     $restore = $guard->fire();
                     if ($restore['fired']) {
                         $log .= "\n" . ($restore['ok']
-                            ? 'Update incomplete; auto-restored the pre-update snapshot.'
-                            : 'Update incomplete; auto-restore FAILED: ' . $restore['log']);
+                            ? 'Update incomplete; auto-restored the pre-update snapshot.' . $reasonSuffix
+                            : 'Update incomplete; auto-restore FAILED: ' . $restore['log'] . $reasonSuffix);
                         // Re-read the version now the directory should be
                         // back to its pre-update state, so the response
                         // reflects what is actually on disk.
                         $toVersion = $this->runner->currentVersion($type, $slug);
                     }
                 } else {
-                    $log .= "\nUpdate incomplete; no pre-update snapshot was available to auto-restore.";
+                    $log .= "\nUpdate incomplete; no pre-update snapshot was available to auto-restore." . $reasonSuffix;
                 }
 
                 return $this->result($type, $slug, $fromVersion, $toVersion, 'failed', $snapshotId, $log);

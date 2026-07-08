@@ -711,6 +711,96 @@ final class UpdateCheckerTest extends TestCase
         $this->assertFalse($result, 'verifyDownload must return $reply unchanged for other plugins.');
     }
 
+    /**
+     * GitHub issue #182 (RED before Change 1, GREEN after): upgrader_pre_download
+     * is a GLOBAL filter — WP core calls
+     * apply_filters('upgrader_pre_download', false, null, ...) whenever the
+     * CURRENT update-transient row for some OTHER plugin/theme has no
+     * ->package at all (legitimate for premium plugins running their own
+     * updater, e.g. one that leaves ->package unset until a license check
+     * succeeds). Before the is_string() guard, PHP's strict_types(1) fatales
+     * a TypeError at this call boundary — before verifyDownload()'s own
+     * self-gate could even run — which fataled the whole bulk-update request
+     * and stranded the site in maintenance mode.
+     */
+    public function test_verifyDownload_null_package_passes_through(): void
+    {
+        $checker = $this->makeChecker();
+        $reply   = false;
+
+        $result = $checker->verifyDownload($reply, null, null, ['plugin' => 'other/other.php']);
+
+        $this->assertFalse($result, 'A null $package must pass $reply through unchanged, with no TypeError.');
+    }
+
+    /**
+     * is_string() (not merely !== null) must also cover a literal `false`
+     * package value — the other shape WP core can pass through this filter.
+     */
+    public function test_verifyDownload_false_package_passes_through(): void
+    {
+        $checker = $this->makeChecker();
+
+        $result = $checker->verifyDownload(false, false, null, null);
+
+        $this->assertFalse($result, 'A false $package must pass $reply through unchanged, with no TypeError.');
+    }
+
+    /**
+     * The #182 fix must never weaken (or bypass) the self-update integrity
+     * chain: a genuine agent package (sentinel + matching sha256) must still
+     * fetch a fresh manifest and verify byte-for-byte, returning the local
+     * temp file path WP_Upgrader installs from.
+     */
+    public function test_verifyDownload_still_verifies_agent_package(): void
+    {
+        $packageContent = str_repeat('Z', 64);
+        $claims         = $this->makeClaims([
+            'version'        => '0.11.0',
+            'package_size'   => 64,
+            'package_sha256' => hash('sha256', $packageContent),
+        ]);
+        $envelope     = $this->signClaims($claims);
+        $envelopeJson = (string) json_encode($envelope);
+
+        $callCount = 0;
+        Functions\when('wp_remote_get')->alias(function (string $url, array $args = []) use ($envelopeJson, &$callCount, $packageContent) {
+            $callCount++;
+            if ($callCount === 1) {
+                // First call: the manifest endpoint.
+                return [
+                    'response' => ['code' => 200, 'message' => 'OK'],
+                    'body'     => $envelopeJson,
+                    'filename' => '',
+                ];
+            }
+            // Second call: the package download.
+            $tmpFile = $args['filename'] ?? (sys_get_temp_dir() . '/wpmgr-test-' . bin2hex(random_bytes(4)) . '.zip');
+            file_put_contents($tmpFile, $packageContent);
+            return [
+                'response' => ['code' => 200, 'message' => 'OK'],
+                'body'     => '',
+                'filename' => $tmpFile,
+            ];
+        });
+        Functions\when('wp_remote_retrieve_response_code')->alias(function ($response) {
+            return $response['response']['code'] ?? 0;
+        });
+        Functions\when('wp_remote_retrieve_body')->alias(function ($response) {
+            return $response['body'] ?? '';
+        });
+        Functions\when('is_wp_error')->justReturn(false);
+
+        $checker = $this->makeChecker();
+        $result  = $checker->verifyDownload(false, UpdateChecker::PACKAGE_SENTINEL, null, ['plugin' => UpdateChecker::PLUGIN_KEY]);
+
+        $this->assertIsString($result, 'A verified, matching-sha256 self-update package must return the local temp file path.');
+        $this->assertTrue(is_file($result));
+        $this->assertSame($packageContent, file_get_contents($result));
+
+        @unlink($result); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- test-only temp-file cleanup
+    }
+
     public function test_verifyDownload_sha256_mismatch_returns_wp_error_and_unlinks(): void
     {
         $checker = $this->makeChecker();
@@ -798,6 +888,35 @@ final class UpdateCheckerTest extends TestCase
 
         $this->assertInstanceOf(\WP_Error::class, $result);
         $this->assertSame('wpmgr_update_manifest_failed', $result->get_error_code());
+    }
+
+    // =========================================================================
+    // renameSource tests
+    // =========================================================================
+
+    /**
+     * upgrader_source_selection is also a GLOBAL filter, and can likewise
+     * receive a non-string $source (e.g. a WP_Error already carried through
+     * from an earlier failed step) for a download this method was never
+     * meant to touch — the same strict_types(1) hazard as verifyDownload().
+     */
+    public function test_renameSource_non_string_source_passes_through(): void
+    {
+        $checker = $this->makeChecker();
+        $wpError = new \WP_Error('some_error', 'unrelated failure');
+
+        $result = $checker->renameSource($wpError, '/tmp/remote', null, ['plugin' => UpdateChecker::PLUGIN_KEY]);
+
+        $this->assertSame($wpError, $result, 'A non-string (WP_Error) $source must pass through untouched, with no TypeError.');
+    }
+
+    public function test_renameSource_null_source_passes_through(): void
+    {
+        $checker = $this->makeChecker();
+
+        $result = $checker->renameSource(null, '/tmp/remote', null, null);
+
+        $this->assertNull($result, 'A null $source must pass through untouched, with no TypeError.');
     }
 
     // =========================================================================

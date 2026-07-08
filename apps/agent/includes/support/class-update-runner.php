@@ -20,6 +20,19 @@ namespace WPMgr\Agent\Support;
 class UpdateRunner
 {
     /**
+     * The reason the most recent isComplete() call returned false, or '' when
+     * that call returned true (or isComplete() has not been called yet).
+     * Reset to '' at the START of every isComplete() call (see that method)
+     * so a caller can never read a stale reason left over from an earlier
+     * item in the same batch/request. Populated only from the same concise,
+     * non-secret (slug/version/WP-error-message) text already written to
+     * DebugLog by isPluginComplete()/isThemeComplete() — safe to surface
+     * directly in the CP-visible per-item result log (agent-only, 0.61.19,
+     * GitHub issue #182's sibling visibility fix).
+     */
+    private string $lastIncompleteReason = '';
+
+    /**
      * Validate an untrusted version string before it reaches WP-CLI argv or an
      * upgrader offer URL. Accepts only the literal "latest" or a token that
      * starts with a digit and contains only [0-9A-Za-z.-] (no spaces, no flag
@@ -272,11 +285,32 @@ class UpdateRunner
      */
     public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
     {
+        // Reset FIRST, unconditionally — so a caller that skips reading
+        // lastIncompleteReason() after a TRUE verdict (the common case) never
+        // leaves a prior item's reason lingering for the next isComplete()
+        // call in the same batch/request to accidentally inherit.
+        $this->lastIncompleteReason = '';
+
         return match ($type) {
             'plugin' => $this->isPluginComplete($slug, $expectedVersion),
             'theme'  => $this->isThemeComplete($slug, $expectedVersion),
             default  => true,
         };
+    }
+
+    /**
+     * The reason the most recent isComplete() call returned false. See the
+     * $lastIncompleteReason property doc for the reset/lifetime contract.
+     * UpdateCommand reads this ONLY immediately after an isComplete() call
+     * that itself returned false, so a caller must never treat a non-empty
+     * value here as meaningful on its own without having just observed that.
+     *
+     * @return string Concise, non-secret reason, or '' when the most recent
+     *                 isComplete() call returned true (or was never called).
+     */
+    public function lastIncompleteReason(): string
+    {
+        return $this->lastIncompleteReason;
     }
 
     /**
@@ -352,12 +386,17 @@ class UpdateRunner
             // all EVEN AFTER the clearstatcache()+wp_clean_plugins_cache()
             // above — the genuine half-written-main-file symptom, not a
             // stale-cache artifact.
+            $diagnostic = $this->pluginOnDiskDiagnostic($slug, $expectedVersion);
             DebugLog::write(
                 'WPMgr Agent: isComplete(plugin) => INCOMPLETE for "' . $slug . '"'
                 . ' | reason: basename-unresolved (no get_plugins() entry under'
                 . ' this slug or its folder, even after clearstatcache()+wp_clean_plugins_cache())'
-                . ' | ' . $this->pluginOnDiskDiagnostic($slug, $expectedVersion)
+                . ' | ' . $diagnostic
             );
+            // Surfaced to the CP-visible item log (agent-only, 0.61.19) — same
+            // facts as the DebugLog line above, condensed for a one-line
+            // display; never depends on WPMGR_DEBUG.
+            $this->lastIncompleteReason = 'basename-unresolved (no installed plugin found for this slug); ' . $diagnostic;
             return false;
         }
 
@@ -376,12 +415,17 @@ class UpdateRunner
 
         $result = validate_plugin($basename);
         if (is_wp_error($result)) {
+            $diagnostic = $this->pluginOnDiskDiagnostic($slug, $expectedVersion);
             DebugLog::write(
                 'WPMgr Agent: isComplete(plugin) => INCOMPLETE for "' . $basename . '"'
                 . ' | reason: validate_plugin(): ' . $result->get_error_message()
                 . ' (after clearstatcache()+wp_clean_plugins_cache())'
-                . ' | ' . $this->pluginOnDiskDiagnostic($slug, $expectedVersion)
+                . ' | ' . $diagnostic
             );
+            // Surfaced to the CP-visible item log (agent-only, 0.61.19) — same
+            // facts as the DebugLog line above, condensed for a one-line
+            // display; never depends on WPMGR_DEBUG.
+            $this->lastIncompleteReason = 'validate_plugin: ' . $result->get_error_message() . '; ' . $diagnostic;
             return false;
         }
 
@@ -516,11 +560,16 @@ class UpdateRunner
         // signal WordPress itself treats as "this is not a valid theme".
         $name = (string) $theme->get('Name');
         if ($name === '') {
+            $diagnostic = $this->themeOnDiskDiagnostic($slug, $expectedVersion);
             DebugLog::write(
                 'WPMgr Agent: isComplete(theme) => INCOMPLETE for "' . $slug . '"'
                 . ' | reason: empty-style-name (after clearstatcache()+wp_clean_themes_cache())'
-                . ' | ' . $this->themeOnDiskDiagnostic($slug, $expectedVersion)
+                . ' | ' . $diagnostic
             );
+            // Surfaced to the CP-visible item log (agent-only, 0.61.19) — same
+            // facts as the DebugLog line above, condensed for a one-line
+            // display; never depends on WPMGR_DEBUG.
+            $this->lastIncompleteReason = 'empty-style-name (style.css header did not re-read); ' . $diagnostic;
             return false;
         }
 

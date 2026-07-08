@@ -719,16 +719,40 @@ final class UpdateChecker
      * Any failure returns a WP_Error (visible to the operator; aborts the install).
      * On sha256 mismatch the temp file is unlinked before returning.
      *
-     * @param mixed  $reply      Current reply (false = not handled yet).
-     * @param string $package    Package URL or sentinel from the transient.
-     * @param mixed  $upgrader   WP_Upgrader instance (filter arg 3; unused).
-     * @param mixed  $hook_extra Extra info from WP_Upgrader (array with 'plugin' key;
-     *                           absent on WP < 5.5, hence nullable + the sentinel
-     *                           fallback below).
+     * @param mixed       $reply      Current reply (false = not handled yet).
+     * @param string|null $package    Package URL or sentinel from the transient.
+     *                                WP core passes null (or occasionally false)
+     *                                whenever the current update-transient row for
+     *                                SOME OTHER plugin/theme has no ->package at
+     *                                all — see the is_string() guard below.
+     * @param mixed       $upgrader   WP_Upgrader instance (filter arg 3; unused).
+     * @param mixed       $hook_extra Extra info from WP_Upgrader (array with 'plugin' key;
+     *                                absent on WP < 5.5, hence nullable + the sentinel
+     *                                fallback below).
      * @return mixed Local temp path (string), WP_Error, or $reply untouched.
      */
-    public function verifyDownload($reply, string $package, $upgrader = null, $hook_extra = null)
+    public function verifyDownload($reply, $package, $upgrader = null, $hook_extra = null)
     {
+        // upgrader_pre_download is a GLOBAL filter — install()'s add_filter()
+        // registers this method for EVERY plugin/theme download, not only our
+        // own. WP core calls apply_filters('upgrader_pre_download', false,
+        // null, ...) whenever the CURRENT update-transient row has no
+        // ->package at all, which is legitimate for premium plugins that run
+        // their own updater (e.g. one that leaves ->package unset until a
+        // license check succeeds). $package therefore arrives here as null
+        // (or occasionally false/non-string) on every such download. Bail out
+        // immediately, before hash_equals() below would otherwise be handed a
+        // non-string and fatal with a TypeError — that fatal stranded the
+        // whole bulk-update request (and the site) in maintenance mode
+        // (GitHub issue #182). is_string() (not merely !== null) also covers
+        // false/int. Return $reply UNCHANGED — never $package itself, which
+        // would make WP treat this return as a resolved local file path and
+        // break the other plugin/theme's own download — so WordPress
+        // continues its normal handling for a package that was never ours.
+        if (!is_string($package)) {
+            return $reply;
+        }
+
         // Only act on our plugin key or our sentinel package. The sentinel is the
         // primary signal (it is what we inject as ->package, and it is present on
         // every WP version); hook_extra['plugin'] is a secondary signal available
@@ -863,14 +887,29 @@ final class UpdateChecker
      * Traversal-safe: uses wp_basename() to strip any path components in the
      * source name before comparing.
      *
-     * @param string $source        Path to the extracted source directory.
-     * @param string $remote_source Path to the remote source temp dir.
-     * @param mixed  $upgrader      WP_Upgrader instance.
-     * @param mixed  $hook_extra    Extra context from WP_Upgrader.
-     * @return string Corrected source path, or original on failure.
+     * @param string|null $source        Path to the extracted source directory.
+     *                                   Like verifyDownload()'s $package, WP core
+     *                                   can hand this filter a non-string (e.g. a
+     *                                   WP_Error passed through from an earlier,
+     *                                   already-failed step) for a download this
+     *                                   method was never meant to touch — see the
+     *                                   is_string() guard below.
+     * @param string      $remote_source Path to the remote source temp dir.
+     * @param mixed       $upgrader      WP_Upgrader instance.
+     * @param mixed       $hook_extra    Extra context from WP_Upgrader.
+     * @return mixed Corrected source path (string), or $source untouched.
      */
-    public function renameSource(string $source, string $remote_source, $upgrader, $hook_extra)
+    public function renameSource($source, string $remote_source, $upgrader, $hook_extra)
     {
+        // Same strict_types(1) hazard as verifyDownload(): this is also a
+        // GLOBAL upgrader filter, so a non-string $source (e.g. a WP_Error
+        // already carried through from an earlier failed step, for a plugin
+        // this method was never meant to touch) must never reach the
+        // wp_basename()/basename() calls below. Return it untouched.
+        if (!is_string($source)) {
+            return $source;
+        }
+
         // Only act on our plugin.
         if (!is_array($hook_extra) || !isset($hook_extra['plugin'])) {
             return $source;

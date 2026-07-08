@@ -201,6 +201,15 @@ final class UpdateRunnerCompletenessTest extends TestCase
         $runner = new UpdateRunner();
 
         $this->assertFalse($runner->isComplete('plugin', 'gone-plugin/gone-plugin.php'));
+        // Agent-only, 0.61.19 (GitHub issue #182's sibling visibility fix):
+        // the same reason DebugLog already recorded must now also be readable
+        // via lastIncompleteReason(), so UpdateCommand can surface it in the
+        // CP-visible item log without requiring WPMGR_DEBUG.
+        $this->assertStringContainsString(
+            'basename-unresolved',
+            $runner->lastIncompleteReason(),
+            'lastIncompleteReason() must report the basename-unresolved reason'
+        );
     }
 
     public function test_isComplete_true_for_an_exact_unchanged_basename_match(): void
@@ -293,6 +302,67 @@ final class UpdateRunnerCompletenessTest extends TestCase
         $this->assertFalse(
             $runner->isComplete('plugin', 'demo/demo.php'),
             'ADVERSARIAL: clearstatcache() must not mask a GENUINE half-write — validate_plugin() failing even after the cache-bust must still report incomplete'
+        );
+        // Agent-only, 0.61.19: the validate_plugin() WP_Error message must be
+        // reflected in lastIncompleteReason() — the concrete "why" a #144-style
+        // "Failed + rollback" item needs, without WPMGR_DEBUG.
+        $this->assertStringContainsString(
+            'validate_plugin',
+            $runner->lastIncompleteReason(),
+            'lastIncompleteReason() must report the validate_plugin() error'
+        );
+        $this->assertStringContainsString(
+            'main file genuinely missing on disk.',
+            $runner->lastIncompleteReason(),
+            'lastIncompleteReason() must include the underlying WP_Error message'
+        );
+    }
+
+    // =========================================================================
+    // lastIncompleteReason() lifecycle — agent-only, 0.61.19
+    // =========================================================================
+
+    public function test_lastIncompleteReason_is_empty_after_a_true_verdict(): void
+    {
+        Functions\when('get_plugins')->justReturn([
+            'demo/demo.php' => ['Name' => 'Demo', 'Version' => '2.0'],
+        ]);
+        Functions\when('validate_plugin')->justReturn(0);
+        Functions\when('wp_clean_plugins_cache')->justReturn(null);
+
+        $runner = new UpdateRunner();
+
+        $this->assertTrue($runner->isComplete('plugin', 'demo/demo.php'));
+        $this->assertSame('', $runner->lastIncompleteReason(), 'a TRUE verdict must never leave a stale reason behind');
+    }
+
+    public function test_lastIncompleteReason_never_leaks_across_two_isComplete_calls_on_the_same_runner(): void
+    {
+        // A single UpdateCommand::execute() batch reuses ONE UpdateRunner
+        // across every item — if isComplete() didn't reset the reason at the
+        // START of every call, a SECOND item whose apply already failed
+        // (never reaching isComplete() at all) could read the FIRST item's
+        // stale reason. This proves the reset happens unconditionally.
+        Functions\when('get_plugins')->justReturn([
+            'unrelated/unrelated.php' => ['Name' => 'Unrelated', 'Version' => '1.0'],
+        ]);
+        Functions\when('wp_clean_plugins_cache')->justReturn(null);
+
+        $runner = new UpdateRunner();
+
+        $this->assertFalse($runner->isComplete('plugin', 'gone-plugin/gone-plugin.php'));
+        $this->assertNotSame('', $runner->lastIncompleteReason(), 'precondition: the first call must have set a reason');
+
+        Functions\when('get_plugins')->justReturn([
+            'demo/demo.php' => ['Name' => 'Demo', 'Version' => '2.0'],
+        ]);
+        Functions\when('validate_plugin')->justReturn(0);
+
+        $this->assertTrue($runner->isComplete('plugin', 'demo/demo.php'));
+        $this->assertSame(
+            '',
+            $runner->lastIncompleteReason(),
+            'a subsequent TRUE verdict must clear out the previous call\'s reason, never leak it'
         );
     }
 
