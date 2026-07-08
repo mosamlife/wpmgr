@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.45] - 2026-07-08
+
+### Fixed
+
+- A good plugin or theme update could be reported as failed and automatically rolled back on some hosts, even though it had actually applied correctly (agent 0.61.18). After applying an update, the agent re-checks that the plugin or theme is still readable before declaring success; on some hosting environments that re-check could read a stale, cached view of the filesystem left over from just before the update and see the just-updated files as missing, treating a perfectly good update as incomplete and reverting it. The agent now clears that stale cache before the check, so this false failure can no longer happen; a genuinely incomplete update (a real half-written plugin or theme) is still caught and rolled back exactly as before. A failed check now also records the specific reason and what was actually found on disk, so any future case is easy to diagnose from the log alone.
+
 ## [0.61.44] - 2026-07-08
 
 ### Fixed

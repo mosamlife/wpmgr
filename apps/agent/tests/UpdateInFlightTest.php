@@ -134,7 +134,7 @@ final class UpdateInFlightTest extends TestCase
             {
             }
 
-            public function isComplete(string $type, string $slug): bool
+            public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
             {
                 return $this->complete;
             }

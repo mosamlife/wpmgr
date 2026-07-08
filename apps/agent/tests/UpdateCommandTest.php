@@ -122,7 +122,7 @@ final class UpdateCommandTest extends TestCase
                 return false;
             }
 
-            public function isComplete(string $type, string $slug): bool
+            public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
             {
                 $this->completeChecked[] = [$type, $slug];
 
@@ -1010,7 +1010,7 @@ final class UpdateCommandTest extends TestCase
                 return ['ok' => true, 'log' => 'applied'];
             }
 
-            public function isComplete(string $type, string $slug): bool
+            public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
             {
                 return true;
             }
@@ -1056,7 +1056,7 @@ final class UpdateCommandTest extends TestCase
                 return ['ok' => true, 'log' => 'applied'];
             }
 
-            public function isComplete(string $type, string $slug): bool
+            public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
             {
                 throw new \RuntimeException('simulated isComplete() blow-up');
             }
@@ -1396,7 +1396,7 @@ final class UpdateCommandTest extends TestCase
                 return ['ok' => true, 'log' => 'applied'];
             }
 
-            public function isComplete(string $type, string $slug): bool
+            public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
             {
                 return true;
             }

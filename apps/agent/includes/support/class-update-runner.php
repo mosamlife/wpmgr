@@ -241,15 +241,40 @@ class UpdateRunner
      * must never cause a false rollback of a genuinely good update; a real
      * problem still surfaces through the normal apply()/currentVersion() path.
      *
-     * @param string $type plugin|theme|core.
-     * @param string $slug Sanitized slug (ignored for core).
+     * Agent-only regression fix (0.61.18) — a GOOD apply was being
+     * auto-reverted on an open_basedir/RunCloud-style host: the update files
+     * DID apply (apply() returned ok:true, no mid-copy crash), but
+     * get_plugins()'s / validate_plugin()'s internal file_exists()/
+     * is_readable() calls — and wp_get_theme()'s style.css re-read — went
+     * through a PHP stat/realpath cache entry populated BEFORE this
+     * request's non-atomic directory copy, and reported the just-swapped
+     * main file/style.css as absent even though wp_clean_plugins_cache(true)/
+     * wp_clean_themes_cache() below had already busted WordPress's OWN
+     * metadata cache — that call never touches the separate OS-level stat
+     * cache. isPluginComplete()/isThemeComplete() now call
+     * clearstatcache(true) BEFORE that re-read (see each method's own doc).
+     * This can only ever turn a false "missing" into an accurate "present";
+     * a genuinely missing/truncated file still reads missing afterwards, so
+     * it cannot mask a real half-write, and the removed vendor/autoload.php
+     * sub-check above stays removed — no narrowing of half-write detection.
+     * Every `false` verdict is now also instrumented via DebugLog with the
+     * concrete failure reason plus a raw, cache-bypassing on-disk version
+     * read, so a future occurrence is diagnosable from one log line instead
+     * of guessed at again.
+     *
+     * @param string $type            plugin|theme|core.
+     * @param string $slug            Sanitized slug (ignored for core).
+     * @param string $expectedVersion Version the apply targeted, used only to
+     *                                enrich the DebugLog diagnostic on a
+     *                                `false` verdict ('' when unknown); never
+     *                                affects the return value.
      * @return bool
      */
-    public function isComplete(string $type, string $slug): bool
+    public function isComplete(string $type, string $slug, string $expectedVersion = ''): bool
     {
         return match ($type) {
-            'plugin' => $this->isPluginComplete($slug),
-            'theme'  => $this->isThemeComplete($slug),
+            'plugin' => $this->isPluginComplete($slug, $expectedVersion),
+            'theme'  => $this->isThemeComplete($slug, $expectedVersion),
             default  => true,
         };
     }
@@ -257,15 +282,35 @@ class UpdateRunner
     /**
      * Plugin half of isComplete(). See isComplete()'s doc for the rationale.
      *
-     * @param string $slug Sanitized plugin basename or folder.
+     * Agent-only regression fix (0.61.18) — clearstatcache(true) runs FIRST,
+     * before wp_clean_plugins_cache()/get_plugins()/validate_plugin() re-read
+     * the just-swapped directory. wp_clean_plugins_cache() only busts
+     * WordPress's OWN metadata cache; get_plugins()'s and validate_plugin()'s
+     * underlying file_exists()/is_readable() calls still go through PHP's
+     * separate OS-level stat/realpath cache, which install_package()'s
+     * non-atomic copy can leave stale for the exact file it just wrote — the
+     * false "incomplete" symptom reported on open_basedir/RunCloud-style
+     * hosts. No filename is passed to clearstatcache() here because the
+     * exact swapped path isn't known until get_plugins() resolves
+     * `$basename` a few lines down (a renamed main file resolves only by
+     * FOLDER — see S6 below); a full clear is a single cheap op run once per
+     * applied item, not a hot loop.
+     *
+     * @param string $slug            Sanitized plugin basename or folder.
+     * @param string $expectedVersion Version the apply targeted, for the
+     *                                DebugLog diagnostic only ('' when
+     *                                unknown); never affects the verdict.
      * @return bool
      */
-    private function isPluginComplete(string $slug): bool
+    private function isPluginComplete(string $slug, string $expectedVersion = ''): bool
     {
         $this->loadPluginApi();
         if (!function_exists('get_plugins') || !function_exists('validate_plugin')) {
             return true;
         }
+
+        // Agent-only regression fix (0.61.18) — see this method's class doc.
+        clearstatcache(true);
 
         if (function_exists('wp_clean_plugins_cache')) {
             // The main plugin file may have just been rewritten; force a
@@ -304,12 +349,39 @@ class UpdateRunner
 
         if ($basename === '') {
             // get_plugins() no longer resolves this slug to any header at
-            // all — the classic half-written-main-file symptom.
+            // all EVEN AFTER the clearstatcache()+wp_clean_plugins_cache()
+            // above — the genuine half-written-main-file symptom, not a
+            // stale-cache artifact.
+            DebugLog::write(
+                'WPMgr Agent: isComplete(plugin) => INCOMPLETE for "' . $slug . '"'
+                . ' | reason: basename-unresolved (no get_plugins() entry under'
+                . ' this slug or its folder, even after clearstatcache()+wp_clean_plugins_cache())'
+                . ' | ' . $this->pluginOnDiskDiagnostic($slug, $expectedVersion)
+            );
             return false;
+        }
+
+        if (function_exists('opcache_invalidate')) {
+            // Guarded: not every host runs OPcache. Harmless for the header
+            // re-read above (get_plugins()/validate_plugin() parse the file
+            // directly; they never `include`/`require` it) and correct for
+            // the reactivation include_once() a successful apply performs
+            // afterward — an in-place-overwritten main file could otherwise
+            // still execute stale cached bytecode there.
+            $mainFilePath = $this->pluginMainFilePath($basename);
+            if ($mainFilePath !== '') {
+                @opcache_invalidate($mainFilePath, true); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort opcode-cache bust; @-guarded so an open_basedir host can never warn/fatal here
+            }
         }
 
         $result = validate_plugin($basename);
         if (is_wp_error($result)) {
+            DebugLog::write(
+                'WPMgr Agent: isComplete(plugin) => INCOMPLETE for "' . $basename . '"'
+                . ' | reason: validate_plugin(): ' . $result->get_error_message()
+                . ' (after clearstatcache()+wp_clean_plugins_cache())'
+                . ' | ' . $this->pluginOnDiskDiagnostic($slug, $expectedVersion)
+            );
             return false;
         }
 
@@ -318,6 +390,67 @@ class UpdateRunner
         // REMOVED entirely; see this method's class doc (isComplete()) for
         // why. validate_plugin() succeeding is the whole signal.
         return true;
+    }
+
+    /**
+     * Absolute path to a resolved plugin basename's main file, for the
+     * opcode-cache bust in isPluginComplete(). Returns '' when WP_PLUGIN_DIR
+     * isn't defined (never the case in a real WordPress load).
+     *
+     * @param string $basename Resolved "folder/main-file.php" plugin basename.
+     * @return string
+     */
+    private function pluginMainFilePath(string $basename): string
+    {
+        $pluginDir = defined('WP_PLUGIN_DIR') ? (string) constant('WP_PLUGIN_DIR') : '';
+        return $pluginDir === '' ? '' : rtrim($pluginDir, '/\\') . '/' . $basename;
+    }
+
+    /**
+     * Diagnostic-only, best-effort RAW on-disk read of a plugin main file's
+     * Version header, entirely independent of get_plugins()/validate_plugin()
+     * — and therefore of whatever cache state THEY just saw — so a single
+     * DebugLog line recording an isComplete()=false verdict is enough to tell
+     * a stale-cache false negative (file present, at the expected version,
+     * on disk) apart from a genuine half-write (file missing or short)
+     * without guessing. Never throws and never affects the return value
+     * above; every filesystem touch is @-suppressed so an
+     * open_basedir-restricted probe can never warn/fatal here.
+     *
+     * @param string $slug            Sanitized plugin basename or folder.
+     * @param string $expectedVersion Version the apply targeted ('' when unknown).
+     * @return string Diagnostic fragment (never empty).
+     */
+    private function pluginOnDiskDiagnostic(string $slug, string $expectedVersion): string
+    {
+        $expected = $expectedVersion !== '' ? $expectedVersion : 'unknown';
+
+        $pluginDir = defined('WP_PLUGIN_DIR') ? (string) constant('WP_PLUGIN_DIR') : '';
+        if ($pluginDir === '' || !function_exists('get_plugin_data')) {
+            return 'on-disk read unavailable (expected version ' . $expected . ')';
+        }
+
+        // Best-effort candidate: the slug as given when it already looks
+        // like a "folder/file.php" basename, else guess the conventional
+        // "folder/folder.php" main-file name. Diagnostic-only — a wrong
+        // guess just yields "not found", itself a true (if less specific)
+        // signal; it never flips the actual isComplete() verdict above.
+        $candidate = str_contains($slug, '/') ? $slug : ($slug . '/' . $slug . '.php');
+        $path      = rtrim($pluginDir, '/\\') . '/' . $candidate;
+
+        clearstatcache(true, $path);
+
+        if (!@is_readable($path)) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort diagnostic probe on a guessed candidate path that may legitimately not exist; must never warn/fatal under open_basedir
+            return 'on-disk main file NOT found at "' . $candidate . '" (expected version ' . $expected . ')';
+        }
+
+        $data   = @get_plugin_data($path, false, false); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort raw header parse for a diagnostic log line only; must never warn/fatal under open_basedir
+        $onDisk = is_array($data) && isset($data['Version']) && $data['Version'] !== ''
+            ? (string) $data['Version']
+            : 'unreadable';
+
+        return 'on-disk main file present at "' . $candidate . '", raw Version header: ' . $onDisk
+            . ' (expected ' . $expected . ')';
     }
 
     /**
@@ -342,14 +475,25 @@ class UpdateRunner
     /**
      * Theme half of isComplete(). See isComplete()'s doc for the rationale.
      *
-     * @param string $slug Sanitized theme stylesheet.
+     * Agent-only regression fix (0.61.18) — same stale-stat-cache false
+     * negative as isPluginComplete(), same fix: clearstatcache(true) runs
+     * BEFORE wp_clean_themes_cache()/wp_get_theme() re-read the just-swapped
+     * style.css. See isPluginComplete()'s doc for the full rationale.
+     *
+     * @param string $slug            Sanitized theme stylesheet.
+     * @param string $expectedVersion Version the apply targeted, for the
+     *                                DebugLog diagnostic only ('' when
+     *                                unknown); never affects the verdict.
      * @return bool
      */
-    private function isThemeComplete(string $slug): bool
+    private function isThemeComplete(string $slug, string $expectedVersion = ''): bool
     {
         if (!function_exists('wp_get_theme')) {
             return true;
         }
+
+        // Agent-only regression fix (0.61.18) — see this method's class doc.
+        clearstatcache(true);
 
         if (function_exists('wp_clean_themes_cache')) {
             wp_clean_themes_cache();
@@ -360,12 +504,65 @@ class UpdateRunner
             return true;
         }
 
+        if (function_exists('opcache_invalidate') && function_exists('get_theme_root')) {
+            // Guarded/best-effort, mirroring isPluginComplete(); style.css is
+            // never `include`d so this is defensive rather than required.
+            $styleCss = rtrim((string) get_theme_root($slug), '/\\') . '/' . $slug . '/style.css';
+            @opcache_invalidate($styleCss, true); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort opcode-cache bust; @-guarded so an open_basedir host can never warn/fatal here
+        }
+
         // A half-written theme (style.css truncated or its header block
         // corrupted mid-copy) reads back with an empty Name — the same
         // signal WordPress itself treats as "this is not a valid theme".
         $name = (string) $theme->get('Name');
+        if ($name === '') {
+            DebugLog::write(
+                'WPMgr Agent: isComplete(theme) => INCOMPLETE for "' . $slug . '"'
+                . ' | reason: empty-style-name (after clearstatcache()+wp_clean_themes_cache())'
+                . ' | ' . $this->themeOnDiskDiagnostic($slug, $expectedVersion)
+            );
+            return false;
+        }
 
-        return $name !== '';
+        return true;
+    }
+
+    /**
+     * Diagnostic-only, best-effort RAW on-disk read of a theme's style.css
+     * headers, independent of wp_get_theme()'s cache. See
+     * pluginOnDiskDiagnostic()'s doc for the full rationale — same purpose,
+     * theme-side. Never throws and never affects the return value above;
+     * every filesystem touch is @-suppressed so an open_basedir-restricted
+     * probe can never warn/fatal here.
+     *
+     * @param string $slug            Sanitized theme stylesheet.
+     * @param string $expectedVersion Version the apply targeted ('' when unknown).
+     * @return string Diagnostic fragment (never empty).
+     */
+    private function themeOnDiskDiagnostic(string $slug, string $expectedVersion): string
+    {
+        $expected = $expectedVersion !== '' ? $expectedVersion : 'unknown';
+
+        if (!function_exists('get_theme_root') || !function_exists('get_file_data')) {
+            return 'on-disk read unavailable (expected version ' . $expected . ')';
+        }
+
+        $path = rtrim((string) get_theme_root($slug), '/\\') . '/' . $slug . '/style.css';
+        clearstatcache(true, $path);
+
+        if (!@is_readable($path)) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort diagnostic probe; must never warn/fatal under open_basedir
+            return 'on-disk style.css NOT found at "' . $slug . '/style.css" (expected version ' . $expected . ')';
+        }
+
+        $headers = @get_file_data($path, ['Version' => 'Version', 'Name' => 'Theme Name']); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort raw header parse for a diagnostic log line only; must never warn/fatal under open_basedir
+        $onDiskVersion   = is_array($headers) && isset($headers['Version']) && $headers['Version'] !== ''
+            ? (string) $headers['Version']
+            : 'unreadable';
+        $onDiskNameEmpty = !is_array($headers) || !isset($headers['Name']) || $headers['Name'] === '';
+
+        return 'on-disk style.css present, raw Version header: ' . $onDiskVersion
+            . ', raw Name header ' . ($onDiskNameEmpty ? 'EMPTY' : 'present')
+            . ' (expected version ' . $expected . ')';
     }
 
     /**

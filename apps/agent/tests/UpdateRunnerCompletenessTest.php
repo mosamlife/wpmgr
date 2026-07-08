@@ -217,4 +217,167 @@ final class UpdateRunnerCompletenessTest extends TestCase
 
         $this->assertTrue($runner->isComplete('plugin', 'akismet/akismet.php'));
     }
+
+    // =========================================================================
+    // Agent-only regression fix (0.61.18) — stale post-apply stat/realpath
+    // cache false-negative on open_basedir/RunCloud-style hosts. See
+    // UpdateRunner::isComplete()'s class doc for the full symptom/fix.
+    // =========================================================================
+
+    /**
+     * PROOF: a GOOD apply must no longer be reported incomplete just because
+     * the OS-level stat/realpath cache still holds the pre-apply directory
+     * listing. validate_plugin() is faked to return a WP_Error (the exact
+     * "stale cache reads the just-swapped main file as absent" symptom)
+     * UNTIL clearstatcache() has actually run, proving both the outcome
+     * (isComplete() === true) and the ORDER (clearstatcache() must run
+     * BEFORE the validate_plugin() re-read, not merely somewhere in the
+     * method) — a fix that busted the cache only AFTER this read would still
+     * observe the stale WP_Error here and fail this assertion.
+     */
+    public function test_stale_stat_cache_post_apply_still_reports_complete(): void
+    {
+        // Shared mutable flag. $cacheState is an object, so every closure
+        // below that captures it by VALUE still shares the same underlying
+        // instance (PHP object handles), no by-reference capture needed.
+        $cacheState = new class {
+            public bool $cleared = false;
+        };
+
+        Functions\when('clearstatcache')->alias(function () use ($cacheState) {
+            $cacheState->cleared = true;
+        });
+        Functions\when('get_plugins')->justReturn([
+            'demo/demo.php' => ['Name' => 'Demo', 'Version' => '2.0'],
+        ]);
+        Functions\when('wp_clean_plugins_cache')->justReturn(null);
+        Functions\when('validate_plugin')->alias(function () use ($cacheState) {
+            if (!$cacheState->cleared) {
+                return new \WP_Error('plugin_not_found', 'stale stat cache: main file not found.');
+            }
+
+            return 0;
+        });
+
+        $runner = new UpdateRunner();
+
+        $this->assertTrue(
+            $runner->isComplete('plugin', 'demo/demo.php'),
+            'clearstatcache() must run BEFORE validate_plugin() so a stale post-apply stat cache never produces a false incomplete verdict'
+        );
+        $this->assertTrue(
+            $cacheState->cleared,
+            'precondition: clearstatcache() must actually run as part of isComplete()'
+        );
+    }
+
+    /**
+     * ADVERSARIAL GUARD: the clearstatcache() fix must NOT weaken half-write
+     * detection into ignoring a real partial write. Unlike the stale-cache
+     * test above, validate_plugin() genuinely fails on EVERY call — cache-bust
+     * or not — the real symptom this check exists to catch.
+     */
+    public function test_genuinely_missing_main_file_still_reports_incomplete(): void
+    {
+        Functions\when('clearstatcache')->justReturn(null);
+        Functions\when('get_plugins')->justReturn([
+            'demo/demo.php' => ['Name' => 'Demo', 'Version' => '2.0'],
+        ]);
+        Functions\when('wp_clean_plugins_cache')->justReturn(null);
+        Functions\when('validate_plugin')->justReturn(
+            new \WP_Error('plugin_not_found', 'main file genuinely missing on disk.')
+        );
+
+        $runner = new UpdateRunner();
+
+        $this->assertFalse(
+            $runner->isComplete('plugin', 'demo/demo.php'),
+            'ADVERSARIAL: clearstatcache() must not mask a GENUINE half-write — validate_plugin() failing even after the cache-bust must still report incomplete'
+        );
+    }
+
+    // =========================================================================
+    // Theme parity — the same clearstatcache() fix, theme-side.
+    // =========================================================================
+
+    public function test_theme_truncated_style_css_still_reports_incomplete_after_cache_bust(): void
+    {
+        Functions\when('clearstatcache')->justReturn(null);
+        Functions\when('wp_clean_themes_cache')->justReturn(null);
+
+        // A genuinely truncated style.css (corrupted mid-copy) reads back
+        // with an empty Name even after the cache-bust — must still be
+        // reported incomplete, not masked.
+        $theme = new class {
+            public function get(string $key): string
+            {
+                return '';
+            }
+        };
+        Functions\when('wp_get_theme')->justReturn($theme);
+
+        $runner = new UpdateRunner();
+
+        $this->assertFalse(
+            $runner->isComplete('theme', 'broken-theme'),
+            'ADVERSARIAL: a genuinely truncated style.css must still report incomplete after the cache-bust'
+        );
+    }
+
+    public function test_theme_good_update_reports_complete_after_cache_bust(): void
+    {
+        Functions\when('clearstatcache')->justReturn(null);
+        Functions\when('wp_clean_themes_cache')->justReturn(null);
+
+        $theme = new class {
+            public function get(string $key): string
+            {
+                return $key === 'Name' ? 'Good Theme' : '2.0';
+            }
+        };
+        Functions\when('wp_get_theme')->justReturn($theme);
+
+        $runner = new UpdateRunner();
+
+        $this->assertTrue($runner->isComplete('theme', 'good-theme'));
+    }
+
+    /** Theme-side parity to test_stale_stat_cache_post_apply_still_reports_complete(). */
+    public function test_theme_stale_stat_cache_post_apply_still_reports_complete(): void
+    {
+        $cacheState = new class {
+            public bool $cleared = false;
+        };
+
+        Functions\when('clearstatcache')->alias(function () use ($cacheState) {
+            $cacheState->cleared = true;
+        });
+        Functions\when('wp_clean_themes_cache')->justReturn(null);
+
+        $theme = new class ($cacheState) {
+            public function __construct(private object $cacheState)
+            {
+            }
+
+            public function get(string $key): string
+            {
+                if (!$this->cacheState->cleared) {
+                    // The stale-cache symptom: an empty Name as if the
+                    // header hadn't landed yet.
+                    return '';
+                }
+
+                return $key === 'Name' ? 'Good Theme' : '2.0';
+            }
+        };
+        Functions\when('wp_get_theme')->justReturn($theme);
+
+        $runner = new UpdateRunner();
+
+        $this->assertTrue(
+            $runner->isComplete('theme', 'good-theme'),
+            'theme parity: clearstatcache() must run BEFORE wp_get_theme()\'s re-read too'
+        );
+        $this->assertTrue($cacheState->cleared);
+    }
 }

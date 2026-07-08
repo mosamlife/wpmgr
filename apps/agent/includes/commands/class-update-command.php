@@ -76,6 +76,18 @@
  *     marker in the `finally` below) and opportunistically invokes
  *     SnapshotManager::gcExpired() (C) so orphaned snapshots/asides are
  *     reclaimed even on a `DISABLE_WP_CRON`/dormant site, not cron-only.
+ *   - False-rollback regression fix (agent-only, 0.61.18): on an
+ *     open_basedir/RunCloud-style host a perfectly GOOD apply was being
+ *     auto-reverted here — the completeness re-read (UpdateRunner::isComplete())
+ *     busts WordPress's OWN plugin/theme metadata cache but was reading
+ *     through a separate, still-stale PHP stat/realpath cache for the
+ *     just-swapped directory, producing a false "incomplete" verdict with no
+ *     genuine half-write behind it. UpdateRunner::isComplete() now busts that
+ *     cache too before its re-read (see its own class doc); this call site is
+ *     unchanged except that it now also passes `$available` (the version the
+ *     apply targeted) through as an optional third argument purely so a
+ *     `false` verdict's DebugLog line can report the expected-vs-on-disk
+ *     version — it never influences the verdict.
  *
  * Every input is treated as untrusted: type is whitelisted, slug is sanitized to
  * reject path traversal, and snapshot paths are bounded to wp-content.
@@ -417,7 +429,11 @@ final class UpdateCommand implements CommandInterface
                     // Short-circuits on $applied['ok'] === false, matching
                     // the original intent: a genuine upgrader failure never
                     // pays for the extra WP API round trip isComplete() costs.
-                    $complete = $applied['ok'] && $this->runner->isComplete($type, $slug);
+                    // $available (the version this apply targeted) is passed
+                    // through only to enrich isComplete()'s DebugLog
+                    // diagnostic on a `false` verdict (agent-only regression
+                    // fix, 0.61.18) — it never affects the verdict itself.
+                    $complete = $applied['ok'] && $this->runner->isComplete($type, $slug, $available);
                 } catch (\Throwable $verifyError) {
                     DebugLog::write(
                         'WPMgr Agent: post-apply verification threw for ' . $type . ':' . $slug
