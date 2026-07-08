@@ -3,7 +3,7 @@
  * Plugin Name:       WPMgr Agent
  * Plugin URI:        https://github.com/mosamlife/wpmgr
  * Description:        Connects this WordPress site to a WPMgr control plane for backups, updates, monitoring, and security scanning.
- * Version:           0.61.19
+ * Version:           0.61.20
  * Requires at least: 6.2
  * Requires PHP:      8.1
  * Author:            WPMgr contributors
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
     exit; // No direct access.
 }
 
-define('WPMGR_AGENT_VERSION', '0.61.19');
+define('WPMGR_AGENT_VERSION', '0.61.20');
 define('WPMGR_AGENT_FILE', __FILE__);
 define('WPMGR_AGENT_DIR', plugin_dir_path(__FILE__));
 

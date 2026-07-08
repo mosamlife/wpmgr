@@ -8,6 +8,13 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.47] - 2026-07-08
+
+### Fixed
+
+- Plugin and theme updates could fail and automatically roll back on some hosts, even though the same updates worked before a recent hardening change (agent 0.61.20). That change started pinning WordPress's temporary download/unpack directory to a folder inside the site's own wp-content directory, to keep updates working on hosts that restrict the system-wide temp location. On a host where that wp-content folder exists but is not actually writable in the context the update runs in (for example some open_basedir or managed-hosting setups), the pin itself broke the download and unpack step for every plugin and theme update, including free and premium plugins alike. The agent now only applies that pin when the folder is confirmed writable; otherwise it leaves WordPress to fall back to its own default temporary location, restoring the behavior that worked on this class of host before the change. Hosts where the folder is writable are unaffected.
+- The update run detail now shows the full agent log for a failed or rolled-back task. Previously the reason an update was reverted was clipped to a short preview and effectively hidden; each failed task now has a "View log" toggle that reveals the complete agent diagnostic (including the exact reason and the on-disk version it found), and a button to copy it.
+
 ## [0.61.46] - 2026-07-08
 
 ### Fixed

@@ -9,6 +9,8 @@
     "realpath",
     "clearstatcache",
     "is_readable",
+    "is_dir",
+    "is_writable",
     "opcache_invalidate"
   ]
 }
