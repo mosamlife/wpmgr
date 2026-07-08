@@ -117,8 +117,13 @@ function AdminAccountsPage() {
     useAdminAccountsList(filters);
 
   function patchSearch(patch: Partial<AccountsSearch>) {
+    // `offset: 0` must come BEFORE `...patch`, not after: a filter patch
+    // (search/status/plan/sort — none of which carry an `offset`) should
+    // reset to page 1, but a pager patch (Next/Previous, which DOES carry an
+    // explicit `offset`) must win over that reset. Spreading `patch` last
+    // lets it override the `offset: 0` default when present.
     void navigate({
-      search: (prev: AccountsSearch) => ({ ...prev, ...patch, offset: 0 }),
+      search: (prev: AccountsSearch) => ({ ...prev, offset: 0, ...patch }),
       replace: true,
     });
   }

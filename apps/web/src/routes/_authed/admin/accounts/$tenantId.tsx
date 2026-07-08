@@ -67,7 +67,7 @@ function AdminAccountDetailPage() {
 
   if (isPending) {
     return (
-      <section className="max-w-4xl space-y-6">
+      <section className="space-y-6">
         <PageHeader
           title="Loading account..."
           backTo={{ to: "/admin/accounts", label: "Back to Accounts" }}
@@ -80,7 +80,7 @@ function AdminAccountDetailPage() {
 
   if (isError || !data) {
     return (
-      <section className="max-w-4xl space-y-6">
+      <section className="space-y-6">
         <PageHeader
           title="Account"
           backTo={{ to: "/admin/accounts", label: "Back to Accounts" }}
@@ -123,7 +123,7 @@ function AdminAccountDetailPage() {
   const timelineNewestFirst = sortEventsNewestFirst(timeline);
 
   return (
-    <section className="max-w-4xl space-y-6">
+    <section className="space-y-6">
       <PageHeader
         title={org_name}
         copyable={tenant_id}

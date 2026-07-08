@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
   Activity,
+  ArrowLeft,
+  Building2,
   ChevronRight,
   Globe,
   LineChart,
@@ -9,6 +11,8 @@ import {
   Settings,
   Share2,
   Shield,
+  ShieldAlert,
+  TrendingUp,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -85,6 +89,14 @@ interface NavGroup {
   items?: NavItem[];
   /** When true this group is collapsible in expanded sidebar mode. */
   collapsible?: boolean;
+  /**
+   * When true, this leaf only lights up on an EXACT pathname match, never a
+   * sub-route prefix match. Needed for a top-level index route that has
+   * sibling leaves sharing its prefix (Admin's "Users" leaf lives at
+   * `/admin`, and would otherwise also light up on `/admin/accounts`,
+   * `/admin/revenue`, etc. via the default prefix-match `isActive`).
+   */
+  exactMatch?: boolean;
 }
 
 // Top groups (rendered above the bottom-aligned Settings entry).
@@ -158,11 +170,25 @@ const SHARED_WITH_ME_GROUP: NavGroup = {
   to: "/shared-with-me",
 };
 
-// Superadmin-only nav entry. Only mounted when me.user.is_superadmin === true.
-const ADMIN_GROUP: NavGroup = {
-  label: "Admin",
-  icon: Shield,
-  to: "/admin",
+// Superadmin-only nav entries — promoted directly into the primary sidebar
+// (Option A, GH admin-layout fix) rather than living inside a second, nested
+// "Instance Admin" left-nav inside the /admin route layout. Only mounted when
+// me.user.is_superadmin === true. "Users" is the /admin index route, so it
+// carries `exactMatch` — otherwise its prefix-matching `isActive` check would
+// also light it up on every other /admin/* leaf below it.
+const ADMIN_NAV_GROUPS: ReadonlyArray<NavGroup> = [
+  { label: "Users", icon: Users, to: "/admin", exactMatch: true },
+  { label: "Accounts", icon: Building2, to: "/admin/accounts" },
+  { label: "Revenue", icon: TrendingUp, to: "/admin/revenue" },
+  { label: "Vulnerability feed", icon: ShieldAlert, to: "/admin/vuln-feed" },
+];
+
+// Bottom-aligned app-switcher leaf, mirroring how the tenant sidebar
+// bottom-aligns its single Settings leaf.
+const BACK_TO_SITES_LEAF: NavGroup = {
+  label: "Back to Sites",
+  icon: ArrowLeft,
+  to: "/sites",
 };
 
 export function Sidebar() {
@@ -214,15 +240,30 @@ export function Sidebar() {
           {superadmin ? (
             // Superadmin is monitoring-only: show ONLY the Admin area. They
             // have no org and never manage sites/settings.
-            <ul className="flex flex-col gap-0.5">
-              <li>
-                <NavGroupItem
-                  group={ADMIN_GROUP}
-                  pathname={pathname}
-                  collapsed={collapsed}
-                />
-              </li>
-            </ul>
+            <>
+              <ul className="flex flex-col gap-0.5">
+                {ADMIN_NAV_GROUPS.map((group) => (
+                  <li key={group.label}>
+                    <NavGroupItem
+                      group={group}
+                      pathname={pathname}
+                      collapsed={collapsed}
+                    />
+                  </li>
+                ))}
+              </ul>
+              {/* Back to Sites — bottom-aligned, mirrors the tenant
+                  sidebar's bottom-aligned Settings leaf. */}
+              <ul className="mt-auto flex flex-col gap-0.5 pt-3">
+                <li>
+                  <NavGroupItem
+                    group={BACK_TO_SITES_LEAF}
+                    pathname={pathname}
+                    collapsed={collapsed}
+                  />
+                </li>
+              </ul>
+            </>
           ) : (
             <>
               <ul className="flex flex-col gap-0.5">
@@ -299,8 +340,13 @@ function NavGroupItem({ group, pathname, collapsed }: GroupProps) {
   const hasItems = !!group.items?.length;
 
   // Group is "active" when its own route or any sub-item route is the
-  // current pathname (or prefix).
-  const selfActive = group.to ? isActive(pathname, group.to) : false;
+  // current pathname (or prefix). `exactMatch` opts a leaf out of the
+  // prefix-match behavior (see the NavGroup interface doc above).
+  const selfActive = group.to
+    ? group.exactMatch
+      ? pathname === group.to
+      : isActive(pathname, group.to)
+    : false;
   const childActive =
     hasItems &&
     group.items!.some((item) => item.to && isActive(pathname, item.to));

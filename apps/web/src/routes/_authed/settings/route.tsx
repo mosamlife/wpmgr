@@ -35,7 +35,11 @@ interface SettingsNavItem {
 
 export const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { label: "Account",       to: "/settings/account",      icon: User },
-  { label: "Security",      to: "/settings/security",     icon: ShieldCheck,  orgOnly: true },
+  // Security (2FA) is a PERSONAL account setting backed by per-user
+  // /auth/2fa/* endpoints — it must render for every authenticated principal
+  // (superadmin, site-scoped collaborator, org member), not just org-scoped
+  // members. Do NOT add `orgOnly` back here.
+  { label: "Security",      to: "/settings/security",     icon: ShieldCheck },
   { label: "Organisation",  to: "/settings/organization", icon: Building2,    orgOnly: true },
   // Billing is owner-only (like the audit re-baseline) AND only ever
   // meaningful on a hosted instance — self-hosted installs never see it.

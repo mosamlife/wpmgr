@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.41] - 2026-07-08
+
+### Fixed
+
+- Admin panel improvements. Two-factor authentication settings are now reachable for every account: they were hidden for any account without an organization (including the instance superadmin), and a "Security" shortcut was added to the account menu so it is one click away. The instance-admin console is now full width with a single, cleaner sidebar navigation instead of the previous boxed, narrow layout with a wasted gutter. And the Accounts list pagination now advances correctly, the Next and Previous controls were resetting back to the first page on every click.
+
 ## [0.61.40] - 2026-07-08
 
 ### Fixed

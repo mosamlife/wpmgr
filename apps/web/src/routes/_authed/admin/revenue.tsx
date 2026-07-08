@@ -40,7 +40,7 @@ function AdminRevenuePage() {
 
   if (isPending) {
     return (
-      <section className="max-w-4xl space-y-6">
+      <section className="space-y-6">
         <PageHeader title="Revenue" subline="Instance-wide billing health." />
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
@@ -54,7 +54,7 @@ function AdminRevenuePage() {
 
   if (isError || !data) {
     return (
-      <section className="max-w-4xl space-y-6">
+      <section className="space-y-6">
         <PageHeader title="Revenue" subline="Instance-wide billing health." />
         <PageError
           what="Could not load revenue data."
@@ -72,7 +72,7 @@ function AdminRevenuePage() {
   const webhookStale = isWebhookStale(last_webhook_received_at);
 
   return (
-    <section className="max-w-4xl space-y-6">
+    <section className="space-y-6">
       <PageHeader title="Revenue" subline="Instance-wide billing health." />
 
       {!hosted ? (
