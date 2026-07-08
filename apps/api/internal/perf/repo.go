@@ -199,6 +199,34 @@ func (r *Repo) UpdateInstallState(ctx context.Context, siteID uuid.UUID, serverS
 	})
 }
 
+// UpdateBeaconKeyAcked records the agent's config-ack signal for whether it
+// currently holds a non-empty rum_beacon_key (GH #174). Agent write path
+// (InAgentTx). Returns needsReconcile=true when the row is rum-enabled with a
+// hash already minted but the agent just reported present=false — the exact
+// "hash committed, plaintext never delivered/lost" stuck state — so the caller
+// can enqueue a re-mint reconcile job. Returns ErrNotFound when no config row
+// exists yet for the site (the operator has never saved a config).
+func (r *Repo) UpdateBeaconKeyAcked(ctx context.Context, siteID uuid.UUID, present bool) (needsReconcile bool, err error) {
+	err = r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		row, qerr := sqlc.New(tx).UpdateBeaconKeyAcked(ctx, sqlc.UpdateBeaconKeyAckedParams{
+			Present: present,
+			SiteID:  siteID,
+		})
+		if qerr != nil {
+			if errors.Is(qerr, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return qerr
+		}
+		needsReconcile = row.RumEnabled && row.BeaconKeyHash != nil && !present
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return needsReconcile, nil
+}
+
 // UpdateWooFragmentsSupported stamps the agent-reported woo_theme_fragments_supported
 // flag and woo_fragments_probed_at. Agent write path (InAgentTx) — the agent is
 // the sole writer; operators can never set this via the API.
@@ -543,8 +571,9 @@ func (r *Repo) GetStalledDBScanJobs(ctx context.Context, scanThreshold time.Dura
 // DBScanResultInput carries the parameters for upserting a scan result.
 // Phase 2.1: TablesJSON carries the per-table inventory JSON alongside CategoriesJSON.
 // Phase 3.3 (M41): OrphanedOptionsJSON, OrphanedCronJSON, InstalledPluginsJSON
-//   carry the orphan-enumeration output from agents >= 0.16.0. nil/empty values
-//   default to '[]' so rows from older agents remain safe to read.
+//
+//	carry the orphan-enumeration output from agents >= 0.16.0. nil/empty values
+//	default to '[]' so rows from older agents remain safe to read.
 type DBScanResultInput struct {
 	SiteID         uuid.UUID
 	TenantID       uuid.UUID
@@ -832,8 +861,9 @@ func (r *Repo) PruneCacheHitRatioHistory(ctx context.Context, retention time.Dur
 // DBScanResult is the model returned from a scan result lookup.
 // Phase 2.1: TablesJSON holds the per-table inventory JSONB column.
 // Phase 3.3 (M41): OrphanedOptionsJSON, OrphanedCronJSON, InstalledPluginsJSON
-//   hold the orphan-enumeration columns. They default to '[]' for rows from
-//   agents < 0.16.0 via the schema DEFAULT.
+//
+//	hold the orphan-enumeration columns. They default to '[]' for rows from
+//	agents < 0.16.0 via the schema DEFAULT.
 type DBScanResult struct {
 	SiteID         uuid.UUID
 	TenantID       uuid.UUID
@@ -863,9 +893,9 @@ type DBScanResult struct {
 // DBCleanResultInput carries the parameters for upserting a clean result.
 // It is assembled from the final done=true progress push in HandleDBCleanProgress.
 type DBCleanResultInput struct {
-	SiteID      uuid.UUID
-	TenantID    uuid.UUID
-	JobID       string
+	SiteID   uuid.UUID
+	TenantID uuid.UUID
+	JobID    string
 	// ResultJSON is the per-category {rows_deleted, bytes_freed, state} map
 	// serialised as JSONB. nil/empty defaults to '{}'.
 	ResultJSON  []byte
@@ -1015,63 +1045,63 @@ func (r *Repo) GetDBScanResult(ctx context.Context, tenantID, siteID uuid.UUID) 
 
 func configFromRow(row sqlc.SitePerfConfig) Config {
 	return Config{
-		SiteID:                    row.SiteID,
-		TenantID:                  row.TenantID,
-		CacheEnabled:              row.CacheEnabled,
-		CacheLoggedIn:             row.CacheLoggedIn,
-		CacheMobile:               row.CacheMobile,
-		CacheRefresh:              row.CacheRefresh,
-		CacheRefreshInterval:      row.CacheRefreshInterval,
-		CacheLinkPrefetch:         row.CacheLinkPrefetch,
-		CacheBypassURLs:           coalesce(row.CacheBypassUrls),
-		CacheBypassCookies:        coalesce(row.CacheBypassCookies),
-		CacheIncludeQueries:       coalesce(row.CacheIncludeQueries),
-		CacheIncludeCookies:       coalesce(row.CacheIncludeCookies),
-		PreloadConcurrency:        int(row.PreloadConcurrency),
-		PreloadDelayMs:            int(row.PreloadDelayMs),
-		PreloadBatchSize:          int(row.PreloadBatchSize),
-		PreloadMaxLoad:            float64(row.PreloadMaxLoad),
-		CSSJSMinify:               row.CssJsMinify,
-		CSSRucss:                  row.CssRucss,
-		CSSRucssIncludeSelectors:  coalesce(row.CssRucssIncludeSelectors),
-		CSSJSSelfHostThirdParty:   row.CssJsSelfHostThirdParty,
-		JSDelay:                   row.JsDelay,
-		JSDelayMethod:             row.JsDelayMethod,
-		JSDelayExcludes:           coalesce(row.JsDelayExcludes),
-		JSDelayThirdParty:         row.JsDelayThirdParty,
-		JSDelayThirdPartyExcludes: coalesce(row.JsDelayThirdPartyExcludes),
-		FontsDisplaySwap:    row.FontsDisplaySwap,
-		FontsOptimizeGoogle: row.FontsOptimizeGoogle,
-		FontsPreload:        row.FontsPreload,
-		LazyLoad:            row.LazyLoad,
-		LazyLoadExclusions:        coalesce(row.LazyLoadExclusions),
-		ProperlySizeImages:        row.ProperlySizeImages,
-		YouTubePlaceholder:        row.YoutubePlaceholder,
-		SelfHostGravatars:         row.SelfHostGravatars,
-		CDNEnabled:                row.CdnEnabled,
-		CDNURL:                    derefStr(row.CdnUrl),
-		CDNFileTypes:              row.CdnFileTypes,
-		CDNProvider:               derefStr(row.CdnProvider),
-		CDNHasCredentials:         len(row.CdnCredentialsEncrypted) > 0,
-		DBAutoClean:               row.DbAutoClean,
-		DBAutoCleanInterval:       row.DbAutoCleanInterval,
-		DBPostRevisions:           row.DbPostRevisions,
-		DBPostAutoDrafts:          row.DbPostAutoDrafts,
-		DBPostTrashed:             row.DbPostTrashed,
-		DBCommentsSpam:            row.DbCommentsSpam,
-		DBCommentsTrashed:         row.DbCommentsTrashed,
-		DBTransientsExpired:       row.DbTransientsExpired,
-		DBOptimizeTables:          row.DbOptimizeTables,
-		NextDBCleanAt:             tsToTimePtr(row.NextDbCleanAt),
-		BloatDisableBlockCSS:      row.BloatDisableBlockCss,
-		BloatDisableDashicons:     row.BloatDisableDashicons,
-		BloatDisableEmojis:        row.BloatDisableEmojis,
-		BloatDisableJQueryMig:     row.BloatDisableJqueryMigrate,
-		BloatDisableXMLRPC:        row.BloatDisableXmlRpc,
-		BloatDisableRSSFeed:       row.BloatDisableRssFeed,
-		BloatDisableOembeds:       row.BloatDisableOembeds,
-		BloatHeartbeatControl:     row.BloatHeartbeatControl,
-		BloatPostRevisionControl:  row.BloatPostRevisionsControl,
+		SiteID:                     row.SiteID,
+		TenantID:                   row.TenantID,
+		CacheEnabled:               row.CacheEnabled,
+		CacheLoggedIn:              row.CacheLoggedIn,
+		CacheMobile:                row.CacheMobile,
+		CacheRefresh:               row.CacheRefresh,
+		CacheRefreshInterval:       row.CacheRefreshInterval,
+		CacheLinkPrefetch:          row.CacheLinkPrefetch,
+		CacheBypassURLs:            coalesce(row.CacheBypassUrls),
+		CacheBypassCookies:         coalesce(row.CacheBypassCookies),
+		CacheIncludeQueries:        coalesce(row.CacheIncludeQueries),
+		CacheIncludeCookies:        coalesce(row.CacheIncludeCookies),
+		PreloadConcurrency:         int(row.PreloadConcurrency),
+		PreloadDelayMs:             int(row.PreloadDelayMs),
+		PreloadBatchSize:           int(row.PreloadBatchSize),
+		PreloadMaxLoad:             float64(row.PreloadMaxLoad),
+		CSSJSMinify:                row.CssJsMinify,
+		CSSRucss:                   row.CssRucss,
+		CSSRucssIncludeSelectors:   coalesce(row.CssRucssIncludeSelectors),
+		CSSJSSelfHostThirdParty:    row.CssJsSelfHostThirdParty,
+		JSDelay:                    row.JsDelay,
+		JSDelayMethod:              row.JsDelayMethod,
+		JSDelayExcludes:            coalesce(row.JsDelayExcludes),
+		JSDelayThirdParty:          row.JsDelayThirdParty,
+		JSDelayThirdPartyExcludes:  coalesce(row.JsDelayThirdPartyExcludes),
+		FontsDisplaySwap:           row.FontsDisplaySwap,
+		FontsOptimizeGoogle:        row.FontsOptimizeGoogle,
+		FontsPreload:               row.FontsPreload,
+		LazyLoad:                   row.LazyLoad,
+		LazyLoadExclusions:         coalesce(row.LazyLoadExclusions),
+		ProperlySizeImages:         row.ProperlySizeImages,
+		YouTubePlaceholder:         row.YoutubePlaceholder,
+		SelfHostGravatars:          row.SelfHostGravatars,
+		CDNEnabled:                 row.CdnEnabled,
+		CDNURL:                     derefStr(row.CdnUrl),
+		CDNFileTypes:               row.CdnFileTypes,
+		CDNProvider:                derefStr(row.CdnProvider),
+		CDNHasCredentials:          len(row.CdnCredentialsEncrypted) > 0,
+		DBAutoClean:                row.DbAutoClean,
+		DBAutoCleanInterval:        row.DbAutoCleanInterval,
+		DBPostRevisions:            row.DbPostRevisions,
+		DBPostAutoDrafts:           row.DbPostAutoDrafts,
+		DBPostTrashed:              row.DbPostTrashed,
+		DBCommentsSpam:             row.DbCommentsSpam,
+		DBCommentsTrashed:          row.DbCommentsTrashed,
+		DBTransientsExpired:        row.DbTransientsExpired,
+		DBOptimizeTables:           row.DbOptimizeTables,
+		NextDBCleanAt:              tsToTimePtr(row.NextDbCleanAt),
+		BloatDisableBlockCSS:       row.BloatDisableBlockCss,
+		BloatDisableDashicons:      row.BloatDisableDashicons,
+		BloatDisableEmojis:         row.BloatDisableEmojis,
+		BloatDisableJQueryMig:      row.BloatDisableJqueryMigrate,
+		BloatDisableXMLRPC:         row.BloatDisableXmlRpc,
+		BloatDisableRSSFeed:        row.BloatDisableRssFeed,
+		BloatDisableOembeds:        row.BloatDisableOembeds,
+		BloatHeartbeatControl:      row.BloatHeartbeatControl,
+		BloatPostRevisionControl:   row.BloatPostRevisionsControl,
 		ServerSoftware:             derefStr(row.ServerSoftware),
 		DropinInstalled:            row.DropinInstalled,
 		WPCacheConstantSet:         row.WpCacheConstantSet,
@@ -1088,9 +1118,11 @@ func configFromRow(row sqlc.SitePerfConfig) Config {
 		MaxDistinctCountries:       int(row.MaxDistinctCountries),
 		MinSampleCount:             int(row.MinSampleCount),
 		BeaconKeySet:               row.BeaconKeyHash != nil,
+		BeaconKeyAckedPresent:      row.BeaconKeyAckedPresent,
+		BeaconKeyAckedAt:           tsToTimePtr(row.BeaconKeyAckedAt),
 		ConfigVersion:              int(row.ConfigVersion),
-		CreatedAt:           row.CreatedAt,
-		UpdatedAt:           row.UpdatedAt,
+		CreatedAt:                  row.CreatedAt,
+		UpdatedAt:                  row.UpdatedAt,
 	}
 }
 

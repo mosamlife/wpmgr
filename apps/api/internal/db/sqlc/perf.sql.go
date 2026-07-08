@@ -374,7 +374,7 @@ func (q *Queries) GetFleetDbHealth(ctx context.Context, arg GetFleetDbHealthPara
 const getPerfConfig = `-- name: GetPerfConfig :one
 
 
-SELECT site_id, tenant_id, cache_enabled, cache_logged_in, cache_mobile, cache_refresh, cache_refresh_interval, cache_link_prefetch, cache_bypass_urls, cache_bypass_cookies, cache_include_queries, cache_include_cookies, css_js_minify, css_rucss, css_rucss_include_selectors, css_js_self_host_third_party, js_delay, js_delay_method, js_delay_excludes, js_delay_third_party, js_delay_third_party_excludes, fonts_display_swap, fonts_optimize_google, fonts_preload, lazy_load, lazy_load_exclusions, properly_size_images, youtube_placeholder, self_host_gravatars, cdn_enabled, cdn_url, cdn_file_types, cdn_provider, cdn_credentials_encrypted, db_auto_clean, db_auto_clean_interval, db_post_revisions, db_post_auto_drafts, db_post_trashed, db_comments_spam, db_comments_trashed, db_transients_expired, db_optimize_tables, next_db_clean_at, bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis, bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed, bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control, preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed, config_version, active_db_clean_job_id, active_db_clean_started, active_db_scan_job_id, active_db_scan_started, active_orphan_delete_job_id, active_orphan_delete_started, fonts_transcode_woff2, fonts_subset, fonts_subset_mode, fonts_subset_range, woo_cacheable_session, woo_theme_fragments_supported, woo_fragments_probed_at, rum_enabled, rum_sample_rate, max_distinct_countries, min_sample_count, beacon_key_hash, beacon_key_hash_prev, created_at, updated_at FROM site_perf_config
+SELECT site_id, tenant_id, cache_enabled, cache_logged_in, cache_mobile, cache_refresh, cache_refresh_interval, cache_link_prefetch, cache_bypass_urls, cache_bypass_cookies, cache_include_queries, cache_include_cookies, css_js_minify, css_rucss, css_rucss_include_selectors, css_js_self_host_third_party, js_delay, js_delay_method, js_delay_excludes, js_delay_third_party, js_delay_third_party_excludes, fonts_display_swap, fonts_optimize_google, fonts_preload, lazy_load, lazy_load_exclusions, properly_size_images, youtube_placeholder, self_host_gravatars, cdn_enabled, cdn_url, cdn_file_types, cdn_provider, cdn_credentials_encrypted, db_auto_clean, db_auto_clean_interval, db_post_revisions, db_post_auto_drafts, db_post_trashed, db_comments_spam, db_comments_trashed, db_transients_expired, db_optimize_tables, next_db_clean_at, bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis, bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed, bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control, preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed, config_version, active_db_clean_job_id, active_db_clean_started, active_db_scan_job_id, active_db_scan_started, active_orphan_delete_job_id, active_orphan_delete_started, fonts_transcode_woff2, fonts_subset, fonts_subset_mode, fonts_subset_range, woo_cacheable_session, woo_theme_fragments_supported, woo_fragments_probed_at, rum_enabled, rum_sample_rate, max_distinct_countries, min_sample_count, beacon_key_hash, beacon_key_hash_prev, beacon_key_acked_present, beacon_key_acked_at, created_at, updated_at FROM site_perf_config
 WHERE site_id = $1
 `
 
@@ -470,6 +470,8 @@ func (q *Queries) GetPerfConfig(ctx context.Context, siteID uuid.UUID) (SitePerf
 		&i.MinSampleCount,
 		&i.BeaconKeyHash,
 		&i.BeaconKeyHashPrev,
+		&i.BeaconKeyAckedPresent,
+		&i.BeaconKeyAckedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1084,6 +1086,120 @@ func (q *Queries) TouchRucssResultLastUsed(ctx context.Context, arg TouchRucssRe
 	return err
 }
 
+const updateBeaconKeyAcked = `-- name: UpdateBeaconKeyAcked :one
+UPDATE site_perf_config
+SET beacon_key_acked_present = $1,
+    beacon_key_acked_at      = now(),
+    updated_at                = now()
+WHERE site_id = $2
+RETURNING site_id, tenant_id, cache_enabled, cache_logged_in, cache_mobile, cache_refresh, cache_refresh_interval, cache_link_prefetch, cache_bypass_urls, cache_bypass_cookies, cache_include_queries, cache_include_cookies, css_js_minify, css_rucss, css_rucss_include_selectors, css_js_self_host_third_party, js_delay, js_delay_method, js_delay_excludes, js_delay_third_party, js_delay_third_party_excludes, fonts_display_swap, fonts_optimize_google, fonts_preload, lazy_load, lazy_load_exclusions, properly_size_images, youtube_placeholder, self_host_gravatars, cdn_enabled, cdn_url, cdn_file_types, cdn_provider, cdn_credentials_encrypted, db_auto_clean, db_auto_clean_interval, db_post_revisions, db_post_auto_drafts, db_post_trashed, db_comments_spam, db_comments_trashed, db_transients_expired, db_optimize_tables, next_db_clean_at, bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis, bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed, bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control, preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed, config_version, active_db_clean_job_id, active_db_clean_started, active_db_scan_job_id, active_db_scan_started, active_orphan_delete_job_id, active_orphan_delete_started, fonts_transcode_woff2, fonts_subset, fonts_subset_mode, fonts_subset_range, woo_cacheable_session, woo_theme_fragments_supported, woo_fragments_probed_at, rum_enabled, rum_sample_rate, max_distinct_countries, min_sample_count, beacon_key_hash, beacon_key_hash_prev, beacon_key_acked_present, beacon_key_acked_at, created_at, updated_at
+`
+
+type UpdateBeaconKeyAckedParams struct {
+	Present bool      `json:"present"`
+	SiteID  uuid.UUID `json:"site_id"`
+}
+
+// GH #174 — records whether the agent's most recent config-ack reported that
+// it currently holds a non-empty rum_beacon_key (configAckBody.rum_beacon_present).
+// Kept separate from UpsertPerfConfig for the same reason as
+// UpdatePerfInstallState: an operator config save must never overwrite this
+// agent-reported fact, and vice-versa. Runs under app.agent. RETURNING * lets
+// the caller decide, in one round-trip, whether a re-mint reconcile job is
+// needed: rum_enabled AND beacon_key_hash IS NOT NULL AND NOT @present.
+func (q *Queries) UpdateBeaconKeyAcked(ctx context.Context, arg UpdateBeaconKeyAckedParams) (SitePerfConfig, error) {
+	row := q.db.QueryRow(ctx, updateBeaconKeyAcked, arg.Present, arg.SiteID)
+	var i SitePerfConfig
+	err := row.Scan(
+		&i.SiteID,
+		&i.TenantID,
+		&i.CacheEnabled,
+		&i.CacheLoggedIn,
+		&i.CacheMobile,
+		&i.CacheRefresh,
+		&i.CacheRefreshInterval,
+		&i.CacheLinkPrefetch,
+		&i.CacheBypassUrls,
+		&i.CacheBypassCookies,
+		&i.CacheIncludeQueries,
+		&i.CacheIncludeCookies,
+		&i.CssJsMinify,
+		&i.CssRucss,
+		&i.CssRucssIncludeSelectors,
+		&i.CssJsSelfHostThirdParty,
+		&i.JsDelay,
+		&i.JsDelayMethod,
+		&i.JsDelayExcludes,
+		&i.JsDelayThirdParty,
+		&i.JsDelayThirdPartyExcludes,
+		&i.FontsDisplaySwap,
+		&i.FontsOptimizeGoogle,
+		&i.FontsPreload,
+		&i.LazyLoad,
+		&i.LazyLoadExclusions,
+		&i.ProperlySizeImages,
+		&i.YoutubePlaceholder,
+		&i.SelfHostGravatars,
+		&i.CdnEnabled,
+		&i.CdnUrl,
+		&i.CdnFileTypes,
+		&i.CdnProvider,
+		&i.CdnCredentialsEncrypted,
+		&i.DbAutoClean,
+		&i.DbAutoCleanInterval,
+		&i.DbPostRevisions,
+		&i.DbPostAutoDrafts,
+		&i.DbPostTrashed,
+		&i.DbCommentsSpam,
+		&i.DbCommentsTrashed,
+		&i.DbTransientsExpired,
+		&i.DbOptimizeTables,
+		&i.NextDbCleanAt,
+		&i.BloatDisableBlockCss,
+		&i.BloatDisableDashicons,
+		&i.BloatDisableEmojis,
+		&i.BloatDisableJqueryMigrate,
+		&i.BloatDisableXmlRpc,
+		&i.BloatDisableRssFeed,
+		&i.BloatDisableOembeds,
+		&i.BloatHeartbeatControl,
+		&i.BloatPostRevisionsControl,
+		&i.PreloadConcurrency,
+		&i.PreloadDelayMs,
+		&i.PreloadBatchSize,
+		&i.PreloadMaxLoad,
+		&i.ServerSoftware,
+		&i.DropinInstalled,
+		&i.WpCacheConstantSet,
+		&i.HtaccessManaged,
+		&i.ConfigVersion,
+		&i.ActiveDbCleanJobID,
+		&i.ActiveDbCleanStarted,
+		&i.ActiveDbScanJobID,
+		&i.ActiveDbScanStarted,
+		&i.ActiveOrphanDeleteJobID,
+		&i.ActiveOrphanDeleteStarted,
+		&i.FontsTranscodeWoff2,
+		&i.FontsSubset,
+		&i.FontsSubsetMode,
+		&i.FontsSubsetRange,
+		&i.WooCacheableSession,
+		&i.WooThemeFragmentsSupported,
+		&i.WooFragmentsProbedAt,
+		&i.RumEnabled,
+		&i.RumSampleRate,
+		&i.MaxDistinctCountries,
+		&i.MinSampleCount,
+		&i.BeaconKeyHash,
+		&i.BeaconKeyHashPrev,
+		&i.BeaconKeyAckedPresent,
+		&i.BeaconKeyAckedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateNextDBCleanAt = `-- name: UpdateNextDBCleanAt :exec
 UPDATE site_perf_config
 SET next_db_clean_at = $1,
@@ -1111,7 +1227,7 @@ SET server_software       = $1,
     htaccess_managed      = $4,
     updated_at            = now()
 WHERE site_id = $5
-RETURNING site_id, tenant_id, cache_enabled, cache_logged_in, cache_mobile, cache_refresh, cache_refresh_interval, cache_link_prefetch, cache_bypass_urls, cache_bypass_cookies, cache_include_queries, cache_include_cookies, css_js_minify, css_rucss, css_rucss_include_selectors, css_js_self_host_third_party, js_delay, js_delay_method, js_delay_excludes, js_delay_third_party, js_delay_third_party_excludes, fonts_display_swap, fonts_optimize_google, fonts_preload, lazy_load, lazy_load_exclusions, properly_size_images, youtube_placeholder, self_host_gravatars, cdn_enabled, cdn_url, cdn_file_types, cdn_provider, cdn_credentials_encrypted, db_auto_clean, db_auto_clean_interval, db_post_revisions, db_post_auto_drafts, db_post_trashed, db_comments_spam, db_comments_trashed, db_transients_expired, db_optimize_tables, next_db_clean_at, bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis, bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed, bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control, preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed, config_version, active_db_clean_job_id, active_db_clean_started, active_db_scan_job_id, active_db_scan_started, active_orphan_delete_job_id, active_orphan_delete_started, fonts_transcode_woff2, fonts_subset, fonts_subset_mode, fonts_subset_range, woo_cacheable_session, woo_theme_fragments_supported, woo_fragments_probed_at, rum_enabled, rum_sample_rate, max_distinct_countries, min_sample_count, beacon_key_hash, beacon_key_hash_prev, created_at, updated_at
+RETURNING site_id, tenant_id, cache_enabled, cache_logged_in, cache_mobile, cache_refresh, cache_refresh_interval, cache_link_prefetch, cache_bypass_urls, cache_bypass_cookies, cache_include_queries, cache_include_cookies, css_js_minify, css_rucss, css_rucss_include_selectors, css_js_self_host_third_party, js_delay, js_delay_method, js_delay_excludes, js_delay_third_party, js_delay_third_party_excludes, fonts_display_swap, fonts_optimize_google, fonts_preload, lazy_load, lazy_load_exclusions, properly_size_images, youtube_placeholder, self_host_gravatars, cdn_enabled, cdn_url, cdn_file_types, cdn_provider, cdn_credentials_encrypted, db_auto_clean, db_auto_clean_interval, db_post_revisions, db_post_auto_drafts, db_post_trashed, db_comments_spam, db_comments_trashed, db_transients_expired, db_optimize_tables, next_db_clean_at, bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis, bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed, bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control, preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed, config_version, active_db_clean_job_id, active_db_clean_started, active_db_scan_job_id, active_db_scan_started, active_orphan_delete_job_id, active_orphan_delete_started, fonts_transcode_woff2, fonts_subset, fonts_subset_mode, fonts_subset_range, woo_cacheable_session, woo_theme_fragments_supported, woo_fragments_probed_at, rum_enabled, rum_sample_rate, max_distinct_countries, min_sample_count, beacon_key_hash, beacon_key_hash_prev, beacon_key_acked_present, beacon_key_acked_at, created_at, updated_at
 `
 
 type UpdatePerfInstallStateParams struct {
@@ -1216,6 +1332,8 @@ func (q *Queries) UpdatePerfInstallState(ctx context.Context, arg UpdatePerfInst
 		&i.MinSampleCount,
 		&i.BeaconKeyHash,
 		&i.BeaconKeyHashPrev,
+		&i.BeaconKeyAckedPresent,
+		&i.BeaconKeyAckedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1728,7 +1846,7 @@ ON CONFLICT (site_id) DO UPDATE SET
     max_distinct_countries        = EXCLUDED.max_distinct_countries,
     min_sample_count              = EXCLUDED.min_sample_count,
     updated_at                    = now()
-RETURNING site_id, tenant_id, cache_enabled, cache_logged_in, cache_mobile, cache_refresh, cache_refresh_interval, cache_link_prefetch, cache_bypass_urls, cache_bypass_cookies, cache_include_queries, cache_include_cookies, css_js_minify, css_rucss, css_rucss_include_selectors, css_js_self_host_third_party, js_delay, js_delay_method, js_delay_excludes, js_delay_third_party, js_delay_third_party_excludes, fonts_display_swap, fonts_optimize_google, fonts_preload, lazy_load, lazy_load_exclusions, properly_size_images, youtube_placeholder, self_host_gravatars, cdn_enabled, cdn_url, cdn_file_types, cdn_provider, cdn_credentials_encrypted, db_auto_clean, db_auto_clean_interval, db_post_revisions, db_post_auto_drafts, db_post_trashed, db_comments_spam, db_comments_trashed, db_transients_expired, db_optimize_tables, next_db_clean_at, bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis, bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed, bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control, preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed, config_version, active_db_clean_job_id, active_db_clean_started, active_db_scan_job_id, active_db_scan_started, active_orphan_delete_job_id, active_orphan_delete_started, fonts_transcode_woff2, fonts_subset, fonts_subset_mode, fonts_subset_range, woo_cacheable_session, woo_theme_fragments_supported, woo_fragments_probed_at, rum_enabled, rum_sample_rate, max_distinct_countries, min_sample_count, beacon_key_hash, beacon_key_hash_prev, created_at, updated_at
+RETURNING site_id, tenant_id, cache_enabled, cache_logged_in, cache_mobile, cache_refresh, cache_refresh_interval, cache_link_prefetch, cache_bypass_urls, cache_bypass_cookies, cache_include_queries, cache_include_cookies, css_js_minify, css_rucss, css_rucss_include_selectors, css_js_self_host_third_party, js_delay, js_delay_method, js_delay_excludes, js_delay_third_party, js_delay_third_party_excludes, fonts_display_swap, fonts_optimize_google, fonts_preload, lazy_load, lazy_load_exclusions, properly_size_images, youtube_placeholder, self_host_gravatars, cdn_enabled, cdn_url, cdn_file_types, cdn_provider, cdn_credentials_encrypted, db_auto_clean, db_auto_clean_interval, db_post_revisions, db_post_auto_drafts, db_post_trashed, db_comments_spam, db_comments_trashed, db_transients_expired, db_optimize_tables, next_db_clean_at, bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis, bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed, bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control, preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed, config_version, active_db_clean_job_id, active_db_clean_started, active_db_scan_job_id, active_db_scan_started, active_orphan_delete_job_id, active_orphan_delete_started, fonts_transcode_woff2, fonts_subset, fonts_subset_mode, fonts_subset_range, woo_cacheable_session, woo_theme_fragments_supported, woo_fragments_probed_at, rum_enabled, rum_sample_rate, max_distinct_countries, min_sample_count, beacon_key_hash, beacon_key_hash_prev, beacon_key_acked_present, beacon_key_acked_at, created_at, updated_at
 `
 
 type UpsertPerfConfigParams struct {
@@ -1956,6 +2074,8 @@ func (q *Queries) UpsertPerfConfig(ctx context.Context, arg UpsertPerfConfigPara
 		&i.MinSampleCount,
 		&i.BeaconKeyHash,
 		&i.BeaconKeyHashPrev,
+		&i.BeaconKeyAckedPresent,
+		&i.BeaconKeyAckedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

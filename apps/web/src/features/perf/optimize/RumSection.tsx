@@ -1,11 +1,14 @@
 import { useId, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2, RotateCw } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { toast } from "@/components/toast";
 
 import { SettingRow } from "../components/SettingRow";
 import { SettingsCard } from "../components/SettingsCard";
+import { useRotateBeaconKey } from "../hooks/useRotateBeaconKey";
 import type { PerfConfig } from "../types";
 
 // Real User Monitoring (RUM) settings section.
@@ -21,19 +24,32 @@ import type { PerfConfig } from "../types";
 //
 // The sample-rate control appears only when rum_enabled is on, matching the
 // FontsSection pattern of revealing dependent settings under the parent toggle.
+//
+// Beacon-key recovery (GH #174): the one best-effort mint+push that happens
+// on first RUM-enable can be lost (agent down/unreachable), permanently
+// stranding the beacon key empty on the agent with zero RUM samples ever
+// collected and no visible error. `beacon_key_set` (a key is stored CP-side)
+// and `beacon_key_acked_present` (the agent has confirmed holding it) let
+// this section show the stuck state and offer the same recovery action
+// (rotate) the control plane's own reconcile job uses.
 
 export interface RumSectionProps {
+  siteId: string;
   config: PerfConfig;
   save: (patch: Partial<PerfConfig>) => void;
   disabled: boolean;
   isSaving: (key: string) => boolean;
+  /** operator+ (site.perf.config) -- can rotate the beacon key. Viewers never see the action. */
+  canOperate: boolean;
 }
 
 export function RumSection({
+  siteId,
   config,
   save,
   disabled,
   isSaving,
+  canOperate,
 }: RumSectionProps) {
   return (
     <SettingsCard
@@ -67,7 +83,109 @@ export function RumSection({
           saving={isSaving("min_sample_count")}
         />
       </SettingRow>
+      {config.beacon_key_set ? (
+        <BeaconKeyRow
+          siteId={siteId}
+          stuck={Boolean(config.rum_enabled) && !config.beacon_key_acked_present}
+          canOperate={canOperate}
+        />
+      ) : null}
     </SettingsCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Beacon-key row: the recovery action + stuck-state warning (GH #174)
+// ---------------------------------------------------------------------------
+
+interface BeaconKeyRowProps {
+  siteId: string;
+  /** rum_enabled && beacon_key_set && !beacon_key_acked_present. */
+  stuck: boolean;
+  canOperate: boolean;
+}
+
+function BeaconKeyRow({ siteId, stuck, canOperate }: BeaconKeyRowProps) {
+  if (stuck) {
+    return (
+      <div className="px-5 py-4">
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/30"
+        >
+          <AlertTriangle
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+          />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+              Beacon key not yet confirmed
+            </p>
+            <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+              RUM is on, but the site hasn't confirmed it received the beacon
+              key yet, so no data will arrive until it does. This usually
+              resolves on its own the next time the site checks in.
+            </p>
+            {canOperate ? (
+              <div className="mt-2">
+                <RotateBeaconKeyButton siteId={siteId} />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!canOperate) return null;
+
+  return (
+    <div className="flex items-center justify-between gap-4 px-5 py-4">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-foreground">Beacon key</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Mint a fresh beacon key and push it to the site now. Beacons already
+          in flight signed with the previous key still resolve during a short
+          grace window.
+        </p>
+      </div>
+      <RotateBeaconKeyButton siteId={siteId} />
+    </div>
+  );
+}
+
+interface RotateBeaconKeyButtonProps {
+  siteId: string;
+}
+
+function RotateBeaconKeyButton({ siteId }: RotateBeaconKeyButtonProps) {
+  const rotate = useRotateBeaconKey(siteId);
+
+  function handleClick() {
+    rotate.mutate(undefined, {
+      onSuccess: () => {
+        toast.success("Beacon key rotated.", {
+          description: "The site will receive a fresh key on its next sync.",
+        });
+      },
+    });
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={handleClick}
+      disabled={rotate.isPending}
+    >
+      {rotate.isPending ? (
+        <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+      ) : (
+        <RotateCw aria-hidden="true" className="size-4" />
+      )}
+      Rotate beacon key
+    </Button>
   );
 }
 

@@ -81,6 +81,26 @@ type CDNPurger interface {
 	Purge(ctx context.Context, creds CDNCredentials, siteURL string, urls []string) error
 }
 
+// BeaconKeyRotator is the subset of *rum.BeaconKeyRepo the perf service needs
+// to mint/rotate a RUM beacon key. Declared as an interface (rather than the
+// concrete *rum.BeaconKeyRepo) so tests can substitute a fake without a live
+// DB. *rum.BeaconKeyRepo satisfies it.
+type BeaconKeyRotator interface {
+	// RotateBeaconKey rotates the beacon key for a site: the existing
+	// beacon_key_hash becomes beacon_key_hash_prev (grace window — in-flight
+	// beacons signed with the old key still resolve via LookupRumBeaconKey)
+	// and newKeyHash becomes the current hash.
+	RotateBeaconKey(ctx context.Context, tenantID, siteID uuid.UUID, newKeyHash []byte) error
+}
+
+// RumBeaconReconcileEnqueuer enqueues a River job that calls
+// Service.RotateBeaconKey for one site (GH #174 ack-based self-heal). The
+// concrete implementation (worker.go) wraps river.Client[pgx.Tx].Insert;
+// declared as an interface so tests can substitute a fake.
+type RumBeaconReconcileEnqueuer interface {
+	EnqueueRumBeaconReconcile(ctx context.Context, args RumBeaconReconcileArgs) error
+}
+
 // repository is the persistence surface the service needs. *Repo satisfies it;
 // declared as an interface so the service is unit-testable with a fake (no DB).
 type repository interface {
@@ -88,6 +108,10 @@ type repository interface {
 	UpsertConfig(ctx context.Context, in UpsertConfigInput) (Config, error)
 	GetCDNCredentialsCiphertext(ctx context.Context, tenantID, siteID uuid.UUID) ([]byte, string, error)
 	UpdateInstallState(ctx context.Context, siteID uuid.UUID, serverSoftware string, dropinInstalled, wpCacheConstantSet, htaccessManaged bool) error
+	// GH #174 — ack-based RUM beacon-key presence signal. Returns
+	// needsReconcile=true when the site is rum-enabled with a hash already
+	// minted but the agent just reported it does not hold the key.
+	UpdateBeaconKeyAcked(ctx context.Context, siteID uuid.UUID, present bool) (needsReconcile bool, err error)
 	// M53 / #169 — agent-reported WooCommerce theme probe result (tri-state after M67).
 	// Returns (rowsAffected, error); 0 rows means no config row exists yet for the site.
 	UpdateWooFragmentsSupported(ctx context.Context, siteID uuid.UUID, supported bool) (int64, error)
@@ -142,13 +166,19 @@ type Service struct {
 	backupChecker BackupChecker
 	logger        *slog.Logger
 	// beaconKeyRepo is the RUM beacon-key persistence layer. Used during
-	// UpdateConfig to generate/rotate the key when RUM is first enabled.
+	// UpdateConfig to generate/rotate the key when RUM is first enabled, and
+	// unconditionally by RotateBeaconKey.
 	// nil = RUM beacon-key management disabled (tests/degraded mode).
-	beaconKeyRepo *rum.BeaconKeyRepo
+	beaconKeyRepo BeaconKeyRotator
 	// cpBaseURL is the control-plane public base URL (e.g.
 	// "https://manage.example.com"). Used to derive the RUM ingest URL that is
 	// pushed to the agent as rum_ingest_url.
 	cpBaseURL string
+	// rumReconcileEnqueuer enqueues the GH #174 ack-based beacon-key reconcile
+	// job. nil = the ack-based self-heal is disabled (the mint gate and the
+	// operator rotate-key endpoint still work; only the automatic "an ack just
+	// told us the agent lost the key" retry is skipped).
+	rumReconcileEnqueuer RumBeaconReconcileEnqueuer
 }
 
 // NewService builds the perf service. agent/sites/events/decryptor/cdn may be nil
@@ -177,9 +207,16 @@ func (s *Service) SetBackupChecker(b BackupChecker) { s.backupChecker = b }
 // URL used to derive rum_ingest_url in the agent push payload.
 // Call this from main after creating the service; nil disables RUM beacon
 // provisioning (the endpoint still works but keys are never generated).
-func (s *Service) SetBeaconKeyRepo(repo *rum.BeaconKeyRepo, cpBaseURL string) {
+func (s *Service) SetBeaconKeyRepo(repo BeaconKeyRotator, cpBaseURL string) {
 	s.beaconKeyRepo = repo
 	s.cpBaseURL = cpBaseURL
+}
+
+// SetRumBeaconReconcileEnqueuer wires the GH #174 ack-based reconcile job
+// enqueuer. Call this from main after River has started; nil disables the
+// automatic self-heal (MarkConfigApplied logs and skips instead of enqueuing).
+func (s *Service) SetRumBeaconReconcileEnqueuer(e RumBeaconReconcileEnqueuer) {
+	s.rumReconcileEnqueuer = e
 }
 
 // ---------------------------------------------------------------------------
@@ -261,24 +298,25 @@ func (s *Service) UpdateConfig(ctx context.Context, tenantID, siteID uuid.UUID, 
 	})
 
 	// M56 — RUM beacon-key provisioning (best-effort, config already persisted).
-	// When RUM is enabled and no beacon key exists for the site, generate one now
-	// and capture the plaintext so it can be sent to the agent in this push.
-	// On subsequent pushes the CP stores only the hash; the plaintext is never
-	// re-derivable, so we send an empty string and the agent retains its copy.
+	// When RUM is enabled and either (a) no beacon key exists for the site yet,
+	// OR (b) the agent's most recent config-ack said it does NOT hold the key
+	// (GH #174 — the one best-effort mint+push on first-enable was lost, e.g.
+	// the agent was down), (re-)generate one now and capture the plaintext so
+	// it can be sent to the agent in this push. On a healthy subsequent save
+	// (key already set AND already acked present) the plaintext is never
+	// re-derivable, so we send an empty string and the agent retains its copy —
+	// this is what makes an operator's routine config save NOT churn the key on
+	// every single save.
 	var freshBeaconKey string // non-empty only when freshly generated/rotated
-	if saved.RumEnabled && s.beaconKeyRepo != nil && !saved.BeaconKeySet {
-		pt, keyHash, genErr := rum.GenerateBeaconKey()
-		if genErr == nil {
-			if rotErr := s.beaconKeyRepo.RotateBeaconKey(ctx, tenantID, siteID, keyHash); rotErr == nil {
-				freshBeaconKey = pt
-				// Mark BeaconKeySet true so toPerfConfigRequest can reflect the correct
-				// state without an extra DB round-trip.
-				saved.BeaconKeySet = true
-			} else {
-				s.logger.Warn("rum: beacon key rotation failed", slog.Any("error", rotErr))
-			}
+	if saved.RumEnabled && s.beaconKeyRepo != nil && (!saved.BeaconKeySet || !saved.BeaconKeyAckedPresent) {
+		pt, mintErr := s.mintAndRotateBeaconKey(ctx, tenantID, siteID)
+		if mintErr == nil {
+			freshBeaconKey = pt
+			// Mark BeaconKeySet true so toPerfConfigRequest can reflect the correct
+			// state without an extra DB round-trip.
+			saved.BeaconKeySet = true
 		} else {
-			s.logger.Warn("rum: beacon key generation failed", slog.Any("error", genErr))
+			s.logger.Warn("rum: beacon key mint/rotate failed", slog.Any("error", mintErr))
 		}
 	}
 
@@ -297,6 +335,97 @@ func (s *Service) UpdateConfig(ctx context.Context, tenantID, siteID uuid.UUID, 
 		}
 	}
 	return saved, nil
+}
+
+// mintAndRotateBeaconKey generates a fresh RUM beacon key, rotates the stored
+// hash (the existing beacon_key_hash moves to beacon_key_hash_prev for the
+// grace window so any in-flight beacon signed with the old key still resolves
+// via LookupRumBeaconKey), and returns the plaintext. Returns ("", err) on any
+// failure — generation or persistence — never a partial success. Callers
+// decide whether a failure here is fatal (RotateBeaconKey, the reconcile
+// worker) or best-effort (UpdateConfig's opportunistic mint, which logs and
+// continues so a beacon-key hiccup never blocks an otherwise-valid config
+// save).
+func (s *Service) mintAndRotateBeaconKey(ctx context.Context, tenantID, siteID uuid.UUID) (plaintext string, err error) {
+	if s.beaconKeyRepo == nil {
+		return "", fmt.Errorf("rum beacon-key repo not wired")
+	}
+	pt, keyHash, genErr := rum.GenerateBeaconKey()
+	if genErr != nil {
+		return "", fmt.Errorf("generate beacon key: %w", genErr)
+	}
+	if rotErr := s.beaconKeyRepo.RotateBeaconKey(ctx, tenantID, siteID, keyHash); rotErr != nil {
+		return "", fmt.Errorf("rotate beacon key: %w", rotErr)
+	}
+	return pt, nil
+}
+
+// RotateBeaconKey unconditionally mints a fresh RUM beacon key for a site and
+// pushes it to the agent (GH #174). Unlike UpdateConfig's opportunistic mint
+// (which only fires on first-enable, or when the ack signal says the agent
+// lost its copy), this ALWAYS rotates. It is BOTH:
+//
+//  1. The deterministic operator escape hatch behind
+//     POST /sites/{siteId}/perf/rum/rotate-key — lets an operator force a
+//     fresh mint+push on demand instead of editing the database directly.
+//  2. The primitive the ack-based RumBeaconReconcileWorker calls when a
+//     config-ack reports the agent does not hold the key it should.
+//
+// The plaintext is sent to the agent in this ONE push only; RotateBeaconKey
+// itself never returns it to the caller, logs it, or stores it anywhere but
+// the (never-persisted) local variable used to build the push payload.
+func (s *Service) RotateBeaconKey(ctx context.Context, tenantID, siteID uuid.UUID) error {
+	if s.beaconKeyRepo == nil {
+		return domain.ServiceUnavailable("rum_beacon_repo_unwired", "RUM beacon-key management is not configured")
+	}
+	// Fail fast on every precondition that would prevent the push BEFORE
+	// touching the hash: rotating a key we already know we cannot deliver
+	// would recreate the exact "hash committed, plaintext never delivered"
+	// stuck state this method exists to fix — deterministically instead of via
+	// a race.
+	if s.agent == nil || s.sites == nil {
+		return domain.ServiceUnavailable("agent_unwired", "agent client not configured")
+	}
+	cfg, err := s.repo.GetConfig(ctx, tenantID, siteID)
+	if err != nil {
+		if err == ErrNotFound {
+			return domain.NotFound("perf_config_not_found", "no performance config exists for this site yet")
+		}
+		return err
+	}
+	siteURL, lookupErr := s.sites.GetSiteURL(ctx, tenantID, siteID)
+	if lookupErr != nil {
+		return lookupErr
+	}
+
+	freshKey, mintErr := s.mintAndRotateBeaconKey(ctx, tenantID, siteID)
+	if mintErr != nil {
+		return fmt.Errorf("rotate beacon key: %w", mintErr)
+	}
+	cfg.BeaconKeySet = true
+
+	// Bump config_version so the push can never be mistaken for a repeat of the
+	// last version the agent already applied. Carry the existing CDN ciphertext
+	// forward unchanged (UpsertPerfConfig always writes the column — mirrors
+	// EnableCache/DisableCache exactly).
+	cfg.ConfigVersion++
+	ct, _, _ := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
+	saved, err := s.repo.UpsertConfig(ctx, UpsertConfigInput{Config: cfg, CDNCredentialsEncrypted: ct})
+	if err != nil {
+		return err
+	}
+
+	res, pushErr := s.agent.SyncPerfConfig(ctx, siteID, siteURL, toPerfConfigRequest(saved, freshKey, s.cpBaseURL))
+	if pushErr != nil {
+		// The hash is already rotated + persisted; the push failure is surfaced
+		// as a non-domain error so the caller (handler or River worker) can
+		// decide how to react — mirrors UpdateConfig's "config stored but agent
+		// push failed" pattern exactly. A subsequent rotate-key call or the
+		// next ack-based reconcile pass will retry.
+		return fmt.Errorf("beacon key rotated but agent push failed: %w", pushErr)
+	}
+	_ = s.repo.UpdateInstallState(ctx, siteID, res.ServerSoftware, res.DropinInstalled, res.WPCacheConstantSet, res.HtaccessManaged)
+	return nil
 }
 
 // resolveCDNCiphertext encrypts fresh credentials, or returns the prior stored
@@ -475,10 +604,45 @@ func (s *Service) ReportCacheStats(ctx context.Context, stats CacheStats) (Cache
 	return saved, nil
 }
 
-// MarkConfigApplied records the agent's install-state report (InAgentTx). Called
-// from the perf/config-ack agent endpoint.
-func (s *Service) MarkConfigApplied(ctx context.Context, siteID uuid.UUID, serverSoftware string, dropinInstalled, wpCacheConstantSet, htaccessManaged bool) error {
-	return s.repo.UpdateInstallState(ctx, siteID, serverSoftware, dropinInstalled, wpCacheConstantSet, htaccessManaged)
+// MarkConfigApplied records the agent's install-state report (InAgentTx) and,
+// when rumBeaconPresent is non-nil, the GH #174 ack-based beacon-key presence
+// signal. Called from the perf/config-ack agent endpoint.
+//
+// rumBeaconPresent is nil when the agent omitted the field (pre-#174 agents,
+// or any agent that does not report it) — treated as "no signal", never as
+// "absent", so an old agent can never spuriously trigger the reconcile churn
+// below. When non-nil, false on a site that is rum-enabled with a hash
+// already minted enqueues a RumBeaconReconcileWorker job that calls
+// RotateBeaconKey — the systemic self-heal that makes the "hash committed,
+// plaintext never delivered/lost" stuck state unable to persist past one ack
+// cycle, instead of requiring an operator to notice zero RUM samples and
+// intervene (or wait for their next unrelated config save to happen to
+// re-trigger the mint gate).
+func (s *Service) MarkConfigApplied(ctx context.Context, tenantID, siteID uuid.UUID, serverSoftware string, dropinInstalled, wpCacheConstantSet, htaccessManaged bool, rumBeaconPresent *bool) error {
+	if err := s.repo.UpdateInstallState(ctx, siteID, serverSoftware, dropinInstalled, wpCacheConstantSet, htaccessManaged); err != nil {
+		return err
+	}
+	if rumBeaconPresent == nil {
+		return nil
+	}
+	needsReconcile, ackErr := s.repo.UpdateBeaconKeyAcked(ctx, siteID, *rumBeaconPresent)
+	if ackErr != nil {
+		// Best-effort: the ack signal is a self-heal aid, not a correctness
+		// requirement, and must never fail the ack response the agent is
+		// waiting on. A missing config row here would be surprising immediately
+		// after UpdateInstallState succeeded on the same row, but is handled
+		// the same tolerant way regardless of cause.
+		s.logger.Warn("rum: failed to record beacon-key ack",
+			slog.String("site_id", siteID.String()), slog.Any("error", ackErr))
+		return nil
+	}
+	if needsReconcile && s.rumReconcileEnqueuer != nil {
+		if enqErr := s.rumReconcileEnqueuer.EnqueueRumBeaconReconcile(ctx, RumBeaconReconcileArgs{TenantID: tenantID, SiteID: siteID}); enqErr != nil {
+			s.logger.Warn("rum: failed to enqueue beacon reconcile",
+				slog.String("site_id", siteID.String()), slog.Any("error", enqErr))
+		}
+	}
+	return nil
 }
 
 // MarkWooFragmentsSupported records the agent-reported WooCommerce theme-probe
@@ -1515,7 +1679,7 @@ func (s *Service) DBTableAction(ctx context.Context, tenantID, siteID uuid.UUID,
 
 // OrphanDeleteRequestItem is one item from the operator's POST body.
 type OrphanDeleteRequestItem struct {
-	Kind      string `json:"kind"`       // "option" | "cron" | "table"
+	Kind      string `json:"kind"` // "option" | "cron" | "table"
 	Name      string `json:"name"`
 	OwnerSlug string `json:"owner_slug"`
 }
@@ -1927,11 +2091,11 @@ func toPerfConfigRequest(c Config, freshBeaconKey, cpBaseURL string) agentcmd.Pe
 		JSDelayExcludes:          coalesce(c.JSDelayExcludes),
 		JSDelayThirdParty:        c.JSDelayThirdParty,
 		JSDelayThirdPartyExc:     coalesce(c.JSDelayThirdPartyExcludes),
-		FontsDisplaySwap:    c.FontsDisplaySwap,
-		FontsOptimizeGoogle: c.FontsOptimizeGoogle,
-		FontsPreload:        c.FontsPreload,
-		FontsTranscodeWOFF2: c.FontsTranscodeWOFF2,
-		LazyLoad:            c.LazyLoad,
+		FontsDisplaySwap:         c.FontsDisplaySwap,
+		FontsOptimizeGoogle:      c.FontsOptimizeGoogle,
+		FontsPreload:             c.FontsPreload,
+		FontsTranscodeWOFF2:      c.FontsTranscodeWOFF2,
+		LazyLoad:                 c.LazyLoad,
 		LazyLoadExclusions:       coalesce(c.LazyLoadExclusions),
 		ProperlySizeImages:       c.ProperlySizeImages,
 		YouTubePlaceholder:       c.YouTubePlaceholder,
@@ -2055,11 +2219,11 @@ func (s *Service) SearchReplace(ctx context.Context, tenantID, siteID uuid.UUID,
 	}
 
 	s.publish(ctx, tenantID, siteID, site.EventDbSearchReplaceCompleted, map[string]any{
-		"job_id":          jobID,
-		"dry_run":         in.DryRun,
-		"tables_scanned":  res.TablesScanned,
-		"rows_matched":    res.RowsMatched,
-		"rows_changed":    res.RowsChanged,
+		"job_id":         jobID,
+		"dry_run":        in.DryRun,
+		"tables_scanned": res.TablesScanned,
+		"rows_matched":   res.RowsMatched,
+		"rows_changed":   res.RowsChanged,
 	})
 
 	return SearchReplaceOutput{
@@ -2158,7 +2322,7 @@ type MediaCleanIsolateOutput struct {
 // MediaCleanRestoreInput is the validated operator input for restore.
 type MediaCleanRestoreInput struct {
 	// JobID is a CP-minted UUID v4 for idempotency.
-	JobID         string
+	JobID string
 	// QuarantineIDs are the opaque manifest IDs returned by prior isolate calls.
 	QuarantineIDs []string
 }
@@ -2174,7 +2338,7 @@ type MediaCleanRestoreOutput struct {
 // MediaCleanDeleteInput is the validated operator input for the permanent delete.
 type MediaCleanDeleteInput struct {
 	// JobID is a CP-minted UUID v4 for idempotency.
-	JobID         string
+	JobID string
 	// QuarantineIDs are the opaque manifest IDs to permanently remove.
 	QuarantineIDs []string
 	// Confirm MUST equal "DELETE" (case-sensitive). The agent enforces this
@@ -2383,7 +2547,7 @@ func (s *Service) MediaCleanRestore(ctx context.Context, tenantID, siteID uuid.U
 	})
 	if agentErr != nil {
 		s.publish(ctx, tenantID, siteID, site.EventMediaCleanRestoreFailed, map[string]any{
-			"error":                agentErr.Error(),
+			"error":               agentErr.Error(),
 			"requested_manifests": len(in.QuarantineIDs),
 		})
 		return MediaCleanRestoreOutput{}, agentErr

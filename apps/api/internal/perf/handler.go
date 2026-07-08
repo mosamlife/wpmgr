@@ -130,6 +130,10 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g.GET("/perf/rum/summary", authz.RequirePermission(authz.PermSiteRead), h.rumSummary)
 	g.GET("/perf/rum/trend", authz.RequirePermission(authz.PermSiteRead), h.rumTrend)
 	g.GET("/perf/rum", authz.RequirePermission(authz.PermSiteRead), h.rumResults)
+	// GH #174 — deterministic operator recovery for a beacon key stuck empty on
+	// the agent (the one best-effort mint+push on first RUM-enable was lost).
+	// Same permission gate as putConfig — this is a perf-config-class mutation.
+	g.POST("/perf/rum/rotate-key", authz.RequirePermission(authz.PermSitePerfConfig), h.rotateRumBeaconKey)
 
 	// #190 — Media Cleaner tool.
 	// Scan is read-only (PermMediaCleanScan = viewer+); isolate/restore are
@@ -417,7 +421,7 @@ func (h *Handler) getDbClean(c *gin.Context) {
 		return
 	}
 
-	var activeJobID any    // null when not active
+	var activeJobID any     // null when not active
 	var activeStartedAt any // null when not active
 	if activeState.Active {
 		activeJobID = activeState.JobID
@@ -427,10 +431,10 @@ func (h *Handler) getDbClean(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"clean_active":       activeState.Active,
-		"active_job_id":      activeJobID,
-		"active_started_at":  activeStartedAt,
-		"last_result":        dbCleanResultToGinH(result),
+		"clean_active":      activeState.Active,
+		"active_job_id":     activeJobID,
+		"active_started_at": activeStartedAt,
+		"last_result":       dbCleanResultToGinH(result),
 	})
 }
 
@@ -533,7 +537,7 @@ func (h *Handler) getDbScan(c *gin.Context) {
 		return
 	}
 
-	var activeJobID any   // null when not active
+	var activeJobID any     // null when not active
 	var activeStartedAt any // null when not active
 	if activeState.Active {
 		activeJobID = activeState.JobID
@@ -1180,12 +1184,12 @@ func (h *Handler) dbSearchReplace(c *gin.Context) {
 	}
 
 	h.record(c, p, audit.ActionDbSearchReplace, siteID, map[string]any{
-		"job_id":          out.JobID,
-		"search_len":      len(body.Search), // length only — do not log the actual value
-		"dry_run":         body.DryRun,
-		"tables_scanned":  out.TablesScanned,
-		"rows_matched":    out.RowsMatched,
-		"rows_changed":    out.RowsChanged,
+		"job_id":         out.JobID,
+		"search_len":     len(body.Search), // length only — do not log the actual value
+		"dry_run":        body.DryRun,
+		"tables_scanned": out.TablesScanned,
+		"rows_matched":   out.RowsMatched,
+		"rows_changed":   out.RowsChanged,
 	})
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1412,15 +1416,15 @@ func (h *Handler) mediaCleanScan(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusOK, gin.H{
-		"ok":               true,
-		"total":            out.Total,
-		"candidates":       out.Candidates,
-		"has_more":         out.HasMore,
-		"truncated":        out.Truncated,
+		"ok":                true,
+		"total":             out.Total,
+		"candidates":        out.Candidates,
+		"has_more":          out.HasMore,
+		"truncated":         out.Truncated,
 		"total_attachments": out.TotalAttachments,
-		"referenced_count": out.ReferencedCount,
-		"unused_count":     out.UnusedCount,
-		"referenced":       out.Referenced,
+		"referenced_count":  out.ReferencedCount,
+		"unused_count":      out.UnusedCount,
+		"referenced":        out.Referenced,
 	})
 }
 
@@ -1518,7 +1522,7 @@ func (h *Handler) mediaCleanIsolate(c *gin.Context) {
 // mediaCleanRestoreBody is the JSON body for POST /media/clean/restore.
 type mediaCleanRestoreBody struct {
 	// JobID is a CP-minted UUID v4. Required.
-	JobID         string   `json:"job_id"`
+	JobID string `json:"job_id"`
 	// QuarantineIDs are the manifest IDs returned by prior isolate calls.
 	QuarantineIDs []string `json:"quarantine_ids"`
 }
@@ -1566,7 +1570,7 @@ func (h *Handler) mediaCleanRestore(c *gin.Context) {
 // mediaCleanDeleteBody is the JSON body for POST /media/clean/delete.
 type mediaCleanDeleteBody struct {
 	// JobID is a CP-minted UUID v4. Required.
-	JobID         string   `json:"job_id"`
+	JobID string `json:"job_id"`
 	// QuarantineIDs are the manifest IDs to permanently remove.
 	QuarantineIDs []string `json:"quarantine_ids"`
 	// Confirm MUST be the exact string "DELETE". The agent enforces this

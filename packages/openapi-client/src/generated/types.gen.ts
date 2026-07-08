@@ -3217,6 +3217,18 @@ export type PerfActionResult = {
 };
 
 /**
+ * The response to POST .../perf/rum/rotate-key (GH #174). Confirms the
+ * beacon key was rotated and pushed to the agent. The plaintext key is
+ * NEVER returned here, logged, or exposed by any other endpoint — only
+ * this confirmation boolean.
+ *
+ */
+export type RumBeaconRotateResult = {
+  ok: boolean;
+  beacon_key_set: boolean;
+};
+
+/**
  * One row in the per-table inventory returned by the db_scan agent command
  * (Phase 2.1). Ownership is classified locally on the agent using the WP
  * core table list + active plugin/theme slugs; no cloud lookup is performed.
@@ -12201,6 +12213,25 @@ export type ListRumResultsResponses = {
 
 export type ListRumResultsResponse =
   ListRumResultsResponses[keyof ListRumResultsResponses];
+
+export type RotateRumBeaconKeyData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/perf/rum/rotate-key";
+};
+
+export type RotateRumBeaconKeyResponses = {
+  /**
+   * Beacon key rotated and pushed
+   */
+  200: RumBeaconRotateResult;
+};
+
+export type RotateRumBeaconKeyResponse =
+  RotateRumBeaconKeyResponses[keyof RotateRumBeaconKeyResponses];
 
 export type ListRucssResultsData = {
   body?: never;

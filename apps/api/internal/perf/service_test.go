@@ -30,6 +30,9 @@ type fakeRepo struct {
 	purges      []RecordPurgeInput
 	upserts     []UpsertConfigInput
 	markedKinds []string // kinds passed to MarkCachePurged
+	// GH #174 — ack-based beacon-key reconcile stubs.
+	beaconAckedCalls []bool // the `present` arg of each UpdateBeaconKeyAcked call
+	beaconAckedErr   error
 }
 
 func (r *fakeRepo) GetConfig(_ context.Context, tenantID, siteID uuid.UUID) (Config, error) {
@@ -47,10 +50,17 @@ func (r *fakeRepo) UpsertConfig(_ context.Context, in UpsertConfigInput) (Config
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.upserts = append(r.upserts, in)
-	r.config = in.Config
+	cfg := in.Config
+	// Mirror the real UpsertPerfConfig SQL: beacon_key_hash / beacon_key_acked_*
+	// are agent-owned columns NOT included in the operator upsert's SET list —
+	// they pass through unchanged from whatever was already stored (GH #174).
+	cfg.BeaconKeySet = r.config.BeaconKeySet
+	cfg.BeaconKeyAckedPresent = r.config.BeaconKeyAckedPresent
+	cfg.BeaconKeyAckedAt = r.config.BeaconKeyAckedAt
+	r.config = cfg
 	r.configFound = true
 	r.ciphertext = in.CDNCredentialsEncrypted
-	return in.Config, nil
+	return cfg, nil
 }
 
 func (r *fakeRepo) GetCDNCredentialsCiphertext(_ context.Context, _, _ uuid.UUID) ([]byte, string, error) {
@@ -163,6 +173,20 @@ func (r *fakeRepo) GetStalledDBOrphanDeleteJobs(_ context.Context, _ time.Durati
 // M53/M67 — agent-reported WooCommerce theme probe result (tri-state after M67).
 func (r *fakeRepo) UpdateWooFragmentsSupported(_ context.Context, _ uuid.UUID, _ bool) (int64, error) {
 	return 1, nil
+}
+
+// GH #174 — ack-based beacon-key presence signal. needsReconcile mirrors the
+// real repo's semantics: rum_enabled && beacon_key_hash set && !present,
+// evaluated against the CURRENT stored config (this call never mutates
+// RumEnabled/BeaconKeySet — only the real acked_present/acked_at columns).
+func (r *fakeRepo) UpdateBeaconKeyAcked(_ context.Context, _ uuid.UUID, present bool) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.beaconAckedCalls = append(r.beaconAckedCalls, present)
+	if r.beaconAckedErr != nil {
+		return false, r.beaconAckedErr
+	}
+	return r.config.RumEnabled && r.config.BeaconKeySet && !present, nil
 }
 
 type fakeEvents struct {

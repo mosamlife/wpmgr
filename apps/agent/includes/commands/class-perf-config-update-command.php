@@ -225,6 +225,22 @@ final class PerfConfigUpdateCommand implements CommandInterface
         if ($intersection === []) {
             return false;
         }
+
+        // GH #174 defense-in-depth: array_intersect_key keys on PRESENCE, not
+        // value, so a present-but-EMPTY rum_beacon_key would silently clobber a
+        // good stored key with "". The CP relies on omitempty to drop the field
+        // when unchanged, but the agent must be robust regardless of what the
+        // wire actually sends. Treat an empty incoming beacon key as "leave the
+        // stored value unchanged" — mirroring the CP's omit-means-unchanged
+        // contract. A non-empty incoming key still overwrites normally
+        // (rotation / first mint).
+        if (array_key_exists('rum_beacon_key', $intersection)
+            && $intersection['rum_beacon_key'] === ''
+            && ($current['rum_beacon_key'] ?? '') !== ''
+        ) {
+            unset($intersection['rum_beacon_key']);
+        }
+
         $merged = new PerfConfig(array_merge($current, $intersection));
         if (function_exists('update_option')) {
             update_option(PerfConfig::OPTION, $merged->toArray(), false);

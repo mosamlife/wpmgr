@@ -113,6 +113,12 @@ const (
 	ActionCacheDeleteEverything = "site.cache.delete_everything"
 	ActionPerfConfigUpdated     = "site.perf.config.updated"
 	ActionDbCleaned             = "site.db.cleaned"
+	// ActionRumBeaconKeyRotated is recorded on an OPERATOR-initiated RUM
+	// beacon-key rotation (POST .../perf/rum/rotate-key, GH #174). The
+	// CP-initiated ack-based reconcile job (RumBeaconReconcileWorker) does NOT
+	// record this — it is a system self-heal, not an operator action; metadata
+	// carries only site_id (never the plaintext key).
+	ActionRumBeaconKeyRotated = "site.perf.rum.beacon_key.rotated"
 	// Phase 2.2 — per-table DDL action (optimize/repair/drop/empty). The
 	// destructive drop/empty paths require PermSiteCacheDeleteAll (admin+);
 	// the action field in metadata distinguishes optimize/repair (read-only

@@ -22,6 +22,7 @@ use WPMgr\Agent\Commands\CachePreloadCommand;
 use WPMgr\Agent\Commands\CachePurgeCommand;
 use WPMgr\Agent\Commands\DbCleanCommand;
 use WPMgr\Agent\Commands\PerfConfigUpdateCommand;
+use WPMgr\Agent\Optimizer\PerfConfig;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -322,5 +323,67 @@ final class CacheCommandsTest extends TestCase
         $stored = $this->optionStore[CacheManager::OPTION_CONFIG] ?? [];
         $this->assertArrayNotHasKey('stats', $res);
         $this->assertTrue(empty($stored['enabled']));
+    }
+
+    // -------------------------------------------------------------------------
+    // GH #174 — merge hardening: a present-but-empty rum_beacon_key must never
+    // clobber a good stored key (array_intersect_key keys on presence, not
+    // value). This is defense-in-depth: the CP relies on omitempty to drop the
+    // field entirely, but the agent must be robust regardless of the wire.
+    // -------------------------------------------------------------------------
+
+    public function test_perf_config_update_empty_beacon_key_does_not_clobber_stored_key(): void
+    {
+        $this->optionStore[PerfConfig::OPTION] = ['rum_beacon_key' => 'good-existing-key'];
+
+        $cmd = new PerfConfigUpdateCommand($this->manager());
+        $res = $cmd->execute([], ['rum_beacon_key' => '']);
+        $this->assertTrue($res['ok']);
+
+        $stored = $this->optionStore[PerfConfig::OPTION] ?? [];
+        $this->assertSame(
+            'good-existing-key',
+            $stored['rum_beacon_key'],
+            'an empty incoming rum_beacon_key must never clobber a good stored key'
+        );
+    }
+
+    public function test_perf_config_update_nonempty_beacon_key_overwrites_stored_key(): void
+    {
+        $this->optionStore[PerfConfig::OPTION] = ['rum_beacon_key' => 'old-key'];
+
+        $cmd = new PerfConfigUpdateCommand($this->manager());
+        $res = $cmd->execute([], ['rum_beacon_key' => 'rotated-new-key']);
+        $this->assertTrue($res['ok']);
+
+        $stored = $this->optionStore[PerfConfig::OPTION] ?? [];
+        $this->assertSame('rotated-new-key', $stored['rum_beacon_key'], 'a non-empty incoming key must still rotate normally');
+    }
+
+    public function test_perf_config_update_beacon_key_first_mint_from_empty(): void
+    {
+        // No prior key stored (fresh site): an incoming non-empty key must land
+        // (the guard only protects an existing GOOD key from being blanked).
+        $this->optionStore[PerfConfig::OPTION] = ['rum_beacon_key' => ''];
+
+        $cmd = new PerfConfigUpdateCommand($this->manager());
+        $res = $cmd->execute([], ['rum_beacon_key' => 'first-minted-key']);
+        $this->assertTrue($res['ok']);
+
+        $stored = $this->optionStore[PerfConfig::OPTION] ?? [];
+        $this->assertSame('first-minted-key', $stored['rum_beacon_key']);
+    }
+
+    public function test_perf_config_update_omitted_beacon_key_leaves_stored_key_unchanged(): void
+    {
+        $this->optionStore[PerfConfig::OPTION] = ['rum_beacon_key' => 'unchanged-key'];
+
+        $cmd = new PerfConfigUpdateCommand($this->manager());
+        // Push some unrelated optimization field; rum_beacon_key is absent.
+        $res = $cmd->execute([], ['cdn' => true]);
+        $this->assertTrue($res['ok']);
+
+        $stored = $this->optionStore[PerfConfig::OPTION] ?? [];
+        $this->assertSame('unchanged-key', $stored['rum_beacon_key']);
     }
 }

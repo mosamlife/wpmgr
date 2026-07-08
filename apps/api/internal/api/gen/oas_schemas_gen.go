@@ -30150,6 +30150,36 @@ func (s *RucssResultList) SetItems(val []RucssResult) {
 	s.Items = val
 }
 
+// The response to POST .../perf/rum/rotate-key (GH #174). Confirms the
+// beacon key was rotated and pushed to the agent. The plaintext key is
+// NEVER returned here, logged, or exposed by any other endpoint — only
+// this confirmation boolean.
+// Ref: #/components/schemas/RumBeaconRotateResult
+type RumBeaconRotateResult struct {
+	Ok           bool `json:"ok"`
+	BeaconKeySet bool `json:"beacon_key_set"`
+}
+
+// GetOk returns the value of Ok.
+func (s *RumBeaconRotateResult) GetOk() bool {
+	return s.Ok
+}
+
+// GetBeaconKeySet returns the value of BeaconKeySet.
+func (s *RumBeaconRotateResult) GetBeaconKeySet() bool {
+	return s.BeaconKeySet
+}
+
+// SetOk sets the value of Ok.
+func (s *RumBeaconRotateResult) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetBeaconKeySet sets the value of BeaconKeySet.
+func (s *RumBeaconRotateResult) SetBeaconKeySet(val bool) {
+	s.BeaconKeySet = val
+}
+
 // P75 summary for one (metric, device, country) slice over the requested window. suppressed=true
 // when the sample count is below the site's min_sample_count floor; p75_ms is 0 in that case and the
 // dashboard must render "insufficient samples (sample_count of min_sample_count)".

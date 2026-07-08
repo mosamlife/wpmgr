@@ -124,6 +124,8 @@ export {
   // RUM / Core Web Vitals (Phase 3b)
   getRumSummary,
   listRumResults,
+  // RUM beacon key recovery (GH #174)
+  rotateRumBeaconKey,
   // email (Phase 3c)
   listEmailProviders,
   getOrgEmailConfig,
@@ -508,6 +510,10 @@ export type {
   GetRumSummaryResponse,
   ListRumResultsData,
   ListRumResultsResponse,
+  // RUM beacon key recovery (GH #174)
+  RumBeaconRotateResult,
+  RotateRumBeaconKeyData,
+  RotateRumBeaconKeyResponse,
   // email (Phase 3c)
   SiteEmailConfig,
   PutEmailConfigRequest,

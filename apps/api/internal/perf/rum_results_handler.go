@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/rum"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
@@ -448,7 +449,6 @@ func (h *Handler) rumTrend(c *gin.Context) {
 	})
 }
 
-
 // emptyTrendResponse returns an empty RumTrendResponse for the nil-reader path.
 func emptyTrendResponse(windowDays, minSampleCount int) RumTrendResponse {
 	m := make(map[string][]RumTrendDayPoint)
@@ -513,12 +513,12 @@ type fleetRumTrendPoint struct {
 // JSON field names are pinned to the frontend FleetRumResponse contract in
 // apps/web/src/features/fleet/fleet-types.ts.
 type FleetRumResponse struct {
-	SitesReporting int                    `json:"sites_reporting"`
-	SitesTotal     int                    `json:"sites_total"`
-	FleetPassPct   *float64               `json:"fleet_pass_pct"`
-	PerMetric      fleetPerMetric         `json:"per_metric"`
+	SitesReporting int                     `json:"sites_reporting"`
+	SitesTotal     int                     `json:"sites_total"`
+	FleetPassPct   *float64                `json:"fleet_pass_pct"`
+	PerMetric      fleetPerMetric          `json:"per_metric"`
 	WorstOffenders []fleetRumWorstOffender `json:"worst_offenders"`
-	Trend          []fleetRumTrendPoint   `json:"trend"`
+	Trend          []fleetRumTrendPoint    `json:"trend"`
 }
 
 // rumFleet handles GET /api/v1/perf/rum/fleet.
@@ -843,6 +843,38 @@ func (h *Handler) rumFleet(c *gin.Context) {
 		WorstOffenders: worstOffenders,
 		Trend:          trend,
 	})
+}
+
+// rotateRumBeaconKey handles POST /api/v1/sites/:siteId/perf/rum/rotate-key
+// (GH #174). Unconditionally mints a fresh RUM beacon key and pushes it to the
+// agent — the deterministic operator recovery path for a beacon key that got
+// stuck permanently empty on the agent because the one best-effort mint+push
+// on first RUM-enable was lost (agent down/unreachable at that moment).
+//
+// PINNED response contract: {"ok": true, "beacon_key_set": true} on success.
+// The plaintext key is NEVER included in the response, logged, or returned by
+// the service layer at all — only this confirmation boolean.
+func (h *Handler) rotateRumBeaconKey(c *gin.Context) {
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	siteID, ok := parseSiteID(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.RotateBeaconKey(c.Request.Context(), p.TenantID, siteID); err != nil {
+		if _, isDomain := domain.AsDomain(err); isDomain {
+			httpx.Error(c, err)
+			return
+		}
+		// Non-domain = agent push failure AFTER the hash was already rotated and
+		// persisted. Mirrors putConfig's identical "config stored but agent push
+		// failed" handling: 200 + a warning header, because silently reporting
+		// success would hide that the fresh key has NOT reached the agent yet.
+		c.Header("X-Agent-Push-Warning", err.Error())
+		c.JSON(http.StatusOK, gin.H{"ok": true, "beacon_key_set": true})
+		return
+	}
+	h.record(c, p, audit.ActionRumBeaconKeyRotated, siteID, nil)
+	c.JSON(http.StatusOK, gin.H{"ok": true, "beacon_key_set": true})
 }
 
 // parseIntParam parses an integer from a string, clamping to [min, max].

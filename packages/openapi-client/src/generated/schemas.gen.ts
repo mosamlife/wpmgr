@@ -6207,6 +6207,21 @@ export const PerfActionResultSchema = {
   },
 } as const;
 
+export const RumBeaconRotateResultSchema = {
+  type: "object",
+  description:
+    "The response to POST .../perf/rum/rotate-key (GH #174). Confirms the\nbeacon key was rotated and pushed to the agent. The plaintext key is\nNEVER returned here, logged, or exposed by any other endpoint — only\nthis confirmation boolean.\n",
+  required: ["ok", "beacon_key_set"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    beacon_key_set: {
+      type: "boolean",
+    },
+  },
+} as const;
+
 export const DbScanTableInventoryRowSchema = {
   type: "object",
   description:

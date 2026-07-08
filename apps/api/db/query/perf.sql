@@ -144,6 +144,21 @@ SET server_software       = @server_software,
 WHERE site_id = @site_id
 RETURNING *;
 
+-- name: UpdateBeaconKeyAcked :one
+-- GH #174 — records whether the agent's most recent config-ack reported that
+-- it currently holds a non-empty rum_beacon_key (configAckBody.rum_beacon_present).
+-- Kept separate from UpsertPerfConfig for the same reason as
+-- UpdatePerfInstallState: an operator config save must never overwrite this
+-- agent-reported fact, and vice-versa. Runs under app.agent. RETURNING * lets
+-- the caller decide, in one round-trip, whether a re-mint reconcile job is
+-- needed: rum_enabled AND beacon_key_hash IS NOT NULL AND NOT @present.
+UPDATE site_perf_config
+SET beacon_key_acked_present = @present,
+    beacon_key_acked_at      = now(),
+    updated_at                = now()
+WHERE site_id = @site_id
+RETURNING *;
+
 -- ---------------------------------------------------------------------------
 -- site_cache_stats
 -- ---------------------------------------------------------------------------
