@@ -154,6 +154,30 @@ jobs:
       - name: pnpm audit (prod, high+)
         run: pnpm audit --prod --audit-level high
 
+  # ---- nginx routing (infra/nginx/nginx.conf) ----
+  # `nginx -t` only checks syntax; it does not catch a public Go route with no
+  # matching nginx location (GH #175 — self-hosted RUM ingest 405'd on every
+  # beacon because /rum/ had no location and fell through to the SPA
+  # try_files catch-all). This runs the real config against a stub upstream
+  # and asserts proxy-vs-405 outcomes for every known public root-engine
+  # route, plus a class invariant (unrouted public POST still 405, SPA
+  # fallback still serves index.html) so a FUTURE missing route fails the
+  # same way.
+  nginx-routing:
+    name: nginx routing smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: nginx -t (syntax)
+        run: |
+          docker run --rm \
+            -v "$PWD/infra/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:1.27-alpine nginx -t
+
+      - name: Routing smoke test (real infra/Dockerfile.web image vs stub upstream)
+        run: infra/nginx/routing_smoke_test.sh
+
   # ---- PHP agent ----
   php:
     name: PHP (agent)

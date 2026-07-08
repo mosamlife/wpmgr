@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.38] - 2026-07-08
+
+### Fixed
+
+- Real User Monitoring (RUM) data was never being collected on self-hosted installs: the bundled reverse-proxy configuration had no route for the `/rum/` endpoint, so every beacon request was rejected with a 405 error before it reached the application. The same gap also silently dropped inbound email-provider and billing webhooks (`/webhooks/`). The proxy now routes both `/rum/` and `/webhooks/` to the API. A new CI check exercises the real proxy configuration against every public endpoint, so a future public route added without its proxy entry is caught before release. Redeploy the web image to pick this up.
+
 ## [0.61.37] - 2026-07-07
 
 ### Fixed
