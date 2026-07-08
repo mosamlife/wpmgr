@@ -1,7 +1,7 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
 import { AppShell } from "@/components/layout/app-shell";
-import { ensureMe, useMe, isSuperadmin } from "@/features/auth/use-auth";
+import { ensureMe, useMe, isSuperadmin, isSuperadminAllowedPath } from "@/features/auth/use-auth";
 import { BulkActionProvider } from "@/features/sites/bulk-action-drawer";
 import { NoOrgScreen } from "@/features/orgs/no-org-screen";
 
@@ -28,8 +28,9 @@ export const Route = createFileRoute("/_authed")({
     // Superadmins are monitoring-only: they have no org and never manage sites,
     // so keep them inside the Admin area and out of the tenant-scoped shell
     // (which would 403 / bounce them to the create-org screen). They still reach
-    // /admin and any future /admin/* routes.
-    if (isSuperadmin(me) && !location.pathname.startsWith("/admin")) {
+    // /admin and any future /admin/* routes, PLUS their own per-user account
+    // settings (profile + 2FA/security) so they can secure their own login.
+    if (isSuperadmin(me) && !isSuperadminAllowedPath(location.pathname)) {
       throw redirect({ to: "/admin" });
     }
   },
