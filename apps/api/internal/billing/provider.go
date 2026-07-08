@@ -34,6 +34,14 @@ const (
 type CheckoutInput struct {
 	TenantID uuid.UUID
 	Plan     Tier
+	// Currency is an ISO 4217 currency code (e.g. "USD", "INR"), meaningful
+	// ONLY to a provider whose CreateCheckout resolves a price/plan PER
+	// (tier, currency) — e.g. Razorpay's dual-currency plan model (one
+	// Razorpay Plan per currency per tier, since Razorpay has no single
+	// multi-currency price object the way Stripe does). Stripe's own Price
+	// already encodes its currency and ignores this field entirely. Empty is
+	// legal for any provider that does not need it.
+	Currency string
 	// CustomerEmail prefills the checkout form. Best-effort: may be empty.
 	CustomerEmail string
 	// ProviderCustomerID reuses an existing provider customer record when the
@@ -44,10 +52,42 @@ type CheckoutInput struct {
 	CancelURL          string
 }
 
-// CheckoutSession is the result of starting a hosted checkout: a URL the
-// caller redirects the browser to.
+// RazorpayCheckoutData is the data WPMgr's in-app Checkout.js modal needs to
+// open a Razorpay subscription checkout — Razorpay has no hosted Checkout
+// Session object (unlike Stripe's redirect URL), so the CP must create the
+// Subscription server-side and hand the browser just enough to open the
+// modal itself. Declared here (in the core billing package, not
+// internal/billing/razorpay) so CheckoutSession's shape — and therefore the
+// HTTP wire contract the frontend depends on — never requires importing the
+// razorpay adapter package.
+type RazorpayCheckoutData struct {
+	// SubscriptionID is the just-created Razorpay subscription id
+	// (Checkout.js's "subscription_id" option).
+	SubscriptionID string `json:"subscription_id"`
+	// KeyID is Razorpay's PUBLIC key id (Checkout.js's "key" option) — never
+	// the key secret.
+	KeyID string `json:"key_id"`
+	// Currency is the resolved plan's ISO 4217 currency code, echoing back
+	// in.Currency for display.
+	Currency string `json:"currency"`
+	// AmountMinor is the per-billing-cycle charge amount in the currency's
+	// smallest unit (paise for INR, cents for USD) — the exact shape
+	// Checkout.js's own "amount" option expects, read authoritatively off the
+	// Razorpay Plan (never computed/guessed CP-side, so it can never drift
+	// from what Razorpay will actually charge).
+	AmountMinor int64 `json:"amount"`
+}
+
+// CheckoutSession is the result of starting a hosted checkout. Exactly one of
+// URL or Razorpay is populated, depending on the provider's checkout style:
+//
+//   - A hosted-redirect provider (Stripe) sets URL and leaves Razorpay nil —
+//     the caller redirects the browser to URL.
+//   - An in-app-modal provider (Razorpay) sets Razorpay and leaves URL empty —
+//     the caller hands Razorpay to the frontend's Checkout.js modal.
 type CheckoutSession struct {
-	URL string
+	URL      string                `json:"url,omitempty"`
+	Razorpay *RazorpayCheckoutData `json:"razorpay,omitempty"`
 }
 
 // PortalSession is the result of minting a billing-management portal session:
@@ -133,6 +173,23 @@ type Provider interface {
 	// session for an existing provider customer.
 	CreatePortalSession(ctx context.Context, providerCustomerID string) (PortalSession, error)
 
+	// CancelSubscription tells the provider to cancel providerSubscriptionID.
+	// Both adapters cancel AT THE END OF THE CURRENT BILLING PERIOD, never
+	// immediately — the customer keeps paid-tier access through what they
+	// already paid for, matching the state machine's existing
+	// non-destructive-downgrade intent (state_machine.go's StatusCanceled
+	// case just downgrades to free; it never deletes anything).
+	//
+	// This method NEVER mutates a tenant's stored plan/status itself —
+	// "push is a hint, pull is the truth" applies here exactly as it does to
+	// every other billing mutation: the resulting subscription.cancelled (or
+	// Stripe's customer.subscription.updated with cancel_at_period_end=true)
+	// webhook is what actually drives the downgrade, through the EXACT SAME
+	// ProcessWebhook/state-machine path as any other event. Callers
+	// (Service.CancelSubscription) must not assume the plan has changed the
+	// instant this call returns.
+	CancelSubscription(ctx context.Context, providerSubscriptionID string) error
+
 	// GetSubscription fetches a subscription's CURRENT state from the
 	// provider. This is the sole source of truth the state machine acts on.
 	GetSubscription(ctx context.Context, providerSubscriptionID string) (Subscription, error)
@@ -147,6 +204,38 @@ type Provider interface {
 	// (_, false) when the price is not one this control plane's config maps
 	// to a tier (see the "unknown price" no-op path).
 	MapPriceToPlan(priceID string) (Tier, bool)
+
+	// HasPortal reports whether this provider offers a hosted self-service
+	// billing-management portal (Stripe: yes. Razorpay: no — Razorpay has no
+	// equivalent of Stripe's Billing Portal; its CreatePortalSession returns a
+	// domain KindUnavailable error rather than fabricating a URL). Callers
+	// (GetBillingSummary's PortalAvailable, the billing Handler) use this to
+	// decide whether to advertise/attempt a portal link at all, rather than
+	// discovering "not supported" only after calling CreatePortalSession.
+	HasPortal() bool
+}
+
+// CheckoutCallbackVerifier is an OPTIONAL capability a Provider may implement
+// when its checkout flow returns a browser-side completion callback that
+// needs its own signature check — e.g. Razorpay's Checkout.js onSuccess
+// handler, which hands the browser {razorpay_payment_id,
+// razorpay_subscription_id, razorpay_signature} that must be HMAC-verified
+// before the frontend trusts "the modal succeeded". Stripe's redirect-based
+// Checkout Session has no equivalent and does not implement this interface.
+//
+// Declared as a SEPARATE, optional interface (type-asserted by
+// Service.VerifyCheckoutCallback) rather than folded into Provider itself:
+// a browser-callback-verify step is not a capability every payment provider
+// needs, so widening the core Provider interface for it would force every
+// adapter (including test doubles) to carry a method most of them never use.
+//
+// CRITICAL: this is ONLY a UX confirmation that the client-side modal
+// succeeded. The webhook (Service.ProcessWebhook) remains the SOLE source of
+// truth for granting a plan change — an implementation of this method must
+// NEVER be treated as authorization to mutate a tenant's billing state, and
+// none of the callers in this codebase do.
+type CheckoutCallbackVerifier interface {
+	VerifyCheckoutCallback(payload map[string]string) error
 }
 
 // Registry is the set of payment providers wired at boot (from config). A

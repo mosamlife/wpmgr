@@ -151,6 +151,7 @@ func Validate(cfg Config) []Issue {
 	// fails confusingly on first checkout/webhook.
 	if cfg.Hosted.Enabled {
 		issues = append(issues, validateStripeConfig(cfg.Billing.Stripe)...)
+		issues = append(issues, validateRazorpayConfig(cfg.Billing.Razorpay)...)
 	}
 
 	return issues
@@ -184,6 +185,47 @@ func validateStripeConfig(s StripeConfig) []Issue {
 			issues = append(issues, Issue{
 				Name:   name,
 				Reason: "Stripe billing is partially configured — every WPMGR_BILLING_STRIPE_* variable is required once any one of them is set",
+			})
+		}
+	}
+	return issues
+}
+
+// validateRazorpayConfig checks internal consistency of the nine Razorpay
+// fields (3 credentials + 6 dual-currency plan ids): either all empty
+// (Razorpay simply is not configured on this instance — legal) or all nine
+// present. A partial config (e.g. INR plans set but USD plans missing) is
+// refused at boot rather than registering a Razorpay provider that would
+// fail confusingly on the first checkout in the unconfigured currency.
+func validateRazorpayConfig(r RazorpayConfig) []Issue {
+	fields := map[string]string{
+		"WPMGR_BILLING_RAZORPAY_KEY_ID":           r.KeyID,
+		"WPMGR_BILLING_RAZORPAY_KEY_SECRET":       r.KeySecret,
+		"WPMGR_BILLING_RAZORPAY_WEBHOOK_SECRET":   r.WebhookSecret,
+		"WPMGR_BILLING_RAZORPAY_PLAN_STARTER_USD": r.PlanStarterUSD,
+		"WPMGR_BILLING_RAZORPAY_PLAN_STARTER_INR": r.PlanStarterINR,
+		"WPMGR_BILLING_RAZORPAY_PLAN_AGENCY_USD":  r.PlanAgencyUSD,
+		"WPMGR_BILLING_RAZORPAY_PLAN_AGENCY_INR":  r.PlanAgencyINR,
+		"WPMGR_BILLING_RAZORPAY_PLAN_SCALE_USD":   r.PlanScaleUSD,
+		"WPMGR_BILLING_RAZORPAY_PLAN_SCALE_INR":   r.PlanScaleINR,
+	}
+	anySet := false
+	for _, v := range fields {
+		if v != "" {
+			anySet = true
+			break
+		}
+	}
+	if !anySet {
+		return nil
+	}
+
+	var issues []Issue
+	for name, v := range fields {
+		if v == "" {
+			issues = append(issues, Issue{
+				Name:   name,
+				Reason: "Razorpay billing is partially configured — every WPMGR_BILLING_RAZORPAY_* variable is required once any one of them is set",
 			})
 		}
 	}

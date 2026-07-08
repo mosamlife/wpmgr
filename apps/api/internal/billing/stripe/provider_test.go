@@ -259,6 +259,17 @@ func TestVerifyWebhook_ChargeRefunded_NoSubscriptionReference(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CancelSubscription — cancel at period end, never immediate.
+// ---------------------------------------------------------------------------
+
+func TestCancelSubscriptionParams_CancelsAtPeriodEndNotImmediately(t *testing.T) {
+	params := cancelSubscriptionParams()
+	if params.CancelAtPeriodEnd == nil || !*params.CancelAtPeriodEnd {
+		t.Fatal("CancelAtPeriodEnd must be true — cancellation is scheduled for the end of the current billing period, never immediate")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // MapPriceToPlan / subscription-state mapping.
 // ---------------------------------------------------------------------------
 

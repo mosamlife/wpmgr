@@ -38,6 +38,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
+	billingrazorpay "github.com/mosamlife/wpmgr/apps/api/internal/billing/razorpay"
 	billingstripe "github.com/mosamlife/wpmgr/apps/api/internal/billing/stripe"
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
@@ -468,6 +469,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// when its five WPMGR_BILLING_STRIPE_* variables are ALL present
 	// (StripeConfig.Configured — config.Validate refuses a PARTIAL Stripe
 	// config at boot, so by the time we get here it is always all-or-nothing).
+	// Razorpay (India pricing, dual-currency) mirrors this exactly: registered
+	// ONLY when all nine WPMGR_BILLING_RAZORPAY_* variables are present.
 	var billingProviders []billing.Provider
 	stripeCfg := billingstripe.Config{
 		SecretKey:       cfg.Billing.Stripe.SecretKey,
@@ -480,7 +483,23 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if stripeCfg.Configured() {
 		billingProviders = append(billingProviders, billingstripe.New(stripeCfg))
 		logger.Info("billing: Stripe provider registered")
-	} else if cfg.Hosted.Enabled {
+	}
+	razorpayCfg := billingrazorpay.Config{
+		KeyID:          cfg.Billing.Razorpay.KeyID,
+		KeySecret:      cfg.Billing.Razorpay.KeySecret,
+		WebhookSecret:  cfg.Billing.Razorpay.WebhookSecret,
+		PlanStarterUSD: cfg.Billing.Razorpay.PlanStarterUSD,
+		PlanStarterINR: cfg.Billing.Razorpay.PlanStarterINR,
+		PlanAgencyUSD:  cfg.Billing.Razorpay.PlanAgencyUSD,
+		PlanAgencyINR:  cfg.Billing.Razorpay.PlanAgencyINR,
+		PlanScaleUSD:   cfg.Billing.Razorpay.PlanScaleUSD,
+		PlanScaleINR:   cfg.Billing.Razorpay.PlanScaleINR,
+	}
+	if razorpayCfg.Configured() {
+		billingProviders = append(billingProviders, billingrazorpay.New(razorpayCfg))
+		logger.Info("billing: Razorpay provider registered")
+	}
+	if len(billingProviders) == 0 && cfg.Hosted.Enabled {
 		logger.Warn("billing: hosted billing is enabled but no payment provider is configured — checkout/portal will return 503")
 	}
 	billingSvc.SetProviders(billing.NewRegistry(billingProviders...), "stripe")

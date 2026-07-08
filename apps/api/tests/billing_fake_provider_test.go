@@ -60,6 +60,17 @@ type fakeProvider struct {
 	checkoutErr       error
 	portalErr         error
 	verifyErr         error
+	cancelErr         error
+
+	// lastCancelSubscriptionID records what CancelSubscription was called
+	// with, so a test can assert the Service actually told THIS provider to
+	// cancel THIS subscription id.
+	lastCancelSubscriptionID string
+
+	// noPortal flips HasPortal() to false (a Razorpay-like provider). Zero
+	// value (false) keeps every existing test's Stripe-like (portal-having)
+	// assumption working unchanged.
+	noPortal bool
 }
 
 func newFakeProvider(name string) *fakeProvider {
@@ -67,6 +78,9 @@ func newFakeProvider(name string) *fakeProvider {
 }
 
 func (f *fakeProvider) Name() string { return f.name }
+
+// HasPortal implements billing.Provider.
+func (f *fakeProvider) HasPortal() bool { return !f.noPortal }
 
 func (f *fakeProvider) CreateCheckout(_ context.Context, in billing.CheckoutInput) (billing.CheckoutSession, error) {
 	f.lastCheckoutInput = in
@@ -114,4 +128,13 @@ func (f *fakeProvider) VerifyWebhook(rawBody []byte, _ http.Header) (billing.Eve
 
 func (f *fakeProvider) MapPriceToPlan(string) (billing.Tier, bool) {
 	return "", false // not exercised by these tests
+}
+
+// CancelSubscription implements billing.Provider. Records the id it was
+// called with (never mutates any state — mirrors real adapters, which only
+// tell the provider to cancel; the tenant's plan/status changes ONLY via a
+// subsequent webhook, driven separately in tests that need it).
+func (f *fakeProvider) CancelSubscription(_ context.Context, providerSubscriptionID string) error {
+	f.lastCancelSubscriptionID = providerSubscriptionID
+	return f.cancelErr
 }

@@ -46,7 +46,8 @@ type Config struct {
 // Validate's billing checks below), matching Phase A's "hosted with zero
 // providers is legal" behavior.
 type BillingConfig struct {
-	Stripe StripeConfig `koanf:"stripe"`
+	Stripe   StripeConfig   `koanf:"stripe"`
+	Razorpay RazorpayConfig `koanf:"razorpay"`
 }
 
 // StripeConfig holds the Stripe adapter's credentials and tier->price
@@ -66,6 +67,38 @@ type StripeConfig struct {
 	PriceStarter string `koanf:"price_starter"`
 	PriceAgency  string `koanf:"price_agency"`
 	PriceScale   string `koanf:"price_scale"`
+}
+
+// RazorpayConfig holds the Razorpay adapter's credentials and its
+// DUAL-CURRENCY tier->plan mapping: one Razorpay Plan per currency per tier
+// (Razorpay has no single multi-currency price object the way Stripe does).
+// All nine fields are required TOGETHER once ANY one of them is set (see
+// Validate/validateRazorpayConfig) — a partially-configured Razorpay is
+// refused at boot rather than silently registering a broken provider.
+type RazorpayConfig struct {
+	// KeyID is Razorpay's PUBLIC key id, also handed to the frontend's
+	// Checkout.js modal. Env: WPMGR_BILLING_RAZORPAY_KEY_ID.
+	KeyID string `koanf:"key_id"`
+	// KeySecret is Razorpay's secret API key (used for the Subscriptions/Plans
+	// REST API's Basic Auth, and for verifying the browser checkout callback's
+	// signature). Env: WPMGR_BILLING_RAZORPAY_KEY_SECRET.
+	KeySecret string `koanf:"key_secret"`
+	// WebhookSecret is the Razorpay webhook signing secret, DISTINCT from
+	// KeySecret, used to verify POST /webhooks/billing/razorpay. Env:
+	// WPMGR_BILLING_RAZORPAY_WEBHOOK_SECRET.
+	WebhookSecret string `koanf:"webhook_secret"`
+	// PlanStarterUSD/PlanStarterINR/... are the Razorpay recurring Plan ids
+	// for the three paid tiers, ONE PER CURRENCY (created once in the
+	// Razorpay Dashboard/API — this control plane never creates plans
+	// itself). Env: WPMGR_BILLING_RAZORPAY_PLAN_STARTER_USD /
+	// _PLAN_STARTER_INR / _PLAN_AGENCY_USD / _PLAN_AGENCY_INR /
+	// _PLAN_SCALE_USD / _PLAN_SCALE_INR.
+	PlanStarterUSD string `koanf:"plan_starter_usd"`
+	PlanStarterINR string `koanf:"plan_starter_inr"`
+	PlanAgencyUSD  string `koanf:"plan_agency_usd"`
+	PlanAgencyINR  string `koanf:"plan_agency_inr"`
+	PlanScaleUSD   string `koanf:"plan_scale_usd"`
+	PlanScaleINR   string `koanf:"plan_scale_inr"`
 }
 
 // HostedConfig gates the M16 Phase A hosted-billing entitlement substrate
@@ -446,69 +479,78 @@ func defaults() map[string]any {
 		"auth.absolute_expiry":     "720h", // 30 days hard cap
 		// ADR-056: WebAuthn relying party defaults (hosted instance).
 		// Self-hosted operators override via WPMGR_AUTH_WEBAUTHN_RPID etc.
-		"auth.webauthn_rpid":            "manage.wpmgr.app",
-		"auth.webauthn_rp_origins":      "https://manage.wpmgr.app",
-		"auth.webauthn_rp_display_name": "WPMgr",
-		"oidc.issuer":                   "",
-		"oidc.client_id":                "",
-		"oidc.client_secret":            "",
-		"oidc.redirect_url":             "",
-		"otel.exporter_otlp_endpoint":   "",
-		"otel.service_name":             "wpmgr-api",
-		"shutdown.timeout":              "15s",
-		"agent.signing_private_key":     "",
-		"agent.signing_public_key":      "",
-		"agent.signature_skew":          "5m",
-		"agent.stale_after":             "10m", // ~2 missed 5-min heartbeats
-		"agent.health_interval":         "5m",
-		"update.per_tenant_parallelism": 5,
-		"update.http_timeout":           "30s",
-		"update.http_retries":           2,
-		"s3.endpoint":                   "",
-		"s3.region":                     "us-east-1",
-		"s3.bucket":                     "",
-		"s3.access_key":                 "",
-		"s3.secret_key":                 "",
-		"s3.force_path_style":           true,
-		"backup.presign_ttl":            "1h",
-		"backup.retention_days":         30,
-		"backup.monthly_archive_keep":   12,
-		"backup.schedule_interval":      "5m",
-		"backup.gc_interval":            "1h",
-		"backup.http_timeout":           "10m",
-		"clickhouse.addr":               "",
-		"clickhouse.db":                 "wpmgr_metrics",
-		"clickhouse.username":           "default",
-		"clickhouse.password":           "",
-		"smtp.host":                     "",
-		"smtp.port":                     587,
-		"smtp.username":                 "",
-		"smtp.password":                 "",
-		"smtp.from":                     "",
-		"smtp.tls_mode":                 "starttls",
-		"uptime.probe_interval":         "60s",
-		"uptime.probe_timeout":          "15s",
-		"uptime.probe_concurrency":      10,
-		"uptime.alert_interval":         "60s",
-		"uptime.down_threshold":         2,
-		"uptime.cron_kick_enabled":      true,
-		"uptime.cron_kick_interval":     "5m",
-		"uptime.cron_kick_timeout":      "5s",
-		"uptime.cron_kick_concurrency":  10,
-		"river.media_schema":            "",
-		"autologin.require_2fa_step_up": false,
-		"conn.degrade_after":            "300s",
-		"conn.degrade_miss_threshold":   3,
-		"conn.disconnect_after":         "900s",
-		"conn.active_verify":            true,
-		"conn.verify_timeout":           "8s",
-		"conn.verify_concurrency":       8,
-		"hosted.enabled":                false,
-		"billing.stripe.secret_key":     "",
-		"billing.stripe.webhook_secret": "",
-		"billing.stripe.price_starter":  "",
-		"billing.stripe.price_agency":   "",
-		"billing.stripe.price_scale":    "",
+		"auth.webauthn_rpid":                "manage.wpmgr.app",
+		"auth.webauthn_rp_origins":          "https://manage.wpmgr.app",
+		"auth.webauthn_rp_display_name":     "WPMgr",
+		"oidc.issuer":                       "",
+		"oidc.client_id":                    "",
+		"oidc.client_secret":                "",
+		"oidc.redirect_url":                 "",
+		"otel.exporter_otlp_endpoint":       "",
+		"otel.service_name":                 "wpmgr-api",
+		"shutdown.timeout":                  "15s",
+		"agent.signing_private_key":         "",
+		"agent.signing_public_key":          "",
+		"agent.signature_skew":              "5m",
+		"agent.stale_after":                 "10m", // ~2 missed 5-min heartbeats
+		"agent.health_interval":             "5m",
+		"update.per_tenant_parallelism":     5,
+		"update.http_timeout":               "30s",
+		"update.http_retries":               2,
+		"s3.endpoint":                       "",
+		"s3.region":                         "us-east-1",
+		"s3.bucket":                         "",
+		"s3.access_key":                     "",
+		"s3.secret_key":                     "",
+		"s3.force_path_style":               true,
+		"backup.presign_ttl":                "1h",
+		"backup.retention_days":             30,
+		"backup.monthly_archive_keep":       12,
+		"backup.schedule_interval":          "5m",
+		"backup.gc_interval":                "1h",
+		"backup.http_timeout":               "10m",
+		"clickhouse.addr":                   "",
+		"clickhouse.db":                     "wpmgr_metrics",
+		"clickhouse.username":               "default",
+		"clickhouse.password":               "",
+		"smtp.host":                         "",
+		"smtp.port":                         587,
+		"smtp.username":                     "",
+		"smtp.password":                     "",
+		"smtp.from":                         "",
+		"smtp.tls_mode":                     "starttls",
+		"uptime.probe_interval":             "60s",
+		"uptime.probe_timeout":              "15s",
+		"uptime.probe_concurrency":          10,
+		"uptime.alert_interval":             "60s",
+		"uptime.down_threshold":             2,
+		"uptime.cron_kick_enabled":          true,
+		"uptime.cron_kick_interval":         "5m",
+		"uptime.cron_kick_timeout":          "5s",
+		"uptime.cron_kick_concurrency":      10,
+		"river.media_schema":                "",
+		"autologin.require_2fa_step_up":     false,
+		"conn.degrade_after":                "300s",
+		"conn.degrade_miss_threshold":       3,
+		"conn.disconnect_after":             "900s",
+		"conn.active_verify":                true,
+		"conn.verify_timeout":               "8s",
+		"conn.verify_concurrency":           8,
+		"hosted.enabled":                    false,
+		"billing.stripe.secret_key":         "",
+		"billing.stripe.webhook_secret":     "",
+		"billing.stripe.price_starter":      "",
+		"billing.stripe.price_agency":       "",
+		"billing.stripe.price_scale":        "",
+		"billing.razorpay.key_id":           "",
+		"billing.razorpay.key_secret":       "",
+		"billing.razorpay.webhook_secret":   "",
+		"billing.razorpay.plan_starter_usd": "",
+		"billing.razorpay.plan_starter_inr": "",
+		"billing.razorpay.plan_agency_usd":  "",
+		"billing.razorpay.plan_agency_inr":  "",
+		"billing.razorpay.plan_scale_usd":   "",
+		"billing.razorpay.plan_scale_inr":   "",
 	}
 }
 
@@ -622,6 +664,12 @@ func mapEnvKey(k string) string {
 	// WPMGR_BILLING_STRIPE_* -> billing.stripe.* (M16 Phase B).
 	case strings.HasPrefix(k, "billing_stripe_"):
 		return "billing.stripe." + strings.TrimPrefix(k, "billing_stripe_")
+	// WPMGR_BILLING_RAZORPAY_* -> billing.razorpay.* (M16 Phase B, Razorpay
+	// adapter). Without this case every WPMGR_BILLING_RAZORPAY_* variable is
+	// silently dropped by koanf's env provider (falls through to the default
+	// passthrough below, which unmarshal simply ignores).
+	case strings.HasPrefix(k, "billing_razorpay_"):
+		return "billing.razorpay." + strings.TrimPrefix(k, "billing_razorpay_")
 	default:
 		return k
 	}
