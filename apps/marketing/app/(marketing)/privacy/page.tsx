@@ -3,12 +3,12 @@ import { buildMetadata, buildBreadcrumbLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { LegalPage } from "@/components/templates/legal-page";
 import { SITE_CONFIG } from "@/lib/site";
-import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE } from "@/lib/content/legal";
+import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE, STRIPE, RAZORPAY } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
   title: "Privacy Policy | WPMgr",
   description:
-    "How WPMgr collects, uses, and protects data for the hosted service at manage.wpmgr.app, including our sub-processors, Google Cloud and Paddle.",
+    "How WPMgr collects, uses, and protects data for the hosted service at manage.wpmgr.app, including our sub-processors, Google Cloud Platform, Stripe, Razorpay, and Paddle.",
   canonical: "/privacy/",
 });
 
@@ -90,7 +90,8 @@ export default function PrivacyPage() {
                 <p>
                   <strong className="font-semibold text-foreground">Billing information.</strong>{" "}
                   We do not collect or store your card details. Payment information is collected and
-                  processed directly by Paddle, our merchant of record; see section 3.
+                  processed by whichever payment provider you choose at checkout: Razorpay, Stripe,
+                  or Paddle. See section 3.
                 </p>
                 <p>
                   <strong className="font-semibold text-foreground">Operational logs.</strong>{" "}
@@ -134,12 +135,22 @@ export default function PrivacyPage() {
                     hosts the control plane, database, and managed backup storage.
                   </li>
                   <li>
+                    <strong className="font-semibold text-foreground">{STRIPE.legalName}</strong>{" "}
+                    and{" "}
+                    <strong className="font-semibold text-foreground">{RAZORPAY.legalName}</strong>{" "}
+                    are payment processors for payments made through those providers. For those
+                    payments, {COMPANY.legalName} is the seller, and Stripe or Razorpay processes
+                    the payment on our behalf. Each receives the billing and contact data needed to
+                    process your payment and acts as an independent data controller for that
+                    billing data under its own privacy policy.
+                  </li>
+                  <li>
                     <strong className="font-semibold text-foreground">{PADDLE.legalName}</strong>{" "}
-                    is our payment processor and merchant of record for all paid subscriptions.
-                    Paddle receives the billing and contact data needed to process your payment,
-                    calculate tax, issue invoices and receipts, and process refunds. Paddle acts as
-                    an independent data controller for that billing data under its own privacy
-                    policy.
+                    is our payment processor and merchant of record for sales it processes. Paddle
+                    receives the billing and contact data needed to process your payment, calculate
+                    tax, issue invoices and receipts, and process refunds for Paddle-processed
+                    sales. Paddle acts as an independent data controller for that billing data under
+                    its own privacy policy.
                   </li>
                   <li>A transactional email provider, used solely to deliver account emails.</li>
                 </ul>
@@ -152,10 +163,10 @@ export default function PrivacyPage() {
             body: (
               <p>
                 Hosted-service data is stored on Google Cloud Platform infrastructure. Where data is
-                transferred across borders, for example to Paddle for payment processing, we rely
-                on the sub-processor&apos;s own safeguards, such as standard contractual clauses,
-                for that transfer. Contact us at {mail} if you need details about a specific
-                transfer.
+                transferred across borders, for example to Stripe, Razorpay, or Paddle for payment
+                processing, we rely on the sub-processor&apos;s own safeguards, such as standard
+                contractual clauses, for that transfer. Contact us at {mail} if you need details
+                about a specific transfer.
               </p>
             ),
           },

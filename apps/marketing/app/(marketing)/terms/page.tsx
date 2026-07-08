@@ -3,12 +3,12 @@ import { buildMetadata, buildBreadcrumbLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { LegalPage } from "@/components/templates/legal-page";
 import { SITE_CONFIG } from "@/lib/site";
-import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE } from "@/lib/content/legal";
+import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE, STRIPE, RAZORPAY } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
   title: "Terms of Service | WPMgr",
   description:
-    "Terms of Service for the WPMgr hosted service at manage.wpmgr.app, including subscription billing through Paddle as merchant of record.",
+    "Terms of Service for the WPMgr hosted service at manage.wpmgr.app, including subscription billing and your choice of payment provider at checkout.",
   canonical: "/terms/",
 });
 
@@ -40,6 +40,28 @@ const paddleLink = (
     className="font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
   >
     {PADDLE.legalName}
+  </a>
+);
+
+const stripeLink = (
+  <a
+    href={STRIPE.website}
+    target="_blank"
+    rel="noreferrer noopener"
+    className="font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
+  >
+    {STRIPE.legalName}
+  </a>
+);
+
+const razorpayLink = (
+  <a
+    href={RAZORPAY.website}
+    target="_blank"
+    rel="noreferrer noopener"
+    className="font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
+  >
+    {RAZORPAY.legalName}
   </a>
 );
 
@@ -121,22 +143,34 @@ export default function TermsPage() {
             ),
           },
           {
-            heading: "4. Subscription plans and billing through Paddle",
+            heading: "4. Subscription plans and billing",
             body: (
               <>
                 <p>
-                  Paid plans are billed monthly. Our order process and payment collection are
-                  conducted by our online reseller and merchant of record, {paddleLink}. Paddle sells
-                  the WPMgr subscription to you as the authorized reseller, is responsible for
+                  Paid plans are billed monthly. At checkout, you choose the payment provider used
+                  to process your payment: {razorpayLink}, {stripeLink}, or {paddleLink}.
+                </p>
+                <p>
+                  For payments processed through Stripe or Razorpay, {COMPANY.legalName} is the
+                  seller and merchant of record. We are responsible for invoicing, calculating and
+                  remitting applicable tax (including GST on Razorpay-processed payments in India),
+                  and processing refunds directly to you under our Refund Policy. Stripe and
+                  Razorpay act solely as payment processors for these transactions and do not
+                  appear as the merchant on your statement.
+                </p>
+                <p>
+                  For payments processed through Paddle, Paddle is the merchant of record. Paddle
+                  sells the WPMgr subscription to you as our authorized reseller, is responsible for
                   processing your payment, and appears as the merchant on your card or bank
                   statement. Paddle is also responsible for invoicing, calculating and remitting
                   applicable sales tax, VAT, or GST, and processing refunds on our behalf under our
-                  Refund Policy.
+                  Refund Policy for Paddle-processed sales. By subscribing through Paddle, you also
+                  agree to Paddle&apos;s buyer terms and privacy policy, which govern that payment
+                  transaction.
                 </p>
                 <p>
-                  By subscribing, you also agree to Paddle&apos;s buyer terms and privacy policy,
-                  which govern the payment transaction itself. Your subscription renews
-                  automatically each billing period until you cancel. We will provide reasonable
+                  Your subscription renews automatically each billing period until you cancel,
+                  regardless of which provider processed your payment. We will provide reasonable
                   advance notice before any price change takes effect for your account.
                 </p>
               </>

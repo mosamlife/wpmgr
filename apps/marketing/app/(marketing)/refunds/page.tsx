@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 import { buildMetadata, buildBreadcrumbLd, buildFAQPageLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { LegalPage } from "@/components/templates/legal-page";
-import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE } from "@/lib/content/legal";
+import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE, STRIPE, RAZORPAY } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
   title: "Refund Policy | WPMgr",
   description:
-    "WPMgr refund policy: cancel a monthly subscription anytime, plus a 14-day money-back guarantee on your first paid payment, processed through Paddle.",
+    "WPMgr refund policy: cancel a monthly subscription anytime, plus a 14-day money-back guarantee on your first paid payment, refunded through your original payment provider.",
   canonical: "/refunds/",
 });
 
@@ -31,6 +31,28 @@ const paddleLink = (
   </a>
 );
 
+const stripeLink = (
+  <a
+    href={STRIPE.website}
+    target="_blank"
+    rel="noreferrer noopener"
+    className="font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
+  >
+    {STRIPE.legalName}
+  </a>
+);
+
+const razorpayLink = (
+  <a
+    href={RAZORPAY.website}
+    target="_blank"
+    rel="noreferrer noopener"
+    className="font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
+  >
+    {RAZORPAY.legalName}
+  </a>
+);
+
 const REFUND_FAQ = [
   {
     q: "Do I need to cancel my Free plan?",
@@ -42,7 +64,7 @@ const REFUND_FAQ = [
   },
   {
     q: "What if I subscribed by mistake or the plan doesn't fit?",
-    a: "If this is your first paid payment on your account, you are covered by the 14-day money-back guarantee: contact us within 14 days of that payment and we will arrange a full refund through Paddle.",
+    a: "If this is your first paid payment on your account, you are covered by the 14-day money-back guarantee: contact us within 14 days of that payment and we will arrange a full refund back through whichever payment provider processed it: Razorpay, Stripe, or Paddle.",
   },
 ];
 
@@ -66,8 +88,10 @@ export default function RefundsPage() {
         intro={
           <>
             This Refund Policy applies to paid WPMgr subscriptions on the hosted service at
-            manage.wpmgr.app. All payments are processed by {paddleLink}, our merchant of record, and
-            refunds are issued through Paddle to your original payment method.
+            manage.wpmgr.app. At checkout, you choose the payment provider that processes your
+            payment: {razorpayLink}, {stripeLink}, or {paddleLink}. Refunds are issued back
+            through whichever provider processed the original payment, to your original payment
+            method.
           </>
         }
         sections={[
@@ -99,10 +123,11 @@ export default function RefundsPage() {
               <p>
                 If you are new to paid WPMgr plans, your first paid subscription payment is covered
                 by a 14-day money-back guarantee. If the Service is not right for you, contact us
-                within 14 days of that first payment and we will arrange a full refund through
-                Paddle, no detailed justification required. This guarantee applies once per customer
-                and covers only the first paid payment; it does not apply to subsequent renewal
-                payments or to a later resubscription after a previous refund.
+                within 14 days of that first payment and we will arrange a full refund back through
+                the payment provider that processed it, no detailed justification required. This
+                guarantee applies once per customer and covers only the first paid payment; it does
+                not apply to subsequent renewal payments or to a later resubscription after a
+                previous refund.
               </p>
             ),
           },
@@ -111,9 +136,10 @@ export default function RefundsPage() {
             body: (
               <p>
                 Email {mail} with your account email address and the date of the payment you would
-                like refunded. You can also reach out through Paddle&apos;s own support channels,
-                since Paddle processed the original transaction and appears on your statement.
-                We aim to respond to every refund request within two business days.
+                like refunded. If your payment was processed through Paddle, you can also reach out
+                through Paddle&apos;s own support channels, since Paddle processed that transaction
+                and appears on your statement. We aim to respond to every refund request within two
+                business days.
               </p>
             ),
           },
@@ -121,9 +147,12 @@ export default function RefundsPage() {
             heading: "5. How refunds are processed",
             body: (
               <p>
-                Approved refunds are processed by Paddle back to the original payment method used
-                for the purchase. Depending on your bank or card issuer, a refund can take several
-                business days to appear on your statement after Paddle issues it. We are not able to
+                Approved refunds are issued back through whichever payment provider processed the
+                original payment, to the original payment method used for the purchase. For
+                payments processed through Stripe or Razorpay, {COMPANY.legalName} issues the
+                refund directly. For payments processed through Paddle, Paddle issues the refund on
+                our behalf. Depending on your bank or card issuer, a refund can take several
+                business days to appear on your statement after it is issued. We are not able to
                 refund to a different payment method or account than the one that made the original
                 payment.
               </p>
