@@ -158,3 +158,12 @@ func TestStatusAppliesPlan(t *testing.T) {
 		}
 	}
 }
+
+// TestReconcileArgs_InsertOpts_RoutesToReconcileQueue guards the GH #161 review
+// class fix (sibling of org_purge): the reconcile job must land on its dedicated
+// MaxWorkers:1 queue, not river.QueueDefault.
+func TestReconcileArgs_InsertOpts_RoutesToReconcileQueue(t *testing.T) {
+	if got := (ReconcileArgs{}).InsertOpts().Queue; got != ReconcileQueue {
+		t.Fatalf("ReconcileArgs.InsertOpts().Queue = %q, want %q", got, ReconcileQueue)
+	}
+}

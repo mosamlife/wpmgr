@@ -1025,6 +1025,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if raw := os.Getenv("WPMGR_ORG_PURGE_GRACE_DAYS"); raw != "" {
 		if n, perr := strconv.Atoi(raw); perr == nil && n > 0 {
 			orgPurgeGraceDays = n
+		} else {
+			// Gates a destructive, irreversible purge — a typo'd value silently
+			// falling back to 7 days could purge orgs weeks earlier than intended.
+			logger.Warn("WPMGR_ORG_PURGE_GRACE_DAYS is not a positive integer; using default",
+				slog.String("raw", raw), slog.Int("default_days", orgPurgeGraceDays))
 		}
 	}
 	var orgPurgeStore org.ObjectPurger

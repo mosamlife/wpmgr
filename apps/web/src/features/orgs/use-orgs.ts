@@ -275,19 +275,25 @@ export function useDeleteOrg(): UseMutationResult<
       }
       return result.data as DeleteOrgResult;
     },
-    onSuccess: (_result, variables) => {
+    onSuccess: (result, variables) => {
       // Drop ALL server state, mirroring useActivateOrg: the deleted org
       // disappears from every list server-side immediately, so any cached
       // org-scoped data (sites, members, keys, ...) is now stale.
       queryClient.clear();
       resetSiteStream();
-      toast.success(
-        `"${variables.confirmName}" is scheduled for permanent deletion`,
-        {
-          description:
-            "It stays recoverable during the grace window before it's purged for good.",
-        },
-      );
+      // A "hard" delete (empty org) is gone immediately with no grace window,
+      // so it must not claim to be recoverable (GH #161 CodeRabbit review).
+      if (result.lane === "hard") {
+        toast.success(`"${variables.confirmName}" has been permanently deleted`);
+      } else {
+        toast.success(
+          `"${variables.confirmName}" is scheduled for permanent deletion`,
+          {
+            description:
+              "It stays recoverable during the grace window before it's purged for good.",
+          },
+        );
+      }
     },
     onError: (err) => {
       toast.error("Could not delete organisation", { description: err.message });

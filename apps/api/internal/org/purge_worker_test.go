@@ -342,3 +342,13 @@ func TestPurgeWorker_MarksPurgeStartedBeforeHardDelete(t *testing.T) {
 		t.Fatal("tenant should be fully purged")
 	}
 }
+
+// TestPurgeArgs_InsertOpts_RoutesToPurgeQueue guards the GH #161 review fix:
+// without InsertOpts the periodic purge falls back to river.QueueDefault, so the
+// org_purge queue's MaxWorkers:1 isolation never applies and a long tenant-wide
+// purge competes for shared default workers.
+func TestPurgeArgs_InsertOpts_RoutesToPurgeQueue(t *testing.T) {
+	if got := (PurgeArgs{}).InsertOpts().Queue; got != PurgeQueue {
+		t.Fatalf("PurgeArgs.InsertOpts().Queue = %q, want %q", got, PurgeQueue)
+	}
+}

@@ -56,6 +56,14 @@ type PurgeArgs struct{}
 // Kind implements river.JobArgs.
 func (PurgeArgs) Kind() string { return "org_purge" }
 
+// InsertOpts routes the purge job to the dedicated PurgeQueue. Without it the
+// job falls back to river.QueueDefault, so the org_purge queue's MaxWorkers:1
+// isolation never applies and a ~30-min tenant-wide purge competes for shared
+// default workers (GH #161 CodeRabbit review).
+func (PurgeArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: PurgeQueue}
+}
+
 // SiteRevoker is the subset of site.ConnectionService the purge worker needs.
 type SiteRevoker interface {
 	Revoke(ctx context.Context, in site.ActorSiteInput) (site.Site, error)

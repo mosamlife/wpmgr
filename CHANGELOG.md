@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.40] - 2026-07-08
+
+### Fixed
+
+- Deleting an empty organization (which is removed immediately) no longer shows a misleading "recoverable during the grace window" message; that wording now appears only for a soft delete that actually has a grace window. Internally, the organization-purge and billing-reconcile background sweeps now run on their dedicated single-worker queues as intended (they were falling back to the shared default queue), and an invalid `WPMGR_ORG_PURGE_GRACE_DAYS` value is now logged rather than silently ignored.
+
 ## [0.61.39] - 2026-07-08
 
 ### Fixed
