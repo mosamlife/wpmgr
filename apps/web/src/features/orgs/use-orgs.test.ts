@@ -1,6 +1,31 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createElement, type ReactNode } from "react";
 
-import { mapDeleteOrgError, orgDeleteConfirmMatches } from "./use-orgs";
+// Mock the transport, toast, and SSE reset so useDeleteOrg's onSuccess can be
+// exercised without a network call or touching the real event stream.
+const { deleteMock, toastSuccess, toastError } = vi.hoisted(() => ({
+  deleteMock: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}));
+vi.mock("@wpmgr/api", () => ({
+  client: { delete: deleteMock, get: vi.fn(), post: vi.fn(), patch: vi.fn() },
+}));
+vi.mock("@/components/toast", () => ({
+  toast: { success: toastSuccess, error: toastError },
+}));
+vi.mock("@/features/sites/use-site-events", () => ({ resetSiteStream: vi.fn() }));
+
+import { mapDeleteOrgError, orgDeleteConfirmMatches, useDeleteOrg } from "./use-orgs";
+
+function hookWrapper({ children }: { children: ReactNode }) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return createElement(QueryClientProvider, { client: qc }, children);
+}
 
 // ---------------------------------------------------------------------------
 // mapDeleteOrgError, GH #152 part 2: every documented DELETE /orgs/{orgId}
@@ -83,5 +108,41 @@ describe("orgDeleteConfirmMatches", () => {
 
   it("rejects a partial match", () => {
     expect(orgDeleteConfirmMatches("Acme", "Acme Corp")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useDeleteOrg onSuccess toast, GH #161 CodeRabbit review: a "hard" delete
+// (empty org, gone immediately) must NOT claim to be recoverable during a
+// grace window like a "soft" delete does.
+// ---------------------------------------------------------------------------
+describe("useDeleteOrg success toast", () => {
+  beforeEach(() => {
+    deleteMock.mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+  });
+
+  it("hard delete shows a permanently-deleted toast with no grace-window description", async () => {
+    deleteMock.mockResolvedValue({ data: { id: "o1", lane: "hard" }, error: undefined });
+    const { result } = renderHook(() => useDeleteOrg(), { wrapper: hookWrapper });
+    await result.current.mutateAsync({ orgId: "o1", confirmName: "Acme" });
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
+    const hardCall = toastSuccess.mock.calls[0] as [string, unknown?] | undefined;
+    expect(hardCall?.[0]).toBe('"Acme" has been permanently deleted');
+    // No second arg: a hard delete has no recoverable grace window to describe.
+    expect(hardCall?.[1]).toBeUndefined();
+  });
+
+  it("soft delete shows a scheduled toast with the grace-window description", async () => {
+    deleteMock.mockResolvedValue({ data: { id: "o1", lane: "soft" }, error: undefined });
+    const { result } = renderHook(() => useDeleteOrg(), { wrapper: hookWrapper });
+    await result.current.mutateAsync({ orgId: "o1", confirmName: "Acme" });
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
+    const softCall = toastSuccess.mock.calls[0] as
+      | [string, { description?: string }?]
+      | undefined;
+    expect(softCall?.[0]).toBe('"Acme" is scheduled for permanent deletion');
+    expect(softCall?.[1]?.description).toContain("recoverable");
   });
 });

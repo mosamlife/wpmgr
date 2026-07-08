@@ -21,6 +21,13 @@ type ReconcileArgs struct{}
 // Kind implements river.JobArgs.
 func (ReconcileArgs) Kind() string { return "billing_reconcile" }
 
+// InsertOpts routes the reconcile job to the dedicated ReconcileQueue. Without
+// it the job falls back to river.QueueDefault and the billing_reconcile queue's
+// MaxWorkers:1 isolation never applies (same class as the org_purge fix, GH #161).
+func (ReconcileArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: ReconcileQueue}
+}
+
 // ReconcileWorker drives the daily drift-repair sweep (see reconcile.go).
 type ReconcileWorker struct {
 	river.WorkerDefaults[ReconcileArgs]
