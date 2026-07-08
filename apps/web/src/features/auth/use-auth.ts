@@ -418,6 +418,22 @@ export function isSuperadmin(me: Me | null | undefined): boolean {
 }
 
 /**
+ * Paths a superadmin (who has no org) may visit outside the Admin area. The
+ * _authed gate keeps superadmins out of the tenant-scoped shell (which would
+ * 403 or bounce them to the create-org screen), but their OWN personal account
+ * settings — profile and 2FA/security — are per-user, not tenant-scoped, so
+ * they must be reachable (otherwise a superadmin can never enable their own
+ * 2FA). Everything else outside /admin stays redirected to /admin.
+ */
+export function isSuperadminAllowedPath(pathname: string): boolean {
+  return (
+    pathname.startsWith("/admin") ||
+    pathname === "/settings/account" ||
+    pathname === "/settings/security"
+  );
+}
+
+/**
  * Active role of the user in their active tenant.
  *
  * FIXED (M5.7): no longer falls back to memberships[0] — that was unsafe

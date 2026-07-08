@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.42] - 2026-07-08
+
+### Fixed
+
+- Completed the admin two-factor-access fix from the previous release: the instance superadmin was still redirected back to the admin area when opening the Security (2FA) settings. Superadmin accounts are intentionally kept out of the tenant-scoped app, but that route guard also blocked their own personal account pages. The superadmin can now reach their own Account and Security settings (to enable 2FA) while still being kept out of the tenant-scoped screens.
+
 ## [0.61.41] - 2026-07-08
 
 ### Fixed
