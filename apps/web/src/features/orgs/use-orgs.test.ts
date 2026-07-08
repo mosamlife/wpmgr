@@ -128,9 +128,10 @@ describe("useDeleteOrg success toast", () => {
     const { result } = renderHook(() => useDeleteOrg(), { wrapper: hookWrapper });
     await result.current.mutateAsync({ orgId: "o1", confirmName: "Acme" });
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
-    expect(toastSuccess).toHaveBeenCalledWith('"Acme" has been permanently deleted');
+    const hardCall = toastSuccess.mock.calls[0] as [string, unknown?] | undefined;
+    expect(hardCall?.[0]).toBe('"Acme" has been permanently deleted');
     // No second arg: a hard delete has no recoverable grace window to describe.
-    expect(toastSuccess.mock.calls[0][1]).toBeUndefined();
+    expect(hardCall?.[1]).toBeUndefined();
   });
 
   it("soft delete shows a scheduled toast with the grace-window description", async () => {
@@ -138,9 +139,10 @@ describe("useDeleteOrg success toast", () => {
     const { result } = renderHook(() => useDeleteOrg(), { wrapper: hookWrapper });
     await result.current.mutateAsync({ orgId: "o1", confirmName: "Acme" });
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
-    expect(toastSuccess).toHaveBeenCalledWith(
-      '"Acme" is scheduled for permanent deletion',
-      expect.objectContaining({ description: expect.stringContaining("recoverable") }),
-    );
+    const softCall = toastSuccess.mock.calls[0] as
+      | [string, { description?: string }?]
+      | undefined;
+    expect(softCall?.[0]).toBe('"Acme" is scheduled for permanent deletion');
+    expect(softCall?.[1]?.description).toContain("recoverable");
   });
 });
