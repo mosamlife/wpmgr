@@ -39,6 +39,192 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.40",
+    date: "2026-07-08",
+    summary: "Organizations can now be deleted, with a safety grace window.",
+    items: [
+      {
+        tag: "Added",
+        text: "Organization owners can delete an organization from Settings, Organization, with a type-the-name confirmation. An empty organization is removed immediately; a populated one is scheduled with a grace window: hidden right away and recoverable until the window passes, then permanently removed along with its sites' agent connections and stored data.",
+      },
+      {
+        tag: "Fixed",
+        text: "Switching the active organization now reconnects live dashboard updates to the newly active one immediately, instead of requiring a full page reload.",
+      },
+      {
+        tag: "Fixed",
+        text: "The deletion flow no longer shows a misleading \"recoverable during the grace window\" message for an empty organization, which is removed immediately and has no grace window; that message now appears only when a deletion is genuinely recoverable.",
+      },
+    ],
+  },
+  {
+    version: "0.61.39",
+    date: "2026-07-08",
+    summary: "Real User Monitoring data collection fixed, on self-host and under any cache.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Real User Monitoring collected no data at all on self-hosted installs: the bundled reverse-proxy configuration had no route for the RUM endpoint, so every beacon request was rejected before it reached the application (the same gap silently dropped inbound email and billing webhooks too). Both are now routed correctly, and a new check exercises the real proxy configuration against every public endpoint so a gap like this is caught before release.",
+      },
+      {
+        tag: "Fixed",
+        text: "Real User Monitoring also collected no data on sites served by a third-party page cache, because the collector script was only injected inside WPMgr's own cache output. It is now injected on a standard WordPress hook during page generation, so whichever cache serves the page still captures the data.",
+      },
+      {
+        tag: "Fixed",
+        text: "The RUM beacon key could get permanently stuck: if the one-time delivery of the key to a site was ever lost, the site kept showing RUM as enabled while silently collecting nothing. The control plane now tracks whether the site has actually confirmed it holds a key and automatically reissues one when it is missing. A manual \"Rotate beacon key\" action was added, and the dashboard now warns when RUM is on but unconfirmed.",
+      },
+    ],
+    featureLinks: [{ label: "Real User Monitoring", href: "/features/real-user-monitoring/" }],
+  },
+  {
+    version: "0.61.37",
+    date: "2026-07-07",
+    summary: "Fixed the hide-login security feature: the secret URL now actually serves a login form.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Turning on \"hide login\" showed a harmless but alarming \"policy stored but agent push failed\" error even though it saved and applied correctly. More seriously, the secret login URL did not show a login form at all (it bounced to the home page), which could leave you unable to sign in through the browser. The secret URL now serves the login form correctly while the default wp-login.php stays hidden. Review also closed two smaller gaps: the secret URL is no longer exposed in page links to logged-out visitors, and the access cookie is now signed so it cannot be forged.",
+      },
+    ],
+    featureLinks: [{ label: "Security suite", href: "/features/security/" }],
+  },
+  {
+    version: "0.61.36",
+    date: "2026-07-07",
+    summary: "Fixed a bug that could permanently break an incremental backup chain.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "An incremental backup could fail with a \"stalled\" error because retention cleanup had deleted a parent snapshot's file-list data while it was still needed, permanently breaking the chain. Retention now always protects the completed snapshot at each chain position and, as a ground-truth safety net, never deletes data that any surviving snapshot still references. A broken chain now fails fast with a clear \"run a full backup\" message instead of stalling silently.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+  },
+  {
+    version: "0.61.35",
+    date: "2026-07-07",
+    summary: "Vulnerability and performance tiles on the Health tab now show live data.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The Vulnerabilities and Performance tiles on a site's Health tab were placeholders that always read \"Not scanned yet\" and \"Not measured yet\", regardless of the real data. They now show live results: open-vulnerability count and worst severity, and Core Web Vitals (LCP) from real visitor data, each linking through to the full view. A site that has not been scanned, or has no visitor data yet, shows an honest empty state instead of a fabricated number.",
+      },
+    ],
+    featureLinks: [
+      { label: "Security suite", href: "/features/security/" },
+      { label: "Real User Monitoring", href: "/features/real-user-monitoring/" },
+    ],
+  },
+  {
+    version: "0.61.33",
+    date: "2026-07-07",
+    summary: "Your own backup destinations now actually work, end to end.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Configuring a local folder or your own S3-compatible bucket as a backup destination looked like it worked (the \"Test connection\" check passed), but every backup still went to managed storage regardless. Backups, full and incremental, now run to the destination you configured, and restore reads back from it, across all three types: managed storage, a local folder on the server, and your own S3-compatible bucket. For your own bucket, the control plane signs the uploads and downloads so the site never holds your storage credentials.",
+      },
+      {
+        tag: "Fixed",
+        text: "Temporary backup working files left behind by a failed or interrupted run are now cleaned up automatically by a daily job, instead of slowly accumulating on disk.",
+      },
+      {
+        tag: "Changed",
+        text: "Hosted service only: managed backup storage is now a paid-plan feature. On the free plan, backups target your own storage (a local folder or your own S3-compatible bucket) instead. Self-hosted installs are unaffected and always keep managed storage, and restoring an existing backup is never restricted.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+  },
+  {
+    version: "0.61.31",
+    date: "2026-07-07",
+    summary: "Restore now verifies the site actually loads, and rolls back automatically if it does not.",
+    items: [
+      {
+        tag: "Added",
+        text: "After the files and database are swapped, restore now runs two checks: first that the restored database is intact while the site is still in maintenance mode, then, once the site is live, that it is not showing a fatal error. If either check finds a genuine failure, the restore automatically reverts both the files and the database to their pre-restore state and reports the run as failed with the reason, instead of leaving a broken site behind and reporting success. The checks fail open on a network blip, so they can never roll back a good restore.",
+      },
+      {
+        tag: "Fixed",
+        text: "Restore could also silently drop plugin or theme files whose path happened to contain a reserved drop-in name (for example a plugin's own class-db.php), leaving the site broken while the restore reported success. Restore now matches its protected-file exclusions by exact path instead of substring, so only genuine WordPress root drop-ins and config files are held back. Sites affected by an earlier restore can recover by re-restoring from the same snapshot.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+  },
+  {
+    version: "0.61.30",
+    date: "2026-07-07",
+    summary: "Uptime incidents now have real history, with a detail view.",
+    items: [
+      {
+        tag: "Added",
+        text: "Uptime incidents are now recorded and kept, so the Incidents panel shows real history: past incidents with accurate durations and a flapping indicator for sites that go down repeatedly. Clicking an incident opens a detail view with the site's live status, the probe results across the incident window, a timeline of what else happened around that time (updates, backups, activity, PHP errors), 7- and 30-day uptime, and quick actions.",
+      },
+      {
+        tag: "Fixed",
+        text: "An ongoing incident previously showed the wrong severity (\"Degraded\" for a site that was down), a duration that read \"NaNh\", and a blank site name; incidents now show the correct severity, read \"ongoing\" while open, and always show the site name. Also fixed: unreadable dropdown menus in dark mode, two dead breadcrumb links, and an \"Open site\" action that did nothing.",
+      },
+    ],
+    featureLinks: [{ label: "Uptime monitoring", href: "/features/uptime-monitoring/" }],
+  },
+  {
+    version: "0.61.26",
+    date: "2026-07-06",
+    summary: "Uptime: TLS expiry now shows, and downtime alert emails send reliably.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "TLS certificate expiry now shows for monitored sites. The uptime prober only read the certificate during a fresh TLS handshake, which almost never happened after the first probe on a reused connection, so the TLS expiry column stayed empty from the start. It now reads the certificate on every probe, fresh or reused.",
+      },
+      {
+        tag: "Fixed",
+        text: "Downtime and recovery alert emails were silently skipped when SMTP was configured only in the dashboard (Settings, Email/SMTP) and not also set as environment variables. Alerts now send through the same saved relay used everywhere else, with environment variables kept only as a fallback.",
+      },
+      {
+        tag: "Fixed",
+        text: "The audit log recorded \"Emailed: Yes\" for a downtime alert whenever recipients were configured, even when the send was skipped or failed. It now records the true outcome (Sent, Skipped, or Failed) with the reason, for both email and webhook delivery.",
+      },
+    ],
+    featureLinks: [{ label: "Uptime monitoring", href: "/features/uptime-monitoring/" }],
+  },
+  {
+    version: "0.61.17",
+    date: "2026-07-05",
+    summary: "Bulk, chain-aware backup deletion.",
+    items: [
+      {
+        tag: "Added",
+        text: "Select multiple backups with checkboxes, including whole incremental chains via a tri-state chain checkbox, with one-click filters for all failed or all zero-byte runs, and delete the batch in one action. Selecting a snapshot automatically includes the later generations that depend on it, shown before you confirm, so a chain can never be left broken.",
+      },
+      {
+        tag: "Added",
+        text: "A batch of failed or zero-byte runs needs one plain confirmation; a batch containing any completed backup asks you to type one phrase for the whole batch. Deleting a snapshot, single or bulk, now also refuses while a restore that reads it is in progress.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+  },
+  {
+    version: "0.61.15",
+    date: "2026-07-04",
+    summary: "Fleet Audit log redesigned, with several reliability fixes.",
+    items: [
+      {
+        tag: "Changed",
+        text: "Redesigned the fleet Audit log. Events now read as plain sentences instead of raw internal codes, the operator who performed each action is shown by name, and long runs of routine file reads collapse into one expandable line so writes, deletions, and denied actions stand out. Added an outcome filter (Denied, Writes, Sensitive), a search box, exact timestamps, and a per-event detail view.",
+      },
+      {
+        tag: "Fixed",
+        text: "The event list was ordered oldest-first while presented as newest-first, so once a tenant passed one page of events, recent activity was paged off the end; it now lists newest events first (no audit data was ever lost). Also fixed a false \"Chain break\" integrity warning caused by two actions recorded at the same instant, and a page-load failure for accounts with automated activity like uptime alerts and backups.",
+      },
+      {
+        tag: "Added",
+        text: "Owners can now acknowledge a \"Chain break\" that predates an older fix, since the audit log is append-only and its rows can never be altered. Acknowledging moves the integrity anchor to the current point so verification runs forward cleanly; new tampering is still detected, and the acknowledgment itself is recorded in the audit log.",
+      },
+    ],
+    featureLinks: [{ label: "Team and access control", href: "/features/team-access/" }],
+  },
+  {
     version: "0.61.10",
     date: "2026-07-02",
     summary: "Bulk updates only touch sites that actually need them.",
@@ -188,182 +374,6 @@ const RELEASES: ChangeEntry[] = [
       },
     ],
     featureLinks: [{ label: "Two-factor auth", href: "/features/two-factor-auth/" }],
-  },
-  {
-    version: "0.53.0",
-    date: "2026-06-20",
-    summary: "File integrity monitoring.",
-    items: [
-      {
-        tag: "Added",
-        text: "File integrity scanning over the full WordPress install or just wp-content. The control plane compares scanned file hashes against WordPress.org checksums for core, wp.org-hosted plugins and themes, and against a learned per-site baseline for everything else. Flagged files stay flagged until an operator reviews and accepts them.",
-      },
-    ],
-    featureLinks: [{ label: "Security suite", href: "/features/security/" }],
-  },
-  {
-    version: "0.52.0",
-    date: "2026-06-20",
-    summary: "Per-site WordPress hardening controls and IP ban list.",
-    items: [
-      {
-        tag: "Added",
-        text: "Security tab with hardening controls: file editor, XML-RPC, REST API restriction, login identifier restriction, force unique nicknames, block author enumeration, SSL with HSTS, directory browsing, PHP execution in uploads, and system file protection. All off by default.",
-      },
-      {
-        tag: "Added",
-        text: "Per-site ban list: blocked IP addresses, CIDR ranges, and user agents, stored on the control plane and enforced in the agent. Broad blocks and operator IPs are never banned.",
-      },
-    ],
-    featureLinks: [{ label: "Security suite", href: "/features/security/" }],
-  },
-  {
-    version: "0.51.5",
-    date: "2026-06-20",
-    summary: "Bulk and update-triggered backups now actually run.",
-    items: [
-      {
-        tag: "Fixed",
-        text: "The Sites bulk backup action, command bar backup commands, and the Updates tab Take backup first option previously showed feedback but never enqueued a backup. They now enqueue real backups, report per-site results, and the toast action link goes to the right place.",
-      },
-    ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
-  },
-  {
-    version: "0.51.4",
-    date: "2026-06-19",
-    summary: "Uptime data now correct when using ClickHouse metrics backend.",
-    items: [
-      {
-        tag: "Fixed",
-        text: "Fleet uptime status and the uptime/SSL column in the Sites list read probe data directly from Postgres, so ClickHouse deployments saw every site as Unknown. Both now read through the metrics store so both backends display correct status, uptime percentage, latency, and TLS expiry.",
-      },
-    ],
-  },
-  {
-    version: "0.51.3",
-    date: "2026-06-19",
-    summary: "Scheduled backups no longer re-fire every few minutes.",
-    items: [
-      {
-        tag: "Fixed",
-        text: "A schedule whose next-run time had slipped into the past was re-triggered on every scheduler tick, producing overlapping runs. Re-enabling or an overdue schedule now advances to the next future run slot. The scheduler claims and advances each due schedule atomically, and only one backup per site runs at a time.",
-      },
-    ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
-  },
-  {
-    version: "0.50.0",
-    date: "2026-06-16",
-    summary: "Dashboard two-factor authentication (TOTP + WebAuthn).",
-    items: [
-      {
-        tag: "Added",
-        text: "Operators can protect their account with an authenticator app (TOTP) and/or a passkey or security key (WebAuthn/FIDO2). Setup is a guided flow with recovery codes. At login, a second step asks for the code or passkey; Remember this device can skip it for 30 days.",
-      },
-      {
-        tag: "Security",
-        text: "The TOTP secret is encrypted at rest, recovery codes are hashed and single-use, used codes are burned to prevent replay, a cloned authenticator is detected and rejected, and attempts are rate-limited. All two-factor events are in the audit log.",
-      },
-    ],
-    featureLinks: [{ label: "Two-factor auth", href: "/features/two-factor-auth/" }],
-  },
-  {
-    version: "0.49.0",
-    date: "2026-06-16",
-    summary: "Sites grid view with website screenshots.",
-    items: [
-      {
-        tag: "Added",
-        text: "The Sites dashboard has a list/grid toggle. The grid shows each site as a rich card with a real server-side screenshot, connection state, capability strip, pending updates, backup health, SSL expiry, uptime, versions, host, and tags.",
-      },
-      {
-        tag: "Fixed",
-        text: "Sites filters (Status and Tags) were previously inert. They are now real multi-select filters that compose with search and all other filters, with applied-count badges and a clear-all control.",
-      },
-      {
-        tag: "Security",
-        text: "Screenshot capture runs headless Chromium behind an in-process SSRF guard. QUIC, HTTP/3, and non-proxied WebRTC are disabled. The screenshot table is tenant-isolated with a restrictive row policy.",
-      },
-    ],
-  },
-  {
-    version: "0.48.3",
-    date: "2026-06-15",
-    summary: "Activity log integrity report.",
-    items: [
-      {
-        tag: "Added",
-        text: "The Chain break badge is now a button that opens a report explaining why the tamper-evident audit chain failed to verify. The control plane classifies the break into missing events, a broken link, modified content, or a missing chain start.",
-      },
-    ],
-    featureLinks: [{ label: "Team and access control", href: "/features/team-access/" }],
-  },
-  {
-    version: "0.48.0",
-    date: "2026-06-15",
-    summary: "Fleet email and deliverability dashboard.",
-    items: [
-      {
-        tag: "Added",
-        text: "A new cross-site Email view: sent, failed, bounced, and complained totals with fleet bounce and complaint rates shown against provider thresholds. A per-site deliverability table lists every site with its provider, volume, rates, and sparkline, sorted riskiest first.",
-      },
-    ],
-    featureLinks: [{ label: "Per-site email", href: "/features/email-deliverability/" }],
-  },
-  {
-    version: "0.47.0",
-    date: "2026-06-15",
-    summary: "Fleet uptime, backup browser, and redesigned performance dashboard.",
-    items: [
-      {
-        tag: "Added",
-        text: "Fleet uptime overview: status tiles, dense status matrix (one cell per site), virtualized per-site table with 90-day uptime strip and response-time sparkline, and a cross-site incident feed.",
-      },
-      {
-        tag: "Added",
-        text: "Fleet backup browser: protected/stale/failed/unprotected tiles, virtualized per-site table with last-good-backup age, next scheduled run, size trend sparkline, and run-backup/restore actions.",
-      },
-      {
-        tag: "Changed",
-        text: "Performance dashboard redesigned as a true fleet view with headline figures, worst-offenders table with Core Web Vitals distribution bars, 28-day trend, and database-health rollup.",
-      },
-    ],
-    featureLinks: [
-      { label: "Backups", href: "/features/backups/" },
-      { label: "Uptime monitoring", href: "/features/uptime-monitoring/" },
-      { label: "Real User Monitoring", href: "/features/real-user-monitoring/" },
-    ],
-  },
-  {
-    version: "0.46.0",
-    date: "2026-06-15",
-    summary: "wp.org compliance: local backup paths and prepared DB queries.",
-    items: [
-      {
-        tag: "Changed",
-        text: "Local backups now store under the uploads directory with a deny-all .htaccess so archives are never directly downloadable.",
-      },
-      {
-        tag: "Changed",
-        text: "Database queries in the object-cache drop-in and media URL rewriter now use prepared placeholders.",
-      },
-      {
-        tag: "Added",
-        text: "The readme lists every outbound service the agent contacts, with links to terms and privacy for each.",
-      },
-    ],
-  },
-  {
-    version: "0.45.0",
-    date: "2026-06-13",
-    summary: "Cron keep-alive and connection reliability improvements.",
-    items: [
-      {
-        tag: "Added",
-        text: "Cron keep-alive ensures the agent connection health check fires on schedule even on hosts that do not run WP-Cron reliably.",
-      },
-    ],
   },
 ];
 
