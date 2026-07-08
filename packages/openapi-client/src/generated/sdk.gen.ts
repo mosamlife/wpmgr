@@ -621,6 +621,8 @@ import type {
   RevokeSiteData,
   RevokeSiteErrors,
   RevokeSiteResponses,
+  RotateRumBeaconKeyData,
+  RotateRumBeaconKeyResponses,
   RunSearchReplaceData,
   RunSearchReplaceResponses,
   ScanUnusedMediaData,
@@ -4770,6 +4772,35 @@ export const listRumResults = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: "/api/v1/sites/{siteId}/perf/rum", ...options });
+
+/**
+ * Rotate the RUM beacon key for a site
+ *
+ * Unconditionally mints a fresh RUM beacon key, rotates the previous
+ * hash into a grace-window column (in-flight beacons signed with the
+ * old key still resolve), and pushes the new plaintext key to the
+ * site's agent in this one request only — it is never returned in the
+ * response, logged, or exposed anywhere but the agent's local copy.
+ *
+ * This is the deterministic recovery path for GH #174: the one
+ * best-effort mint+push that happens on first RUM-enable can be lost
+ * (agent down/unreachable), permanently stranding the beacon key empty
+ * on the agent with zero RUM samples ever collected and no visible
+ * error. This endpoint lets an operator force a fresh mint+push on
+ * demand; the control plane also self-heals this automatically via an
+ * ack-based reconcile job.
+ *
+ * Requires the `site.perf.config` permission.
+ *
+ */
+export const rotateRumBeaconKey = <ThrowOnError extends boolean = false>(
+  options: Options<RotateRumBeaconKeyData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RotateRumBeaconKeyResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/perf/rum/rotate-key", ...options });
 
 /**
  * List cached Used-CSS (RUCSS) results for a site

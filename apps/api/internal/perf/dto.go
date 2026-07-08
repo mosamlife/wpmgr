@@ -129,6 +129,12 @@ type perfConfigDTO struct {
 	MaxDistinctCountries int     `json:"max_distinct_countries"`
 	MinSampleCount       int     `json:"min_sample_count"`
 	BeaconKeySet         bool    `json:"beacon_key_set"` // read-only
+	// BeaconKeyAckedPresent is read-only (GH #174): reports whether the
+	// agent's most recent config-ack confirmed it holds the beacon key. When
+	// BeaconKeySet=true but this is false, RUM is provisioned CP-side but the
+	// agent has not (yet) confirmed receiving it — the CP is auto-retrying;
+	// an operator can also force it via POST .../perf/rum/rotate-key.
+	BeaconKeyAckedPresent bool `json:"beacon_key_acked_present"` // read-only
 
 	ConfigVersion int    `json:"config_version"`
 	UpdatedAt     string `json:"updated_at,omitempty"`
@@ -136,64 +142,64 @@ type perfConfigDTO struct {
 
 func toConfigDTO(c Config) perfConfigDTO {
 	dto := perfConfigDTO{
-		CacheEnabled:              c.CacheEnabled,
-		CacheLoggedIn:             c.CacheLoggedIn,
-		CacheMobile:               c.CacheMobile,
-		CacheRefresh:              c.CacheRefresh,
-		CacheRefreshInterval:      c.CacheRefreshInterval,
-		CacheLinkPrefetch:         c.CacheLinkPrefetch,
-		CacheBypassURLs:           nonNil(c.CacheBypassURLs),
-		CacheBypassCookies:        nonNil(c.CacheBypassCookies),
-		CacheIncludeQueries:       nonNil(c.CacheIncludeQueries),
-		CacheIncludeCookies:       nonNil(c.CacheIncludeCookies),
-		PreloadConcurrency:        c.PreloadConcurrency,
-		PreloadDelayMs:            c.PreloadDelayMs,
-		PreloadBatchSize:          c.PreloadBatchSize,
-		PreloadMaxLoad:            c.PreloadMaxLoad,
-		CSSJSMinify:               c.CSSJSMinify,
-		CSSRucss:                  c.CSSRucss,
-		CSSRucssIncludeSelectors:  nonNil(c.CSSRucssIncludeSelectors),
-		CSSJSSelfHostThirdParty:   c.CSSJSSelfHostThirdParty,
-		JSDelay:                   c.JSDelay,
-		JSDelayMethod:             c.JSDelayMethod,
-		JSDelayExcludes:           nonNil(c.JSDelayExcludes),
-		JSDelayThirdParty:         c.JSDelayThirdParty,
-		JSDelayThirdPartyExcludes: nonNil(c.JSDelayThirdPartyExcludes),
-		FontsDisplaySwap:    c.FontsDisplaySwap,
-		FontsOptimizeGoogle: c.FontsOptimizeGoogle,
-		FontsPreload:        c.FontsPreload,
-		FontsTranscodeWOFF2: c.FontsTranscodeWOFF2,
-		FontsSubset:         c.FontsSubset,
-		FontsSubsetMode:     c.FontsSubsetMode,
-		FontsSubsetRange:    c.FontsSubsetRange,
-		LazyLoad:            c.LazyLoad,
-		LazyLoadExclusions:        nonNil(c.LazyLoadExclusions),
-		ProperlySizeImages:        c.ProperlySizeImages,
-		YouTubePlaceholder:        c.YouTubePlaceholder,
-		SelfHostGravatars:         c.SelfHostGravatars,
-		CDNEnabled:                c.CDNEnabled,
-		CDNURL:                    c.CDNURL,
-		CDNFileTypes:              c.CDNFileTypes,
-		CDNProvider:               c.CDNProvider,
-		CDNHasCredentials:         c.CDNHasCredentials,
-		DBAutoClean:               c.DBAutoClean,
-		DBAutoCleanInterval:       c.DBAutoCleanInterval,
-		DBPostRevisions:           c.DBPostRevisions,
-		DBPostAutoDrafts:          c.DBPostAutoDrafts,
-		DBPostTrashed:             c.DBPostTrashed,
-		DBCommentsSpam:            c.DBCommentsSpam,
-		DBCommentsTrashed:         c.DBCommentsTrashed,
-		DBTransientsExpired:       c.DBTransientsExpired,
-		DBOptimizeTables:          c.DBOptimizeTables,
-		BloatDisableBlockCSS:      c.BloatDisableBlockCSS,
-		BloatDisableDashicons:     c.BloatDisableDashicons,
-		BloatDisableEmojis:        c.BloatDisableEmojis,
-		BloatDisableJQueryMig:     c.BloatDisableJQueryMig,
-		BloatDisableXMLRPC:        c.BloatDisableXMLRPC,
-		BloatDisableRSSFeed:       c.BloatDisableRSSFeed,
-		BloatDisableOembeds:       c.BloatDisableOembeds,
-		BloatHeartbeatControl:     c.BloatHeartbeatControl,
-		BloatPostRevisionControl:  c.BloatPostRevisionControl,
+		CacheEnabled:               c.CacheEnabled,
+		CacheLoggedIn:              c.CacheLoggedIn,
+		CacheMobile:                c.CacheMobile,
+		CacheRefresh:               c.CacheRefresh,
+		CacheRefreshInterval:       c.CacheRefreshInterval,
+		CacheLinkPrefetch:          c.CacheLinkPrefetch,
+		CacheBypassURLs:            nonNil(c.CacheBypassURLs),
+		CacheBypassCookies:         nonNil(c.CacheBypassCookies),
+		CacheIncludeQueries:        nonNil(c.CacheIncludeQueries),
+		CacheIncludeCookies:        nonNil(c.CacheIncludeCookies),
+		PreloadConcurrency:         c.PreloadConcurrency,
+		PreloadDelayMs:             c.PreloadDelayMs,
+		PreloadBatchSize:           c.PreloadBatchSize,
+		PreloadMaxLoad:             c.PreloadMaxLoad,
+		CSSJSMinify:                c.CSSJSMinify,
+		CSSRucss:                   c.CSSRucss,
+		CSSRucssIncludeSelectors:   nonNil(c.CSSRucssIncludeSelectors),
+		CSSJSSelfHostThirdParty:    c.CSSJSSelfHostThirdParty,
+		JSDelay:                    c.JSDelay,
+		JSDelayMethod:              c.JSDelayMethod,
+		JSDelayExcludes:            nonNil(c.JSDelayExcludes),
+		JSDelayThirdParty:          c.JSDelayThirdParty,
+		JSDelayThirdPartyExcludes:  nonNil(c.JSDelayThirdPartyExcludes),
+		FontsDisplaySwap:           c.FontsDisplaySwap,
+		FontsOptimizeGoogle:        c.FontsOptimizeGoogle,
+		FontsPreload:               c.FontsPreload,
+		FontsTranscodeWOFF2:        c.FontsTranscodeWOFF2,
+		FontsSubset:                c.FontsSubset,
+		FontsSubsetMode:            c.FontsSubsetMode,
+		FontsSubsetRange:           c.FontsSubsetRange,
+		LazyLoad:                   c.LazyLoad,
+		LazyLoadExclusions:         nonNil(c.LazyLoadExclusions),
+		ProperlySizeImages:         c.ProperlySizeImages,
+		YouTubePlaceholder:         c.YouTubePlaceholder,
+		SelfHostGravatars:          c.SelfHostGravatars,
+		CDNEnabled:                 c.CDNEnabled,
+		CDNURL:                     c.CDNURL,
+		CDNFileTypes:               c.CDNFileTypes,
+		CDNProvider:                c.CDNProvider,
+		CDNHasCredentials:          c.CDNHasCredentials,
+		DBAutoClean:                c.DBAutoClean,
+		DBAutoCleanInterval:        c.DBAutoCleanInterval,
+		DBPostRevisions:            c.DBPostRevisions,
+		DBPostAutoDrafts:           c.DBPostAutoDrafts,
+		DBPostTrashed:              c.DBPostTrashed,
+		DBCommentsSpam:             c.DBCommentsSpam,
+		DBCommentsTrashed:          c.DBCommentsTrashed,
+		DBTransientsExpired:        c.DBTransientsExpired,
+		DBOptimizeTables:           c.DBOptimizeTables,
+		BloatDisableBlockCSS:       c.BloatDisableBlockCSS,
+		BloatDisableDashicons:      c.BloatDisableDashicons,
+		BloatDisableEmojis:         c.BloatDisableEmojis,
+		BloatDisableJQueryMig:      c.BloatDisableJQueryMig,
+		BloatDisableXMLRPC:         c.BloatDisableXMLRPC,
+		BloatDisableRSSFeed:        c.BloatDisableRSSFeed,
+		BloatDisableOembeds:        c.BloatDisableOembeds,
+		BloatHeartbeatControl:      c.BloatHeartbeatControl,
+		BloatPostRevisionControl:   c.BloatPostRevisionControl,
 		ServerSoftware:             c.ServerSoftware,
 		DropinInstalled:            c.DropinInstalled,
 		WPCacheConstantSet:         c.WPCacheConstantSet,
@@ -205,6 +211,7 @@ func toConfigDTO(c Config) perfConfigDTO {
 		MaxDistinctCountries:       c.MaxDistinctCountries,
 		MinSampleCount:             c.MinSampleCount,
 		BeaconKeySet:               c.BeaconKeySet,
+		BeaconKeyAckedPresent:      c.BeaconKeyAckedPresent,
 		ConfigVersion:              c.ConfigVersion,
 	}
 	if !c.UpdatedAt.IsZero() {
@@ -244,14 +251,14 @@ func fromConfigDTO(dto perfConfigDTO, tenantID, siteID uuid.UUID) Config {
 		JSDelayExcludes:           dto.JSDelayExcludes,
 		JSDelayThirdParty:         dto.JSDelayThirdParty,
 		JSDelayThirdPartyExcludes: dto.JSDelayThirdPartyExcludes,
-		FontsDisplaySwap:    dto.FontsDisplaySwap,
-		FontsOptimizeGoogle: dto.FontsOptimizeGoogle,
-		FontsPreload:        dto.FontsPreload,
-		FontsTranscodeWOFF2: dto.FontsTranscodeWOFF2,
-		FontsSubset:         dto.FontsSubset,
-		FontsSubsetMode:     dto.FontsSubsetMode,
-		FontsSubsetRange:    dto.FontsSubsetRange,
-		LazyLoad:            dto.LazyLoad,
+		FontsDisplaySwap:          dto.FontsDisplaySwap,
+		FontsOptimizeGoogle:       dto.FontsOptimizeGoogle,
+		FontsPreload:              dto.FontsPreload,
+		FontsTranscodeWOFF2:       dto.FontsTranscodeWOFF2,
+		FontsSubset:               dto.FontsSubset,
+		FontsSubsetMode:           dto.FontsSubsetMode,
+		FontsSubsetRange:          dto.FontsSubsetRange,
+		LazyLoad:                  dto.LazyLoad,
 		LazyLoadExclusions:        dto.LazyLoadExclusions,
 		ProperlySizeImages:        dto.ProperlySizeImages,
 		YouTubePlaceholder:        dto.YouTubePlaceholder,
@@ -269,15 +276,15 @@ func fromConfigDTO(dto perfConfigDTO, tenantID, siteID uuid.UUID) Config {
 		DBCommentsTrashed:         dto.DBCommentsTrashed,
 		DBTransientsExpired:       dto.DBTransientsExpired,
 		DBOptimizeTables:          dto.DBOptimizeTables,
-		BloatDisableBlockCSS:     dto.BloatDisableBlockCSS,
-		BloatDisableDashicons:    dto.BloatDisableDashicons,
-		BloatDisableEmojis:       dto.BloatDisableEmojis,
-		BloatDisableJQueryMig:    dto.BloatDisableJQueryMig,
-		BloatDisableXMLRPC:       dto.BloatDisableXMLRPC,
-		BloatDisableRSSFeed:      dto.BloatDisableRSSFeed,
-		BloatDisableOembeds:      dto.BloatDisableOembeds,
-		BloatHeartbeatControl:    dto.BloatHeartbeatControl,
-		BloatPostRevisionControl: dto.BloatPostRevisionControl,
+		BloatDisableBlockCSS:      dto.BloatDisableBlockCSS,
+		BloatDisableDashicons:     dto.BloatDisableDashicons,
+		BloatDisableEmojis:        dto.BloatDisableEmojis,
+		BloatDisableJQueryMig:     dto.BloatDisableJQueryMig,
+		BloatDisableXMLRPC:        dto.BloatDisableXMLRPC,
+		BloatDisableRSSFeed:       dto.BloatDisableRSSFeed,
+		BloatDisableOembeds:       dto.BloatDisableOembeds,
+		BloatHeartbeatControl:     dto.BloatHeartbeatControl,
+		BloatPostRevisionControl:  dto.BloatPostRevisionControl,
 		// M53 / #169: WooCacheableSession is operator-writable; accept it from PUT.
 		// WooThemeFragmentsSupported is agent-reported and deliberately NOT read from
 		// dto here — the PUT handler must not let an operator write it.
@@ -552,7 +559,7 @@ func cwvThresholds(metric string) (goodUpper int, niUpper int) {
 		return 800, 1800
 	}
 	// Unknown metric: treat entire range as "good" (no threshold to fold on).
-	return 1<<30, 1<<30
+	return 1 << 30, 1 << 30
 }
 
 // hamiltonRound3 rounds three proportions (a/total, b/total, c/total) to
@@ -651,10 +658,10 @@ type RumResultDTO struct {
 // the trend line for that day (not a zero). The day entry is always included so
 // the client has a consistent X-axis across all metrics.
 type RumTrendDayPoint struct {
-	Day         string  `json:"day"`          // "YYYY-MM-DD"
-	P75Ms       float64 `json:"p75_ms"`       // 0 when Suppressed
+	Day         string  `json:"day"`    // "YYYY-MM-DD"
+	P75Ms       float64 `json:"p75_ms"` // 0 when Suppressed
 	SampleCount int64   `json:"sample_count"`
-	Rating      string  `json:"rating"`       // "good" | "needs-improvement" | "poor" | ""
+	Rating      string  `json:"rating"` // "good" | "needs-improvement" | "poor" | ""
 	Suppressed  bool    `json:"suppressed"`
 }
 
@@ -664,8 +671,8 @@ type RumTrendDayPoint struct {
 // for). Days with insufficient samples appear as suppressed=true, p75_ms=0
 // entries so the client can render a GAP on the trend line.
 type RumTrendResponse struct {
-	WindowDays     int                          `json:"window_days"`
-	MinSampleCount int                          `json:"min_sample_count"`
+	WindowDays     int                           `json:"window_days"`
+	MinSampleCount int                           `json:"min_sample_count"`
 	Metrics        map[string][]RumTrendDayPoint `json:"metrics"`
 }
 

@@ -13,7 +13,6 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 )
 
-
 // ----------------------------------------------------------------------------
 // DBCleanRiverEnqueuer
 // ----------------------------------------------------------------------------
@@ -472,5 +471,91 @@ func (w *DBOrphanDeleteWatchdogWorker) Work(ctx context.Context, _ *river.Job[DB
 			slog.String("site_id", s.SiteID.String()),
 			slog.String("job_id", s.JobID))
 	}
+	return nil
+}
+
+// ----------------------------------------------------------------------------
+// RumBeaconReconcileArgs — ack-based beacon-key re-mint (GH #174)
+// ----------------------------------------------------------------------------
+
+// RumBeaconReconcileArgs is the River job payload for one site's RUM
+// beacon-key reconcile. Enqueued from Service.MarkConfigApplied when a
+// config-ack reports rum_beacon_present=false on a site that is rum-enabled
+// with a hash already minted — i.e. the CP believes the agent should have a
+// key but the agent says it does not (the exact "the one best-effort
+// mint+push was lost" stuck state GH #174 describes). The worker calls the
+// SAME RotateBeaconKey primitive the operator rotate-key endpoint uses, so a
+// transiently-down agent self-heals on its next successful config-ack without
+// any operator action.
+type RumBeaconReconcileArgs struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	SiteID   uuid.UUID `json:"site_id"`
+}
+
+// Kind implements river.JobArgs.
+func (RumBeaconReconcileArgs) Kind() string { return "perf_rum_beacon_reconcile" }
+
+// rumBeaconReconcileUniqueWindow collapses back-to-back acks from the same
+// site's cron heartbeat into a single in-flight rotation, so a chatty or
+// mis-signaling agent cannot spam rotate-and-push in a tight loop.
+const rumBeaconReconcileUniqueWindow = 5 * time.Minute
+
+// RumBeaconReconcileRiverEnqueuer enqueues RumBeaconReconcileArgs onto River.
+// It satisfies perf.RumBeaconReconcileEnqueuer.
+type RumBeaconReconcileRiverEnqueuer struct {
+	client *river.Client[pgx.Tx]
+}
+
+// NewRumBeaconReconcileRiverEnqueuer builds an enqueuer around the started
+// River client.
+func NewRumBeaconReconcileRiverEnqueuer(client *river.Client[pgx.Tx]) *RumBeaconReconcileRiverEnqueuer {
+	return &RumBeaconReconcileRiverEnqueuer{client: client}
+}
+
+// EnqueueRumBeaconReconcile inserts one reconcile job, deduplicated per site
+// within rumBeaconReconcileUniqueWindow.
+func (e *RumBeaconReconcileRiverEnqueuer) EnqueueRumBeaconReconcile(ctx context.Context, args RumBeaconReconcileArgs) error {
+	if _, err := e.client.Insert(ctx, args, &river.InsertOpts{
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByPeriod: rumBeaconReconcileUniqueWindow,
+		},
+	}); err != nil {
+		return fmt.Errorf("enqueue rum beacon reconcile: %w", err)
+	}
+	return nil
+}
+
+// RumBeaconReconcileWorker calls Service.RotateBeaconKey to unconditionally
+// re-mint + push a fresh RUM beacon key for one site (GH #174 self-heal).
+type RumBeaconReconcileWorker struct {
+	river.WorkerDefaults[RumBeaconReconcileArgs]
+	svc    *Service
+	logger *slog.Logger
+}
+
+// NewRumBeaconReconcileWorker builds the reconcile worker.
+func NewRumBeaconReconcileWorker(svc *Service, logger *slog.Logger) *RumBeaconReconcileWorker {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &RumBeaconReconcileWorker{svc: svc, logger: logger}
+}
+
+// Work rotates the beacon key for one site. Returns the error so River
+// retries on a transient failure (e.g. the agent is still unreachable) — the
+// whole point of this worker is to keep trying until a push actually lands.
+func (w *RumBeaconReconcileWorker) Work(ctx context.Context, job *river.Job[RumBeaconReconcileArgs]) error {
+	a := job.Args
+	if err := w.svc.RotateBeaconKey(ctx, a.TenantID, a.SiteID); err != nil {
+		w.logger.Warn("rum beacon reconcile failed",
+			slog.String("site_id", a.SiteID.String()),
+			slog.String("tenant_id", a.TenantID.String()),
+			slog.Any("error", err))
+		return err
+	}
+	w.logger.Info("rum beacon reconcile: rotated + pushed",
+		slog.String("site_id", a.SiteID.String()),
+		slog.String("tenant_id", a.TenantID.String()))
 	return nil
 }

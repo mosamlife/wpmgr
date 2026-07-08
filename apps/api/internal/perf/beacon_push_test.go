@@ -99,6 +99,35 @@ func TestToPerfConfigRequest_omitsBeaconKeyOnSubsequentPush(t *testing.T) {
 	}
 }
 
+// TestToPerfConfigRequest_beaconKeyFieldAbsentFromWireOnUnchangedPush is a
+// regression guard for the EnableCache push path (service.go — EnableCache
+// calls toPerfConfigRequest(cfg, "", cpBaseURL)), which relies on
+// `RumBeaconKey string json:"rum_beacon_key,omitempty"` (agentcmd/cache_
+// contract.go) DROPPING the field entirely on the wire so the agent's local
+// merge preserves whatever key it already has. Asserting only
+// RumBeaconKey=="" (as the test above does) is not sufficient — a future
+// change that removes `omitempty` or adds a custom MarshalJSON could still
+// leave RumBeaconKey=="" in Go while emitting `"rum_beacon_key":""` on the
+// wire, which a naive agent-side merge could misread as "the CP wants to
+// clear the key." This test fails loudly on that regression by asserting the
+// key is ABSENT from the marshaled JSON, not just empty.
+func TestToPerfConfigRequest_beaconKeyFieldAbsentFromWireOnUnchangedPush(t *testing.T) {
+	cfg := Config{RumEnabled: true, BeaconKeySet: true}
+	req := toPerfConfigRequest(cfg, "" /*freshBeaconKey=unchanged*/, "https://cp.example.com")
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := wire["rum_beacon_key"]; present {
+		t.Errorf("rum_beacon_key must be ABSENT from the wire payload on an unchanged push (omitempty regression), got: %s", string(data))
+	}
+}
+
 // TestToPerfConfigRequest_cacheVariantWireNames verifies that the four page-
 // cache variant lists marshal with the agent-side unprefixed keys
 // (bypass_urls, bypass_cookies, include_queries, include_cookies), not the CP

@@ -2159,6 +2159,24 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/revoke
 	RevokeSite(ctx context.Context, request OptSiteLifecycleReason, params RevokeSiteParams) (RevokeSiteRes, error)
+	// RotateRumBeaconKey invokes rotateRumBeaconKey operation.
+	//
+	// Unconditionally mints a fresh RUM beacon key, rotates the previous
+	// hash into a grace-window column (in-flight beacons signed with the
+	// old key still resolve), and pushes the new plaintext key to the
+	// site's agent in this one request only — it is never returned in the
+	// response, logged, or exposed anywhere but the agent's local copy.
+	// This is the deterministic recovery path for GH #174: the one
+	// best-effort mint+push that happens on first RUM-enable can be lost
+	// (agent down/unreachable), permanently stranding the beacon key empty
+	// on the agent with zero RUM samples ever collected and no visible
+	// error. This endpoint lets an operator force a fresh mint+push on
+	// demand; the control plane also self-heals this automatically via an
+	// ack-based reconcile job.
+	// Requires the `site.perf.config` permission.
+	//
+	// POST /api/v1/sites/{siteId}/perf/rum/rotate-key
+	RotateRumBeaconKey(ctx context.Context, params RotateRumBeaconKeyParams) (*RumBeaconRotateResult, error)
 	// RunSearchReplace invokes runSearchReplace operation.
 	//
 	// Dispatches a serialization-safe search-replace command to the site's
@@ -25860,6 +25878,111 @@ func (c *Client) sendRevokeSite(ctx context.Context, request OptSiteLifecycleRea
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeSiteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// RotateRumBeaconKey invokes rotateRumBeaconKey operation.
+//
+// Unconditionally mints a fresh RUM beacon key, rotates the previous
+// hash into a grace-window column (in-flight beacons signed with the
+// old key still resolve), and pushes the new plaintext key to the
+// site's agent in this one request only — it is never returned in the
+// response, logged, or exposed anywhere but the agent's local copy.
+// This is the deterministic recovery path for GH #174: the one
+// best-effort mint+push that happens on first RUM-enable can be lost
+// (agent down/unreachable), permanently stranding the beacon key empty
+// on the agent with zero RUM samples ever collected and no visible
+// error. This endpoint lets an operator force a fresh mint+push on
+// demand; the control plane also self-heals this automatically via an
+// ack-based reconcile job.
+// Requires the `site.perf.config` permission.
+//
+// POST /api/v1/sites/{siteId}/perf/rum/rotate-key
+func (c *Client) RotateRumBeaconKey(ctx context.Context, params RotateRumBeaconKeyParams) (*RumBeaconRotateResult, error) {
+	res, err := c.sendRotateRumBeaconKey(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendRotateRumBeaconKey(ctx context.Context, params RotateRumBeaconKeyParams) (res *RumBeaconRotateResult, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("rotateRumBeaconKey"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/perf/rum/rotate-key"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RotateRumBeaconKeyOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/perf/rum/rotate-key"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeRotateRumBeaconKeyResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

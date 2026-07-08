@@ -128,10 +128,12 @@ export function OptimizeTab({ siteId, hostname, canOperate }: OptimizeTabProps) 
         canOperate={canOperate}
       />
       <RumSection
+        siteId={siteId}
         config={cfg}
         save={save}
         disabled={disabled}
         isSaving={isSaving}
+        canOperate={canOperate}
       />
       <RumResultsTable siteId={siteId} perSite />
     </div>

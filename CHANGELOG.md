@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.39] - 2026-07-08
+
+### Fixed
+
+- The Real User Monitoring (RUM) beacon key could get permanently stuck. If the one-time delivery of the key to a site was ever lost, the site was left showing RUM as enabled while silently collecting nothing, with no way to recover short of editing the database. The control plane now tracks whether the site has actually confirmed it holds a key (rather than only whether one was ever generated) and automatically re-issues the key when the site reports it is missing one. A "Rotate beacon key" action was added for manual recovery, and the dashboard now shows a warning when RUM is on but the site has not confirmed its key. The site agent also refuses to overwrite a working key with an empty one. Requires agent 0.61.16 (older agents will re-issue the key on the next settings save until updated, which is harmless).
+
 ## [0.61.38] - 2026-07-08
 
 ### Fixed

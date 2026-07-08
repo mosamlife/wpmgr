@@ -932,6 +932,8 @@ type SitePerfConfig struct {
 	MinSampleCount             int32              `json:"min_sample_count"`
 	BeaconKeyHash              []byte             `json:"beacon_key_hash"`
 	BeaconKeyHashPrev          []byte             `json:"beacon_key_hash_prev"`
+	BeaconKeyAckedPresent      bool               `json:"beacon_key_acked_present"`
+	BeaconKeyAckedAt           pgtype.Timestamptz `json:"beacon_key_acked_at"`
 	CreatedAt                  time.Time          `json:"created_at"`
 	UpdatedAt                  time.Time          `json:"updated_at"`
 }

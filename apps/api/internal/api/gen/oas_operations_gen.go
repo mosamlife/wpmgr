@@ -230,6 +230,7 @@ const (
 	RevokeApiKeyOperation                   OperationName = "RevokeApiKey"
 	RevokeClientInvitationOperation         OperationName = "RevokeClientInvitation"
 	RevokeSiteOperation                     OperationName = "RevokeSite"
+	RotateRumBeaconKeyOperation             OperationName = "RotateRumBeaconKey"
 	RunSearchReplaceOperation               OperationName = "RunSearchReplace"
 	ScanUnusedMediaOperation                OperationName = "ScanUnusedMedia"
 	SearchSiteFilesOperation                OperationName = "SearchSiteFiles"

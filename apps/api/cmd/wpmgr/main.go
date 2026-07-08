@@ -1290,6 +1290,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Always wired (no signing key required).
 	cacheHitRatioHistoryGCWorker := perf.NewCacheHitRatioHistoryGCWorker(perfRepo, logger)
 
+	// GH #174 — ack-based RUM beacon-key reconcile worker (always wired; no
+	// signing key required to REGISTER the worker — RotateBeaconKey itself
+	// degrades to domain.ServiceUnavailable when the agent client isn't
+	// configured, same as every other perf agent command). Event-driven only:
+	// enqueued from Service.MarkConfigApplied, no periodic sweep. The enqueuer
+	// is wired after River starts (mirrors the db-clean schedule worker).
+	rumBeaconReconcileWorker := perf.NewRumBeaconReconcileWorker(perfSvc, logger)
+
 	// m68 — Object Cache (P0+P1). Shares the same age identity as the
 	// Performance Suite (siteDestAgeID). The agent command client is wired only
 	// when the CP signing key is available (same guard as every other domain that
@@ -1460,6 +1468,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// M56 — RUM GC + rollup workers (always wired).
 		rumGCWorker:     rumGCWorker,
 		rumRollupWorker: rumRollupWorker,
+		// GH #174 — ack-based RUM beacon-key reconcile worker (always wired).
+		rumBeaconReconcileWorker: rumBeaconReconcileWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
 		// m62 — org-config propagation + hourly digest workers (always wired).
@@ -1691,6 +1701,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	perfH.SetRumResultsReader(perfRumResultsReader)
 	// M56 — Wire the RUM beacon key repo so UpdateConfig generates keys on first enable.
 	perfSvc.SetBeaconKeyRepo(rumBeaconRepo, os.Getenv("WPMGR_PUBLIC_BASE_URL"))
+	// GH #174 — wire the ack-based reconcile enqueuer now that River has started.
+	perfSvc.SetRumBeaconReconcileEnqueuer(perf.NewRumBeaconReconcileRiverEnqueuer(riverClient))
 	fontResultsAgentH := perf.NewFontResultsAgentHandler(perfRepo)
 	perfAgentH := perf.NewAgentHandler(perfSvc, rucssIngestSvc, ocSvc)
 
@@ -2536,6 +2548,9 @@ type riverDeps struct {
 	// M56 — RUM retention-GC + rollup workers (always wired).
 	rumGCWorker     *rum.RumGCWorker
 	rumRollupWorker *rum.RumRollupWorker
+	// GH #174 — ack-based RUM beacon-key reconcile worker (always wired,
+	// event-driven only — no periodic sweep).
+	rumBeaconReconcileWorker *perf.RumBeaconReconcileWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
 	// m62 — org-config propagation worker + hourly digest worker (always wired).
@@ -2904,6 +2919,14 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// rollup tables. Jobs are enqueued by the ingest handler (one per site per hour).
 	if d.rumRollupWorker != nil {
 		river.AddWorker(workers, d.rumRollupWorker)
+	}
+
+	// GH #174 — ack-based RUM beacon-key reconcile worker (always wired).
+	// Event-driven only: enqueued from Service.MarkConfigApplied when a
+	// config-ack reports rum_beacon_present=false on an already-provisioned
+	// rum-enabled site. No periodic sweep — there is nothing to poll for.
+	if d.rumBeaconReconcileWorker != nil {
+		river.AddWorker(workers, d.rumBeaconReconcileWorker)
 	}
 
 	// m59 Phase 3 — email log retention GC: sweeps site_email_log rows older

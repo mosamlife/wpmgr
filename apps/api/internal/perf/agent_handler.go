@@ -130,9 +130,9 @@ type agentObjectCacheBlock struct {
 	ConfigHash string `json:"config_hash,omitempty"`
 
 	// Stats delta fields (time-series history).
-	HitCount         int64   `json:"hit_count,omitempty"`
-	MissCount        int64   `json:"miss_count,omitempty"`
-	AvgWaitMs        float64 `json:"avg_wait_ms,omitempty"`
+	HitCount  int64   `json:"hit_count,omitempty"`
+	MissCount int64   `json:"miss_count,omitempty"`
+	AvgWaitMs float64 `json:"avg_wait_ms,omitempty"`
 	// OpsPerSec is typed float64 because the PHP agent emits round($ops/$elapsed, 2)
 	// which produces a fractional JSON number (e.g. 35.25). An int target would
 	// cause encoding/json to reject the whole block. The value is rounded to the
@@ -366,12 +366,24 @@ func (h *AgentHandler) statsReport(c *gin.Context) {
 // perf config ack (install-state report)
 // ---------------------------------------------------------------------------
 
+// configAckBody is the POST /agent/v1/perf/config-ack body. rum_beacon_present
+// is the GH #174 PINNED contract field: a plain boolean, true iff the agent
+// currently holds a non-empty rum_beacon_key. It is a *bool (not bool) so a
+// pre-#174 agent that omits the field entirely is distinguishable from a
+// current agent explicitly reporting false — mirrors the identical
+// WooThemeFragmentsSupported *bool precedent above (statsReportBody). The
+// agent MUST NEVER send the plaintext key back here; only this boolean.
 type configAckBody struct {
 	ConfigVersion      int    `json:"config_version"`
 	ServerSoftware     string `json:"server_software"`
 	DropinInstalled    bool   `json:"dropin_installed"`
 	WPCacheConstantSet bool   `json:"wp_cache_constant_set"`
 	HtaccessManaged    bool   `json:"htaccess_managed"`
+	// RumBeaconPresent reports whether the agent holds a non-empty
+	// rum_beacon_key at ack time (GH #174). Optional: nil = the agent did not
+	// report it (no signal, not "absent" — never treated as a reconcile
+	// trigger). See Service.MarkConfigApplied for the self-heal this drives.
+	RumBeaconPresent *bool `json:"rum_beacon_present,omitempty"`
 }
 
 func (h *AgentHandler) configAck(c *gin.Context) {
@@ -390,7 +402,7 @@ func (h *AgentHandler) configAck(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON: "+err.Error()))
 		return
 	}
-	if err := h.svc.MarkConfigApplied(c.Request.Context(), id.SiteID, in.ServerSoftware, in.DropinInstalled, in.WPCacheConstantSet, in.HtaccessManaged); err != nil {
+	if err := h.svc.MarkConfigApplied(c.Request.Context(), id.TenantID, id.SiteID, in.ServerSoftware, in.DropinInstalled, in.WPCacheConstantSet, in.HtaccessManaged, in.RumBeaconPresent); err != nil {
 		// A missing config row (the operator never saved one yet) is non-fatal: the
 		// agent will re-ack after the next config push. Return ok=true.
 		if err == ErrNotFound {

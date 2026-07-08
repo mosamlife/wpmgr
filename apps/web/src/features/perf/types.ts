@@ -124,6 +124,21 @@ export interface PerfConfig {
    * "Insufficient samples". Default 30. Range 1..1000.
    */
   min_sample_count?: number;
+  /**
+   * Read-only. Reports whether a beacon key is currently stored for this site
+   * (the plaintext key itself is never returned). Once RUM has been enabled at
+   * least once, this stays true even if `rum_enabled` is later turned off, so
+   * the recovery action (rotate) remains available.
+   */
+  readonly beacon_key_set?: boolean;
+  /**
+   * Read-only (GH #174). Reports whether the agent's most recent config-ack
+   * confirmed it holds a non-empty beacon key. When `beacon_key_set` is true
+   * but this is false, RUM is provisioned control-plane-side but the agent has
+   * not (yet) confirmed receiving it -- the control plane auto-retries this in
+   * the background; an operator can also force it via the rotate-key action.
+   */
+  readonly beacon_key_acked_present?: boolean;
 
   // WooCommerce cart-session caching (#169)
   //   woo_cacheable_session       — operator toggle (READ+WRITE).

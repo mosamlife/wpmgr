@@ -1999,6 +1999,19 @@ CREATE TABLE site_perf_config (
     min_sample_count          integer  NOT NULL DEFAULT 30,
     beacon_key_hash           bytea,
     beacon_key_hash_prev      bytea,
+    -- GH #174 — ack-based beacon-key re-mint. beacon_key_acked_present records
+    -- whether the agent's most recent config-ack (POST
+    -- /agent/v1/perf/config-ack, field rum_beacon_present) reported that it
+    -- currently holds a non-empty rum_beacon_key. Combined with
+    -- beacon_key_hash IS NOT NULL, false here identifies the exact "hash
+    -- committed but the agent never got/kept the plaintext" stuck state (the
+    -- one best-effort mint+push on first RUM-enable was lost — agent
+    -- down/unreachable — and nothing before this column ever re-minted). Agent
+    -- write path only (never operator-settable). Default false so a config row
+    -- that predates this migration is treated as "unknown/not-yet-acked" and
+    -- is eligible for the self-heal re-mint on the next operator save or ack.
+    beacon_key_acked_present  boolean  NOT NULL DEFAULT false,
+    beacon_key_acked_at       timestamptz,
     created_at                    timestamptz NOT NULL DEFAULT now(),
     updated_at                    timestamptz NOT NULL DEFAULT now()
 );

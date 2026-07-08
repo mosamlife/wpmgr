@@ -1688,6 +1688,14 @@ type Querier interface {
 	// handler injects the tenant from the verified Ed25519 identity, never from
 	// the body.
 	UpdateBackupSnapshotProgress(ctx context.Context, arg UpdateBackupSnapshotProgressParams) (BackupSnapshot, error)
+	// GH #174 — records whether the agent's most recent config-ack reported that
+	// it currently holds a non-empty rum_beacon_key (configAckBody.rum_beacon_present).
+	// Kept separate from UpsertPerfConfig for the same reason as
+	// UpdatePerfInstallState: an operator config save must never overwrite this
+	// agent-reported fact, and vice-versa. Runs under app.agent. RETURNING * lets
+	// the caller decide, in one round-trip, whether a re-mint reconcile job is
+	// needed: rum_enabled AND beacon_key_hash IS NOT NULL AND NOT @present.
+	UpdateBeaconKeyAcked(ctx context.Context, arg UpdateBeaconKeyAckedParams) (SitePerfConfig, error)
 	// Partial update: each field uses COALESCE so an absent narg leaves the
 	// stored value unchanged. updated_at is always refreshed.
 	UpdateClient(ctx context.Context, arg UpdateClientParams) (Client, error)

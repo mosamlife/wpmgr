@@ -68,6 +68,9 @@ var canonicalOperatorRoutes = []string{
 	"GET    /api/v1/sites/:siteId/perf/rum/summary",
 	"GET    /api/v1/sites/:siteId/perf/rum/trend",
 	"GET    /api/v1/sites/:siteId/perf/rum",
+	// GH #174 — deterministic operator recovery for a beacon key stuck empty
+	// on the agent.
+	"POST   /api/v1/sites/:siteId/perf/rum/rotate-key",
 	"POST   /api/v1/cache/bulk-purge",
 	"PUT    /api/v1/cache/bulk-config",
 	// P3.7 — tenant-level (no :siteId) fleet DB health aggregate.

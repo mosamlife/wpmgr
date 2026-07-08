@@ -19,6 +19,7 @@ namespace WPMgr\Agent\Cache;
 
 use WPMgr\Agent\ObjectCache\ObjectCacheDropinInstaller;
 use WPMgr\Agent\ObjectCache\ObjectCacheHeartbeat;
+use WPMgr\Agent\Optimizer\PerfConfig;
 use WPMgr\Agent\Settings;
 use WPMgr\Agent\Signer;
 
@@ -253,12 +254,20 @@ final class PerfReporter
                 ? get_option(self::OPTION_PERF_CONFIG_VERSION, 0)
                 : 0);
 
+            // GH #174: report whether the agent currently holds a non-empty local
+            // RUM beacon key. This is a boolean SIGNAL only — the plaintext key is
+            // never sent in the ack. The CP uses a `false` here to auto-trigger a
+            // beacon-key re-mint (the systemic self-heal for the stuck-empty-key
+            // bug); `true` is a no-op.
+            $rumBeaconPresent = PerfConfig::load()->rumBeaconKey !== '';
+
             $body = [
                 'config_version'        => $configVersion,
                 'server_software'       => $serverSoftware,
                 'dropin_installed'      => $dropinInstalled,
                 'wp_cache_constant_set' => $wpCacheSet,
                 'htaccess_managed'      => $htaccessManaged,
+                'rum_beacon_present'    => $rumBeaconPresent,
             ];
 
             $this->post(self::PATH_CONFIG_ACK, $body);
