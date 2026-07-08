@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   useMutation,
   useQuery,
+  useQueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
@@ -21,8 +22,10 @@ import { toError } from "@/features/auth/use-auth";
 // landed contract.
 //
 //   GET  /api/v1/billing            (owner-only; 404 when not hosted)
-//   POST /api/v1/billing/checkout   { tier } -> { url }
-//   POST /api/v1/billing/portal     -> { url }
+//   POST /api/v1/billing/checkout        { tier, provider?, currency? } -> CheckoutResult
+//   POST /api/v1/billing/checkout/verify { razorpay_payment_id, razorpay_subscription_id, razorpay_signature } -> { verified }
+//   POST /api/v1/billing/portal          -> { url }
+//   POST /api/v1/billing/cancel          (owner-only) -> { ok }
 
 export type BillingPlanId = "free" | "starter" | "agency" | "scale";
 
@@ -32,6 +35,17 @@ export type CheckoutTierId = Exclude<BillingPlanId, "free">;
 export function isCheckoutTier(id: BillingPlanId): id is CheckoutTierId {
   return id !== "free";
 }
+
+/** Payment provider a checkout can target — mirrors the CP's provider registry (internal/billing/provider.go). */
+export type BillingProvider = "stripe" | "razorpay";
+
+/**
+ * Currency choice, meaningful ONLY for the Razorpay provider — Razorpay has
+ * no single multi-currency price the way Stripe's own Price object does, so
+ * the CP resolves a plan PER (tier, currency). Ignored by every other
+ * provider.
+ */
+export type BillingCurrency = "USD" | "INR";
 
 export type BillingPlanStatus =
   | "none"
@@ -101,25 +115,138 @@ export function useBilling(
   });
 }
 
-export interface CheckoutResult {
-  url: string;
+/**
+ * The data WPMgr's in-app Checkout.js modal needs to open a Razorpay
+ * subscription checkout — mirrors the CP's `RazorpayCheckoutData` wire shape
+ * exactly (apps/api/internal/billing/provider.go). `amount` is in the
+ * currency's smallest unit (paise for INR, cents for USD), read
+ * authoritatively off the Razorpay Plan — never computed client-side.
+ */
+export interface RazorpayCheckoutData {
+  subscription_id: string;
+  key_id: string;
+  currency: string;
+  amount: number;
 }
 
-/** POST /api/v1/billing/checkout { tier } -> { url }. Caller redirects the browser there. */
+/**
+ * POST /api/v1/billing/checkout's response. Exactly one of `url`/`razorpay`
+ * is populated depending on the chosen provider's checkout style:
+ *   - Stripe: `url` is a hosted Checkout Session redirect target.
+ *   - Razorpay: `razorpay` is handed straight to the in-app Checkout.js modal.
+ */
+export interface CheckoutResult {
+  url?: string;
+  razorpay?: RazorpayCheckoutData;
+}
+
+export interface CreateCheckoutVariables {
+  tier: CheckoutTierId;
+  /** Omitted defers to this tenant's already-pinned provider, then this instance's configured default ("stripe"). */
+  provider?: BillingProvider;
+  /** Razorpay-only; ignored (and omitted from the request body) for every other provider. */
+  currency?: BillingCurrency;
+}
+
+/**
+ * POST /api/v1/billing/checkout { tier, provider?, currency? } -> CheckoutResult.
+ * The caller branches on which field the result populates — see
+ * `routes/_authed/settings/billing.tsx`'s `startCheckout`.
+ */
 export function useCreateBillingCheckout(): UseMutationResult<
   CheckoutResult,
   Error,
-  { tier: CheckoutTierId }
+  CreateCheckoutVariables
 > {
   return useMutation({
-    mutationFn: async ({ tier }) => {
+    mutationFn: async ({ tier, provider, currency }) => {
+      const body: { tier: string; provider?: string; currency?: string } = {
+        tier,
+      };
+      if (provider) body.provider = provider;
+      if (provider === "razorpay" && currency) body.currency = currency;
       const result = await client.post<{ 200: CheckoutResult }>({
         url: "/api/v1/billing/checkout",
-        body: { tier },
+        body,
       });
       if (result.error) throw toError(result.error);
       if (!result.data) throw new Error("Empty response");
       return result.data;
+    },
+  });
+}
+
+/**
+ * The EXACT field names Razorpay's Checkout.js `handler` option hands the
+ * browser on a successful payment, passed straight through as this request's
+ * body so the frontend never renames them.
+ */
+export interface RazorpayCheckoutSuccess {
+  razorpay_payment_id: string;
+  razorpay_subscription_id: string;
+  razorpay_signature: string;
+}
+
+export interface VerifyCheckoutResult {
+  verified: boolean;
+}
+
+/**
+ * POST /api/v1/billing/checkout/verify. UX-CONFIRMATION ONLY — per the CP's
+ * own doc comment (`Service.VerifyCheckoutCallback`), this never mutates the
+ * tenant's plan itself; the provider webhook remains the sole source of
+ * truth. Callers must poll GET /api/v1/billing afterward (see
+ * `useBillingCheckoutReturn`) regardless of whether this call succeeds or
+ * fails — a bad/late signature here must never block the poll that will
+ * eventually observe the real plan flip.
+ */
+export function useVerifyRazorpayCheckout(): UseMutationResult<
+  VerifyCheckoutResult,
+  Error,
+  RazorpayCheckoutSuccess
+> {
+  return useMutation({
+    mutationFn: async (payload) => {
+      const result = await client.post<{ 200: VerifyCheckoutResult }>({
+        url: "/api/v1/billing/checkout/verify",
+        body: payload,
+      });
+      if (result.error) throw toError(result.error);
+      if (!result.data) throw new Error("Empty response");
+      return result.data;
+    },
+  });
+}
+
+export interface CancelSubscriptionResult {
+  ok: boolean;
+}
+
+/**
+ * POST /api/v1/billing/cancel (owner-only). Cancels the tenant's subscription
+ * AT THE END OF THE CURRENT BILLING PERIOD, never immediately — the
+ * provider's webhook then drives the non-destructive plan=free downgrade,
+ * exactly like a natural expiry. Only relevant when `portal_available` is
+ * false (e.g. Razorpay, which has no hosted billing-management portal to
+ * cancel through instead).
+ */
+export function useCancelBillingSubscription(): UseMutationResult<
+  CancelSubscriptionResult,
+  Error,
+  void
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const result = await client.post<{ 200: CancelSubscriptionResult }>({
+        url: "/api/v1/billing/cancel",
+      });
+      if (result.error) throw toError(result.error);
+      if (!result.data) throw new Error("Empty response");
+      return result.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: billingKeys.info() });
     },
   });
 }

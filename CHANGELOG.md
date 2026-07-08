@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.43] - 2026-07-08
+
+### Added
+
+- Razorpay as a second payment provider for hosted billing, alongside Stripe (behind WPMGR_HOSTED, so self-hosted installations are unaffected and billing stays disabled). It supports dual-currency subscriptions (USD for international customers, INR for India), an in-app Razorpay Checkout.js payment modal, subscription cancellation at the end of the billing period, and a signature-verified webhook that activates the plan. Customers choose their payment provider at checkout. The adapter is hand-rolled on the standard library (no third-party SDK), the webhook is the sole authority that changes a plan (raw-body HMAC-SHA256, constant-time), and tenant attribution is server-stamped so a payment can never affect another account.
+
 ## [0.61.42] - 2026-07-08
 
 ### Fixed

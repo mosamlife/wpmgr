@@ -37,11 +37,18 @@ func validPurchasableTier(t Tier) bool {
 }
 
 // CreateCheckout starts a hosted checkout session for tenantID targeting
-// tier. The caller (the HTTP handler) supplies customerEmail (best-effort
-// prefill, may be empty) and the success/cancel redirect URLs — the price
-// itself is resolved SERVER-SIDE by the provider adapter's tier->price map;
-// nothing the caller supplies can select a price directly.
-func (s *Service) CreateCheckout(ctx context.Context, tenantID uuid.UUID, tier Tier, customerEmail, successURL, cancelURL string, actor Actor) (CheckoutSession, error) {
+// tier. requestedProvider is the caller's preferred provider ("stripe" |
+// "razorpay"; empty defers to whatever this tenant is already pinned to, then
+// this instance's configured default — see the "one tenant = one provider"
+// resolution below). currency is meaningful ONLY to a provider whose
+// CreateCheckout resolves a price/plan PER (tier, currency) — e.g. Razorpay's
+// dual-currency plan model; Stripe ignores it entirely (its own Price already
+// encodes a currency). The caller (the HTTP handler) supplies customerEmail
+// (best-effort prefill, may be empty) and the success/cancel redirect URLs —
+// the price itself is resolved SERVER-SIDE by the provider adapter's
+// tier(+currency)->price map; nothing the caller supplies can select a price
+// directly.
+func (s *Service) CreateCheckout(ctx context.Context, tenantID uuid.UUID, tier Tier, requestedProvider, currency, customerEmail, successURL, cancelURL string, actor Actor) (CheckoutSession, error) {
 	if !validPurchasableTier(tier) {
 		return CheckoutSession{}, domain.Validation("billing_invalid_tier", "tier must be one of: starter, agency, scale")
 	}
@@ -57,7 +64,17 @@ func (s *Service) CreateCheckout(ctx context.Context, tenantID uuid.UUID, tier T
 		return CheckoutSession{}, err
 	}
 
+	// "One tenant = one provider at a time (set at first checkout)": an
+	// already-pinned provider ALWAYS wins over the caller's request — a
+	// returning customer's checkout can never accidentally split their
+	// subscription across two providers. requestedProvider is only consulted
+	// on a tenant's first-ever checkout; s.defaultProvider (configured at
+	// boot, today always "stripe") is the final fallback, so an omitted
+	// "provider" field in the request keeps working exactly as before.
 	providerName := profile.BillingProvider
+	if providerName == "" {
+		providerName = requestedProvider
+	}
 	if providerName == "" {
 		providerName = s.defaultProvider
 	}
@@ -70,6 +87,7 @@ func (s *Service) CreateCheckout(ctx context.Context, tenantID uuid.UUID, tier T
 	sess, err := provider.CreateCheckout(ctx, CheckoutInput{
 		TenantID:           tenantID,
 		Plan:               tier,
+		Currency:           currency,
 		CustomerEmail:      customerEmail,
 		ProviderCustomerID: profile.ProviderCustomerID,
 		SuccessURL:         successURL,
@@ -95,6 +113,45 @@ func (s *Service) CreateCheckout(ctx context.Context, tenantID uuid.UUID, tier T
 	})
 
 	return sess, nil
+}
+
+// VerifyCheckoutCallback authenticates a browser-returned checkout-completion
+// callback for tenantID's CURRENT billing provider (e.g. Razorpay's
+// Checkout.js onSuccess payload: razorpay_payment_id/razorpay_subscription_id/
+// razorpay_signature). This is ONLY a UX confirmation that the client-side
+// modal succeeded — it NEVER mutates tenants.plan/plan_status itself; the
+// frontend is expected to poll GetBillingSummary afterward and wait for the
+// webhook (Service.ProcessWebhook) to actually flip the plan, exactly like
+// Stripe's existing redirect-then-poll success flow.
+//
+// Returns a "billing_callback_not_supported" error for a provider that has no
+// such callback to verify (Stripe's redirect-based Checkout Session has no
+// equivalent) — see CheckoutCallbackVerifier's doc comment.
+func (s *Service) VerifyCheckoutCallback(ctx context.Context, tenantID uuid.UUID, payload map[string]string) error {
+	if !s.enabled {
+		return domain.Unavailable("billing_disabled", "hosted billing is not enabled on this instance")
+	}
+	profile, err := s.getBillingProfile(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if profile.BillingProvider == "" {
+		return domain.Conflict("billing_no_customer",
+			"start a checkout before verifying a checkout callback — this workspace has no billing provider yet")
+	}
+	if s.registry == nil {
+		return domain.ServiceUnavailable("billing_not_configured", "no payment provider is configured on this instance yet")
+	}
+	provider, ok := s.registry.Provider(profile.BillingProvider)
+	if !ok {
+		return domain.ServiceUnavailable("billing_provider_unavailable",
+			"the configured payment provider for this workspace is not available")
+	}
+	verifier, ok := provider.(CheckoutCallbackVerifier)
+	if !ok {
+		return domain.Unavailable("billing_callback_not_supported", "this payment provider has no browser checkout callback to verify")
+	}
+	return verifier.VerifyCheckoutCallback(payload)
 }
 
 // CreatePortalSession mints a short-lived billing-management portal session
@@ -133,6 +190,59 @@ func (s *Service) CreatePortalSession(ctx context.Context, tenantID uuid.UUID, a
 	})
 
 	return sess, nil
+}
+
+// CancelSubscription tells tenantID's CURRENT billing provider to cancel its
+// live subscription — the provider-agnostic backend for the dashboard's
+// "Cancel subscription" action. Every provider is reachable through this ONE
+// method regardless of whether it also has a hosted portal: Razorpay tenants
+// (HasPortal()==false) have NO other way to cancel; Stripe tenants may use
+// either this or the portal.
+//
+// Cancellation is scheduled for the END of the current billing period by
+// every adapter (see Provider.CancelSubscription's doc comment) — the
+// customer keeps paid access through what they already paid for.
+//
+// This method NEVER mutates tenants.plan/plan_status itself: "push is a
+// hint, pull is the truth" applies here exactly as it does to every other
+// billing mutation in this package — the provider's own cancellation webhook
+// is what actually drives the non-destructive downgrade, through the EXACT
+// SAME ProcessWebhook/state-machine path as any other event. Callers must
+// not assume the plan has changed the instant this call returns; the
+// frontend should poll GetBillingSummary afterward, same as the checkout
+// success flow.
+//
+// Returns a clean "billing_no_subscription" error when the tenant has no
+// live provider subscription to cancel (never checked out, or a provider
+// name is set with no subscription id on file).
+func (s *Service) CancelSubscription(ctx context.Context, tenantID uuid.UUID, actor Actor) error {
+	if !s.enabled {
+		return domain.Unavailable("billing_disabled", "hosted billing is not enabled on this instance")
+	}
+	profile, err := s.getBillingProfile(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if profile.BillingProvider == "" || profile.ProviderSubscriptionID == "" {
+		return domain.Conflict("billing_no_subscription", "this workspace has no active subscription to cancel")
+	}
+	if s.registry == nil {
+		return domain.ServiceUnavailable("billing_not_configured", "no payment provider is configured on this instance yet")
+	}
+	provider, ok := s.registry.Provider(profile.BillingProvider)
+	if !ok {
+		return domain.ServiceUnavailable("billing_provider_unavailable",
+			"the configured payment provider for this workspace is not available")
+	}
+
+	if err := provider.CancelSubscription(ctx, profile.ProviderSubscriptionID); err != nil {
+		return err
+	}
+
+	s.recordAudit(ctx, tenantID, actor.Type, actor.ID, "billing.subscription.cancel_requested", map[string]any{
+		"provider": profile.BillingProvider,
+	})
+	return nil
 }
 
 // SiteMeter is a single usage/limit pair for the Billing page's meters block.
@@ -187,6 +297,19 @@ func (s *Service) GetBillingSummary(ctx context.Context, tenantID uuid.UUID) (Su
 		return Summary{}, domain.Internal("billing_usage_count_failed", "failed to count active sites").WithCause(txErr)
 	}
 
+	// PortalAvailable defaults to "has a provider customer at all" and is only
+	// suppressed when the tenant's OWN provider is registered and positively
+	// reports HasPortal()==false (e.g. Razorpay). An unresolvable provider
+	// (registry nil/not-yet-registered) errs toward the prior, simpler
+	// behavior rather than hiding a legitimate Stripe portal link over an
+	// unrelated lookup gap.
+	portalAvailable := profile.ProviderCustomerID != ""
+	if portalAvailable && s.registry != nil {
+		if provider, ok := s.registry.Provider(profile.BillingProvider); ok && !provider.HasPortal() {
+			portalAvailable = false
+		}
+	}
+
 	return Summary{
 		Plan:             profile.Plan,
 		PlanStatus:       profile.Status,
@@ -196,7 +319,7 @@ func (s *Service) GetBillingSummary(ctx context.Context, tenantID uuid.UUID) (Su
 		Meters: Meters{
 			Sites: SiteMeter{Used: int(used), Limit: ent.MaxSites},
 		},
-		PortalAvailable: profile.ProviderCustomerID != "",
+		PortalAvailable: portalAvailable,
 	}, nil
 }
 

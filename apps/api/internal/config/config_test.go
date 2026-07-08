@@ -237,6 +237,88 @@ func TestValidateStripeConfig_NotHostedNeverValidated(t *testing.T) {
 	}
 }
 
+// TestValidateHostedWithFullRazorpayConfigIsLegal proves a completely-filled-
+// in Razorpay config (all 3 credentials + all 6 dual-currency plan ids)
+// passes cleanly.
+func TestValidateHostedWithFullRazorpayConfigIsLegal(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = true
+	cfg.Billing.Razorpay = RazorpayConfig{
+		KeyID: "rzp_live_x", KeySecret: "secret_x", WebhookSecret: "whsec_x",
+		PlanStarterUSD: "plan_su", PlanStarterINR: "plan_si",
+		PlanAgencyUSD: "plan_au", PlanAgencyINR: "plan_ai",
+		PlanScaleUSD: "plan_scu", PlanScaleINR: "plan_sci",
+	}
+	if issues := Validate(cfg); len(issues) != 0 {
+		t.Fatalf("Validate() with a fully-configured Razorpay returned issues: %+v", issues)
+	}
+}
+
+// TestValidateHostedWithPartialRazorpayConfigIsRejected mirrors the Stripe
+// partial-config guard: an operator who has started configuring Razorpay
+// (ANY one of the nine fields set) but left the rest blank must be refused
+// at boot, one Issue per unset field.
+func TestValidateHostedWithPartialRazorpayConfigIsRejected(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = true
+	cfg.Billing.Razorpay = RazorpayConfig{KeyID: "rzp_live_x"} // only one of nine fields set
+
+	issues := Validate(cfg)
+	if len(issues) != 8 {
+		t.Fatalf("Validate() with a partial Razorpay config returned %d issues, want 8 (the eight unset fields): %+v", len(issues), issues)
+	}
+	for _, is := range issues {
+		if is.Name == "WPMGR_BILLING_RAZORPAY_KEY_ID" {
+			t.Fatalf("the ONE field that IS set should not itself be reported as an issue: %+v", issues)
+		}
+	}
+}
+
+// TestValidateRazorpayConfig_NotHostedNeverValidated proves the Razorpay
+// checks are skipped entirely when hosted billing is off, even with a
+// partial config present.
+func TestValidateRazorpayConfig_NotHostedNeverValidated(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = false
+	cfg.Billing.Razorpay = RazorpayConfig{KeyID: "rzp_live_x"} // partial, but hosted is off
+
+	if issues := Validate(cfg); len(issues) != 0 {
+		t.Fatalf("Validate() should skip Razorpay checks entirely when Hosted.Enabled is false, got: %+v", issues)
+	}
+}
+
+// TestLoadRazorpayEnvMapping proves every WPMGR_BILLING_RAZORPAY_* variable
+// resolves through mapEnvKey to billing.razorpay.* — without that mapping
+// case, koanf's env provider silently drops every one of these vars (they'd
+// fall through to the default passthrough key, which Unmarshal simply
+// ignores), and Razorpay would appear permanently unconfigured no matter what
+// an operator sets.
+func TestLoadRazorpayEnvMapping(t *testing.T) {
+	t.Setenv("WPMGR_BILLING_RAZORPAY_KEY_ID", "rzp_live_x")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_KEY_SECRET", "secret_x")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_WEBHOOK_SECRET", "whsec_x")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_PLAN_STARTER_USD", "plan_su")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_PLAN_STARTER_INR", "plan_si")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_PLAN_AGENCY_USD", "plan_au")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_PLAN_AGENCY_INR", "plan_ai")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_PLAN_SCALE_USD", "plan_scu")
+	t.Setenv("WPMGR_BILLING_RAZORPAY_PLAN_SCALE_INR", "plan_sci")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := RazorpayConfig{
+		KeyID: "rzp_live_x", KeySecret: "secret_x", WebhookSecret: "whsec_x",
+		PlanStarterUSD: "plan_su", PlanStarterINR: "plan_si",
+		PlanAgencyUSD: "plan_au", PlanAgencyINR: "plan_ai",
+		PlanScaleUSD: "plan_scu", PlanScaleINR: "plan_sci",
+	}
+	if cfg.Billing.Razorpay != want {
+		t.Fatalf("Billing.Razorpay = %+v, want %+v", cfg.Billing.Razorpay, want)
+	}
+}
+
 // TestPrivilegeProbeGate verifies that the two-DSN gate logic (MigrationDSN != "")
 // correctly identifies when the privilege probe should run. In single-DSN mode
 // (MigrationDSN empty) the app connects as the migration runner, so the probe is

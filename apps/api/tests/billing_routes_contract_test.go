@@ -14,9 +14,9 @@ import (
 
 // TestBillingRoutes_404WhenUnhosted proves the routes-contract guarantee:
 // when billing.Handler is never mounted (mirrors cmd/wpmgr/main.go's
-// cfg.Hosted.Enabled==false wiring, which leaves deps.BillingH nil), all
-// three billing paths simply 404 — there is no special-cased "hosted
-// disabled" response, just an absent route.
+// cfg.Hosted.Enabled==false wiring, which leaves deps.BillingH nil), every
+// billing path simply 404s — there is no special-cased "hosted disabled"
+// response, just an absent route.
 func TestBillingRoutes_404WhenUnhosted(t *testing.T) {
 	engine := gin.New()
 	engine.Group("/api/v1") // no billing routes registered on it
@@ -24,7 +24,9 @@ func TestBillingRoutes_404WhenUnhosted(t *testing.T) {
 	for _, req := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/billing"},
 		{http.MethodPost, "/api/v1/billing/checkout"},
+		{http.MethodPost, "/api/v1/billing/checkout/verify"},
 		{http.MethodPost, "/api/v1/billing/portal"},
+		{http.MethodPost, "/api/v1/billing/cancel"},
 	} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(req.method, req.path, nil)

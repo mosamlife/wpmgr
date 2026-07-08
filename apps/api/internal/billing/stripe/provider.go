@@ -98,6 +98,10 @@ func New(cfg Config) *Provider {
 // Name implements billing.Provider.
 func (p *Provider) Name() string { return "stripe" }
 
+// HasPortal implements billing.Provider: Stripe's Billing Portal is always
+// available once a customer exists.
+func (p *Provider) HasPortal() bool { return true }
+
 // MapPriceToPlan implements billing.Provider.
 func (p *Provider) MapPriceToPlan(priceID string) (billing.Tier, bool) {
 	t, ok := p.priceToPlan[priceID]
@@ -157,6 +161,32 @@ func (p *Provider) CreatePortalSession(ctx context.Context, providerCustomerID s
 		return billing.PortalSession{}, wrapErr("stripe_portal_create_failed", "failed to create Stripe billing portal session", err)
 	}
 	return billing.PortalSession{URL: sess.URL}, nil
+}
+
+// CancelSubscription implements billing.Provider: schedules cancellation at
+// the END of the current billing period (cancel_at_period_end=true) rather
+// than an immediate delete — the customer keeps access through what they
+// already paid for, and the tenant's own downgrade-to-free happens later,
+// driven by the resulting customer.subscription.updated webhook through the
+// normal ProcessWebhook path (never mutated directly here). Stripe customers
+// can also reach this same effect via the Billing Portal
+// (CreatePortalSession); this method is the programmatic equivalent for a
+// provider (like Razorpay) that has no portal at all.
+func (p *Provider) CancelSubscription(ctx context.Context, providerSubscriptionID string) error {
+	if _, err := p.client.V1Subscriptions.Update(ctx, providerSubscriptionID, cancelSubscriptionParams()); err != nil {
+		return wrapErr("stripe_subscription_cancel_failed", "failed to schedule Stripe subscription cancellation", err)
+	}
+	return nil
+}
+
+// cancelSubscriptionParams builds the SubscriptionUpdateParams
+// CancelSubscription sends. Extracted as a pure function (mirrors
+// toSubscription/mapStatus below) so the cancel-at-period-end — NEVER
+// immediate — choice is unit-testable without a live Stripe API call.
+func cancelSubscriptionParams() *stripesdk.SubscriptionUpdateParams {
+	return &stripesdk.SubscriptionUpdateParams{
+		CancelAtPeriodEnd: stripesdk.Bool(true),
+	}
 }
 
 // GetSubscription implements billing.Provider — the sole source of truth the

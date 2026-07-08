@@ -18,7 +18,7 @@ func TestCreateCheckout_RejectsNonPurchasableTier(t *testing.T) {
 
 	tests := []Tier{TierFree, Tier(""), Tier("enterprise"), Tier("price_agency_123")}
 	for _, tier := range tests {
-		_, err := svc.CreateCheckout(context.Background(), uuid.New(), tier, "", "", "", Actor{})
+		_, err := svc.CreateCheckout(context.Background(), uuid.New(), tier, "", "", "", "", "", Actor{})
 		de, ok := domain.AsDomain(err)
 		if !ok || de.Kind != domain.KindValidation {
 			t.Errorf("tier %q: want a KindValidation error, got %v", tier, err)
@@ -41,7 +41,7 @@ func TestCreateCheckout_AcceptsEveryPaidTier(t *testing.T) {
 
 func TestCreateCheckout_DisabledReturnsUnavailable(t *testing.T) {
 	svc := New(nil, nil, false, domain.SystemClock{}, nil) // hosted billing OFF
-	_, err := svc.CreateCheckout(context.Background(), uuid.New(), TierStarter, "", "", "", Actor{})
+	_, err := svc.CreateCheckout(context.Background(), uuid.New(), TierStarter, "", "", "", "", "", Actor{})
 	de, ok := domain.AsDomain(err)
 	if !ok || de.Kind != domain.KindUnavailable {
 		t.Fatalf("want KindUnavailable when hosted billing is disabled, got %v", err)
@@ -52,7 +52,7 @@ func TestCreateCheckout_NoProviderRegisteredReturnsServiceUnavailable(t *testing
 	svc := New(nil, nil, true, domain.SystemClock{}, nil)
 	svc.SetProviders(NewRegistry(), "stripe") // registry built, but empty
 
-	_, err := svc.CreateCheckout(context.Background(), uuid.New(), TierStarter, "", "", "", Actor{})
+	_, err := svc.CreateCheckout(context.Background(), uuid.New(), TierStarter, "", "", "", "", "", Actor{})
 	de, ok := domain.AsDomain(err)
 	if !ok || de.Kind != domain.KindServiceUnavailable {
 		t.Fatalf("want KindServiceUnavailable when no provider is configured, got %v", err)
@@ -62,6 +62,24 @@ func TestCreateCheckout_NoProviderRegisteredReturnsServiceUnavailable(t *testing
 func TestCreatePortalSession_DisabledReturnsUnavailable(t *testing.T) {
 	svc := New(nil, nil, false, domain.SystemClock{}, nil)
 	_, err := svc.CreatePortalSession(context.Background(), uuid.New(), Actor{})
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Kind != domain.KindUnavailable {
+		t.Fatalf("want KindUnavailable when hosted billing is disabled, got %v", err)
+	}
+}
+
+func TestVerifyCheckoutCallback_DisabledReturnsUnavailable(t *testing.T) {
+	svc := New(nil, nil, false, domain.SystemClock{}, nil)
+	err := svc.VerifyCheckoutCallback(context.Background(), uuid.New(), map[string]string{})
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Kind != domain.KindUnavailable {
+		t.Fatalf("want KindUnavailable when hosted billing is disabled, got %v", err)
+	}
+}
+
+func TestCancelSubscription_DisabledReturnsUnavailable(t *testing.T) {
+	svc := New(nil, nil, false, domain.SystemClock{}, nil)
+	err := svc.CancelSubscription(context.Background(), uuid.New(), Actor{})
 	de, ok := domain.AsDomain(err)
 	if !ok || de.Kind != domain.KindUnavailable {
 		t.Fatalf("want KindUnavailable when hosted billing is disabled, got %v", err)
