@@ -6,6 +6,9 @@
     "http_response_code",
     "header",
     "headers_sent",
-    "realpath"
+    "realpath",
+    "clearstatcache",
+    "is_readable",
+    "opcache_invalidate"
   ]
 }
