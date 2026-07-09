@@ -410,6 +410,26 @@ export interface FleetDbTopSite {
 }
 
 /**
+ * One entry in the FULL list of flagged sites returned by
+ * GET /api/v1/perf/db/fleet-health (`sites_needing_review`) — every site
+ * with at least one orphan candidate, unlike `top_sites` which is capped at
+ * the top-10-by-size.
+ *
+ * Field names match the Go FleetSiteNeedingReview JSON tags exactly
+ * (apps/api/internal/perf/model.go).
+ */
+export interface FleetDbSiteNeedingReview {
+  /** UUID of the site. */
+  site_id: string;
+  /** Human-readable site name. */
+  site_name: string;
+  /** Number of orphaned wp_options candidates from the latest scan. */
+  orphaned_options_count: number;
+  /** Number of orphaned cron-event candidates from the latest scan. */
+  orphaned_cron_count: number;
+}
+
+/**
  * Tenant-level aggregate returned by GET /api/v1/perf/db/fleet-health.
  *
  * Field names match the Go FleetDbHealth JSON tags exactly
@@ -430,6 +450,13 @@ export interface FleetDbHealth {
   sites_with_orphans: number;
   /** Top-N sites ordered by DB size descending (typically <= 10). */
   top_sites: FleetDbTopSite[];
+  /**
+   * The FULL list of every site flagged with at least one orphan candidate
+   * (options or cron), unlike `top_sites` which is capped at the
+   * top-10-by-size. May be absent on an older server response — callers
+   * must guard with `?? []`.
+   */
+  sites_needing_review?: FleetDbSiteNeedingReview[];
 }
 
 // ---------------------------------------------------------------------------

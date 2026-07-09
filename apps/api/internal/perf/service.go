@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -1490,6 +1491,7 @@ func (s *Service) GetFleetDbHealth(ctx context.Context, tenantID uuid.UUID, days
 
 	var out FleetDbHealth
 	out.TopSites = make([]FleetSiteDbSummary, 0)
+	out.SitesNeedingReview = make([]FleetSiteDbReview, 0)
 
 	for _, row := range rows {
 		out.TotalSitesScanned++
@@ -1499,8 +1501,28 @@ func (s *Service) GetFleetDbHealth(ctx context.Context, tenantID uuid.UUID, days
 		out.TotalOrphanedCron += row.OrphanedCronCount
 		if row.OrphanedOptionsCount > 0 || row.OrphanedCronCount > 0 {
 			out.SitesWithOrphans++
+			out.SitesNeedingReview = append(out.SitesNeedingReview, FleetSiteDbReview{
+				SiteID:               row.SiteID,
+				SiteName:             row.SiteName,
+				OrphanedOptionsCount: row.OrphanedOptionsCount,
+				OrphanedCronCount:    row.OrphanedCronCount,
+			})
 		}
 	}
+
+	// SitesNeedingReview carries EVERY flagged site (not capped by fleetTopN)
+	// so the FE can enumerate the full "sites with items to review" set even
+	// when a flagged site isn't among the top-10-by-DB-size (GH #197). Sort
+	// by total orphan count descending, then by name for stable ordering.
+	sort.Slice(out.SitesNeedingReview, func(i, j int) bool {
+		a, b := out.SitesNeedingReview[i], out.SitesNeedingReview[j]
+		aTotal := a.OrphanedOptionsCount + a.OrphanedCronCount
+		bTotal := b.OrphanedOptionsCount + b.OrphanedCronCount
+		if aTotal != bTotal {
+			return aTotal > bTotal
+		}
+		return a.SiteName < b.SiteName
+	})
 
 	// Cap the top-N list. The SQL result is already ordered by db_size_bytes
 	// DESC so the first fleetTopN rows are the largest sites.

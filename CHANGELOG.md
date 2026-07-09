@@ -8,7 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.50] - 2026-07-09
+## [0.61.51] - 2026-07-09
+
+### Fixed
+
+- The fleet "Sites with items to review" database-health stat is no longer a dead end (GH #197). It was an inert number, and the data behind it only covered the ten largest databases, so sites flagged for review outside that window could not be reached at all. The stat now expands into the full list of every site with database items to review, each linking directly to that site's Orphaned-items view.
+- The database-size "90-day history" trend and the fleet "90-day growth" stat now populate automatically (GH #196). They read a size-history table that was only ever written on a manual "Scan database" click, so the trend stayed frozen. A size sample is now recorded from each site's daily diagnostics push (best-effort, so it can never affect the diagnostics itself), so the history builds over time for every site with no manual scanning. No agent update or database migration is required.
 
 ### Fixed
 

@@ -651,6 +651,47 @@ func (r *Repo) UpsertDBScanResult(ctx context.Context, in DBScanResultInput) err
 	})
 }
 
+// RecordDBSizeHistoryFromDiagnostics appends a site_db_size_history data
+// point sourced from the agent's DAILY diagnostics push rather than a manual
+// "Scan database" run (GH #196). Before this tap, UpsertDBScanResult was the
+// ONLY writer, so the 90-day trend + fleet growth read never populated unless
+// an operator clicked "Scan database" — this taps the wp-paths-sizes size the
+// agent already ships on every diagnostics push instead.
+//
+// table_count is carried forward from the most recent site_db_size_history
+// row for the site (a prior manual scan or a prior diagnostics-sourced
+// point); diagnostics does not carry a table inventory, so 0 is used only
+// when no prior row exists at all. The chart plots db_size_bytes, so a
+// carried-forward (or zero) table_count does not affect what operators see.
+//
+// Operator-tenant write path via InTenantTx — mirrors UpsertDBScanResult.
+// Idempotent via the (site_id, scanned_at) unique constraint (ON CONFLICT DO
+// NOTHING): passing the diagnostics push's own collected_at as scanned_at
+// naturally dedups to one point per push.
+func (r *Repo) RecordDBSizeHistoryFromDiagnostics(ctx context.Context, tenantID, siteID uuid.UUID, dbSizeBytes int64, scannedAt time.Time) error {
+	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		tableCount, qerr := q.GetLatestDBSizeHistoryTableCount(ctx, sqlc.GetLatestDBSizeHistoryTableCountParams{
+			SiteID:   siteID,
+			TenantID: tenantID,
+		})
+		if qerr != nil {
+			if !errors.Is(qerr, pgx.ErrNoRows) {
+				return qerr
+			}
+			tableCount = 0
+		}
+		_, qerr = q.InsertDBSizeHistory(ctx, sqlc.InsertDBSizeHistoryParams{
+			SiteID:      siteID,
+			TenantID:    tenantID,
+			DbSizeBytes: dbSizeBytes,
+			TableCount:  tableCount,
+			ScannedAt:   scannedAt,
+		})
+		return qerr
+	})
+}
+
 // GetDBSizeHistory returns size-trend data points for a site from `since`
 // onwards (up to 366 points), ordered oldest-first. Operator read path
 // (InTenantTx).

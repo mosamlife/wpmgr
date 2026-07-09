@@ -14427,7 +14427,72 @@ type GetEmailNotifySettingsUnauthorized Error
 func (*GetEmailNotifySettingsUnauthorized) getEmailNotifySettingsRes() {}
 
 // Fleet DB health aggregate (shape matches FleetDbHealth Go model).
-type GetFleetDbHealthOK struct{}
+type GetFleetDbHealthOK struct {
+	// Every scanned site with at least one orphan candidate
+	// (orphaned wp_options rows or WP-Cron events) — NOT
+	// capped, unlike top_sites (which is capped at 10 and
+	// ordered by DB size, so a small flagged site can be
+	// absent from it). Sorted by orphan count descending,
+	// then by site name.
+	SitesNeedingReview []GetFleetDbHealthOKSitesNeedingReviewItem `json:"sites_needing_review"`
+}
+
+// GetSitesNeedingReview returns the value of SitesNeedingReview.
+func (s *GetFleetDbHealthOK) GetSitesNeedingReview() []GetFleetDbHealthOKSitesNeedingReviewItem {
+	return s.SitesNeedingReview
+}
+
+// SetSitesNeedingReview sets the value of SitesNeedingReview.
+func (s *GetFleetDbHealthOK) SetSitesNeedingReview(val []GetFleetDbHealthOKSitesNeedingReviewItem) {
+	s.SitesNeedingReview = val
+}
+
+type GetFleetDbHealthOKSitesNeedingReviewItem struct {
+	SiteID               OptUUID   `json:"site_id"`
+	SiteName             OptString `json:"site_name"`
+	OrphanedOptionsCount OptInt    `json:"orphaned_options_count"`
+	OrphanedCronCount    OptInt    `json:"orphaned_cron_count"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) GetSiteID() OptUUID {
+	return s.SiteID
+}
+
+// GetSiteName returns the value of SiteName.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) GetSiteName() OptString {
+	return s.SiteName
+}
+
+// GetOrphanedOptionsCount returns the value of OrphanedOptionsCount.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) GetOrphanedOptionsCount() OptInt {
+	return s.OrphanedOptionsCount
+}
+
+// GetOrphanedCronCount returns the value of OrphanedCronCount.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) GetOrphanedCronCount() OptInt {
+	return s.OrphanedCronCount
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) SetSiteID(val OptUUID) {
+	s.SiteID = val
+}
+
+// SetSiteName sets the value of SiteName.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) SetSiteName(val OptString) {
+	s.SiteName = val
+}
+
+// SetOrphanedOptionsCount sets the value of OrphanedOptionsCount.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) SetOrphanedOptionsCount(val OptInt) {
+	s.OrphanedOptionsCount = val
+}
+
+// SetOrphanedCronCount sets the value of OrphanedCronCount.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) SetOrphanedCronCount(val OptInt) {
+	s.OrphanedCronCount = val
+}
 
 type GetFleetEmailDeliverabilityForbidden Error
 

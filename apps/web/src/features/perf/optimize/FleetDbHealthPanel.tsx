@@ -8,23 +8,29 @@
 // Placement: apps/web/src/routes/_authed/performance.tsx (Insights > Performance),
 // which is the natural portfolio/fleet home for cross-site rollups.
 
+import { useState } from "react";
 import {
   AlertTriangle,
+  ChevronDown,
   Database,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 
+import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
 
 import { useFleetDbHealth } from "../hooks/useFleetDbHealth";
 import { formatBytes, formatCount } from "../format";
-import type { FleetDbTopSite } from "../types";
+import type { FleetDbSiteNeedingReview, FleetDbTopSite } from "../types";
+
+const SITES_NEEDING_REVIEW_LIST_ID = "fleet-sites-needing-review-list";
 
 export function FleetDbHealthPanel() {
   const { data, isPending, isError, error, refetch } = useFleetDbHealth();
+  const [needingReviewExpanded, setNeedingReviewExpanded] = useState(false);
 
   return (
     <section
@@ -93,9 +99,20 @@ export function FleetDbHealthPanel() {
                 label="Sites with items to review"
                 value={formatCount(data.sites_with_orphans)}
                 highlight="amber"
+                expanded={needingReviewExpanded}
+                controls={SITES_NEEDING_REVIEW_LIST_ID}
+                onToggle={() => setNeedingReviewExpanded((v) => !v)}
               />
             )}
           </div>
+
+          {/* Sites needing review — drill-down disclosure */}
+          {needingReviewExpanded && (data.sites_needing_review?.length ?? 0) > 0 && (
+            <SitesNeedingReviewList
+              id={SITES_NEEDING_REVIEW_LIST_ID}
+              sites={data.sites_needing_review ?? []}
+            />
+          )}
 
           {/* Top sites table */}
           {data.top_sites.length > 0 && (
@@ -116,32 +133,121 @@ interface FleetStatProps {
   value: string;
   hint?: string;
   highlight?: "amber";
+  /** When set (together with `onToggle`), the stat renders as an expandable
+   *  disclosure button rather than inert text. */
+  expanded?: boolean;
+  /** id of the region this stat's disclosure controls, wired via
+   *  `aria-controls`. Required alongside `onToggle`. */
+  controls?: string;
+  onToggle?: () => void;
 }
 
-function FleetStat({ label, value, hint, highlight }: FleetStatProps) {
+function FleetStat({
+  label,
+  value,
+  hint,
+  highlight,
+  expanded,
+  controls,
+  onToggle,
+}: FleetStatProps) {
+  const valueEl = (
+    <span
+      className={`tabular-nums text-xl font-semibold leading-none ${
+        highlight === "amber"
+          ? "text-amber-700 dark:text-amber-400"
+          : "text-foreground"
+      }`}
+    >
+      {value}
+    </span>
+  );
+
+  const labelEl = (
+    <span className="text-xs text-muted-foreground" title={hint}>
+      {label}
+      {hint && (
+        <AlertTriangle
+          aria-label={hint}
+          className="ml-1 inline size-3 cursor-help text-muted-foreground/50"
+        />
+      )}
+    </span>
+  );
+
+  if (onToggle) {
+    return (
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded ?? false}
+        aria-controls={controls}
+        className="flex flex-col gap-0.5 rounded-sm text-left transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      >
+        <span className="inline-flex items-center gap-1">
+          {valueEl}
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
+        </span>
+        {labelEl}
+      </button>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-0.5">
-      <span
-        className={`tabular-nums text-xl font-semibold leading-none ${
-          highlight === "amber"
-            ? "text-amber-700 dark:text-amber-400"
-            : "text-foreground"
-        }`}
-      >
-        {value}
-      </span>
-      <span
-        className="text-xs text-muted-foreground"
-        title={hint}
-      >
-        {label}
-        {hint && (
-          <AlertTriangle
-            aria-label={hint}
-            className="ml-1 inline size-3 cursor-help text-muted-foreground/50"
-          />
-        )}
-      </span>
+      {valueEl}
+      {labelEl}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sites needing review — drill-down disclosure for the amber stat (GH #197)
+// ---------------------------------------------------------------------------
+
+function SitesNeedingReviewList({
+  id,
+  sites,
+}: {
+  id: string;
+  sites: FleetDbSiteNeedingReview[];
+}) {
+  return (
+    <div
+      id={id}
+      className="border-b border-border px-5 py-4"
+    >
+      <p className="mb-3 text-xs font-medium uppercase tracking-[0.02em] text-muted-foreground">
+        Sites with items to review
+      </p>
+      <ul className="space-y-2.5">
+        {sites.map((site) => {
+          const total = site.orphaned_options_count + site.orphaned_cron_count;
+          return (
+            <li
+              key={site.site_id}
+              className="flex items-center justify-between gap-3"
+            >
+              <Link
+                to="/sites/$siteId/optimize"
+                params={{ siteId: site.site_id }}
+                className="min-w-0 flex-1 truncate text-sm font-medium text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {site.site_name}
+              </Link>
+              <span className="shrink-0 text-xs tabular-nums text-amber-700 dark:text-amber-400">
+                {formatCount(total)} item{total === 1 ? "" : "s"}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

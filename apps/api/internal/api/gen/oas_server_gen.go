@@ -957,7 +957,7 @@ type Handler interface {
 	// by DB size. Org-scope only. Requires viewer+.
 	//
 	// GET /api/v1/perf/db/fleet-health
-	GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) error
+	GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) (*GetFleetDbHealthOK, error)
 	// GetFleetEmailDeliverability implements getFleetEmailDeliverability operation.
 	//
 	// Returns per-site deliverability aggregates for a rolling window.

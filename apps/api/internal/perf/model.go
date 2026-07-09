@@ -467,6 +467,18 @@ type FleetSiteDbSummary struct {
 	GrowthBytes int64 `json:"growth_bytes"`
 }
 
+// FleetSiteDbReview is the slim per-site entry in FleetDbHealth.SitesNeedingReview.
+// Unlike TopSites (capped at fleetTopN, ordered by DB size), this list carries
+// EVERY site flagged for review — i.e. every site with at least one orphan
+// candidate — regardless of DB size, so the FE can enumerate the full flagged
+// set (GH #197).
+type FleetSiteDbReview struct {
+	SiteID               uuid.UUID `json:"site_id"`
+	SiteName             string    `json:"site_name"`
+	OrphanedOptionsCount int       `json:"orphaned_options_count"`
+	OrphanedCronCount    int       `json:"orphaned_cron_count"`
+}
+
 // FleetDbHealth is the response payload for GET /api/v1/perf/db/fleet-health.
 // It aggregates database health across every site in the tenant that has at
 // least one completed scan.
@@ -488,6 +500,13 @@ type FleetDbHealth struct {
 	// TopSites is the top-N sites by DB size (descending). N is capped at 10.
 	// When TotalSitesScanned is zero, TopSites is an empty slice.
 	TopSites []FleetSiteDbSummary `json:"top_sites"`
+	// SitesNeedingReview is EVERY scanned site that has at least one orphan
+	// candidate (options or cron) — NOT capped, unlike TopSites. Sorted by
+	// (orphaned_options_count + orphaned_cron_count) descending, then by
+	// site_name. This is what lets the FE enumerate the full "sites with
+	// items to review" set (GH #197); TopSites alone can omit a small site
+	// that's flagged but not in the top-10-by-DB-size.
+	SitesNeedingReview []FleetSiteDbReview `json:"sites_needing_review"`
 }
 
 // ---------------------------------------------------------------------------

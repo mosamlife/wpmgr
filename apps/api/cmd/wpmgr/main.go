@@ -1829,6 +1829,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// on the next GET /diagnostics.
 	// diagnosticsRepo is already built above (before River start) so we reuse it.
 	diagnosticsSvc := diagnostics.NewService(diagnosticsRepo)
+	// GH #196 — tap the daily diagnostics push (wp-paths-sizes.database_size)
+	// so the 90-day DB-size trend + fleet growth read populate automatically
+	// instead of only on a manual "Scan database" click. perfRepo is already
+	// built above (before River start) so we reuse it; it satisfies
+	// diagnostics.DBSizeHistorySink structurally via
+	// RecordDBSizeHistoryFromDiagnostics.
+	diagnosticsSvc.SetDBSizeHistorySink(perfRepo)
 	// M28 — offline IP -> hosting-provider resolver. Self-disables (no-op) if the
 	// embedded DB-IP ASN database fails to open; never blocks boot.
 	if ipResolver, ipErr := ipprovider.New(); ipErr != nil {

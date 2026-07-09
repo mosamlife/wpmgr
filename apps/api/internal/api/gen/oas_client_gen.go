@@ -977,7 +977,7 @@ type Invoker interface {
 	// by DB size. Org-scope only. Requires viewer+.
 	//
 	// GET /api/v1/perf/db/fleet-health
-	GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) error
+	GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) (*GetFleetDbHealthOK, error)
 	// GetFleetEmailDeliverability invokes getFleetEmailDeliverability operation.
 	//
 	// Returns per-site deliverability aggregates for a rolling window.
@@ -11955,9 +11955,9 @@ func (c *Client) sendGetFleetBackupHealth(ctx context.Context, params GetFleetBa
 // by DB size. Org-scope only. Requires viewer+.
 //
 // GET /api/v1/perf/db/fleet-health
-func (c *Client) GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) error {
-	_, err := c.sendGetFleetDbHealth(ctx, params)
-	return err
+func (c *Client) GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) (*GetFleetDbHealthOK, error) {
+	res, err := c.sendGetFleetDbHealth(ctx, params)
+	return res, err
 }
 
 func (c *Client) sendGetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) (res *GetFleetDbHealthOK, err error) {
