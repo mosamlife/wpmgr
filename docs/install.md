@@ -176,7 +176,9 @@ docker compose -f infra/docker-compose.yml up -d
 ```
 
 This starts Postgres, Redis, SeaweedFS (S3 gateway on `:8333`), ClickHouse, the
-API, and the web dashboard (served by nginx). To avoid colliding with anything
+API, the web dashboard (served by nginx), and the media-encoder (screenshots +
+Media Optimizer — see [Media encoder](#media-encoder) below for its resource
+footprint and how to disable it). To avoid colliding with anything
 already bound on the host, the **published** host ports default to non-standard
 values — the dashboard on **`:8088`** and the API on **`:8081`** (the
 container-side ports are unchanged, so in-network wiring is unaffected). Override
@@ -198,7 +200,8 @@ docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -
 
 The overlay only swaps the three app services to `image:` + `pull_policy:
 always`; everything else (Postgres, Redis, SeaweedFS, ClickHouse, env, volumes)
-is inherited from the base file. Add `--profile media` for the encoder.
+is inherited from the base file, including `media-encoder` — it starts by
+default, no profile needed.
 
 > GHCR packages are public. `docker pull` needs no auth. arm64 multi-arch
 > images are a near-term follow-up.
@@ -226,31 +229,47 @@ Open the dashboard at `http://localhost:8088` (the default `WPMGR_WEB_PORT`; the
 `web` service serves the built SPA via nginx and proxies to the API). Set
 `WPMGR_WEB_PORT=80` in `.env` if you want it on the standard HTTP port.
 
-## Optional: Media Optimizer
+## Media encoder
 
-Image encoding (JPEG/PNG to WebP/AVIF) runs on a separate encoder service that
-is opt-in. Enable it with the `media` Compose profile:
+Image encoding (JPEG/PNG to WebP/AVIF, the Media Optimizer tab) and site
+screenshot capture (the Sites grid cards) both run on a separate `media-encoder`
+service. It is part of the **base** stack and starts automatically with the
+plain `docker compose -f infra/docker-compose.yml up -d` shown above — no
+Compose profile or extra flag needed. This means both features work out of the
+box on a default install.
+
+Resource footprint: the image bundles headless Chromium for screenshot capture,
+so it is noticeably heavier than the api/web images (expect on the order of a
+few hundred MB of additional RAM at idle, more while a capture or encode job is
+running). If you're on a constrained host and don't need screenshots or image
+optimization, disable it without editing the compose file:
 
 ```bash
-docker compose -f infra/docker-compose.yml --profile media up -d
+# scale it to zero — api/web still start normally
+docker compose -f infra/docker-compose.yml up -d --scale media-encoder=0
 ```
 
-The bundled Compose profile sets `WPMGR_RIVER_MEDIA_SCHEMA=media_encoder` on
-both the API and media-encoder services. Custom deployments should set the same
-value on both processes so media and screenshot jobs are inserted into the
-schema the encoder is polling. When this value names a dedicated schema, the
-encoder also needs the migration-owner DSN so it can create and migrate that
-schema safely.
+or comment out the `media-encoder:` service block in `infra/docker-compose.yml`
+if you never want it built/pulled at all. Either way, screenshot cards fall back
+to favicon/monogram permanently and the Media Optimizer tab is unavailable —
+everything else in the dashboard is unaffected.
 
-Upgrade note: on existing deployments, enabling the bundled `media_encoder`
-default does not migrate already queued `media_encode` or
-`site_screenshot_capture` rows from `public.river_job`. Drain media and
+The compose file sets `WPMGR_RIVER_MEDIA_SCHEMA=media_encoder` on both the API
+and media-encoder services. Custom deployments should set the same value on
+both processes so media and screenshot jobs are inserted into the schema the
+encoder is polling. When this value names a dedicated schema, the encoder also
+needs the migration-owner DSN so it can create and migrate that schema safely.
+
+Upgrade note: on deployments upgrading from before the `media_encoder` schema
+became the default, enabling it does not migrate already-queued `media_encode`
+or `site_screenshot_capture` rows from `public.river_job`. Drain media and
 screenshot jobs before upgrading, or set `WPMGR_RIVER_MEDIA_SCHEMA=` / `public`
 on both services to keep the current shared-schema behavior until you are ready
 to switch.
 
-Without the profile the core API starts fine; the Media Optimizer tab in the
-dashboard is unavailable. See [features/media-optimizer.md](./features/media-optimizer.md).
+See [features/media-optimizer.md](./features/media-optimizer.md) and
+[features/sites.md](./features/sites.md#website-screenshots) for the features
+themselves.
 
 ## Observability profile
 

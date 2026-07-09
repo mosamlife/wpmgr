@@ -41,12 +41,23 @@ import { useSite } from "@/features/sites/use-sites";
 import { cn, formatBytes, relativeTime } from "@/lib/utils";
 import type { BackupSnapshot, BackupSnapshotDetail } from "@wpmgr/api";
 
-export const Route = createFileRoute("/_authed/backups/$snapshotId")({
+// `/sites/$siteId/backups/$snapshotId` — snapshot detail.
+//
+// GH #188: moved here from the top-level, siteId-less `/backups/$snapshotId`
+// route so the pathname carries siteId and the top-bar breadcrumb (a pure
+// pathname->label mapper) renders `Sites › <siteId> › Backups ›
+// <snapshotId>` with "Backups" correctly linking back to THIS site's
+// Backups tab instead of the fleet-wide `/backups` list. See the layout at
+// `$siteId.backups.tsx` for the route-nesting rationale.
+
+export const Route = createFileRoute(
+  "/_authed/sites/$siteId/backups/$snapshotId",
+)({
   component: SnapshotDetailPage,
 });
 
 function SnapshotDetailPage() {
-  const { snapshotId } = Route.useParams();
+  const { siteId, snapshotId } = Route.useParams();
   const { data, isPending, isError, error, refetch } = useBackup(snapshotId);
   const { data: me } = useMe();
   const operate = canOperate(me);
@@ -60,7 +71,9 @@ function SnapshotDetailPage() {
       return (
         <section aria-labelledby="snapshot-heading" className="space-y-4">
           <Button asChild variant="outline" size="sm">
-            <Link to="/sites">Back to sites</Link>
+            <Link to="/sites/$siteId/backups" params={{ siteId }}>
+              Back to backups
+            </Link>
           </Button>
           <div role="alert" className="space-y-2">
             <h1 id="snapshot-heading" className="text-2xl font-semibold">
@@ -78,7 +91,9 @@ function SnapshotDetailPage() {
     return (
       <section aria-labelledby="snapshot-heading" className="space-y-4">
         <Button asChild variant="outline" size="sm">
-          <Link to="/sites">Back to sites</Link>
+          <Link to="/sites/$siteId/backups" params={{ siteId }}>
+            Back to backups
+          </Link>
         </Button>
         <PageError
           what="Could not load this snapshot."
@@ -90,7 +105,7 @@ function SnapshotDetailPage() {
     );
   }
 
-  return <SnapshotDetailView detail={data} canRestore={operate} />;
+  return <SnapshotDetailView siteId={siteId} detail={data} canRestore={operate} />;
 }
 
 function DetailSkeleton() {
@@ -123,9 +138,11 @@ function isInFlight(snapshot: BackupSnapshot): boolean {
 }
 
 function SnapshotDetailView({
+  siteId,
   detail,
   canRestore,
 }: {
+  siteId: string;
   detail: BackupSnapshotDetail;
   canRestore: boolean;
 }) {
@@ -137,20 +154,21 @@ function SnapshotDetailView({
   );
   const navigate = useNavigate();
 
-  const deleteBackup = useDeleteBackup(snapshot.id, snapshot.site_id);
-  const cancelBackup = useCancelBackup(snapshot.id, snapshot.site_id);
+  const deleteBackup = useDeleteBackup(snapshot.id, siteId);
+  const cancelBackup = useCancelBackup(snapshot.id, siteId);
 
   function backToSiteBackups() {
     void navigate({
       to: "/sites/$siteId/backups",
-      params: { siteId: snapshot.site_id },
+      params: { siteId },
     });
   }
 
-  // Resolve the originating site so the back-link returns to the right
-  // Backups tab (not the global sites list) and so the destructive-confirm
-  // can use the real host.
-  const { data: site } = useSite(snapshot.site_id);
+  // Resolve the site so the destructive-confirm can use the real host, and
+  // so the header shows the site name (the back-link target is already
+  // known from the URL itself, unlike before GH #188 where it had to be
+  // derived from `snapshot.site_id`).
+  const { data: site } = useSite(siteId);
 
   // ALWAYS open the SSE stream on this page so the first restore event lands
   // and triggers the progress card to render. The returned state is consumed
@@ -274,7 +292,7 @@ function SnapshotDetailView({
         actions={headerActions}
         backTo={{
           to: "/sites/$siteId/backups",
-          params: { siteId: snapshot.site_id },
+          params: { siteId },
           label: site?.name
             ? `Back to ${site.name} backups`
             : "Back to site backups",

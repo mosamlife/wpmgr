@@ -61,7 +61,7 @@ func (h *Handler) refresh(c *gin.Context) {
 	}
 
 	if h.svc.enqueuer == nil {
-		httpx.Error(c, domain.Internal("screenshot_disabled", "screenshot capture is not configured"))
+		httpx.Error(c, domain.Unavailable("screenshot_disabled", "screenshot capture is not configured on this server"))
 		return
 	}
 

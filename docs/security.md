@@ -48,12 +48,12 @@ WordPress sites. Threat surface and mitigations:
   `image/png` decode; anything else is rejected (`ErrUnsupportedSource`) and
   recorded `excluded`. The decoder is guarded by **50 MB** and **100 MP** limits
   (`ErrDimensionsTooBig`) and a **60s per-encode timeout** (`ErrEncoderTimeout`).
-- **Blast-radius isolation.** All decode/encode runs in the **optional
-  `media-encoder` container** (CGO + native codec libs), never in the static main
-  API. The `media_encode` River queue is bounded (small `MaxWorkers`) so a burst
-  of large images can't OOM the instance, and the encoder process is the only
-  place native codec CVE surface exists — a self-hoster who doesn't run the
-  `media` profile has none of it.
+- **Blast-radius isolation.** All decode/encode runs in the separate
+  **`media-encoder` container** (CGO + native codec libs), never in the static
+  main API. The `media_encode` River queue is bounded (small `MaxWorkers`) so a
+  burst of large images can't OOM the instance, and the encoder process is the
+  only place native codec CVE surface exists — a self-hoster who disables it
+  (it runs by default; `--scale media-encoder=0` opts out) has none of it.
 - **No media bytes on the control plane.** Bytes move agent ↔ object storage over
   **presigned URLs** (the backup transport, ADR-033); the CP never streams or
   persists source or optimized image bytes, and never calls a live `GetObject`

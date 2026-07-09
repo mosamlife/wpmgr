@@ -65,7 +65,7 @@ nginx.conf (`infra/nginx/nginx.conf`) — ONE hostname serves three surfaces and
 
 Compose layering:
 - Base `infra/docker-compose.yml` has `build:` stanzas + dev env (Postgres, Redis, SeaweedFS S3-gateway:8333, ClickHouse, api, web, dex, optional otel-lgtm). Two-DSN model: unprivileged `wpmgr_app` (NOBYPASSRLS) for the app, separate `WPMGR_DB_MIGRATION_DSN` owner role for migrations only.
-- `media-encoder` is behind the `media` profile (`profiles: ["media"]`) — self-hosters who don't want image optimization simply don't run it, keeping their core api a minimal static binary. It registers the `media_encode` River queue as the ONLY worker; the api registers that queue with zero workers (insert-only).
+- `media-encoder` is part of the BASE stack (GH #187, no `profiles:` gate — it used to be opt-in behind a `media` profile, which silently left screenshots/Media Optimizer dead on a plain `docker compose up -d`; now it starts by default). Self-hosters who want a leaner footprint disable it via `--scale media-encoder=0` rather than a profile flag. It registers the `media_encode` River queue as the ONLY worker; the api registers that queue with zero workers (insert-only).
 - `infra/docker-compose.prod.yml` is the pull-only overlay: `image: ghcr.io/mosamlife/wpmgr-{api,web,media-encoder}:${WPMGR_VERSION:-latest}` + `pull_policy: always`. Self-host users compose base + prod overlay.
 
 Release workflow (`.github/workflows/release.yml`):

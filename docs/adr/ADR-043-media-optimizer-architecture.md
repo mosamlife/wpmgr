@@ -4,6 +4,14 @@
 **Relates:** ADR-033 (backup transport — presigned S3), ADR-010 (object storage), ADR-031 (CP→agent signed commands).
 **Recon:** `analysis/media-optimizer-recon.md`.
 
+> **Update (2026-07-08, GH #187):** the self-host Compose deployment mechanism
+> described below (an opt-in `media` profile) is superseded — `media-encoder`
+> is now part of the base stack and starts by default, because gating it left
+> both the Media Optimizer and site screenshots silently dead on a plain
+> `docker compose up -d`. The rest of this ADR (separate image, presigned-URL
+> transport, no bytes on the CP) is unchanged. See
+> [install.md](../install.md#media-encoder).
+
 ## Context
 
 WPMgr is adding a Media Optimizer (JPEG/PNG → WebP/AVIF) with a product surface

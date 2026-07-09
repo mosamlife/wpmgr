@@ -72,15 +72,15 @@ is ready, with no manual reload.
 
 ### Self-host note
 
-Screenshots require the `media-encoder` service with headless Chromium. Start it
-with the `media` profile:
+Screenshots require the `media-encoder` service (headless Chromium). It is part
+of the base Compose stack and starts automatically with a plain
+`docker compose -f infra/docker-compose.yml up -d` — no profile or extra flag
+needed.
 
-```bash
-docker compose -f infra/docker-compose.yml --profile media up -d
-```
-
-Without the media-encoder, screenshot requests are accepted but captures never
-run; cards degrade to favicon / monogram permanently.
+If you disabled it (e.g. `--scale media-encoder=0` on a RAM-constrained host —
+see [install.md](../install.md#media-encoder)), screenshot requests are
+accepted but captures never run; cards degrade to favicon / monogram
+permanently.
 
 ---
 

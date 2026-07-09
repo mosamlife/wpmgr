@@ -919,8 +919,8 @@ function SingletonRow({
           ) : null}
           <Button asChild variant="outline" size="sm">
             <Link
-              to="/backups/$snapshotId"
-              params={{ snapshotId: snap.id }}
+              to="/sites/$siteId/backups/$snapshotId"
+              params={{ siteId, snapshotId: snap.id }}
             >
               View
             </Link>
@@ -1081,8 +1081,8 @@ function ChainGroupRows({
             ) : null}
             <Button asChild variant="outline" size="sm">
               <Link
-                to="/backups/$snapshotId"
-                params={{ snapshotId: tip.id }}
+                to="/sites/$siteId/backups/$snapshotId"
+                params={{ siteId, snapshotId: tip.id }}
               >
                 View
               </Link>
@@ -1251,8 +1251,8 @@ function ChainMemberRow({
           ) : null}
           <Button asChild variant="outline" size="sm">
             <Link
-              to="/backups/$snapshotId"
-              params={{ snapshotId: member.id }}
+              to="/sites/$siteId/backups/$snapshotId"
+              params={{ siteId, snapshotId: member.id }}
             >
               View
             </Link>
@@ -1847,8 +1847,8 @@ function ScheduleRunRow({
           {run.snapshot_id ? (
             <Button asChild variant="link" size="sm" className="h-auto p-0">
               <Link
-                to="/backups/$snapshotId"
-                params={{ snapshotId: run.snapshot_id }}
+                to="/sites/$siteId/backups/$snapshotId"
+                params={{ siteId: run.site_id, snapshotId: run.snapshot_id }}
               >
                 <code className="font-mono text-xs">
                   {run.snapshot_id.slice(0, 8)}

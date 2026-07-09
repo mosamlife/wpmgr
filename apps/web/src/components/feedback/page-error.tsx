@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 //   • Surface: `--card` on `--background` (page-level), but the inner border
 //     uses `--destructive` at low alpha — paints "this is an error" without
 //     blasting the page red. Matches the Sprint 3 alert tone in
-//     `routes/_authed/backups/$snapshotId.tsx`.
+//     `routes/_authed/sites/$siteId.backups.$snapshotId.tsx`.
 //   • Headline: `--foreground` body weight 600.
 //   • Why: `--muted-foreground` body-sm.
 //   • Button: outline, sm — recovery is reversible and low-stakes by design.

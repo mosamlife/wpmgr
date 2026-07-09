@@ -78,3 +78,37 @@ describe("ROUTELESS_SEGMENTS", () => {
     expect(ROUTELESS_SEGMENTS.has("sites")).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// GH #188 — snapshot-detail breadcrumb dead end
+//
+// The snapshot detail used to live at the top-level, siteId-less
+// `/backups/$snapshotId` route, so this pure pathname->label mapper could
+// only see `Backups › <snapshotId>`, with "Backups" linking to the FLEET
+// `/backups` list — a dead end that doesn't contain the snapshot. Moving the
+// route to `/sites/$siteId/backups/$snapshotId` (mirroring every other site
+// tab) makes the pathname itself carry siteId; NO change to this mapper was
+// needed ("backups" was already a linked TITLE, not a ROUTELESS_SEGMENT) —
+// these tests pin the resulting crumb shape as a regression lock.
+// ---------------------------------------------------------------------------
+
+describe("buildBreadcrumbCrumbs — snapshot detail nested under its site (GH #188)", () => {
+  it("renders Sites › <siteId> › Backups › <snapshotId>, with Backups linking to THIS site's backups tab", () => {
+    const crumbs = buildBreadcrumbCrumbs(
+      "/sites/site_01hzxy/backups/snap_01hzab",
+    );
+    expect(crumbs).toEqual([
+      { label: "Sites", to: "/sites" },
+      { label: "site_01hzxy", to: "/sites/site_01hzxy" },
+      { label: "Backups", to: "/sites/site_01hzxy/backups" },
+      { label: "snap_01hzab", to: null },
+    ]);
+  });
+
+  it("the 'Backups' crumb never points at the fleet-wide /backups list once nested under a site", () => {
+    const crumbs = buildBreadcrumbCrumbs("/sites/site_01hzxy/backups/snap_01hzab");
+    const backupsCrumb = crumbs.find((c) => c.label === "Backups");
+    expect(backupsCrumb?.to).not.toBe("/backups");
+    expect(backupsCrumb?.to).toBe("/sites/site_01hzxy/backups");
+  });
+});

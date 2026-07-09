@@ -9,13 +9,17 @@ Design: [ADR-043](../adr/ADR-043-media-optimizer-architecture.md).
 Architecture: [architecture/media-optimizer.md](../architecture/media-optimizer.md).
 API: [api/media.md](../api/media.md).
 
-> **Optional self-host component.** The encoder is opt-in. A self-hoster who
-> wants image optimization runs `docker compose --profile media up`; one who
-> doesn't simply omits the profile and their core API stays a minimal static
-> binary. See [install.md](../install.md).
+> **Self-host: on by default.** The `media-encoder` service is part of the base
+> Compose stack — a plain `docker compose up -d` starts it, no profile needed.
+> It's a separate service/image (CGO + native codec libs + headless Chromium)
+> so the core API stays a minimal `CGO_ENABLED=0` static binary regardless. On
+> a RAM-constrained host you can disable it (`--scale media-encoder=0` or
+> comment out the service); the Media Optimizer tab (and site screenshots) then
+> go unavailable while everything else keeps working. See
+> [install.md](../install.md#media-encoder).
 >
-> The bundled Compose profile isolates encoder-owned River jobs in the
-> `media_encoder` schema. If you deploy API and encoder separately, set the same
+> The Compose stack isolates encoder-owned River jobs in the `media_encoder`
+> schema. If you deploy API and encoder separately, set the same
 > `WPMGR_RIVER_MEDIA_SCHEMA` value on both processes.
 
 ## The Media tab

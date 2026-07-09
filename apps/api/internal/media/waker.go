@@ -41,7 +41,7 @@ const metadataIdentityURL = "http://metadata.google.internal/computeMetadata/v1/
 // covers any in-flight job interrupted by a mid-drain scale-down.
 //
 // Disabled (drainURL == "") on self-host, where the media-encoder runs as a
-// long-lived always-on container (docker-compose `media` profile) and needs no
+// long-lived always-on container in the base docker-compose stack and needs no
 // waking. Both Run and Kick become no-ops.
 type EncoderWaker struct {
 	pool     *db.Pool

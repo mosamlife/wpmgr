@@ -179,7 +179,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
 ### Media
 
 - **Dedicated cloud encoder** — Separate `media-encoder` container decodes from magic bytes (never trusted MIME) and re-encodes to AVIF (q50/speed8), WebP (q80), or re-optimized original. Animated GIFs → animated WebP.
-- **Optional, opt-in** — `docker compose --profile media up`; zero weight or native-library CVE surface on the core API for operators who don't use it.
+- **Runs by default, disable if unneeded** — Part of the base self-host stack (`docker compose up -d` starts it, no profile needed); disable on constrained hosts with `--scale media-encoder=0`. Zero weight or native-library CVE surface on the core API either way, since encoding never runs there.
 - **Per-image optimize and full reversible restore** — Originals archived on-site (`.wpmgr-original.*` rename); restore reverts every variant. A separate admin-gated delete-originals reclaims disk.
 - **No image bytes on the control plane** — Source and optimized bytes move agent-to-storage and encoder-to-storage via presigned URLs only. CP stores metadata rows only.
 - **`.htaccess` Accept-header fallback** — Serves the modern format only when the browser's `Accept` header advertises support; legacy twin is served otherwise. `Vary: Accept` for CDN correctness. nginx map equivalent emitted for non-Apache hosts.
@@ -248,7 +248,7 @@ See [docs/architecture.md](./docs/architecture.md) for a full system diagram.
 
 ## Quickstart (self-host)
 
-The bundled compose brings up the full stack — control plane, dashboard, Postgres, Redis, and object storage — building the API and dashboard from source:
+The bundled compose brings up the full stack — control plane, dashboard, Postgres, Redis, object storage, and the media encoder (screenshots + Media Optimizer) — building all three images from source:
 
 ```bash
 cp .env.example .env
@@ -259,20 +259,22 @@ curl localhost:8081/healthz   # {"status":"ok"}   (default WPMGR_API_PORT=8081)
 
 Open `http://localhost:8088` in your browser (the default `WPMGR_WEB_PORT`) — the first signup creates the owner account. After that, anyone can self-register and gains access only after verifying their email.
 
-Include the optional media encoder with the `media` profile:
+The media encoder runs headless Chromium for screenshots, so it adds some RAM/CPU over the api/web images. On a constrained host you can skip it without editing the compose file:
 
 ```bash
-docker compose -f infra/docker-compose.yml --profile media up -d
+docker compose -f infra/docker-compose.yml up -d --scale media-encoder=0
 ```
+
+Site screenshot cards then fall back to favicon/monogram and the Media Optimizer tab is unavailable; everything else works normally.
 
 ### Prebuilt container images
 
-The control plane, dashboard, and (optional) media encoder are published on GitHub Container Registry as multi-arch (`linux/amd64` + `linux/arm64`) images — wire them into your own compose, Kubernetes, or Swarm for production:
+The control plane, dashboard, and media encoder are published on GitHub Container Registry as multi-arch (`linux/amd64` + `linux/arm64`) images — wire them into your own compose, Kubernetes, or Swarm for production:
 
 ```bash
 docker pull ghcr.io/mosamlife/wpmgr-api:v0.43.3
 docker pull ghcr.io/mosamlife/wpmgr-web:v0.43.3
-docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.43.3   # optional
+docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.43.3
 ```
 
 Or bring up the whole stack from the published images (no local build) with the pull-only Compose overlay:
