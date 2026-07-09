@@ -4,9 +4,10 @@
 #   export WPMGR_VERSION=v0.19.0     # omit to track :latest
 #   docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 #
-# Add the usual profiles as needed, e.g. the media encoder:
-#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml \
-#     --profile media up -d
+# media-encoder is part of the base stack's default service set (no profile
+# needed) — this overlay just swaps its image for the published GHCR one like
+# api/web. To disable it on a constrained host, add `--scale media-encoder=0`
+# to the `up` command above.
 #
 # `pull_policy: always` makes `up` pull the GHCR image rather than building the
 # base file's local `build:` stanza. All other service config (env, ports,

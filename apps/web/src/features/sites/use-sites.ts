@@ -21,6 +21,8 @@ import {
   type ApiError,
 } from "@wpmgr/api";
 
+import { toast } from "@/components/toast";
+
 // Server-state hooks for the Sites domain. Built on the generated @wpmgr/api
 // SDK (Hey API). Each SDK call returns `{ data, error, response }`; we unwrap
 // `data` (throwing on transport/HTTP errors) so TanStack Query manages the
@@ -221,9 +223,22 @@ export function useSetSiteTags(): UseMutationResult<
  * invalidate both so the completed screenshot appears once the SSE event fires
  * or the next poll wins.
  *
+ * GH #187: on self-host, the media-encoder that actually performs the capture
+ * is frequently not running, so the job never completes. Without this fix the
+ * poll below exhausted SILENTLY, leaving the card stuck on the "capturing"
+ * spinner forever with no further feedback — a permanent false-pending state
+ * after an honest "Screenshot queued" toast. The poll's terminal branch below
+ * now ALWAYS resolves the optimistic state one way or another: either the
+ * server confirms ready/failed, or we time out and force the card back to
+ * "failed" (clearing the spinner) with a warning toast that names the likely
+ * cause. There is no code path where this mutation's UI effects end in
+ * silence.
+ *
  * Expected non-2xx:
  *   409 — site not enrolled (no agent to take the shot)
+ *   500 — screenshot capture failed / not configured on this instance
  *   501 — screenshot feature not configured on this instance
+ *   503 — the screenshot worker (media-encoder) is not running
  */
 export function useRefreshScreenshot(): UseMutationResult<void, Error, string> {
   const queryClient = useQueryClient();
@@ -234,8 +249,13 @@ export function useRefreshScreenshot(): UseMutationResult<void, Error, string> {
       });
       if (response?.status === 409)
         throw new Error("Site is not enrolled; cannot capture screenshot.");
-      if (response?.status === 501)
-        throw new Error("Screenshot capture is not configured on this instance.");
+      if (response?.status === 503)
+        throw new Error("The screenshot service isn't running.");
+      // 500 (capture failed / worker misconfigured) and 501 (feature not
+      // wired on this instance) are both "you can't use this here" from the
+      // operator's point of view — one clear message for both.
+      if (response?.status === 500 || response?.status === 501)
+        throw new Error("Screenshots aren't configured on this server.");
       if (error) throw toError(error);
     },
     onMutate: (siteId: string) => {
@@ -283,8 +303,40 @@ export function useRefreshScreenshot(): UseMutationResult<void, Error, string> {
             break;
           }
         }
-        if (status !== undefined && status !== "pending") return; // ready/failed
-        if (attempts >= maxAttempts) return;
+        if (status !== undefined && status !== "pending") {
+          // Terminal state confirmed by the server (ready or failed) — the
+          // list/detail cache already reflects it via the invalidation above.
+          return;
+        }
+        if (attempts >= maxAttempts) {
+          // Exhausted the poll window with the server still saying "pending"
+          // (or never surfacing this site at all). NEVER end silently here:
+          // force the optimistic state out of "capturing" so the spinner
+          // clears, and tell the operator why.
+          const clearStuckPending = (site: Site): Site =>
+            site.screenshot_status === "pending"
+              ? { ...site, screenshot_status: "failed" as const }
+              : site;
+          queryClient.setQueriesData<Site[]>(
+            { queryKey: sitesKeys.lists() },
+            (prevList) =>
+              prevList?.map((s) => (s.id === siteId ? clearStuckPending(s) : s)),
+          );
+          const prevDetail = queryClient.getQueryData<Site>(
+            sitesKeys.detail(siteId),
+          );
+          if (prevDetail) {
+            queryClient.setQueryData<Site>(
+              sitesKeys.detail(siteId),
+              clearStuckPending(prevDetail),
+            );
+          }
+          toast.warning("Screenshot didn't finish", {
+            description:
+              "If you self-host, make sure the media-encoder service is running.",
+          });
+          return;
+        }
         setTimeout(() => void poll(), 3000);
       };
       setTimeout(() => void poll(), 3000);

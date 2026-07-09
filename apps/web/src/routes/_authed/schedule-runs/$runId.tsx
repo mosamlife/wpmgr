@@ -239,8 +239,8 @@ function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
                 label: "Snapshot",
                 value: run.snapshot_id ? (
                   <Link
-                    to="/backups/$snapshotId"
-                    params={{ snapshotId: run.snapshot_id }}
+                    to="/sites/$siteId/backups/$snapshotId"
+                    params={{ siteId: run.site_id, snapshotId: run.snapshot_id }}
                     className="font-mono text-xs underline-offset-2 hover:underline"
                   >
                     {run.snapshot_id.slice(0, 8)}

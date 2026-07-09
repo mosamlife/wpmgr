@@ -260,8 +260,8 @@ func run() error {
 	// startup probe fails the revision. The health server also hosts the
 	// /internal/drain wake endpoint: at min-instances=0 the CP holds a request
 	// open there to keep this cold-started instance alive until the media_encode
-	// queue drains. Self-hosters running this via docker-compose (the `media`
-	// profile) run it always-on and never call /internal/drain.
+	// queue drains. Self-hosters running this via the base docker-compose stack
+	// run it always-on and never call /internal/drain.
 	// Pass encoder-owned queues to the drain handler. The encoder must stay warm
 	// while any queue it processes has pending work.
 	healthSrv := startHealthServer(logger, pool, mediaSchema, model.MediaEncodeQueue, screenshot.ScreenshotQueue, mediafont.FontTranscodeQueue)

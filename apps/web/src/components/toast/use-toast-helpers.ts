@@ -106,6 +106,24 @@ export const toast = {
   },
 
   /**
+   * Auto-dismisses in 6s. A soft heads-up that is NOT a hard failure (the
+   * request succeeded) but the operator should still notice — e.g. a
+   * background job that never confirmed completion (GH #187: a queued
+   * screenshot capture that never finished, most often because a self-hosted
+   * media-encoder isn't running). Sits between `info` (5s, fully neutral)
+   * and `error` (8s, red) in both duration and tone. Icon comes from the
+   * Toaster's per-type `icons.warning` (already wired) — no override needed,
+   * same as `success`/`error`/`info` above.
+   */
+  warning: (title: string, opts: CommonOpts = {}) => {
+    return sonner.warning(title, {
+      description: opts.description,
+      action: toAction(opts.action),
+      duration: 6000,
+    });
+  },
+
+  /**
    * Promise-bound toast. Shows `loading` immediately, swaps to `success` or
    * `error` based on resolution. Use for mutations where the operator
    * benefits from a single thread of feedback (e.g. an update run).

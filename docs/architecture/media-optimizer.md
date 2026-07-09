@@ -15,24 +15,28 @@ presigned S3); command channel: ADR-031 (CP→agent signed commands).
 > Encoding runs on WPMgr's own Go control plane using Discord's `lilliput` (MIT).
 > See [apps/agent/NOTICE.md](../../apps/agent/NOTICE.md).
 
-## Two binaries, one of them optional
+## Two binaries, one separate image
 
-| Service | Image | Encoding | Always on |
-|---------|-------|----------|-----------|
-| **Main API** (`cmd/wpmgr`) | `distroless/static`, `CGO_ENABLED=0` | none — serves DTOs, owns metadata + RLS | yes |
-| **`media-encoder`** (`cmd/media-encoder`) | `distroless/base-nonroot`, **CGO + glibc + lilliput** | runs the `media_encode` River worker | **opt-in** |
+| Service | Image | Encoding | Compose default |
+|---------|-------|----------|------------------|
+| **Main API** (`cmd/wpmgr`) | `distroless/static`, `CGO_ENABLED=0` | none — serves DTOs, owns metadata + RLS | on |
+| **`media-encoder`** (`cmd/media-encoder`) | `debian:trixie-slim`, **CGO + glibc + lilliput + headless Chromium** | runs the `media_encode`/screenshot/font-transcode River workers | on (base stack; see below) |
 
 `lilliput` is CGO + native codec libraries (libaom/dav1d for AVIF, libwebp,
 mozjpeg-class JPEG), so it cannot live in the lean static API image. It is
-isolated in a **separate, optional** service behind a compose profile:
+isolated in a **separate** service/image:
 
 ```bash
-docker compose --profile media up   # bring up the encoder
+docker compose -f infra/docker-compose.yml up -d   # brings up the encoder too, no profile needed
 ```
 
-A self-hoster who skips the profile keeps a minimal static API and simply has no
-optimize feature. On the hosted deployment the same container is a second Cloud
-Run service connecting to the same Postgres + object storage — nothing here is
+The encoder is part of the base Compose stack (GH #187 — it used to be behind
+an opt-in `media` profile, which silently left screenshots and image
+optimization dead on a default `up`). A self-hoster who wants a leaner
+footprint can disable it (`--scale media-encoder=0`, or comment out the
+service) and keep a minimal static API with no optimize/screenshot feature. On
+the hosted deployment the same container is a second Cloud Run service
+connecting to the same Postgres + object storage — nothing here is
 GCP-specific.
 
 ## Transport: presigned S3, no bytes on the CP

@@ -223,8 +223,10 @@ WPMgr is ready to start. Run:
   cd $(pwd)
   docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 
-To use the media optimizer (image encoding to WebP/AVIF), add --profile media:
-  docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml --profile media up -d
+This includes the media-encoder (screenshots + image optimizer to WebP/AVIF) by
+default — no extra flag needed. It runs headless Chromium, so it adds some RAM;
+to skip it on a constrained host, add --scale media-encoder=0 to the command
+above.
 
 Verify:
   curl localhost:${api_port}/healthz    # {"status":"ok"}

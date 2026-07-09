@@ -1,6 +1,8 @@
 # WPMgr — full self-host stack.
 #
-# Base profile: postgres, redis, seaweedfs (S3 gateway), clickhouse, api, web.
+# Base profile: postgres, redis, seaweedfs (S3 gateway), clickhouse, api, web,
+# media-encoder (screenshots + Media Optimizer — runs by default, see the
+# media-encoder service below for how to disable it on constrained hosts).
 # Optional "observability" profile adds a grafana/otel-lgtm backend.
 #
 # Image tags are pinned (no :latest). Bring up with:
@@ -191,6 +193,14 @@ services:
       WPMGR_S3_SECRET_KEY: ${WPMGR_S3_SECRET_KEY:-wpmgr-dev-secret}
       WPMGR_S3_FORCE_PATH_STYLE: "true"
       WPMGR_RIVER_MEDIA_SCHEMA: ${WPMGR_RIVER_MEDIA_SCHEMA:-media_encoder}
+      # WPMGR_MEDIA_ENCODER_URL is intentionally NOT set here. It only matters on
+      # a scale-to-zero deployment (Cloud Run), where the api holds a blocking
+      # POST to the encoder's /internal/drain to wake a cold instance — see
+      # internal/media/waker.go. In this compose stack media-encoder is a
+      # long-lived always-on container that polls Postgres directly, so there is
+      # nothing to wake; leaving this unset makes EncoderWaker a no-op, which is
+      # correct here (and it has no GCP metadata server to mint an ID token from
+      # anyway).
       WPMGR_CLICKHOUSE_ADDR: clickhouse:9000
       WPMGR_CLICKHOUSE_DB: ${WPMGR_CLICKHOUSE_DB:-wpmgr_metrics}
       WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT: ${WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
@@ -220,22 +230,34 @@ services:
     # (GET /healthz, GET /readyz), add an HTTP healthcheck (e.g. via a small
     # busybox sidecar or by embedding a `wpmgr healthcheck` subcommand). TODO.
 
-  # Media Optimizer encode worker (ADR-043, M23). OPTIONAL: behind the `media`
-  # profile so a self-hoster who doesn't want image optimization simply doesn't
-  # run it (and their core API stays a minimal CGO_ENABLED=0 static binary).
-  # Bring it up with:  docker compose --profile media up
+  # Media Optimizer / screenshot encode worker (ADR-043, M23). Part of the BASE
+  # stack (GH #187): screenshots (Sites grid cards) and the Media Optimizer tab
+  # both depend on this service, and a default `docker compose up -d` must make
+  # them work out of the box — an opt-in `media` Compose profile silently left
+  # both features dead on a plain `up`. It's the ONLY consumer of the CGO +
+  # lilliput + headless-Chromium image, so the core api stays a minimal
+  # CGO_ENABLED=0 static binary regardless.
   #
   # It connects to the SAME Postgres + object storage as the api (it runs under
   # the app.agent RLS GUC and moves bytes via presigned URLs — no extra grants).
   # It registers River workers for encoder-owned queues; the api only inserts
   # those jobs, so media work is only ever executed here.
+  #
+  # Resource footprint: this image bundles headless Chromium for screenshot
+  # capture, so it is noticeably heavier than the api/web images (expect it to
+  # add on the order of a few hundred MB RSS at idle, more while a capture or
+  # encode is in flight). On a RAM-constrained host you can disable it without
+  # editing this file — either scale it to zero:
+  #   docker compose -f infra/docker-compose.yml up -d --scale media-encoder=0
+  # or comment out this service block. Either way the api and dashboard still
+  # start fine; screenshots stop refreshing (cards fall back to favicon/
+  # monogram) and the Media tab's optimize action never completes.
   media-encoder:
     build:
       context: ..
       dockerfile: infra/Dockerfile.media-encoder
     image: wpmgr-media-encoder:dev
     restart: unless-stopped
-    profiles: ["media"]
     env_file:
       - path: ../.env
         required: false

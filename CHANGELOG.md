@@ -8,7 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.48] - 2026-07-09
+## [0.61.49] - 2026-07-09
+
+### Fixed
+
+- Backup breadcrumbs (GH #188). When viewing a specific site backup, the navigation trail now reads Sites > [site] > Backups (mirroring the Updates section) with the "Backups" crumb linking back to that site's own backup list, instead of a dead-end trail that forced you to use the browser back button. The snapshot detail now lives under the site's own URL.
+- Refresh screenshot no longer silently does nothing (GH #187). If the screenshot could not be captured (most often because the media-encoder service is not running), the card no longer spins forever after a false "queued" message; it now stops and shows a warning, and the server returns clearer, specific errors ("service isn't running" / "not configured") instead of a generic failure.
+
+### Changed
+
+- Self-hosted installs now run the media-encoder by default (GH #187). It was previously opt-in behind a Compose profile, which silently disabled site screenshots and the Media Optimizer on a default `docker compose up`. It now starts with the base stack (it runs headless Chromium, so it adds some memory/CPU; you can opt out with `docker compose up -d --scale media-encoder=0`). The hosted service is unaffected.
 
 ### Fixed
 
