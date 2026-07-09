@@ -251,9 +251,9 @@ func TestRumSummary_cwvRatings(t *testing.T) {
 		{"inp", 100, "good"},
 		{"inp", 300, "needs_improvement"},
 		{"inp", 600, "poor"},
-		{"cls", 50, "good"},    // 50 milli-units = 0.05 raw (good threshold is 0.1/100 milli)
+		{"cls", 50, "good"},               // 50 milli-units = 0.05 raw (good threshold is 0.1/100 milli)
 		{"cls", 200, "needs_improvement"}, // 0.2 raw
-		{"cls", 300, "poor"},   // 0.3 raw
+		{"cls", 300, "poor"},              // 0.3 raw
 		{"fcp", 1000, "good"},
 		{"fcp", 2500, "needs_improvement"},
 		{"fcp", 4000, "poor"},
@@ -353,29 +353,101 @@ func TestFoldBuckets_INP_exact(t *testing.T) {
 	}
 }
 
-// TestFoldBuckets_CLS_straddle verifies the CLS coarse-fold behaviour.
-// CLS thresholds: good≤100, NI≤250 (milli-units). The first CrUX boundary is 200,
-// so the entire first bucket [0,200) has lower=0 < 100 → assigned to "good"
-// (straddle-to-lower-band). Bucket 1 (lower=200 ≥ 100, < 250) → NI.
-// For this test, buckets 0..0 = good, bucket 1 = NI, bucket 2+ = poor.
-func TestFoldBuckets_CLS_straddle(t *testing.T) {
-	// bucket 0 lower=0 < 100 → good (even though [0,200) spans both 100 and 250)
-	// bucket 1 lower=200 ≥ 100 and < 250 → NI
-	// bucket 2 lower=300 ≥ 250 → poor
+// TestFoldBuckets_CLS_straddleProportionalSplit verifies the GH #185 fix: a
+// bucket that straddles a CLS threshold is split PROPORTIONALLY at the
+// threshold (uniform-within-bucket assumption), not assigned wholesale to the
+// lower band. CLS thresholds: good<=100, NI<=250 (milli-units); the first
+// CrUX boundary is 200, so bucket 0 ([0,200)) straddles 100 and bucket 1
+// ([200,300)) straddles 250.
+//
+//	bucket 0 [0,200), count=60: goodUpper=100 splits it exactly in half ->
+//	    30 good / 30 NI.
+//	bucket 1 [200,300), count=30: niUpper=250 splits it exactly in half ->
+//	    15 NI / 15 poor.
+//	bucket 2 [300,400), count=10: wholly >= niUpper(250) -> all poor.
+//
+// Totals: good=30, NI=30+15=45, poor=15+10=25 (sums to the original 100).
+func TestFoldBuckets_CLS_straddleProportionalSplit(t *testing.T) {
 	counts := makeCounts(0, 60, 1, 30, 2, 10)
 	d := foldBucketsIntoDistribution("cls", counts)
 
-	if d.Good != 60 {
-		t.Errorf("CLS good = %d, want 60 (straddle→lower band = good)", d.Good)
+	if d.Good != 30 {
+		t.Errorf("CLS good = %d, want 30 (bucket 0 split 50/50 at the 100 threshold)", d.Good)
 	}
-	if d.NeedsImprovement != 30 {
-		t.Errorf("CLS NI = %d, want 30", d.NeedsImprovement)
+	if d.NeedsImprovement != 45 {
+		t.Errorf("CLS NI = %d, want 45 (30 from bucket 0 + 15 from bucket 1)", d.NeedsImprovement)
 	}
-	if d.Poor != 10 {
-		t.Errorf("CLS poor = %d, want 10", d.Poor)
+	if d.Poor != 25 {
+		t.Errorf("CLS poor = %d, want 25 (15 from bucket 1 + 10 from bucket 2)", d.Poor)
 	}
 	if d.GoodPct+d.NeedsImprovementPct+d.PoorPct != 100 {
 		t.Errorf("CLS pct sum = %d, want 100", d.GoodPct+d.NeedsImprovementPct+d.PoorPct)
+	}
+}
+
+// TestFoldBuckets_CLS_matchesP75Rating is the exact GH #185 reported
+// scenario: 16 CLS samples, all in bucket 0 ([0,200)). InterpolateP75FromCounts
+// places p75 at 150 milli-units (75% of the way through [0,200)), which rates
+// "needs_improvement" (100 < 150 <= 250) — NOT "good". Before the fix,
+// foldBucketsIntoDistribution credited the whole bucket to "good" (100%),
+// directly contradicting that p75 rating. The fix must produce a split that is
+// consistent with the p75 rating: some samples good, some needs-improvement,
+// and NOT 100% good.
+func TestFoldBuckets_CLS_matchesP75Rating(t *testing.T) {
+	counts := makeCounts(0, 16)
+
+	p75 := rum.InterpolateP75FromCounts(counts, 16, 200)
+	wantRating := cwvRating("cls", p75)
+	if wantRating != "needs_improvement" {
+		t.Fatalf("test setup invalid: p75=%v rated %q, want needs_improvement", p75, wantRating)
+	}
+
+	d := foldBucketsIntoDistribution("cls", counts)
+	if d.Good == 16 {
+		t.Fatalf("CLS distribution reports 100%% good (good=%d/16) while p75=%v rates %q — distribution contradicts the rating (GH #185)", d.Good, p75, wantRating)
+	}
+	// The bucket's goodUpper(100) sits exactly at the midpoint of [0,200), so a
+	// uniform 16-sample bucket splits 8/8.
+	if d.Good != 8 || d.NeedsImprovement != 8 || d.Poor != 0 {
+		t.Errorf("CLS good/ni/poor = %d/%d/%d, want 8/8/0", d.Good, d.NeedsImprovement, d.Poor)
+	}
+	if d.Good+d.NeedsImprovement+d.Poor != 16 {
+		t.Errorf("CLS counts sum = %d, want 16", d.Good+d.NeedsImprovement+d.Poor)
+	}
+}
+
+// TestFoldBuckets_CLS_secondBucketPoorNoSplit verifies a bucket wholly beyond
+// niUpper is NOT split (regression guard alongside the straddle fix): bucket 2
+// ([300,400)) is entirely >= 250, so it must be 100% poor with none leaking
+// into "good" or "needs_improvement".
+func TestFoldBuckets_CLS_secondBucketPoorNoSplit(t *testing.T) {
+	counts := makeCounts(2, 40)
+	d := foldBucketsIntoDistribution("cls", counts)
+	if d.Good != 0 || d.NeedsImprovement != 0 || d.Poor != 40 {
+		t.Errorf("CLS good/ni/poor = %d/%d/%d, want 0/0/40 (bucket 2 is wholly poor)", d.Good, d.NeedsImprovement, d.Poor)
+	}
+}
+
+// TestFoldBuckets_LCP_INP_unaffectedByProportionalSplitFix is an explicit
+// GH #185 no-regression guard: LCP and INP's good/NI thresholds (2500/4000 and
+// 200/500 respectively) land exactly on CrUX bucket boundaries, so the
+// proportional-split fix must be a no-op for these metrics — every bucket
+// falls wholly within one band, identical to the pre-fix fold.
+func TestFoldBuckets_LCP_INP_unaffectedByProportionalSplitFix(t *testing.T) {
+	// LCP: bucket 11 ([1800,2000)) wholly good, bucket 14 ([3000,3500)) wholly
+	// NI, bucket 18 ([6000,7000)) wholly poor.
+	lcpCounts := makeCounts(11, 40, 14, 25, 18, 15)
+	lcp := foldBucketsIntoDistribution("lcp", lcpCounts)
+	if lcp.Good != 40 || lcp.NeedsImprovement != 25 || lcp.Poor != 15 {
+		t.Errorf("LCP good/ni/poor = %d/%d/%d, want 40/25/15 (no split expected)", lcp.Good, lcp.NeedsImprovement, lcp.Poor)
+	}
+
+	// INP: bucket 0 ([0,200)) wholly good, bucket 2 ([300,400)) wholly NI,
+	// bucket 4 ([600,800)) wholly poor.
+	inpCounts := makeCounts(0, 40, 2, 25, 4, 15)
+	inp := foldBucketsIntoDistribution("inp", inpCounts)
+	if inp.Good != 40 || inp.NeedsImprovement != 25 || inp.Poor != 15 {
+		t.Errorf("INP good/ni/poor = %d/%d/%d, want 40/25/15 (no split expected)", inp.Good, inp.NeedsImprovement, inp.Poor)
 	}
 }
 

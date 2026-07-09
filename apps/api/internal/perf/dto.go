@@ -465,14 +465,17 @@ func nonNil(s []string) []string {
 // largest-remainder rounding). Distribution is nil (omitted) when the slice
 // is suppressed (SampleCount < min_sample_count).
 //
-// CLS distribution caveat: the CrUX histogram boundaries start at 200 ms-units
-// while the CLS "good" threshold is 100 milli-units and "NI" is 250 milli-units.
-// The entire first bucket [0, 200) straddles both boundaries, so it is assigned
-// wholesale to "good" per the straddle-to-lower-band rule. This means CLS
-// distribution is coarse for V1: the "good" band is slightly over-counted and
-// "needs_improvement" slightly under-counted relative to the true split within
-// [0, 200). The effect is minor in practice (most CLS values are near 0) and
-// will be refined in a future iteration using sub-200 histogram resolution.
+// CLS distribution note: the CrUX histogram boundaries start at 200 ms-units
+// while the CLS "good" threshold is 100 milli-units and "NI" is 250
+// milli-units, so the first two buckets ([0,200) and [200,300)) each straddle
+// a threshold. foldBucketsIntoDistribution splits a straddling bucket
+// proportionally at the threshold, assuming samples are uniformly distributed
+// within the bucket — the same assumption InterpolateP75FromCounts (p75.go)
+// uses when interpolating a p75 value inside a bucket. This keeps the
+// reported distribution consistent with the p75 rating by construction (GH
+// #185): e.g. 16 CLS samples all in [0,200) interpolate to p75=150 -> "needs
+// improvement", and the distribution now reports 8 good / 8 needs-improvement
+// rather than crediting the whole bucket to "good".
 type RumDistribution struct {
 	Good                int64 `json:"good"`
 	NeedsImprovement    int64 `json:"needs_improvement"`
@@ -486,59 +489,142 @@ type RumDistribution struct {
 // into three bands (good / needs-improvement / poor) using the official CWV
 // thresholds for the given metric.
 //
-// Fold rule: a bucket is assigned to the band whose upper bound first reaches
-// or exceeds the band boundary. Concretely, a bucket whose ENTIRE value range
-// is ≤ good-threshold goes to "good"; one entirely within (good, NI] goes to
-// "needs_improvement"; otherwise "poor". A bucket that straddles a threshold
-// (i.e. its lower bound is below the threshold but its upper bound is above) is
-// assigned to the LOWER band (conservative/PSI-compatible behaviour). For
-// LCP/FCP/TTFB/INP the thresholds coincide exactly with CrUX bucket boundaries,
-// so no bucket straddles and the fold is exact. For CLS (thresholds 100/250) the
-// first bucket [0,200) straddles both 100 and 250; it is assigned to "good".
-// See the RumDistribution comment for the full CLS coarseness caveat.
+// Fold rule: a bucket whose entire value range [lo, hi) falls on one side of
+// the good/NI thresholds is assigned wholesale to that band. A bucket that
+// straddles a threshold is split PROPORTIONALLY at the threshold, assuming
+// samples are uniformly distributed within the bucket — the same assumption
+// rum.InterpolateP75FromCounts (p75.go) makes when interpolating a p75 value
+// inside a bucket. This keeps the reported distribution consistent with the
+// p75 rating by construction (GH #185): a bucket can no longer be counted
+// 100% "good" while its p75 lands in "needs improvement".
+//
+// For LCP/FCP/TTFB/INP the thresholds coincide exactly with CrUX bucket
+// boundaries, so no bucket ever straddles and the split is a no-op (every
+// bucket falls wholly in one band, matching the pre-#185 behaviour exactly).
+// For CLS (thresholds 100/250 milli-units) the first two buckets ([0,200) and
+// [200,300)) straddle 100 and 250 respectively and are split accordingly. See
+// the RumDistribution comment for the worked example.
 //
 // Percentages are computed with Hamilton (largest-remainder) rounding so that
 // good_pct + needs_improvement_pct + poor_pct == 100 exactly, even in the
-// presence of rounding ties.
+// presence of rounding ties. The raw Good/NeedsImprovement/Poor counts are
+// similarly integerized (proportional split can produce fractional counts)
+// so they too sum exactly to the total sample count.
 func foldBucketsIntoDistribution(metric string, counts []int64) *RumDistribution {
 	goodUpper, niUpper := cwvThresholds(metric)
+	goodU, niU := float64(goodUpper), float64(niUpper)
 
-	var good, ni, poor int64
+	var good, ni, poor float64
+	var total int64
 	for i, c := range counts {
 		if c == 0 {
 			continue
 		}
-		// Lower bound (inclusive) of this bucket.
-		var bucketLower int32
+		total += c
+		// [lo, hi) bounds of this bucket. The final bucket is open-ended; its
+		// upper bound is only used to decide whether it straddles a threshold,
+		// and in practice CrUXBuckets' largest finite boundary (10000) already
+		// exceeds every metric's niUpper, so the open-ended bucket always lands
+		// wholly in "poor" without ever needing a real upper bound.
+		var lo, hi float64
 		if i > 0 {
-			bucketLower = rum.CrUXBuckets[i-1]
+			lo = float64(rum.CrUXBuckets[i-1])
 		}
-		// Assign by the bucket's lower bound. The straddle-to-lower-band rule is
-		// implicit: if the lower bound is below the threshold but the upper bound
-		// crosses it, the bucket's lower bound still places it in the lower band.
-		// For LCP/FCP/TTFB/INP the thresholds align with bucket boundaries exactly,
-		// so no bucket straddles in practice. For CLS (thresholds 100/250) the first
-		// bucket [0,200) has lower=0 which is < 100, so it correctly lands in "good".
-		switch {
-		case bucketLower < int32(goodUpper):
-			good += c
-		case bucketLower < int32(niUpper):
-			ni += c
-		default:
-			poor += c
+		if i < len(rum.CrUXBuckets) {
+			hi = float64(rum.CrUXBuckets[i])
+		} else {
+			hi = lo
 		}
+		fc := float64(c)
+		gf, nf, pf := splitBucketFraction(lo, hi, goodU, niU)
+		good += fc * gf
+		ni += fc * nf
+		poor += fc * pf
 	}
 
-	total := good + ni + poor
+	goodI, niI, poorI := integerizeHamilton(good, ni, poor, total)
 	d := &RumDistribution{
-		Good:             good,
-		NeedsImprovement: ni,
-		Poor:             poor,
+		Good:             goodI,
+		NeedsImprovement: niI,
+		Poor:             poorI,
 	}
 	if total > 0 {
-		d.GoodPct, d.NeedsImprovementPct, d.PoorPct = hamiltonRound3(good, ni, poor, total)
+		d.GoodPct, d.NeedsImprovementPct, d.PoorPct = hamiltonRound3(goodI, niI, poorI, total)
 	}
 	return d
+}
+
+// splitBucketFraction returns the fraction of a bucket [lo, hi) that falls
+// into the good / needs-improvement / poor bands, assuming samples are
+// distributed uniformly within the bucket. The three returned fractions
+// always sum to 1. A bucket entirely on one side of both thresholds returns
+// (1,0,0), (0,1,0), or (0,0,1); a bucket straddling one or both thresholds
+// splits proportionally by the overlap of [lo,hi) with each band.
+func splitBucketFraction(lo, hi, goodUpper, niUpper float64) (goodFrac, niFrac, poorFrac float64) {
+	width := hi - lo
+	switch {
+	case hi <= goodUpper:
+		return 1, 0, 0
+	case lo >= niUpper:
+		return 0, 0, 1
+	case lo >= goodUpper && hi <= niUpper:
+		return 0, 1, 0
+	case width <= 0:
+		// Degenerate (zero-width) bucket that isn't wholly on one side above —
+		// shouldn't happen for real CrUX boundaries, but avoid a NaN/divide-by-
+		// zero by falling back to the "needs improvement" band.
+		return 0, 1, 0
+	case hi <= niUpper:
+		// Spans only the good/NI boundary: lo < goodUpper < hi <= niUpper.
+		goodFrac = (goodUpper - lo) / width
+		return goodFrac, 1 - goodFrac, 0
+	case lo >= goodUpper:
+		// Spans only the NI/poor boundary: goodUpper <= lo < niUpper < hi.
+		niFrac = (niUpper - lo) / width
+		return 0, niFrac, 1 - niFrac
+	default:
+		// Spans both boundaries: lo < goodUpper and hi > niUpper.
+		goodFrac = (goodUpper - lo) / width
+		poorFrac = (hi - niUpper) / width
+		return goodFrac, 1 - goodFrac - poorFrac, poorFrac
+	}
+}
+
+// integerizeHamilton rounds three non-negative float64 values that (up to
+// floating-point error) sum to total into int64 counts that sum EXACTLY to
+// total, using the same Hamilton (largest-remainder) method as
+// hamiltonRound3: floor each value, then distribute the remaining units to
+// the values with the largest fractional remainder.
+func integerizeHamilton(a, b, c float64, total int64) (int64, int64, int64) {
+	if total == 0 {
+		return 0, 0, 0
+	}
+	ia, ib, ic := int64(a), int64(b), int64(c)
+	rem := int(total - ia - ib - ic)
+
+	type slot struct {
+		idx  int
+		frac float64
+	}
+	slots := [3]slot{{0, a - float64(ia)}, {1, b - float64(ib)}, {2, c - float64(ic)}}
+	for i := 1; i < 3; i++ {
+		for j := i; j > 0 && slots[j].frac > slots[j-1].frac; j-- {
+			slots[j], slots[j-1] = slots[j-1], slots[j]
+		}
+	}
+	vals := [3]int64{ia, ib, ic}
+	// Clamp for safety against floating-point drift; rem should always be in
+	// [0,2] for three non-negative values that sum to an integer total.
+	if rem < 0 {
+		rem = 0
+	}
+	if rem > 3 {
+		rem = 3
+	}
+	for k := 0; k < rem; k++ {
+		vals[slots[k].idx]++
+	}
+	return vals[0], vals[1], vals[2]
 }
 
 // cwvThresholds returns the (goodUpperInclusive, niUpperInclusive) for a metric

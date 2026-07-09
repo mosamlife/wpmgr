@@ -10,6 +10,7 @@ import { client } from "@wpmgr/api";
 import { toError } from "@/features/auth/use-auth";
 import { resetSiteStream } from "@/features/sites/use-site-events";
 import { toast } from "@/components/toast";
+import { router } from "@/router";
 
 // Org (tenant) management hooks — hand-rolled endpoints, not in @wpmgr/api.
 // Pattern mirrors use-restores.ts / use-auth.ts.
@@ -88,8 +89,9 @@ export function useCreateOrg(): UseMutationResult<
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/orgs/{orgId}/activate
-// Switch the session's active org. Clears ALL server state so every query
-// refetches under the new org context.
+// Switch the session's active org. Actively resets + refetches ALL server
+// state (GH #186 — a passive `clear()` never notifies mounted observers) so
+// every query reflects the new org context immediately, even when it's empty.
 // ---------------------------------------------------------------------------
 
 export function useActivateOrg(): UseMutationResult<
@@ -107,19 +109,31 @@ export function useActivateOrg(): UseMutationResult<
       if (result.error !== undefined) throw toError(result.error);
       return result.data as ActivateOrgResult;
     },
-    onSuccess: () => {
-      // Drop ALL server state — sites, members, me, etc. — so everything
-      // refetches in the context of the newly-active org.
-      queryClient.clear();
+    onSuccess: async () => {
+      // GH #186: `queryClient.clear()` only PASSIVELY empties the cache — it
+      // does not notify or refetch already-mounted QueryObservers, so a
+      // mounted Sites route kept rendering the PREVIOUS org's rows until a
+      // hard reload. `resetQueries()` resets every query back to its initial
+      // (data-less) state AND actively refetches every mounted observer
+      // (useMe, useSites, members, ...), so no stale cross-tenant data can
+      // ever be shown as "fresh" in the gap. This also fixes the case a
+      // populated-org switch was accidentally masking: an EMPTY target org
+      // has no sites, so the SSE reset below never fires a site event to
+      // nudge a frozen observer — resetQueries doesn't depend on that.
+      await queryClient.resetQueries();
       // The shared Sites SSE stream is a module-level singleton whose tenant
       // is resolved ONCE by the CP at connect time and held for the life of
-      // the connection (up to ~15 min). Clearing the cache only fixes the
+      // the connection (up to ~15 min). Resetting the cache only fixes the
       // pull (refetch) path — without this, an already-open stream keeps
       // delivering the OLD tenant's events (or none for the new one) until a
       // hard reload or the stream's natural expiry. Reset it so the live
       // (push) path re-establishes under the new tenant too, with a fresh
       // cursor (see resetSiteStream's doc for why the cursor must be dropped).
       resetSiteStream();
+      // Re-run the `_authed` route's beforeLoad/loaders (ensureMe, the
+      // superadmin bounce, per-route prefetches, ...) under the new tenant —
+      // the same thing a hard browser reload does.
+      await router.invalidate();
     },
     onError: (err) => {
       toast.error(`Could not switch organisation: ${err.message}`);
@@ -167,8 +181,8 @@ export function useRenameOrg(): UseMutationResult<
 //
 // Deletion is SOFT with a grace window: the org disappears from GET /orgs
 // the instant this commits (recoverable server-side until a background job
-// purges it), so onSuccess mirrors useActivateOrg's cache teardown -- every
-// org-scoped query (sites, members, keys, ...) is now stale.
+// purges it), so onSuccess mirrors useActivateOrg's active cache reset --
+// every org-scoped query (sites, members, keys, ...) is refetched fresh.
 // ---------------------------------------------------------------------------
 
 export interface DeleteOrgResult {
@@ -275,12 +289,17 @@ export function useDeleteOrg(): UseMutationResult<
       }
       return result.data as DeleteOrgResult;
     },
-    onSuccess: (result, variables) => {
-      // Drop ALL server state, mirroring useActivateOrg: the deleted org
-      // disappears from every list server-side immediately, so any cached
-      // org-scoped data (sites, members, keys, ...) is now stale.
-      queryClient.clear();
+    onSuccess: async (result, variables) => {
+      // GH #186: mirror useActivateOrg's fix. The active org is reassigned by
+      // the server on delete (the deleted org can never be the active one —
+      // see cannot_delete_active_org), so a passive `queryClient.clear()`
+      // carried the same latent freeze, just usually masked by the reassigned
+      // org's SSE traffic. `resetQueries()` actively refetches every mounted
+      // observer under the new active org, with no stale cross-tenant data
+      // shown in the gap even when that org is empty.
+      await queryClient.resetQueries();
       resetSiteStream();
+      await router.invalidate();
       // A "hard" delete (empty org) is gone immediately with no grace window,
       // so it must not claim to be recoverable (GH #161 CodeRabbit review).
       if (result.lane === "hard") {

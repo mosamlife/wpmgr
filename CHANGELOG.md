@@ -8,7 +8,13 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.49] - 2026-07-09
+## [0.61.50] - 2026-07-09
+
+### Fixed
+
+- Switching organizations now takes effect immediately instead of only after a browser refresh (GH #186). The switch was clearing the cached data but not re-fetching it, so the view stayed on the previous organization until something else happened to trigger a reload; this was most visible when switching to an empty organization (which produced no live events to nudge a refresh). The same latent issue in the organization-delete path is fixed too.
+- Fleet-wide Core Web Vitals pass rate and the "worst offenders" table now consider all three Core Web Vitals, not just LCP (GH #195). A site with a good LCP but a failing CLS or INP was previously counted as passing in the fleet headline and never surfaced as a worst offender, even though its own per-site page correctly showed "Does not pass"; the fleet view now marks a site as passing only when LCP, INP, and CLS all pass, and surfaces sites failing on any of the three.
+- The CLS good / needs-improvement / poor distribution bar no longer contradicts the p75 rating shown next to it (GH #185). The distribution was classifying whole histogram buckets by their lower edge, but the CLS thresholds fall inside a bucket, so a value that the p75 correctly rated "needs work" could still show as 100% good. The distribution now splits a straddling bucket proportionally at the threshold, using the same assumption the p75 calculation already uses, so the two agree. LCP and INP distributions are unchanged.
 
 ### Fixed
 

@@ -521,6 +521,47 @@ type FleetRumResponse struct {
 	Trend          []fleetRumTrendPoint    `json:"trend"`
 }
 
+// normalizeRating converts cwvRating's "needs_improvement" (underscore) to the
+// hyphenated "needs-improvement" the frontend contract expects everywhere
+// else in the fleet response. "" (unrated), "good", and "poor" pass through
+// unchanged.
+func normalizeRating(rating string) string {
+	if rating == "needs_improvement" {
+		return "needs-improvement"
+	}
+	return rating
+}
+
+// ratingRank orders CWV ratings by severity for sorting: poor is worst,
+// unrated ("") sorts below "good" so it never outranks an actual failing
+// rating.
+func ratingRank(rating string) int {
+	switch rating {
+	case "poor":
+		return 2
+	case "needs-improvement":
+		return 1
+	case "good":
+		return 0
+	default:
+		return -1
+	}
+}
+
+// worstOfThree returns the most severe of the (already-normalized) lcp/inp/cls
+// ratings, ignoring any that are "" (unrated). Returns "" if none are rated.
+func worstOfThree(lcp, inp, cls string) string {
+	worst := ""
+	worstRank := -1
+	for _, r := range [3]string{lcp, inp, cls} {
+		if rank := ratingRank(r); rank > worstRank {
+			worstRank = rank
+			worst = r
+		}
+	}
+	return worst
+}
+
 // rumFleet handles GET /api/v1/perf/rum/fleet.
 // Returns a fleet-level CWV aggregate across all tenant sites that reported
 // RUM data in the window. Query params:
@@ -703,100 +744,101 @@ func (h *Handler) rumFleet(c *gin.Context) {
 		TTFB: buildMetric("ttfb", fleetAcc["ttfb"]),
 	}
 
-	// Fleet-pass-pct: fraction of reporting sites with "good" LCP p75.
-	var fleetPassPct *float64
-	var lcpGoodSites, lcpTotalSites int
+	// Per-site core-CWV verdict (GH #195). A site's fleet pass/fail status and
+	// its worst-offender rating must consider ALL THREE core metrics (LCP,
+	// INP, CLS) — mirroring the per-site FE logic in FleetRumPanel.tsx
+	// (coreRated = lcp && inp && cls all rated; allGood = all three "good").
+	// Each metric is independently gated on minSampleCount before it is
+	// rated; a metric below the floor leaves that field's rating "" (unrated)
+	// rather than being silently treated as passing.
+	type siteVerdict struct {
+		lcpP75, inpP75, clsP75             *float64
+		lcpRating, inpRating, clsRating    string // "" = unrated (suppressed/no data)
+		lcpSamples, inpSamples, clsSamples int64
+	}
+	siteVerdicts := make(map[uuid.UUID]*siteVerdict)
 	for smk, sa := range siteAcc {
-		if smk.metric != "lcp" {
+		if smk.metric != "lcp" && smk.metric != "inp" && smk.metric != "cls" {
 			continue
 		}
-		if sa.sampleCount < int64(minSampleCount) {
-			continue
+		sv, ok := siteVerdicts[smk.siteID]
+		if !ok {
+			sv = &siteVerdict{}
+			siteVerdicts[smk.siteID] = sv
 		}
-		lcpTotalSites++
-		siteP75 := rum.InterpolateP75FromCounts(sa.counts, sa.sampleCount, sa.maxVal)
-		if cwvRating("lcp", siteP75) == "good" {
-			lcpGoodSites++
+		var p75 *float64
+		var rating string
+		if sa.sampleCount >= int64(minSampleCount) {
+			v := rum.InterpolateP75FromCounts(sa.counts, sa.sampleCount, sa.maxVal)
+			p75 = &v
+			rating = normalizeRating(cwvRating(smk.metric, v))
+		}
+		switch smk.metric {
+		case "lcp":
+			sv.lcpP75, sv.lcpRating, sv.lcpSamples = p75, rating, sa.sampleCount
+		case "inp":
+			sv.inpP75, sv.inpRating, sv.inpSamples = p75, rating, sa.sampleCount
+		case "cls":
+			sv.clsP75, sv.clsRating, sv.clsSamples = p75, rating, sa.sampleCount
 		}
 	}
-	if lcpTotalSites > 0 {
-		v := float64(lcpGoodSites) / float64(lcpTotalSites) * 100
+
+	// Fleet-pass-pct: fraction of sites rated on ALL THREE core metrics
+	// (coreRated) whose lcp/inp/cls are all "good". A site missing INP/CLS
+	// data is excluded from BOTH the numerator and denominator — it is never
+	// counted as passing on LCP alone.
+	var fleetPassPct *float64
+	var coreRatedSites, passingSites int
+	for _, sv := range siteVerdicts {
+		if sv.lcpRating == "" || sv.inpRating == "" || sv.clsRating == "" {
+			continue
+		}
+		coreRatedSites++
+		if sv.lcpRating == "good" && sv.inpRating == "good" && sv.clsRating == "good" {
+			passingSites++
+		}
+	}
+	if coreRatedSites > 0 {
+		v := float64(passingSites) / float64(coreRatedSites) * 100
 		fleetPassPct = &v
 	}
 
-	// Worst offenders: collect unique sites with poor/needs-improvement LCP,
-	// joined with their inp/cls p75 values.
-	type offenderAcc struct {
-		lcpP75  float64
-		inpP75  *float64
-		clsP75  *float64
-		samples int64
-		rating  string
-	}
-	offenderMap := make(map[uuid.UUID]*offenderAcc)
-	for smk, sa := range siteAcc {
-		if smk.metric != "lcp" {
+	// Worst offenders: any site with at least one RATED core metric in the
+	// poor or needs-improvement band. Previously this only looked at LCP,
+	// which hid sites with good LCP but failing CLS/INP (GH #195).
+	// OverallRating is the worst band among whichever metrics are rated.
+	worstOffenders := make([]fleetRumWorstOffender, 0, len(siteVerdicts))
+	for siteID, sv := range siteVerdicts {
+		worst := worstOfThree(sv.lcpRating, sv.inpRating, sv.clsRating)
+		if worst != "poor" && worst != "needs-improvement" {
 			continue
 		}
-		if sa.sampleCount < int64(minSampleCount) {
-			continue
-		}
-		p75 := rum.InterpolateP75FromCounts(sa.counts, sa.sampleCount, sa.maxVal)
-		rating := cwvRating("lcp", p75)
-		// normalise: frontend expects "needs-improvement" (hyphen), not underscore
-		if rating == "needs_improvement" {
-			rating = "needs-improvement"
-		}
-		if rating == "poor" || rating == "needs-improvement" {
-			offenderMap[smk.siteID] = &offenderAcc{
-				lcpP75:  p75,
-				samples: sa.sampleCount,
-				rating:  rating,
-			}
-		}
-	}
-	// Enrich offenders with inp/cls p75 values.
-	for smk, sa := range siteAcc {
-		oa, isOffender := offenderMap[smk.siteID]
-		if !isOffender {
-			continue
-		}
-		if sa.sampleCount < int64(minSampleCount) {
-			continue
-		}
-		p75 := rum.InterpolateP75FromCounts(sa.counts, sa.sampleCount, sa.maxVal)
-		switch smk.metric {
-		case "inp":
-			oa.inpP75 = &p75
-		case "cls":
-			oa.clsP75 = &p75
-		}
-	}
-
-	worstOffenders := make([]fleetRumWorstOffender, 0, len(offenderMap))
-	for siteID, oa := range offenderMap {
-		lcpP75 := oa.lcpP75
 		worstOffenders = append(worstOffenders, fleetRumWorstOffender{
 			SiteID:        siteID,
 			Name:          "", // name/url not available without N+1 lookup; frontend tolerates empty
 			URL:           "",
-			LCPP75:        &lcpP75,
-			INPP75:        oa.inpP75,
-			CLSP75:        oa.clsP75,
-			OverallRating: oa.rating,
-			SampleCount:   oa.samples,
+			LCPP75:        sv.lcpP75,
+			INPP75:        sv.inpP75,
+			CLSP75:        sv.clsP75,
+			OverallRating: worst,
+			SampleCount:   sv.lcpSamples + sv.inpSamples + sv.clsSamples,
 		})
 	}
 	sort.Slice(worstOffenders, func(i, j int) bool {
-		// Sort by LCP p75 descending (worst first).
-		li, lj := float64(0), float64(0)
-		if worstOffenders[i].LCPP75 != nil {
-			li = *worstOffenders[i].LCPP75
+		a, b := worstOffenders[i], worstOffenders[j]
+		// Sort by rating severity first (poor before needs-improvement),
+		// then by LCP p75 descending (worst first; nil sorts last).
+		if ra, rb := ratingRank(a.OverallRating), ratingRank(b.OverallRating); ra != rb {
+			return ra > rb
 		}
-		if worstOffenders[j].LCPP75 != nil {
-			lj = *worstOffenders[j].LCPP75
+		la, lb := float64(0), float64(0)
+		if a.LCPP75 != nil {
+			la = *a.LCPP75
 		}
-		return li > lj
+		if b.LCPP75 != nil {
+			lb = *b.LCPP75
+		}
+		return la > lb
 	})
 	if len(worstOffenders) > 10 {
 		worstOffenders = worstOffenders[:10]
