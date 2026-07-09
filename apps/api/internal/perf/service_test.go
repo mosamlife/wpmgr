@@ -348,6 +348,9 @@ func (s *fakeSites) GetSiteURL(context.Context, uuid.UUID, uuid.UUID) (string, e
 func (s *fakeSites) ListSiteIDs(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
 	return nil, nil
 }
+func (s *fakeSites) ListSitesMeta(_ context.Context, _ uuid.UUID) ([]SiteMeta, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // config validation

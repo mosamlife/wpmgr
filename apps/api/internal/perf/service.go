@@ -59,6 +59,19 @@ type SiteLookup interface {
 	// ListSiteIDs returns all site IDs for the tenant. Used by the fleet RUM
 	// aggregate endpoint to compute sites_total.
 	ListSiteIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
+	// ListSitesMeta returns the name+url for every site in the tenant in a
+	// single bulk call (GH #202). Used to enrich the fleet RUM worst-offenders
+	// list, which only carries site IDs from the rollup aggregation, without
+	// an N+1 GetSiteURL round-trip per offender.
+	ListSitesMeta(ctx context.Context, tenantID uuid.UUID) ([]SiteMeta, error)
+}
+
+// SiteMeta is the minimal display info (name + url) for a site, returned in
+// bulk by SiteLookup.ListSitesMeta.
+type SiteMeta struct {
+	ID   uuid.UUID
+	Name string
+	URL  string
 }
 
 // EventPublisher publishes perf SSE envelopes on the shared tenant bus.
@@ -1480,6 +1493,14 @@ const fleetTopN = 10
 // handler to build the full candidate set and compute sites_total.
 func (s *Service) ListAllSiteIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error) {
 	return s.sites.ListSiteIDs(ctx, tenantID)
+}
+
+// ListSitesMeta returns the name+url for every site in the tenant in one bulk
+// call (GH #202). Used by the fleet RUM handler to enrich the worst-offenders
+// list (capped to <=10 rows) with a display name/url after sort+cap, so the
+// lookup never scales with the tenant's total reporting site count.
+func (s *Service) ListSitesMeta(ctx context.Context, tenantID uuid.UUID) ([]SiteMeta, error) {
+	return s.sites.ListSitesMeta(ctx, tenantID)
 }
 
 func (s *Service) GetFleetDbHealth(ctx context.Context, tenantID uuid.UUID, days int) (FleetDbHealth, error) {

@@ -1138,14 +1138,30 @@ type Querier interface {
 	// across a CASE/COALESCE spanning two different LEFT JOINs — see the LEFT
 	// JOIN LATERAL note in alerts.sql for the same class of limitation.
 	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]ListAuditEntriesRow, error)
-	// Optional filters: action prefix (LIKE 'prefix%'), site_id (target_type='site'
-	// AND target_id = site_id::text). Passing an empty string for action_prefix or
-	// a zero UUID for site_id disables those filters respectively. RLS is still the
-	// primary tenant-isolation gate; the explicit tenant_id is defense-in-depth.
+	// Optional filters: action prefix (LIKE 'prefix%'), site_id. Passing an empty
+	// string for action_prefix or a zero UUID for site_id disables those filters
+	// respectively. RLS is still the primary tenant-isolation gate; the explicit
+	// tenant_id is defense-in-depth.
 	// Newest-first (see ListAuditEntries); actor_user_name/actor_key_name/
 	// actor_email resolve the same way, including the CASE-guarded ::uuid cast
 	// (see ListAuditEntries for the full join contract and why a plain regex-AND
 	// guard is NOT safe here).
+	//
+	// The site_id filter (GH #201) matches THREE shapes, because target_id only
+	// holds the site id for target_type='site' rows:
+	//   1. target_type='site' AND target_id = site_id (site lifecycle events).
+	//   2. metadata->>'site_id' = site_id (backup/restore/update lifecycle rows,
+	//      whose target_id is a snapshot/run/task id, not the site — the
+	//      recorders always stamp metadata.site_id for these).
+	//   3. target_type='backup_schedule' AND target_id = site_id (the one
+	//      recorder that carries the site id in target_id but never writes
+	//      metadata.site_id — see backup.recordScheduleChange).
+	// metadata->>'site_id' is TEXT-to-TEXT on purpose: it must NEVER be cast to
+	// ::uuid. metadata is free-form JSONB and a malformed/absent value must
+	// degrade to NULL (never match) rather than throw 22P02 — the same class of
+	// bug the CASE-guarded actor join above exists to avoid. ->>'site_id' already
+	// returns NULL when the key is absent, so non-site rows are safely excluded
+	// without any extra guard.
 	ListAuditEntriesFiltered(ctx context.Context, arg ListAuditEntriesFilteredParams) ([]ListAuditEntriesFilteredRow, error)
 	ListAuditEntriesForVerify(ctx context.Context, tenantID uuid.UUID) ([]AuditLog, error)
 	// Same forward walk as ListAuditEntriesForVerify, but starting STRICTLY AFTER

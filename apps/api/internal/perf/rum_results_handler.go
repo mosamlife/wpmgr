@@ -815,7 +815,7 @@ func (h *Handler) rumFleet(c *gin.Context) {
 		}
 		worstOffenders = append(worstOffenders, fleetRumWorstOffender{
 			SiteID:        siteID,
-			Name:          "", // name/url not available without N+1 lookup; frontend tolerates empty
+			Name:          "", // enriched below, after sort+cap (GH #202); left empty here by design
 			URL:           "",
 			LCPP75:        sv.lcpP75,
 			INPP75:        sv.inpP75,
@@ -842,6 +842,26 @@ func (h *Handler) rumFleet(c *gin.Context) {
 	})
 	if len(worstOffenders) > 10 {
 		worstOffenders = worstOffenders[:10]
+	}
+
+	// Enrich the (already-capped, <=10) offenders with a display name/url
+	// (GH #202). Deliberately done AFTER sort+cap so this never scales with
+	// the number of reporting sites — one bulk lookup, not an N+1 per site.
+	if len(worstOffenders) > 0 {
+		if metas, merr := h.svc.ListSitesMeta(c.Request.Context(), p.TenantID); merr == nil {
+			metaByID := make(map[uuid.UUID]SiteMeta, len(metas))
+			for _, m := range metas {
+				metaByID[m.ID] = m
+			}
+			for i := range worstOffenders {
+				if m, ok := metaByID[worstOffenders[i].SiteID]; ok {
+					worstOffenders[i].Name = m.Name
+					worstOffenders[i].URL = m.URL
+				}
+			}
+		}
+		// A lookup error is non-fatal: the offender rows still carry their
+		// site_id and CWV data; the frontend tolerates an empty name/url.
 	}
 
 	// Build trend: one point per day with lcp_p75/inp_p75/cls_p75.

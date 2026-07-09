@@ -3,6 +3,7 @@ package perf
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,14 +21,27 @@ import (
 // ---------------------------------------------------------------------------
 
 // fleetSiteIDsStub is a minimal SiteLookup that returns a fixed site set,
-// ignoring the tenantID argument (fine for a single-tenant unit test).
-type fleetSiteIDsStub struct{ ids []uuid.UUID }
+// ignoring the tenantID argument (fine for a single-tenant unit test). meta,
+// when set, backs ListSitesMeta for the GH #202 offender-enrichment tests.
+// metaCalls, when non-nil, is incremented on every ListSitesMeta call so
+// tests can assert it is called exactly once per request (bulk, not N+1).
+type fleetSiteIDsStub struct {
+	ids       []uuid.UUID
+	meta      []SiteMeta
+	metaCalls *int
+}
 
 func (s *fleetSiteIDsStub) GetSiteURL(context.Context, uuid.UUID, uuid.UUID) (string, error) {
 	return "", nil
 }
 func (s *fleetSiteIDsStub) ListSiteIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
 	return s.ids, nil
+}
+func (s *fleetSiteIDsStub) ListSitesMeta(context.Context, uuid.UUID) ([]SiteMeta, error) {
+	if s.metaCalls != nil {
+		*s.metaCalls++
+	}
+	return s.meta, nil
 }
 
 // fleetInt32Counts builds a NumBuckets int32 slice with a single bucket index
@@ -41,9 +55,10 @@ func fleetInt32Counts(idx int, count int32) []int32 {
 // newFleetRumHandler builds a Handler wired for rumFleet: ListAllSiteIDs
 // returns siteIDs (via fleetSiteIDsStub), and GetHourlyRollupsForSites always
 // returns the given rollups regardless of the requested tenant/site/window.
-func newFleetRumHandler(siteIDs []uuid.UUID, rollups []rum.HourlyRollup) *Handler {
+// meta, when given, backs ListSitesMeta for the GH #202 enrichment tests.
+func newFleetRumHandler(siteIDs []uuid.UUID, rollups []rum.HourlyRollup, meta ...SiteMeta) *Handler {
 	svc := NewService(&fakeRepo{}, nil, nil, nil)
-	svc.SetAgentClient(nil, &fleetSiteIDsStub{ids: siteIDs})
+	svc.SetAgentClient(nil, &fleetSiteIDsStub{ids: siteIDs, meta: meta})
 	reader := &RumResultsReader{
 		GetHourlyRollupsForSites: func(context.Context, uuid.UUID, []uuid.UUID, time.Time) ([]rum.HourlyRollup, error) {
 			return rollups, nil
@@ -202,5 +217,105 @@ func TestRumFleet_normalizeRatingHyphenation(t *testing.T) {
 	}
 	if off.OverallRating != "needs-improvement" {
 		t.Errorf("overall_rating = %q, want hyphenated %q", off.OverallRating, "needs-improvement")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GH #202 — worst_offenders rows must carry a display name+url, enriched
+// once (bulk) after sort+cap, never left blank by design nor fetched N+1.
+// ---------------------------------------------------------------------------
+
+// TestRumFleet_worstOffendersEnrichedWithNameURL verifies a resolvable site
+// gets its name/url populated on the offender row (previously hardcoded "").
+func TestRumFleet_worstOffendersEnrichedWithNameURL(t *testing.T) {
+	siteH := uuid.New()
+	// Bucket 17 lower bound (4500ms) is already > LCP's poor threshold (4000).
+	poorLCPCounts := fleetInt32Counts(17, 50)
+
+	rollups := []rum.HourlyRollup{
+		{RollupKey: rum.RollupKey{SiteID: siteH, Metric: "lcp"}, SampleCount: 50, BucketCounts: poorLCPCounts, MaxValue: 4900},
+	}
+	h := newFleetRumHandler([]uuid.UUID{siteH}, rollups, SiteMeta{ID: siteH, Name: "Acme Blog", URL: "https://acme.example"})
+	resp := callRumFleet(t, h)
+
+	off := findOffender(resp, siteH)
+	if off == nil {
+		t.Fatalf("expected site H in worst_offenders")
+	}
+	if off.Name != "Acme Blog" {
+		t.Errorf("Name = %q, want %q", off.Name, "Acme Blog")
+	}
+	if off.URL != "https://acme.example" {
+		t.Errorf("URL = %q, want %q", off.URL, "https://acme.example")
+	}
+}
+
+// TestRumFleet_worstOffendersUnresolvedMetaLeftBlank verifies a site absent
+// from the ListSitesMeta result (e.g. deleted between rollup write and the
+// fleet read) degrades to an empty name/url rather than erroring the request.
+func TestRumFleet_worstOffendersUnresolvedMetaLeftBlank(t *testing.T) {
+	siteI := uuid.New()
+	poorLCPCounts := fleetInt32Counts(17, 50)
+
+	rollups := []rum.HourlyRollup{
+		{RollupKey: rum.RollupKey{SiteID: siteI, Metric: "lcp"}, SampleCount: 50, BucketCounts: poorLCPCounts, MaxValue: 4900},
+	}
+	// No SiteMeta entries at all — ListSitesMeta returns an empty slice.
+	h := newFleetRumHandler([]uuid.UUID{siteI}, rollups)
+	resp := callRumFleet(t, h)
+
+	off := findOffender(resp, siteI)
+	if off == nil {
+		t.Fatalf("expected site I in worst_offenders")
+	}
+	if off.Name != "" || off.URL != "" {
+		t.Errorf("expected empty name/url for unresolved site, got name=%q url=%q", off.Name, off.URL)
+	}
+}
+
+// TestRumFleet_worstOffendersEnrichmentIsSingleBulkCall is GH #202's
+// no-N+1 requirement: even with more offending sites than fit in the
+// worst_offenders cap (10), ListSitesMeta must be called exactly ONCE per
+// request — enrichment happens after sort+cap, as one bulk lookup, never
+// once per offender and never once per reporting site.
+func TestRumFleet_worstOffendersEnrichmentIsSingleBulkCall(t *testing.T) {
+	const nSites = 15 // > the 10-row worst_offenders cap
+	siteIDs := make([]uuid.UUID, nSites)
+	var rollups []rum.HourlyRollup
+	meta := make([]SiteMeta, nSites)
+	poorLCPCounts := fleetInt32Counts(17, 50)
+	for i := 0; i < nSites; i++ {
+		id := uuid.New()
+		siteIDs[i] = id
+		rollups = append(rollups, rum.HourlyRollup{
+			RollupKey:    rum.RollupKey{SiteID: id, Metric: "lcp"},
+			SampleCount:  50,
+			BucketCounts: poorLCPCounts,
+			MaxValue:     4900,
+		})
+		meta[i] = SiteMeta{ID: id, Name: fmt.Sprintf("site-%d", i), URL: fmt.Sprintf("https://s%d.example", i)}
+	}
+
+	svc := NewService(&fakeRepo{}, nil, nil, nil)
+	calls := 0
+	svc.SetAgentClient(nil, &fleetSiteIDsStub{ids: siteIDs, meta: meta, metaCalls: &calls})
+	reader := &RumResultsReader{
+		GetHourlyRollupsForSites: func(context.Context, uuid.UUID, []uuid.UUID, time.Time) ([]rum.HourlyRollup, error) {
+			return rollups, nil
+		},
+	}
+	h := &Handler{svc: svc, rum: reader}
+	resp := callRumFleet(t, h)
+
+	if len(resp.WorstOffenders) != 10 {
+		t.Fatalf("expected worst_offenders capped to 10, got %d", len(resp.WorstOffenders))
+	}
+	for _, off := range resp.WorstOffenders {
+		if off.Name == "" || off.URL == "" {
+			t.Errorf("offender %s missing enrichment: name=%q url=%q", off.SiteID, off.Name, off.URL)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("ListSitesMeta called %d times, want exactly 1 (bulk lookup, not N+1)", calls)
 	}
 }

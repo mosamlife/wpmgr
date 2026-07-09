@@ -336,6 +336,30 @@ func (a *perfSiteAdapter) ListSiteIDs(ctx context.Context, tenantID uuid.UUID) (
 	return a.svc.ListAllSiteIDs(ctx, tenantID)
 }
 
+// ListSitesMeta returns the name+url for every non-archived site in the
+// tenant (used by the fleet RUM worst-offenders enrichment, GH #202). Pages
+// through site.Service.List (which clamps Limit to 200 per call) so large
+// fleets are not silently truncated.
+func (a *perfSiteAdapter) ListSitesMeta(ctx context.Context, tenantID uuid.UUID) ([]perf.SiteMeta, error) {
+	const pageSize = 200
+	var metas []perf.SiteMeta
+	offset := int32(0)
+	for {
+		sites, err := a.svc.List(ctx, site.ListInput{TenantID: tenantID, Limit: pageSize, Offset: offset})
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range sites {
+			metas = append(metas, perf.SiteMeta{ID: s.ID, Name: s.Name, URL: s.URL})
+		}
+		if len(sites) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return metas, nil
+}
+
 var _ perf.SiteLookup = (*perfSiteAdapter)(nil)
 
 // backupCheckerAdapter adapts the backup service to the perf.BackupChecker

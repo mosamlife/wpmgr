@@ -519,11 +519,14 @@ type Filter struct {
 	// starts with this string (prefix match). An exact action string also works
 	// because it is a prefix of itself.
 	ActionPrefix string
-	// SiteID, when non-nil, restricts results to entries whose target_type is
-	// "site" and target_id equals this UUID (string form). All file-manager,
-	// perf, backup, and other per-site actions write their siteID as target_id
-	// with target_type="site", so this filter correctly captures the full
-	// per-site timeline without a schema change to audit_log.
+	// SiteID, when non-nil, restricts results to entries associated with this
+	// site (string UUID form). Most per-site actions (file-manager, perf, and
+	// site lifecycle events) write target_type="site" with target_id=site_id,
+	// but backup/restore/update lifecycle rows target a snapshot/run/task id
+	// instead, so those recorders stamp metadata.site_id — the query (GH #201)
+	// matches on whichever of the two shapes the row has (plus the
+	// backup_schedule special case: target_id=site_id, no metadata.site_id).
+	// See ListAuditEntriesFiltered in audit_log.sql for the full predicate.
 	SiteID *uuid.UUID
 }
 

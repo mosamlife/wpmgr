@@ -8,7 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.51] - 2026-07-09
+## [0.61.52] - 2026-07-09
+
+### Fixed
+
+- The fleet Core Web Vitals "worst offenders" table now shows each site's name and URL (GH #202). The rows were built from the metrics data alone, which is keyed only by site id, so the Name/URL columns rendered blank. The final (top ten) rows are now enriched with a single site lookup, so you can see which sites they are.
+- Audit-log entries for backups, restores, and updates are now associated with their site (GH #201). Previously only events whose target was the site itself carried a site association, so backup/restore/update entries showed no site name and the "filter by site" control silently returned zero rows for them. The site filter now also matches the site id recorded in those entries' metadata (and the schedule target), and the log shows the site name for them. This is a read/display change only, the tamper-evident audit chain is untouched, and no migration is needed.
 
 ### Fixed
 
