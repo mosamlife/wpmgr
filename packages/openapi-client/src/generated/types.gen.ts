@@ -10055,7 +10055,21 @@ export type GetFleetDbHealthResponses = {
    * Fleet DB health aggregate (shape matches FleetDbHealth Go model).
    */
   200: {
-    [key: string]: unknown;
+    /**
+     * Every scanned site with at least one orphan candidate
+     * (orphaned wp_options rows or WP-Cron events) — NOT
+     * capped, unlike top_sites (which is capped at 10 and
+     * ordered by DB size, so a small flagged site can be
+     * absent from it). Sorted by orphan count descending,
+     * then by site name.
+     *
+     */
+    sites_needing_review?: Array<{
+      site_id?: string;
+      site_name?: string;
+      orphaned_options_count?: number;
+      orphaned_cron_count?: number;
+    }>;
   };
 };
 

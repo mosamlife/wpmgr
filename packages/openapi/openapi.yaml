@@ -4210,6 +4210,28 @@ paths:
               schema:
                 type: object
                 description: Fleet DB health aggregate (shape matches FleetDbHealth Go model).
+                properties:
+                  sites_needing_review:
+                    type: array
+                    description: |
+                      Every scanned site with at least one orphan candidate
+                      (orphaned wp_options rows or WP-Cron events) — NOT
+                      capped, unlike top_sites (which is capped at 10 and
+                      ordered by DB size, so a small flagged site can be
+                      absent from it). Sorted by orphan count descending,
+                      then by site name.
+                    items:
+                      type: object
+                      properties:
+                        site_id:
+                          type: string
+                          format: uuid
+                        site_name:
+                          type: string
+                        orphaned_options_count:
+                          type: integer
+                        orphaned_cron_count:
+                          type: integer
   /api/v1/uptime/summary:
     get:
       operationId: getUptimeSummary

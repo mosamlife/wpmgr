@@ -34,11 +34,12 @@ type AgentErrorConfigClient interface {
 // AgentErrorConfigClient (optional). Held stateless so handlers can compose
 // it freely.
 type Service struct {
-	repo         *Repo
-	enqueuer     RefreshEnqueuer
-	errorClient  AgentErrorConfigClient
-	siteLookup   SiteLookup
-	hostResolver HostResolver
+	repo          *Repo
+	enqueuer      RefreshEnqueuer
+	errorClient   AgentErrorConfigClient
+	siteLookup    SiteLookup
+	hostResolver  HostResolver
+	dbSizeHistory DBSizeHistorySink
 }
 
 // RefreshEnqueuer enqueues an on-demand diagnostics command to the agent.
@@ -234,6 +235,14 @@ func (s *Service) IngestDiagnostics(ctx context.Context, tenantID, siteID uuid.U
 		// payload must not abort the whole diagnostics ingest.
 		if cat == CategoryIdentity {
 			s.ingestSiteTimezone(ctx, tenantID, siteID, payload)
+		}
+
+		// At wp_native ingest, append a DB-size trend point from the
+		// wp-paths-sizes.fields.database_size the agent already computes for
+		// the Directory Sizes card (GH #196). Best-effort/non-fatal — see
+		// ingestDBSizeHistory (db_size_history.go).
+		if cat == CategoryWPNative {
+			s.ingestDBSizeHistory(ctx, tenantID, siteID, payload, collected)
 		}
 	}
 	return count, nil

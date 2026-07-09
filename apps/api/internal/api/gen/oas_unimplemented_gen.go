@@ -1250,8 +1250,8 @@ func (UnimplementedHandler) GetFleetBackupHealth(ctx context.Context, params Get
 // by DB size. Org-scope only. Requires viewer+.
 //
 // GET /api/v1/perf/db/fleet-health
-func (UnimplementedHandler) GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) error {
-	return ht.ErrNotImplemented
+func (UnimplementedHandler) GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) (r *GetFleetDbHealthOK, _ error) {
+	return r, ht.ErrNotImplemented
 }
 
 // GetFleetEmailDeliverability implements getFleetEmailDeliverability operation.

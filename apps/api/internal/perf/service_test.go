@@ -33,6 +33,8 @@ type fakeRepo struct {
 	// GH #174 — ack-based beacon-key reconcile stubs.
 	beaconAckedCalls []bool // the `present` arg of each UpdateBeaconKeyAcked call
 	beaconAckedErr   error
+	// GH #197 — fleet DB health rows returned by GetFleetDbHealth.
+	fleetDbHealthRows []FleetSiteDbSummary
 }
 
 func (r *fakeRepo) GetConfig(_ context.Context, tenantID, siteID uuid.UUID) (Config, error) {
@@ -158,7 +160,9 @@ func (r *fakeRepo) PruneCacheHitRatioHistory(_ context.Context, _ time.Duration)
 
 // P3.7 — fleet DB health stub.
 func (r *fakeRepo) GetFleetDbHealth(_ context.Context, _ uuid.UUID, _ time.Time) ([]FleetSiteDbSummary, error) {
-	return nil, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fleetDbHealthRows, nil
 }
 
 // P3.8 — orphan-delete watchdog stubs.
@@ -2429,4 +2433,100 @@ func (a *mediaCleanSanitizeAgent) MediaClean(_ context.Context, _ uuid.UUID, _ s
 			},
 		},
 	}, nil
+}
+
+// TestGetFleetDbHealthSitesNeedingReviewNotCapped is GH #197: a site flagged
+// for review (orphan candidates present) must appear in SitesNeedingReview
+// even when it's far outside the top-10-by-DB-size TopSites list.
+func TestGetFleetDbHealthSitesNeedingReviewNotCapped(t *testing.T) {
+	const totalSites = 20
+	const flaggedSites = 14
+
+	rows := make([]FleetSiteDbSummary, 0, totalSites)
+	for i := 0; i < totalSites; i++ {
+		row := FleetSiteDbSummary{
+			SiteID: uuid.New(),
+			// Name encodes rank so we can identify entries later. Sorted
+			// descending by DBSizeBytes below, mirroring the SQL's ORDER BY.
+			SiteName:    fmt.Sprintf("site-%02d", i),
+			DBSizeBytes: int64(totalSites-i) * 1024 * 1024, // largest first
+			TableCount:  50,
+		}
+		// Flag the first 14 sites by rank (i=0..13) for review. Since rows
+		// are constructed largest-first (i=0 is the biggest DB), TopSites
+		// (capped at fleetTopN=10) only covers i=0..9 — flagged sites
+		// i=10..13 fall OUTSIDE TopSites, reproducing GH #197.
+		if i < flaggedSites {
+			row.OrphanedOptionsCount = i + 1
+			row.OrphanedCronCount = 1
+		}
+		rows = append(rows, row)
+	}
+
+	repo := &fakeRepo{fleetDbHealthRows: rows}
+	svc := NewService(repo, nil, nil, nil)
+
+	out, err := svc.GetFleetDbHealth(context.Background(), uuid.New(), 90)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(out.TopSites) != fleetTopN {
+		t.Fatalf("TopSites: got %d entries, want %d (capped)", len(out.TopSites), fleetTopN)
+	}
+
+	if out.SitesWithOrphans != flaggedSites {
+		t.Fatalf("SitesWithOrphans: got %d, want %d", out.SitesWithOrphans, flaggedSites)
+	}
+	if len(out.SitesNeedingReview) != flaggedSites {
+		t.Fatalf("SitesNeedingReview: got %d entries, want %d (uncapped)", len(out.SitesNeedingReview), flaggedSites)
+	}
+
+	// Confirm at least one flagged site OUTSIDE the top-10-by-size window is
+	// present in SitesNeedingReview but absent from TopSites — this is the
+	// exact bug being fixed.
+	inTopSites := make(map[uuid.UUID]bool, len(out.TopSites))
+	for _, s := range out.TopSites {
+		inTopSites[s.SiteID] = true
+	}
+	foundOutsideTop := false
+	for _, s := range out.SitesNeedingReview {
+		if !inTopSites[s.SiteID] {
+			foundOutsideTop = true
+			break
+		}
+	}
+	if !foundOutsideTop {
+		t.Fatal("expected at least one flagged site outside TopSites to be present in SitesNeedingReview")
+	}
+
+	// Sort order: descending total orphan count (options+cron), tie-break by
+	// site name ascending.
+	for i := 1; i < len(out.SitesNeedingReview); i++ {
+		prev, cur := out.SitesNeedingReview[i-1], out.SitesNeedingReview[i]
+		prevTotal := prev.OrphanedOptionsCount + prev.OrphanedCronCount
+		curTotal := cur.OrphanedOptionsCount + cur.OrphanedCronCount
+		if prevTotal < curTotal {
+			t.Fatalf("SitesNeedingReview not sorted by total orphan count desc at index %d: %d < %d", i, prevTotal, curTotal)
+		}
+		if prevTotal == curTotal && prev.SiteName > cur.SiteName {
+			t.Fatalf("SitesNeedingReview tie-break not sorted by name asc at index %d: %q > %q", i, prev.SiteName, cur.SiteName)
+		}
+	}
+
+	// Every review entry must carry the slim 4-field shape correctly mapped
+	// from the source row (spot-check by id).
+	bySiteID := make(map[uuid.UUID]FleetSiteDbSummary, len(rows))
+	for _, r := range rows {
+		bySiteID[r.SiteID] = r
+	}
+	for _, review := range out.SitesNeedingReview {
+		src, ok := bySiteID[review.SiteID]
+		if !ok {
+			t.Fatalf("SitesNeedingReview entry %s not found in source rows", review.SiteID)
+		}
+		if review.SiteName != src.SiteName || review.OrphanedOptionsCount != src.OrphanedOptionsCount || review.OrphanedCronCount != src.OrphanedCronCount {
+			t.Fatalf("SitesNeedingReview entry mismatch for %s: got %+v, want fields from %+v", review.SiteID, review, src)
+		}
+	}
 }

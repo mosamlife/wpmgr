@@ -446,6 +446,18 @@ WHERE site_id   = @site_id
 ORDER BY scanned_at ASC
 LIMIT 366;
 
+-- name: GetLatestDBSizeHistoryTableCount :one
+-- Returns the table_count from the most recent site_db_size_history row for a
+-- site (from either a manual "Scan database" run or a prior diagnostics-
+-- sourced point; GH #196). The daily diagnostics push does not carry a table
+-- inventory, so the diagnostics ingest tap carries this value forward rather
+-- than writing a 0 over a real count. pgx.ErrNoRows when no prior point
+-- exists yet — callers default to 0 in that case.
+SELECT table_count FROM site_db_size_history
+WHERE site_id = @site_id AND tenant_id = @tenant_id
+ORDER BY scanned_at DESC
+LIMIT 1;
+
 -- name: PruneDBSizeHistory :execrows
 -- Deletes rows older than the cutoff across ALL tenants (InAgentTx / app.agent).
 -- LIMIT 2000 keeps each GC transaction short; the periodic job runs daily so

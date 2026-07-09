@@ -371,6 +371,31 @@ func (q *Queries) GetFleetDbHealth(ctx context.Context, arg GetFleetDbHealthPara
 	return items, nil
 }
 
+const getLatestDBSizeHistoryTableCount = `-- name: GetLatestDBSizeHistoryTableCount :one
+SELECT table_count FROM site_db_size_history
+WHERE site_id = $1 AND tenant_id = $2
+ORDER BY scanned_at DESC
+LIMIT 1
+`
+
+type GetLatestDBSizeHistoryTableCountParams struct {
+	SiteID   uuid.UUID `json:"site_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Returns the table_count from the most recent site_db_size_history row for a
+// site (from either a manual "Scan database" run or a prior diagnostics-
+// sourced point; GH #196). The daily diagnostics push does not carry a table
+// inventory, so the diagnostics ingest tap carries this value forward rather
+// than writing a 0 over a real count. pgx.ErrNoRows when no prior point
+// exists yet — callers default to 0 in that case.
+func (q *Queries) GetLatestDBSizeHistoryTableCount(ctx context.Context, arg GetLatestDBSizeHistoryTableCountParams) (int32, error) {
+	row := q.db.QueryRow(ctx, getLatestDBSizeHistoryTableCount, arg.SiteID, arg.TenantID)
+	var table_count int32
+	err := row.Scan(&table_count)
+	return table_count, err
+}
+
 const getPerfConfig = `-- name: GetPerfConfig :one
 
 

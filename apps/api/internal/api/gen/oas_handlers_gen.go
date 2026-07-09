@@ -15169,12 +15169,12 @@ func (s *Server) handleGetFleetDbHealthRequest(args [0]string, argsEscaped bool,
 			mreq,
 			unpackGetFleetDbHealthParams,
 			func(ctx context.Context, request Request, params Params) (response Response, err error) {
-				err = s.h.GetFleetDbHealth(ctx, params)
+				response, err = s.h.GetFleetDbHealth(ctx, params)
 				return response, err
 			},
 		)
 	} else {
-		err = s.h.GetFleetDbHealth(ctx, params)
+		response, err = s.h.GetFleetDbHealth(ctx, params)
 	}
 	if err != nil {
 		defer recordError("Internal", err)

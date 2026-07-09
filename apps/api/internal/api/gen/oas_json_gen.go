@@ -38791,9 +38791,21 @@ func (s *GetFleetDbHealthOK) Encode(e *jx.Encoder) {
 
 // encodeFields encodes fields.
 func (s *GetFleetDbHealthOK) encodeFields(e *jx.Encoder) {
+	{
+		if s.SitesNeedingReview != nil {
+			e.FieldStart("sites_needing_review")
+			e.ArrStart()
+			for _, elem := range s.SitesNeedingReview {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
 }
 
-var jsonFieldsNameOfGetFleetDbHealthOK = [0]string{}
+var jsonFieldsNameOfGetFleetDbHealthOK = [1]string{
+	0: "sites_needing_review",
+}
 
 // Decode decodes GetFleetDbHealthOK from json.
 func (s *GetFleetDbHealthOK) Decode(d *jx.Decoder) error {
@@ -38803,9 +38815,27 @@ func (s *GetFleetDbHealthOK) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "sites_needing_review":
+			if err := func() error {
+				s.SitesNeedingReview = make([]GetFleetDbHealthOKSitesNeedingReviewItem, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem GetFleetDbHealthOKSitesNeedingReviewItem
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.SitesNeedingReview = append(s.SitesNeedingReview, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"sites_needing_review\"")
+			}
 		default:
 			return d.Skip()
 		}
+		return nil
 	}); err != nil {
 		return errors.Wrap(err, "decode GetFleetDbHealthOK")
 	}
@@ -38822,6 +38852,120 @@ func (s *GetFleetDbHealthOK) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *GetFleetDbHealthOK) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) encodeFields(e *jx.Encoder) {
+	{
+		if s.SiteID.Set {
+			e.FieldStart("site_id")
+			s.SiteID.Encode(e)
+		}
+	}
+	{
+		if s.SiteName.Set {
+			e.FieldStart("site_name")
+			s.SiteName.Encode(e)
+		}
+	}
+	{
+		if s.OrphanedOptionsCount.Set {
+			e.FieldStart("orphaned_options_count")
+			s.OrphanedOptionsCount.Encode(e)
+		}
+	}
+	{
+		if s.OrphanedCronCount.Set {
+			e.FieldStart("orphaned_cron_count")
+			s.OrphanedCronCount.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfGetFleetDbHealthOKSitesNeedingReviewItem = [4]string{
+	0: "site_id",
+	1: "site_name",
+	2: "orphaned_options_count",
+	3: "orphaned_cron_count",
+}
+
+// Decode decodes GetFleetDbHealthOKSitesNeedingReviewItem from json.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetFleetDbHealthOKSitesNeedingReviewItem to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "site_id":
+			if err := func() error {
+				s.SiteID.Reset()
+				if err := s.SiteID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_id\"")
+			}
+		case "site_name":
+			if err := func() error {
+				s.SiteName.Reset()
+				if err := s.SiteName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_name\"")
+			}
+		case "orphaned_options_count":
+			if err := func() error {
+				s.OrphanedOptionsCount.Reset()
+				if err := s.OrphanedOptionsCount.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"orphaned_options_count\"")
+			}
+		case "orphaned_cron_count":
+			if err := func() error {
+				s.OrphanedCronCount.Reset()
+				if err := s.OrphanedCronCount.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"orphaned_cron_count\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode GetFleetDbHealthOKSitesNeedingReviewItem")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetFleetDbHealthOKSitesNeedingReviewItem) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

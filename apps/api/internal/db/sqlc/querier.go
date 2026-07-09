@@ -676,6 +676,13 @@ type Querier interface {
 	// Returns the current chain head (newest row) for a tenant — the anchor point
 	// captured by an integrity re-baseline. Not used by Verify itself.
 	GetLatestAuditEntry(ctx context.Context, tenantID uuid.UUID) (GetLatestAuditEntryRow, error)
+	// Returns the table_count from the most recent site_db_size_history row for a
+	// site (from either a manual "Scan database" run or a prior diagnostics-
+	// sourced point; GH #196). The daily diagnostics push does not carry a table
+	// inventory, so the diagnostics ingest tap carries this value forward rather
+	// than writing a 0 over a real count. pgx.ErrNoRows when no prior point
+	// exists yet — callers default to 0 in that case.
+	GetLatestDBSizeHistoryTableCount(ctx context.Context, arg GetLatestDBSizeHistoryTableCountParams) (int32, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	// ---------------------------------------------------------------------------
 	// email_notify_settings  (m62 — alerts + digest)
