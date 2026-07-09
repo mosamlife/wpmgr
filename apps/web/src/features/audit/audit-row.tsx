@@ -9,7 +9,13 @@ import { AuditEntryDetail, RunDetail } from "./audit-detail";
 import type { AuditRun } from "./group-runs";
 import { runSummaryLabel } from "./group-runs";
 import { actionLabel, classifySeverity, type AuditSeverity } from "./labels";
-import { commonPathPrefix, formatClockTime, formatDateTime, metaString } from "./metadata";
+import {
+  commonPathPrefix,
+  formatClockTime,
+  formatDateTime,
+  humanizeTargetType,
+  metaString,
+} from "./metadata";
 import type { SiteMin } from "./types";
 
 // One row of the fleet audit log (redesign points 1, 3, 4, 5, 7, 10).
@@ -71,11 +77,33 @@ function EntryTime({ iso, isToday }: { iso: string; isToday: boolean }) {
   );
 }
 
+/**
+ * Best-effort site id for a non-"site" target_type, so a backup/restore/
+ * update row (target_type "backup_snapshot", "update_task", ...) can still
+ * resolve and show the site it happened on instead of just the raw target
+ * type (GH #201). The control plane attaches `metadata.site_id` to every
+ * site-scoped lifecycle event that isn't itself target_type "site"; the one
+ * exception is "backup_schedule", whose events don't carry metadata.site_id
+ * because the schedule row's own id IS the site id (backup/handler.go's
+ * recordScheduleChange sets TargetID to sched.SiteID). Entries with neither
+ * (e.g. update_run, which is scoped to a run, not a single site) return null
+ * and fall through to the existing raw target_type display.
+ */
+function targetSiteId(entry: AuditEntry): string | null {
+  if (entry.target_type === "site") return entry.target_id;
+  const metaSiteId = metaString(entry.metadata, "site_id");
+  if (metaSiteId) return metaSiteId;
+  if (entry.target_type === "backup_schedule") return entry.target_id;
+  return null;
+}
+
 function TargetSlot({ entry, sites }: { entry: AuditEntry; sites: SiteMin[] }) {
   const path = metaString(entry.metadata, "path");
+  const isSiteTarget = entry.target_type === "site";
+  const siteId = targetSiteId(entry);
+  const site = siteId ? sites.find((s) => s.id === siteId) : undefined;
 
-  if (entry.target_type === "site") {
-    const site = sites.find((s) => s.id === entry.target_id);
+  if (isSiteTarget) {
     return (
       <div className="flex min-w-0 flex-col gap-0.5">
         <span
@@ -94,6 +122,26 @@ function TargetSlot({ entry, sites }: { entry: AuditEntry; sites: SiteMin[] }) {
             {path}
           </span>
         ) : null}
+      </div>
+    );
+  }
+
+  // Site-scoped non-"site" target (backup/restore/update, ...): show the
+  // resolved site name as the primary label, and keep the target-type
+  // context (e.g. "Backup snapshot") as a secondary line rather than
+  // silently dropping the fact that this was a backup/update on that site.
+  if (site) {
+    return (
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="inline-flex w-fit max-w-full items-center truncate rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">
+          {site.name || site.url}
+        </span>
+        <span
+          className="truncate text-[11px] text-muted-foreground"
+          title={`${humanizeTargetType(entry.target_type)} · ${entry.target_id}`}
+        >
+          {humanizeTargetType(entry.target_type)}
+        </span>
       </div>
     );
   }
