@@ -31,8 +31,8 @@ import { useSharedWithMe } from "@/features/sharing/use-shared-with-me";
 // collaborator can still see and switch to that org.
 //
 // Switching calls POST /api/v1/orgs/{id}/activate which sets the session's
-// active_tenant_id; useActivateOrg then clears ALL server state so every
-// query refetches in the new org context.
+// active_tenant_id; useActivateOrg then actively resets + refetches ALL
+// server state so every query reflects the new org context immediately.
 
 interface OrgEntry {
   id: string;
