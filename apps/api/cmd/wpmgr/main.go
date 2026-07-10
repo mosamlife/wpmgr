@@ -67,6 +67,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/org"
 	"github.com/mosamlife/wpmgr/apps/api/internal/perf"
 	portalpkg "github.com/mosamlife/wpmgr/apps/api/internal/portal"
+	"github.com/mosamlife/wpmgr/apps/api/internal/pricing"
 	reportpkg "github.com/mosamlife/wpmgr/apps/api/internal/report"
 	reporthtml "github.com/mosamlife/wpmgr/apps/api/internal/report/render/html"
 	reportpdf "github.com/mosamlife/wpmgr/apps/api/internal/report/render/pdf"
@@ -502,8 +503,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if len(billingProviders) == 0 && cfg.Hosted.Enabled {
 		logger.Warn("billing: hosted billing is enabled but no payment provider is configured — checkout/portal will return 503")
 	}
-	billingSvc.SetProviders(billing.NewRegistry(billingProviders...), "stripe")
+	billingRegistry := billing.NewRegistry(billingProviders...)
+	billingSvc.SetProviders(billingRegistry, "stripe")
 	billingSvc.SetAudit(auditRec)
+	// M16 Phase 0 — "sign up into a plan": billingSvc.ValidPaidTier no-ops to
+	// false when WPMGR_HOSTED is off, so this wiring is safe to leave on
+	// unconditionally, exactly like SetBillingGate above.
+	authSvc.SetPlanValidator(billingSvc)
 
 	// The billing HTTP handlers are always CONSTRUCTED (cheap, stateless) but
 	// only MOUNTED when hosted billing is enabled (see the server.Deps wiring
@@ -520,11 +526,22 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	billingWebhookH := billing.NewWebhookHandler(billingSvc, logger)
 	billingReconcileWorker := billing.NewReconcileWorker(billingSvc, logger)
 
+	// M16 live-pricing Phase 1 — public GET /api/v1/pricing (internal/pricing),
+	// the marketing site's price source. Reuses the SAME billingRegistry (so
+	// it sees exactly the providers billingSvc itself would use) and the
+	// SAME session Redis pool as the entitlements cache (a distinct
+	// "pricing:" key prefix keeps them from colliding). Always CONSTRUCTED
+	// (cheap, stateless) but only MOUNTED when hosted billing is enabled —
+	// same nil/non-nil split as billingH/billingWebhookH below.
+	pricingSvc := pricing.NewService(billingRegistry, redisPool, logger)
+	pricingH := pricing.NewHandler(pricingSvc)
+
 	// Both handlers are mounted ONLY when hosted billing is enabled — this
 	// nil/non-nil split is the routes-contract 404-when-unhosted guarantee
-	// (see server.Deps.BillingH/BillingWebhookH's doc comments).
+	// (see server.Deps.BillingH/BillingWebhookH/PricingH's doc comments).
 	var billingHForRoutes *billing.Handler
 	var billingWebhookHForRoutes *billing.WebhookHandler
+	var pricingHForRoutes *pricing.Handler
 	// M16 Phase C1 — the superadmin hard-lockout enforcement middleware
 	// (tenants.suspended_at, m92). Same nil/non-nil split: self-host
 	// (unhosted) never even constructs the closure, matching every other
@@ -535,6 +552,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		billingHForRoutes = billingH
 		billingWebhookHForRoutes = billingWebhookH
 		billingSuspensionGateForRoutes = billingSvc.SuspensionGate()
+		pricingHForRoutes = pricingH
 	}
 
 	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc, pool)
@@ -2186,8 +2204,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		BillingH:              billingHForRoutes,
 		BillingWebhookH:       billingWebhookHForRoutes,
 		BillingSuspensionGate: billingSuspensionGateForRoutes,
-		ServiceName:           cfg.OTel.ServiceName,
-		Version:               version,
+		// M16 live-pricing Phase 1 — public GET /api/v1/pricing. nil unless
+		// WPMGR_HOSTED is enabled (same 404-when-unhosted guarantee as the
+		// billing routes immediately above).
+		PricingH:    pricingHForRoutes,
+		ServiceName: cfg.OTel.ServiceName,
+		Version:     version,
 	})
 
 	return srv.Run(ctx)

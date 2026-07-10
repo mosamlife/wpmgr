@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
-import { AlertTriangle, CircleCheck, Loader2 } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +12,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { SegmentedControl } from "@/components/ui/segmented-control";
 import { PageError } from "@/components/feedback";
 import { PageHeader } from "@/components/shared/page-header";
 import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
@@ -20,22 +19,13 @@ import { toast } from "@/components/toast";
 import { useMe, activeRole } from "@/features/auth/use-auth";
 import {
   useBilling,
-  useCreateBillingCheckout,
   useCreateBillingPortal,
   useCancelBillingSubscription,
-  useVerifyRazorpayCheckout,
   useBillingCheckoutReturn,
   isCheckoutTier,
   type BillingInfo,
-  type BillingProvider,
-  type BillingCurrency,
-  type RazorpayCheckoutData,
-  type CheckoutTierId,
 } from "@/features/billing/use-billing";
-import {
-  loadRazorpayCheckout,
-  type RazorpayHandlerResponse,
-} from "@/features/billing/razorpay-checkout";
+import { useCheckoutFlow } from "@/features/billing/use-checkout-flow";
 import {
   billingBannerFor,
   formatBillingDate,
@@ -48,6 +38,8 @@ import {
   planLabel,
 } from "@/features/billing/plan-catalog";
 import { UsageMeterList } from "@/features/billing/usage-meter-list";
+import { PaymentMethodPicker } from "@/features/billing/payment-method-picker";
+import { CheckoutReturnBanner } from "@/features/billing/checkout-return-banner";
 import { cn } from "@/lib/utils";
 
 // M16 Phase B — the tenant Billing settings page. Owner-only, hosted-only
@@ -314,119 +306,6 @@ function BillingContent({
 }
 
 // ---------------------------------------------------------------------------
-// Checkout-return banner — success | cancel | finalizing | timed out
-// ---------------------------------------------------------------------------
-
-function CheckoutReturnBanner({
-  status,
-  finalizing,
-  timedOut,
-}: {
-  status: "success" | "cancel" | undefined;
-  finalizing: boolean;
-  timedOut: boolean;
-}) {
-  if (!status) return null;
-
-  if (status === "cancel") {
-    return (
-      <div
-        role="status"
-        className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
-      >
-        Checkout was canceled. No changes were made to your plan.
-      </div>
-    );
-  }
-
-  if (finalizing) {
-    return (
-      <div
-        role="status"
-        aria-live="polite"
-        className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-foreground"
-      >
-        <Loader2 aria-hidden="true" className="size-4 animate-spin" />
-        Finalizing your subscription…
-      </div>
-    );
-  }
-
-  if (timedOut) {
-    return (
-      <div
-        role="status"
-        className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
-      >
-        Payment received. It can take a few minutes for your plan to update
-        here.
-      </div>
-    );
-  }
-
-  return (
-    <div
-      role="status"
-      className="flex items-center gap-2 rounded-lg bg-[var(--color-success-subtle)] px-4 py-3 text-sm text-[var(--color-success-subtle-fg)]"
-    >
-      <CircleCheck aria-hidden="true" className="size-4" />
-      Subscription updated.
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Payment method picker — provider (Stripe/Razorpay) + Razorpay-only currency
-// ---------------------------------------------------------------------------
-
-function PaymentMethodPicker({
-  provider,
-  onProviderChange,
-  currency,
-  onCurrencyChange,
-}: {
-  provider: BillingProvider;
-  onProviderChange: (provider: BillingProvider) => void;
-  currency: BillingCurrency;
-  onCurrencyChange: (currency: BillingCurrency) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-muted/20 px-4 py-3 text-sm">
-      <div className="flex items-center gap-2">
-        <span className="font-medium text-foreground">Pay via</span>
-        <SegmentedControl
-          aria-label="Payment provider"
-          value={provider}
-          onChange={onProviderChange}
-          options={[
-            { value: "stripe", label: "Stripe" },
-            { value: "razorpay", label: "Razorpay" },
-          ]}
-        />
-      </div>
-      {provider === "razorpay" ? (
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-foreground">Currency</span>
-          <SegmentedControl
-            aria-label="Currency"
-            value={currency}
-            onChange={onCurrencyChange}
-            options={[
-              { value: "USD", label: "USD ($)" },
-              { value: "INR", label: "INR (₹)" },
-            ]}
-          />
-          <span className="text-xs text-muted-foreground">
-            Prices below are shown in USD; the exact INR amount is confirmed
-            in the payment window before you pay.
-          </span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Plan tiers grid
 // ---------------------------------------------------------------------------
 
@@ -443,67 +322,16 @@ function PlanTiersGrid({
   portalPending: boolean;
   onCheckoutSuccess: () => void;
 }) {
-  const checkout = useCreateBillingCheckout();
-  const verify = useVerifyRazorpayCheckout();
-  const [provider, setProvider] = useState<BillingProvider>("stripe");
-  const [currency, setCurrency] = useState<BillingCurrency>("USD");
+  const {
+    provider,
+    currency,
+    setProvider,
+    setCurrency,
+    startCheckout,
+    isStarting,
+    error: checkoutError,
+  } = useCheckoutFlow({ onCheckoutSuccess });
   const usedSites = billing.meters.sites?.used ?? 0;
-
-  function openRazorpayCheckout(data: RazorpayCheckoutData) {
-    loadRazorpayCheckout()
-      .then((Razorpay) => {
-        const instance = new Razorpay({
-          key: data.key_id,
-          subscription_id: data.subscription_id,
-          amount: data.amount,
-          currency: data.currency,
-          name: "WPMgr",
-          description: "WPMgr subscription",
-          handler: (response: RazorpayHandlerResponse) => {
-            // Verify is a UX confirmation only — the poll below (via
-            // onCheckoutSuccess -> the shared Stripe success-poll mechanism)
-            // is what actually observes the plan flip, so it must start
-            // regardless of whether verify itself succeeds or fails.
-            verify.mutate(response, {
-              onSettled: () => onCheckoutSuccess(),
-            });
-          },
-          modal: {
-            // The operator closed the modal without paying — a normal
-            // cancel, never an error. No toast, no navigation.
-            ondismiss: () => {},
-          },
-        });
-        instance.open();
-      })
-      .catch((err: unknown) => {
-        toast.error("Could not open the Razorpay payment window", {
-          description:
-            err instanceof Error
-              ? err.message
-              : "Please try again, or choose Stripe instead.",
-        });
-      });
-  }
-
-  function startCheckout(tier: CheckoutTierId) {
-    checkout.mutate(
-      {
-        tier,
-        provider,
-        currency: provider === "razorpay" ? currency : undefined,
-      },
-      {
-        onSuccess: (result) => {
-          if (result.razorpay) {
-            openRazorpayCheckout(result.razorpay);
-          } else if (result.url) {
-            window.location.href = result.url;
-          }
-        },
-      },
-    );
-  }
 
   return (
     <div className="space-y-3">
@@ -571,13 +399,13 @@ function PlanTiersGrid({
                   <Button
                     type="button"
                     className="w-full"
-                    disabled={blocked || checkout.isPending}
+                    disabled={blocked || isStarting}
                     onClick={() => {
                       if (!isCheckoutTier(tier.id)) return;
                       startCheckout(tier.id);
                     }}
                   >
-                    {checkout.isPending
+                    {isStarting
                       ? provider === "razorpay"
                         ? "Opening…"
                         : "Redirecting…"
@@ -591,9 +419,9 @@ function PlanTiersGrid({
           );
         })}
       </div>
-      {checkout.isError ? (
+      {checkoutError ? (
         <p role="alert" className="text-sm text-destructive">
-          {checkout.error.message}
+          {checkoutError.message}
         </p>
       ) : null}
     </div>

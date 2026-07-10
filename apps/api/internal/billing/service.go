@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/gomodule/redigo/redis"
 	"github.com/google/uuid"
@@ -255,6 +256,26 @@ func (s *Service) ManagedStorageAllowed(ctx context.Context, tenantID uuid.UUID)
 		return false, err
 	}
 	return ent.ManagedBackupStorage, nil
+}
+
+// ValidPaidTier reports whether the given string names one of the hosted
+// PAID tiers (never the free tier) recognized by the plan ladder. Implements
+// auth.PaidTierValidator (internal/auth already imports internal/billing
+// indirectly via cmd/wpmgr's wiring, but billing itself imports auth for
+// TenantCreator-adjacent types, so the reverse import would cycle — this
+// narrow method lets internal/auth validate a "sign up into a plan" hint at
+// registration time without ever spelling out a tier name itself; see
+// grep_guard_test.go). Case/whitespace-insensitive so a caller need not
+// pre-normalize.
+//
+// Returns false, without touching the database, whenever hosted billing is
+// disabled: self-host and pre-Phase-B hosted deployments have no checkout to
+// route a plan intent to, so no intent should ever be captured.
+func (s *Service) ValidPaidTier(plan string) bool {
+	if !s.enabled {
+		return false
+	}
+	return ValidPaidTier(Tier(strings.ToLower(strings.TrimSpace(plan))))
 }
 
 // fetchTenantBilling loads the plan-resolution fields via any DBTX (the pool

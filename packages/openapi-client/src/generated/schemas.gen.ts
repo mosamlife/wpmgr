@@ -1151,6 +1151,12 @@ export const MeSchema = {
       description:
         "Whether the active tenant's plan currently permits routing a NEW backup to CP-managed storage (M16 Phase B). Always true on a self-hosted or hosted-billing-disabled instance, and true for every paid plan; false only for a free-plan tenant under WPMGR_HOSTED. This is a coarse, role-safe display signal for the operator-facing /destinations page (which any operator can view, unlike the owner-only /billing summary) — it is NOT the authoritative gate; the backup-run endpoints enforce the real check server-side and return 402 byo_destination_required when denied. Restoring/downloading an existing backup is never gated by this or any other check.\n",
     },
+    desired_plan: {
+      type: "string",
+      enum: ["starter", "agency", "scale"],
+      description:
+        'The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan), single-use: present ONLY in the direct response to POST /auth/verify-email (read off the just-consumed verification token) or the first-run bootstrap response of POST /auth/register — never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start checkout right after the account is verified. Absent means no intent was captured (free signup, self-hosted instance, or a resend/login/OIDC path that never carries one).',
+    },
   },
 } as const;
 
@@ -1228,6 +1234,12 @@ export const RegisterRequestSchema = {
       type: "string",
       maxLength: 64,
       pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    },
+    plan: {
+      type: "string",
+      enum: ["starter", "agency", "scale"],
+      description:
+        'OPTIONAL "sign up into a plan" hint (M16 Phase 0, hosted billing only). Omit for an ordinary free-tier signup. Persisted against the email-verification token and surfaced back as Me.desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a real paid tier, is silently treated as no intent — this field can never fail registration on its own.',
     },
   },
 } as const;

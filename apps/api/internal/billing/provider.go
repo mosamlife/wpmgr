@@ -238,6 +238,32 @@ type CheckoutCallbackVerifier interface {
 	VerifyCheckoutCallback(payload map[string]string) error
 }
 
+// StripePriceReader is an OPTIONAL capability a Provider may implement to
+// expose its live per-tier list price WITHOUT creating a subscription — the
+// read backing the public GET /api/v1/pricing endpoint (internal/pricing),
+// which the marketing site polls to show accurate prices. Declared as a
+// SEPARATE, optional interface (mirrors CheckoutCallbackVerifier immediately
+// above) rather than folded into Provider itself: a price-introspection
+// capability is not something every payment-provider adapter or test double
+// needs to carry.
+type StripePriceReader interface {
+	// GetPrice reads tier's price via a side-effect-free provider lookup (no
+	// subscription created) and returns the per-billing-cycle amount in the
+	// currency's smallest unit, its ISO 4217 currency code, and the billing
+	// interval (e.g. "month").
+	GetPrice(ctx context.Context, tier Tier) (amountMinor int64, currency string, interval string, err error)
+}
+
+// RazorpayPlanReader is the Razorpay-shaped equivalent of StripePriceReader:
+// Razorpay has no single multi-currency price object the way Stripe does —
+// it maintains one Plan PER CURRENCY PER TIER (see the razorpay package's own
+// doc comment) — so its price read is additionally keyed by currency.
+type RazorpayPlanReader interface {
+	// GetPlanAmount reads the (tier, currency) Plan's authoritative amount via
+	// a side-effect-free provider lookup (no subscription created).
+	GetPlanAmount(ctx context.Context, tier Tier, currency string) (amountMinor int64, resolvedCurrency string, interval string, err error)
+}
+
 // Registry is the set of payment providers wired at boot (from config). A
 // provider only appears here when its configuration is actually present
 // (e.g. Stripe's secret key + webhook secret + all three price IDs) — an

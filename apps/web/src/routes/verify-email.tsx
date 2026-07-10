@@ -26,6 +26,7 @@ import {
   useVerifyEmail,
   useResendVerification,
 } from "@/features/auth/use-auth";
+import { readPendingPlan } from "@/features/billing/pending-plan";
 
 // Unauthenticated — NOT under _authed, no beforeLoad guard.
 const searchSchema = z.object({
@@ -137,8 +138,22 @@ function VerifyWithToken({ token }: { token: string }) {
       {
         onSuccess: (result) => {
           if (result.status === 200) {
-            // Session is now live (me is in the query cache). Navigate into app.
-            void navigate({ to: "/sites" });
+            // Session is now live (me is in the query cache). A hosted
+            // instance where this account captured a paid-plan intent at
+            // signup (Me.desired_plan, single-use — see use-auth.ts) skips
+            // straight to checkout instead of an empty Sites page. The
+            // local same-browser stash only ever supplies a `?currency=`
+            // hint here; `desired_plan`+`hosted` alone decide whether to go.
+            const me = result.me;
+            if (me?.desired_plan && me.hosted) {
+              const stash = readPendingPlan();
+              void navigate({
+                to: "/welcome/checkout",
+                search: { plan: me.desired_plan, currency: stash?.currency },
+              });
+            } else {
+              void navigate({ to: "/sites" });
+            }
           }
           // 410/429 handled by rendering below.
         },

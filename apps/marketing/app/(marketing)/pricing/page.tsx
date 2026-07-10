@@ -1,11 +1,13 @@
 // PricingPage: real, priced hosted tiers plus the permanent free self-host
 // option. Tier data lives in lib/content/pricing.ts so it is edited in one
-// place. SoftwareApplication JSON-LD lists every tier as a separate Offer.
+// place. Prices are fetched live from the CP at build time (SSG) via
+// lib/pricing-live.ts, with a static fallback if that fetch fails for any
+// reason -- see resolveTierPrices. SoftwareApplication JSON-LD lists every
+// tier as a separate Offer per currency it is actually priced in.
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Icon } from "@/components/ui/icon";
-import { Button } from "@/components/ui/button";
-import { Container, Section, SectionHeading, Card } from "@/components/ui/primitives";
+import { Container, Section, SectionHeading } from "@/components/ui/primitives";
 import { Reveal } from "@/components/motion/reveal";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
 import { FAQ } from "@/components/sections/faq";
@@ -13,8 +15,9 @@ import { CTABand } from "@/components/sections/cta-band";
 import { buildMetadata, buildFAQPageLd, buildBreadcrumbLd, buildSoftwareApplicationLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { SITE_CONFIG } from "@/lib/site";
-import { PRICING_TIERS, PRICING_NOTE, PRICING_FAQ, PRICING_CTAS } from "@/lib/content/pricing";
-import { cn } from "@/lib/utils";
+import { PRICING_TIERS, PRICING_NOTE, PRICING_FAQ, PRICING_CTAS, resolveTierPrices } from "@/lib/content/pricing";
+import { fetchLivePricing } from "@/lib/pricing-live";
+import { PricingTierCards } from "./pricing-tiers";
 
 export const metadata: Metadata = buildMetadata({
   title: "Pricing | WPMgr",
@@ -23,7 +26,10 @@ export const metadata: Metadata = buildMetadata({
   canonical: "/pricing/",
 });
 
-export default function PricingPage() {
+export default async function PricingPage() {
+  const livePricing = await fetchLivePricing();
+  const prices = resolveTierPrices(livePricing);
+
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
     { name: "Pricing", href: "/pricing/" },
@@ -31,14 +37,32 @@ export default function PricingPage() {
 
   const appLd = {
     ...buildSoftwareApplicationLd(),
-    offers: PRICING_TIERS.map((tier) => ({
-      "@type": "Offer",
-      name: `${tier.name} plan`,
-      price: String(tier.price),
-      priceCurrency: "USD",
-      description: tier.audience,
-      url: `${SITE_CONFIG.baseUrl}/pricing/`,
-    })),
+    // One Offer per (tier, currency) actually priced -- USD always, INR only
+    // when the tier has a live INR quote (see TierDisplayPrice.inr).
+    offers: PRICING_TIERS.flatMap((tier) => {
+      const tierPrice = prices[tier.id];
+      const offers = [
+        {
+          "@type": "Offer",
+          name: `${tier.name} plan`,
+          price: String(tierPrice.usd.amountMajor),
+          priceCurrency: "USD",
+          description: tier.audience,
+          url: `${SITE_CONFIG.baseUrl}/pricing/`,
+        },
+      ];
+      if (tierPrice.inr) {
+        offers.push({
+          "@type": "Offer",
+          name: `${tier.name} plan`,
+          price: String(tierPrice.inr.amountMajor),
+          priceCurrency: "INR",
+          description: tier.audience,
+          url: `${SITE_CONFIG.baseUrl}/pricing/`,
+        });
+      }
+      return offers;
+    }),
   };
 
   const faqLd = buildFAQPageLd(PRICING_FAQ);
@@ -102,63 +126,7 @@ export default function PricingPage() {
       {/* Tier cards */}
       <Section id="tiers">
         <Container>
-          <Stagger className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {PRICING_TIERS.map((tier) => {
-              const trailing = tier.cta.icon === "ArrowRight";
-              return (
-                <StaggerItem key={tier.id} className="h-full">
-                  <Card
-                    className={cn(
-                      "flex h-full flex-col gap-5",
-                      tier.mostPopular && "border-[var(--primary)]/50 ring-1 ring-[var(--primary)]/20",
-                    )}
-                  >
-                    {tier.mostPopular ? (
-                      <span className="inline-flex self-start rounded-full bg-[var(--primary-subtle)] px-2.5 py-0.5 text-xs font-semibold text-[var(--primary-pressed)]">
-                        Most popular
-                      </span>
-                    ) : (
-                      <span className="h-[22px]" aria-hidden />
-                    )}
-                    <div>
-                      <h2 className="text-lg font-semibold text-foreground">{tier.name}</h2>
-                      <p className="mt-0.5 text-xs font-medium text-[var(--primary-pressed)] uppercase tracking-wide">
-                        {tier.audience}
-                      </p>
-                    </div>
-                    <div className="flex items-baseline gap-1">
-                      <span
-                        className="text-3xl font-semibold text-foreground"
-                        style={{ fontVariantNumeric: "tabular-nums" }}
-                      >
-                        ${tier.price}
-                      </span>
-                      <span className="text-sm text-[var(--muted-foreground)]">/mo</span>
-                    </div>
-                    <ul className="flex-1 space-y-2.5">
-                      {tier.features.map((f) => (
-                        <li key={f} className="flex items-start gap-2 text-sm text-foreground">
-                          <Icon name="Check" size={16} className="mt-0.5 shrink-0 text-[var(--primary)]" />
-                          <span>{f}</span>
-                        </li>
-                      ))}
-                    </ul>
-                    <Button
-                      href={tier.cta.href}
-                      variant={tier.cta.variant}
-                      size="md"
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="w-full"
-                    >
-                      {tier.cta.label}
-                      {trailing ? <Icon name="ArrowRight" size={16} /> : null}
-                    </Button>
-                  </Card>
-                </StaggerItem>
-              );
-            })}
-          </Stagger>
+          <PricingTierCards prices={prices} />
 
           <Reveal delay={0.1}>
             <p className="mx-auto mt-8 max-w-2xl text-center text-sm leading-relaxed text-[var(--muted-foreground)]">

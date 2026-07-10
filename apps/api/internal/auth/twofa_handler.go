@@ -127,7 +127,7 @@ func (h *Handler) twoFATOTPComplete(c *gin.Context) {
 	}
 
 	remaining, _ := h.svc.CountRecoveryCodes(c.Request.Context(), res.User.ID)
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 	c.JSON(http.StatusOK, gin.H{
 		"me":                        out,
 		"recovery_codes_remaining":  remaining,
@@ -175,7 +175,7 @@ func (h *Handler) twoFARecoveryComplete(c *gin.Context) {
 		h.issueDeviceCookieWithLabel(c, res, label)
 	}
 
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 	c.JSON(http.StatusOK, gin.H{
 		"me":                       out,
 		"recovery_codes_remaining": remaining,
@@ -256,7 +256,7 @@ func (h *Handler) twoFAWebAuthnFinish(c *gin.Context) {
 		h.issueDeviceCookieWithLabel(c, res, label)
 	}
 
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 	c.JSON(http.StatusOK, &out)
 }
 

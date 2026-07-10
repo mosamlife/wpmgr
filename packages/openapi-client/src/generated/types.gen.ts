@@ -618,6 +618,10 @@ export type Me = {
    *
    */
   managed_storage_allowed?: boolean;
+  /**
+   * The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan), single-use: present ONLY in the direct response to POST /auth/verify-email (read off the just-consumed verification token) or the first-run bootstrap response of POST /auth/register — never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start checkout right after the account is verified. Absent means no intent was captured (free signup, self-hosted instance, or a resend/login/OIDC path that never carries one).
+   */
+  desired_plan?: "starter" | "agency" | "scale";
 };
 
 /**
@@ -664,6 +668,10 @@ export type RegisterRequest = {
   name?: string;
   tenant_name?: string;
   tenant_slug?: string;
+  /**
+   * OPTIONAL "sign up into a plan" hint (M16 Phase 0, hosted billing only). Omit for an ordinary free-tier signup. Persisted against the email-verification token and surfaced back as Me.desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a real paid tier, is silently treated as no intent — this field can never fail registration on its own.
+   */
+  plan?: "starter" | "agency" | "scale";
 };
 
 export type InviteRequest = {

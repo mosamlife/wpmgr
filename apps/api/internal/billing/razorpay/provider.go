@@ -212,6 +212,26 @@ func (p *Provider) CreateCheckout(ctx context.Context, in billing.CheckoutInput)
 	}, nil
 }
 
+// GetPlanAmount implements billing.RazorpayPlanReader: reads the (tier,
+// currency) Plan's authoritative amount via the SAME side-effect-free
+// GET /plans/{id} call CreateCheckout uses to read the Checkout.js "amount" —
+// no subscription is created. Backs the public GET /api/v1/pricing endpoint
+// (internal/pricing). Every Razorpay Plan this adapter creates bills
+// MONTHLY (see subscriptionTotalCycles's doc comment), so interval is always
+// "month".
+func (p *Provider) GetPlanAmount(ctx context.Context, tier billing.Tier, currency string) (amountMinor int64, resolvedCurrency string, interval string, err error) {
+	planID, ok := p.planID(tier, currency)
+	if !ok {
+		return 0, "", "", domain.NotFound("razorpay_plan_not_configured",
+			fmt.Sprintf("no Razorpay plan is configured for tier %q in currency %q", tier, currency))
+	}
+	plan, err := p.fetchPlan(ctx, planID)
+	if err != nil {
+		return 0, "", "", err
+	}
+	return plan.Item.Amount, plan.Item.Currency, "month", nil
+}
+
 // CreatePortalSession implements billing.Provider: Razorpay has no hosted
 // billing-management portal (unlike Stripe's Billing Portal). Returns a
 // clear domain KindUnavailable (HTTP 501) error rather than fabricating a

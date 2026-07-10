@@ -175,7 +175,7 @@ func (h *Handler) login(c *gin.Context) {
 					httpx.Error(c, domain.Internal("session_failed", "failed to establish session").WithCause(err))
 					return
 				}
-				out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+				out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 				c.JSON(http.StatusOK, &out)
 				return
 			}
@@ -192,7 +192,7 @@ func (h *Handler) login(c *gin.Context) {
 	if !h.issueSessionOrChallenge(c, res, "") {
 		return
 	}
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -202,6 +202,10 @@ type registerBody struct {
 	Name       string `json:"name"`
 	TenantName string `json:"tenant_name"`
 	TenantSlug string `json:"tenant_slug"`
+	// Plan is an OPTIONAL M16 Phase 0 "sign up into a plan" hint. See
+	// RegisterInput.Plan's doc comment: any non-paid-tier value (including
+	// "free", empty, or unrecognized) is silently treated as no intent.
+	Plan string `json:"plan"`
 }
 
 func (h *Handler) register(c *gin.Context) {
@@ -216,6 +220,7 @@ func (h *Handler) register(c *gin.Context) {
 		Name:       body.Name,
 		TenantName: body.TenantName,
 		TenantSlug: body.TenantSlug,
+		Plan:       body.Plan,
 	}
 
 	// First account on a fresh install bootstraps frictionlessly (no SMTP exists
@@ -235,7 +240,7 @@ func (h *Handler) register(c *gin.Context) {
 		if !h.issueSessionOrChallenge(c, res, "") {
 			return
 		}
-		out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+		out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 		c.JSON(http.StatusCreated, &out)
 		return
 	}
@@ -331,7 +336,7 @@ func (h *Handler) verifyEmail(c *gin.Context) {
 	if !h.issueSessionOrChallenge(c, res, "") {
 		return
 	}
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -388,7 +393,7 @@ func (h *Handler) me(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID))
+	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID), "")
 	// m66 — portal principal: enrich Me with scope, role, and portal branding.
 	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
 	c.JSON(http.StatusOK, &out)
@@ -417,7 +422,7 @@ func (h *Handler) updateProfile(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID))
+	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID), "")
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -552,11 +557,15 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 		return
 	}
 	// Non-2FA path: session was issued; redirect the browser to the SPA home.
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant))
+	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 	c.JSON(http.StatusOK, &out)
 }
 
-func toMe(u User, memberships []Membership, active uuid.UUID, hosted, managedStorageAllowed bool) gen.Me {
+// toMe builds the wire Me response. desiredPlan is the M16 Phase 0 "sign up
+// into a plan" intent (LoginResult.DesiredPlan) — non-empty ONLY right after
+// Bootstrap or VerifyEmail; every other caller passes "" (no such field
+// exists on that path's result).
+func toMe(u User, memberships []Membership, active uuid.UUID, hosted, managedStorageAllowed bool, desiredPlan string) gen.Me {
 	me := gen.Me{
 		User:                  toAPIUser(u),
 		Memberships:           toAPIMemberships(memberships),
@@ -565,6 +574,9 @@ func toMe(u User, memberships []Membership, active uuid.UUID, hosted, managedSto
 	}
 	if active != uuid.Nil {
 		me.ActiveTenantID = gen.NewOptUUID(active)
+	}
+	if desiredPlan != "" {
+		me.DesiredPlan = gen.NewOptMeDesiredPlan(gen.MeDesiredPlan(desiredPlan))
 	}
 	return me
 }

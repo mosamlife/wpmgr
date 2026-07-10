@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useState } from "react";
-import { AlertCircle, AlertTriangle, CheckCircle2, Globe } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, Globe, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,8 +16,23 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ensureMe, useRegister, useResendVerification } from "@/features/auth/use-auth";
+import { planCatalogEntry } from "@/features/billing/plan-catalog";
+import { stashPendingPlan } from "@/features/billing/pending-plan";
+import type { BillingCurrency, CheckoutTierId } from "@/features/billing/use-billing";
+
+// M16 Phase C2 — signup-to-premium: a plan chosen on the marketing pricing
+// page is carried through `/register?plan=...&currency=...` (see
+// registerSearchSchema below). Unknown/`free` values are silently ignored
+// (`.catch(undefined)`, same idiom as admin/accounts/index.tsx's own note on
+// why `z.enum()` needs a literal tuple) rather than erroring the whole route
+// out — a stray or stale query param must never break the signup page.
+const registerSearchSchema = z.object({
+  plan: z.enum(["starter", "agency", "scale"]).optional().catch(undefined),
+  currency: z.enum(["USD", "INR"]).optional().catch(undefined),
+});
 
 export const Route = createFileRoute("/register")({
+  validateSearch: registerSearchSchema,
   // Already signed in? Nothing to bootstrap — go to the app.
   beforeLoad: async ({ context }) => {
     const me = await ensureMe(context.queryClient);
@@ -45,6 +60,9 @@ type RegisterValues = z.infer<typeof registerSchema>;
 
 function RegisterPage() {
   const navigate = useNavigate();
+  const search = Route.useSearch();
+  const chosenPlan: CheckoutTierId | undefined = search.plan;
+  const chosenCurrency: BillingCurrency | undefined = search.currency;
   const registerMutation = useRegister();
   const resendMutation = useResendVerification();
   // When the self-serve path succeeds we flip to a confirmation view showing
@@ -69,14 +87,29 @@ function RegisterPage() {
         name: values.name || undefined,
         tenant_name: values.tenant_name || undefined,
         tenant_slug: values.tenant_slug || undefined,
+        plan: chosenPlan,
       },
       {
         onSuccess: (result) => {
           if (result.pending) {
             // Normal self-serve path: must verify email before logging in.
+            // Stash the chosen plan as a same-browser fast path — the
+            // canonical carrier is still the backend (persisted against the
+            // verification token, surfaced back as Me.desired_plan).
+            if (chosenPlan) {
+              stashPendingPlan({ plan: chosenPlan, currency: chosenCurrency });
+            }
             setPendingEmail(values.email);
+          } else if (result.me?.desired_plan && result.me.hosted) {
+            // First-account bootstrap path (session established immediately)
+            // with a captured paid-plan intent on a hosted instance: skip
+            // straight to checkout instead of landing on an empty Sites page.
+            void navigate({
+              to: "/welcome/checkout",
+              search: { plan: result.me.desired_plan, currency: chosenCurrency },
+            });
           } else {
-            // First-account path: session established, go into the app.
+            // First-account path, no paid intent (or self-hosted): go into the app.
             void navigate({ to: "/sites" });
           }
         },
@@ -182,6 +215,8 @@ function RegisterPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {chosenPlan ? <PlanChip plan={chosenPlan} /> : null}
+
           <form
             onSubmit={(e) => void onSubmit(e)}
             noValidate
@@ -258,6 +293,26 @@ function RegisterPage() {
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+/**
+ * Small summary chip shown above the form when the signup URL carries a
+ * `?plan=` hint (e.g. from the marketing pricing page). Purely informational
+ * — the actual plan is threaded through the register call and, on a hosted
+ * instance, resolved server-side; this never blocks a free signup.
+ */
+function PlanChip({ plan }: { plan: CheckoutTierId }) {
+  const entry = planCatalogEntry(plan);
+  if (!entry) return null;
+  return (
+    <div className="mb-4 flex items-center gap-2 rounded-full border border-[var(--color-primary)]/30 bg-[var(--color-primary)]/10 px-3 py-1.5 text-xs font-medium text-[var(--color-primary)]">
+      <Sparkles aria-hidden="true" className="size-3.5 shrink-0" />
+      You&apos;re signing up for the {entry.name} plan
+      <span className="text-[var(--color-primary)]/70">
+        &middot; {entry.priceLabel}
+      </span>
+    </div>
   );
 }
 

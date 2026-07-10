@@ -18,10 +18,11 @@ SET used_at = now()
 WHERE token_hash = $1
   AND used_at IS NULL
   AND expires_at > now()
-RETURNING id, user_id, token_hash, expires_at, used_at, created_at
+RETURNING id, user_id, token_hash, expires_at, used_at, created_at, desired_plan
 `
 
-// Atomically consume an unused, unexpired verification token.
+// Atomically consume an unused, unexpired verification token. The returned
+// row's desired_plan (if any) is single-use: it is gone with the token.
 func (q *Queries) ConsumeEmailVerificationToken(ctx context.Context, tokenHash []byte) (EmailVerificationToken, error) {
 	row := q.db.QueryRow(ctx, consumeEmailVerificationToken, tokenHash)
 	var i EmailVerificationToken
@@ -32,25 +33,51 @@ func (q *Queries) ConsumeEmailVerificationToken(ctx context.Context, tokenHash [
 		&i.ExpiresAt,
 		&i.UsedAt,
 		&i.CreatedAt,
+		&i.DesiredPlan,
 	)
 	return i, err
 }
 
+const getLatestDesiredPlanForUser = `-- name: GetLatestDesiredPlanForUser :one
+SELECT desired_plan FROM email_verification_tokens
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+// Looks up the most recent desired_plan captured across a user's
+// verification tokens (active or already consumed/invalidated), so a resent
+// verification link can carry the SAME plan intent forward onto its new
+// token instead of losing it when the prior token is invalidated.
+func (q *Queries) GetLatestDesiredPlanForUser(ctx context.Context, userID uuid.UUID) (*string, error) {
+	row := q.db.QueryRow(ctx, getLatestDesiredPlanForUser, userID)
+	var desired_plan *string
+	err := row.Scan(&desired_plan)
+	return desired_plan, err
+}
+
 const insertEmailVerificationToken = `-- name: InsertEmailVerificationToken :one
-INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
-VALUES ($1, $2, $3)
-RETURNING id, user_id, token_hash, expires_at, used_at, created_at
+INSERT INTO email_verification_tokens (user_id, token_hash, expires_at, desired_plan)
+VALUES ($1, $2, $3, $4)
+RETURNING id, user_id, token_hash, expires_at, used_at, created_at, desired_plan
 `
 
 type InsertEmailVerificationTokenParams struct {
-	UserID    uuid.UUID `json:"user_id"`
-	TokenHash []byte    `json:"token_hash"`
-	ExpiresAt time.Time `json:"expires_at"`
+	UserID      uuid.UUID `json:"user_id"`
+	TokenHash   []byte    `json:"token_hash"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	DesiredPlan *string   `json:"desired_plan"`
 }
 
-// Run under Pool.InAgentTx (app.agent='on').
+// Run under Pool.InAgentTx (app.agent='on'). desired_plan is a nullable M16
+// "sign up into a plan" hint (Phase 0); pass nil for an ordinary signup.
 func (q *Queries) InsertEmailVerificationToken(ctx context.Context, arg InsertEmailVerificationTokenParams) (EmailVerificationToken, error) {
-	row := q.db.QueryRow(ctx, insertEmailVerificationToken, arg.UserID, arg.TokenHash, arg.ExpiresAt)
+	row := q.db.QueryRow(ctx, insertEmailVerificationToken,
+		arg.UserID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+		arg.DesiredPlan,
+	)
 	var i EmailVerificationToken
 	err := row.Scan(
 		&i.ID,
@@ -59,6 +86,7 @@ func (q *Queries) InsertEmailVerificationToken(ctx context.Context, arg InsertEm
 		&i.ExpiresAt,
 		&i.UsedAt,
 		&i.CreatedAt,
+		&i.DesiredPlan,
 	)
 	return i, err
 }

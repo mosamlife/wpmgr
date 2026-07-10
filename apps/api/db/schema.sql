@@ -1852,12 +1852,20 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
 -- Same hashed/TTL/single-use model as password_reset_tokens but purpose=verify.
 -- Consumed under app.agent='on' (pre-tenant, unauthenticated activation).
 CREATE TABLE email_verification_tokens (
-    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id     uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    token_hash  bytea       NOT NULL,
-    expires_at  timestamptz NOT NULL,
-    used_at     timestamptz,
-    created_at  timestamptz NOT NULL DEFAULT now()
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id       uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    token_hash    bytea       NOT NULL,
+    expires_at    timestamptz NOT NULL,
+    used_at       timestamptz,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    -- m98 — "sign up into a plan" Phase 0. A hosted-billing paid-tier hint
+    -- captured at self-serve registration time (validated against
+    -- internal/billing's plan ladder — never a free-form value; NULL means no
+    -- intent). Carried here (not on users) so it is naturally scoped to THIS
+    -- registration and disappears with the single-use token once consumed by
+    -- VerifyEmail. A resend (ResendVerification) copies the prior value
+    -- forward onto the new token instead of losing it.
+    desired_plan  text
 );
 
 CREATE UNIQUE INDEX email_verification_tokens_token_hash_key ON email_verification_tokens (token_hash);

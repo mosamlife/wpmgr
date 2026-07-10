@@ -1,16 +1,28 @@
 // Pricing page content module. Tier data, FAQ, and supporting copy for
 // /pricing. House rules enforced by scripts/check-copy.mjs: no em dashes,
 // no en dashes, no competitor plugin names.
+//
+// Live prices (from GET /api/v1/pricing, fetched at build time in
+// app/(marketing)/pricing/page.tsx via lib/pricing-live.ts) override each
+// paid tier's `price` fallback below, per currency -- see resolveTierPrices.
 import type { Cta, FaqItem } from "./types";
 import { SITE_CONFIG } from "@/lib/site";
+import type { LivePricingResponse, LiveTier } from "@/lib/pricing-live";
 
 export type PricingTier = {
   id: "free" | "starter" | "agency" | "scale";
   name: string;
+  /** Fallback USD dollars/month, used whenever live pricing is unresolved. */
   price: number;
   audience: string;
   mostPopular?: boolean;
   features: string[];
+  /**
+   * The paid tiers' href already carries `?plan=<id>` so the signup app
+   * knows which plan to preselect at checkout; the free tier's href stays a
+   * bare signup link. Use ctaHrefWithCurrency to also thread the currency
+   * toggle's selection through.
+   */
   cta: Cta;
 };
 
@@ -46,7 +58,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     cta: {
       label: "Start with Starter",
-      href: SITE_CONFIG.signup,
+      href: `${SITE_CONFIG.signup}?plan=starter`,
       variant: "secondary",
       icon: "ArrowRight",
     },
@@ -65,7 +77,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     cta: {
       label: "Start with Agency",
-      href: SITE_CONFIG.signup,
+      href: `${SITE_CONFIG.signup}?plan=agency`,
       variant: "primary",
       icon: "ArrowRight",
     },
@@ -83,7 +95,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     cta: {
       label: "Start with Scale",
-      href: SITE_CONFIG.signup,
+      href: `${SITE_CONFIG.signup}?plan=scale`,
       variant: "secondary",
       icon: "ArrowRight",
     },
@@ -124,3 +136,86 @@ export const PRICING_CTAS: Cta[] = [
   { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
   { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
 ];
+
+// ---------------------------------------------------------------------------
+// Live pricing: build-time merge of GET /api/v1/pricing (lib/pricing-live.ts)
+// with the static fallback amounts above, plus the USD/INR display toggle.
+// ---------------------------------------------------------------------------
+
+export type BillingCurrency = "USD" | "INR";
+
+export type CurrencyPrice = {
+  /** Major-unit amount (dollars/rupees) -- used for the JSON-LD Offer.price. */
+  amountMajor: number;
+  /** Human display label with currency symbol, e.g. "$15" or "₹1,249". */
+  label: string;
+};
+
+export type TierDisplayPrice = {
+  usd: CurrencyPrice;
+  /**
+   * Null when this tier has no live INR price: the free tier (never priced
+   * by a payment provider), a Stripe-only paid tier, or the fully-offline
+   * static fallback (which is USD-only, mirroring the CP's own
+   * staticFallbackJSON in apps/api/internal/pricing/service.go).
+   */
+  inr: CurrencyPrice | null;
+};
+
+const CURRENCY_SYMBOLS: Record<BillingCurrency, string> = {
+  USD: "$",
+  INR: "₹",
+};
+
+function formatMajorAmount(amountMinor: number, currency: BillingCurrency): string {
+  const major = amountMinor / 100;
+  const hasFraction = !Number.isInteger(major);
+  const formatted = major.toLocaleString(currency === "INR" ? "en-IN" : "en-US", {
+    minimumFractionDigits: hasFraction ? 2 : 0,
+    maximumFractionDigits: hasFraction ? 2 : 0,
+  });
+  return `${CURRENCY_SYMBOLS[currency]}${formatted}`;
+}
+
+function buildCurrencyPrice(amountMinor: number, currency: BillingCurrency): CurrencyPrice {
+  return { amountMajor: amountMinor / 100, label: formatMajorAmount(amountMinor, currency) };
+}
+
+/**
+ * Resolves each tier's display price from the live CP payload, falling back
+ * to this module's static PRICING_TIERS `price` (USD dollars) per tier
+ * whenever the live fetch failed entirely, or a specific tier was missing
+ * from the live response. Safe to call with `live: null` (the build-time
+ * fetch failure path) -- every tier then resolves to its static USD
+ * fallback with no INR price, which is exactly the CP's own offline
+ * behavior.
+ */
+export function resolveTierPrices(
+  live: LivePricingResponse | null,
+): Record<PricingTier["id"], TierDisplayPrice> {
+  const byId = new Map<string, LiveTier>((live?.tiers ?? []).map((t) => [t.id, t]));
+  const out = {} as Record<PricingTier["id"], TierDisplayPrice>;
+
+  for (const tier of PRICING_TIERS) {
+    const raw = byId.get(tier.id);
+    const fallbackMinor = Math.round(tier.price * 100);
+    const usdMinor =
+      tier.id === "free" ? (raw?.amount ?? fallbackMinor) : (raw?.usd?.amount ?? fallbackMinor);
+    const inr = tier.id !== "free" && raw?.inr ? buildCurrencyPrice(raw.inr.amount, "INR") : null;
+
+    out[tier.id] = { usd: buildCurrencyPrice(usdMinor, "USD"), inr };
+  }
+
+  return out;
+}
+
+/**
+ * Appends `&currency=<currency>` to a paid tier's signup CTA href so the
+ * checkout defaults to whichever currency is selected on the page. The free
+ * tier's href never carries `?plan=`, so it is returned unchanged -- the
+ * free lane stays a bare signup link regardless of the currency toggle.
+ */
+export function ctaHrefWithCurrency(cta: Cta, currency: BillingCurrency): string {
+  if (!cta.href.includes("?")) return cta.href;
+  return `${cta.href}&currency=${currency}`;
+}
