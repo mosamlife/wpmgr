@@ -597,3 +597,51 @@ func TestVerifyCheckoutCallback_MissingFields(t *testing.T) {
 		t.Fatalf("want KindValidation for missing callback fields, got %v", err)
 	}
 }
+
+// ---- GetPlanAmount (billing.RazorpayPlanReader — backs GET /api/v1/pricing) ----
+
+func TestGetPlanAmount_Success(t *testing.T) {
+	var sawSubscriptionCreate bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/plans/plan_agency_inr", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET (no subscription should ever be created)", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"plan_agency_inr","item":{"amount":489900,"currency":"INR"}}`)
+	})
+	mux.HandleFunc("/subscriptions", func(w http.ResponseWriter, r *http.Request) {
+		sawSubscriptionCreate = true
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := testConfig()
+	cfg.BaseURL = srv.URL
+	p := New(cfg)
+
+	amount, currency, interval, err := p.GetPlanAmount(context.Background(), billing.TierAgency, CurrencyINR)
+	if err != nil {
+		t.Fatalf("GetPlanAmount: %v", err)
+	}
+	if amount != 489900 || currency != "INR" || interval != "month" {
+		t.Fatalf("GetPlanAmount = (%d, %q, %q), want (489900, INR, month)", amount, currency, interval)
+	}
+	if sawSubscriptionCreate {
+		t.Fatal("GetPlanAmount must be side-effect-free — it must never create a subscription")
+	}
+}
+
+func TestGetPlanAmount_UnconfiguredTierCurrencyCombo(t *testing.T) {
+	cfg := testConfig()
+	cfg.PlanScaleINR = "" // deliberately leave one (tier,currency) pair unconfigured
+	p := New(cfg)
+
+	_, _, _, err := p.GetPlanAmount(context.Background(), billing.TierScale, CurrencyINR)
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Kind != domain.KindNotFound {
+		t.Fatalf("want KindNotFound for an unconfigured (tier,currency) pair, got %v", err)
+	}
+}

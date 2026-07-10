@@ -207,6 +207,15 @@ func ValidTier(t Tier) bool {
 	return ok
 }
 
+// ValidPaidTier reports whether t is one of the three PAID tiers in the plan
+// ladder — TierFree is deliberately excluded, unlike ValidTier. Backs
+// Service.ValidPaidTier (M16 "sign up into a plan" Phase 0), which lets
+// internal/auth validate a self-serve registration's plan hint against the
+// real ladder without spelling out a tier name itself.
+func ValidPaidTier(t Tier) bool {
+	return t != TierFree && ValidTier(t)
+}
+
 // MonthlyPriceCentsForTier returns the ladder's list price (USD cents) for
 // t, ignoring plan_overrides (overrides never touch price). Returns 0 for an
 // unrecognized tier — indistinguishable from free's legitimate 0, which is

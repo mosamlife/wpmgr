@@ -6,6 +6,7 @@ package stripe
 // mapping tests construct *stripesdk.Subscription values directly in Go.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/stripe/stripe-go/v86/webhook"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 func testConfig() Config {
@@ -360,6 +362,25 @@ func TestMapStatus_FullMatrix(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Config.Configured
 // ---------------------------------------------------------------------------
+
+// ---- GetPrice (billing.StripePriceReader — backs GET /api/v1/pricing) --------
+//
+// The live GET /v1/prices/:id round trip itself is exercised indirectly via
+// internal/pricing's fake-provider tests (which test the calling contract);
+// this file makes no live Stripe API calls (see the package doc comment
+// above), so only the pure, no-network guard clause is unit-tested here —
+// mirrors TestCreateCheckout's identical "no price configured" case.
+func TestGetPrice_UnconfiguredTier(t *testing.T) {
+	cfg := testConfig()
+	cfg.PriceScale = "" // deliberately leave one tier unconfigured
+	p := New(cfg)
+
+	_, _, _, err := p.GetPrice(context.Background(), billing.TierScale)
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Kind != domain.KindValidation {
+		t.Fatalf("want KindValidation for an unconfigured tier, got %v", err)
+	}
+}
 
 func TestConfigConfigured(t *testing.T) {
 	if (Config{}).Configured() {

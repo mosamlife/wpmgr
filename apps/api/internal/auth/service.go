@@ -14,6 +14,23 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
+// PaidTierValidator answers whether a caller-supplied string names one of the
+// hosted PAID tiers (never the free tier) recognized by internal/billing's
+// plan ladder (M16 "sign up into a plan" Phase 0). This narrow interface
+// keeps internal/auth free of a direct internal/billing import — billing
+// already imports auth, so the reverse import would cycle — and keeps
+// internal/billing the SOLE owner of paid-tier vocabulary (see
+// billing/grep_guard_test.go): auth only ever asks the question, it never
+// spells out a tier name itself. Implemented by *internal/billing.Service
+// (wired in cmd/wpmgr via Service.SetPlanValidator), mirroring
+// ManagedStorageResolver above. A nil validator (never wired, e.g. in a test
+// that doesn't need this) or a validator that answers false for everything
+// (self-host / hosted disabled) both correctly resolve to "no intent" — there
+// is no checkout to route a plan to.
+type PaidTierValidator interface {
+	ValidPaidTier(plan string) bool
+}
+
 // Service holds authentication business logic: password login, first-run
 // bootstrap, invited registration, and OIDC user upsert. It records auth events
 // to the audit log.
@@ -28,6 +45,10 @@ type Service struct {
 	// twofa holds the Phase 2 two-factor service logic. Injected via
 	// SetTwoFactorDeps after startup. nil when 2FA is not configured.
 	twofa *TwoFactorService
+	// planValidator resolves a "sign up into a plan" hint (M16 Phase 0).
+	// Injected via SetPlanValidator after startup; nil treats every plan hint
+	// as no intent.
+	planValidator PaidTierValidator
 }
 
 // NewService builds an auth Service.
@@ -35,11 +56,37 @@ func NewService(repo *Repo, rec *audit.Recorder, v *domain.Validator) *Service {
 	return &Service{repo: repo, audit: rec, validator: v}
 }
 
+// SetPlanValidator wires the M16 Phase 0 paid-tier validator. Call this after
+// NewService, before serving. Pass the hosted *billing.Service at startup;
+// leaving it unset (self-host, or a test that does not exercise plan intent)
+// makes every registration's plan hint resolve to "no intent" — always safe.
+func (s *Service) SetPlanValidator(v PaidTierValidator) {
+	s.planValidator = v
+}
+
+// validatePlanIntent normalizes a caller-supplied "sign up into a plan" hint
+// and validates it against the wired PaidTierValidator. Returns "" — meaning
+// "no intent, nothing to persist" — for an empty string, an unrecognized or
+// free-tier value, or when no validator is wired. Case/whitespace-insensitive.
+func (s *Service) validatePlanIntent(raw string) string {
+	norm := strings.ToLower(strings.TrimSpace(raw))
+	if norm == "" || s.planValidator == nil || !s.planValidator.ValidPaidTier(norm) {
+		return ""
+	}
+	return norm
+}
+
 // LoginResult is the outcome of a successful login.
 type LoginResult struct {
 	User         User
 	Memberships  []Membership
 	ActiveTenant uuid.UUID
+	// DesiredPlan is the M16 Phase 0 "sign up into a plan" intent surfaced on
+	// the two paths that can carry one: Bootstrap (immediate session, echoes
+	// the just-validated request field) and VerifyEmail (read off the
+	// just-consumed verification token). Every other path (Login,
+	// UpsertOIDCUser, Me/UpdateProfile) leaves this at its zero value "".
+	DesiredPlan string
 }
 
 // loginInput validates the email/password login body.
@@ -147,6 +194,13 @@ type RegisterInput struct {
 	Name       string `validate:"max=200"`
 	TenantName string `validate:"max=200"`
 	TenantSlug string `validate:"omitempty,slug,max=64"`
+	// Plan is an OPTIONAL "sign up into a plan" hint (M16 Phase 0). Any value
+	// that is not a real hosted paid tier — including "free", empty, or
+	// unrecognized — is silently treated as no intent; this field never
+	// fails validation on its own. Resolved via Service.validatePlanIntent,
+	// which is the ONLY place in this package allowed to ask
+	// internal/billing whether a value is a real tier.
+	Plan string `validate:"omitempty,max=32"`
 }
 
 // Bootstrap creates the very first user together with their tenant and an owner
@@ -208,7 +262,12 @@ func (s *Service) Bootstrap(
 		Metadata:   map[string]any{"bootstrap": true},
 	})
 
-	return LoginResult{User: u, Memberships: []Membership{m}, ActiveTenant: tenantID}, nil
+	// Bootstrap issues an immediate session in this same request, so there is
+	// no verify-email gap to survive — the validated hint is simply echoed
+	// back for the caller to act on right away (no server-side persistence
+	// needed, unlike RegisterSelfServe).
+	intent := s.validatePlanIntent(in.Plan)
+	return LoginResult{User: u, Memberships: []Membership{m}, ActiveTenant: tenantID, DesiredPlan: intent}, nil
 }
 
 // InviteInput is an admin/owner request to add a user to a tenant.

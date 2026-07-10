@@ -18,6 +18,6 @@ func (s *Service) ResendVerificationByID(ctx context.Context, userID uuid.UUID) 
 	if u.Status != "pending" {
 		return domain.Validation("not_pending", "user is not pending verification")
 	}
-	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name)
+	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name, s.priorDesiredPlan(ctx, u.ID))
 	return nil
 }

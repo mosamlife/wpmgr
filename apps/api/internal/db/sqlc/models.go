@@ -304,12 +304,13 @@ type EmailSuppression struct {
 }
 
 type EmailVerificationToken struct {
-	ID        uuid.UUID          `json:"id"`
-	UserID    uuid.UUID          `json:"user_id"`
-	TokenHash []byte             `json:"token_hash"`
-	ExpiresAt time.Time          `json:"expires_at"`
-	UsedAt    pgtype.Timestamptz `json:"used_at"`
-	CreatedAt time.Time          `json:"created_at"`
+	ID          uuid.UUID          `json:"id"`
+	UserID      uuid.UUID          `json:"user_id"`
+	TokenHash   []byte             `json:"token_hash"`
+	ExpiresAt   time.Time          `json:"expires_at"`
+	UsedAt      pgtype.Timestamptz `json:"used_at"`
+	CreatedAt   time.Time          `json:"created_at"`
+	DesiredPlan *string            `json:"desired_plan"`
 }
 
 type EmailWebhookEvent struct {

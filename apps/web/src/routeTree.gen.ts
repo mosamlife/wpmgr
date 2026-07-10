@@ -29,6 +29,7 @@ import { Route as AuthedSharedWithMeRouteImport } from './routes/_authed/shared-
 import { Route as AuthedPerformanceRouteImport } from './routes/_authed/performance'
 import { Route as AuthedMigrationsRouteImport } from './routes/_authed/migrations'
 import { Route as AuthedDestinationsRouteImport } from './routes/_authed/destinations'
+import { Route as AuthedBillingRouteImport } from './routes/_authed/billing'
 import { Route as AuthedAuditRouteImport } from './routes/_authed/audit'
 import { Route as AuthedAlertsRouteImport } from './routes/_authed/alerts'
 import { Route as AuthedSettingsRouteRouteImport } from './routes/_authed/settings/route'
@@ -41,6 +42,7 @@ import { Route as AuthedClientsIndexRouteImport } from './routes/_authed/clients
 import { Route as AuthedBackupsIndexRouteImport } from './routes/_authed/backups/index'
 import { Route as AuthedAdminIndexRouteImport } from './routes/_authed/admin/index'
 import { Route as PortalSitesSiteIdRouteImport } from './routes/portal/sites.$siteId'
+import { Route as AuthedWelcomeCheckoutRouteImport } from './routes/_authed/welcome.checkout'
 import { Route as AuthedUpdatesRunIdRouteImport } from './routes/_authed/updates/$runId'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
 import { Route as AuthedSettingsSmtpRouteImport } from './routes/_authed/settings/smtp'
@@ -177,6 +179,11 @@ const AuthedDestinationsRoute = AuthedDestinationsRouteImport.update({
   path: '/destinations',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedBillingRoute = AuthedBillingRouteImport.update({
+  id: '/billing',
+  path: '/billing',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedAuditRoute = AuthedAuditRouteImport.update({
   id: '/audit',
   path: '/audit',
@@ -236,6 +243,11 @@ const PortalSitesSiteIdRoute = PortalSitesSiteIdRouteImport.update({
   id: '/sites/$siteId',
   path: '/sites/$siteId',
   getParentRoute: () => PortalRouteRoute,
+} as any)
+const AuthedWelcomeCheckoutRoute = AuthedWelcomeCheckoutRouteImport.update({
+  id: '/welcome/checkout',
+  path: '/welcome/checkout',
+  getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedUpdatesRunIdRoute = AuthedUpdatesRunIdRouteImport.update({
   id: '/updates/$runId',
@@ -449,6 +461,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AuthedSettingsRouteRouteWithChildren
   '/alerts': typeof AuthedAlertsRoute
   '/audit': typeof AuthedAuditRoute
+  '/billing': typeof AuthedBillingRoute
   '/destinations': typeof AuthedDestinationsRoute
   '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
@@ -471,6 +484,7 @@ export interface FileRoutesByFullPath {
   '/settings/smtp': typeof AuthedSettingsSmtpRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
+  '/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
   '/portal/sites/$siteId': typeof PortalSitesSiteIdRoute
   '/admin/': typeof AuthedAdminIndexRoute
   '/backups/': typeof AuthedBackupsIndexRoute
@@ -515,6 +529,7 @@ export interface FileRoutesByTo {
   '/verify-email': typeof VerifyEmailRoute
   '/alerts': typeof AuthedAlertsRoute
   '/audit': typeof AuthedAuditRoute
+  '/billing': typeof AuthedBillingRoute
   '/destinations': typeof AuthedDestinationsRoute
   '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
@@ -535,6 +550,7 @@ export interface FileRoutesByTo {
   '/settings/security': typeof AuthedSettingsSecurityRoute
   '/settings/smtp': typeof AuthedSettingsSmtpRoute
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
+  '/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
   '/portal/sites/$siteId': typeof PortalSitesSiteIdRoute
   '/admin': typeof AuthedAdminIndexRoute
   '/backups': typeof AuthedBackupsIndexRoute
@@ -583,6 +599,7 @@ export interface FileRoutesById {
   '/_authed/settings': typeof AuthedSettingsRouteRouteWithChildren
   '/_authed/alerts': typeof AuthedAlertsRoute
   '/_authed/audit': typeof AuthedAuditRoute
+  '/_authed/billing': typeof AuthedBillingRoute
   '/_authed/destinations': typeof AuthedDestinationsRoute
   '/_authed/migrations': typeof AuthedMigrationsRoute
   '/_authed/performance': typeof AuthedPerformanceRoute
@@ -605,6 +622,7 @@ export interface FileRoutesById {
   '/_authed/settings/smtp': typeof AuthedSettingsSmtpRoute
   '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/_authed/updates/$runId': typeof AuthedUpdatesRunIdRoute
+  '/_authed/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
   '/portal/sites/$siteId': typeof PortalSitesSiteIdRoute
   '/_authed/admin/': typeof AuthedAdminIndexRoute
   '/_authed/backups/': typeof AuthedBackupsIndexRoute
@@ -654,6 +672,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/alerts'
     | '/audit'
+    | '/billing'
     | '/destinations'
     | '/migrations'
     | '/performance'
@@ -676,6 +695,7 @@ export interface FileRouteTypes {
     | '/settings/smtp'
     | '/sites/$siteId'
     | '/updates/$runId'
+    | '/welcome/checkout'
     | '/portal/sites/$siteId'
     | '/admin/'
     | '/backups/'
@@ -720,6 +740,7 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/alerts'
     | '/audit'
+    | '/billing'
     | '/destinations'
     | '/migrations'
     | '/performance'
@@ -740,6 +761,7 @@ export interface FileRouteTypes {
     | '/settings/security'
     | '/settings/smtp'
     | '/updates/$runId'
+    | '/welcome/checkout'
     | '/portal/sites/$siteId'
     | '/admin'
     | '/backups'
@@ -787,6 +809,7 @@ export interface FileRouteTypes {
     | '/_authed/settings'
     | '/_authed/alerts'
     | '/_authed/audit'
+    | '/_authed/billing'
     | '/_authed/destinations'
     | '/_authed/migrations'
     | '/_authed/performance'
@@ -809,6 +832,7 @@ export interface FileRouteTypes {
     | '/_authed/settings/smtp'
     | '/_authed/sites/$siteId'
     | '/_authed/updates/$runId'
+    | '/_authed/welcome/checkout'
     | '/portal/sites/$siteId'
     | '/_authed/admin/'
     | '/_authed/backups/'
@@ -998,6 +1022,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedDestinationsRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/billing': {
+      id: '/_authed/billing'
+      path: '/billing'
+      fullPath: '/billing'
+      preLoaderRoute: typeof AuthedBillingRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/audit': {
       id: '/_authed/audit'
       path: '/audit'
@@ -1081,6 +1112,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/portal/sites/$siteId'
       preLoaderRoute: typeof PortalSitesSiteIdRouteImport
       parentRoute: typeof PortalRouteRoute
+    }
+    '/_authed/welcome/checkout': {
+      id: '/_authed/welcome/checkout'
+      path: '/welcome/checkout'
+      fullPath: '/welcome/checkout'
+      preLoaderRoute: typeof AuthedWelcomeCheckoutRouteImport
+      parentRoute: typeof AuthedRoute
     }
     '/_authed/updates/$runId': {
       id: '/_authed/updates/$runId'
@@ -1475,6 +1513,7 @@ interface AuthedRouteChildren {
   AuthedSettingsRouteRoute: typeof AuthedSettingsRouteRouteWithChildren
   AuthedAlertsRoute: typeof AuthedAlertsRoute
   AuthedAuditRoute: typeof AuthedAuditRoute
+  AuthedBillingRoute: typeof AuthedBillingRoute
   AuthedDestinationsRoute: typeof AuthedDestinationsRoute
   AuthedMigrationsRoute: typeof AuthedMigrationsRoute
   AuthedPerformanceRoute: typeof AuthedPerformanceRoute
@@ -1486,6 +1525,7 @@ interface AuthedRouteChildren {
   AuthedScheduleRunsRunIdRoute: typeof AuthedScheduleRunsRunIdRoute
   AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRouteWithChildren
   AuthedUpdatesRunIdRoute: typeof AuthedUpdatesRunIdRoute
+  AuthedWelcomeCheckoutRoute: typeof AuthedWelcomeCheckoutRoute
   AuthedBackupsIndexRoute: typeof AuthedBackupsIndexRoute
   AuthedClientsIndexRoute: typeof AuthedClientsIndexRoute
   AuthedEmailIndexRoute: typeof AuthedEmailIndexRoute
@@ -1498,6 +1538,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSettingsRouteRoute: AuthedSettingsRouteRouteWithChildren,
   AuthedAlertsRoute: AuthedAlertsRoute,
   AuthedAuditRoute: AuthedAuditRoute,
+  AuthedBillingRoute: AuthedBillingRoute,
   AuthedDestinationsRoute: AuthedDestinationsRoute,
   AuthedMigrationsRoute: AuthedMigrationsRoute,
   AuthedPerformanceRoute: AuthedPerformanceRoute,
@@ -1509,6 +1550,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedScheduleRunsRunIdRoute: AuthedScheduleRunsRunIdRoute,
   AuthedSitesSiteIdRoute: AuthedSitesSiteIdRouteWithChildren,
   AuthedUpdatesRunIdRoute: AuthedUpdatesRunIdRoute,
+  AuthedWelcomeCheckoutRoute: AuthedWelcomeCheckoutRoute,
   AuthedBackupsIndexRoute: AuthedBackupsIndexRoute,
   AuthedClientsIndexRoute: AuthedClientsIndexRoute,
   AuthedEmailIndexRoute: AuthedEmailIndexRoute,

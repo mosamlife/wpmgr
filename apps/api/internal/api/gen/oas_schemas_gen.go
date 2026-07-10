@@ -15594,6 +15594,13 @@ type Me struct {
 	// enforce the real check server-side and return 402 byo_destination_required when denied.
 	// Restoring/downloading an existing backup is never gated by this or any other check.
 	ManagedStorageAllowed OptBool `json:"managed_storage_allowed"`
+	// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
+	// single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
+	// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
+	// never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
+	// checkout right after the account is verified. Absent means no intent was captured (free signup,
+	// self-hosted instance, or a resend/login/OIDC path that never carries one).
+	DesiredPlan OptMeDesiredPlan `json:"desired_plan"`
 }
 
 // GetUser returns the value of User.
@@ -15636,6 +15643,11 @@ func (s *Me) GetManagedStorageAllowed() OptBool {
 	return s.ManagedStorageAllowed
 }
 
+// GetDesiredPlan returns the value of DesiredPlan.
+func (s *Me) GetDesiredPlan() OptMeDesiredPlan {
+	return s.DesiredPlan
+}
+
 // SetUser sets the value of User.
 func (s *Me) SetUser(val User) {
 	s.User = val
@@ -15676,11 +15688,70 @@ func (s *Me) SetManagedStorageAllowed(val OptBool) {
 	s.ManagedStorageAllowed = val
 }
 
+// SetDesiredPlan sets the value of DesiredPlan.
+func (s *Me) SetDesiredPlan(val OptMeDesiredPlan) {
+	s.DesiredPlan = val
+}
+
 func (*Me) getMeRes()        {}
 func (*Me) loginRes()        {}
 func (*Me) oidcCallbackRes() {}
 func (*Me) registerRes()     {}
 func (*Me) verifyEmailRes()  {}
+
+// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
+// single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
+// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
+// never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
+// checkout right after the account is verified. Absent means no intent was captured (free signup,
+// self-hosted instance, or a resend/login/OIDC path that never carries one).
+type MeDesiredPlan string
+
+const (
+	MeDesiredPlanStarter MeDesiredPlan = "starter"
+	MeDesiredPlanAgency  MeDesiredPlan = "agency"
+	MeDesiredPlanScale   MeDesiredPlan = "scale"
+)
+
+// AllValues returns all MeDesiredPlan values.
+func (MeDesiredPlan) AllValues() []MeDesiredPlan {
+	return []MeDesiredPlan{
+		MeDesiredPlanStarter,
+		MeDesiredPlanAgency,
+		MeDesiredPlanScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s MeDesiredPlan) MarshalText() ([]byte, error) {
+	switch s {
+	case MeDesiredPlanStarter:
+		return []byte(s), nil
+	case MeDesiredPlanAgency:
+		return []byte(s), nil
+	case MeDesiredPlanScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *MeDesiredPlan) UnmarshalText(data []byte) error {
+	switch MeDesiredPlan(data) {
+	case MeDesiredPlanStarter:
+		*s = MeDesiredPlanStarter
+		return nil
+	case MeDesiredPlanAgency:
+		*s = MeDesiredPlanAgency
+		return nil
+	case MeDesiredPlanScale:
+		*s = MeDesiredPlanScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Portal branding context. Present only when role == "client".
 // Ref: #/components/schemas/MePortal
@@ -21554,6 +21625,52 @@ func (o OptListSitesState) Or(d ListSitesState) ListSitesState {
 	return d
 }
 
+// NewOptMeDesiredPlan returns new OptMeDesiredPlan with value set to v.
+func NewOptMeDesiredPlan(v MeDesiredPlan) OptMeDesiredPlan {
+	return OptMeDesiredPlan{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptMeDesiredPlan is optional MeDesiredPlan.
+type OptMeDesiredPlan struct {
+	Value MeDesiredPlan
+	Set   bool
+}
+
+// IsSet returns true if OptMeDesiredPlan was set.
+func (o OptMeDesiredPlan) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptMeDesiredPlan) Reset() {
+	var v MeDesiredPlan
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptMeDesiredPlan) SetTo(v MeDesiredPlan) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptMeDesiredPlan) Get() (v MeDesiredPlan, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptMeDesiredPlan) Or(d MeDesiredPlan) MeDesiredPlan {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptMePortal returns new OptMePortal with value set to v.
 func NewOptMePortal(v MePortal) OptMePortal {
 	return OptMePortal{
@@ -24159,6 +24276,52 @@ func (o OptPutEmailConnectionRequestConfig) Get() (v PutEmailConnectionRequestCo
 
 // Or returns value if set, or given parameter if does not.
 func (o OptPutEmailConnectionRequestConfig) Or(d PutEmailConnectionRequestConfig) PutEmailConnectionRequestConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRegisterRequestPlan returns new OptRegisterRequestPlan with value set to v.
+func NewOptRegisterRequestPlan(v RegisterRequestPlan) OptRegisterRequestPlan {
+	return OptRegisterRequestPlan{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRegisterRequestPlan is optional RegisterRequestPlan.
+type OptRegisterRequestPlan struct {
+	Value RegisterRequestPlan
+	Set   bool
+}
+
+// IsSet returns true if OptRegisterRequestPlan was set.
+func (o OptRegisterRequestPlan) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRegisterRequestPlan) Reset() {
+	var v RegisterRequestPlan
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRegisterRequestPlan) SetTo(v RegisterRequestPlan) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRegisterRequestPlan) Get() (v RegisterRequestPlan, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRegisterRequestPlan) Or(d RegisterRequestPlan) RegisterRequestPlan {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -29059,6 +29222,13 @@ type RegisterRequest struct {
 	Name       OptString `json:"name"`
 	TenantName OptString `json:"tenant_name"`
 	TenantSlug OptString `json:"tenant_slug"`
+	// OPTIONAL "sign up into a plan" hint (M16 Phase 0, hosted billing only). Omit for an ordinary
+	// free-tier signup. Persisted against the email-verification token and surfaced back as Me.
+	// desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so
+	// the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a
+	// real paid tier, is silently treated as no intent — this field can never fail registration on its
+	// own.
+	Plan OptRegisterRequestPlan `json:"plan"`
 }
 
 // GetEmail returns the value of Email.
@@ -29086,6 +29256,11 @@ func (s *RegisterRequest) GetTenantSlug() OptString {
 	return s.TenantSlug
 }
 
+// GetPlan returns the value of Plan.
+func (s *RegisterRequest) GetPlan() OptRegisterRequestPlan {
+	return s.Plan
+}
+
 // SetEmail sets the value of Email.
 func (s *RegisterRequest) SetEmail(val string) {
 	s.Email = val
@@ -29109,6 +29284,65 @@ func (s *RegisterRequest) SetTenantName(val OptString) {
 // SetTenantSlug sets the value of TenantSlug.
 func (s *RegisterRequest) SetTenantSlug(val OptString) {
 	s.TenantSlug = val
+}
+
+// SetPlan sets the value of Plan.
+func (s *RegisterRequest) SetPlan(val OptRegisterRequestPlan) {
+	s.Plan = val
+}
+
+// OPTIONAL "sign up into a plan" hint (M16 Phase 0, hosted billing only). Omit for an ordinary
+// free-tier signup. Persisted against the email-verification token and surfaced back as Me.
+// desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so
+// the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a
+// real paid tier, is silently treated as no intent — this field can never fail registration on its
+// own.
+type RegisterRequestPlan string
+
+const (
+	RegisterRequestPlanStarter RegisterRequestPlan = "starter"
+	RegisterRequestPlanAgency  RegisterRequestPlan = "agency"
+	RegisterRequestPlanScale   RegisterRequestPlan = "scale"
+)
+
+// AllValues returns all RegisterRequestPlan values.
+func (RegisterRequestPlan) AllValues() []RegisterRequestPlan {
+	return []RegisterRequestPlan{
+		RegisterRequestPlanStarter,
+		RegisterRequestPlanAgency,
+		RegisterRequestPlanScale,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RegisterRequestPlan) MarshalText() ([]byte, error) {
+	switch s {
+	case RegisterRequestPlanStarter:
+		return []byte(s), nil
+	case RegisterRequestPlanAgency:
+		return []byte(s), nil
+	case RegisterRequestPlanScale:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RegisterRequestPlan) UnmarshalText(data []byte) error {
+	switch RegisterRequestPlan(data) {
+	case RegisterRequestPlanStarter:
+		*s = RegisterRequestPlanStarter
+		return nil
+	case RegisterRequestPlanAgency:
+		*s = RegisterRequestPlanAgency
+		return nil
+	case RegisterRequestPlanScale:
+		*s = RegisterRequestPlanScale
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 type RegisterUnprocessableEntity Error

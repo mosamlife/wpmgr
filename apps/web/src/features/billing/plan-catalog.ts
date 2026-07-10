@@ -1,4 +1,4 @@
-import type { BillingPlanId } from "./use-billing";
+import type { BillingCurrency, BillingPlanId, CheckoutTierId } from "./use-billing";
 
 // The four hosted-SaaS tiers, in ascending order. Presentational catalog
 // data (marketing copy) for the pricing cards — independent of the backend's
@@ -56,6 +56,26 @@ export const PLAN_ORDER: readonly BillingPlanId[] = [
   "agency",
   "scale",
 ];
+
+/**
+ * The three paid tiers a checkout can ever target (same set as
+ * `CheckoutTierId`, spelled out as a plain array for call sites that need to
+ * check membership at runtime rather than the type alone — e.g. parsing a
+ * `?plan=` URL search param or a localStorage stash, see
+ * features/billing/pending-plan.ts and routes/register.tsx /
+ * routes/_authed/welcome.checkout.tsx). Zod's `z.enum()` needs a literal
+ * tuple rather than a `readonly T[]` (see the identical note in
+ * routes/_authed/admin/accounts/index.tsx), so the search-schema call sites
+ * still spell the literal tuple inline — keep both in sync with this array.
+ */
+export const CHECKOUT_TIER_IDS: readonly CheckoutTierId[] = [
+  "starter",
+  "agency",
+  "scale",
+];
+
+/** The two currencies a checkout can be started in (Razorpay-only; see `BillingCurrency`). */
+export const BILLING_CURRENCIES: readonly BillingCurrency[] = ["USD", "INR"];
 
 export function planRank(id: BillingPlanId): number {
   return PLAN_ORDER.indexOf(id);

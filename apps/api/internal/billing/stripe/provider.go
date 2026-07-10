@@ -148,6 +148,25 @@ func (p *Provider) CreateCheckout(ctx context.Context, in billing.CheckoutInput)
 	return billing.CheckoutSession{URL: sess.URL}, nil
 }
 
+// GetPrice implements billing.StripePriceReader: reads tier's live price via
+// a side-effect-free GET /v1/prices/:id — no subscription is created. Backs
+// the public GET /api/v1/pricing endpoint (internal/pricing).
+func (p *Provider) GetPrice(ctx context.Context, tier billing.Tier) (amountMinor int64, currency string, interval string, err error) {
+	price, ok := p.planToPrice[tier]
+	if !ok || price == "" {
+		return 0, "", "", domain.Validation("billing_unknown_tier", "no Stripe price is configured for this tier")
+	}
+	pr, ferr := p.client.V1Prices.Retrieve(ctx, price, nil)
+	if ferr != nil {
+		return 0, "", "", wrapErr("stripe_price_fetch_failed", "failed to fetch the Stripe price", ferr)
+	}
+	interval = "month"
+	if pr.Recurring != nil && pr.Recurring.Interval != "" {
+		interval = string(pr.Recurring.Interval)
+	}
+	return pr.UnitAmount, string(pr.Currency), interval, nil
+}
+
 // CreatePortalSession implements billing.Provider.
 func (p *Provider) CreatePortalSession(ctx context.Context, providerCustomerID string) (billing.PortalSession, error) {
 	params := &stripesdk.BillingPortalSessionCreateParams{

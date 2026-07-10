@@ -78,13 +78,14 @@ func (s *Service) RegisterSelfServe(
 	if err := s.repo.SetUserPending(ctx, u.ID); err != nil {
 		return err
 	}
+	intent := s.validatePlanIntent(in.Plan)
 	_, _ = s.audit.Record(ctx, audit.Event{
 		TenantID: tenantID, ActorType: audit.ActorUser, ActorID: u.ID.String(),
 		Action: audit.ActionRegister, TargetType: "user", TargetID: u.ID.String(),
-		Metadata: map[string]any{"self_serve": true, "pending": true},
+		Metadata: map[string]any{"self_serve": true, "pending": true, "desired_plan": intent},
 	})
 
-	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name)
+	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name, intent)
 	return nil
 }
 
@@ -125,6 +126,7 @@ func (s *Service) VerifyEmail(ctx context.Context, token string) (LoginResult, e
 	}
 	hash := sha256Sum(token)
 	var userID uuid.UUID
+	var intent string
 	consumeErr := s.repo.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		row, err := sqlc.New(tx).ConsumeEmailVerificationToken(ctx, hash)
 		if err != nil {
@@ -134,6 +136,9 @@ func (s *Service) VerifyEmail(ctx context.Context, token string) (LoginResult, e
 			return err
 		}
 		userID = row.UserID
+		if row.DesiredPlan != nil {
+			intent = *row.DesiredPlan
+		}
 		return nil
 	})
 	if consumeErr != nil {
@@ -156,7 +161,7 @@ func (s *Service) VerifyEmail(ctx context.Context, token string) (LoginResult, e
 	}
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, userID)
 	_ = s.repo.TouchLogin(ctx, userID)
-	res := LoginResult{User: u, Memberships: memberships}
+	res := LoginResult{User: u, Memberships: memberships, DesiredPlan: intent}
 	res.ActiveTenant = s.resolveActiveTenant(ctx, userID, memberships)
 	return res, nil
 }
@@ -177,8 +182,29 @@ func (s *Service) ResendVerification(ctx context.Context, email string) error {
 	if err != nil || u.Status != "pending" {
 		return nil
 	}
-	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name)
+	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name, s.priorDesiredPlan(ctx, u.ID))
 	return nil
+}
+
+// priorDesiredPlan looks up the most recent desired_plan captured across this
+// user's verification tokens (active or already consumed/invalidated), so a
+// resent verification link (ResendVerification, above) carries the SAME
+// intent forward onto its freshly minted token instead of losing it when the
+// prior token is invalidated. Best-effort: any lookup failure — including
+// "no token exists yet" — resolves to "", always a safe default.
+func (s *Service) priorDesiredPlan(ctx context.Context, userID uuid.UUID) string {
+	var intent string
+	_ = s.repo.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		got, err := sqlc.New(tx).GetLatestDesiredPlanForUser(ctx, userID)
+		if err != nil {
+			return nil // no rows yet: intent stays ""
+		}
+		if got != nil {
+			intent = *got
+		}
+		return nil
+	})
+	return intent
 }
 
 // sendAccountExists nudges an existing user who tried to re-register: sign in or
@@ -201,11 +227,18 @@ func (s *Service) sendAccountExists(ctx context.Context, email, name string) {
 }
 
 // sendVerificationEmail mints a verification token + enqueues the verify_email
-// template. Best-effort.
-func (s *Service) sendVerificationEmail(ctx context.Context, userID uuid.UUID, email, name string) {
+// template. desiredPlan is the M16 Phase 0 "sign up into a plan" hint to carry
+// on the new token ("" for none); the caller has already resolved it (either
+// freshly, via validatePlanIntent, or carried forward, via priorDesiredPlan).
+// Best-effort.
+func (s *Service) sendVerificationEmail(ctx context.Context, userID uuid.UUID, email, name, desiredPlan string) {
 	raw, hash, gerr := newResetToken()
 	if gerr != nil {
 		return
+	}
+	var desiredPlanArg *string
+	if desiredPlan != "" {
+		desiredPlanArg = &desiredPlan
 	}
 	txErr := s.repo.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
@@ -213,9 +246,10 @@ func (s *Service) sendVerificationEmail(ctx context.Context, userID uuid.UUID, e
 			return err
 		}
 		_, err := q.InsertEmailVerificationToken(ctx, sqlc.InsertEmailVerificationTokenParams{
-			UserID:    userID,
-			TokenHash: hash,
-			ExpiresAt: time.Now().Add(verifyTokenTTL),
+			UserID:      userID,
+			TokenHash:   hash,
+			ExpiresAt:   time.Now().Add(verifyTokenTTL),
+			DesiredPlan: desiredPlanArg,
 		})
 		return err
 	})

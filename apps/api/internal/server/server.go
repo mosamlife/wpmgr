@@ -37,6 +37,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/org"
 	"github.com/mosamlife/wpmgr/apps/api/internal/perf"
 	portalpkg "github.com/mosamlife/wpmgr/apps/api/internal/portal"
+	"github.com/mosamlife/wpmgr/apps/api/internal/pricing"
 	reportpkg "github.com/mosamlife/wpmgr/apps/api/internal/report"
 	"github.com/mosamlife/wpmgr/apps/api/internal/rum"
 	"github.com/mosamlife/wpmgr/apps/api/internal/scan"
@@ -212,6 +213,14 @@ type Deps struct {
 	// BillingWebhookH serves the M16 Phase B public payment-provider webhook
 	// endpoint at POST /webhooks/billing/:provider. nil ⇒ route not mounted.
 	BillingWebhookH *billing.WebhookHandler
+	// PricingH serves the PUBLIC, unauthenticated live-pricing endpoint at
+	// GET /api/v1/pricing (internal/pricing) — the marketing site's price
+	// source. nil ⇒ route not mounted; wired only when WPMGR_HOSTED is
+	// enabled (see cmd/wpmgr/main.go), mirroring BillingH/BillingWebhookH's
+	// nil-when-unhosted convention exactly. Mounted directly on the root
+	// engine (not under the tenant-gated /api/v1 group) despite sharing its
+	// path prefix — see RegisterPublic.
+	PricingH *pricing.Handler
 	// BillingSuspensionGate is the M16 Phase C1 superadmin hard-lockout
 	// middleware (billing.Service.SuspensionGate) mounted on the tenant-scoped
 	// v1 group. nil ⇒ WPMGR_HOSTED is off; self-host never sees this check
@@ -304,6 +313,13 @@ func New(deps Deps) *Server {
 	// sessionAuthGroup (H2 note above).
 	if deps.BillingWebhookH != nil {
 		deps.BillingWebhookH.RegisterPublic(engine)
+	}
+
+	// M16 live-pricing Phase 1 — public GET /api/v1/pricing. No session, no
+	// tenant gate; mounted directly on the root engine like the webhook
+	// immediately above. nil ⇒ WPMGR_HOSTED is off; self-host 404s here.
+	if deps.PricingH != nil {
+		deps.PricingH.RegisterPublic(engine)
 	}
 
 	// Agent-authenticated endpoints: the agent authenticator verifies an Ed25519

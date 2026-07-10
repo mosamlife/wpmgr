@@ -68,7 +68,7 @@ func TestManagedStorageAllowed_PropagatesResolverAnswer(t *testing.T) {
 // ---- toMe --------------------------------------------------------------
 
 func TestToMe_SetsManagedStorageAllowed(t *testing.T) {
-	me := toMe(User{}, nil, uuid.New(), true, false)
+	me := toMe(User{}, nil, uuid.New(), true, false, "")
 	if !me.Hosted.Value {
 		t.Fatal("expected Hosted to propagate through toMe")
 	}
@@ -76,7 +76,7 @@ func TestToMe_SetsManagedStorageAllowed(t *testing.T) {
 		t.Fatalf("expected ManagedStorageAllowed = false (set), got %+v", me.ManagedStorageAllowed)
 	}
 
-	me2 := toMe(User{}, nil, uuid.New(), true, true)
+	me2 := toMe(User{}, nil, uuid.New(), true, true, "")
 	if !me2.ManagedStorageAllowed.Set || !me2.ManagedStorageAllowed.Value {
 		t.Fatalf("expected ManagedStorageAllowed = true (set), got %+v", me2.ManagedStorageAllowed)
 	}

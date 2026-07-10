@@ -264,7 +264,8 @@ type Querier interface {
 	// site_id check binds the consume to the agent's verified identity (anti
 	// cross-tenant replay).
 	ConsumeAutologinToken(ctx context.Context, arg ConsumeAutologinTokenParams) (ConsumeAutologinTokenRow, error)
-	// Atomically consume an unused, unexpired verification token.
+	// Atomically consume an unused, unexpired verification token. The returned
+	// row's desired_plan (if any) is single-use: it is gone with the token.
 	ConsumeEmailVerificationToken(ctx context.Context, tokenHash []byte) (EmailVerificationToken, error)
 	// Enroll path (app.enroll GUC): mark consumed only if still unconsumed.
 	ConsumePairingCode(ctx context.Context, id uuid.UUID) (int64, error)
@@ -683,6 +684,11 @@ type Querier interface {
 	// than writing a 0 over a real count. pgx.ErrNoRows when no prior point
 	// exists yet — callers default to 0 in that case.
 	GetLatestDBSizeHistoryTableCount(ctx context.Context, arg GetLatestDBSizeHistoryTableCountParams) (int32, error)
+	// Looks up the most recent desired_plan captured across a user's
+	// verification tokens (active or already consumed/invalidated), so a resent
+	// verification link can carry the SAME plan intent forward onto its new
+	// token instead of losing it when the prior token is invalidated.
+	GetLatestDesiredPlanForUser(ctx context.Context, userID uuid.UUID) (*string, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	// ---------------------------------------------------------------------------
 	// email_notify_settings  (m62 — alerts + digest)
@@ -993,7 +999,8 @@ type Querier interface {
 	// Record a queued email before enqueuing the send_email job. Run under
 	// Pool.InAgentTx (app.agent='on'); tenant_id may be NULL for auth mail.
 	InsertEmailLog(ctx context.Context, arg InsertEmailLogParams) (EmailLog, error)
-	// Run under Pool.InAgentTx (app.agent='on').
+	// Run under Pool.InAgentTx (app.agent='on'). desired_plan is a nullable M16
+	// "sign up into a plan" hint (Phase 0); pass nil for an ordinary signup.
 	InsertEmailVerificationToken(ctx context.Context, arg InsertEmailVerificationTokenParams) (EmailVerificationToken, error)
 	// ---------------------------------------------------------------------------
 	// file_transfers

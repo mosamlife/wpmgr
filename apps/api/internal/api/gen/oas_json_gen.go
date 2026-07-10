@@ -43454,9 +43454,15 @@ func (s *Me) encodeFields(e *jx.Encoder) {
 			s.ManagedStorageAllowed.Encode(e)
 		}
 	}
+	{
+		if s.DesiredPlan.Set {
+			e.FieldStart("desired_plan")
+			s.DesiredPlan.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfMe = [8]string{
+var jsonFieldsNameOfMe = [9]string{
 	0: "user",
 	1: "memberships",
 	2: "active_tenant_id",
@@ -43465,6 +43471,7 @@ var jsonFieldsNameOfMe = [8]string{
 	5: "portal",
 	6: "hosted",
 	7: "managed_storage_allowed",
+	8: "desired_plan",
 }
 
 // Decode decodes Me from json.
@@ -43472,7 +43479,7 @@ func (s *Me) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode Me to nil")
 	}
-	var requiredBitSet [1]uint8
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -43564,6 +43571,16 @@ func (s *Me) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"managed_storage_allowed\"")
 			}
+		case "desired_plan":
+			if err := func() error {
+				s.DesiredPlan.Reset()
+				if err := s.DesiredPlan.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"desired_plan\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -43573,8 +43590,9 @@ func (s *Me) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [1]uint8{
+	for i, mask := range [2]uint8{
 		0b00000011,
+		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -43616,6 +43634,48 @@ func (s *Me) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *Me) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes MeDesiredPlan as json.
+func (s MeDesiredPlan) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes MeDesiredPlan from json.
+func (s *MeDesiredPlan) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode MeDesiredPlan to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch MeDesiredPlan(v) {
+	case MeDesiredPlanStarter:
+		*s = MeDesiredPlanStarter
+	case MeDesiredPlanAgency:
+		*s = MeDesiredPlanAgency
+	case MeDesiredPlanScale:
+		*s = MeDesiredPlanScale
+	default:
+		*s = MeDesiredPlan(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s MeDesiredPlan) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *MeDesiredPlan) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -51643,6 +51703,39 @@ func (s *OptInt64) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes MeDesiredPlan as json.
+func (o OptMeDesiredPlan) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes MeDesiredPlan from json.
+func (o *OptMeDesiredPlan) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptMeDesiredPlan to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptMeDesiredPlan) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptMeDesiredPlan) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes MePortal as json.
 func (o OptMePortal) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -53654,6 +53747,39 @@ func (s OptPutEmailConnectionRequestConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptPutEmailConnectionRequestConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes RegisterRequestPlan as json.
+func (o OptRegisterRequestPlan) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes RegisterRequestPlan from json.
+func (o *OptRegisterRequestPlan) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptRegisterRequestPlan to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptRegisterRequestPlan) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptRegisterRequestPlan) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -65339,14 +65465,21 @@ func (s *RegisterRequest) encodeFields(e *jx.Encoder) {
 			s.TenantSlug.Encode(e)
 		}
 	}
+	{
+		if s.Plan.Set {
+			e.FieldStart("plan")
+			s.Plan.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfRegisterRequest = [5]string{
+var jsonFieldsNameOfRegisterRequest = [6]string{
 	0: "email",
 	1: "password",
 	2: "name",
 	3: "tenant_name",
 	4: "tenant_slug",
+	5: "plan",
 }
 
 // Decode decodes RegisterRequest from json.
@@ -65412,6 +65545,16 @@ func (s *RegisterRequest) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"tenant_slug\"")
 			}
+		case "plan":
+			if err := func() error {
+				s.Plan.Reset()
+				if err := s.Plan.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"plan\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -65464,6 +65607,48 @@ func (s *RegisterRequest) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *RegisterRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes RegisterRequestPlan as json.
+func (s RegisterRequestPlan) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes RegisterRequestPlan from json.
+func (s *RegisterRequestPlan) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode RegisterRequestPlan to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch RegisterRequestPlan(v) {
+	case RegisterRequestPlanStarter:
+		*s = RegisterRequestPlanStarter
+	case RegisterRequestPlanAgency:
+		*s = RegisterRequestPlanAgency
+	case RegisterRequestPlanScale:
+		*s = RegisterRequestPlanScale
+	default:
+		*s = RegisterRequestPlan(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s RegisterRequestPlan) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *RegisterRequestPlan) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

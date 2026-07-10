@@ -8,7 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.52] - 2026-07-09
+## [0.61.53] - 2026-07-10
+
+### Added
+
+- Sign up directly into a paid plan from the marketing site. Choosing Starter, Agency, or Scale on the pricing page now carries that choice through signup and email verification (persisted server-side, so it survives even if you open the verification email on a different device) and lands you on a "Complete your subscription" screen that opens checkout for the plan you picked, with a "Skip for now" option that keeps the free account. Previously every plan button led to the same generic signup and left you on the free plan to find billing yourself. Hosted only; self-host is unaffected.
+- Live pricing on the marketing pricing page. Prices are now fetched from the payment providers (Razorpay and Stripe) at build time rather than hardcoded, with a USD/INR currency toggle, so the amounts shown always match what is actually charged. A new public, cached pricing endpoint serves these amounts (no secrets, hosted only), and the page falls back to its built-in prices if the endpoint is unreachable so a fetch hiccup never breaks the site.
+
+### Fixed
+
+- The Stripe checkout return link pointed at `/billing` instead of `/settings/billing`, which showed a not-found page on return from Stripe; it now forwards correctly so the "finalizing your subscription" confirmation appears as expected.
 
 ### Fixed
 
