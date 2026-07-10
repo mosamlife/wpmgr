@@ -170,6 +170,23 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	logger.Info("media River schema resolved", slog.String("media_river_schema", mediaSchemaLog))
 
+	// GH #205 (CRITICAL, defense-in-depth): if a separate media-encoder
+	// process is deployed against this same default/public schema, River
+	// leadership is per-schema and only the elected leader's client runs its
+	// own PeriodicJobs — the encoder (which runs workers) can win leadership
+	// and silently stop ALL of this API's fleet periodic jobs (uptime_probe,
+	// backup_scheduler, site_connection_sweep, health-check, reapers, every
+	// GC/rollup). This is intentionally NOT a hard failure here: a
+	// single-process, encoder-less deploy on the default schema is legal.
+	// The media-encoder binary itself refuses to boot on a default schema.
+	if riverutil.IsDefaultSchema(mediaRiverSchema) {
+		logger.Warn("WPMGR_RIVER_MEDIA_SCHEMA is unset/public: if a media-encoder process is also "+
+			"deployed, it will silently steal River leader election on this schema and stop ALL fleet "+
+			"periodic jobs with no error (GH #205) — set WPMGR_RIVER_MEDIA_SCHEMA to a dedicated schema "+
+			"(e.g. \"media_encoder\") on BOTH the API and the media-encoder",
+			slog.String("media_river_schema", mediaSchemaLog))
+	}
+
 	// Migrations run with the owner/superuser DSN (creates the app role +
 	// privileged DDL); the application connects with the unprivileged app DSN.
 	// River's own schema is migrated here too, with the same owner DSN. In

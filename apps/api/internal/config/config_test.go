@@ -71,15 +71,31 @@ func TestMigrateDSNFallback(t *testing.T) {
 }
 
 // TestLoadRiverMediaSchemaDefault verifies the media River schema defaults to
-// empty (public/default schema behavior) when the env var is unset.
+// a dedicated "media_encoder" schema when the env var is unset (GH #205: a
+// shared default schema lets the media-encoder silently steal River
+// leadership and stop the API's fleet periodics, so isolation is now the
+// binary default rather than opt-in).
 func TestLoadRiverMediaSchemaDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.River.MediaSchema; got != "media_encoder" {
+		t.Fatalf("River.MediaSchema = %q, want media_encoder default", got)
+	}
+}
+
+// TestLoadRiverMediaSchemaExplicitEmpty verifies an operator can still
+// explicitly opt back into the legacy shared/public schema by setting the
+// env var to an empty string.
+func TestLoadRiverMediaSchemaExplicitEmpty(t *testing.T) {
 	t.Setenv("WPMGR_RIVER_MEDIA_SCHEMA", "")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if got := cfg.River.MediaSchema; got != "" {
-		t.Fatalf("River.MediaSchema = %q, want empty default", got)
+		t.Fatalf("River.MediaSchema = %q, want empty when explicitly set", got)
 	}
 }
 

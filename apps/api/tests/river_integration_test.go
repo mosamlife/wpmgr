@@ -10,6 +10,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/media/model"
@@ -246,6 +247,65 @@ func TestRiverDualSchemaIsolation(t *testing.T) {
 	}
 	if got := countRiverJobs(t, admin, `SELECT count(*) FROM "media_encoder"."river_job" WHERE kind = 'site_health_check'`); got != 0 {
 		t.Fatalf("media schema site_health_check jobs = %d, want 0", got)
+	}
+}
+
+// TestRiverMediaSchemaSelfHealsOnBoot proves GH #205's load-bearing safety
+// property for the new binary default: a fresh/upgraded deploy that never
+// set WPMGR_RIVER_MEDIA_SCHEMA resolves to config's "media_encoder" default,
+// and EnsureSchema — called unconditionally at API boot (cmd/wpmgr/main.go)
+// and at media-encoder boot — creates that schema, migrates River's tables
+// into it, and grants the app role access, all from a completely fresh
+// database where the schema has never existed. Without this, changing the
+// binary default would break any deploy that relied on the old empty/public
+// default.
+func TestRiverMediaSchemaSelfHealsOnBoot(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.River.MediaSchema != "media_encoder" {
+		t.Fatalf("config default River.MediaSchema = %q, want media_encoder", cfg.River.MediaSchema)
+	}
+
+	// Confirm the schema genuinely does not exist yet on this fresh database.
+	if got := countRiverJobs(t, admin,
+		"SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'media_encoder'"); got != 0 {
+		t.Fatalf("media_encoder schema already exists before EnsureSchema, want 0")
+	}
+
+	// Mirror exactly what cmd/wpmgr/main.go's run() and cmd/media-encoder's
+	// run() both do unconditionally at boot.
+	if err := riverutil.EnsureSchema(ctx, admin.Pool, cfg.River.MediaSchema, "wpmgr_app"); err != nil {
+		t.Fatalf("ensure media schema from config default: %v", err)
+	}
+
+	if got := countRiverJobs(t, admin,
+		"SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'media_encoder'"); got != 1 {
+		t.Fatalf("media_encoder schema after EnsureSchema = %d, want 1", got)
+	}
+	if got := countRiverJobs(t, admin,
+		`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'media_encoder' AND table_name = 'river_job'`); got != 1 {
+		t.Fatalf("media_encoder.river_job table after EnsureSchema = %d, want 1", got)
+	}
+
+	// The unprivileged app role must be able to insert immediately — proving
+	// the grants (not just CREATE SCHEMA) are also self-healed.
+	client, err := river.NewClient(riverpgxv5.New(pool.Pool), &river.Config{
+		Schema: cfg.River.MediaSchema, SkipUnknownJobCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("media client: %v", err)
+	}
+	if _, err := client.Insert(ctx, model.EncodeArgs{
+		TenantID: uuid.New(), SiteID: uuid.New(), JobID: "self-heal-check",
+	}, nil); err != nil {
+		t.Fatalf("insert into self-healed media schema as app role: %v", err)
 	}
 }
 

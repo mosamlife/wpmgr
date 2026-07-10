@@ -65,11 +65,19 @@ callbacks** (agent → CP, the diagnostics/backup model). The `media_encode`
 River queue is bounded (small `MaxWorkers`) so a burst of large AVIF encodes
 can't OOM the encoder instance.
 
-Self-hosted deployments should run encoder-owned River jobs in a dedicated
-schema by setting the same `WPMGR_RIVER_MEDIA_SCHEMA` value on the API and
-media-encoder processes. The API keeps uptime, cron, backup, and other control
-plane jobs in the default schema; media and screenshot jobs are inserted into the
-encoder schema so the encoder cannot take leadership for API-owned periodics.
+Encoder-owned River jobs run in a dedicated schema (default `media_encoder`),
+set via the same `WPMGR_RIVER_MEDIA_SCHEMA` value on both the API and
+media-encoder processes. This isolation is required, not a tuning knob: River
+leader election is per-schema, so a media-encoder process (which runs
+workers) sharing the API's default/public schema could silently win
+leadership and stop the API's entire fleet cron (uptime_probe,
+backup_scheduler, site_connection_sweep, health-check, reapers, every
+GC/rollup) with no error anywhere (GH #205). The media-encoder binary refuses
+to start if it resolves to the API's default/public schema, so this
+misconfiguration cannot reach production. The API keeps uptime, cron, backup,
+and other control plane jobs in the default schema; media and screenshot jobs
+are inserted into the encoder's own schema instead. If the encoder is
+disabled entirely, this schema is unused and irrelevant.
 
 ```mermaid
 sequenceDiagram
