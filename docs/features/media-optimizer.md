@@ -18,9 +18,15 @@ API: [api/media.md](../api/media.md).
 > go unavailable while everything else keeps working. See
 > [install.md](../install.md#media-encoder).
 >
-> The Compose stack isolates encoder-owned River jobs in the `media_encoder`
-> schema. If you deploy API and encoder separately, set the same
-> `WPMGR_RIVER_MEDIA_SCHEMA` value on both processes.
+> The encoder's River jobs must run in a dedicated schema (default
+> `media_encoder`), never the API's own default/public schema, so the
+> encoder can never take over leader election for the API's fleet periodic
+> jobs (backups, uptime checks, sweeps). This is enforced: the media-encoder
+> refuses to start if it resolves to the API's default/public schema. The
+> Compose stack already sets this correctly out of the box; if you deploy API
+> and encoder separately, set the same dedicated `WPMGR_RIVER_MEDIA_SCHEMA`
+> value on both processes. If you disable the encoder entirely, this setting
+> doesn't matter.
 
 ## The Media tab
 

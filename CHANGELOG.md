@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.54] - 2026-07-10
+
+### Fixed
+
+- On self-hosted installs where the media-encoder ran using the API's default database schema (an unset or `public` `WPMGR_RIVER_MEDIA_SCHEMA`), it could silently take over background-job leader election and stop every scheduled fleet job, including backups, uptime checks, and cleanups, with no error anywhere (GH #205). The media-encoder now refuses to start in that misconfiguration instead of risking it. The safe, dedicated schema is now the built-in default, so no configuration change is needed on a fresh or existing install; the API also logs a clear warning if it ever sees itself configured to share its schema with a media-encoder. Any media or screenshot jobs left behind in the shared schema from before this fix are cleaned up automatically.
+
 ## [0.61.53] - 2026-07-10
 
 ### Added

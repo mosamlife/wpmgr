@@ -254,18 +254,30 @@ if you never want it built/pulled at all. Either way, screenshot cards fall back
 to favicon/monogram permanently and the Media Optimizer tab is unavailable —
 everything else in the dashboard is unaffected.
 
-The compose file sets `WPMGR_RIVER_MEDIA_SCHEMA=media_encoder` on both the API
-and media-encoder services. Custom deployments should set the same value on
-both processes so media and screenshot jobs are inserted into the schema the
-encoder is polling. When this value names a dedicated schema, the encoder also
-needs the migration-owner DSN so it can create and migrate that schema safely.
+The media-encoder runs its jobs in a dedicated River schema (default
+`media_encoder`), separate from the API's own default/public schema. This is
+required, not optional: River leader election is per-schema, and if the
+media-encoder shared the API's schema it could silently win leadership and
+stop **all** of the API's fleet periodic jobs (backups, uptime checks,
+sweeps, GC) with no error anywhere (GH #205). The media-encoder binary
+refuses to start if it resolves to the API's default/public schema, so this
+can't happen by misconfiguration. The compose file sets
+`WPMGR_RIVER_MEDIA_SCHEMA=media_encoder` on both the API and media-encoder
+services; custom deployments must set the same dedicated value on both
+processes so media and screenshot jobs are inserted into the schema the
+encoder is polling. When this value names a dedicated schema, the encoder
+also needs the migration-owner DSN so it can create and migrate that schema
+safely. If you never run the media-encoder (disabled/scaled to zero), this
+setting has no effect on the API.
 
-Upgrade note: on deployments upgrading from before the `media_encoder` schema
-became the default, enabling it does not migrate already-queued `media_encode`
-or `site_screenshot_capture` rows from `public.river_job`. Drain media and
-screenshot jobs before upgrading, or set `WPMGR_RIVER_MEDIA_SCHEMA=` / `public`
-on both services to keep the current shared-schema behavior until you are ready
-to switch.
+Upgrade note: an existing self-host `.env` from before this variable existed
+needs no changes — both the compose default and the binary's built-in default
+already resolve to `media_encoder`. If your deployment previously ran the
+media-encoder against the API's shared/public schema (before the
+`media_encoder` default existed) and had media/screenshot jobs queued at the
+time, the encoder reconciles any jobs it still finds stranded in
+`public.river_job` automatically the first time it starts on the dedicated
+schema, so nothing further is required.
 
 See [features/media-optimizer.md](./features/media-optimizer.md) and
 [features/sites.md](./features/sites.md#website-screenshots) for the features

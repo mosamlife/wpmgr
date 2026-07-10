@@ -85,6 +85,21 @@ func run() error {
 	}
 	logger.Info("media River schema resolved", slog.String("media_river_schema", mediaSchemaLog))
 
+	// GH #205 (CRITICAL): this binary runs WORKERS, which makes it a River
+	// leadership candidate on whatever schema it connects to. River leader
+	// election and the periodic-job scheduler are per-schema, and only the
+	// elected leader's own client runs its PeriodicJobs. If this process
+	// shares the API's default/public schema, it can win leadership and
+	// silently stop the API's ENTIRE fleet cron (uptime_probe,
+	// backup_scheduler, site_connection_sweep, health-check, reapers, every
+	// GC/rollup) with no error anywhere. Refuse to boot rather than risk it —
+	// schema isolation is mandatory, not advisory.
+	if riverutil.IsDefaultSchema(mediaSchema) {
+		return errEnv("WPMGR_RIVER_MEDIA_SCHEMA must be set to a dedicated schema (e.g. \"media_encoder\"); " +
+			"running on the API's default/public River schema silently steals leader election and stops " +
+			"ALL fleet periodic jobs (GH #205)")
+	}
+
 	if !cfg.S3.Enabled() {
 		return errEnv("WPMGR_S3_BUCKET is required: the media-encoder transfers bytes via presigned object storage")
 	}
@@ -264,7 +279,18 @@ func run() error {
 	// run it always-on and never call /internal/drain.
 	// Pass encoder-owned queues to the drain handler. The encoder must stay warm
 	// while any queue it processes has pending work.
+	//
+	// Bind $PORT here, BEFORE the reconcile sweep below, so the startup probe
+	// passes immediately regardless of how large the public backlog is.
 	healthSrv := startHealthServer(logger, pool, mediaSchema, model.MediaEncodeQueue, screenshot.ScreenshotQueue, mediafont.FontTranscodeQueue)
+
+	// GH #205 follow-up: move any encoder-owned jobs stranded in the public
+	// schema (from before this schema was dedicated) onto this client. The
+	// hard-fail above guarantees mediaSchema is non-default here, so this
+	// always runs once the client is up; it is a no-op once public.river_job
+	// holds no matching rows. Best-effort, batched, and only after $PORT is
+	// bound — so it never delays startup.
+	reconcileStrandedPublicJobs(ctx, pool, client, logger)
 
 	<-ctx.Done()
 	logger.Info("shutdown signal received, draining encode queue")

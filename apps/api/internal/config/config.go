@@ -190,8 +190,14 @@ func (s SMTPConfig) Enabled() bool { return s.Host != "" }
 // RiverConfig holds River queue/storage settings shared by API and worker
 // binaries.
 type RiverConfig struct {
-	// MediaSchema optionally moves media-encoder-owned jobs into a dedicated
-	// Postgres schema. Empty keeps the existing default-schema behavior.
+	// MediaSchema moves media-encoder-owned jobs into a dedicated Postgres
+	// schema, isolating River leader election from the API's own schema (GH
+	// #205: the media-encoder runs workers, making it a leadership candidate
+	// on whatever schema it shares — on the API's default/public schema it
+	// can silently win leadership and stop the API's entire fleet cron).
+	// Defaults to "media_encoder"; empty or "public" keeps the legacy
+	// single-schema behavior, which the media-encoder binary now refuses to
+	// boot on.
 	MediaSchema string `koanf:"media_schema"`
 }
 
@@ -528,7 +534,7 @@ func defaults() map[string]any {
 		"uptime.cron_kick_interval":         "5m",
 		"uptime.cron_kick_timeout":          "5s",
 		"uptime.cron_kick_concurrency":      10,
-		"river.media_schema":                "",
+		"river.media_schema":                "media_encoder",
 		"autologin.require_2fa_step_up":     false,
 		"conn.degrade_after":                "300s",
 		"conn.degrade_miss_threshold":       3,
