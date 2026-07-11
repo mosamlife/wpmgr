@@ -290,10 +290,25 @@ type BackupConfig struct {
 // shared worker pool (enforced via per-tenant River queue shards plus an
 // in-worker guard). HTTPTimeout/HTTPRetries tune the SSRF-hardened client used
 // for CP->agent commands and post-update health probes.
+//
+// ApplyHTTPTimeout (GH #208 Bug 2) is a SEPARATE, longer per-attempt cap used
+// only for the update-apply commander (the actual Update/Rollback dispatch),
+// not the lighter uses of the shared HTTPTimeout (refresh-inventory probes,
+// scan). A real update is heavy and synchronous on the agent — a mandatory
+// pre-update snapshot, download, extract, and core/plugin/theme DB migration
+// all happen inline in one request — and routinely exceeds the snappy 30s
+// HTTPTimeout, which previously drove a spurious CP-recorded "Failed" even
+// though the agent had actually finished. Defaults to 5m: longer than the
+// 30s shared update timeout, shorter than the 10m backup timeout (an update
+// apply + its mandatory snapshot is lighter than a full-site backup), and
+// leaves headroom under the agent's own apply script cap
+// (set_time_limit(900)) for network/transfer overhead on top of the agent's
+// own execution time.
 type UpdateConfig struct {
 	PerTenantParallelism int           `koanf:"per_tenant_parallelism"`
 	HTTPTimeout          time.Duration `koanf:"http_timeout"`
 	HTTPRetries          int           `koanf:"http_retries"`
+	ApplyHTTPTimeout     time.Duration `koanf:"apply_http_timeout"`
 }
 
 // AgentConfig holds the control-plane agent-protocol configuration.
@@ -503,6 +518,7 @@ func defaults() map[string]any {
 		"update.per_tenant_parallelism":     5,
 		"update.http_timeout":               "30s",
 		"update.http_retries":               2,
+		"update.apply_http_timeout":         "5m",
 		"s3.endpoint":                       "",
 		"s3.region":                         "us-east-1",
 		"s3.bucket":                         "",

@@ -7,6 +7,7 @@ package capture
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,19 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	siteevents "github.com/mosamlife/wpmgr/apps/api/internal/site/events"
 )
+
+// errInfraCapture is a sentinel wrapped around browser/proxy INFRASTRUCTURE
+// failures (Chromium missing, SSRF proxy failing to start, Chromium failing
+// to launch) so Work can distinguish "the encoder's own environment can't
+// capture right now" (transient — worth a bounded River retry, since a fresh
+// attempt or a fresh encoder instance may well succeed) from "this particular
+// SITE couldn't be captured" (navigation/render/timeout failures AFTER a
+// browser connection was established — not transient; retrying won't make a
+// down or blocking site come up). GH #207 Bug 3: previously every capture
+// failure — including infra failures like a Chromium launch crash — was
+// recorded MarkFailed + Work returned nil, which told River the job
+// "completed" and it silently never retried even a self-healing infra hiccup.
+var errInfraCapture = errors.New("screenshot: infrastructure capture failure")
 
 // CaptureQueue is the dedicated River queue (alias for screenshot.ScreenshotQueue).
 const CaptureQueue = screenshot.ScreenshotQueue
@@ -92,6 +106,11 @@ type Worker struct {
 	logger *slog.Logger
 	// sem caps concurrent Chromium captures. Sized at construction.
 	sem chan struct{}
+	// captureFn is the browser-capture step, extracted as a field (defaulting
+	// to w.capture) so tests can substitute a fake implementation to exercise
+	// the infra-vs-site-level error classification in Work() without
+	// launching a real Chromium browser.
+	captureFn func(ctx context.Context, siteURL string) (img1x, img2x []byte, err error)
 }
 
 // NewWorker builds the capture worker.
@@ -108,13 +127,23 @@ func NewWorker(
 	if concurrency <= 0 {
 		concurrency = defaultConcurrency
 	}
-	return &Worker{
+	w := &Worker{
 		repo:   repo,
 		store:  store,
 		events: events,
 		logger: logger,
 		sem:    make(chan struct{}, concurrency),
 	}
+	w.captureFn = w.capture
+	return w
+}
+
+// SetCaptureFuncForTest overrides the browser-capture step. Exported so tests
+// in other packages (capture_test) can simulate infra vs. site-level capture
+// failures deterministically, without a real Chromium binary. Production code
+// must never call this — NewWorker already wires captureFn to w.capture.
+func (w *Worker) SetCaptureFuncForTest(fn func(ctx context.Context, siteURL string) (img1x, img2x []byte, err error)) {
+	w.captureFn = fn
 }
 
 // Timeout gives each capture job 30 s.
@@ -139,16 +168,30 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[screenshot.CaptureArgs
 	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
 
-	img1x, img2x, err := w.capture(capCtx, a.SiteURL)
+	img1x, img2x, err := w.captureFn(capCtx, a.SiteURL)
 	if err != nil {
 		reason := err.Error()
 		w.logger.WarnContext(ctx, "screenshot capture failed",
 			slog.String("site_id", a.SiteID.String()),
-			slog.String("reason", reason))
+			slog.String("reason", reason),
+			slog.Bool("infra", errors.Is(err, errInfraCapture)))
+		// MarkFailed unconditionally — the dashboard's "didn't finish" state
+		// must reflect every failure, infra or site-level, so the operator
+		// always sees the latest outcome regardless of whether River retries.
 		_, _ = w.repo.MarkFailed(ctx, a.TenantID, a.SiteID, reason)
-		// Return nil — a capture failure is NOT a transient error worth retrying
-		// automatically (if the site is down or blocks headless browsers, retries
-		// won't help). The operator can request a manual refresh.
+		if errors.Is(err, errInfraCapture) {
+			// Infrastructure failure (Chromium missing/launch crash, SSRF
+			// proxy start failure): return the error so River retries, bounded
+			// by CaptureArgs.InsertOpts().MaxAttempts. A transient encoder
+			// hiccup — or a self-healed environment on the next attempt —
+			// recovers automatically instead of being permanently stuck
+			// "completed" with no further attempt ever made.
+			return err
+		}
+		// Site-level failure (navigation/render/timeout after a browser
+		// connection was established): return nil — not a transient error
+		// worth retrying (if the site is down or blocks headless browsers,
+		// retries won't help). The operator can request a manual refresh.
 		return nil
 	}
 
@@ -212,14 +255,14 @@ func (w *Worker) capture(ctx context.Context, siteURL string) (img1x, img2x []by
 	// Fast-fail when Chromium is not installed (clear error message).
 	chromiumBin := chromiumBinPath()
 	if _, lookupErr := exec.LookPath(chromiumBin); lookupErr != nil {
-		return nil, nil, fmt.Errorf("chromium not found at %s: install chromium in the media-encoder image", chromiumBin)
+		return nil, nil, fmt.Errorf("chromium not found at %s: install chromium in the media-encoder image: %w", chromiumBin, errInfraCapture)
 	}
 
 	// 1. Start the SSRF proxy. Every TCP connection Chromium makes goes through
 	//    this proxy, whose dialer calls ssrf.Safe (same guard as httpclient).
 	proxy, proxyErr := ssrfproxy.New(w.logger)
 	if proxyErr != nil {
-		return nil, nil, fmt.Errorf("ssrf proxy start: %w", proxyErr)
+		return nil, nil, fmt.Errorf("ssrf proxy start: %w: %w", proxyErr, errInfraCapture)
 	}
 	defer proxy.Stop()
 
@@ -272,7 +315,7 @@ func (w *Worker) capture(ctx context.Context, siteURL string) (img1x, img2x []by
 
 	browserURL, launchErr := l.Launch()
 	if launchErr != nil {
-		return nil, nil, fmt.Errorf("chromium launch: %w", launchErr)
+		return nil, nil, fmt.Errorf("chromium launch: %w: %w", launchErr, errInfraCapture)
 	}
 	defer func() { l.Cleanup() }()
 

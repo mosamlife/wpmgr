@@ -10,7 +10,10 @@
  *               status, snapshot_id, log } ] }
  *
  * Execution strategy:
- *   - dry_run: never touches the filesystem; reports would_update / up_to_date.
+ *   - dry_run: never touches the filesystem; reports would_update / up_to_date
+ *     / unknown (GitHub issue #208 — availability could not be determined
+ *     even after a forced fresh WordPress update check; see this class's
+ *     "Stale-availability visibility fix" note below).
  *   - Pre-update snapshot (GitHub issue #131): for plugin/theme items a
  *     snapshot is ALWAYS captured before applying, regardless of the
  *     request's `snapshot` flag — it is the precondition for the auto-restore
@@ -101,6 +104,35 @@
  *     unconditionally, so a stale reason from an earlier item can never leak)
  *     to the rollback log line below. Concise and non-secret (slug/version/WP
  *     error message only); never changes the boolean gate semantics above.
+ *   - Stale-availability visibility fix (agent-only, GitHub issue #208):
+ *     UpdateRunner::availableVersion() previously read WordPress's cached
+ *     update_core/update_plugins/update_themes transient AS-IS, with no
+ *     forced fresh check — a momentarily stale, expired, or never-yet-
+ *     populated transient was indistinguishable from "genuinely no update
+ *     available", so a real pending update could be silently reported here
+ *     as `up_to_date` while WordPress's own background auto-updater applied
+ *     it moments later. availableVersion() now forces exactly ONE fresh
+ *     check first (wp_version_check()/wp_update_plugins()/wp_update_themes(),
+ *     the same calls the apply path below already makes) and returns `null`
+ *     — distinct from `''` — when availability still cannot be determined
+ *     even after that check. `isUpdatable()` never treats `null` as
+ *     updatable; a `null` result must never be silently folded into
+ *     `up_to_date` either. Two call sites, two different fixes appropriate
+ *     to what each may do: dryRun() (which the CP contract forbids from ever
+ *     mutating) reports a distinct `unknown` status rather than guessing.
+ *     processItem() (the real, non-dry-run apply) instead falls through to
+ *     the normal snapshot+apply path unconditionally on `null` — apply()
+ *     performs its OWN forced fresh check right before mutating anything, so
+ *     a genuine pending update is still applied correctly, and a genuinely
+ *     already-current site still safely resolves to `up_to_date` once
+ *     to_version is re-read below and found unchanged. This also keeps the
+ *     real-apply response status within the control plane's existing
+ *     {succeeded,failed,skipped,up_to_date} vocabulary
+ *     (apps/api/internal/agentcmd/contract.go) — introducing a brand-new
+ *     status there would fall through the CP worker's runApply() switch to
+ *     its default "post-update probe healthy => succeeded" branch, which
+ *     would misreport an item that was never even attempted as a successful
+ *     update: worse than the bug being fixed here.
  *
  * Every input is treated as untrusted: type is whitelisted, slug is sanitized to
  * reject path traversal, and snapshot paths are bounded to wp-content.
@@ -318,8 +350,21 @@ final class UpdateCommand implements CommandInterface
             // up front as up_to_date without running a snapshot+apply — both
             // avoids needless work and keeps a target with no real update to
             // apply from ever being able to surface as a failure.
+            //
+            // GitHub issue #208 — $available === null means UpdateRunner
+            // could not determine availability AT ALL, even after forcing a
+            // fresh WordPress update check (see
+            // UpdateRunner::availableVersion()'s doc). This must never be
+            // treated as "up to date": isUpdatable() only ever returns true
+            // for a genuinely available, newer version, so the guard below
+            // is skipped entirely on null rather than short-circuiting —
+            // execution falls through to the normal snapshot+apply path,
+            // whose own apply() call performs its OWN forced fresh check
+            // before mutating anything (see this class's doc for the full
+            // rationale, including why the real-apply path deliberately does
+            // NOT introduce a new status here).
             $available = $this->runner->availableVersion($type, $slug, $version);
-            if (!self::isUpdatable($available, $fromVersion, $version)) {
+            if ($available !== null && !self::isUpdatable($available, $fromVersion, $version)) {
                 return $this->result(
                     $type,
                     $slug,
@@ -453,9 +498,13 @@ final class UpdateCommand implements CommandInterface
                     // $available (the version this apply targeted) is passed
                     // through only to enrich isComplete()'s diagnostic on a
                     // `false` verdict (agent-only regression fix, 0.61.18) —
-                    // it never affects the verdict itself.
+                    // it never affects the verdict itself. Coerced to '' when
+                    // null (GitHub issue #208's undetermined-availability
+                    // case) since isComplete()'s $expectedVersion parameter
+                    // is a plain string; its own diagnostic already renders
+                    // '' as "expected version unknown", which is accurate here.
                     if ($applied['ok']) {
-                        $complete = $this->runner->isComplete($type, $slug, $available);
+                        $complete = $this->runner->isComplete($type, $slug, $available ?? '');
                         if (!$complete) {
                             $incompleteReason = $this->runner->lastIncompleteReason();
                         }
@@ -583,6 +632,31 @@ final class UpdateCommand implements CommandInterface
     private function dryRun(string $type, string $slug, string $requested, string $fromVersion): array
     {
         $available = $this->runner->availableVersion($type, $slug, $requested);
+
+        // GitHub issue #208 — a dry run may never mutate the site (the
+        // control-plane contract's hard rule: "dry_run true => the agent
+        // MUST NOT mutate the site"), so unlike processItem()'s real-apply
+        // path there is no forced-fresh-check-on-apply() to fall back on
+        // here. Report a status distinct from BOTH `up_to_date` (would
+        // falsely claim we know nothing is pending) and `would_update`
+        // (would falsely claim we know something IS pending) so a dry-run
+        // report never silently misrepresents an undetermined result as
+        // either. Safe for the control plane's existing dry-run handling,
+        // which already treats any status other than `would_update` as
+        // "nothing to report" informationally, without mutating anything
+        // either way.
+        if ($available === null) {
+            return $this->result(
+                $type,
+                $slug,
+                $fromVersion,
+                $fromVersion,
+                'unknown',
+                '',
+                'Dry run: could not determine update availability.'
+            );
+        }
+
         $updatable = self::isUpdatable($available, $fromVersion, $requested);
 
         $status = $updatable ? 'would_update' : 'up_to_date';
@@ -599,14 +673,29 @@ final class UpdateCommand implements CommandInterface
      * version already matches what's installed, or (for a 'latest' request)
      * the available version isn't actually newer.
      *
-     * @param string $available   Version an update would move to ('' when none).
-     * @param string $fromVersion Currently installed version.
-     * @param string $requested   'latest' or an explicit x.y.z.
+     * GitHub issue #208 — deliberately accepts `$available === null` (the
+     * "availability could not be determined at all" signal from
+     * UpdateRunner::availableVersion(), distinct from '') and always returns
+     * `false` for it, exactly as it already does for `''`. This method only
+     * ever answers "should an apply be attempted right now"; it never
+     * conflates "unknown" with "definitely up to date" — that distinction is
+     * the CALLER's responsibility (see both call sites' surrounding comments
+     * for how processItem() and dryRun() report `null` differently).
+     *
+     * @param string|null $available   Version an update would move to ('' when
+     *                                  a fresh check confirms none is
+     *                                  available; null when undetermined).
+     * @param string      $fromVersion Currently installed version.
+     * @param string      $requested   'latest' or an explicit x.y.z.
      * @return bool
      */
-    private static function isUpdatable(string $available, string $fromVersion, string $requested): bool
+    private static function isUpdatable(?string $available, string $fromVersion, string $requested): bool
     {
-        return $available !== '' && $available !== $fromVersion
+        if ($available === null || $available === '') {
+            return false;
+        }
+
+        return $available !== $fromVersion
             && (version_compare($available, $fromVersion, '>') || $requested !== 'latest');
     }
 

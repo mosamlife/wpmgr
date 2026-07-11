@@ -631,7 +631,21 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// grows expensive over time.
 	uptimeProbeGCWorker := metrics.NewUptimeProbeGCWorker(pool, logger)
 
-	updateWorker := update.NewWorker(updateRepo, sitesLookup, commander, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
+	// GH #208 Bug 2: a real update is synchronous and heavy on the agent (a
+	// mandatory pre-update snapshot + download + extract + core/plugin/theme
+	// DB migration, all inline in one request) and routinely exceeds the
+	// snappy 30s Update.HTTPTimeout the shared `commander`/`ssrfClient` uses —
+	// driving a spurious CP-recorded Failed even though the agent actually
+	// finished. Mirror the backup (:729-733) and media (:1219-1223) dedicated
+	// commander pattern via buildUpdateApplyCommander: build a SEPARATE
+	// SSRF-hardened client with a longer per-attempt cap
+	// (cfg.Update.ApplyHTTPTimeout, default 5m — see UpdateConfig's doc
+	// comment for how that default was picked) just for the update-apply
+	// commander, falling back to the shared `commander` when no signing key
+	// is configured (the cmdSigner == nil / disabled-commander case, guarded
+	// exactly like the media block does).
+	updateApplyCmd := buildUpdateApplyCommander(commander, cmdSigner, cfg.Update.ApplyHTTPTimeout)
+	updateWorker := update.NewWorker(updateRepo, sitesLookup, updateApplyCmd, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
 	// #131 follow-up — periodic reaper for update_tasks stuck in pending/running
 	// past staleTaskThreshold (a worker crash mid-task, or a failed enqueue that
 	// leaves a task pending). Without this, such a task permanently occupies its
@@ -3189,6 +3203,24 @@ func (disabledBackupCommander) IncrementalBackup(_ context.Context, _ uuid.UUID,
 
 func (disabledBackupCommander) Restore(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.RestoreRequest) (agentcmd.RestoreResponse, error) {
 	return agentcmd.RestoreResponse{}, fmt.Errorf("CP->agent commands are disabled: no signing key configured")
+}
+
+// buildUpdateApplyCommander builds the dedicated CP->agent commander used
+// only for update-apply dispatch (GH #208 Bug 2). It is extracted as a
+// standalone function — rather than inlined in run() — so this wiring is
+// unit-testable without a live agent or DB: falling back to the shared
+// commander when no signing key is configured, and otherwise building a
+// distinct client bound to applyTimeout (mirrors the backup/media dedicated
+// commander pattern; see the call site in run() for the full rationale).
+func buildUpdateApplyCommander(shared update.Commander, cmdSigner *agentcmd.Signer, applyTimeout time.Duration) update.Commander {
+	if cmdSigner == nil {
+		return shared
+	}
+	updateApplySSRFClient := httpclient.New(httpclient.Config{
+		Timeout:    applyTimeout,
+		MaxRetries: 0,
+	})
+	return agentcmd.NewClient(updateApplySSRFClient, cmdSigner)
 }
 
 // disabledCommander is the no-op Commander used when no CP signing key is

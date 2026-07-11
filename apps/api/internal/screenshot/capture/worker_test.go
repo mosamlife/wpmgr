@@ -2,6 +2,7 @@ package capture_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -150,9 +151,15 @@ func TestWorker_Timeout(t *testing.T) {
 	}
 }
 
-// TestWorker_MarksFailed_OnChromiumMissing verifies that when Chromium is not
-// found the worker marks the screenshot as failed (not a transient River error).
-func TestWorker_MarksFailed_OnChromiumMissing(t *testing.T) {
+// TestWorker_InfraFailure_OnChromiumMissing_RetriesAndMarksFailed is the
+// GH #207 Bug 3 regression lock for the INFRASTRUCTURE branch: Chromium
+// missing is an infra failure (not a site-level one), so Work() must both
+// MarkFailed (so the dashboard shows "didn't finish") AND return a non-nil
+// error so River retries (bounded by CaptureArgs.InsertOpts().MaxAttempts).
+// Before the fix, Work() returned nil here, which told River the job
+// "completed" and silently killed all future attempts — even once the
+// encoder environment (e.g. a fixed $HOME/crashpad issue) self-healed.
+func TestWorker_InfraFailure_OnChromiumMissing_RetriesAndMarksFailed(t *testing.T) {
 	// Force the chromium-missing path deterministically: point the worker at a
 	// path that cannot exist. Without this the test relied on the ambient
 	// environment NOT having Chromium, which is false on CI runners (they ship
@@ -174,10 +181,9 @@ func TestWorker_MarksFailed_OnChromiumMissing(t *testing.T) {
 		},
 	})
 
-	// Work() returns nil (not a transient error) — capture failures must not
-	// cause River to retry infinitely.
-	if err != nil {
-		t.Fatalf("Work() = %v, want nil (mark-failed, not retryable)", err)
+	// Work() must return a non-nil (retryable) error for an infra failure.
+	if err == nil {
+		t.Fatal("Work() = nil, want a non-nil error (Chromium-missing is an infra failure and must retry)")
 	}
 	repo.mu.Lock()
 	nFailed := len(repo.failed)
@@ -186,6 +192,49 @@ func TestWorker_MarksFailed_OnChromiumMissing(t *testing.T) {
 		t.Errorf("MarkFailed called %d times, want 1", nFailed)
 	}
 	if len(repo.failed[0]) == 0 {
+		t.Error("MarkFailed reason is empty")
+	}
+}
+
+// TestWorker_SiteLevelFailure_ReturnsNilAndMarksFailed verifies the
+// site-level branch (a failure AFTER the browser/proxy infrastructure came up
+// successfully — e.g. navigation, render, or a site timeout) still returns
+// nil (no River retry — retrying won't fix a down or blocking site) while
+// still marking the screenshot failed so the dashboard reflects it. Uses the
+// captureFn test seam (SetCaptureFuncForTest) to simulate a post-MustConnect
+// failure deterministically, without a real Chromium/network round trip.
+func TestWorker_SiteLevelFailure_ReturnsNilAndMarksFailed(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStore{}
+	w := capture.NewWorker(repo, store, nil, 1, nil)
+	w.SetCaptureFuncForTest(func(ctx context.Context, siteURL string) ([]byte, []byte, error) {
+		return nil, nil, errors.New("navigate https://example.com: context deadline exceeded")
+	})
+
+	ctx := context.Background()
+	err := w.Work(ctx, &river.Job[screenshot.CaptureArgs]{
+		Args: screenshot.CaptureArgs{
+			SiteID:   uuid.New(),
+			TenantID: uuid.New(),
+			SiteURL:  "https://example.com",
+			Reason:   screenshot.ReasonManual,
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("Work() = %v, want nil (site-level failure must not retry)", err)
+	}
+	repo.mu.Lock()
+	nFailed := len(repo.failed)
+	failedReason := ""
+	if nFailed > 0 {
+		failedReason = repo.failed[0]
+	}
+	repo.mu.Unlock()
+	if nFailed != 1 {
+		t.Errorf("MarkFailed called %d times, want 1", nFailed)
+	}
+	if failedReason == "" {
 		t.Error("MarkFailed reason is empty")
 	}
 }
