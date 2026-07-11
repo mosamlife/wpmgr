@@ -107,11 +107,19 @@ RUN apt-get update \
     && ln -s /usr/bin/chromium /usr/bin/chromium-browser \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 65532 nonroot \
-    && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin nonroot
+    && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin nonroot \
+    && mkdir -p /home/nonroot && chown 65532:65532 /home/nonroot
 
 WORKDIR /
 COPY --from=build /out/media-encoder /usr/local/bin/media-encoder
 
+# HOME must be a real, writable, owned directory: Chromium's crashpad handler
+# fails to launch ("--database is required") without a writable $HOME-relative
+# location for its crash-dump database. --no-create-home above means passwd's
+# HOME field for uid 65532 points at a directory that doesn't exist unless we
+# create it explicitly (see mkdir/chown in the RUN layer above). Set ENV HOME
+# too so it's explicit regardless of how the shell/exec resolves passwd.
+ENV HOME=/home/nonroot
 USER nonroot:nonroot
 
 ENTRYPOINT ["/usr/local/bin/media-encoder"]

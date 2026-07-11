@@ -13,11 +13,27 @@ import (
 // Kind() must be stable — changing it orphans in-flight jobs.
 func (CaptureArgs) Kind() string { return "site_screenshot_capture" }
 
+// captureMaxAttempts bounds River's retry storm for site_screenshot_capture
+// jobs. GH #207 Bug 3: capture.Worker.Work now returns a non-nil error (which
+// River retries) for INFRASTRUCTURE capture failures (Chromium missing/launch
+// crash, SSRF proxy start failure) so a transient encoder hiccup self-heals,
+// instead of the job being recorded "completed" with no further attempt ever
+// made. Without an explicit cap, River's package default (MaxAttemptsDefault
+// = 25, with exponential backoff) would let a PERSISTENTLY broken encoder
+// environment retry the same job 25 times. 3 is enough to ride out a
+// transient hiccup (or a redeploy of a broken encoder image) without turning
+// a real outage into a retry storm; site-level failures never retry at all
+// (Work returns nil for those), so this cap only ever bounds the infra case.
+const captureMaxAttempts = 3
+
 // InsertOpts pins every capture job to the screenshot queue with MaxWorkers=2.
 // The main API registers this queue with MaxWorkers=0 (insert-only); the
 // media-encoder process runs the workers.
 func (CaptureArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: ScreenshotQueue}
+	return river.InsertOpts{
+		Queue:       ScreenshotQueue,
+		MaxAttempts: captureMaxAttempts,
+	}
 }
 
 // captureUniqueWindow is the deduplication window for manual screenshot refresh

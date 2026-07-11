@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestValidateSessionSecret checks that empty, placeholder, and short session
@@ -67,6 +68,41 @@ func TestMigrateDSNFallback(t *testing.T) {
 	d.MigrationDSN = "postgres://owner@host/db"
 	if got := d.MigrateDSN(); got != "postgres://owner@host/db" {
 		t.Fatalf("MigrateDSN should use MigrationDSN when set: %q", got)
+	}
+}
+
+// TestLoadUpdateApplyHTTPTimeoutDefault is the GH #208 Bug 2 regression lock:
+// with no WPMGR_UPDATE_APPLY_HTTP_TIMEOUT env configured, Update.ApplyHTTPTimeout
+// must default to a value LONGER than the shared 30s Update.HTTPTimeout (the
+// whole point of the dedicated knob) but no longer than the 10m Backup.HTTPTimeout
+// (an update apply + its mandatory pre-update snapshot is lighter than a
+// full-site backup).
+func TestLoadUpdateApplyHTTPTimeoutDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Update.ApplyHTTPTimeout; got <= cfg.Update.HTTPTimeout {
+		t.Fatalf("Update.ApplyHTTPTimeout = %v, want > Update.HTTPTimeout (%v) — otherwise the dedicated knob does nothing", got, cfg.Update.HTTPTimeout)
+	}
+	if got := cfg.Update.ApplyHTTPTimeout; got > cfg.Backup.HTTPTimeout {
+		t.Fatalf("Update.ApplyHTTPTimeout = %v, want <= Backup.HTTPTimeout (%v) — an update apply is lighter than a full-site backup", got, cfg.Backup.HTTPTimeout)
+	}
+	if got := cfg.Update.ApplyHTTPTimeout; got != 5*time.Minute {
+		t.Fatalf("Update.ApplyHTTPTimeout = %v, want 5m default", got)
+	}
+}
+
+// TestLoadUpdateApplyHTTPTimeoutEnv verifies WPMGR_UPDATE_APPLY_HTTP_TIMEOUT is
+// loaded from the environment when set.
+func TestLoadUpdateApplyHTTPTimeoutEnv(t *testing.T) {
+	t.Setenv("WPMGR_UPDATE_APPLY_HTTP_TIMEOUT", "3m")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Update.ApplyHTTPTimeout; got != 3*time.Minute {
+		t.Fatalf("Update.ApplyHTTPTimeout = %v, want 3m", got)
 	}
 }
 

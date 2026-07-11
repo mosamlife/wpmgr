@@ -62,6 +62,14 @@ final class UpdateCommandTest extends TestCase
             public array $versions = [];
             /** @var array<string,string> */
             public array $available = [];
+            /**
+             * @var array<string,bool> Keys ("type:slug") for which
+             *     availableVersion() must return null — i.e. availability
+             *     could not be determined even after a forced fresh check
+             *     (GitHub issue #208) — rather than '' (genuinely no
+             *     update) or a real version string.
+             */
+            public array $availableUnknown = [];
             /** @var array<string,bool> Explicit installed-state overrides, keyed "type:slug". */
             public array $installedOverride = [];
             /** Whether apply() should report success. */
@@ -113,9 +121,14 @@ final class UpdateCommandTest extends TestCase
                 return array_key_exists($key, $this->versions);
             }
 
-            public function availableVersion(string $type, string $slug, string $requested): string
+            public function availableVersion(string $type, string $slug, string $requested): ?string
             {
-                return $this->available[$type . ':' . $slug] ?? ($requested !== 'latest' ? $requested : '');
+                $key = $type . ':' . $slug;
+                if (isset($this->availableUnknown[$key])) {
+                    return null;
+                }
+
+                return $this->available[$key] ?? ($requested !== 'latest' ? $requested : '');
             }
 
             public function apply(string $type, string $slug, string $version): array
@@ -238,6 +251,112 @@ final class UpdateCommandTest extends TestCase
 
         $this->assertSame('up_to_date', $out['results'][0]['status']);
         $this->assertSame([], $runner->applied);
+    }
+
+    // ---- undetermined availability (GitHub issue #208) ---------------------
+
+    /**
+     * Dry run: a real pending update went silently unreported before this
+     * fix because a stale/expired/never-populated update transient was read
+     * as-is, indistinguishable from "genuinely no update available".
+     * UpdateRunner::availableVersion() now returns null (rather than '')
+     * when it cannot determine availability at all — even after forcing a
+     * fresh check — and the dry-run reporter must surface that as a status
+     * distinct from both `up_to_date` and `would_update`, never guessing.
+     */
+    public function test_dry_run_reports_unknown_status_when_availability_cannot_be_determined(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:hello/hello.php'] = '1.7.2';
+        $runner->availableUnknown['plugin:hello/hello.php'] = true;
+
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'dry_run' => true,
+            'items'   => [['type' => 'plugin', 'slug' => 'hello/hello.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertSame(
+            'unknown',
+            $r['status'],
+            'undetermined availability must never be silently folded into up_to_date (or falsely reported as would_update)'
+        );
+        $this->assertNotSame('up_to_date', $r['status']);
+        $this->assertNotSame('would_update', $r['status']);
+        $this->assertSame([], $runner->applied, 'a dry run must never mutate regardless of availability');
+    }
+
+    /**
+     * Real (non-dry-run) apply: when availability is undetermined, the
+     * caller must NOT silently report up_to_date and skip the item — it
+     * must fall through to the normal snapshot+apply path, whose own
+     * apply() call performs its own forced fresh check before mutating
+     * anything. A genuine pending update (simulated here by the spy's
+     * apply() successfully bumping the version) is still applied and
+     * reported succeeded, proving the item was never silently skipped.
+     */
+    public function test_undetermined_availability_is_not_reported_up_to_date_and_the_update_is_still_attempted(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.0';
+        $runner->availableUnknown['plugin:akismet/akismet.php'] = true;
+
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => 'latest']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertNotSame(
+            'up_to_date',
+            $r['status'],
+            'undetermined availability must never be silently reported as up_to_date on a real apply'
+        );
+        $this->assertCount(
+            1,
+            $runner->applied,
+            'undetermined availability must fall through to the normal apply path, not skip the item'
+        );
+        $this->assertSame('succeeded', $r['status'], 'a genuine pending update behind an undetermined pre-check must still be applied');
+        $this->assertSame('9.9.9', $r['to_version']);
+    }
+
+    /**
+     * The complementary case: when availability is undetermined but the
+     * apply's own forced re-check (simulated by the spy's apply() being a
+     * true no-op — applySucceeds stays true but currentVersion never moves
+     * because 'latest' bumps to a fixed '9.9.9' in the spy, so this test
+     * instead pins an explicit version equal to from_version) turns out to
+     * genuinely have nothing to do, the result must still resolve
+     * accurately rather than reporting a false failure or false success.
+     */
+    public function test_undetermined_availability_that_turns_out_genuinely_current_reports_up_to_date_after_apply(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.3';
+        $runner->availableUnknown['plugin:akismet/akismet.php'] = true;
+
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        // Pin an explicit version equal to what's already installed — the
+        // spy's apply() only bumps the recorded version to '9.9.9' for a
+        // 'latest' request; for an explicit version it sets it to that exact
+        // string, so requesting the currently-installed version simulates
+        // an apply() that ends up changing nothing.
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+
+        $r = $out['results'][0];
+        $this->assertCount(1, $runner->applied, 'the apply must still be attempted for an undetermined pre-check');
+        $this->assertSame(
+            'up_to_date',
+            $r['status'],
+            'once the apply itself confirms nothing changed, the result must accurately settle on up_to_date, not a false failure'
+        );
     }
 
     public function test_response_shape_matches_contract_exactly(): void

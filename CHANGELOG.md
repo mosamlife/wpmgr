@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.55] - 2026-07-11
+
+### Fixed
+
+- Self-hosted media-encoder no longer crash-loops on boot after upgrading to v0.61.54 (GH #207). The v0.61.54 River-schema safety change began preparing the dedicated `media_encoder` schema on every boot, which needs database-level CREATE privileges even when the schema already exists. On installs where the media-encoder connects with the unprivileged application role (no owner migration DSN configured for that service), this failed on every start. The media-encoder now detects an already-prepared schema and skips the privileged setup entirely, so a role with only the standard read and usage grants boots normally. Genuine first-time creation still needs an owner role and now reports a clear, actionable message instead of a raw database error.
+- Screenshot capture now works on the bundled media-encoder image (GH #207). The image did not create a home directory for the non-root user it runs as, so Chromium's crash handler could not start and every capture failed before the page loaded. The image now provides a real, writable home directory.
+- A failed screenshot capture is no longer recorded as a successful job (GH #207). An infrastructure failure, such as Chromium failing to launch, is now retried a bounded number of times so a transient or since-fixed environment recovers on its own, while a genuine site-level failure (an unreachable site, or one that blocks headless browsers) is still recorded without pointless retries. Every failure continues to update the dashboard's "didn't finish" state.
+- Core, plugin, and theme updates targeting "latest" no longer report "already up to date" when the site's cached update information is momentarily stale (GH #208). The agent now forces a fresh update check before deciding there is nothing to do, and an inability to determine availability is no longer treated as "up to date". The update is attempted, and its own fresh check settles it, rather than being silently skipped.
+- Update runs no longer spuriously report "failed" when a heavy update takes longer than 30 seconds on the agent (GH #208). A real update performs a pre-update snapshot, download, extraction, and, for core, a database migration synchronously, which can exceed the shared 30-second dispatch timeout even though the update itself completes. Update dispatch now uses a dedicated client with a longer timeout, matching the treatment already given to backup and media commands.
+
 ## [0.61.54] - 2026-07-10
 
 ### Fixed

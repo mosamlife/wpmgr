@@ -19,6 +19,22 @@ func TestCaptureArgs_InsertOpts_Queue(t *testing.T) {
 	}
 }
 
+// TestCaptureArgs_InsertOpts_MaxAttemptsBounded is the GH #207 Bug 3
+// regression lock: now that capture.Worker.Work returns a non-nil error for
+// infra failures (so River retries), CaptureArgs must pin an explicit, small
+// MaxAttempts — otherwise River's package default (25, MaxAttemptsDefault)
+// would let a persistently broken encoder retry the same job 25 times.
+func TestCaptureArgs_InsertOpts_MaxAttemptsBounded(t *testing.T) {
+	var a screenshot.CaptureArgs
+	opts := a.InsertOpts()
+	if opts.MaxAttempts <= 0 {
+		t.Fatalf("InsertOpts().MaxAttempts = %d, want an explicit positive bound (River defaults to 25 when unset)", opts.MaxAttempts)
+	}
+	if opts.MaxAttempts > 5 {
+		t.Errorf("InsertOpts().MaxAttempts = %d, want a small bound (<=5) to avoid an infra-failure retry storm", opts.MaxAttempts)
+	}
+}
+
 // TestEnqueuer_UniqueOpts verifies that Enqueuer.Enqueue passes UniqueOpts
 // with ByArgs=true and a non-zero ByPeriod (M5: deduplication of manual-refresh
 // spam). We test this by constructing the same InsertOpts the Enqueuer builds

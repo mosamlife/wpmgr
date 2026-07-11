@@ -146,15 +146,33 @@ class UpdateRunner
     /**
      * Resolve the version that an update would move the item to.
      *
-     * Used only by dry-run. For an explicit version request we return it as-is.
-     * For 'latest' we consult the WordPress update transients / version check.
+     * Used by dry-run AND as the pre-apply "is anything even pending" check
+     * in UpdateCommand::processItem(). For an explicit version request we
+     * return it as-is (no WordPress check involved — the caller already
+     * knows the target). For 'latest' we consult the WordPress update
+     * transients, but ONLY after forcing exactly one fresh check first
+     * (GitHub issue #208): see pluginUpdateVersion()/themeUpdateVersion()/
+     * coreUpdateVersion() for why. Before that fix, a momentarily
+     * stale/expired/never-yet-populated transient was read as-is and
+     * indistinguishable from "genuinely no update available", so a real
+     * pending update could be silently reported as up_to_date here while
+     * WordPress's own background auto-updater applied it moments later.
      *
      * @param string $type      plugin|theme|core.
      * @param string $slug      Sanitized slug.
      * @param string $requested 'latest' or an explicit x.y.z.
-     * @return string Target version, or '' when none is available.
+     * @return string|null Target version, '' when a forced fresh check
+     *                confirms none is available (genuinely up to date), or
+     *                null when availability could not be determined AT ALL
+     *                even after that forced check (the update transient is
+     *                still missing/malformed, or the relevant WordPress
+     *                update-check function itself is unavailable in this
+     *                runtime). The caller (UpdateCommand) MUST treat null
+     *                distinctly from '' — never fold "couldn't tell" into
+     *                "nothing to do" (see UpdateCommand::isUpdatable()'s
+     *                doc and its two call sites).
      */
-    public function availableVersion(string $type, string $slug, string $requested): string
+    public function availableVersion(string $type, string $slug, string $requested): ?string
     {
         if ($requested !== 'latest') {
             return $requested;
@@ -1400,17 +1418,37 @@ class UpdateRunner
     /**
      * Pending update version for a plugin from the update transient.
      *
+     * Forces exactly ONE fresh check via wp_update_plugins() before reading
+     * the transient (GitHub issue #208) — the identical, unconditional call
+     * applyViaUpgrader() already makes before a real plugin apply (see
+     * below). This closes the gap where this READ-ONLY resolution path
+     * trusted whatever was already cached while the APPLY path would have
+     * refreshed it first: a stale/expired/never-yet-populated transient can
+     * no longer make a real pending update look like "up to date" here.
+     * Called at most once per availableVersion() resolution — never in a
+     * loop — matching the apply path's own single forced check per run.
+     *
      * @param string $slug Plugin basename.
-     * @return string
+     * @return string|null The pending version, '' when a forced fresh check
+     *                confirms none is available, or null when availability
+     *                could not be determined even after that check
+     *                (get_site_transient()/wp_update_plugins() unavailable
+     *                in this runtime, or the transient is not the
+     *                well-formed object WordPress itself always produces
+     *                once a check has actually completed).
      */
-    private function pluginUpdateVersion(string $slug): string
+    private function pluginUpdateVersion(string $slug): ?string
     {
+        if (function_exists('wp_update_plugins')) {
+            wp_update_plugins();
+        }
+
         if (!function_exists('get_site_transient')) {
-            return '';
+            return null;
         }
         $transient = get_site_transient('update_plugins');
         if (!is_object($transient) || !isset($transient->response) || !is_array($transient->response)) {
-            return '';
+            return null;
         }
         $entry = $transient->response[$slug] ?? null;
         if (is_object($entry) && isset($entry->new_version)) {
@@ -1423,17 +1461,31 @@ class UpdateRunner
     /**
      * Pending update version for a theme from the update transient.
      *
+     * Forces exactly ONE fresh check via wp_update_themes() before reading
+     * the transient (GitHub issue #208) — same rationale and shape as
+     * pluginUpdateVersion(); see its doc.
+     *
      * @param string $slug Theme stylesheet.
-     * @return string
+     * @return string|null The pending version, '' when a forced fresh check
+     *                confirms none is available, or null when availability
+     *                could not be determined even after that check
+     *                (get_site_transient()/wp_update_themes() unavailable
+     *                in this runtime, or the transient is not the
+     *                well-formed object WordPress itself always produces
+     *                once a check has actually completed).
      */
-    private function themeUpdateVersion(string $slug): string
+    private function themeUpdateVersion(string $slug): ?string
     {
+        if (function_exists('wp_update_themes')) {
+            wp_update_themes();
+        }
+
         if (!function_exists('get_site_transient')) {
-            return '';
+            return null;
         }
         $transient = get_site_transient('update_themes');
         if (!is_object($transient) || !isset($transient->response) || !is_array($transient->response)) {
-            return '';
+            return null;
         }
         $entry = $transient->response[$slug] ?? null;
         if (is_array($entry) && isset($entry['new_version'])) {
@@ -1446,16 +1498,33 @@ class UpdateRunner
     /**
      * Latest offered core version from the update transient.
      *
-     * @return string
+     * Forces exactly ONE fresh check via wp_version_check([], true) before
+     * reading the transient (GitHub issue #208) — the identical forced,
+     * cache-bypassing call applyCoreUpgrade() already makes before a real
+     * core apply (the `true` second argument is WordPress's own "ignore the
+     * 12-hour throttle" flag). Same rationale as pluginUpdateVersion(); see
+     * its doc.
+     *
+     * @return string|null The pending core version, '' when a forced fresh
+     *                check confirms none is available, or null when
+     *                availability could not be determined even after that
+     *                check (get_site_transient()/wp_version_check()
+     *                unavailable in this runtime, or the transient is not
+     *                the well-formed object WordPress itself always
+     *                produces once a check has actually completed).
      */
-    private function coreUpdateVersion(): string
+    private function coreUpdateVersion(): ?string
     {
+        if (function_exists('wp_version_check')) {
+            wp_version_check([], true);
+        }
+
         if (!function_exists('get_site_transient')) {
-            return '';
+            return null;
         }
         $transient = get_site_transient('update_core');
         if (!is_object($transient) || !isset($transient->updates) || !is_array($transient->updates)) {
-            return '';
+            return null;
         }
         foreach ($transient->updates as $update) {
             if (is_object($update) && isset($update->response) && $update->response === 'upgrade' && isset($update->version)) {
