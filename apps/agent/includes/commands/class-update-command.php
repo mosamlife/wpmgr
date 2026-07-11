@@ -150,6 +150,7 @@ use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateGuard;
 use WPMgr\Agent\Support\UpdateInFlight;
 use WPMgr\Agent\Support\UpdateRunner;
+use WPMgr\Agent\Support\UpdateWatchdogMarker;
 
 /**
  * Performs core/plugin/theme updates with optional pre-update snapshots.
@@ -545,6 +546,18 @@ final class UpdateCommand implements CommandInterface
 
                     $status = $toVersion !== $fromVersion ? 'succeeded' : 'up_to_date';
 
+                    // GitHub issue #210 — arm the update-watchdog mu-plugin's
+                    // marker ONLY for a genuinely applied, verified-good
+                    // plugin/theme change: never `up_to_date` (nothing
+                    // changed, nothing to guard against), never `core` (no
+                    // directory-level snapshot exists for core — see this
+                    // class's own D3). Best-effort and isolated in its own
+                    // method so a resolution failure can never affect this
+                    // response — see UpdateWatchdogMarker::arm()'s own doc.
+                    if ($type !== 'core' && $status === 'succeeded' && $snapshotId !== '') {
+                        $this->armUpdateWatchdog($type, $slug, $snapshotId, $toVersion);
+                    }
+
                     return $this->result($type, $slug, $fromVersion, $toVersion, $status, $snapshotId, $log);
                 }
 
@@ -618,6 +631,45 @@ final class UpdateCommand implements CommandInterface
             // Never leak internals; keep the per-item failure contained.
             return $this->result($type, $slug, '', '', 'failed', $snapshotId, 'Update error.');
         }
+    }
+
+    /**
+     * GitHub issue #210 — resolve this apply's absolute live/payload paths
+     * via SnapshotManager (the single source of truth for that path
+     * resolution; see resolvedRestorePaths()'s own doc) and, only when both
+     * resolve, persist the update-watchdog marker. Isolated into its own
+     * method — rather than inlined at the call site — precisely so that any
+     * failure here can never bubble into, or otherwise affect, the
+     * already-decided `succeeded` response for the item that triggered it.
+     *
+     * @param string $type       'plugin'|'theme'.
+     * @param string $slug       Sanitized slug.
+     * @param string $snapshotId Snapshot identifier captured for this apply.
+     * @param string $toVersion  The version this apply moved the item to —
+     *                            recorded on the marker so MEDIUM-1b's
+     *                            healthy-boot disarm (see
+     *                            UpdateWatchdogMarker::disarmHealthy()) can
+     *                            confirm the on-disk version still matches
+     *                            before clearing the marker early.
+     * @return void
+     */
+    private function armUpdateWatchdog(string $type, string $slug, string $snapshotId, string $toVersion): void
+    {
+        try {
+            $paths = $this->snapshots->resolvedRestorePaths($type, $slug, $snapshotId);
+        } catch (\Throwable $e) {
+            DebugLog::write(
+                'WPMgr Agent: update-watchdog path resolution threw for ' . $type . ':' . $slug
+                . ': ' . $e->getMessage()
+            );
+            return;
+        }
+
+        if ($paths['live'] === '' || $paths['payload'] === '') {
+            return;
+        }
+
+        UpdateWatchdogMarker::arm($type, $slug, $snapshotId, $paths['live'], $paths['payload'], $toVersion);
     }
 
     /**

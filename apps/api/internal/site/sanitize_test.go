@@ -166,3 +166,85 @@ func TestApplyMetadataHappyPath(t *testing.T) {
 		t.Fatalf("metadata not persisted as-is: %+v", repo.gotMeta)
 	}
 }
+
+// TestApplyMetadataDropsSameVersionAvailableUpdate proves GH #211: an
+// AvailableUpdate whose new_version normalizes equal to the component's own
+// installed Version (e.g. Kadence's observed "1.5.1 -> 1.5.1") is never
+// persisted — sanitizeComponents is the universal write chokepoint for
+// agent-pushed metadata, so this covers every write path (ApplyAgentMetadata,
+// the recheck handler, etc). The component itself still survives (only the
+// phantom advisory is dropped), and a legitimate newer advisory on a sibling
+// component in the same payload is unaffected. A same-version CoreUpdate
+// advisory is dropped the same way (sanitizeCoreUpdate).
+func TestApplyMetadataDropsSameVersionAvailableUpdate(t *testing.T) {
+	repo := &captureRepo{}
+	svc := newSvc(repo)
+
+	_, err := svc.ApplyMetadata(context.Background(), uuid.New(), uuid.New(), Metadata{
+		Plugins: []Component{
+			{Slug: "kadence", Name: "Kadence", Version: "1.5.1", Active: true,
+				AvailableUpdate: &AvailableUpdate{NewVersion: "1.5.1"}}, // GH #211 phantom
+			{Slug: "wp-rocket", Name: "WP Rocket", Version: "3.16.1", Active: true,
+				AvailableUpdate: &AvailableUpdate{NewVersion: "3.16.2"}}, // legitimate
+		},
+		CoreUpdate: &CoreUpdate{NewVersion: "6.4.3", CurrentVersion: "6.4.3"}, // phantom core advisory
+	})
+	if err != nil {
+		t.Fatalf("ApplyMetadata: %v", err)
+	}
+	if len(repo.gotMeta.Plugins) != 2 {
+		t.Fatalf("both components must survive (only the advisory is dropped): got %d", len(repo.gotMeta.Plugins))
+	}
+	if repo.gotMeta.Plugins[0].Slug != "kadence" || repo.gotMeta.Plugins[0].AvailableUpdate != nil {
+		t.Fatalf("same-version advisory must not be persisted: %+v", repo.gotMeta.Plugins[0])
+	}
+	if repo.gotMeta.Plugins[1].Slug != "wp-rocket" || repo.gotMeta.Plugins[1].AvailableUpdate == nil ||
+		repo.gotMeta.Plugins[1].AvailableUpdate.NewVersion != "3.16.2" {
+		t.Fatalf("legitimate newer advisory must still be persisted: %+v", repo.gotMeta.Plugins[1])
+	}
+	if repo.gotMeta.CoreUpdate != nil {
+		t.Fatalf("same-version core-update advisory must not be persisted: %+v", repo.gotMeta.CoreUpdate)
+	}
+
+	// The persisted JSONB itself must not carry the phantom advisory either.
+	var got struct {
+		Plugins []struct {
+			Slug            string           `json:"slug"`
+			AvailableUpdate *AvailableUpdate `json:"available_update"`
+		} `json:"plugins"`
+		CoreUpdate *CoreUpdate `json:"core_update"`
+	}
+	if err := json.Unmarshal(repo.gotComponents, &got); err != nil {
+		t.Fatalf("components JSON invalid: %v", err)
+	}
+	if got.Plugins[0].AvailableUpdate != nil {
+		t.Fatalf("persisted JSONB must not carry the phantom advisory: %+v", got.Plugins[0])
+	}
+	if got.CoreUpdate != nil {
+		t.Fatalf("persisted JSONB must not carry the phantom core advisory: %+v", got.CoreUpdate)
+	}
+}
+
+// TestApplyMetadataKeepsAvailableUpdateWhenInstalledVersionEmpty proves the
+// fail-open rule: a component reporting an empty installed Version keeps its
+// advisory (never suppressed) — wpversion.SameVersion returns false whenever
+// either side is empty, so an unknown/unreported installed version can never
+// hide a real update.
+func TestApplyMetadataKeepsAvailableUpdateWhenInstalledVersionEmpty(t *testing.T) {
+	repo := &captureRepo{}
+	svc := newSvc(repo)
+
+	_, err := svc.ApplyMetadata(context.Background(), uuid.New(), uuid.New(), Metadata{
+		Plugins: []Component{
+			{Slug: "mystery", Version: "", Active: true,
+				AvailableUpdate: &AvailableUpdate{NewVersion: "2.0"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyMetadata: %v", err)
+	}
+	if len(repo.gotMeta.Plugins) != 1 || repo.gotMeta.Plugins[0].AvailableUpdate == nil ||
+		repo.gotMeta.Plugins[0].AvailableUpdate.NewVersion != "2.0" {
+		t.Fatalf("fail-open: advisory on an empty-installed-version component must be kept: %+v", repo.gotMeta.Plugins)
+	}
+}

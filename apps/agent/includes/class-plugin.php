@@ -123,6 +123,7 @@ use WPMgr\Agent\Support\MuPluginInstaller;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateChecker;
 use WPMgr\Agent\Support\UpdateInFlight;
+use WPMgr\Agent\Support\UpdateWatchdogMarker;
 use WPMgr\Agent\AutoOptimizeUpload;
 use WPMgr\Agent\Webhooks\MediaModalInjector;
 
@@ -494,6 +495,18 @@ final class Plugin
         // any boot once the heartbeat event is found missing.
         add_action('plugins_loaded', [$this, 'maybeRescheduleCron']);
 
+        // GitHub issue #210, MEDIUM-1b (security review follow-up) — the
+        // "principled disarm" for the update-watchdog mu-plugin. Reaching
+        // plugins_loaded at all is proof the WHOLE plugin-loading loop
+        // (every active plugin, including any one an armed marker entry is
+        // watching) completed this request without the every-request
+        // bootstrap fatal GitHub issue #210 exists to catch — see
+        // UpdateWatchdogMarker::disarmHealthy()'s own doc for the full
+        // reasoning and its fail-closed guarantee. Gated internally on the
+        // marker file existing (one is_file() stat), so this costs nothing
+        // extra on the overwhelmingly common no-marker boot.
+        add_action('plugins_loaded', [$this, 'maybeDisarmUpdateWatchdog']);
+
         // M14: Guard against Performance Lab disabling our object-cache drop-in.
         // When the OC is configured (config file exists), register the filter so
         // Performance Lab cannot suppress it.
@@ -775,6 +788,21 @@ final class Plugin
             $this->muInstaller->installWaf();
         } elseif ($this->muInstaller->isWafInstalled()) {
             $this->muInstaller->uninstallWaf();
+        }
+
+        // GitHub issue #210 — install the update-watchdog mu-plugin whenever
+        // the site is enrolled (the only state in which UpdateCommand can
+        // ever run at all, and therefore the only state in which its marker
+        // could ever be armed). The mu-plugin itself is inert on every
+        // request until a marker actually exists (a single is_file() stat —
+        // see its own class doc), so no separate feature opt-in is needed
+        // beyond enrollment. Remove a previously-installed copy on
+        // un-enrollment so no executable mu-plugin lingers for a site the
+        // control plane no longer manages.
+        if ($this->settings->isEnrolled()) {
+            $this->muInstaller->installUpdateWatchdog();
+        } elseif ($this->muInstaller->isUpdateWatchdogInstalled()) {
+            $this->muInstaller->uninstallUpdateWatchdog();
         }
 
         // Login Whitelabel — bind login_head/login_headerurl/login_message hooks
@@ -1077,12 +1105,14 @@ final class Plugin
             wp_clear_scheduled_hook(PreloadQueue::WATCHDOG_HOOK);
         }
 
-        // Best-effort removal of both mu-plugins on deactivation so no executable
-        // PHP file installed by this plugin lingers in wp-content/mu-plugins/
-        // after the plugin is deactivated. Both calls are idempotent and
-        // best-effort; a failure must never block deactivation.
+        // Best-effort removal of all THREE mu-plugins on deactivation so no
+        // executable PHP file installed by this plugin lingers in
+        // wp-content/mu-plugins/ after the plugin is deactivated. All calls
+        // are idempotent and best-effort; a failure must never block
+        // deactivation.
         try {
             $this->muInstaller->uninstallWaf();
+            $this->muInstaller->uninstallUpdateWatchdog();
             $this->muInstaller->uninstall();
         } catch (\Throwable $e) {
             // Swallow — deactivation must always complete.
@@ -1255,6 +1285,19 @@ final class Plugin
     public function maybeRunSchemaMigrations(): void
     {
         Schema::ensureCurrent();
+    }
+
+    /**
+     * GitHub issue #210, MEDIUM-1b — clear the update-watchdog marker entry
+     * for any armed slug that just proved itself healthy on this exact
+     * request. See UpdateWatchdogMarker::disarmHealthy()'s own doc for the
+     * full reasoning; this method is only the plugins_loaded binding point.
+     *
+     * @return void
+     */
+    public function maybeDisarmUpdateWatchdog(): void
+    {
+        UpdateWatchdogMarker::disarmHealthy();
     }
 
     /**

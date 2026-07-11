@@ -476,6 +476,13 @@ final class Enrollment
      * update transients WordPress already maintains; does NOT force a refresh
      * (that is the 30-min metadata cron's job) so the 60s heartbeat stays light.
      *
+     * GH #211 sibling guard: each transient response entry is compared against
+     * the installed version before counting — WordPress's own transients can
+     * carry a stale/duplicate entry whose `new_version` is not actually newer,
+     * and blindly counting it would show a phantom "N updates available" badge
+     * that disagrees with the metadata push (which already applies this guard
+     * in MetadataCommand::normalizeAvailableUpdate()).
+     *
      * @return int
      */
     private function installedUpdatesCount(): int
@@ -485,23 +492,134 @@ final class Enrollment
         if (function_exists('get_site_transient')) {
             $plugins = get_site_transient('update_plugins');
             if (is_object($plugins) && isset($plugins->response) && is_array($plugins->response)) {
-                $count += count($plugins->response);
+                $installedPlugins = $this->pluginVersions();
+                foreach ($plugins->response as $file => $entry) {
+                    $installed  = is_string($file) ? ($installedPlugins[$file] ?? '') : '';
+                    $newVersion = $this->extractNewVersion($entry);
+                    if (!$this->isPhantomUpdate($newVersion, $installed)) {
+                        $count++;
+                    }
+                }
             }
             $themes = get_site_transient('update_themes');
             if (is_object($themes) && isset($themes->response) && is_array($themes->response)) {
-                $count += count($themes->response);
+                $installedThemes = $this->themeVersions();
+                foreach ($themes->response as $stylesheet => $entry) {
+                    $installed  = is_string($stylesheet) ? ($installedThemes[$stylesheet] ?? '') : '';
+                    $newVersion = $this->extractNewVersion($entry);
+                    if (!$this->isPhantomUpdate($newVersion, $installed)) {
+                        $count++;
+                    }
+                }
             }
             $core = get_site_transient('update_core');
             if (is_object($core) && isset($core->updates) && is_array($core->updates)) {
+                $installedCore = $this->wpVersion();
                 foreach ($core->updates as $update) {
-                    if (is_object($update) && isset($update->response) && $update->response === 'upgrade') {
-                        $count++;
+                    if (!is_object($update) || !isset($update->response) || $update->response !== 'upgrade') {
+                        continue;
                     }
+                    $newVersion = isset($update->version) && is_scalar($update->version)
+                        ? (string) $update->version
+                        : (isset($update->current) && is_scalar($update->current) ? (string) $update->current : '');
+                    if ($newVersion === '' || $this->isPhantomUpdate($newVersion, $installedCore)) {
+                        continue;
+                    }
+                    $count++;
                 }
             }
         }
 
         return $count;
+    }
+
+    /**
+     * A compact stylesheet=>version map of installed themes, mirroring
+     * {@see pluginVersions()}. Used only by installedUpdatesCount()'s GH #211
+     * phantom-update guard — not sent on the wire itself (the heartbeat only
+     * ships plugin_versions).
+     *
+     * @return array<string,string>
+     */
+    private function themeVersions(): array
+    {
+        if (!function_exists('wp_get_themes')) {
+            return [];
+        }
+        $themes = wp_get_themes();
+        if (!is_array($themes)) {
+            return [];
+        }
+        $map = [];
+        foreach ($themes as $stylesheet => $theme) {
+            if (!is_object($theme) || !method_exists($theme, 'get')) {
+                continue;
+            }
+            $version = $theme->get('Version');
+            $map[(string) $stylesheet] = is_scalar($version) ? (string) $version : '';
+        }
+        return $map;
+    }
+
+    /**
+     * Extract a usable `new_version` string from a transient response entry
+     * (object for plugins, array for themes). Returns '' when absent/unusable.
+     *
+     * @param mixed $entry Raw transient response entry.
+     * @return string
+     */
+    private function extractNewVersion(mixed $entry): string
+    {
+        if (is_object($entry)) {
+            $value = $entry->new_version ?? null;
+        } elseif (is_array($entry)) {
+            $value = $entry['new_version'] ?? null;
+        } else {
+            return '';
+        }
+        return (is_string($value) || is_numeric($value)) ? (string) $value : '';
+    }
+
+    /**
+     * GH #211 sibling guard: true when `$newVersion` is not strictly newer
+     * than `$installedVersion` (i.e. counting it would be a phantom "update").
+     * Fails OPEN (returns false, i.e. "keep counting it") when either side is
+     * empty/unreadable/the 'unknown' sentinel — over-counting is preferable to
+     * silently hiding a real update because a version string was unreadable.
+     * Mirrors MetadataCommand::normalizeAvailableUpdate()'s normalization:
+     * trim + strip a single leading `v`/`V`, leaving any prerelease/build
+     * suffix intact for version_compare() to arbitrate.
+     *
+     * @param string $newVersion       Offered version from the transient.
+     * @param string $installedVersion Currently-installed version.
+     * @return bool
+     */
+    private function isPhantomUpdate(string $newVersion, string $installedVersion): bool
+    {
+        if ($newVersion === '' || $installedVersion === '' || $installedVersion === 'unknown') {
+            return false;
+        }
+        $normNew       = $this->normalizeVersionForCompare($newVersion);
+        $normInstalled = $this->normalizeVersionForCompare($installedVersion);
+        return version_compare($normNew, $normInstalled, '<=');
+    }
+
+    /**
+     * Lightly normalize a version string for the phantom-update comparison:
+     * trims whitespace and strips a single leading `v`/`V`. See
+     * MetadataCommand::normalizeVersionForCompare() for the full rationale
+     * (deliberately does NOT strip prerelease/build suffixes).
+     *
+     * @param string $version Raw version string.
+     * @return string
+     */
+    private function normalizeVersionForCompare(string $version): string
+    {
+        $trimmed = trim($version);
+        if ($trimmed !== '' && ($trimmed[0] === 'v' || $trimmed[0] === 'V')) {
+            $trimmed = substr($trimmed, 1);
+        }
+        return $trimmed;
     }
 
     /**

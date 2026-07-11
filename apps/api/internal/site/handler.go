@@ -17,6 +17,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // RefreshEnqueuer schedules an immediate CP->agent inventory-refresh job for a
@@ -489,13 +490,17 @@ func buildAvailableUpdates(s Site) gen.SiteAvailableUpdates {
 	core := s.ParsedCoreUpdate()
 	items := make([]gen.SiteAvailableUpdatesItemsItem, 0, len(plugins)+len(themes))
 	for _, p := range plugins {
-		if p.AvailableUpdate == nil || p.AvailableUpdate.NewVersion == "" {
+		// GH #211: drop a same-version phantom advisory here too, so a site
+		// whose inventory was persisted before the write-path fix (see
+		// sanitizeComponents) self-heals on its next read — no re-sync
+		// required.
+		if p.AvailableUpdate == nil || p.AvailableUpdate.NewVersion == "" || wpversion.SameVersion(p.Version, p.AvailableUpdate.NewVersion) {
 			continue
 		}
 		items = append(items, toAvailableItem(gen.SiteAvailableUpdatesItemsItemTypePlugin, p))
 	}
 	for _, t := range themes {
-		if t.AvailableUpdate == nil || t.AvailableUpdate.NewVersion == "" {
+		if t.AvailableUpdate == nil || t.AvailableUpdate.NewVersion == "" || wpversion.SameVersion(t.Version, t.AvailableUpdate.NewVersion) {
 			continue
 		}
 		items = append(items, toAvailableItem(gen.SiteAvailableUpdatesItemsItemTypeTheme, t))
@@ -512,7 +517,7 @@ func buildAvailableUpdates(s Site) gen.SiteAvailableUpdates {
 		return items[i].Slug < items[j].Slug
 	})
 	out := gen.SiteAvailableUpdates{SiteID: s.ID, Items: items}
-	if core != nil {
+	if core != nil && !wpversion.SameVersion(core.CurrentVersion, core.NewVersion) {
 		out.CoreUpdate = gen.NewOptNilSiteAvailableUpdatesCoreUpdate(gen.SiteAvailableUpdatesCoreUpdate{
 			NewVersion:     core.NewVersion,
 			CurrentVersion: core.CurrentVersion,
@@ -686,18 +691,22 @@ func toAPI(s Site) gen.Site {
 		if json.Unmarshal(s.Components, &comp) == nil {
 			// M27 — updates_available: same predicate as buildAvailableUpdates
 			// (a non-empty AvailableUpdate.NewVersion), +1 for a core update.
+			// GH #211: a same-version advisory (new_version == the component's
+			// own installed Version) is excluded here too, so an
+			// already-persisted phantom self-heals on the next read.
 			updates := 0
 			for _, p := range comp.Plugins {
-				if p.AvailableUpdate != nil && p.AvailableUpdate.NewVersion != "" {
+				if p.AvailableUpdate != nil && p.AvailableUpdate.NewVersion != "" && !wpversion.SameVersion(p.Version, p.AvailableUpdate.NewVersion) {
 					updates++
 				}
 			}
 			for _, t := range comp.Themes {
-				if t.AvailableUpdate != nil && t.AvailableUpdate.NewVersion != "" {
+				if t.AvailableUpdate != nil && t.AvailableUpdate.NewVersion != "" && !wpversion.SameVersion(t.Version, t.AvailableUpdate.NewVersion) {
 					updates++
 				}
 			}
-			if comp.CoreUpdate != nil {
+			hasCoreUpdate := comp.CoreUpdate != nil && !wpversion.SameVersion(comp.CoreUpdate.CurrentVersion, comp.CoreUpdate.NewVersion)
+			if hasCoreUpdate {
 				updates++
 			}
 			out.UpdatesAvailable = gen.NewOptInt32(int32(updates))
@@ -707,7 +716,7 @@ func toAPI(s Site) gen.Site {
 					Plugins: toAPIComponents(comp.Plugins),
 					Themes:  toAPIComponents(comp.Themes),
 				}
-				if comp.CoreUpdate != nil {
+				if hasCoreUpdate {
 					sc.CoreUpdate = gen.NewOptNilSiteComponentsCoreUpdate(gen.SiteComponentsCoreUpdate{
 						NewVersion:     comp.CoreUpdate.NewVersion,
 						CurrentVersion: comp.CoreUpdate.CurrentVersion,
@@ -730,7 +739,10 @@ func toAPIComponents(cs []Component) []gen.SiteComponent {
 		if c.Version != "" {
 			gc.Version = gen.NewOptString(c.Version)
 		}
-		if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" {
+		// GH #211: a same-version advisory is dropped here too (the full
+		// components inventory shares the phantom-update defect with the
+		// available-updates projection above).
+		if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" && !wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) {
 			au := gen.SiteComponentAvailableUpdate{NewVersion: c.AvailableUpdate.NewVersion}
 			if c.AvailableUpdate.Package != "" {
 				au.Package = gen.NewOptNilString(c.AvailableUpdate.Package)

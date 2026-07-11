@@ -16,6 +16,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // maxMetadataBytes bounds the agent metadata body (untrusted input).
@@ -181,7 +182,12 @@ func (d metadataDTO) toMetadata() Metadata {
 				AuthorURI: string(c.AuthorURI),
 				Network:   bool(c.Network),
 			}
-			if c.AvailableUpdate != nil && string(c.AvailableUpdate.NewVersion) != "" {
+			// GH #211: the first CP checkpoint for agent-pushed metadata — drop
+			// a same-version phantom advisory (new_version == the component's
+			// own installed Version) here too, defense-in-depth ahead of the
+			// site package's write-path guard (sanitizeComponents).
+			if c.AvailableUpdate != nil && string(c.AvailableUpdate.NewVersion) != "" &&
+				!wpversion.SameVersion(string(c.Version), string(c.AvailableUpdate.NewVersion)) {
 				comp.AvailableUpdate = &AvailableUpdate{
 					NewVersion:  string(c.AvailableUpdate.NewVersion),
 					Package:     flexStringPtr(c.AvailableUpdate.Package),
@@ -204,7 +210,8 @@ func (d metadataDTO) toMetadata() Metadata {
 		Plugins:      conv(d.Plugins),
 		Themes:       conv(d.Themes),
 	}
-	if d.CoreUpdate != nil && string(d.CoreUpdate.NewVersion) != "" {
+	if d.CoreUpdate != nil && string(d.CoreUpdate.NewVersion) != "" &&
+		!wpversion.SameVersion(string(d.CoreUpdate.CurrentVersion), string(d.CoreUpdate.NewVersion)) {
 		m.CoreUpdate = &CoreUpdate{
 			NewVersion:     string(d.CoreUpdate.NewVersion),
 			CurrentVersion: string(d.CoreUpdate.CurrentVersion),

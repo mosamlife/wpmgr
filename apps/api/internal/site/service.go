@@ -14,6 +14,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // Service holds site business logic. All operations require a tenant ID, which
@@ -483,7 +484,15 @@ func sanitizeComponents(cs []Component, maxLen int) []Component {
 		}
 		if c.AvailableUpdate != nil {
 			nv := strings.TrimSpace(c.AvailableUpdate.NewVersion)
-			if nv != "" {
+			// GH #211: a WordPress update transient can report new_version ==
+			// the already-installed Version (observed with Kadence, e.g.
+			// "1.5.1 -> 1.5.1"). This is the universal write chokepoint for
+			// agent-pushed metadata, so a same-version advisory is never
+			// persisted in the first place. wpversion.SameVersion is
+			// EQUALITY-only (never a version_compare-style ordering) and fails
+			// open (false) when either side is empty, so a component with an
+			// unknown installed Version always keeps its advisory.
+			if nv != "" && !wpversion.SameVersion(comp.Version, nv) {
 				comp.AvailableUpdate = &AvailableUpdate{
 					NewVersion:  truncateRunes(nv, maxVersionLen),
 					Package:     truncateRunes(c.AvailableUpdate.Package, maxPackageURL),
@@ -501,7 +510,9 @@ func sanitizeComponents(cs []Component, maxLen int) []Component {
 }
 
 // sanitizeCoreUpdate truncates the core-update advisory fields and drops the
-// whole advisory when new_version is empty (the contract requires it).
+// whole advisory when new_version is empty (the contract requires it), or
+// when new_version normalizes equal to current_version (GH #211-class
+// phantom advisory — see sanitizeComponents).
 func sanitizeCoreUpdate(cu *CoreUpdate) *CoreUpdate {
 	if cu == nil {
 		return nil
@@ -510,9 +521,13 @@ func sanitizeCoreUpdate(cu *CoreUpdate) *CoreUpdate {
 	if nv == "" {
 		return nil
 	}
+	cv := truncateRunes(cu.CurrentVersion, maxWPVersion)
+	if wpversion.SameVersion(cv, nv) {
+		return nil
+	}
 	return &CoreUpdate{
 		NewVersion:     nv,
-		CurrentVersion: truncateRunes(cu.CurrentVersion, maxWPVersion),
+		CurrentVersion: cv,
 	}
 }
 

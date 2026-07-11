@@ -1428,6 +1428,15 @@ class UpdateRunner
      * Called at most once per availableVersion() resolution — never in a
      * loop — matching the apply path's own single forced check per run.
      *
+     * GH #212 residual gap: wp_update_plugins() alone stays throttled by
+     * WordPress core's own ~12h `update_plugins` transient window — off-cron
+     * (i.e. any caller reaching this method outside the 30-min metadata cron,
+     * which already force-refreshed via Scheduler::refreshUpdateTransients())
+     * a "forced" check here could still read a stale cached response. Delete
+     * the transient FIRST so wp_update_plugins() always performs a real
+     * re-check, matching applyViaUpgrader()'s equivalent forced pre-apply
+     * check and coreUpdateVersion()'s `wp_version_check([], true)` below.
+     *
      * @param string $slug Plugin basename.
      * @return string|null The pending version, '' when a forced fresh check
      *                confirms none is available, or null when availability
@@ -1439,6 +1448,9 @@ class UpdateRunner
      */
     private function pluginUpdateVersion(string $slug): ?string
     {
+        if (function_exists('delete_site_transient')) {
+            delete_site_transient('update_plugins');
+        }
         if (function_exists('wp_update_plugins')) {
             wp_update_plugins();
         }
@@ -1465,6 +1477,10 @@ class UpdateRunner
      * the transient (GitHub issue #208) — same rationale and shape as
      * pluginUpdateVersion(); see its doc.
      *
+     * GH #212 residual gap: see pluginUpdateVersion()'s doc — the same
+     * off-cron core-throttle gap applies here, so the transient is deleted
+     * before wp_update_themes() forces a real re-check.
+     *
      * @param string $slug Theme stylesheet.
      * @return string|null The pending version, '' when a forced fresh check
      *                confirms none is available, or null when availability
@@ -1476,6 +1492,9 @@ class UpdateRunner
      */
     private function themeUpdateVersion(string $slug): ?string
     {
+        if (function_exists('delete_site_transient')) {
+            delete_site_transient('update_themes');
+        }
         if (function_exists('wp_update_themes')) {
             wp_update_themes();
         }

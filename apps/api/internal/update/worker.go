@@ -231,10 +231,10 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 	probe, perr, attempts := w.probeHealthWithRetry(ctx, siteURL)
 	if perr != nil {
 		// Still unreachable after retrying — treat as unhealthy and roll back.
-		return w.rollback(ctx, task, siteURL, item, res, fmt.Sprintf("post-update probe error after %d attempt(s): %v", attempts, perr))
+		return w.rollback(ctx, task, siteURL, item, res, probe, fmt.Sprintf("post-update probe error after %d attempt(s): %v", attempts, perr))
 	}
 	if !probe.Healthy() {
-		return w.rollback(ctx, task, siteURL, item, res, fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail))
+		return w.rollback(ctx, task, siteURL, item, res, probe, fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail))
 	}
 
 	return w.finish(ctx, task, TaskSucceeded, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "updated and healthy", "")
@@ -276,8 +276,12 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 	}
 }
 
-// rollback issues the signed rollback command and records the rolled_back state.
-func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, reason string) error {
+// rollback issues the signed rollback command and records the rolled_back
+// state. probe is the ProbeResult that triggered the rollback decision (the
+// zero value when rollback was reached via a probe TRANSPORT error rather
+// than a reachable-but-unhealthy response) — it is used only to classify a
+// rollback-transport failure below (GH #210).
+func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, probe agentcmd.ProbeResult, reason string) error {
 	from := fromOr(res.FromVersion, task.FromVersion)
 	_, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
 		Type:       item.Type,
@@ -288,7 +292,21 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 	if rbErr != nil {
 		// Rollback itself failed: this is the worst case. Record as failed with
 		// both the health reason and the rollback error so the operator is alerted.
-		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, "rollback FAILED after unhealthy update: "+reason, rbErr.Error())
+		detail := "rollback FAILED after unhealthy update: " + reason
+		// GH #210: when the post-update probe ITSELF detected a site-wide PHP
+		// fatal (a fatal-error body signature, or a 5xx response) AND the
+		// rollback command's transport also errored, the site is very likely
+		// serving a site-wide PHP fatal that makes the agent's own REST
+		// endpoint undeliverable — a distinct, more actionable failure mode
+		// than a generic "rollback failed" (which could also mean e.g. a
+		// transient network blip unrelated to the update). Record a distinct
+		// detail so the operator knows the automatic filesystem-level
+		// recovery on the agent side is the remaining recovery path.
+		if probe.Fatal || probe.StatusCode >= 500 {
+			detail = "site not responding: site-wide PHP fatal after update; rollback command undeliverable. " +
+				"The agent update watchdog will attempt automatic filesystem recovery; if it cannot, manual filesystem recovery is required."
+		}
+		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, detail, rbErr.Error())
 	}
 	return w.finish(ctx, task, TaskRolledBack, from, from, "rolled back: "+reason, "")
 }

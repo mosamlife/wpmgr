@@ -33,3 +33,39 @@ export function siteNameMap(sites: Site[] | undefined): Map<string, string> {
   for (const site of sites ?? []) map.set(site.id, site.name);
   return map;
 }
+
+// GH #210 — the worst-case rollback failure: an update causes a site-wide
+// PHP fatal, so the rollback command is undeliverable (it rides the same
+// WordPress request that's fataling), and an agent-side watchdog attempts
+// automatic filesystem-level recovery. The backend keeps the existing task
+// status enum (failed/rolled_back) and communicates this condition purely
+// through the detail/error text, so callers key off content rather than a
+// new status value. Every surface that renders a task's outcome should use
+// this helper rather than re-deriving the pattern locally, so the condition
+// reads consistently (and never as a generic "rollback failed") everywhere.
+const SITE_DOWN_RECOVERY_STATUSES = new Set(["failed", "rolled_back"]);
+const SITE_DOWN_RECOVERY_PATTERN =
+  /site[- ]wide|site is down|not responding|undeliverable|filesystem recovery|automatic recovery|watchdog/i;
+
+/**
+ * True when a terminal (failed/rolled_back) task's detail/error text
+ * describes the site-wide-fatal + undeliverable-rollback + auto-filesystem-
+ * recovery condition, as opposed to an ordinary update failure or rollback.
+ */
+export function isSiteDownRecovery(
+  status: string,
+  detail?: string,
+  error?: string,
+): boolean {
+  if (!SITE_DOWN_RECOVERY_STATUSES.has(status)) return false;
+  return SITE_DOWN_RECOVERY_PATTERN.test(`${detail ?? ""} ${error ?? ""}`);
+}
+
+/** Distinct, actionable label for the site-down-recovery condition. Never
+ * collapse this into the generic "Rolled back"/"Failed" copy. */
+export const SITE_DOWN_RECOVERY_LABEL = "Site down, recovery attempted";
+
+/** Fallback body copy when the backend detail is empty but the condition is
+ * detected from `error` alone. */
+export const SITE_DOWN_RECOVERY_FALLBACK_DETAIL =
+  "The site went down site-wide during this update. Automatic filesystem recovery was attempted; manual filesystem recovery may be required.";

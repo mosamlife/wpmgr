@@ -101,3 +101,82 @@ describe("UpdateTasksTable — failed task log disclosure", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 });
+
+// GH #210 — the worst-case rollback failure: an update causes a site-wide
+// PHP fatal, so the rollback command is undeliverable (it rides the same
+// WordPress request that's fataling), and an agent-side watchdog attempts
+// automatic filesystem recovery. The backend keeps the existing
+// failed/rolled_back status and communicates this purely through the
+// detail/error text, so this MUST read as its own distinct, actionable
+// condition (never the generic "Rolled back"/"Failed" copy).
+describe("UpdateTasksTable — GH #210 site-down-recovery condition", () => {
+  it("renders the distinct site-down badge + non-truncated alert callout for a rolled_back task whose detail names the condition, instead of the generic 'Rolled back' copy", () => {
+    const task = buildTask({
+      id: "task-site-down",
+      status: "rolled_back",
+      detail:
+        "The site went down site-wide during this update. The rollback command was undeliverable; an automatic filesystem recovery was attempted.",
+      error: "Fatal error: watchdog restore log ...",
+    });
+
+    renderWithProviders(<UpdateTasksTable tasks={[task]} />);
+
+    const row = screen.getByTestId("update-task-row");
+
+    // Distinct badge label, not the generic "Rolled back" chip.
+    expect(within(row).getByText("Site down, recovery attempted")).toBeInTheDocument();
+    expect(within(row).queryByText("Rolled back")).not.toBeInTheDocument();
+
+    // The full detail text is surfaced directly (not truncated behind a
+    // title attribute) inside an alert-role callout.
+    const callout = within(row).getByRole("alert");
+    expect(callout).toHaveTextContent(/site went down site-wide/i);
+    expect(callout).toHaveTextContent(/automatic filesystem recovery/i);
+  });
+
+  it("renders the distinct treatment for a failed task whose error (not detail) names the condition, falling back to the canned explanation since detail is empty, while the raw error stays reachable via the log disclosure", () => {
+    const task = buildTask({
+      id: "task-failed-site-down",
+      status: "failed",
+      detail: undefined,
+      error:
+        "Site is not responding after the update; agent watchdog attempted automatic recovery of the filesystem.",
+    });
+
+    renderWithProviders(<UpdateTasksTable tasks={[task]} />);
+
+    const row = screen.getByTestId("update-task-row");
+    expect(within(row).getByText("Site down, recovery attempted")).toBeInTheDocument();
+    // No detail was provided, so the callout falls back to the canned
+    // explanation rather than rendering nothing.
+    expect(within(row).getByRole("alert")).toHaveTextContent(
+      /automatic filesystem recovery was attempted/i,
+    );
+    // The raw agent error is still reachable one click away, unchanged from
+    // the existing log-disclosure behavior.
+    fireEvent.click(within(row).getByRole("button", { name: /view log/i }));
+    expect(screen.getByText(/agent watchdog attempted automatic recovery/i)).toBeInTheDocument();
+  });
+
+  it("leaves an ordinary rolled_back / failed task on the generic status copy (no false positive)", () => {
+    const rolledBack = buildTask({
+      id: "task-ordinary-rollback",
+      status: "rolled_back",
+      detail: "agent reported update failure",
+      error: "activation check failed after replacing plugin files",
+    });
+    const failed = buildTask({
+      id: "task-ordinary-failed",
+      target_slug: "another-plugin/another-plugin.php",
+      status: "failed",
+      detail: "connection timed out",
+    });
+
+    renderWithProviders(<UpdateTasksTable tasks={[rolledBack, failed]} />);
+
+    const rows = screen.getAllByTestId("update-task-row");
+    expect(within(rows[0]!).getByText("Rolled back")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Failed")).toBeInTheDocument();
+    expect(screen.queryByText("Site down, recovery attempted")).not.toBeInTheDocument();
+  });
+});

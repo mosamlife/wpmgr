@@ -48,6 +48,36 @@ interface ComponentOption {
   hasUpdate: boolean;
 }
 
+/**
+ * Normalize a version string for equality comparison: trim whitespace and
+ * strip a single leading "v"/"V" (mirrors the backend's normalized-equality
+ * check). Deliberately a simple string compare, not a semver parse; the
+ * backend is the authority on real version semantics.
+ */
+function normalizeVersion(version: string): string {
+  const trimmed = version.trim();
+  return /^[vV]/.test(trimmed) ? trimmed.slice(1) : trimmed;
+}
+
+/**
+ * True when `available_update` reports a version that actually differs from
+ * what's installed. Guards against a phantom same-version entry (e.g. a
+ * cached `1.5.1 -> 1.5.1` row) being treated as a real update (GH #211).
+ * The backend is also being fixed to stop sending/persisting these, but this
+ * keeps the wizard correct against already-cached data.
+ */
+function isRealUpdate(
+  installedVersion: string | undefined,
+  availableUpdate: { new_version: string } | undefined,
+): boolean {
+  if (!availableUpdate) return false;
+  if (installedVersion === undefined) return true;
+  return (
+    normalizeVersion(availableUpdate.new_version) !==
+    normalizeVersion(installedVersion)
+  );
+}
+
 /** Build a de-duplicated, sorted list of plugin/theme options from sites. */
 function componentOptions(sites: Site[]): ComponentOption[] {
   const seen = new Map<string, ComponentOption>();
@@ -59,12 +89,16 @@ function componentOptions(sites: Site[]): ComponentOption[] {
           type: "plugin",
           slug: plugin.slug,
           label: plugin.name ?? plugin.slug,
-          hasUpdate: Boolean(plugin.available_update),
+          hasUpdate: isRealUpdate(plugin.version, plugin.available_update),
         });
       } else {
-        // If any site reports an update available, mark the option as having one.
+        // If any site reports a real (different-version) update, mark the
+        // option as having one.
         const existing = seen.get(key)!;
-        if (plugin.available_update && !existing.hasUpdate) {
+        if (
+          isRealUpdate(plugin.version, plugin.available_update) &&
+          !existing.hasUpdate
+        ) {
           seen.set(key, { ...existing, hasUpdate: true });
         }
       }
@@ -76,11 +110,14 @@ function componentOptions(sites: Site[]): ComponentOption[] {
           type: "theme",
           slug: theme.slug,
           label: theme.name ?? theme.slug,
-          hasUpdate: Boolean(theme.available_update),
+          hasUpdate: isRealUpdate(theme.version, theme.available_update),
         });
       } else {
         const existing = seen.get(key)!;
-        if (theme.available_update && !existing.hasUpdate) {
+        if (
+          isRealUpdate(theme.version, theme.available_update) &&
+          !existing.hasUpdate
+        ) {
           seen.set(key, { ...existing, hasUpdate: true });
         }
       }

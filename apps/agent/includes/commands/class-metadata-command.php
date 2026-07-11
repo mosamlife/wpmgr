@@ -317,12 +317,13 @@ final class MetadataCommand implements CommandInterface
             }
             $meta   = is_array($meta) ? $meta : [];
             $update = $updates[$file] ?? null;
+            $installedVersion = isset($meta['Version']) ? (string) $meta['Version'] : 'unknown';
             $out[] = [
                 'slug'             => $file,
                 'name'             => isset($meta['Name']) ? (string) $meta['Name'] : $file,
-                'version'          => isset($meta['Version']) ? (string) $meta['Version'] : 'unknown',
+                'version'          => $installedVersion,
                 'active'           => isset($activeSet[$file]),
-                'available_update' => $this->normalizeAvailableUpdate($update),
+                'available_update' => $this->normalizeAvailableUpdate($update, $installedVersion),
                 // ADR-037 Sprint 1, 1C — sparse-metadata expansion. Optional
                 // fields surfaced from get_plugins(); empty string when the
                 // plugin header omits them. CP tolerantly decodes.
@@ -366,12 +367,13 @@ final class MetadataCommand implements CommandInterface
             }
             $slug   = (string) $stylesheet;
             $update = $updates[$slug] ?? null;
+            $installedVersion = (string) $theme->get('Version');
             $out[]  = [
                 'slug'             => $slug,
                 'name'             => (string) $theme->get('Name'),
-                'version'          => (string) $theme->get('Version'),
+                'version'          => $installedVersion,
                 'active'           => $slug === $activeStylesheet,
-                'available_update' => $this->normalizeAvailableUpdate($update),
+                'available_update' => $this->normalizeAvailableUpdate($update, $installedVersion),
             ];
         }
 
@@ -436,12 +438,29 @@ final class MetadataCommand implements CommandInterface
 
     /**
      * Normalize a per-item update entry (object OR array) into the contract
-     * shape, or null when no entry is present / lacks a usable `new_version`.
+     * shape, or null when no entry is present / lacks a usable `new_version`,
+     * OR when the offered `new_version` is not strictly newer than what is
+     * already installed (GH #211 — WordPress's own update transients can
+     * carry a stale/duplicate response entry whose `new_version` equals or
+     * trails the installed version; surfacing that as an "available update"
+     * is a phantom the operator cannot act on).
      *
-     * @param object|array<string,mixed>|null $entry The transient entry, if any.
+     * Both sides are lightly normalized before comparison (trimmed, a single
+     * leading `v`/`V` stripped) so a header like `v1.5.1` compares equal to a
+     * transient `1.5.1`. No further normalization is applied — a prerelease
+     * or build suffix (`1.5.1-beta`) is left intact for version_compare() to
+     * arbitrate, so a genuinely newer prerelease still surfaces.
+     *
+     * An installed version that is empty or the `'unknown'` sentinel (see
+     * plugins()) cannot be compared, so the guard fails OPEN in that case and
+     * keeps the entry — over-reporting is preferable to hiding a real update
+     * because the installed version was unreadable.
+     *
+     * @param object|array<string,mixed>|null $entry            The transient entry, if any.
+     * @param string                          $installedVersion The currently-installed version, for the phantom-update guard.
      * @return array{new_version:string,package:?string,tested:?string,requires_php:?string}|null
      */
-    private function normalizeAvailableUpdate(object|array|null $entry): ?array
+    private function normalizeAvailableUpdate(object|array|null $entry, string $installedVersion): ?array
     {
         if ($entry === null) {
             return null;
@@ -462,6 +481,14 @@ final class MetadataCommand implements CommandInterface
             return null;
         }
 
+        if ($installedVersion !== '' && $installedVersion !== 'unknown') {
+            $normNew       = $this->normalizeVersionForCompare($newVersion);
+            $normInstalled = $this->normalizeVersionForCompare($installedVersion);
+            if (version_compare($normNew, $normInstalled, '<=')) {
+                return null;
+            }
+        }
+
         $package     = $get('package');
         $tested      = $get('tested');
         $requiresPhp = $get('requires_php');
@@ -472,6 +499,25 @@ final class MetadataCommand implements CommandInterface
             'tested'       => is_scalar($tested)      && (string) $tested      !== '' ? (string) $tested      : null,
             'requires_php' => is_scalar($requiresPhp) && (string) $requiresPhp !== '' ? (string) $requiresPhp : null,
         ];
+    }
+
+    /**
+     * Lightly normalize a version string for the phantom-update comparison:
+     * trims whitespace and strips a single leading `v`/`V` (e.g. `v1.5.1` ->
+     * `1.5.1`). Deliberately does NOT strip prerelease/build suffixes — those
+     * must remain visible to version_compare() so a real prerelease bump
+     * still surfaces as an update.
+     *
+     * @param string $version Raw version string.
+     * @return string Normalized version string.
+     */
+    private function normalizeVersionForCompare(string $version): string
+    {
+        $trimmed = trim($version);
+        if ($trimmed !== '' && ($trimmed[0] === 'v' || $trimmed[0] === 'V')) {
+            $trimmed = substr($trimmed, 1);
+        }
+        return $trimmed;
     }
 
     /**
@@ -527,6 +573,21 @@ final class MetadataCommand implements CommandInterface
             if ($newVersion === '') {
                 continue;
             }
+
+            // GH #211 sibling guard: only surface a core update when the
+            // offered version is strictly newer than what's installed —
+            // mirrors normalizeAvailableUpdate()'s phantom-suppression so a
+            // stale/duplicate 'upgrade' response entry does not report a
+            // same-version "update". Fails OPEN (keeps the entry) when
+            // $current is empty/unreadable.
+            if ($current !== '' && $current !== 'unknown') {
+                $normNew     = $this->normalizeVersionForCompare($newVersion);
+                $normCurrent = $this->normalizeVersionForCompare($current);
+                if (version_compare($normNew, $normCurrent, '<=')) {
+                    continue;
+                }
+            }
+
             return [
                 'new_version'     => $newVersion,
                 'current_version' => $current,

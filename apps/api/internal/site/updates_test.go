@@ -18,6 +18,10 @@ import (
 //     ties broken by slug
 //   - attaches the optional CoreUpdate from the JSONB inventory
 //   - stamps as_of from sites.updated_at
+//   - GH #211: drops a same-version phantom advisory (available_update.new_version
+//     == the component's own Version) from both Items and the item count, while
+//     a legitimate newer advisory still surfaces, and an advisory on a component
+//     with an EMPTY installed Version is kept (fail open — see wpversion.SameVersion)
 func TestBuildAvailableUpdatesFiltersAndSorts(t *testing.T) {
 	updatedAt := time.Date(2026, 5, 28, 10, 0, 0, 0, time.UTC)
 	siteID := uuid.New()
@@ -30,6 +34,18 @@ func TestBuildAvailableUpdatesFiltersAndSorts(t *testing.T) {
 				"available_update": map[string]any{"new_version": "5.3.2"}},
 			{"slug": "zoo", "name": "Zoo", "version": "1.0", "active": true,
 				"available_update": map[string]any{"new_version": "1.1"}},
+			// GH #211 phantom: new_version equals the installed Version
+			// (observed with Kadence, e.g. "1.5.1 -> 1.5.1") — must be dropped.
+			{"slug": "kadence", "name": "Kadence", "version": "1.5.1", "active": true,
+				"available_update": map[string]any{"new_version": "1.5.1"}},
+			// A "v"-prefixed phantom must also normalize-equal and drop.
+			{"slug": "v-prefixed", "name": "V Prefixed", "version": "2.0.0", "active": true,
+				"available_update": map[string]any{"new_version": "v2.0.0"}},
+			// Fail-open: an empty installed Version must never suppress a
+			// reported advisory (wpversion.SameVersion returns false when
+			// either side is empty).
+			{"slug": "zz-mystery", "name": "Mystery Plugin", "version": "", "active": true,
+				"available_update": map[string]any{"new_version": "2.0"}},
 		},
 		"themes": []map[string]any{
 			{"slug": "twentytwentyfour", "name": "Twenty Twenty-Four", "version": "1.0", "active": true,
@@ -58,22 +74,33 @@ func TestBuildAvailableUpdatesFiltersAndSorts(t *testing.T) {
 	if out.CoreUpdate.Value.NewVersion != "6.5.2" || out.CoreUpdate.Value.CurrentVersion != "6.4.3" {
 		t.Fatalf("core_update wrong: %+v", out.CoreUpdate.Value)
 	}
-	// 3 plugins (no-update dropped) + 2 themes = 5 items.
-	if got := len(out.Items); got != 5 {
-		t.Fatalf("filtered item count = %d, want 5: %+v", got, out.Items)
+	// 4 plugins (no-update, kadence phantom, v-prefixed phantom dropped) + 2
+	// themes = 6 items.
+	if got := len(out.Items); got != 6 {
+		t.Fatalf("filtered item count = %d, want 6: %+v", got, out.Items)
+	}
+	for _, it := range out.Items {
+		if it.Slug == "kadence" {
+			t.Fatalf("GH #211 phantom (same-version) advisory must be dropped: %+v", it)
+		}
+		if it.Slug == "v-prefixed" {
+			t.Fatalf("GH #211 phantom (v-prefixed same-version) advisory must be dropped: %+v", it)
+		}
 	}
 	// Expected sort: plugins (active before inactive, slug-sorted within each), then themes.
 	//   1. plugin/wp-rocket  (active)
 	//   2. plugin/zoo        (active)
-	//   3. plugin/akismet    (inactive)
-	//   4. theme/twentytwentyfour (active)
-	//   5. theme/old-theme   (inactive)
+	//   3. plugin/zz-mystery (active; fail-open empty-installed-version kept)
+	//   4. plugin/akismet    (inactive)
+	//   5. theme/twentytwentyfour (active)
+	//   6. theme/old-theme   (inactive)
 	want := []struct {
 		typ  gen.SiteAvailableUpdatesItemsItemType
 		slug string
 	}{
 		{gen.SiteAvailableUpdatesItemsItemTypePlugin, "wp-rocket"},
 		{gen.SiteAvailableUpdatesItemsItemTypePlugin, "zoo"},
+		{gen.SiteAvailableUpdatesItemsItemTypePlugin, "zz-mystery"},
 		{gen.SiteAvailableUpdatesItemsItemTypePlugin, "akismet"},
 		{gen.SiteAvailableUpdatesItemsItemTypeTheme, "twentytwentyfour"},
 		{gen.SiteAvailableUpdatesItemsItemTypeTheme, "old-theme"},
@@ -84,12 +111,18 @@ func TestBuildAvailableUpdatesFiltersAndSorts(t *testing.T) {
 			t.Fatalf("sort[%d] = (%s,%s), want (%s,%s)", i, got.Type, got.Slug, w.typ, w.slug)
 		}
 	}
-	// WP Rocket carries the package URL; check the OptNilString round-trip.
+	// WP Rocket carries the package URL; check the OptNilString round-trip. A
+	// legitimate newer advisory must still surface despite the new same-version
+	// guard.
 	if !out.Items[0].Package.Set || out.Items[0].Package.Value != "https://example.com/wp-rocket.zip" {
 		t.Fatalf("package URL not surfaced: %+v", out.Items[0].Package)
 	}
+	// zz-mystery: fail-open (empty installed Version) kept its advisory.
+	if out.Items[2].Slug != "zz-mystery" || out.Items[2].NewVersion != "2.0" {
+		t.Fatalf("fail-open (empty installed version) advisory not kept: %+v", out.Items[2])
+	}
 	// twentytwentyfour carries tested + requires_php.
-	tt := out.Items[3]
+	tt := out.Items[4]
 	if !tt.Tested.Set || tt.Tested.Value != "6.5" || !tt.RequiresPhp.Set || tt.RequiresPhp.Value != "7.4" {
 		t.Fatalf("optional advisory fields lost: %+v", tt)
 	}

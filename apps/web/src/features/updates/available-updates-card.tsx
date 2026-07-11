@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Check, CheckCircle2, ExternalLink, RotateCcw, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ExternalLink,
+  RotateCcw,
+  X,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,6 +38,10 @@ import {
   type CoreUpdate,
   type SiteAvailableUpdates,
 } from "@/features/updates/types";
+import {
+  isSiteDownRecovery,
+  SITE_DOWN_RECOVERY_FALLBACK_DETAIL,
+} from "@/features/updates/summarize";
 import { toast } from "@/components/toast";
 import { wpOrgSlug } from "@/features/updates/wp-org-slug";
 
@@ -474,16 +485,33 @@ function RowStateLine({
         </span>
       );
     case "failed":
-      return (
-        <span
-          role="alert"
-          className="inline-flex items-center gap-1 text-[var(--color-destructive)]"
-        >
-          <X aria-hidden="true" className="size-3.5" />
-          {error ?? "Update failed"}
-        </span>
-      );
-    case "rolled_back":
+    case "rolled_back": {
+      // GH #210 — the worst-case rollback failure (site-wide fatal, the
+      // rollback command undeliverable, an agent watchdog attempting
+      // automatic filesystem recovery) reads as its own severe, actionable
+      // condition here too, not a generic "failed"/"rolled back" line.
+      if (isSiteDownRecovery(state, progress, error)) {
+        return (
+          <span
+            role="alert"
+            className="inline-flex items-start gap-1.5 text-destructive-subtle-fg"
+          >
+            <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+            {error ?? progress ?? SITE_DOWN_RECOVERY_FALLBACK_DETAIL}
+          </span>
+        );
+      }
+      if (state === "failed") {
+        return (
+          <span
+            role="alert"
+            className="inline-flex items-center gap-1 text-[var(--color-destructive)]"
+          >
+            <X aria-hidden="true" className="size-3.5" />
+            {error ?? "Update failed"}
+          </span>
+        );
+      }
       return (
         <span
           role="alert"
@@ -493,6 +521,7 @@ function RowStateLine({
           Rolled back{error ? `: ${error}` : ""}
         </span>
       );
+    }
     case "skipped":
       return (
         <span role="status" className="text-[var(--color-muted-foreground)]">

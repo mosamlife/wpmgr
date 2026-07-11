@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
+use Brain\Monkey\Functions;
 use WPMgr\Agent\Commands\RollbackCommand;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateRunner;
@@ -23,6 +24,15 @@ final class RollbackCommandTest extends TestCase
 {
     /** Absolute path to the `.maintenance` marker under the test ABSPATH. */
     private string $maintenanceFile = '';
+
+    /**
+     * Spy for delete_site_transient() calls (completeness sweep — a
+     * successful rollback must invalidate the relevant update transient so
+     * the rolled-back-FROM version stops being offered as an "update").
+     *
+     * @var array<int,string>
+     */
+    private array $deletedTransients = [];
 
     protected function set_up(): void
     {
@@ -37,6 +47,18 @@ final class RollbackCommandTest extends TestCase
         if (file_exists($this->maintenanceFile)) {
             unlink($this->maintenanceFile); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
         }
+
+        // Stubbed unconditionally (rather than per-test) so every test in
+        // this file behaves predictably regardless of PHPUnit's run order —
+        // once ANY test in the process defines delete_site_transient as a
+        // Brain Monkey stub, function_exists('delete_site_transient') is
+        // true for every subsequent test, so an unstubbed call elsewhere
+        // would otherwise raise an "unmocked function" error.
+        $this->deletedTransients = [];
+        Functions\when('delete_site_transient')->alias(function (string $key): bool {
+            $this->deletedTransients[] = $key;
+            return true;
+        });
     }
 
     protected function tear_down(): void
@@ -202,6 +224,104 @@ final class RollbackCommandTest extends TestCase
 
         $this->assertTrue($out['ok']);
         $this->assertSame(['6.2.0'], $runner->forced);
+    }
+
+    // ---- transient invalidation completeness sweep (GH #211/#212 cluster) -
+
+    /**
+     * A successful plugin restore must invalidate `update_plugins` so the
+     * rolled-back-FROM version stops being cached as an "available update"
+     * (feeding the #211 phantom / a re-apply loop) before the CP's next
+     * metadata pull re-reads the transient.
+     */
+    public function test_successful_plugin_rollback_deletes_update_plugins_transient(): void
+    {
+        $cmd = new RollbackCommand($this->spySnapshots(true), $this->spyRunner());
+
+        $out = $cmd->execute([], [
+            'type'        => 'plugin',
+            'slug'        => 'akismet/akismet.php',
+            'snapshot_id' => 'snap_abc',
+        ]);
+
+        $this->assertTrue($out['ok']);
+        $this->assertSame(['update_plugins'], $this->deletedTransients);
+    }
+
+    /**
+     * Theme-side sibling of the plugin test above.
+     */
+    public function test_successful_theme_rollback_deletes_update_themes_transient(): void
+    {
+        $cmd = new RollbackCommand($this->spySnapshots(true), $this->spyRunner());
+
+        $out = $cmd->execute([], [
+            'type'        => 'theme',
+            'slug'        => 'twentytwentyfour',
+            'snapshot_id' => 'snap_abc',
+        ]);
+
+        $this->assertTrue($out['ok']);
+        $this->assertSame(['update_themes'], $this->deletedTransients);
+    }
+
+    /**
+     * Core-side sibling: a successful core downgrade must invalidate
+     * `update_core` so the pre-rollback "current" version WordPress cached
+     * stops being offered as an update.
+     */
+    public function test_successful_core_rollback_deletes_update_core_transient(): void
+    {
+        $runner = $this->spyRunner(true);
+        $runner->versions['core:core'] = '6.3.2';
+        $cmd = new RollbackCommand($this->spySnapshots(true), $runner);
+
+        $out = $cmd->execute([], [
+            'type'        => 'core',
+            'snapshot_id' => 'snap_core',
+            'to_version'  => '6.3.2',
+        ]);
+
+        $this->assertTrue($out['ok']);
+        $this->assertSame(['update_core'], $this->deletedTransients);
+    }
+
+    /**
+     * A FAILED restore must not invalidate the transient — there is nothing
+     * to invalidate against, and doing so would just cause an extra wp.org
+     * re-check for no reason.
+     */
+    public function test_failed_plugin_rollback_does_not_delete_any_transient(): void
+    {
+        $cmd = new RollbackCommand($this->spySnapshots(false), $this->spyRunner());
+
+        $out = $cmd->execute([], [
+            'type'        => 'plugin',
+            'slug'        => 'akismet/akismet.php',
+            'snapshot_id' => 'snap_abc',
+        ]);
+
+        $this->assertFalse($out['ok']);
+        $this->assertSame([], $this->deletedTransients);
+    }
+
+    /**
+     * A FAILED core rollback (forceCore returns ok=false) must likewise not
+     * invalidate `update_core`.
+     */
+    public function test_failed_core_rollback_does_not_delete_update_core_transient(): void
+    {
+        $runner = $this->spyRunner(false);
+        $cmd    = new RollbackCommand($this->spySnapshots(true), $runner);
+
+        $out = $cmd->execute([], [
+            'type'        => 'core',
+            'snapshot_id' => 'snap_core',
+            'to_version'  => '6.3.2',
+        ]);
+
+        $this->assertFalse($out['ok']);
+        $this->assertSame([], $this->deletedTransients);
     }
 
     public function test_invalid_type_is_rejected(): void
