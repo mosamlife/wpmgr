@@ -336,3 +336,37 @@ func BestFixedVersion(installed string, patched []string) string {
 	}
 	return best
 }
+
+// SameVersion reports whether installed and available refer to the same
+// release after light, conservative normalization: both sides are
+// TrimSpace'd, then a single leading "v"/"V" prefix is stripped from each
+// (some update-transient sources report a "v"-prefixed version while the
+// installed Version string carries none, or vice versa).
+//
+// This is intentionally an EQUALITY-only comparison. Go has no
+// version_compare() equivalent safe enough to use for ORDERING an arbitrary
+// plugin/theme version string, and a hand-rolled ordering check risks
+// misclassifying a genuinely newer update as already-installed — far worse
+// than the phantom-update symptom this guards against (GH #211: a WordPress
+// update transient occasionally reports new_version == the already-installed
+// Version, e.g. a Kadence "1.5.1 -> 1.5.1" advisory). Compare() (PHP
+// version_compare semantics) is deliberately NOT used here.
+//
+// Either side empty returns false — fail OPEN, so a missing/unknown
+// installed version never suppresses a reported update.
+func SameVersion(installed, available string) bool {
+	installed = strings.TrimSpace(installed)
+	available = strings.TrimSpace(available)
+	if installed == "" || available == "" {
+		return false
+	}
+	return stripLeadingV(installed) == stripLeadingV(available)
+}
+
+// stripLeadingV removes a single leading "v"/"V" prefix, if present.
+func stripLeadingV(v string) string {
+	if len(v) > 0 && (v[0] == 'v' || v[0] == 'V') {
+		return v[1:]
+	}
+	return v
+}

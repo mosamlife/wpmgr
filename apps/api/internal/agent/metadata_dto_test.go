@@ -144,3 +144,40 @@ func TestMetadataDTOTolerantOnFlexFields(t *testing.T) {
 		t.Fatalf("flexString tested not coerced from number: %+v", m.Plugins[0].AvailableUpdate)
 	}
 }
+
+// TestMetadataDTODropsSameVersionAvailableUpdate proves GH #211's first CP
+// checkpoint: toMetadata drops a component's available_update (and the
+// top-level core_update) when new_version normalizes equal to the reported
+// installed version — the WordPress update-transient quirk observed with
+// Kadence ("1.5.1 -> 1.5.1"). A legitimate newer advisory on a sibling
+// component in the same payload must still decode.
+func TestMetadataDTODropsSameVersionAvailableUpdate(t *testing.T) {
+	body := []byte(`{
+		"wp_version":"6.4.3",
+		"plugins":[
+			{"slug":"kadence","name":"Kadence","version":"1.5.1","active":true,
+			 "available_update":{"new_version":"1.5.1"}},
+			{"slug":"wp-rocket","name":"WP Rocket","version":"3.16.1","active":true,
+			 "available_update":{"new_version":"3.16.2"}}
+		],
+		"core_update":{"new_version":"6.4.3","current_version":"6.4.3"}
+	}`)
+	var dto metadataDTO
+	if err := json.Unmarshal(body, &dto); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	m := dto.toMetadata()
+	if len(m.Plugins) != 2 {
+		t.Fatalf("both components must survive (only the advisory is dropped): %+v", m.Plugins)
+	}
+	if m.Plugins[0].Slug != "kadence" || m.Plugins[0].AvailableUpdate != nil {
+		t.Fatalf("same-version phantom advisory must be dropped: %+v", m.Plugins[0])
+	}
+	if m.Plugins[1].Slug != "wp-rocket" || m.Plugins[1].AvailableUpdate == nil ||
+		m.Plugins[1].AvailableUpdate.NewVersion != "3.16.2" {
+		t.Fatalf("legitimate newer advisory must still decode: %+v", m.Plugins[1])
+	}
+	if m.CoreUpdate != nil {
+		t.Fatalf("same-version phantom core_update must be dropped: %+v", m.CoreUpdate)
+	}
+}

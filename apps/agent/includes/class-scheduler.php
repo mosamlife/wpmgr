@@ -422,14 +422,37 @@ final class Scheduler
      * Public so a dispatcher (e.g. the RefreshInventoryCommand on-demand
      * refresh) can reuse the same throttle without re-implementing the lock.
      *
-     * @param bool $force Bypass the rate-limit lock (used by the on-demand
-     *                    refresh command, which is human-initiated).
+     * GH #212: `$force` bypassed only WPMgr's own 5-minute REFRESH_LOCK_KEY —
+     * it never bypassed WordPress core's own ~12h `update_plugins`/
+     * `update_themes`/`update_core` throttle, so wp_update_*() and
+     * wp_version_check() would silently no-op against a still-fresh core
+     * transient and a human "Refresh" often needed several clicks to land.
+     * When `$force` is true we now ALSO delete the three site transients
+     * before re-checking (clearing core's own throttle) and pass `true` as
+     * wp_version_check()'s second (bypass-cache) argument. This hard-force is
+     * gated strictly on `$force` — the 30-min cron and the
+     * upgrader_process_complete/switch_theme/activated_plugin/deactivated_plugin
+     * event hooks all call this via Scheduler::runMetadata() with the default
+     * `$force = false` and MUST stay on the soft/throttled path, or a bulk
+     * update (which fires several of those hooks back-to-back) would hammer
+     * wp.org on every plugin toggle.
+     *
+     * @param bool $force Bypass BOTH the WPMgr rate-limit lock AND WordPress
+     *                    core's own update-check throttle (used by the
+     *                    on-demand refresh command, which is human-initiated).
      * @return void
      */
     public function refreshUpdateTransients(bool $force = false): void
     {
         if (!$force && function_exists('get_transient') && get_transient(self::REFRESH_LOCK_KEY) !== false) {
             return;
+        }
+        if ($force) {
+            if (function_exists('delete_site_transient')) {
+                delete_site_transient('update_plugins');
+                delete_site_transient('update_themes');
+                delete_site_transient('update_core');
+            }
         }
         if (function_exists('wp_update_plugins')) {
             @wp_update_plugins();
@@ -438,7 +461,7 @@ final class Scheduler
             @wp_update_themes();
         }
         if (function_exists('wp_version_check')) {
-            @wp_version_check();
+            @wp_version_check([], $force);
         }
         if (function_exists('set_transient') && defined('MINUTE_IN_SECONDS')) {
             set_transient(self::REFRESH_LOCK_KEY, 1, 5 * MINUTE_IN_SECONDS);

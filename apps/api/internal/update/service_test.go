@@ -142,6 +142,80 @@ func (e *countingEnqueuer) EnqueueTask(context.Context, uuid.UUID, uuid.UUID, uu
 	return nil
 }
 
+// TestIndexPendingDropsSameVersionPhantom proves GH #210/#211's planTasks
+// authority checkpoint: indexPending (which planTasks intersects a run's
+// requested items against) excludes a component/core advisory whose
+// NewVersion normalizes equal to its own Version — a same-version phantom
+// (e.g. Kadence's observed "1.5.1 -> 1.5.1") must never be treated as
+// pending, or planTasks would plan a doomed/no-op update task for it. A
+// legitimate newer advisory (both component and core) is unaffected, and an
+// advisory on a component reporting an EMPTY installed Version is kept
+// (fail open — wpversion.SameVersion returns false when either side is
+// empty).
+func TestIndexPendingDropsSameVersionPhantom(t *testing.T) {
+	site := SiteInfo{
+		ID: uuid.New(), Enrolled: true,
+		Components: []Component{
+			// Phantom: NewVersion == Version — must not appear as pending.
+			{Type: TargetPlugin, Slug: "kadence", Version: "1.5.1", UpdateAvailable: true, NewVersion: "1.5.1"},
+			// Legitimate newer update — must appear as pending.
+			{Type: TargetPlugin, Slug: "wp-rocket", Version: "3.16.1", UpdateAvailable: true, NewVersion: "3.16.2"},
+			// Fail-open: empty installed Version must never suppress a real update.
+			{Type: TargetPlugin, Slug: "mystery", Version: "", UpdateAvailable: true, NewVersion: "2.0"},
+		},
+		CoreUpdateAvailable: true,
+		CoreCurrentVersion:  "6.4.3",
+		CoreNewVersion:      "6.4.3", // phantom core advisory
+	}
+
+	pending := indexPending(site)
+
+	if _, ok := pending[TargetPlugin+"/kadence"]; ok {
+		t.Fatalf("same-version phantom must not be indexed as pending: %+v", pending)
+	}
+	if _, ok := pending[TargetCore+"/core"]; ok {
+		t.Fatalf("same-version phantom core advisory must not be indexed as pending: %+v", pending)
+	}
+	if v, ok := pending[TargetPlugin+"/wp-rocket"]; !ok || v != "3.16.2" {
+		t.Fatalf("legitimate newer advisory must be indexed as pending: %+v", pending)
+	}
+	if v, ok := pending[TargetPlugin+"/mystery"]; !ok || v != "2.0" {
+		t.Fatalf("fail-open (empty installed version) advisory must be indexed as pending: %+v", pending)
+	}
+}
+
+// TestCreateRunNoTaskForSameVersionPhantomUpdate is the end-to-end companion
+// to TestIndexPendingDropsSameVersionPhantom: a site whose only "pending"
+// component is a same-version phantom produces NO task through the full
+// CreateRun -> planTasks -> indexPending path, exactly like a site with
+// nothing pending at all.
+func TestCreateRunNoTaskForSameVersionPhantomUpdate(t *testing.T) {
+	tenant := uuid.New()
+	siteA := uuid.New()
+	lookup := &fakeSiteLookup{sites: map[uuid.UUID]SiteInfo{
+		siteA: {
+			ID: siteA, Enrolled: true,
+			Components: []Component{
+				{Type: TargetPlugin, Slug: "kadence", Version: "1.5.1", UpdateAvailable: true, NewVersion: "1.5.1"},
+			},
+		},
+	}}
+	svc := NewService(&fakeCreateRepo{}, lookup, &countingEnqueuer{}, domain.NewValidator(), domain.SystemClock{})
+
+	_, _, err := svc.CreateRun(context.Background(), CreateRunInput{
+		TenantID: tenant,
+		SiteIDs:  []uuid.UUID{siteA},
+		Items:    []Item{{Type: "plugin", Slug: "kadence", Version: "latest"}},
+	})
+	if err == nil {
+		t.Fatal("want an error: a same-version phantom advisory must not plan a task")
+	}
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Kind != domain.KindValidation {
+		t.Fatalf("want a KindValidation domain error, got %v", err)
+	}
+}
+
 // TestCreateRunIntersectsPerSitePendingUpdates is the regression test for
 // #126 (Problem 1: the N×M task-explosion bug). Two sites are selected in one
 // run: site A has 3 of its own pending updates, site B has 20 (2 of which

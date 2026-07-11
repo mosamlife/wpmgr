@@ -256,6 +256,133 @@ final class MetadataCommandTest extends TestCase
         $this->assertNull($data['plugins'][0]['available_update']);
     }
 
+    /**
+     * GH #211: WordPress's own `update_plugins` transient can carry a
+     * response entry whose `new_version` merely EQUALS the installed
+     * version (a stale/duplicate offer) — that must not surface as an
+     * "available update".
+     */
+    public function test_plugins_available_update_is_null_when_same_version(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(false);
+        Functions\when('get_option')->justReturn([]);
+        Functions\when('get_plugins')->justReturn([
+            'akismet/akismet.php' => ['Name' => 'Akismet', 'Version' => '5.3.1'],
+        ]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_core_updates')->justReturn([]);
+
+        $pluginTransient = new \stdClass();
+        $pluginEntry = new \stdClass();
+        $pluginEntry->new_version = '5.3.1';
+        $pluginTransient->response = ['akismet/akismet.php' => $pluginEntry];
+        Functions\when('get_site_transient')->alias(static function ($key) use ($pluginTransient) {
+            return $key === 'update_plugins' ? $pluginTransient : false;
+        });
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertCount(1, $data['plugins']);
+        $this->assertNull($data['plugins'][0]['available_update']);
+    }
+
+    /**
+     * GH #211 normalization: a leading `v`/`V` and incidental whitespace on
+     * either side of the comparison must not defeat the same-version guard
+     * (`v1.5.1` from the transient vs. ` 1.5.1 ` from the plugin header).
+     */
+    public function test_plugins_available_update_normalizes_leading_v_and_whitespace(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(false);
+        Functions\when('get_option')->justReturn([]);
+        Functions\when('get_plugins')->justReturn([
+            'foo/foo.php' => ['Name' => 'Foo', 'Version' => ' 1.5.1 '],
+        ]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_core_updates')->justReturn([]);
+
+        $pluginTransient = new \stdClass();
+        $pluginEntry = new \stdClass();
+        $pluginEntry->new_version = 'v1.5.1';
+        $pluginTransient->response = ['foo/foo.php' => $pluginEntry];
+        Functions\when('get_site_transient')->alias(static function ($key) use ($pluginTransient) {
+            return $key === 'update_plugins' ? $pluginTransient : false;
+        });
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertNull($data['plugins'][0]['available_update']);
+    }
+
+    /**
+     * Regression guard: the #211 same-version guard must NOT suppress a
+     * genuinely newer offer — a real update must still surface even when
+     * both versions carry a leading `v`.
+     */
+    public function test_plugins_available_update_still_surfaces_when_genuinely_newer(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(false);
+        Functions\when('get_option')->justReturn([]);
+        Functions\when('get_plugins')->justReturn([
+            'foo/foo.php' => ['Name' => 'Foo', 'Version' => 'v1.5.1'],
+        ]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_core_updates')->justReturn([]);
+
+        $pluginTransient = new \stdClass();
+        $pluginEntry = new \stdClass();
+        $pluginEntry->new_version = '1.6.0';
+        $pluginTransient->response = ['foo/foo.php' => $pluginEntry];
+        Functions\when('get_site_transient')->alias(static function ($key) use ($pluginTransient) {
+            return $key === 'update_plugins' ? $pluginTransient : false;
+        });
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertNotNull($data['plugins'][0]['available_update']);
+        $this->assertSame('1.6.0', $data['plugins'][0]['available_update']['new_version']);
+    }
+
+    /**
+     * Fail-open guard: when the installed version cannot be determined
+     * (get_plugins() omitted the Version header, so plugins() falls back to
+     * the 'unknown' sentinel), the same-version comparison must be skipped
+     * entirely and the offered update kept — hiding a real update because
+     * the installed version was unreadable would be worse than an occasional
+     * over-report.
+     */
+    public function test_plugins_available_update_present_when_installed_version_unknown(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(false);
+        Functions\when('get_option')->justReturn([]);
+        Functions\when('get_plugins')->justReturn([
+            'foo/foo.php' => ['Name' => 'Foo'],
+        ]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_core_updates')->justReturn([]);
+
+        $pluginTransient = new \stdClass();
+        $pluginEntry = new \stdClass();
+        $pluginEntry->new_version = '1.0.0';
+        $pluginTransient->response = ['foo/foo.php' => $pluginEntry];
+        Functions\when('get_site_transient')->alias(static function ($key) use ($pluginTransient) {
+            return $key === 'update_plugins' ? $pluginTransient : false;
+        });
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertSame('unknown', $data['plugins'][0]['version']);
+        $this->assertNotNull($data['plugins'][0]['available_update']);
+    }
+
     public function test_themes_include_available_update_when_transient_has_entry(): void
     {
         Functions\when('get_bloginfo')->justReturn('6.5.2');
@@ -304,6 +431,53 @@ final class MetadataCommandTest extends TestCase
         ], $data['themes'][0]['available_update']);
     }
 
+    /**
+     * GH #211 theme-side sibling of test_plugins_available_update_is_null_when_same_version():
+     * the `update_themes` transient's `new_version` merely EQUALS the
+     * installed stylesheet version — must not surface as an "available
+     * update".
+     */
+    public function test_themes_available_update_is_null_when_same_version(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(false);
+        Functions\when('get_option')->justReturn([]);
+        Functions\when('get_plugins')->justReturn([]);
+        $themeObj = new class {
+            /** @param string $k Field. @return string */
+            public function get($k): string
+            {
+                return match ($k) {
+                    'Name'    => 'Twenty Twenty-Four',
+                    'Version' => '1.5.1',
+                    default   => '',
+                };
+            }
+        };
+        Functions\when('wp_get_themes')->justReturn([
+            'twentytwentyfour' => $themeObj,
+        ]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_core_updates')->justReturn([]);
+
+        // Theme transient entries are ARRAYS, not objects (per WP core).
+        $themeTransient = new \stdClass();
+        $themeTransient->response = [
+            'twentytwentyfour' => [
+                'theme'       => 'twentytwentyfour',
+                'new_version' => '1.5.1',
+            ],
+        ];
+        Functions\when('get_site_transient')->alias(static function ($key) use ($themeTransient) {
+            return $key === 'update_themes' ? $themeTransient : false;
+        });
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertCount(1, $data['themes']);
+        $this->assertNull($data['themes'][0]['available_update']);
+    }
+
     public function test_core_update_present_when_get_core_updates_returns_upgrade(): void
     {
         Functions\when('get_bloginfo')->alias(static fn ($k) => $k === 'version' ? '6.4.3' : '');
@@ -340,6 +514,32 @@ final class MetadataCommandTest extends TestCase
         // get_core_updates returns a `latest` response (not `upgrade`).
         $core = new \stdClass();
         $core->response = 'latest';
+        $core->version  = '6.5.2';
+        Functions\when('get_core_updates')->justReturn([$core]);
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertNull($data['core_update']);
+    }
+
+    /**
+     * GH #211 core-side sibling: an `update_core` transient entry whose
+     * `response` is 'upgrade' but whose offered `version` merely EQUALS the
+     * currently-running core version (a stale/duplicate entry) must not
+     * surface as a core update.
+     */
+    public function test_core_update_null_when_new_version_not_newer(): void
+    {
+        Functions\when('get_bloginfo')->alias(static fn ($k) => $k === 'version' ? '6.5.2' : '');
+        Functions\when('is_multisite')->justReturn(false);
+        Functions\when('get_option')->justReturn([]);
+        Functions\when('get_plugins')->justReturn([]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_site_transient')->justReturn(false);
+
+        $core = new \stdClass();
+        $core->response = 'upgrade';
         $core->version  = '6.5.2';
         Functions\when('get_core_updates')->justReturn([$core]);
 

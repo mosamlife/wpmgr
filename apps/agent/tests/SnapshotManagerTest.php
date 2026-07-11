@@ -622,6 +622,42 @@ final class SnapshotManagerTest extends TestCase
         );
     }
 
+    /**
+     * MEDIUM-2 (GitHub issue #210 security review) — a stranded aside left
+     * behind by an INTERRUPTED update-watchdog restore
+     * (`wpmgr_watchdog_swap_directories()`'s `.wpmgr-watchdog-old-<snap_id>`
+     * naming, not SnapshotManager's own `.wpmgr-old-<snap_id>`) must be
+     * reclaimed by the SAME GC backstop, or it leaks as a permanent ghost
+     * plugin-directory duplicate.
+     */
+    public function test_gc_expired_sweeps_a_stranded_watchdog_aside_past_the_backstop_ttl(): void
+    {
+        $pluginsRoot = $this->root . '/plugins-root-watchdog';
+        mkdir($pluginsRoot . '/demo', 0755, true);
+
+        $strandedWatchdogAside = $pluginsRoot . '/demo.wpmgr-watchdog-old-snap_' . bin2hex(random_bytes(12));
+        mkdir($strandedWatchdogAside, 0755, true);
+        file_put_contents($strandedWatchdogAside . '/demo.php', "<?php\n// Plugin Name: Demo\n");
+        touch($strandedWatchdogAside, time() - (73 * 3600)); // > 72h backstop TTL
+
+        $recentWatchdogAside = $pluginsRoot . '/other.wpmgr-watchdog-old-snap_' . bin2hex(random_bytes(12));
+        mkdir($recentWatchdogAside, 0755, true);
+        touch($recentWatchdogAside, time() - 3600); // 1h — must survive
+
+        $class = $this->managerClassWithPluginRoot($pluginsRoot);
+        $class::gcExpired();
+
+        $this->assertFalse(
+            is_dir($strandedWatchdogAside),
+            'MEDIUM-2: a stranded .wpmgr-watchdog-old-<id> aside past the GC backstop TTL must be swept, same as the original .wpmgr-old-<id> naming'
+        );
+        $this->assertTrue(is_dir($recentWatchdogAside), 'a recent stranded watchdog aside must survive the sweep');
+        $this->assertTrue(
+            is_dir($pluginsRoot . '/demo'),
+            'the sweep must never touch the LIVE plugin directory itself, only the stranded aside sibling'
+        );
+    }
+
     // =========================================================================
     // F1 — recovery from a re-interrupted restore (deterministic aside name)
     // =========================================================================
@@ -930,5 +966,66 @@ final class SnapshotManagerTest extends TestCase
         $this->assertTrue($result['ok']);
         $this->assertSame('v1', file_get_contents($live . '/marker.txt'));
         $this->assertFalse(is_dir($live . '.wpmgr-old-' . $snap['snapshot_id']));
+    }
+
+    // =========================================================================
+    // GitHub issue #210 — resolvedRestorePaths() (update-watchdog ARM step)
+    // =========================================================================
+
+    public function test_resolved_restore_paths_returns_the_live_and_payload_dirs_for_a_real_snapshot(): void
+    {
+        $mgr  = $this->manager();
+        $live = $this->root . '/plugins-src/watchdog-demo';
+        mkdir($live, 0755, true);
+        file_put_contents($live . '/marker.txt', 'v1');
+        $mgr->liveOverride = $live;
+
+        $snap = $mgr->capture('plugin', 'watchdog-demo/watchdog-demo.php', '1.0');
+        $this->assertNotSame('', $snap['snapshot_id']);
+
+        $paths = $mgr->resolvedRestorePaths('plugin', 'watchdog-demo/watchdog-demo.php', $snap['snapshot_id']);
+
+        $this->assertSame($live, $paths['live'], 'resolvedRestorePaths() must return the exact liveDir() resolution');
+        // resolveSnapshotDir() returns a realpath()'d value (e.g. macOS
+        // resolves /var -> /private/var), so compare through realpath() on
+        // both sides rather than asserting exact string identity against a
+        // manually-concatenated (non-canonicalized) expectation.
+        $this->assertSame(
+            realpath($this->snapshotsBase . '/' . $snap['snapshot_id']) . '/payload',
+            $paths['payload'],
+            'resolvedRestorePaths() must return the exact snapshot payload directory'
+        );
+        $this->assertTrue(is_dir($paths['payload']), 'the returned payload dir must actually exist on disk');
+    }
+
+    public function test_resolved_restore_paths_returns_empty_for_an_unknown_snapshot_id(): void
+    {
+        $mgr  = $this->manager();
+        $mgr->liveOverride = $this->root . '/plugins-src/never-captured';
+
+        $paths = $mgr->resolvedRestorePaths('plugin', 'never-captured/never-captured.php', 'snap_' . bin2hex(random_bytes(12)));
+
+        $this->assertSame(['live' => '', 'payload' => ''], $paths);
+    }
+
+    public function test_resolved_restore_paths_returns_empty_when_the_live_dir_cannot_be_resolved(): void
+    {
+        $mgr  = $this->manager();
+        $live = $this->root . '/plugins-src/watchdog-demo2';
+        mkdir($live, 0755, true);
+        file_put_contents($live . '/marker.txt', 'v1');
+        $mgr->liveOverride = $live;
+
+        $snap = $mgr->capture('plugin', 'watchdog-demo2/watchdog-demo2.php', '1.0');
+        $this->assertNotSame('', $snap['snapshot_id']);
+
+        // Simulate liveDir() being unable to resolve (e.g. the live source
+        // has since been removed) — resolvedRestorePaths() must propagate
+        // '' rather than fabricate a path.
+        $mgr->liveOverride = '';
+
+        $paths = $mgr->resolvedRestorePaths('plugin', 'watchdog-demo2/watchdog-demo2.php', $snap['snapshot_id']);
+
+        $this->assertSame(['live' => '', 'payload' => ''], $paths);
     }
 }

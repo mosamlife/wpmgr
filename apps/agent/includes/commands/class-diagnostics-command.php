@@ -764,6 +764,13 @@ final class DiagnosticsCommand implements CommandInterface
      * Plugins category — installed/active counts, available updates count,
      * and the per-paid-plugin `licensing` probe (leapfrog feature).
      *
+     * GH #211 sibling guard: `available_updates` is only incremented for a
+     * transient response entry whose `new_version` is strictly newer than the
+     * installed version (per get_plugins()) — a stale/duplicate transient
+     * entry no longer inflates the site-health Plugins card with a phantom
+     * count. Mirrors MetadataCommand::normalizeAvailableUpdate() /
+     * Enrollment::installedUpdatesCount().
+     *
      * @return array<string,mixed>
      */
     private function collectPlugins(): array
@@ -779,7 +786,15 @@ final class DiagnosticsCommand implements CommandInterface
         $availableUpdates = 0;
         $updates = function_exists('get_site_transient') ? get_site_transient('update_plugins') : null;
         if (is_object($updates) && isset($updates->response) && is_array($updates->response)) {
-            $availableUpdates = count($updates->response);
+            foreach ($updates->response as $file => $entry) {
+                $installed = is_string($file) && isset($all[$file]['Version']) && is_scalar($all[$file]['Version'])
+                    ? (string) $all[$file]['Version']
+                    : '';
+                $newVersion = $this->extractNewVersion($entry);
+                if (!$this->isPhantomUpdate($newVersion, $installed)) {
+                    $availableUpdates++;
+                }
+            }
         }
 
         return [
@@ -790,6 +805,66 @@ final class DiagnosticsCommand implements CommandInterface
             // option keys (out of scope for this sprint to ship the allowlist).
             'licensing'              => $this->collectPluginLicensing($all),
         ];
+    }
+
+    /**
+     * Extract a usable `new_version` string from a transient response entry
+     * (object for plugins, array for themes). Returns '' when absent/unusable.
+     *
+     * @param mixed $entry Raw transient response entry.
+     * @return string
+     */
+    private function extractNewVersion(mixed $entry): string
+    {
+        if (is_object($entry)) {
+            $value = $entry->new_version ?? null;
+        } elseif (is_array($entry)) {
+            $value = $entry['new_version'] ?? null;
+        } else {
+            return '';
+        }
+        return (is_string($value) || is_numeric($value)) ? (string) $value : '';
+    }
+
+    /**
+     * GH #211 sibling guard: true when `$newVersion` is not strictly newer
+     * than `$installedVersion` (i.e. counting it would be a phantom "update").
+     * Fails OPEN (returns false, i.e. "keep counting it") when either side is
+     * empty/unreadable/the 'unknown' sentinel. Mirrors
+     * MetadataCommand::normalizeAvailableUpdate()'s normalization: trim +
+     * strip a single leading `v`/`V`, leaving any prerelease/build suffix
+     * intact for version_compare() to arbitrate.
+     *
+     * @param string $newVersion       Offered version from the transient.
+     * @param string $installedVersion Currently-installed version.
+     * @return bool
+     */
+    private function isPhantomUpdate(string $newVersion, string $installedVersion): bool
+    {
+        if ($newVersion === '' || $installedVersion === '' || $installedVersion === 'unknown') {
+            return false;
+        }
+        $normNew       = $this->normalizeVersionForCompare($newVersion);
+        $normInstalled = $this->normalizeVersionForCompare($installedVersion);
+        return version_compare($normNew, $normInstalled, '<=');
+    }
+
+    /**
+     * Lightly normalize a version string for the phantom-update comparison:
+     * trims whitespace and strips a single leading `v`/`V`. See
+     * MetadataCommand::normalizeVersionForCompare() for the full rationale
+     * (deliberately does NOT strip prerelease/build suffixes).
+     *
+     * @param string $version Raw version string.
+     * @return string
+     */
+    private function normalizeVersionForCompare(string $version): string
+    {
+        $trimmed = trim($version);
+        if ($trimmed !== '' && ($trimmed[0] === 'v' || $trimmed[0] === 'V')) {
+            $trimmed = substr($trimmed, 1);
+        }
+        return $trimmed;
     }
 
     /**

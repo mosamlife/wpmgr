@@ -21,6 +21,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 	"github.com/mosamlife/wpmgr/apps/api/internal/uptime"
 	"github.com/mosamlife/wpmgr/apps/api/internal/vuln"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // uptimeSiteAdapter adapts the site service to the uptime package's SiteVerifier
@@ -513,7 +514,11 @@ func toSiteInfo(s site.Site) update.SiteInfo {
 		Enrolled:   s.EnrolledAt != nil,
 		Components: comps,
 	}
-	if core := s.ParsedCoreUpdate(); core != nil && core.NewVersion != "" {
+	// GH #211: drop a same-version phantom core-update advisory here too
+	// (defense-in-depth; the update package's planTasks authority,
+	// indexPending, re-checks this same condition independently).
+	if core := s.ParsedCoreUpdate(); core != nil && core.NewVersion != "" &&
+		!wpversion.SameVersion(core.CurrentVersion, core.NewVersion) {
 		info.CoreUpdateAvailable = true
 		info.CoreCurrentVersion = core.CurrentVersion
 		info.CoreNewVersion = core.NewVersion
@@ -523,7 +528,11 @@ func toSiteInfo(s site.Site) update.SiteInfo {
 
 func toUpdateComponent(typ string, c site.Component) update.Component {
 	out := update.Component{Type: typ, Slug: c.Slug, Version: c.Version}
-	if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" {
+	// GH #211: a same-version advisory (new_version == the component's own
+	// installed Version) must never surface as UpdateAvailable, or planTasks
+	// would plan a doomed/no-op update task for it.
+	if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" &&
+		!wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) {
 		out.UpdateAvailable = true
 		out.NewVersion = c.AvailableUpdate.NewVersion
 	}

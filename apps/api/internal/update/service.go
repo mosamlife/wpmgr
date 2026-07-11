@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // SiteInfo is the minimal site projection the update service needs to plan and
@@ -252,11 +253,17 @@ func (s *Service) planTasks(sites []SiteInfo, items []Item, inFlight map[InFligh
 func indexPending(site SiteInfo) map[string]string {
 	m := make(map[string]string, len(site.Components)+1)
 	for _, c := range site.Components {
-		if c.UpdateAvailable && c.NewVersion != "" {
+		// GH #211: this is the planTasks authority — a same-version phantom
+		// advisory (new_version == the component's own installed Version)
+		// must never be treated as pending here, defense-in-depth against a
+		// SiteLookup implementation that did not already filter it (see
+		// cmd/wpmgr's toUpdateComponent).
+		if c.UpdateAvailable && c.NewVersion != "" && !wpversion.SameVersion(c.Version, c.NewVersion) {
 			m[c.Type+"/"+c.Slug] = c.NewVersion
 		}
 	}
-	if site.CoreUpdateAvailable && site.CoreNewVersion != "" {
+	if site.CoreUpdateAvailable && site.CoreNewVersion != "" &&
+		!wpversion.SameVersion(site.CoreCurrentVersion, site.CoreNewVersion) {
 		m[TargetCore+"/core"] = site.CoreNewVersion
 	}
 	return m

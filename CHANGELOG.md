@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.56] - 2026-07-11
+
+### Fixed
+
+- Automatic update rollback now recovers a site that an update left fataling on every request (GH #210). Previously, when a plugin or theme update applied cleanly but then caused a site-wide PHP fatal on every WordPress request, the automatic rollback could not run: it was dispatched to the same WordPress endpoint that was now fataling, so the site stayed fully down (front end and admin) until someone recovered it manually at the filesystem level. A new update watchdog loads before regular plugins and, when it detects a genuine post-update fatal, restores the pre-update snapshot directly at the filesystem level without needing WordPress to boot. It fires only for a real fatal attributable to the just-updated plugin or theme, within a short window after the update, and disarms itself as soon as the site boots healthily, so it cannot revert a working update. If the site is still reachable, rollback continues to work exactly as before. The dashboard also now shows this "site not responding, recovery attempted" condition distinctly instead of a generic rollback failure.
+- The "Available updates" panel no longer shows a phantom update whose target version equals the version already installed (GH #211), for example a theme listed as updatable from a version to the same version. WordPress's own update cache can occasionally hold such an entry; nothing in the pipeline compared the offered version to the installed one, so it surfaced as a real update and inflated the update count. The agent now suppresses same-version entries, the control plane drops them defensively (which also clears any already-stored phantoms on the next view, with no re-sync), and the update wizard no longer pre-selects them.
+- The "Refresh" button on a site's available updates now forces a real check against WordPress.org instead of sometimes returning the same cached list (GH #212). The refresh only bypassed WPMgr's own short lock, not WordPress core's separate, roughly twelve-hour check throttle, so it could take several clicks to match what the site's own Updates screen showed immediately. An explicit refresh now clears the relevant update caches and forces the underlying checks, so a single click returns current data. The scheduled background refresh stays gentle and is unchanged. A related gap in the update-apply path's own freshness check is fixed too, and a rollback now clears the update cache so the rolled-back-from version is not left showing as available.
+
 ## [0.61.55] - 2026-07-11
 
 ### Fixed

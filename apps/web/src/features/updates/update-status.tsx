@@ -2,6 +2,7 @@ import type { UpdateRun, UpdateTask } from "@wpmgr/api";
 
 import { StatusChip } from "@/components/status/status-chip";
 import type { StatusTone } from "@/components/status/status-dot";
+import { isSiteDownRecovery, SITE_DOWN_RECOVERY_LABEL } from "./summarize";
 
 type TaskStatus = UpdateTask["status"];
 type RunStatus = UpdateRun["status"];
@@ -15,8 +16,20 @@ const TASK_TONE: Record<TaskStatus, { tone: StatusTone; label: string; pulse?: b
   skipped: { tone: "muted", label: "Skipped" },
 };
 
-export function TaskStatusBadge({ status }: { status: TaskStatus }) {
-  const cfg = TASK_TONE[status];
+export function TaskStatusBadge({
+  task,
+}: {
+  task: Pick<UpdateTask, "status" | "detail" | "error">;
+}) {
+  // GH #210 — the site-wide-fatal + undeliverable-rollback + auto-filesystem-
+  // recovery condition is distinct and more severe than an ordinary failure
+  // or rollback. The backend reports it through detail/error text on the
+  // existing failed/rolled_back statuses, so surface it as its own chip
+  // instead of the generic "Failed"/"Rolled back" label.
+  if (isSiteDownRecovery(task.status, task.detail, task.error)) {
+    return <StatusChip tone="destructive" label={SITE_DOWN_RECOVERY_LABEL} />;
+  }
+  const cfg = TASK_TONE[task.status];
   return (
     <StatusChip
       tone={cfg.tone}

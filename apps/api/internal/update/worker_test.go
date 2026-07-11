@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,7 +220,7 @@ func TestRunApply_ProbeRetry_StillUnhealthyRollsBack(t *testing.T) {
 	}
 
 	reason := fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail)
-	if err := w.rollback(context.Background(), task, "https://example.test", item, res, reason); err != nil {
+	if err := w.rollback(context.Background(), task, "https://example.test", item, res, probe, reason); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	if !cmd.rollbackCalled {
@@ -281,5 +282,98 @@ func TestRunApply_ProbeRetry_RespectsContextCancellation(t *testing.T) {
 	}
 	if perr == nil {
 		t.Fatalf("expected a context error, got nil")
+	}
+}
+
+// TestRollback_FatalProbeAndRollbackTransportError_RecordsDistinctDetail
+// covers GH #210: when the post-update probe itself detected a site-wide PHP
+// fatal (a Fatal body signature, or a 5xx status) AND the rollback command's
+// own transport also errors — the site's REST endpoint is itself
+// undeliverable, most likely because of that same fatal — the recorded
+// detail must be the distinct, actionable message, not the generic
+// "rollback FAILED after unhealthy update", because the CP round trip cannot
+// recover this site; only the agent's own filesystem-level watchdog (or
+// manual intervention) can.
+func TestRollback_FatalProbeAndRollbackTransportError_RecordsDistinctDetail(t *testing.T) {
+	repo := &probeFakeRepo{}
+	cmd := &fakeCommander{rollbackErr: fmt.Errorf("dial tcp: connection refused")}
+	w := newTestWorker(repo, cmd, &scriptedProber{script: []probeStep{unhealthyStep(503)}})
+
+	task := testTask()
+	item := updateItem()
+	res := agentcmd.ItemResult{Type: item.Type, Slug: item.Slug, FromVersion: "1.9.9", ToVersion: "2.0.0", Status: agentcmd.ItemSucceeded}
+	fatalProbe := agentcmd.ProbeResult{StatusCode: 200, Fatal: true, Detail: "fatal-error signature in response body"}
+
+	if err := w.rollback(context.Background(), task, "https://example.test", item, res, fatalProbe, "post-update health failed"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if !cmd.rollbackCalled {
+		t.Fatalf("expected the rollback command to have been attempted")
+	}
+	if len(repo.finished) != 1 {
+		t.Fatalf("expected one finish call, got %d", len(repo.finished))
+	}
+	got := repo.finished[0]
+	if got.Status != TaskFailed {
+		t.Fatalf("expected TaskFailed, got %s", got.Status)
+	}
+	if !strings.Contains(got.Detail, "site not responding") || !strings.Contains(got.Detail, "rollback command undeliverable") {
+		t.Fatalf("expected the distinct site-wide-fatal detail, got %q", got.Detail)
+	}
+	if strings.Contains(got.Detail, "rollback FAILED after unhealthy update") {
+		t.Fatalf("must NOT use the generic rollback-failed detail on a fatal-probe branch: %q", got.Detail)
+	}
+}
+
+// TestRollback_FatalStatusOnlyAndRollbackTransportError_RecordsDistinctDetail
+// covers the 5xx-without-a-body-signature half of the GH #210 condition (the
+// agent.go/agentcmd Probe never sets Fatal for a bare 5xx — only StatusCode).
+func TestRollback_FatalStatusOnlyAndRollbackTransportError_RecordsDistinctDetail(t *testing.T) {
+	repo := &probeFakeRepo{}
+	cmd := &fakeCommander{rollbackErr: fmt.Errorf("dial tcp: connection refused")}
+	w := newTestWorker(repo, cmd, &scriptedProber{script: []probeStep{unhealthyStep(503)}})
+
+	task := testTask()
+	item := updateItem()
+	res := agentcmd.ItemResult{Type: item.Type, Slug: item.Slug, FromVersion: "1.9.9", ToVersion: "2.0.0", Status: agentcmd.ItemSucceeded}
+	statusOnlyProbe := agentcmd.ProbeResult{StatusCode: 503, Detail: "server returned status 503"}
+
+	if err := w.rollback(context.Background(), task, "https://example.test", item, res, statusOnlyProbe, "post-update health failed"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	got := repo.finished[0]
+	if !strings.Contains(got.Detail, "site not responding") {
+		t.Fatalf("expected the distinct site-wide-fatal detail for a 5xx-only probe, got %q", got.Detail)
+	}
+}
+
+// TestRollback_NonFatalTransportErrorKeepsGenericDetail proves the GH #210
+// distinct detail is scoped to a Fatal/5xx probe: a plain probe transport
+// error (the zero-value ProbeResult probeHealthWithRetry returns when the
+// probe itself never got a response) whose rollback ALSO fails to transport
+// keeps the existing generic "rollback FAILED" message — that combination is
+// just as likely to be an unrelated network blip as a site-wide PHP fatal.
+func TestRollback_NonFatalTransportErrorKeepsGenericDetail(t *testing.T) {
+	repo := &probeFakeRepo{}
+	cmd := &fakeCommander{rollbackErr: fmt.Errorf("dial tcp: i/o timeout")}
+	w := newTestWorker(repo, cmd, &scriptedProber{})
+
+	task := testTask()
+	item := updateItem()
+	res := agentcmd.ItemResult{Type: item.Type, Slug: item.Slug, FromVersion: "1.9.9", ToVersion: "2.0.0", Status: agentcmd.ItemSucceeded}
+	transportErrProbe := agentcmd.ProbeResult{} // StatusCode 0, Fatal false
+
+	if err := w.rollback(context.Background(), task, "https://example.test", item, res, transportErrProbe, "post-update probe error"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if len(repo.finished) != 1 {
+		t.Fatalf("expected one finish call, got %d", len(repo.finished))
+	}
+	got := repo.finished[0]
+	if !strings.HasPrefix(got.Detail, "rollback FAILED after unhealthy update:") {
+		t.Fatalf("expected the generic rollback-failed detail, got %q", got.Detail)
+	}
+	if strings.Contains(got.Detail, "site not responding") {
+		t.Fatalf("must NOT use the distinct fatal detail on a non-fatal transport error: %q", got.Detail)
 	}
 }

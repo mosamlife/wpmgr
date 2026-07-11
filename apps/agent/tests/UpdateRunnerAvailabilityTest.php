@@ -45,6 +45,17 @@ final class UpdateRunnerAvailabilityTest extends TestCase
     {
         parent::set_up();
         Monkey\setUp();
+
+        // GH #212 residual-gap fix: pluginUpdateVersion()/themeUpdateVersion()
+        // now delete_site_transient() the relevant transient before forcing a
+        // fresh wp_update_plugins()/wp_update_themes() check (closing the
+        // off-cron 12h-throttle gap). Stub unconditionally, matching this
+        // suite's own convention (see class doc / sibling suites): once any
+        // test in the process defines delete_site_transient as a Brain Monkey
+        // stub, function_exists('delete_site_transient') is true for every
+        // subsequent test, so every test here must have a stub in place
+        // rather than risk an "unmocked function" error depending on run order.
+        Functions\when('delete_site_transient')->justReturn(true);
     }
 
     protected function tear_down(): void

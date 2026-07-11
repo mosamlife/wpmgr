@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import type { UpdateTask } from "@wpmgr/api";
 
 import {
@@ -13,6 +13,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { VersionArrow } from "@/components/shared/version-arrow";
 import { TaskStatusBadge } from "@/features/updates/update-status";
+import {
+  isSiteDownRecovery,
+  SITE_DOWN_RECOVERY_FALLBACK_DETAIL,
+} from "@/features/updates/summarize";
 
 // Re-export siteNameMap so existing callers (e.g. $runId.tsx) don't need an
 // import path change. Surface C agents may update their imports to ./summarize.
@@ -84,6 +88,7 @@ function UpdateTaskRow({
   const [open, setOpen] = useState(false);
   const hasLog = Boolean(task.error && task.error.trim().length > 0);
   const logId = `update-task-log-${task.id}`;
+  const siteDown = isSiteDownRecovery(task.status, task.detail, task.error);
 
   return (
     <>
@@ -112,17 +117,34 @@ function UpdateTaskRow({
           )}
         </TableCell>
         <TableCell>
-          <TaskStatusBadge status={task.status} />
+          <TaskStatusBadge task={task} />
         </TableCell>
         <TableCell className="max-w-[220px] text-xs text-muted-foreground">
           <div className="flex flex-col items-start gap-1">
-            <span
-              className="max-w-full min-w-0 truncate font-mono"
-              title={task.detail}
-            >
-              {task.detail ??
-                (hasLog ? "See log for details" : <span aria-hidden="true">{"–"}</span>)}
-            </span>
+            {siteDown ? (
+              // GH #210 — never truncate this: it's the worst-case rollback
+              // failure (site-wide fatal, undeliverable rollback, automatic
+              // filesystem recovery attempted) and needs to read as its own
+              // actionable condition, not a generic status string.
+              <span
+                role="alert"
+                className="flex items-start gap-1.5 whitespace-normal text-destructive-subtle-fg"
+              >
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="mt-0.5 size-3.5 shrink-0"
+                />
+                <span>{task.detail ?? SITE_DOWN_RECOVERY_FALLBACK_DETAIL}</span>
+              </span>
+            ) : (
+              <span
+                className="max-w-full min-w-0 truncate font-mono"
+                title={task.detail}
+              >
+                {task.detail ??
+                  (hasLog ? "See log for details" : <span aria-hidden="true">{"–"}</span>)}
+              </span>
+            )}
             {hasLog ? (
               <Button
                 type="button"

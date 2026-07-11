@@ -16,6 +16,7 @@ use WPMgr\Agent\Commands\UpdateCommand;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateInFlight;
 use WPMgr\Agent\Support\UpdateRunner;
+use WPMgr\Agent\Support\UpdateWatchdogMarker;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -1651,6 +1652,248 @@ final class UpdateCommandTest extends TestCase
         );
 
         $this->rrmdir($tmp);
+    }
+
+    // =========================================================================
+    // GitHub issue #210 — update-watchdog ARM step
+    // =========================================================================
+
+    /**
+     * Guard-define WP_CONTENT_DIR (same idiom used elsewhere in this suite —
+     * see SnapshotManagerTest::ensurePluginRootConstants()) and return the
+     * update-watchdog marker file's absolute path.
+     */
+    private function watchdogMarkerFile(): string
+    {
+        if (!defined('WP_CONTENT_DIR')) {
+            define('WP_CONTENT_DIR', sys_get_temp_dir() . '/wpmgr-shared-wp-content');
+        }
+        if (!is_dir(WP_CONTENT_DIR)) {
+            mkdir(WP_CONTENT_DIR, 0755, true);
+        }
+
+        return rtrim((string) WP_CONTENT_DIR, '/\\') . '/wpmgr-update-watchdog/watchdog-marker.json';
+    }
+
+    private function cleanWatchdogMarker(): void
+    {
+        $file = $this->watchdogMarkerFile();
+        if (file_exists($file)) {
+            unlink($file); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
+        }
+    }
+
+    /**
+     * A snapshot spy whose resolvedRestorePaths() returns fixed, controlled
+     * absolute paths (rather than the real WP_PLUGIN_DIR/uploads-dependent
+     * resolution), so the ARM step under test can be exercised deterministically.
+     */
+    private function spySnapshotsWithResolvedPaths(string $live, string $payload): SnapshotManager
+    {
+        return new class ($live, $payload) extends SnapshotManager {
+            /** @var array<int,array{string,string,string}> */
+            public array $captured = [];
+
+            public function __construct(private string $live, private string $payload)
+            {
+            }
+
+            public function capture(string $type, string $slug, string $fromVersion): array
+            {
+                $this->captured[] = [$type, $slug, $fromVersion];
+
+                return ['snapshot_id' => 'snap_test123', 'log' => 'captured'];
+            }
+
+            public function restore(string $type, string $slug, string $snapshotId): array
+            {
+                return ['ok' => true, 'log' => 'restored'];
+            }
+
+            public function snapshotExists(string $snapshotId): bool
+            {
+                return true;
+            }
+
+            public function resolvedRestorePaths(string $type, string $slug, string $snapshotId): array
+            {
+                return ['live' => $this->live, 'payload' => $this->payload];
+            }
+        };
+    }
+
+    public function test_successful_apply_arms_the_update_watchdog_marker_with_the_resolved_absolute_paths(): void
+    {
+        $this->cleanWatchdogMarker();
+
+        $live    = sys_get_temp_dir() . '/wpmgr-watchdog-arm-live-' . bin2hex(random_bytes(6));
+        $payload = sys_get_temp_dir() . '/wpmgr-watchdog-arm-payload-' . bin2hex(random_bytes(6));
+        mkdir($live, 0755, true);
+        mkdir($payload, 0755, true);
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.0';
+
+        $snapshots = $this->spySnapshotsWithResolvedPaths($live, $payload);
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $before = time();
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+        $after = time();
+
+        $this->assertSame('succeeded', $out['results'][0]['status']);
+        $this->assertFileExists($this->watchdogMarkerFile(), 'a succeeded plugin apply must arm the update-watchdog marker');
+
+        $decoded = json_decode((string) file_get_contents($this->watchdogMarkerFile()), true);
+        $this->assertCount(1, $decoded['markers']);
+        $entry = $decoded['markers'][0];
+        $this->assertSame('plugin', $entry['type']);
+        $this->assertSame('akismet/akismet.php', $entry['slug']);
+        $this->assertSame('snap_test123', $entry['snapshot_id']);
+        $this->assertSame($live, $entry['live_dir']);
+        $this->assertSame($payload, $entry['payload_dir']);
+        $this->assertSame('5.3', $entry['to_version'], 'MEDIUM-1b: the armed to_version must be threaded through from UpdateCommand');
+
+        $ttl = $entry['expires_at'] - $entry['applied_at'];
+        $this->assertSame(UpdateWatchdogMarker::TTL_SECONDS, $ttl);
+        $this->assertLessThan(600, $ttl, 'ARM test: TTL must be strictly less than SnapshotManager::MIN_KEEP_AGE_SECONDS (600)');
+        $this->assertGreaterThanOrEqual($before, $entry['applied_at']);
+        $this->assertLessThanOrEqual($after, $entry['applied_at']);
+
+        $this->rrmdir($live);
+        $this->rrmdir($payload);
+        $this->cleanWatchdogMarker();
+    }
+
+    public function test_failed_apply_does_not_arm_the_update_watchdog_marker(): void
+    {
+        $this->cleanWatchdogMarker();
+
+        $live    = sys_get_temp_dir() . '/wpmgr-watchdog-arm-live-' . bin2hex(random_bytes(6));
+        $payload = sys_get_temp_dir() . '/wpmgr-watchdog-arm-payload-' . bin2hex(random_bytes(6));
+        mkdir($live, 0755, true);
+        mkdir($payload, 0755, true);
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.0';
+        $runner->applySucceeds = false;
+
+        $snapshots = $this->spySnapshotsWithResolvedPaths($live, $payload);
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+
+        $this->assertSame('failed', $out['results'][0]['status']);
+        $this->assertFileDoesNotExist($this->watchdogMarkerFile(), 'a failed apply must never arm the update-watchdog marker');
+
+        $this->rrmdir($live);
+        $this->rrmdir($payload);
+    }
+
+    public function test_skipped_apply_does_not_arm_the_update_watchdog_marker(): void
+    {
+        $this->cleanWatchdogMarker();
+
+        $live    = sys_get_temp_dir() . '/wpmgr-watchdog-arm-live-' . bin2hex(random_bytes(6));
+        $payload = sys_get_temp_dir() . '/wpmgr-watchdog-arm-payload-' . bin2hex(random_bytes(6));
+        mkdir($live, 0755, true);
+        mkdir($payload, 0755, true);
+
+        $runner = $this->spyRunner();
+        // No version seeded -> isInstalled() reports false -> skipped.
+        $snapshots = $this->spySnapshotsWithResolvedPaths($live, $payload);
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'never-installed/never-installed.php', 'version' => 'latest']],
+        ]);
+
+        $this->assertSame('skipped', $out['results'][0]['status']);
+        $this->assertFileDoesNotExist($this->watchdogMarkerFile(), 'a skipped (not-installed) item must never arm the update-watchdog marker');
+
+        $this->rrmdir($live);
+        $this->rrmdir($payload);
+    }
+
+    public function test_up_to_date_apply_does_not_arm_the_update_watchdog_marker(): void
+    {
+        $this->cleanWatchdogMarker();
+
+        $live    = sys_get_temp_dir() . '/wpmgr-watchdog-arm-live-' . bin2hex(random_bytes(6));
+        $payload = sys_get_temp_dir() . '/wpmgr-watchdog-arm-payload-' . bin2hex(random_bytes(6));
+        mkdir($live, 0755, true);
+        mkdir($payload, 0755, true);
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php']  = '5.3';
+        $runner->available['plugin:akismet/akismet.php'] = '5.3';
+
+        $snapshots = $this->spySnapshotsWithResolvedPaths($live, $payload);
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+
+        $this->assertSame('up_to_date', $out['results'][0]['status']);
+        $this->assertFileDoesNotExist($this->watchdogMarkerFile(), 'an up_to_date item must never arm the update-watchdog marker — nothing changed to guard against');
+
+        $this->rrmdir($live);
+        $this->rrmdir($payload);
+    }
+
+    public function test_core_succeeded_apply_never_arms_the_update_watchdog_marker(): void
+    {
+        $this->cleanWatchdogMarker();
+
+        $live    = sys_get_temp_dir() . '/wpmgr-watchdog-arm-live-' . bin2hex(random_bytes(6));
+        $payload = sys_get_temp_dir() . '/wpmgr-watchdog-arm-payload-' . bin2hex(random_bytes(6));
+        mkdir($live, 0755, true);
+        mkdir($payload, 0755, true);
+
+        $runner = $this->spyRunner();
+        $runner->versions['core:core'] = '6.4.2';
+
+        $snapshots = $this->spySnapshotsWithResolvedPaths($live, $payload);
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'snapshot' => true,
+            'items'    => [['type' => 'core', 'slug' => 'core', 'version' => '6.4.3']],
+        ]);
+
+        $this->assertSame('succeeded', $out['results'][0]['status']);
+        $this->assertFileDoesNotExist(
+            $this->watchdogMarkerFile(),
+            'core has no directory-level snapshot (D3) and must never arm the update-watchdog marker, even when the apply itself succeeded'
+        );
+
+        $this->rrmdir($live);
+        $this->rrmdir($payload);
+    }
+
+    public function test_arm_is_skipped_when_resolved_restore_paths_cannot_be_determined(): void
+    {
+        $this->cleanWatchdogMarker();
+
+        // resolvedRestorePaths() returning empty strings (e.g. the live
+        // directory could not be resolved) must never write a marker.
+        $snapshots = $this->spySnapshotsWithResolvedPaths('', '');
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.0';
+        $cmd = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+
+        $this->assertSame('succeeded', $out['results'][0]['status'], 'the apply itself must still succeed');
+        $this->assertFileDoesNotExist($this->watchdogMarkerFile(), 'an unresolvable live/payload path must silently skip arming, never affect the response');
     }
 
     /** Recursive delete used only for test fixture cleanup. */

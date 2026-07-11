@@ -354,6 +354,61 @@ class SnapshotManager
     }
 
     /**
+     * GitHub issue #210 — resolve the ABSOLUTE, already-validated live
+     * directory and snapshot payload directory for a captured snapshot, for
+     * callers that need those two paths as plain strings without duplicating
+     * this class's containment logic.
+     *
+     * The sole caller today is UpdateCommand's update-watchdog ARM step: on a
+     * successful apply it persists these two absolute paths into a small
+     * marker file consumed by the autoloader-free mu-plugin
+     * `mu-plugin-loader/a-wpmgr-update-watchdog.php`, which restores this
+     * exact snapshot from a `register_shutdown_function()` callback if a
+     * LATER, unrelated request fatals during another plugin's bootstrap
+     * (before `rest_api_init` — and therefore RollbackCommand's REST route —
+     * would ever fire). This method is the single source of truth both that
+     * ARM step and any other same-process caller should use to resolve those
+     * paths; the mu-plugin itself cannot call it (no autoloader at the point
+     * it runs) and independently re-derives + re-validates the same paths in
+     * plain procedural PHP — see that file's own doc for why the paths are
+     * still re-validated there rather than simply trusted from the marker.
+     *
+     * @param string $type       plugin|theme.
+     * @param string $slug       Sanitized slug.
+     * @param string $snapshotId Snapshot identifier captured for this apply.
+     * @return array{live:string,payload:string} Both '' when either side
+     *     cannot be safely resolved right now — callers MUST treat that as
+     *     "do not arm the watchdog for this item", never as a fatal
+     *     condition; the update itself already succeeded.
+     */
+    public function resolvedRestorePaths(string $type, string $slug, string $snapshotId): array
+    {
+        $empty = ['live' => '', 'payload' => ''];
+
+        $base = $this->snapshotBaseDir();
+        if ($base === '') {
+            return $empty;
+        }
+
+        $snapshotDir = $this->resolveSnapshotDir($base, $snapshotId);
+        if ($snapshotDir === '') {
+            return $empty;
+        }
+
+        $payload = $snapshotDir . '/payload';
+        if (!is_dir($payload)) {
+            return $empty;
+        }
+
+        $live = $this->liveDir($type, $slug);
+        if ($live === '') {
+            return $empty;
+        }
+
+        return ['live' => $live, 'payload' => $payload];
+    }
+
+    /**
      * Remove a snapshot directory and its contents.
      *
      * @param string $snapshotId Snapshot identifier.
@@ -565,6 +620,17 @@ class SnapshotManager
      * on the SAME backstop TTL as the snapshot store itself, so both
      * classes of #131 orphan are reclaimed on one cadence.
      *
+     * MEDIUM-2 (GitHub issue #210 security review) — ALSO matches
+     * `<slug>.wpmgr-watchdog-old-<snap_id>`, the aside name
+     * `wpmgr_watchdog_swap_directories()` (the update-watchdog mu-plugin's
+     * own rename-based swap, mirroring this class's restore()) leaves
+     * behind on an interrupted watchdog restore. Before this fix, the
+     * regex here only matched the ORIGINAL `.wpmgr-old-` prefix, so a
+     * watchdog-interrupted aside was never reclaimed by this backstop —
+     * `strandedAsideRoots()` below already covers the right ROOTS (the same
+     * WP_PLUGIN_DIR / theme root the watchdog's own aside is a sibling
+     * under), only the pattern itself needed widening.
+     *
      * @return void
      */
     private function sweepStrandedAsides(): void
@@ -582,7 +648,7 @@ class SnapshotManager
                 if ($item === '.' || $item === '..') {
                     continue;
                 }
-                if (preg_match('#\.wpmgr-old-snap_[A-Za-z0-9_]+$#', $item) !== 1) {
+                if (preg_match('#\.wpmgr-(?:watchdog-)?old-snap_[A-Za-z0-9_]+$#', $item) !== 1) {
                     continue;
                 }
                 $path = $root . '/' . $item;

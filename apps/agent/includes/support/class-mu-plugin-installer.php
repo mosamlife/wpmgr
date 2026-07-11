@@ -51,11 +51,20 @@ final class MuPluginInstaller
     /** Source basename within the plugin's `mu-plugin-loader/` directory (WAF gate). */
     public const WAF_SOURCE_BASENAME = 'a-wpmgr-waf.php';
 
+    /** Destination basename within wp-content/mu-plugins/ for the update watchdog (GH #210). */
+    public const WATCHDOG_DEST_BASENAME = 'a-wpmgr-update-watchdog.php';
+
+    /** Source basename within the plugin's `mu-plugin-loader/` directory (update watchdog). */
+    public const WATCHDOG_SOURCE_BASENAME = 'a-wpmgr-update-watchdog.php';
+
     /** wp-options flag set when error-trap install has been verified at least once. */
     public const OPTION_INSTALLED = 'wpmgr_agent_mu_installed_at';
 
     /** wp-options flag set when WAF install has been verified at least once. */
     public const OPTION_WAF_INSTALLED = 'wpmgr_agent_mu_waf_installed_at';
+
+    /** wp-options flag set when update-watchdog install has been verified at least once. */
+    public const OPTION_WATCHDOG_INSTALLED = 'wpmgr_agent_mu_watchdog_installed_at';
 
     private string $pluginDir;
 
@@ -212,6 +221,99 @@ final class MuPluginInstaller
             return;
         }
         update_option(self::OPTION_WAF_INSTALLED, time(), false);
+    }
+
+    /**
+     * Ensure the update-watchdog mu-plugin file (GitHub issue #210) is
+     * present and up-to-date. Mirrors install()/installWaf() exactly.
+     *
+     * Idempotent: same source content + same destination content = no-op.
+     *
+     * @return bool True when the update-watchdog mu-plugin is in place;
+     *              false when install was attempted but failed (e.g.
+     *              mu-plugins/ not writable).
+     */
+    public function installUpdateWatchdog(): bool
+    {
+        $source = $this->pluginDir . '/mu-plugin-loader/' . self::WATCHDOG_SOURCE_BASENAME;
+        if (!file_exists($source) || !is_readable($source)) {
+            return false;
+        }
+
+        $muDir = defined('WPMU_PLUGIN_DIR') ? (string) constant('WPMU_PLUGIN_DIR') : (defined('WP_CONTENT_DIR') ? constant('WP_CONTENT_DIR') . '/mu-plugins' : '');
+        if ($muDir === '') {
+            return false;
+        }
+
+        if (!is_dir($muDir)) {
+            if (!wp_mkdir_p($muDir) && !is_dir($muDir)) {
+                return false;
+            }
+        }
+
+        $dest = rtrim($muDir, '/\\') . '/' . self::WATCHDOG_DEST_BASENAME;
+
+        // Content-fingerprint short-circuit: if the destination matches the
+        // source byte-for-byte, do nothing.
+        if (file_exists($dest) && @sha1_file($dest) === @sha1_file($source)) {
+            $this->markWatchdogInstalled();
+            return true;
+        }
+
+        $bytes = @file_get_contents($source);
+        if ($bytes === false) {
+            return false;
+        }
+        $written = @file_put_contents($dest, $bytes); // phpcs:ignore WordPress.Security.PluginDirectoryWrite.PluginDirectoryWrite,PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- writes to wp-content/mu-plugins, a persistent install target outside the plugin folder
+        if ($written === false) {
+            return false;
+        }
+        $this->markWatchdogInstalled();
+        return true;
+    }
+
+    /**
+     * Remove the update-watchdog mu-plugin file. Called on plugin
+     * deactivation, and on opt-out (never enrolled / no longer enrolled).
+     *
+     * @return bool
+     */
+    public function uninstallUpdateWatchdog(): bool
+    {
+        $muDir = defined('WPMU_PLUGIN_DIR') ? (string) constant('WPMU_PLUGIN_DIR') : '';
+        if ($muDir === '') {
+            return false;
+        }
+        $dest = rtrim($muDir, '/\\') . '/' . self::WATCHDOG_DEST_BASENAME;
+        if (!file_exists($dest)) {
+            return true;
+        }
+        if (function_exists('delete_option')) {
+            delete_option(self::OPTION_WATCHDOG_INSTALLED);
+        }
+        wp_delete_file($dest);
+        return !file_exists($dest);
+    }
+
+    /**
+     * Report whether the update-watchdog mu-plugin is currently present.
+     */
+    public function isUpdateWatchdogInstalled(): bool
+    {
+        $muDir = defined('WPMU_PLUGIN_DIR') ? (string) constant('WPMU_PLUGIN_DIR') : '';
+        if ($muDir === '') {
+            return false;
+        }
+        $dest = rtrim($muDir, '/\\') . '/' . self::WATCHDOG_DEST_BASENAME;
+        return file_exists($dest);
+    }
+
+    private function markWatchdogInstalled(): void
+    {
+        if (!function_exists('update_option')) {
+            return;
+        }
+        update_option(self::OPTION_WATCHDOG_INSTALLED, time(), false);
     }
 
     /**

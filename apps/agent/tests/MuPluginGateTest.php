@@ -71,6 +71,7 @@ final class MuPluginGateTest extends TestCase
         }
         file_put_contents($loaderDir . '/' . MuPluginInstaller::SOURCE_BASENAME, '<?php // error-trap stub');
         file_put_contents($loaderDir . '/' . MuPluginInstaller::WAF_SOURCE_BASENAME, '<?php // waf stub');
+        file_put_contents($loaderDir . '/' . MuPluginInstaller::WATCHDOG_SOURCE_BASENAME, '<?php // watchdog stub');
 
         // Build the shared mu-plugins destination directory.
         self::$sharedMuDir = sys_get_temp_dir() . '/wpmgr_mu_gate_dest';
@@ -150,10 +151,16 @@ final class MuPluginGateTest extends TestCase
         return rtrim(self::$sharedMuDir, '/') . '/' . MuPluginInstaller::WAF_DEST_BASENAME;
     }
 
+    private function watchdogPath(): string
+    {
+        return rtrim(self::$sharedMuDir, '/') . '/' . MuPluginInstaller::WATCHDOG_DEST_BASENAME;
+    }
+
     private function cleanMuDir(): void
     {
         @unlink($this->errorTrapPath());
         @unlink($this->wafPath());
+        @unlink($this->watchdogPath());
     }
 
     private static function rmrfStatic(string $dir): void
@@ -286,24 +293,97 @@ final class MuPluginGateTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // (e) deactivate() removes BOTH mu-plugin files
+    // (h) GitHub issue #210 — update-watchdog mu-plugin install/uninstall pair
     // -------------------------------------------------------------------------
 
-    public function test_deactivate_removes_both_mu_plugins(): void
+    public function test_update_watchdog_install_is_idempotent_and_writes_shipped_content(): void
     {
         Functions\when('update_option')->justReturn(true);
         $installer = $this->makeInstaller();
 
-        // Pre-install both.
+        $this->assertFalse(file_exists($this->watchdogPath()), 'file must not exist before install');
+
+        $result = $installer->installUpdateWatchdog();
+        $this->assertTrue($result, 'installUpdateWatchdog() must succeed with a writable temp dir');
+        $this->assertTrue(file_exists($this->watchdogPath()), 'update-watchdog mu-plugin must be written');
+        $this->assertTrue($installer->isUpdateWatchdogInstalled(), 'isUpdateWatchdogInstalled() must be true');
+
+        $firstWriteMtime = filemtime($this->watchdogPath());
+
+        // Re-installing with unchanged source content must be a content-
+        // fingerprint no-op (same idempotent short-circuit install()/
+        // installWaf() already use) — the destination file is not rewritten.
+        clearstatcache(true, $this->watchdogPath());
+        $second = $installer->installUpdateWatchdog();
+        $this->assertTrue($second, 'a repeat installUpdateWatchdog() call must still report success');
+        $this->assertSame(
+            $firstWriteMtime,
+            filemtime($this->watchdogPath()),
+            'installUpdateWatchdog() must be idempotent: unchanged source content must not rewrite the destination'
+        );
+    }
+
+    public function test_update_watchdog_installed_content_matches_the_real_shipped_mu_plugin_file(): void
+    {
+        Functions\when('update_option')->justReturn(true);
+
+        // Use the REAL plugin root (this repo's apps/agent/) rather than the
+        // stub fixture, so this test proves the installer copies the ACTUAL
+        // shipped a-wpmgr-update-watchdog.php byte-for-byte.
+        $realPluginDir = dirname(__DIR__);
+        $installer     = new MuPluginInstaller($realPluginDir);
+
+        $this->assertTrue($installer->installUpdateWatchdog(), 'installUpdateWatchdog() must succeed against the real shipped source file');
+
+        $shipped  = (string) file_get_contents($realPluginDir . '/mu-plugin-loader/' . MuPluginInstaller::WATCHDOG_SOURCE_BASENAME);
+        $installed = (string) file_get_contents($this->watchdogPath());
+
+        $this->assertSame($shipped, $installed, 'the installed mu-plugin file content must be EXACTLY what is shipped in mu-plugin-loader/');
+
+        // Clean up: this test intentionally installs from the real source,
+        // bypassing the shared stub fixture other tests in this class rely
+        // on for the SAME destination path.
+        $installer->uninstallUpdateWatchdog();
+    }
+
+    public function test_update_watchdog_opt_out_removes_the_file(): void
+    {
+        Functions\when('update_option')->justReturn(true);
+        $installer = $this->makeInstaller();
+
+        $this->assertTrue($installer->installUpdateWatchdog(), 'installUpdateWatchdog() must succeed with a writable temp dir');
+        $this->assertTrue(file_exists($this->watchdogPath()), 'watchdog file must be present after installUpdateWatchdog()');
+        $this->assertTrue($installer->isUpdateWatchdogInstalled());
+
+        // Simulate boot gate: un-enrolled + isUpdateWatchdogInstalled() -> uninstallUpdateWatchdog().
+        $installer->uninstallUpdateWatchdog();
+
+        $this->assertFalse(file_exists($this->watchdogPath()), 'update-watchdog mu-plugin must be removed on un-enrollment');
+        $this->assertFalse($installer->isUpdateWatchdogInstalled());
+    }
+
+    // -------------------------------------------------------------------------
+    // (e) deactivate() removes ALL THREE mu-plugin files
+    // -------------------------------------------------------------------------
+
+    public function test_deactivate_removes_all_three_mu_plugins(): void
+    {
+        Functions\when('update_option')->justReturn(true);
+        $installer = $this->makeInstaller();
+
+        // Pre-install all three.
         $this->assertTrue($installer->install(), 'install() must succeed');
         $this->assertTrue($installer->installWaf(), 'installWaf() must succeed');
+        $this->assertTrue($installer->installUpdateWatchdog(), 'installUpdateWatchdog() must succeed');
 
         $this->assertTrue(file_exists($this->errorTrapPath()), 'error-trap must be present before deactivate');
         $this->assertTrue(file_exists($this->wafPath()), 'WAF must be present before deactivate');
+        $this->assertTrue(file_exists($this->watchdogPath()), 'update-watchdog must be present before deactivate');
 
         // Simulate deactivate() cleanup block (must not throw).
         try {
             $installer->uninstallWaf();
+            $installer->uninstallUpdateWatchdog();
             $installer->uninstall();
         } catch (\Throwable $e) {
             $this->fail('uninstall must not throw: ' . $e->getMessage());
@@ -316,6 +396,10 @@ final class MuPluginGateTest extends TestCase
         $this->assertFalse(
             file_exists($this->wafPath()),
             'deactivate() must remove the WAF mu-plugin'
+        );
+        $this->assertFalse(
+            file_exists($this->watchdogPath()),
+            'deactivate() must remove the update-watchdog mu-plugin'
         );
     }
 

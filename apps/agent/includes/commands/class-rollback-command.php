@@ -116,6 +116,21 @@ final class RollbackCommand implements CommandInterface
                 ];
             }
 
+            // Completeness sweep (GH #211/#212 cluster) — a successful
+            // restore just put an OLDER version back on disk, but WordPress's
+            // own `update_plugins`/`update_themes` transient still remembers
+            // whatever it last saw as current, so the rolled-back-FROM
+            // version stays cached as "available" and re-offers itself
+            // (feeding the #211 phantom-update display, or a re-apply loop
+            // if the operator/CP acts on it). Invalidate NOW, synchronously,
+            // BEFORE this response reaches the CP and before any subsequent
+            // metadata pull re-reads the transient — the next check (cron or
+            // on-demand refresh) then re-polls wp.org against the version
+            // actually on disk.
+            if (function_exists('delete_site_transient')) {
+                delete_site_transient($type === 'plugin' ? 'update_plugins' : 'update_themes');
+            }
+
             // S4 (issue #131 adversarial review) — defensive cleanup: the CP
             // may call RollbackCommand directly against a snapshot whose
             // original `update` request was hard-killed severely enough that
@@ -178,6 +193,16 @@ final class RollbackCommand implements CommandInterface
                 'restored_version' => '',
                 'log'              => $result['log'],
             ];
+        }
+
+        // Completeness sweep (GH #211/#212 cluster) — same rationale as the
+        // plugin/theme path above: a successful core downgrade just put an
+        // older core on disk, but the `update_core` transient still
+        // remembers the pre-rollback "current" version, so it would keep
+        // offering the rolled-back-FROM version as an "update". Invalidate
+        // synchronously, before the CP's next metadata pull re-reads it.
+        if (function_exists('delete_site_transient')) {
+            delete_site_transient('update_core');
         }
 
         if ($snapshotId !== '') {
