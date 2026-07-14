@@ -2137,9 +2137,12 @@ func (s *Service) DeleteSnapshotForUser(ctx context.Context, tenantID, snapshotI
 //  3. restore_in_progress — an active (queued|running) restore_runs row reads
 //     this snapshot's WHOLE chain (see restoreGroupKey), so deleting any member
 //     while a restore runs would pull the rug out from under the agent mid-read.
-//  4. chain_has_dependents — refuses to orphan a later-generation increment.
-//     Re-checked against LIVE chain membership (repo.ListChainSnapshots) rather
-//     than a snapshot list cached before this call. deletedThisReq lets a caller
+//  4. chain_has_dependents — refuses to orphan a direct dependent increment
+//     (a sibling whose parent_snapshot_id points at this snapshot), not merely
+//     a sibling at a higher generation — a chain can hold multiple snapshots at
+//     the SAME generation (e.g. a failed attempt alongside its successful
+//     retry). Re-checked against LIVE chain membership (repo.ListChainSnapshots)
+//     rather than a snapshot list cached before this call. deletedThisReq lets a caller
 //     that is deleting an entire chain in ONE bulk request treat siblings it has
 //     ALREADY deleted earlier in the SAME request as gone, so a newest-first
 //     walk down a whole chain doesn't trip this guard on its own already-doomed
@@ -2168,16 +2171,23 @@ func (s *Service) evaluateDeleteGuards(ctx context.Context, tenantID uuid.UUID, 
 		return SkipRestoreInProgress, nil
 	}
 
-	// Chain-safety: never orphan a dependent increment. If this snapshot anchors
-	// or sits mid-chain (i.e. a sibling exists at a HIGHER generation in the same
-	// chain), refuse — the dependents would become unrestorable.
+	// Chain-safety: never orphan a dependent increment. Refuse only when a
+	// sibling's PARENT is actually this snapshot (true chain-of-custody), not
+	// merely because a sibling exists at a higher generation — a chain can have
+	// several snapshots AT THE SAME generation (e.g. a failed attempt plus a
+	// successful retry, both children of the same parent), and a later
+	// increment's real parent is the successful one, not the failed sibling.
+	// Safety is preserved transitively: deleting a mid-chain snapshot A is
+	// refused while its direct child B still exists (parent==A); B itself can't
+	// be deleted while ITS child C still exists (parent==B), and so on, so
+	// nothing downstream is ever orphaned.
 	if snap.ChainID != nil {
 		siblings, lerr := s.repo.ListChainSnapshots(ctx, tenantID, *snap.ChainID, maxChainEnumGeneration)
 		if lerr != nil {
 			return "", lerr
 		}
 		for _, sib := range siblings {
-			if sib.Generation > snap.Generation && !deletedThisReq[sib.ID] {
+			if sib.ParentSnapshotID != nil && *sib.ParentSnapshotID == snap.ID && !deletedThisReq[sib.ID] {
 				return SkipChainHasDependents, nil
 			}
 		}

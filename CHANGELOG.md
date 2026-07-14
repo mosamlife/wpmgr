@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.59] - 2026-07-14
+
+### Fixed
+
+- A failed, empty backup snapshot can now be deleted on its own without being forced to also delete a healthy, unrelated later snapshot (GH #221). The chain-safety guard (and the dashboard "Delete + N dependents" warning) previously decided whether a snapshot had dependents by generation number alone, so a failed attempt was wrongly treated as a dependency of any later-generation snapshot in the same chain, even when that later snapshot's actual parent was a different, successful sibling at the same generation. Both the control plane and the dashboard now check the real parent-snapshot chain of custody, so only a snapshot that something genuinely descends from is protected from deletion. Control plane and dashboard only; the agent has no functional change in this release.
+
 ## [0.61.58] - 2026-07-14
 
 ### Fixed

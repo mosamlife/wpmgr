@@ -235,7 +235,7 @@ func TestDeleteSnapshotForUser_BaseWithDependentsRefused(t *testing.T) {
 	tenantID, siteID := uuid.New(), uuid.New()
 	chainID := uuid.New()
 	base := Snapshot{ID: chainID, TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 0}
-	inc := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 1, IsIncremental: true}
+	inc := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 1, IsIncremental: true, ParentSnapshotID: &base.ID}
 	repo.addChainSnap(chainID, base)
 	repo.addChainSnap(chainID, inc)
 
@@ -255,7 +255,7 @@ func TestDeleteSnapshotForUser_LeafIncrementDeletes(t *testing.T) {
 	tenantID, siteID := uuid.New(), uuid.New()
 	chainID := uuid.New()
 	base := Snapshot{ID: chainID, TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 0}
-	leaf := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 1, IsIncremental: true}
+	leaf := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 1, IsIncremental: true, ParentSnapshotID: &base.ID}
 	repo.addChainSnap(chainID, base)
 	repo.addChainSnap(chainID, leaf)
 
@@ -266,6 +266,88 @@ func TestDeleteSnapshotForUser_LeafIncrementDeletes(t *testing.T) {
 	if !repo.deleted[leaf.ID] {
 		t.Fatalf("leaf increment should have been deleted")
 	}
+}
+
+// TestDeleteSnapshotForUser_SameGenerationSiblingNotADependent reproduces GH
+// #221's exact topology: a chain with TWO snapshots at generation 1 (a failed
+// 0-byte attempt F and its successful retry S), both children of the same
+// gen-0 parent A, plus a real gen-2 increment C whose parent is the
+// SUCCESSFUL sibling S (never F). Before the fix, the guard refused deleting F
+// solely because S/C sat at a higher generation in the same chain, even
+// though nothing actually depends on F. After the fix:
+//   - F (a same-generation sibling with no real dependents) is deletable.
+//   - S is refused: C's parent_snapshot_id points at S.
+//   - A is refused: both S and F have parent_snapshot_id pointing at A.
+//   - deleting S and C TOGETHER in one bulk request allows S, because C is
+//     already accounted for via deletedThisReq.
+func TestDeleteSnapshotForUser_SameGenerationSiblingNotADependent(t *testing.T) {
+	tenantID, siteID := uuid.New(), uuid.New()
+	chainID := uuid.New()
+	a := Snapshot{ID: chainID, TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 0}
+	s := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 1, IsIncremental: true, ParentSnapshotID: &a.ID}
+	f := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusFailed, Generation: 1, IsIncremental: true, ParentSnapshotID: &a.ID, TotalSize: 0}
+	c := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, Generation: 2, IsIncremental: true, ParentSnapshotID: &s.ID}
+
+	buildRepo := func() *deleteCancelFakeRepo {
+		repo := newDeleteCancelFakeRepo()
+		repo.addChainSnap(chainID, a)
+		repo.addChainSnap(chainID, s)
+		repo.addChainSnap(chainID, f)
+		repo.addChainSnap(chainID, c)
+		return repo
+	}
+
+	t.Run("failed_same_gen_sibling_with_no_dependents_is_allowed", func(t *testing.T) {
+		repo := buildRepo()
+		svc := buildDeleteCancelSvc(repo)
+		if err := svc.DeleteSnapshotForUser(context.Background(), tenantID, f.ID); err != nil {
+			t.Fatalf("DeleteSnapshotForUser(F): unexpected error: %v (this is the GH #221 bug)", err)
+		}
+		if !repo.deleted[f.ID] {
+			t.Fatalf("F should have been deleted: nothing has parent_snapshot_id == F")
+		}
+	})
+
+	t.Run("successful_sibling_with_a_real_child_is_refused", func(t *testing.T) {
+		repo := buildRepo()
+		svc := buildDeleteCancelSvc(repo)
+		err := svc.DeleteSnapshotForUser(context.Background(), tenantID, s.ID)
+		de, ok := domain.AsDomain(err)
+		if !ok || de.Kind != domain.KindValidation || de.Code != "chain_has_dependents" {
+			t.Fatalf("err = %v, want Validation chain_has_dependents (C's parent is S)", err)
+		}
+		if repo.deleted[s.ID] {
+			t.Fatalf("S must NOT be deleted while its real child C exists")
+		}
+	})
+
+	t.Run("base_with_two_gen1_children_is_refused", func(t *testing.T) {
+		repo := buildRepo()
+		svc := buildDeleteCancelSvc(repo)
+		err := svc.DeleteSnapshotForUser(context.Background(), tenantID, a.ID)
+		de, ok := domain.AsDomain(err)
+		if !ok || de.Kind != domain.KindValidation || de.Code != "chain_has_dependents" {
+			t.Fatalf("err = %v, want Validation chain_has_dependents (S and F both have parent A)", err)
+		}
+		if repo.deleted[a.ID] {
+			t.Fatalf("A must NOT be deleted while S/F still have parent_snapshot_id == A")
+		}
+	})
+
+	t.Run("deleting_s_and_c_together_allows_s", func(t *testing.T) {
+		repo := buildRepo()
+		svc := buildDeleteCancelSvc(repo)
+		out, err := svc.BulkDeleteSnapshots(context.Background(), tenantID, siteID, []uuid.UUID{s.ID, c.ID}, false)
+		if err != nil {
+			t.Fatalf("BulkDeleteSnapshots: unexpected error: %v", err)
+		}
+		if out.Deleted != 2 || out.Skipped != 0 {
+			t.Fatalf("counts = deleted:%d skipped:%d, want 2/0 (deletedThisReq must cover C when checking S)", out.Deleted, out.Skipped)
+		}
+		if !repo.deleted[s.ID] || !repo.deleted[c.ID] {
+			t.Fatalf("both S and C should have been deleted; deleted=%v", repo.deleted)
+		}
+	})
 }
 
 func TestDeleteSnapshotForUser_RunningRefused(t *testing.T) {

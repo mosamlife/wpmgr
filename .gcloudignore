@@ -32,3 +32,6 @@ infra/postgres/data
 # IDE / tooling
 **/*.log
 **/.DS_Store
+
+# PHPUnit result cache (transient; can vanish mid-archive)
+**/.phpunit.result.cache
