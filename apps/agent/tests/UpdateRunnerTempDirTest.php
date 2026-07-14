@@ -29,7 +29,16 @@
  * based subdirectory instead), so the pin itself can never again collide with
  * WP_Upgrader's own use of that folder.
  *
- * All three tests below run in a SEPARATE PROCESS: WP_TEMP_DIR/WP_CONTENT_DIR
+ * ADDED (GitHub issue #216): "usable" was broadened to require not just
+ * writability but also that the default isn't pathologically populated. A
+ * reported host's get_temp_dir() resolved to its session save path with GC
+ * effectively disabled, holding 10,000+ stale `sess_*` files; heavy per-file
+ * unzip I/O against that directory failed intermittently ("Could not copy
+ * file."), even though it was genuinely writable. See
+ * test_temp_dir_pinned_when_default_writable_but_pathologically_populated()
+ * below and UpdateRunner::pinTempDirForUnpack()'s class doc.
+ *
+ * All four tests below run in a SEPARATE PROCESS: WP_TEMP_DIR/WP_CONTENT_DIR
  * are real PHP constants that, once defined, can never be undefined for the
  * rest of a PHPUnit process. Running in-process after any other test in this
  * file (or elsewhere in the suite) that already pinned WP_TEMP_DIR would make
@@ -166,6 +175,60 @@ final class UpdateRunnerTempDirTest extends TestCase
             . 'own unpack_package() cleanup is exactly what this fix exists to stop colliding with'
         );
         $this->assertStringContainsString('pinned to a dedicated fallback dir', $note);
+    }
+
+    /**
+     * THE REGRESSION LOCK — GitHub issue #216. WordPress's own default temp
+     * dir is genuinely WRITABLE (unlike the #131/open_basedir case above) —
+     * proving this test isn't merely re-exercising that case — but it is
+     * pathologically POPULATED: opendir()/readdir() report it holds more
+     * than UpdateRunner::MAX_HEALTHY_DEFAULT_TEMP_ENTRIES entries, mirroring
+     * a shared host's GC-disabled session-save-path default with 10,000+
+     * stale `sess_*` files. Run this test against the pre-#216 code and it
+     * fails: that code treated a writable default as unconditionally usable
+     * and never defined WP_TEMP_DIR at all, leaving heavy per-file unzip I/O
+     * to fail intermittently against the polluted directory.
+     *
+     * @runInSeparateProcess
+     */
+    public function test_temp_dir_pinned_when_default_writable_but_pathologically_populated(): void
+    {
+        Functions\when('get_temp_dir')->justReturn('/wpmgr-fake-polluted-default/');
+        Functions\when('is_dir')->justReturn(true);
+        Functions\when('file_put_contents')->justReturn(1);
+        Functions\when('wp_delete_file')->justReturn(null);
+        Functions\when('wp_mkdir_p')->justReturn(true);
+        Functions\when('wp_upload_dir')->justReturn([
+            'basedir' => '/wpmgr-fake-uploads',
+            'error'   => false,
+        ]);
+
+        // The default IS genuinely writable — the writability probe above
+        // (is_dir()/file_put_contents()) passes exactly as it would on a
+        // healthy host. opendir()/readdir() are mocked to simulate a
+        // directory holding far more than MAX_HEALTHY_DEFAULT_TEMP_ENTRIES
+        // non-dot entries: readdir() never returns false, so
+        // tempDirEntryCountExceeds()'s bounded loop counts past the limit
+        // and returns true (early-exit, matching its own doc).
+        Functions\when('opendir')->justReturn('fake-dir-handle');
+        Functions\when('readdir')->justReturn('sess_deadbeef');
+        Functions\when('closedir')->justReturn(true);
+
+        $runner = new UpdateRunner();
+        $note   = $this->pin($runner);
+
+        $this->assertTrue(
+            defined('WP_TEMP_DIR'),
+            'REGRESSION: a writable-but-pathologically-populated default must be routed into the conditional '
+            . 'fallback pin, not left unset merely because it passed the writability probe'
+        );
+        $this->assertSame(
+            '/wpmgr-fake-uploads/.wpmgr-tmp',
+            WP_TEMP_DIR,
+            'the pin must still land at the existing dedicated fallback location, never wp-content/upgrade'
+        );
+        $this->assertStringContainsString('pinned', $note);
+        $this->assertStringContainsString('entries', $note);
     }
 
     /**

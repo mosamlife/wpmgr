@@ -11,6 +11,13 @@
  *   - validate() rejects code of wrong length
  *   - isConfiguredFor() checks user-meta
  *   - base32 encode/decode round-trip (via public test vector)
+ *   - GH #215: sequential logins at different steps (T, then T+10) both
+ *     succeed -- the anti-replay burn never blocks a normal repeated login
+ *   - GH #215: an immediate replay of the SAME accepted step is rejected --
+ *     locks the security property so a future refactor can't silently drop
+ *     the burn while "fixing" the reported bug
+ *   - GH #215: activatePendingSecret() burns the activation timestep so the
+ *     setup-confirm code cannot be reused as the very first login
  *
  * The AgeIdentity is not tested for encrypt/decrypt here; we mock those paths
  * by pre-seeding the user-meta with a base64-encoded "plaintext" that the
@@ -198,6 +205,125 @@ final class TotpProviderTest extends TestCase
 
         $result = $this->provider()->validate($user, ['wpmgr_totp_code' => '12345']);
         $this->assertFalse($result, '5-digit code must be rejected (needs 6)');
+    }
+
+    // -------------------------------------------------------------------------
+    // GH #215: "works once then invalid code" was reported as an anti-replay
+    // bug, but the burn (`$counter <= $last`) is CORRECT single-use TOTP —
+    // these tests drive the REAL provider through a realistic sequential-login
+    // scenario (accept at step T, then accept again at a LATER independent
+    // step) to lock in that normal repeated logins are never blocked, while
+    // still proving a genuine replay of the same accepted step IS rejected.
+    // The existing test_validate_rejects_replayed_step() above only ever
+    // pre-seeded LAST_USED and validated once — it never drove validate()
+    // twice in sequence, which is why the false anti-replay-bug hypothesis
+    // was initially plausible.
+    // -------------------------------------------------------------------------
+
+    public function test_issue215_sequential_logins_at_different_steps_both_succeed(): void
+    {
+        $secret = 'JBSWY3DPEHPK3PXP';
+        $user   = $this->makeUser(5);
+        $this->userMeta[5][TotpProvider::META_SECRET] = base64_encode($secret);
+
+        // Fixed, controllable clock so we can precisely advance by whole
+        // TOTP steps between the two validate() calls.
+        $clock = 1_700_000_000;
+        Functions\when('time')->alias(function () use (&$clock) {
+            return $clock;
+        });
+
+        $provider = $this->provider();
+
+        // First login at step T.
+        $counterT = (int) ($clock / 30);
+        $codeT    = $this->generateExpectedCode($secret, $counterT);
+
+        $this->assertTrue(
+            $provider->validate($user, ['wpmgr_totp_code' => $codeT]),
+            'GH #215: first login at step T must be accepted'
+        );
+        $this->assertSame(
+            $counterT,
+            (int) $this->userMeta[5][TotpProvider::META_LAST_USED],
+            'GH #215: step T must be burned (recorded as LAST_USED) after acceptance'
+        );
+
+        // Advance the clock by 10 steps (300s) -- a later, independent login
+        // (e.g. the next day), not a replay of the same code.
+        $clock += 10 * 30;
+        $counterT10 = (int) ($clock / 30);
+        $this->assertSame($counterT + 10, $counterT10, 'sanity: clock advanced exactly 10 steps');
+        $codeT10 = $this->generateExpectedCode($secret, $counterT10);
+
+        $this->assertTrue(
+            $provider->validate($user, ['wpmgr_totp_code' => $codeT10]),
+            'GH #215: a fresh code at a later step (T+10) must be ACCEPTED -- proves sequential logins are never blocked by the anti-replay burn'
+        );
+    }
+
+    public function test_issue215_replay_of_same_accepted_step_is_rejected(): void
+    {
+        $secret = 'JBSWY3DPEHPK3PXP';
+        $user   = $this->makeUser(6);
+        $this->userMeta[6][TotpProvider::META_SECRET] = base64_encode($secret);
+
+        $baseTime = 1_700_000_000;
+        Functions\when('time')->justReturn($baseTime);
+
+        $provider = $this->provider();
+        $counter  = (int) ($baseTime / 30);
+        $code     = $this->generateExpectedCode($secret, $counter);
+
+        $this->assertTrue(
+            $provider->validate($user, ['wpmgr_totp_code' => $code]),
+            'first submission of the code must be accepted'
+        );
+
+        // Immediately resubmit the IDENTICAL code within the same wall-clock
+        // window -- e.g. a password manager or browser re-submitting the
+        // already-consumed value. This MUST stay rejected: the burn is the
+        // security property that prevents TOTP replay and must never be
+        // silently weakened (do not loosen `<= $last` to `<`/`==`, and do
+        // not drop the update_user_meta() burn, to "fix" GH #215).
+        $this->assertFalse(
+            $provider->validate($user, ['wpmgr_totp_code' => $code]),
+            'GH #215: a replay of the already-accepted code within the same window must be REJECTED'
+        );
+    }
+
+    /**
+     * GH #215 hardening: activatePendingSecret() now burns the activation
+     * timestep, so the same confirm code used to finish 2FA setup cannot be
+     * replayed as the very first login validate() call.
+     */
+    public function test_issue215_activation_code_cannot_be_reused_as_first_login(): void
+    {
+        $secret = 'JBSWY3DPEHPK3PXP';
+        $user   = $this->makeUser(7);
+        $this->userMeta[7][TotpProvider::META_PENDING_SECRET] = base64_encode($secret);
+
+        $baseTime = 1_700_000_000;
+        Functions\when('time')->justReturn($baseTime);
+
+        $provider = $this->provider();
+        $counter  = (int) ($baseTime / 30);
+        $code     = $this->generateExpectedCode($secret, $counter);
+
+        $this->assertTrue(
+            $provider->activatePendingSecret($user, $code),
+            'activation must succeed with a valid code for the pending secret'
+        );
+        $this->assertSame(
+            $counter,
+            (int) ($this->userMeta[7][TotpProvider::META_LAST_USED] ?? -1),
+            'GH #215: activatePendingSecret() must burn the activation step (record LAST_USED)'
+        );
+
+        $this->assertFalse(
+            $provider->validate($user, ['wpmgr_totp_code' => $code]),
+            'GH #215: the activation/confirm code must not be replayable as the first login validate() call'
+        );
     }
 
     // -------------------------------------------------------------------------

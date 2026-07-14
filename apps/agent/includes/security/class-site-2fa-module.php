@@ -914,7 +914,14 @@ final class Site2faModule
             $session['attempts'] = $attempts + 1;
             $this->storeSession($userId, $session);
             $this->incrementCrossRequestAttempts($userId);
-            $this->renderInterstitial($user, $session, esc_html__('Incorrect code. Please try again.', 'wpmgr-agent'));
+            $this->renderInterstitial(
+                $user,
+                $session,
+                esc_html__(
+                    'Incorrect code. Please try again. If you just used this code, wait for your authenticator to show a new one before trying again.',
+                    'wpmgr-agent'
+                )
+            );
             return;
         }
 

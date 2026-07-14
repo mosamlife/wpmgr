@@ -317,10 +317,6 @@ function WizardForm({
               {(["plugins", "themes"] as const).map((tab) => {
                 const count =
                   tab === "plugins" ? pluginsWithUpdate : themesWithUpdate;
-                const total =
-                  tab === "plugins"
-                    ? pluginOptions.length
-                    : themeOptions.length;
                 return (
                   <button
                     key={tab}
@@ -338,10 +334,6 @@ function WizardForm({
                     {count > 0 ? (
                       <span className="ml-1.5 rounded-sm bg-primary/10 px-1 text-[10px] font-semibold tabular-nums text-primary">
                         {count}
-                      </span>
-                    ) : total > 0 ? (
-                      <span className="ml-1.5 rounded-sm bg-muted-foreground/10 px-1 text-[10px] tabular-nums text-muted-foreground">
-                        {total}
                       </span>
                     ) : null}
                   </button>

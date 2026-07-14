@@ -213,6 +213,78 @@ final class HideBackendModuleTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // GH #219: admin-ajax.php / admin-post.php are legitimate logged-out
+    // front-end endpoints that live under /wp-admin/ and must NEVER be gated by
+    // hide-backend (a Bricks form posting to admin-ajax.php to send email via
+    // WPMgr SMTP was getting a 404, breaking submission).
+    // -------------------------------------------------------------------------
+
+    public function test_issue219_admin_ajax_and_admin_post_are_not_login_or_admin_paths(): void
+    {
+        $policy = $this->makePolicy(true, 'my-secret-login');
+        $mod    = $this->module($policy);
+
+        $ref = new \ReflectionMethod($mod, 'isLoginOrAdminPath');
+        $ref->setAccessible(true);
+
+        // Root install.
+        $this->assertFalse(
+            $ref->invoke($mod, '/wp-admin/admin-ajax.php'),
+            'GH #219: admin-ajax.php must NOT be gated by hide-backend'
+        );
+        $this->assertFalse(
+            $ref->invoke($mod, '/wp-admin/admin-post.php'),
+            'GH #219: admin-post.php must NOT be gated by hide-backend'
+        );
+
+        // Subdirectory install (match on final segment at any depth).
+        $this->assertFalse(
+            $ref->invoke($mod, '/subdir/wp-admin/admin-ajax.php'),
+            'GH #219: admin-ajax.php under a subdirectory install must NOT be gated'
+        );
+        $this->assertFalse(
+            $ref->invoke($mod, '/subdir/wp-admin/admin-post.php'),
+            'GH #219: admin-post.php under a subdirectory install must NOT be gated'
+        );
+
+        // Regression guard: every OTHER /wp-admin/ page must STILL be gated.
+        $this->assertTrue(
+            $ref->invoke($mod, '/wp-admin/edit.php'),
+            'GH #219 regression guard: real admin pages must still be gated'
+        );
+        $this->assertTrue(
+            $ref->invoke($mod, '/wp-admin'),
+            'GH #219 regression guard: /wp-admin dashboard must still be gated'
+        );
+    }
+
+    /**
+     * End-to-end: a logged-out, un-tokened visitor hitting admin-ajax.php must
+     * pass straight through interceptRequest() with NO 404 and NO redirect.
+     * This is the exact failure mode reported in GH #219.
+     */
+    public function test_issue219_intercept_does_not_block_admin_ajax_for_logged_out_visitor(): void
+    {
+        // Reach the block decision tree instead of bailing on the CLI check.
+        Functions\when('php_sapi_name')->justReturn('fpm-fcgi');
+
+        $policy = $this->makePolicy(true, 'my-secret-login', '');
+        $mod    = $this->module($policy);
+
+        // Logged out (set_up default), no access cookie, front-end AJAX POST.
+        $_SERVER['REQUEST_URI'] = '/wp-admin/admin-ajax.php?action=bricks_form_submit';
+
+        // The block branch must never fire for admin-ajax.php.
+        Functions\expect('http_response_code')->never();
+        Functions\expect('header')->never();
+
+        // Must return normally — no exception, no exit.
+        $mod->interceptRequest();
+
+        $this->addToAssertionCount(1);
+    }
+
+    // -------------------------------------------------------------------------
     // hasAccessCookie()
     // -------------------------------------------------------------------------
 

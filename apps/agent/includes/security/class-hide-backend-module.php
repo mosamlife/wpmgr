@@ -368,17 +368,45 @@ final class HideBackendModule
     }
 
     /**
+     * Legitimate front-end endpoints that live under /wp-admin/ but are
+     * explicitly designed to be reachable while logged out. WordPress serves
+     * these for un-authenticated visitors (admin-ajax.php dispatches
+     * wp_ajax_nopriv_* handlers; admin-post.php dispatches admin_post_nopriv_*
+     * handlers) and countless plugins/themes rely on them for public-facing
+     * AJAX and form submissions. They reveal neither the login page nor the
+     * admin dashboard, so hide-backend must NEVER gate them (GH #219).
+     *
+     * @var string[]
+     */
+    private const ALLOWED_FRONTEND_ADMIN_ENDPOINTS = [
+        'admin-ajax.php',
+        'admin-post.php',
+    ];
+
+    /**
      * Whether the path is a canonical wp-login or wp-admin location.
      * Also catches wp-login.php?action=* variants (lost password, register, etc.)
      * so the access-cookie check applies to the full login multi-request dance.
+     *
+     * admin-ajax.php and admin-post.php are explicitly EXCLUDED: they live under
+     * /wp-admin/ but are legitimate logged-out front-end endpoints (see
+     * ALLOWED_FRONTEND_ADMIN_ENDPOINTS). Gating them 404s public AJAX/POST used
+     * by plugins and page builders (GH #219).
      *
      * @param string $path The request path (no query string, no trailing slash).
      * @return bool
      */
     private function isLoginOrAdminPath(string $path): bool
     {
-        $loginFile = '/wp-login.php';
-        $adminDir  = '/wp-admin';
+        $adminDir = '/wp-admin';
+
+        // Never gate legitimate logged-out front-end endpoints that happen to
+        // live under /wp-admin/ (admin-ajax.php, admin-post.php). Match on the
+        // final path segment so it holds at any install depth
+        // (e.g. /subdir/wp-admin/admin-ajax.php).
+        if (in_array(basename($path), self::ALLOWED_FRONTEND_ADMIN_ENDPOINTS, true)) {
+            return false;
+        }
 
         // Match /wp-login.php at any install depth (e.g. /subdir/wp-login.php).
         // Also catch the original REQUEST_URI with a query string still present --

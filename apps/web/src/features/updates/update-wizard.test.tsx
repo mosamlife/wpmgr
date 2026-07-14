@@ -124,3 +124,54 @@ describe("UpdateWizard — GH #211 same-version phantom guard", () => {
     expect(await screen.findByText("Mystery Plugin")).toBeInTheDocument();
   });
 });
+
+// GH #217 — when a tab has components but NONE of them have a pending
+// update, the tab-strip badge used to fall back to the unfiltered distinct
+// component count (rendered in a muted style), contradicting the "Showing 0
+// with available updates" copy and the empty filtered list right below it.
+// The badge must now show nothing at all in that case.
+describe("UpdateWizard — GH #217 zero-updates tab badge", () => {
+  it("shows no numeric badge on the Plugins tab when no plugin has a pending update", async () => {
+    const site = buildSite({
+      components: {
+        plugins: [
+          { slug: "akismet", name: "Akismet", version: "5.3" },
+          { slug: "jetpack", name: "Jetpack", version: "13.0" },
+        ],
+        themes: [],
+      },
+    });
+
+    renderWithProviders(
+      <UpdateWizard open target={TARGET} sites={[site]} onClose={() => {}} />,
+      { withRouter: true },
+    );
+
+    // Wait for first async paint, then assert the empty-filtered state.
+    expect(
+      await screen.findByText(
+        "No plugins with available updates on the selected sites.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Showing 0 with available updates"),
+    ).toBeInTheDocument();
+
+    // The tab badge must render no number at all — not "2" (the distinct
+    // component count), muted or otherwise.
+    const tab = screen.getByRole("tab", { name: /plugins/i });
+    expect(within(tab).queryByText("2")).not.toBeInTheDocument();
+    expect(within(tab).queryByText("0")).not.toBeInTheDocument();
+
+    // Toggling "Show all" reveals both components, each labeled up to date.
+    fireEvent.click(screen.getByRole("button", { name: /show all/i }));
+
+    const akismetRow = screen.getByText("Akismet").closest("li");
+    expect(akismetRow).not.toBeNull();
+    expect(within(akismetRow!).getByText("up to date")).toBeInTheDocument();
+
+    const jetpackRow = screen.getByText("Jetpack").closest("li");
+    expect(jetpackRow).not.toBeNull();
+    expect(within(jetpackRow!).getByText("up to date")).toBeInTheDocument();
+  });
+});

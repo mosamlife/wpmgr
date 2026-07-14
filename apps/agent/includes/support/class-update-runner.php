@@ -20,6 +20,17 @@ namespace WPMgr\Agent\Support;
 class UpdateRunner
 {
     /**
+     * Above this many entries, WordPress's own default temp directory
+     * (get_temp_dir()) is treated as pathologically populated rather than
+     * healthy, even when it is genuinely writable — see
+     * pinTempDirForUnpack()'s doc (GitHub issue #216). Well above sane
+     * transient temp-file use, well below the 10,000+ stale `sess_*`
+     * entries observed on the reporting host's GC-disabled session-save-path
+     * default.
+     */
+    private const MAX_HEALTHY_DEFAULT_TEMP_ENTRIES = 2000;
+
+    /**
      * The reason the most recent isComplete() call returned false, or '' when
      * that call returned true (or isComplete() has not been called yet).
      * Reset to '' at the START of every isComplete() call (see that method)
@@ -31,6 +42,18 @@ class UpdateRunner
      * GitHub issue #182's sibling visibility fix).
      */
     private string $lastIncompleteReason = '';
+
+    /**
+     * Which component types (plugin|theme|core) have already had their
+     * forced fresh update-check run during THIS UpdateRunner instance's
+     * lifetime (== this run — one CP `update` command constructs exactly one
+     * UpdateRunner; see UpdateCommand's class doc). Keyed by type, value
+     * always true when present. See forceFreshCheckOncePerRun()'s doc
+     * (GitHub issue #218).
+     *
+     * @var array<string,bool>
+     */
+    private array $freshCheckedTypes = [];
 
     /**
      * Validate an untrusted version string before it reaches WP-CLI argv or an
@@ -150,13 +173,16 @@ class UpdateRunner
      * in UpdateCommand::processItem(). For an explicit version request we
      * return it as-is (no WordPress check involved — the caller already
      * knows the target). For 'latest' we consult the WordPress update
-     * transients, but ONLY after forcing exactly one fresh check first
-     * (GitHub issue #208): see pluginUpdateVersion()/themeUpdateVersion()/
+     * transients, but ONLY after forcing a fresh check first (GitHub issue
+     * #208): see pluginUpdateVersion()/themeUpdateVersion()/
      * coreUpdateVersion() for why. Before that fix, a momentarily
      * stale/expired/never-yet-populated transient was read as-is and
      * indistinguishable from "genuinely no update available", so a real
      * pending update could be silently reported as up_to_date here while
      * WordPress's own background auto-updater applied it moments later.
+     * That forced check is now memoized once per run per component-type
+     * (GitHub issue #218) via forceFreshCheckOncePerRun() rather than once
+     * per call — see its doc for the bulk-run regression that fixed.
      *
      * @param string $type      plugin|theme|core.
      * @param string $slug      Sanitized slug.
@@ -993,17 +1019,34 @@ class UpdateRunner
      * writable, open_basedir-safe temp location) while eliminating the
      * collision that caused this regression.
      *
+     * BROADENED (GitHub issue #216): "usable" no longer means merely
+     * writable. A directory can pass the writability probe above and STILL
+     * be a bad place to unpack an update — a reported host's get_temp_dir()
+     * resolved to its PHP session save path with garbage collection
+     * effectively disabled, which had accumulated 10,000+ stale `sess_*`
+     * files; heavy per-file I/O against a directory that populated failed
+     * intermittently with "Could not copy file." tempDirEntryCountExceeds()
+     * cheaply (streaming, bounded) tests whether the default holds more than
+     * self::MAX_HEALTHY_DEFAULT_TEMP_ENTRIES entries; when it does, the
+     * default is treated exactly like an unwritable one and this method
+     * falls through to the SAME conditional last-resort fallback+create+
+     * write-probe pin path below — this constant's doc, not a new pin
+     * location, is the change. The pin location itself is unchanged and
+     * remains a CONDITIONAL last-resort (never unconditional): this is
+     * exactly the posture defended to the wp.org reviewer for this
+     * `define(WP_TEMP_DIR)` call.
+     *
      * Never redefines an already-defined WP_TEMP_DIR (an operator's
      * wp-config.php override, or an earlier call in this same request) —
      * that would be a fatal error, and it is also never our place to
      * second-guess an explicit choice made elsewhere.
      *
      * All filesystem probes (resolveDefaultTempDir(), isDirWritableByProbe(),
-     * fallbackTempDirCandidate()) are @-suppressed: on an open_basedir-
-     * restricted host, touching a disallowed path can emit a PHP warning
-     * (never a fatal), and none of this decision logic may let that noise
-     * surface — "can't tell" is treated the same as "not writable" by
-     * construction.
+     * tempDirEntryCountExceeds(), fallbackTempDirCandidate()) are
+     * @-suppressed: on an open_basedir-restricted host, touching a
+     * disallowed path can emit a PHP warning (never a fatal), and none of
+     * this decision logic may let that noise surface — "can't tell" is
+     * treated the same as "not usable" by construction.
      *
      * @return string A short, log-safe (no secrets) description of the
      *                decision, suitable for both DebugLog and the
@@ -1020,7 +1063,23 @@ class UpdateRunner
         }
 
         $default = $this->resolveDefaultTempDir();
+
+        // "Usable" (GitHub issue #216) requires BOTH a real writability
+        // proof AND that the default isn't pathologically populated — see
+        // this method's class doc. $defaultUnusableReason records WHICH
+        // condition failed, for the log strings below, replacing the
+        // previously-hardcoded 'not writable' wording.
+        $defaultUsable         = false;
+        $defaultUnusableReason = 'not writable';
         if ($default !== '' && $this->isDirWritableByProbe($default)) {
+            if ($this->tempDirEntryCountExceeds($default, self::MAX_HEALTHY_DEFAULT_TEMP_ENTRIES)) {
+                $defaultUnusableReason = 'shared temp dir has ' . self::MAX_HEALTHY_DEFAULT_TEMP_ENTRIES . '+ entries';
+            } else {
+                $defaultUsable = true;
+            }
+        }
+
+        if ($defaultUsable) {
             // The fix: WordPress's own default already works here — never
             // define WP_TEMP_DIR, so it stays completely disjoint from
             // wp-content/upgrade and the collision described in this
@@ -1031,7 +1090,8 @@ class UpdateRunner
         [$fallbackDir, $fallbackLabel] = $this->fallbackTempDirCandidate();
         if ($fallbackDir === '') {
             return 'temp dir: WordPress\'s own default (' . ($default !== '' ? $default : 'unresolved')
-                . ') is not writable here and no fallback directory is available; leaving WP_TEMP_DIR unset.';
+                . ') is unusable here (' . $defaultUnusableReason
+                . ') and no fallback directory is available; leaving WP_TEMP_DIR unset.';
         }
 
         if (!@is_dir($fallbackDir) && function_exists('wp_mkdir_p')) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort existence probe; must never warn/fatal under open_basedir, see method doc
@@ -1040,15 +1100,68 @@ class UpdateRunner
 
         if (!$this->isDirWritableByProbe($fallbackDir)) {
             return 'temp dir: WordPress\'s own default (' . ($default !== '' ? $default : 'unresolved')
-                . ') is not writable here, and the fallback directory ' . $fallbackDir
+                . ') is unusable here (' . $defaultUnusableReason . '), and the fallback directory ' . $fallbackDir
                 . ' could not be created/written either; leaving WP_TEMP_DIR unset.';
         }
 
         // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- WP_TEMP_DIR is a documented, overridable WordPress core constant (wp-admin/includes/file.php get_temp_dir()), not a constant of our own; it is simply missing from this sniff's hardcoded allowed_core_constants list
         define('WP_TEMP_DIR', $fallbackDir);
 
-        return 'temp dir: WordPress\'s own default was not writable here; pinned to a dedicated fallback dir '
-            . $fallbackDir . ' (' . $fallbackLabel . ').';
+        return 'temp dir: WordPress\'s own default was unusable here (' . $defaultUnusableReason
+            . '); pinned to a dedicated fallback dir ' . $fallbackDir . ' (' . $fallbackLabel . ').';
+    }
+
+    /**
+     * Bounded, STREAMING check for whether $dir contains more than $limit
+     * entries (GitHub issue #216) — used to decide whether WordPress's own
+     * default temp dir is pathologically populated (see
+     * pinTempDirForUnpack()'s doc) rather than merely writable.
+     *
+     * Deliberately never builds a full listing (no scandir()/glob() over a
+     * directory that may hold tens of thousands of entries): opendir()/
+     * readdir() are used directly so this can return true as soon as the
+     * count exceeds $limit, costing at most $limit+1 readdir() calls even
+     * against a pathologically large directory.
+     *
+     * Fails CLOSED to "not exceeded" (returns false) whenever the directory
+     * cannot be opened at all — an open_basedir restriction, or a race where
+     * it was removed between the writability probe and this call — so this
+     * check can only ever ADD a fallback pin on top of a genuinely
+     * enumerable, pathologically populated directory; it can never itself
+     * cause a pin to be skipped by guessing. Every filesystem touch is
+     * @-suppressed, mirroring isDirWritableByProbe()'s posture: "can't tell"
+     * must never surface as a warning under open_basedir.
+     *
+     * @param string $dir   Absolute directory path to inspect.
+     * @param int    $limit Entry-count threshold; exceeded means strictly
+     *                      more than this many non-dot entries were found.
+     * @return bool True when $dir's entry count (excluding `.`/`..`) is
+     *              strictly greater than $limit. False when at or below
+     *              $limit, or when $dir could not be opened for reading.
+     */
+    private function tempDirEntryCountExceeds(string $dir, int $limit): bool
+    {
+        $handle = @opendir($dir); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort bounded probe; must never warn/fatal under open_basedir or a directory removed mid-race, see method doc
+        if ($handle === false) {
+            return false;
+        }
+
+        try {
+            $count = 0;
+            while (($entry = readdir($handle)) !== false) {
+                if ($entry === '.' || $entry === '..') {
+                    continue;
+                }
+                ++$count;
+                if ($count > $limit) {
+                    return true;
+                }
+            }
+        } finally {
+            @closedir($handle); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort cleanup; must never warn/fatal under open_basedir
+        }
+
+        return false;
     }
 
     /**
@@ -1416,17 +1529,96 @@ class UpdateRunner
     }
 
     /**
+     * Force exactly one fresh update-check per component-type for the
+     * lifetime of this UpdateRunner instance — i.e. once per RUN, not once
+     * per item (GitHub issue #218, a regression from #208/#212).
+     *
+     * #208/#212 made pluginUpdateVersion()/themeUpdateVersion()/
+     * coreUpdateVersion() each force a fresh check (delete the relevant
+     * site transient, then re-run wp_update_plugins()/wp_update_themes()/
+     * wp_version_check([], true)) before reading the transient, so a
+     * stale/expired transient could never masquerade as "genuinely up to
+     * date". But UpdateCommand::execute() calls availableVersion() — and
+     * therefore this force-fresh-check block — ONCE PER ITEM in its foreach
+     * over a bulk `update` task. With N `latest` items of the same type in
+     * one run, that meant N full wp.org catalog round-trips in a single
+     * request, each one discarding the fresh transient the PRIOR item's
+     * call had just populated; a mid-batch network failure could leave a
+     * later item reading a freshly-emptied/incomplete transient and
+     * misreport a genuinely pending update as up_to_date.
+     *
+     * The fix: memoize by type. The flag for $type is set FIRST, before the
+     * force block runs (re-entrancy safe — nothing inside wp_update_plugins()
+     * et al. can trigger a second round-trip or recursion for the same
+     * type), so every subsequent item of the SAME type in the same run reads
+     * the transient this first call already populated — one shared fresh
+     * transient covers every per-slug lookup, matching the apply path's own
+     * single forced check per run (see applyViaUpgrader()/
+     * applyCoreUpgrade()).
+     *
+     * VERIFIED SAFE: the apply path never calls this method or
+     * availableVersion() — applyViaUpgrader()/applyCoreUpgrade() call
+     * wp_update_plugins()/wp_update_themes()/wp_version_check() directly —
+     * so this memo cannot affect it. RollbackCommand builds its own
+     * UpdateRunner and never calls availableVersion() either.
+     *
+     * core intentionally has no delete_site_transient() call, matching
+     * coreUpdateVersion()'s pre-existing (unchanged) behaviour — core has no
+     * separate transient-deletion step; wp_version_check()'s own `true`
+     * second argument is WordPress's "ignore the 12-hour throttle" flag and
+     * was always sufficient on its own.
+     *
+     * @param string $type plugin|theme|core.
+     * @return void
+     */
+    private function forceFreshCheckOncePerRun(string $type): void
+    {
+        if (isset($this->freshCheckedTypes[$type])) {
+            return;
+        }
+        $this->freshCheckedTypes[$type] = true;
+
+        switch ($type) {
+            case 'plugin':
+                if (function_exists('delete_site_transient')) {
+                    delete_site_transient('update_plugins');
+                }
+                if (function_exists('wp_update_plugins')) {
+                    wp_update_plugins();
+                }
+                break;
+
+            case 'theme':
+                if (function_exists('delete_site_transient')) {
+                    delete_site_transient('update_themes');
+                }
+                if (function_exists('wp_update_themes')) {
+                    wp_update_themes();
+                }
+                break;
+
+            case 'core':
+                if (function_exists('wp_version_check')) {
+                    wp_version_check([], true);
+                }
+                break;
+        }
+    }
+
+    /**
      * Pending update version for a plugin from the update transient.
      *
-     * Forces exactly ONE fresh check via wp_update_plugins() before reading
-     * the transient (GitHub issue #208) — the identical, unconditional call
-     * applyViaUpgrader() already makes before a real plugin apply (see
-     * below). This closes the gap where this READ-ONLY resolution path
-     * trusted whatever was already cached while the APPLY path would have
-     * refreshed it first: a stale/expired/never-yet-populated transient can
-     * no longer make a real pending update look like "up to date" here.
-     * Called at most once per availableVersion() resolution — never in a
-     * loop — matching the apply path's own single forced check per run.
+     * Forces a fresh check via forceFreshCheckOncePerRun('plugin') before
+     * reading the transient (GitHub issue #208) — the identical,
+     * unconditional call applyViaUpgrader() already makes before a real
+     * plugin apply (see below). This closes the gap where this READ-ONLY
+     * resolution path trusted whatever was already cached while the APPLY
+     * path would have refreshed it first: a stale/expired/never-yet-populated
+     * transient can no longer make a real pending update look like "up to
+     * date" here. That forced check now runs at most ONCE PER RUN per
+     * component-type (GitHub issue #218), not once per item — see
+     * forceFreshCheckOncePerRun()'s doc for the bulk-run regression this
+     * fixes and why that is still safe.
      *
      * GH #212 residual gap: wp_update_plugins() alone stays throttled by
      * WordPress core's own ~12h `update_plugins` transient window — off-cron
@@ -1448,12 +1640,7 @@ class UpdateRunner
      */
     private function pluginUpdateVersion(string $slug): ?string
     {
-        if (function_exists('delete_site_transient')) {
-            delete_site_transient('update_plugins');
-        }
-        if (function_exists('wp_update_plugins')) {
-            wp_update_plugins();
-        }
+        $this->forceFreshCheckOncePerRun('plugin');
 
         if (!function_exists('get_site_transient')) {
             return null;
@@ -1473,9 +1660,11 @@ class UpdateRunner
     /**
      * Pending update version for a theme from the update transient.
      *
-     * Forces exactly ONE fresh check via wp_update_themes() before reading
-     * the transient (GitHub issue #208) — same rationale and shape as
-     * pluginUpdateVersion(); see its doc.
+     * Forces a fresh check via forceFreshCheckOncePerRun('theme') before
+     * reading the transient (GitHub issue #208) — same rationale and shape
+     * as pluginUpdateVersion(); see its doc. That forced check now runs at
+     * most ONCE PER RUN per component-type (GitHub issue #218), not once
+     * per item — see forceFreshCheckOncePerRun()'s doc.
      *
      * GH #212 residual gap: see pluginUpdateVersion()'s doc — the same
      * off-cron core-throttle gap applies here, so the transient is deleted
@@ -1492,12 +1681,7 @@ class UpdateRunner
      */
     private function themeUpdateVersion(string $slug): ?string
     {
-        if (function_exists('delete_site_transient')) {
-            delete_site_transient('update_themes');
-        }
-        if (function_exists('wp_update_themes')) {
-            wp_update_themes();
-        }
+        $this->forceFreshCheckOncePerRun('theme');
 
         if (!function_exists('get_site_transient')) {
             return null;
@@ -1517,12 +1701,14 @@ class UpdateRunner
     /**
      * Latest offered core version from the update transient.
      *
-     * Forces exactly ONE fresh check via wp_version_check([], true) before
+     * Forces a fresh check via forceFreshCheckOncePerRun('core') before
      * reading the transient (GitHub issue #208) — the identical forced,
      * cache-bypassing call applyCoreUpgrade() already makes before a real
      * core apply (the `true` second argument is WordPress's own "ignore the
      * 12-hour throttle" flag). Same rationale as pluginUpdateVersion(); see
-     * its doc.
+     * its doc. That forced check now runs at most ONCE PER RUN per
+     * component-type (GitHub issue #218), not once per item — see
+     * forceFreshCheckOncePerRun()'s doc.
      *
      * @return string|null The pending core version, '' when a forced fresh
      *                check confirms none is available, or null when
@@ -1534,9 +1720,7 @@ class UpdateRunner
      */
     private function coreUpdateVersion(): ?string
     {
-        if (function_exists('wp_version_check')) {
-            wp_version_check([], true);
-        }
+        $this->forceFreshCheckOncePerRun('core');
 
         if (!function_exists('get_site_transient')) {
             return null;
