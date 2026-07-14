@@ -121,6 +121,21 @@ final class IntegrationsPurgeTest extends TestCase
             }
             return 'https://shop.example' . ($path[0] === '/' ? $path : '/' . $path);
         });
+        // 2026-07 wp.org review fix: CloudPanel's $_SERVER['SERVER_NAME']/['HOME']
+        // reads are now sanitize_text_field(wp_unslash(...)) inline at the read
+        // site. Mock both realistically (not a passthrough) so the fallback
+        // branches are exercised deterministically regardless of what earlier
+        // test files may have already Patchwork-defined process-wide.
+        Functions\when('wp_unslash')->alias(static fn ($v) => is_string($v) ? stripslashes($v) : $v);
+        // Mirrors real WP core sanitize_text_field(): collapses \r\n\t\space
+        // RUNS into a single space (does NOT delete the surrounding text) --
+        // the real function's job is to make raw newline/CR bytes unable to
+        // start a new HTTP header line, not to redact arbitrary substrings.
+        Functions\when('sanitize_text_field')->alias(static function ($v) {
+            $v = (string) $v;
+            $v = preg_replace('/[\r\n\t ]+/', ' ', $v) ?? '';
+            return trim($v);
+        });
 
         unset($GLOBALS['kinsta_cache'], $GLOBALS['cloudflareHooks']);
         unset(
@@ -462,6 +477,89 @@ final class IntegrationsPurgeTest extends TestCase
         $this->assertSame('PURGE', $method1);
         $this->assertSame('http://127.0.0.1:6081/cart/?id=1', $url1);
         $this->assertSame('shop.example', $args1['headers']['Host']);
+    }
+
+    /**
+     * 2026-07 wp.org review fix regression: siteHost() falls back to
+     * $_SERVER['SERVER_NAME'] when home_url() cannot resolve a host, and must
+     * sanitize it inline (sanitize_text_field(wp_unslash(...))) rather than
+     * trusting the raw superglobal.
+     */
+    public function test_cloudpanel_site_host_falls_back_to_sanitized_server_name(): void
+    {
+        Functions\when('home_url')->justReturn('');
+        $_SERVER['SERVER_NAME'] = 'fallback.example';
+
+        $this->writeCloudPanelSettings([
+            'enabled'        => true,
+            'server'         => '127.0.0.1:6081',
+            'cacheTagPrefix' => 'testtag',
+        ]);
+
+        (new CloudPanel())->onPurgeEverything();
+
+        $this->assertNotEmpty($this->http);
+        [, , $args1] = $this->http[0];
+        $this->assertSame('fallback.example', $args1['headers']['Host']);
+
+        unset($_SERVER['SERVER_NAME']);
+    }
+
+    /**
+     * A hostile SERVER_NAME (e.g. a header-injection attempt riding a
+     * misconfigured proxy) must have raw CR/LF bytes neutralized by the
+     * inline sanitize_text_field(wp_unslash(...)) pass before it is ever used
+     * to build a Host header -- sanitize_text_field() collapses \r\n runs to
+     * a single space (the same behaviour real WP core applies), which is
+     * what makes header-splitting (injecting a SECOND header line) impossible;
+     * it is not a general substring redaction.
+     */
+    public function test_cloudpanel_site_host_strips_control_characters_from_server_name(): void
+    {
+        Functions\when('home_url')->justReturn('');
+        $_SERVER['SERVER_NAME'] = "evil.example\r\nX-Injected: 1";
+
+        $ref = new \ReflectionMethod(CloudPanel::class, 'siteHost');
+        $host = $ref->invoke(new CloudPanel());
+
+        $this->assertStringNotContainsString("\r", $host, 'no raw CR may survive sanitization');
+        $this->assertStringNotContainsString("\n", $host, 'no raw LF may survive sanitization -- this is what prevents HTTP header-splitting');
+        $this->assertSame('evil.example X-Injected: 1', $host, 'CRLF run collapses to a single space, exactly matching real sanitize_text_field()');
+
+        unset($_SERVER['SERVER_NAME']);
+    }
+
+    /**
+     * 2026-07 wp.org review fix regression: homeDirectories() reads
+     * $_SERVER['HOME'] through the same inline sanitize_text_field(wp_unslash(...))
+     * pass, neutralizing raw CR/LF/TAB bytes (collapsed to a single space,
+     * matching real sanitize_text_field()) before the value is used to build
+     * a filesystem path.
+     */
+    public function test_cloudpanel_home_directories_sanitizes_server_home(): void
+    {
+        $savedHome = $_SERVER['HOME'] ?? null;
+        $_SERVER['HOME'] = "/home/evil\r\n\t/sneaky";
+
+        $ref = new \ReflectionMethod(CloudPanel::class, 'homeDirectories');
+        $homes = $ref->invoke(new CloudPanel());
+
+        foreach ($homes as $home) {
+            $this->assertStringNotContainsString("\r", $home, 'no raw CR may survive sanitization');
+            $this->assertStringNotContainsString("\n", $home, 'no raw LF may survive sanitization');
+            $this->assertStringNotContainsString("\t", $home, 'no raw TAB may survive sanitization');
+        }
+        $this->assertContains(
+            '/home/evil /sneaky',
+            $homes,
+            'CRLF/TAB run collapses to a single space, exactly matching real sanitize_text_field()'
+        );
+
+        if ($savedHome === null) {
+            unset($_SERVER['HOME']);
+        } else {
+            $_SERVER['HOME'] = $savedHome;
+        }
     }
 
     public function test_cloudpanel_full_purge_wipes_pagespeed_host_cache(): void

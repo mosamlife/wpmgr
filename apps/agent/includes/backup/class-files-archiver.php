@@ -66,6 +66,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Support\LongRunningJob;
+
 /**
  * Pure-PHP streaming wp-content archiver with on-disk path cache and
  * checkpointed resume. See file docblock for the rationale.
@@ -474,7 +476,7 @@ final class FilesArchiver
         // Lift caller-imposed time/abort guards. Watchdog handles
         // stall recovery; we want this loop to run as long as the SAPI
         // will let it.
-        @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
         @ignore_user_abort(true);
 
         if (!is_dir($outDir) && !wp_mkdir_p($outDir) && !is_dir($outDir)) {

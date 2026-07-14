@@ -78,6 +78,7 @@ use WPMgr\Agent\Signer;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Support\AgeCrypto;
 use WPMgr\Agent\Support\BackupTransport;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * State-machine driver for a single backup task row.
@@ -178,7 +179,7 @@ final class TaskRunner
      */
     public function run(): string
     {
-        @set_time_limit(0); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
         $currentPhase = self::PHASE_QUEUED;

@@ -128,8 +128,30 @@ final class MediaModalInjector
         if ($id <= 0) {
             return;
         }
-        // StatsRenderer escapes every dynamic value; the wrapper markup is static.
-        echo $this->renderer->renderForAttachment($id, $mime); // phpcs:ignore WordPress.Security.EscapeOutput
+        // StatsRenderer escapes every dynamic value with esc_html() at
+        // assembly time (belt-and-suspenders); wp_kses() here is the visible
+        // escape-at-output-boundary pass (2026-07 wp.org review fix), scoped
+        // to exactly the tags/attributes StatsRenderer emits.
+        echo wp_kses($this->renderer->renderForAttachment($id, $mime), self::allowedStatsKses());
+    }
+
+    /**
+     * Explicit wp_kses() tag/attribute allowlist for StatsRenderer's output,
+     * scoped to exactly the tags/attributes it emits (grep-verified): plain
+     * <div class="...">/<strong>/<span class="...">/<code> wrapper markup,
+     * no interactive elements at all -- unlike the 2FA module's forms, this
+     * is a read-only display panel.
+     *
+     * @return array<string,array<string,bool>>
+     */
+    private static function allowedStatsKses(): array
+    {
+        return [
+            'div'    => ['class' => true],
+            'span'   => ['class' => true],
+            'strong' => [],
+            'code'   => [],
+        ];
     }
 
     /**

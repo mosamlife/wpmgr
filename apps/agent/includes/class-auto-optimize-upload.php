@@ -55,6 +55,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent;
 
 use WPMgr\Agent\Media\MediaAttachmentRow;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Observes uploads, buffers attachment ids, and drains via a signed async POST.
@@ -294,8 +295,9 @@ final class AutoOptimizeUpload
      * drain reschedules itself with a short back-off so an offline CP cannot
      * silently drop pending uploads.
      *
-     * Runs under set_time_limit(0) + ignore_user_abort(true) because this is a
-     * cron worker in a separate FPM request — it must not be killed mid-POST.
+     * Runs under a bounded set_time_limit() + ignore_user_abort(true) because
+     * this is a cron worker in a separate FPM request — it must not be killed
+     * mid-POST.
      *
      * @return void
      */
@@ -307,7 +309,7 @@ final class AutoOptimizeUpload
 
         // Lift the PHP execution ceiling — we are in a dedicated cron worker.
         if (function_exists('set_time_limit')) {
-            @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
         }
         if (function_exists('ignore_user_abort')) {
             ignore_user_abort(true);

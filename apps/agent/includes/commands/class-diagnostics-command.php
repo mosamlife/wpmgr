@@ -39,7 +39,7 @@
  * Directory sizes (ADR-037 reliable-diagnostics JIT fix) — computed just-in-time
  * during the collection, exactly like the WP Site Health screen. mergeDirectorySizes()
  * calls SizeProbe::getOrCompute(): returns a FRESH last-good (< 6 h, O(1)) when
- * warm, otherwise computes NOW (set_time_limit(0) + du fast path + PHP/recurse_dirsize
+ * warm, otherwise computes NOW (a bounded set_time_limit() + du fast path + PHP/recurse_dirsize
  * fallback) and persists to the non-autoloaded wp_option wpmgr_agent_dir_sizes.
  * 'pending' is only emitted when both compute and any prior last-good are truly
  * unavailable — never just because a separate cron has not yet fired. Status is
@@ -262,7 +262,7 @@ final class DiagnosticsCommand implements CommandInterface
      * Resolution order (inside getOrCompute()):
      *   (a) FRESH last-good (< 6 h old) — returned instantly; no I/O beyond the
      *       option read (warm-cache fast path; same as Site Health's dirsize_cache).
-     *   (b) Stale or missing — compute NOW (set_time_limit(0) + du fast path +
+     *   (b) Stale or missing — compute NOW (a bounded set_time_limit() + du fast path +
      *       PHP/recurse_dirsize fallback); persist and use the result.
      *   (c) compute() fails/empty — fall back to stale prior (better than nothing).
      *   (d) Nothing at all — only then emit 'pending' (see below).

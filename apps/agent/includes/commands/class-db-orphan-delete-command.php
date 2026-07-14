@@ -54,6 +54,7 @@ use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Settings;
 use WPMgr\Agent\Signer;
 use WPMgr\Agent\Optimizer\DbCleanup;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Orphan-delete command (async, progress-push, full allowlist capture).
@@ -288,7 +289,7 @@ final class DbOrphanDeleteCommand implements CommandInterface
 
                 // Expand execution budget — delete loops can be slow on large sites.
                 if (function_exists('set_time_limit')) {
-                    @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running orphan-delete loop must not hit max_execution_time; @-guarded, no-op when disabled
+                    @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running orphan-delete loop must not hit max_execution_time; @-guarded, no-op when disabled
                 }
 
                 self::runAsync(

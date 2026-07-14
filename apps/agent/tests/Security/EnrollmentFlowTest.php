@@ -112,6 +112,11 @@ final class EnrollmentFlowTest extends TestCase
         Functions\when('wp_die')->alias(function ($msg, $title = '', $args = []) {
             throw new \RuntimeException('wp_die called: ' . (string) $msg);
         });
+        // Escape-late pass at every 2FA form/profile echo (2026-07 wp.org
+        // review fix). Passthrough here -- these tests exercise the module's
+        // routing/session logic, not wp_kses()'s own filtering.
+        Functions\when('wp_kses')->returnArg();
+        Functions\when('wp_allowed_protocols')->justReturn(['http', 'https', 'mailto']);
         Functions\when('wp_hash_password')->alias(fn ($p) => password_hash($p, PASSWORD_BCRYPT));
         Functions\when('wp_check_password')->alias(fn ($p, $h, $uid) => password_verify((string) $p, (string) $h));
         Functions\when('wp_create_nonce')->alias(fn ($action) => 'nonce_' . md5((string) $action));

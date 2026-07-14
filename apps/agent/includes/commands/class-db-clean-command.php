@@ -41,6 +41,7 @@ use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Settings;
 use WPMgr\Agent\Signer;
 use WPMgr\Agent\Optimizer\DbCleanup;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Database cleanup command (M38 async + progress-push).
@@ -171,7 +172,7 @@ final class DbCleanCommand implements CommandInterface
 
                 // Expand execution budget — cleanup can be slow on large sites.
                 if (function_exists('set_time_limit')) {
-                    @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running cleanup loop must not hit max_execution_time; @-guarded, no-op when disabled
+                    @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running cleanup loop must not hit max_execution_time; @-guarded, no-op when disabled
                 }
 
                 self::runAsync(

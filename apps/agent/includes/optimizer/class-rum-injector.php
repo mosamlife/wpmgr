@@ -1,25 +1,38 @@
 <?php
 /**
- * RumInjector — emit the RUM collector script into <head> via wp_head.
+ * RumInjector — enqueue the RUM collector script + config on wp_enqueue_scripts.
  *
  * GH #154 fix: the collector used to be spliced into the page HTML by an
  * Optimizer stage that only ran inside WPMgr's own page-cache output buffer.
  * That meant a site with WPMgr page caching OFF — the norm when a third-party
  * page cache serves the site — or a page served from a third-party cache HIT
  * never received the collector at all, and RUM silently collected zero data
- * with no warning. This class is now driven from a `wp_head` action (bound by
- * Plugin::registerRumHooks()/renderRumHead(), independent of CacheConfig or
- * any optimizer/cache buffer), so injection no longer depends on any cache
- * path. See {@see renderHead()}.
+ * with no warning. This class is driven from the `wp_enqueue_scripts` action
+ * (bound by Plugin::registerRumHooks()/renderRumHead()), independent of
+ * CacheConfig or any optimizer/cache buffer, so injection no longer depends
+ * on any cache path. See {@see renderHead()}.
  *
- * The emitted snippet is always the same two parts:
+ * 2026-07 wp.org review fix: this class used to build and `echo` the script
+ * tags directly from a `wp_head` priority-99 callback (after
+ * `print_head_scripts` had already run), with a docblock claiming "WP's
+ * enqueue API is inapplicable at this late priority". That claim was wrong —
+ * `wp_enqueue_scripts` fires as part of `wp_head` at priority 1 (WordPress
+ * core registers it via `add_action('wp_head', 'wp_enqueue_scripts', 1)`),
+ * i.e. BEFORE `print_head_scripts` runs, so a script enqueued there is still
+ * printed normally. The class is now bound directly to `wp_enqueue_scripts`
+ * and uses {@see wp_enqueue_script()} + {@see wp_add_inline_script()} instead
+ * of a raw echo.
  *
- *   1. A tiny inline <script> that sets window.__WPMGR_RUM__ = {key,url,rate}
- *      (the per-site constants; no per-request variance, no Vary header, no
- *      cookie).
+ * The registered assets are always the same two parts:
  *
- *   2. An external <script async src="…/assets/wpmgr-rum.min.js"> tag that
- *      loads the bundled web-vitals collector IIFE from the plugin assets dir.
+ *   1. A tiny inline script (wp_add_inline_script(..., 'before')) that sets
+ *      window.__WPMGR_RUM__ = {key,url,rate} (the per-site constants; no
+ *      per-request variance, no Vary header, no cookie), printed immediately
+ *      before the collector script tag.
+ *
+ *   2. The external collector script (wp_enqueue_script()), which loads the
+ *      bundled web-vitals collector IIFE from assets/wpmgr-rum.min.js with an
+ *      async loading strategy.
  *
  * Why <head> + async (not defer before </body>):
  *   web-vitals onCLS is gated on onFCP firing. If the collector is deferred to
@@ -31,9 +44,18 @@
  *   async (not defer) is used because web-vitals uses buffered PerformanceObserver
  *   entries and visibility-state history, so exact parse-time ordering relative
  *   to other scripts does not matter; async avoids blocking the render pipeline.
- *   Priority 99 on wp_head prints near the end of <head> — faithfully replacing
- *   the previous splice-before-</head> position — without depending on any
- *   output buffer being open.
+ *   `wp_enqueue_script()` is called with `in_footer` false so the tag prints in
+ *   <head>, faithfully replacing the previous splice-before-</head> position.
+ *
+ *   The plugin's minimum supported WordPress version (6.2) predates the
+ *   `strategy` argument to `wp_enqueue_script()` (added in WP 6.3, see
+ *   {@see https://make.wordpress.org/core/2023/07/14/registering-scripts-with-async-and-defer-attributes-in-wordpress-6-3/}).
+ *   On 6.3+ we pass `strategy => async` directly; on 6.2 (where the 5th
+ *   `wp_enqueue_script()` argument is still a plain `bool $in_footer`, so
+ *   passing an array there would be coerced to `true` and wrongly force the
+ *   script into the footer) we instead pass a plain `false` and fall back to
+ *   a `script_loader_tag` filter that adds the `async` attribute for this
+ *   handle only. See {@see enqueue()} and {@see filterAsyncScriptTag()}.
  *
  * The external src approach means the collector never violates a strict
  * no-unsafe-inline CSP on the main document. sendBeacon is governed by
@@ -44,21 +66,21 @@
  * 'unsafe-inline') AND the policy does not already allowlist the plugin's asset URL,
  * this stage skips injection rather than breaking the page.
  *
- * Deliberate coverage expansion: unlike the old cache-bound stage, wp_head has
- * no cache-cookie/URL-path exclusions, so the beacon now also fires for
- * anonymous visitors on cart/checkout pages and on pages carrying the
- * `_wpmgr_no_cache` / `_wpmgr_no_optimize` post meta. (WooCommerce's My
- * Account page is NOT a new coverage case here — it renders content only for
- * a logged-in visitor, and the anonymous-only guard in {@see renderHead()}
- * already excludes every logged-in request regardless of page type.) This is
- * intentional: the beacon payload is a metric name, value, device class,
- * connection type, and the current page URL — never cart contents or a
- * session identifier. The page URL IS transmitted (window.location.href in
- * the collector, apps/tracker/src/vitals.ts), but the collector strips the
- * query string and hash before sending (origin + pathname only), so a
- * per-visit token that a checkout/order-confirmation flow might carry in the
- * query string (e.g. a WooCommerce order-received key) never leaves the
- * browser.
+ * Deliberate coverage expansion: unlike the old cache-bound stage,
+ * wp_enqueue_scripts has no cache-cookie/URL-path exclusions, so the beacon
+ * now also fires for anonymous visitors on cart/checkout pages and on pages
+ * carrying the `_wpmgr_no_cache` / `_wpmgr_no_optimize` post meta.
+ * (WooCommerce's My Account page is NOT a new coverage case here — it renders
+ * content only for a logged-in visitor, and the anonymous-only guard in
+ * {@see renderHead()} already excludes every logged-in request regardless of
+ * page type.) This is intentional: the beacon payload is a metric name,
+ * value, device class, connection type, and the current page URL — never
+ * cart contents or a session identifier. The page URL IS transmitted
+ * (window.location.href in the collector, apps/tracker/src/vitals.ts), but
+ * the collector strips the query string and hash before sending (origin +
+ * pathname only), so a per-visit token that a checkout/order-confirmation
+ * flow might carry in the query string (e.g. a WooCommerce order-received
+ * key) never leaves the browser.
  *
  * @package WPMgr\Agent\Optimizer
  */
@@ -68,18 +90,21 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Optimizer;
 
 /**
- * Emits the RUM beacon config + collector script on wp_head.
+ * Enqueues the RUM beacon config + collector script on wp_enqueue_scripts.
  */
 final class RumInjector
 {
+    /** wp_enqueue_script()/wp_add_inline_script() handle for the collector. */
+    public const SCRIPT_HANDLE = 'wpmgr-rum';
+
     private PerfConfig $config;
 
     /**
-     * Guards against emitting more than once per request — defends against a
-     * theme calling wp_head() twice, or the wp_head hook accidentally being
-     * registered more than once. A static property (not per-instance) so the
-     * guard holds even if a fresh RumInjector is constructed for each callback
-     * invocation.
+     * Guards against enqueuing more than once per request — defends against a
+     * theme calling wp_head() twice, or the wp_enqueue_scripts hook accidentally
+     * being registered more than once. A static property (not per-instance) so
+     * the guard holds even if a fresh RumInjector is constructed for each
+     * callback invocation.
      */
     private static bool $emitted = false;
 
@@ -92,14 +117,14 @@ final class RumInjector
     }
 
     /**
-     * wp_head callback: echo the RUM config + collector script directly.
+     * wp_enqueue_scripts callback: enqueue the RUM config + collector script.
      *
-     * wp_head already guarantees this only fires while WordPress is rendering
-     * a normal front-end template (not admin/REST/AJAX/cron/feeds), but it does
-     * NOT guarantee the response is an anonymous, GET, 200, non-password-
-     * protected page — those are checked explicitly below, mirroring the
-     * guards the old cache-bound stage got for free from the page-cache
-     * write path (see Cacheability::isRequestCacheable()).
+     * wp_enqueue_scripts already guarantees this only fires while WordPress is
+     * rendering a normal front-end template (not admin/REST/AJAX/cron/feeds),
+     * but it does NOT guarantee the response is an anonymous, GET, 200,
+     * non-password-protected page — those are checked explicitly below,
+     * mirroring the guards the old cache-bound stage got for free from the
+     * page-cache write path (see Cacheability::isRequestCacheable()).
      *
      * @return void
      */
@@ -129,8 +154,8 @@ final class RumInjector
             return;
         }
 
-        // GET only: wp_head can print during a page-rendering POST (e.g. a
-        // themed form handler that re-renders the page on submit).
+        // GET only: wp_enqueue_scripts can fire during a page-rendering POST
+        // (e.g. a themed form handler that re-renders the page on submit).
         $method = sanitize_text_field(
             wp_unslash(isset($_SERVER['REQUEST_METHOD']) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET')
         );
@@ -159,39 +184,50 @@ final class RumInjector
             return;
         }
 
-        $snippet = $this->buildSnippet($key, $url, $this->config->rumSampleRate, $scriptUrl);
+        if (!function_exists('wp_enqueue_script') || !function_exists('wp_add_inline_script')) {
+            return;
+        }
 
-        // buildSnippet() escapes every dynamic value at construction time
-        // (wp_json_encode for the config object, esc_url for the script src);
-        // this is a plain echo of an already-escaped string, not a new sink.
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $snippet is built by buildSnippet(), which wp_json_encode()s the config object and esc_url()s the script src
-        echo $snippet;
+        $this->enqueue($key, $url, $this->config->rumSampleRate, $scriptUrl);
 
         self::$emitted = true;
     }
 
     /**
-     * Build the inline config + external collector snippet.
+     * Enqueue the collector script and its inline config.
      *
-     * The inline block sets window.__WPMGR_RUM__ (a plain object, no DOM
-     * interaction); the external script is async so it loads without blocking
-     * the render pipeline. async is preferred over defer here because web-vitals
-     * uses buffered PerformanceObserver entries and visibility-state history,
-     * so parse-time ordering relative to other scripts is irrelevant — what
-     * matters is that the observers are registered as early as possible.
-     *
-     * @param string $key        Plaintext beacon key.
-     * @param string $url        Ingest endpoint URL.
-     * @param float  $rate       Sample rate [0,1].
-     * @param string $scriptUrl  URL to wpmgr-rum.min.js.
-     * @return string HTML snippet.
+     * @param string $key       Plaintext beacon key.
+     * @param string $url       Ingest endpoint URL.
+     * @param float  $rate      Sample rate [0,1].
+     * @param string $scriptUrl URL to wpmgr-rum.min.js.
+     * @return void
      */
-    private function buildSnippet(string $key, string $url, float $rate, string $scriptUrl): string
+    private function enqueue(string $key, string $url, float $rate, string $scriptUrl): void
     {
+        $ver = defined('WPMGR_AGENT_VERSION') ? (string) constant('WPMGR_AGENT_VERSION') : false;
+
+        if ($this->coreSupportsScriptStrategy()) {
+            // WP 6.3+: the native way to load a script async without
+            // depending on script-loader-tag string surgery.
+            wp_enqueue_script(
+                self::SCRIPT_HANDLE,
+                $scriptUrl,
+                [],
+                $ver,
+                ['in_footer' => false, 'strategy' => 'async']
+            );
+        } else {
+            // WP 6.2 (this plugin's floor): the 5th wp_enqueue_script() arg is
+            // still a plain bool. Passing an array here would be coerced to
+            // `true` by PHP and wrongly force the script into the footer, so
+            // pass `false` (head) and add `async` via the tag filter below.
+            wp_enqueue_script(self::SCRIPT_HANDLE, $scriptUrl, [], $ver, false);
+            $this->ensureAsyncFallbackFilter();
+        }
+
         // Values are encoded with wp_json_encode then written into a JS object
-        // literal via a script tag — there is no unsafe-inline concern because
-        // this sets a config object, NOT an event handler or navigation.
-        // esc_url is applied to the script src attribute.
+        // literal — there is no unsafe-inline concern because this sets a
+        // config object, NOT an event handler or navigation.
         //
         // The JSON_HEX_* flags are the WP-correct hardening for JSON destined
         // for an inline <script> sink: they hex-escape <, >, &, ', and " so a
@@ -200,7 +236,7 @@ final class RumInjector
         // of the JS string context with a literal `</script>` or similar.
         $rate = round(max(0.0, min(1.0, $rate)), 4);
 
-        $config_json = (string) wp_json_encode(
+        $configJson = (string) wp_json_encode(
             [
                 'key'  => $key,
                 'url'  => $url,
@@ -209,20 +245,73 @@ final class RumInjector
             JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
         );
 
-        // Build the snippet without heredoc/nowdoc (Plugin Check bans heredocs).
-        // The inline config script sets a simple window variable; the external
-        // script loads the collector bundle. Both are echoed directly from the
-        // wp_head callback — WP's enqueue API is inapplicable at this late
-        // priority (print_head_scripts already ran at wp_head priority 1).
-        // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedScript -- echoed directly from a late (priority 99) wp_head callback, after print_head_scripts (priority 1) has already run; WP's enqueue API cannot inline a script this late
-        $inline_config = '<script data-wpmgr-rum-config>'
-            . 'window.__WPMGR_RUM__=' . $config_json . ';'
-            . '</script>';
+        // 'before' prints this inline script immediately before the collector
+        // tag, so window.__WPMGR_RUM__ is always set before the collector runs.
+        wp_add_inline_script(
+            self::SCRIPT_HANDLE,
+            'window.__WPMGR_RUM__=' . $configJson . ';',
+            'before'
+        );
+    }
 
-        // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedScript -- echoed directly from a late (priority 99) wp_head callback; WP's enqueue API cannot inline a script this late (same reasoning as the inline config block above)
-        $collector = '<script async src="' . esc_url($scriptUrl) . '"></script>';
+    /**
+     * Whether WP core's wp_enqueue_script() accepts the WP 6.3+ $args array
+     * form (in_footer/strategy) for the 5th parameter.
+     *
+     * @return bool
+     */
+    private function coreSupportsScriptStrategy(): bool
+    {
+        $version = isset($GLOBALS['wp_version']) && is_string($GLOBALS['wp_version'])
+            ? $GLOBALS['wp_version']
+            : '';
 
-        return $inline_config . $collector;
+        if ($version === '') {
+            // Unknown version: fall back to the universally-safe bool + filter
+            // path rather than risk mis-detecting a footer-forcing coercion.
+            return false;
+        }
+
+        return version_compare($version, '6.3', '>=');
+    }
+
+    /**
+     * Register the WP<6.3 `async` attribute fallback filter (idempotent --
+     * add_filter() with the same static callback is a safe no-op if already
+     * registered for this request).
+     *
+     * @return void
+     */
+    private function ensureAsyncFallbackFilter(): void
+    {
+        if (!function_exists('add_filter')) {
+            return;
+        }
+        add_filter('script_loader_tag', [self::class, 'filterAsyncScriptTag'], 10, 2);
+    }
+
+    /**
+     * script_loader_tag filter: add the `async` attribute to this plugin's
+     * collector script tag on WP < 6.3, where wp_enqueue_script() has no
+     * `strategy` argument.
+     *
+     * Idempotent: if the tag already carries `async` (e.g. because a future
+     * WP version starts adding it independently), the tag is returned
+     * unmodified rather than doubled up.
+     *
+     * @param string $tag    The <script> tag WP core built for $handle.
+     * @param string $handle The script's registered handle.
+     * @return string
+     */
+    public static function filterAsyncScriptTag(string $tag, string $handle): string
+    {
+        if ($handle !== self::SCRIPT_HANDLE) {
+            return $tag;
+        }
+        if (preg_match('/\basync\b/', $tag) === 1) {
+            return $tag;
+        }
+        return (string) preg_replace('/\ssrc=/', ' async src=', $tag, 1);
     }
 
     /**
@@ -231,6 +320,12 @@ final class RumInjector
      * Uses plugins_url() when available (the canonical WP function for
      * plugin assets), falling back to WP_PLUGIN_URL for headless contexts
      * where plugins_url() may not yet be registered.
+     *
+     * Deliberately does NOT append a `?ver=` query string itself (unlike the
+     * pre-enqueue implementation) -- wp_enqueue_script()'s own $ver argument
+     * (see {@see enqueue()}) is the correct place for cache-busting versioning
+     * once the script is enqueued rather than raw-echoed, and appending both
+     * would produce a duplicated/malformed query string.
      *
      * @return string URL, or '' when it cannot be resolved.
      */
@@ -256,22 +351,6 @@ final class RumInjector
             }
         }
 
-        if ($base === '') {
-            return '';
-        }
-
-        // Append the plugin version as a cache-busting query arg. The collector
-        // is served from a static, unversioned filename, so a CDN or browser
-        // cache keyed on the URL would keep serving the previous build after a
-        // plugin update -- a long-lived edge cache can mask a collector fix for
-        // the full length of its TTL. Versioning the URL changes it on every
-        // update, so the edge and the browser refetch the new bytes with no
-        // manual purge.
-        $ver = defined('WPMGR_AGENT_VERSION') ? (string) constant('WPMGR_AGENT_VERSION') : '';
-        if ($ver !== '') {
-            $base .= (strpos($base, '?') === false ? '?' : '&') . 'ver=' . rawurlencode($ver);
-        }
-
         return $base;
     }
 
@@ -286,7 +365,7 @@ final class RumInjector
      * browser CSP violation that would block the page's console with errors.
      *
      * This check uses headers_list(), which reflects whatever headers have
-     * already been queued via header() by the time wp_head runs.
+     * already been queued via header() by the time wp_enqueue_scripts runs.
      *
      * @return bool True when a conflicting CSP is detected.
      */

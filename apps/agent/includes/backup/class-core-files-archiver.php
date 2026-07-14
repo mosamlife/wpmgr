@@ -37,6 +37,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Support\LongRunningJob;
+
 /**
  * Pure-PHP streaming WordPress core archiver.
  *
@@ -144,7 +146,7 @@ final class CoreFilesArchiver
      */
     public function archive(string $outDir, callable $progress): array
     {
-        @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
         @ignore_user_abort(true);
 
         if (!is_dir($outDir) && !wp_mkdir_p($outDir) && !is_dir($outDir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- converted to wp_mkdir_p

@@ -108,6 +108,13 @@ final class Site2faModuleTest extends TestCase
         Functions\when('wp_die')->alias(function ($msg, $title = '', $args = []) {
             throw new \RuntimeException('wp_die called: ' . $msg);
         });
+        // Escape-late pass at every form/profile echo (2026-07 wp.org review
+        // fix). Passthrough here -- these tests exercise the module's routing
+        // logic, not wp_kses()'s own filtering (that is exercised by
+        // Site2faKsesEscapingTest, which asserts the exact allowlist/protocol
+        // args every call site passes).
+        Functions\when('wp_kses')->returnArg();
+        Functions\when('wp_allowed_protocols')->justReturn(['http', 'https', 'mailto']);
     }
 
     protected function tear_down(): void

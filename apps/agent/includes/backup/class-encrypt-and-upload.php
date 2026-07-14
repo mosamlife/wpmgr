@@ -63,6 +63,7 @@ use WPMgr\Agent\Backup\Destinations\DestinationResolver;
 use WPMgr\Agent\Support\AgeCrypto;
 use WPMgr\Agent\Support\BackupTransport;
 use WPMgr\Agent\Support\Blake3;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Three-pass chunk pipeline: encrypt → upload (dedup-aware) → submit manifest.
@@ -194,7 +195,7 @@ final class EncryptAndUpload
     {
         // Lift caller-imposed time/abort guards. We may be running inside an
         // FPM request that has already called fastcgi_finish_request().
-        @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running encrypt pass must not hit max_execution_time; @-guarded, no-op when disabled
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running encrypt pass must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
         // Idempotent no-op for an already-completed cursor.
@@ -399,7 +400,7 @@ final class EncryptAndUpload
      */
     public function uploadChunks(array $encryptCursor, array $resume, callable $progress): array
     {
-        @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running upload pass must not hit max_execution_time; @-guarded, no-op when disabled
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running upload pass must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
         if (!empty($resume['done'])) {
@@ -607,7 +608,7 @@ final class EncryptAndUpload
      */
     public function submitManifest(array $entries, callable $progress): void
     {
-        @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running manifest submit must not hit max_execution_time; @-guarded, no-op when disabled
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running manifest submit must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
         try {

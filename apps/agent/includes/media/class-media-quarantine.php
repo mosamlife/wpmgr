@@ -1,10 +1,19 @@
 <?php
 /**
- * MediaQuarantine: manages the wp-content/wpmgr-quarantine/ directory
- * where isolated (unused) attachment files are temporarily stored.
+ * MediaQuarantine: manages the uploads/wpmgr-quarantine/ directory (legacy:
+ * wp-content/wpmgr-quarantine/) where isolated (unused) attachment files are
+ * temporarily stored.
  *
- * Layout:
- *   wp-content/wpmgr-quarantine/
+ * Base path resolution is uploads-first (wp.org Guideline compliance, see
+ * {@see \WPMgr\Agent\Support\StoragePaths::dataBase()}): the resolved root is
+ * normally wp_upload_dir()['basedir'] . '/wpmgr-quarantine', falling back to
+ * WP_CONTENT_DIR . '/wpmgr-quarantine' only when the uploads directory is
+ * unavailable. Existing self-hosted installs that already have data under the
+ * legacy wp-content location keep working via {@see $legacyRoot} read-fallback
+ * and a one-time rename in {@see ensureQuarantineRoot()}.
+ *
+ * Layout (relative to the resolved root, described above):
+ *   wpmgr-quarantine/
  *     .htaccess              — deny all web access (Apache/LiteSpeed)
  *     index.php              — empty PHP guard
  *     manifests/             — manifest JSONs; NEVER web-reachable (outside media/)
@@ -45,9 +54,13 @@
  * Older manifests stored plain strings; restore/delete fall back gracefully.
  *
  * Security:
- *   - The quarantine root is inside wp-content but outside wp-content/uploads,
- *     so no attachment URLs point into it. Web access is blocked by .htaccess
- *     and an index.php guard.
+ *   - The resolved quarantine root (uploads/wpmgr-quarantine, or the legacy
+ *     wp-content/wpmgr-quarantine fallback) is a directory no attachment URL
+ *     ever points into. Because the uploads-first root sits inside the
+ *     web-served uploads/ tree, direct web access is blocked explicitly by
+ *     the .htaccess + index.php guard files ensureQuarantineRoot() writes on
+ *     first use (Deny all / Require all denied) rather than by directory
+ *     placement alone.
  *   - manifest_id values are 128-bit random hex strings. Callers treat them as
  *     opaque; the class never accepts a manifest_id from untrusted input —
  *     callers receive IDs from beginManifest() or from the manifest list, and
@@ -120,11 +133,15 @@ final class MediaQuarantine
         //   1. Explicit $contentDir passed by the caller (test override or known path).
         //   2. StoragePaths::dataBase('quarantine') — uploads-first; honors relocatable
         //      upload_path + multisite per-site subdirs (wp.org Guideline compliance).
-        //   3. WP_CONTENT_DIR / wpmgr-quarantine — legacy fallback for CLI/headless
-        //      contexts where wp_upload_dir() is unavailable.
-        //   4. ABSPATH + '/wp-content/wpmgr-quarantine' — last-resort fallback.
-        //   5. Unresolved — instance is marked unavailable; writes are blocked before
-        //      any mkdir call so nothing is ever created at the filesystem root.
+        //      Internally falls back to WP_CONTENT_DIR/wpmgr-quarantine when
+        //      wp_upload_dir() is unavailable (CLI/headless contexts) — see
+        //      StoragePaths::dataBase() for that fallback's own definition.
+        //   3. Unresolved — instance is marked unavailable; writes are blocked before
+        //      any mkdir call so nothing is ever created at the filesystem root. In
+        //      a real WordPress boot this is unreachable (WP core always defines
+        //      WP_CONTENT_DIR very early, well before any plugin loads), so there is
+        //      no separate ABSPATH-guessing fallback here — StoragePaths::dataBase()
+        //      already covers every path a normal WP request can take.
         if ($contentDir === '') {
             // Explicit empty string is the "unavailable" signal used by tests and by
             // callers that already know no base could be resolved. Treat as unresolved
@@ -150,9 +167,6 @@ final class MediaQuarantine
                 if ($legacy !== '' && $legacy !== $base) {
                     $this->legacyRoot = $legacy;
                 }
-            } elseif (defined('ABSPATH') && is_string(ABSPATH) && ABSPATH !== '') {
-                $base                   = rtrim(ABSPATH, '/\\') . '/wp-content/wpmgr-quarantine';
-                $this->basePathResolved = true;
             } else {
                 // No safe base available. Set the *Root properties to non-empty strings
                 // so that the readonly scandir callers (quarantinedAttachmentIds,

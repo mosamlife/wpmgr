@@ -321,8 +321,15 @@ final class CloudPanel extends Integration
         }
 
         if (isset($_SERVER['SERVER_NAME']) && is_string($_SERVER['SERVER_NAME']) && $_SERVER['SERVER_NAME'] !== '') {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- cleanHeaderValue() unslashes and sanitizes when WordPress helpers exist.
-            return $this->cleanHeaderValue($_SERVER['SERVER_NAME']);
+            // Unslash then sanitize at the read site (same order/behaviour
+            // cleanHeaderValue() applied, now visible at the point of read).
+            if (function_exists('sanitize_text_field') && function_exists('wp_unslash')) {
+                return trim((string) sanitize_text_field(wp_unslash($_SERVER['SERVER_NAME'])));
+            }
+            // No-WP-context fallback (e.g. a unit test or CLI script that has
+            // not booted WordPress): manually strip control characters since
+            // sanitize_text_field()/wp_unslash() are unavailable to call.
+            return trim((string) preg_replace('/[\r\n\t]+/', '', $_SERVER['SERVER_NAME'])); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- no-WP fallback path; preg_replace strips CR/LF/TAB directly since wp_unslash()/sanitize_text_field() are unavailable
         }
 
         return '';
@@ -460,8 +467,24 @@ final class CloudPanel extends Integration
     private function homeDirectories(): array
     {
         $homes = [];
-        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Local environment path normalized before use; not emitted.
-        foreach ([getenv('HOME'), $_SERVER['HOME'] ?? null] as $home) {
+
+        // Unslash then sanitize at the read site (this value is a local
+        // filesystem path, never emitted to a browser; normalized further by
+        // rtrim()/trim() below).
+        $serverHome = null;
+        if (isset($_SERVER['HOME']) && is_string($_SERVER['HOME'])) {
+            if (function_exists('sanitize_text_field') && function_exists('wp_unslash')) {
+                $serverHome = sanitize_text_field(wp_unslash($_SERVER['HOME']));
+            } else {
+                // No-WP-context fallback (e.g. a unit test or CLI script that
+                // has not booted WordPress): manually strip control
+                // characters since sanitize_text_field()/wp_unslash() are
+                // unavailable to call.
+                $serverHome = preg_replace('/[\r\n\t]+/', '', $_SERVER['HOME']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- no-WP fallback path; preg_replace strips CR/LF/TAB directly since wp_unslash()/sanitize_text_field() are unavailable
+            }
+        }
+
+        foreach ([getenv('HOME'), $serverHome] as $home) {
             if (!is_string($home)) {
                 continue;
             }

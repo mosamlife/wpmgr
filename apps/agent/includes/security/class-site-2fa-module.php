@@ -469,6 +469,102 @@ final class Site2faModule
     }
 
     /**
+     * Explicit wp_kses() tag/attribute allowlist for the 2FA verify/setup/
+     * forced-change interstitials and the WP profile-screen section.
+     *
+     * wp_kses_post() cannot be used for these screens: its default
+     * $allowedposttags omits <form>/<input>/<button>, which every one of
+     * these forms requires in order to render (and submit) at all. This
+     * allowlist is instead scoped to exactly the tags/attributes the module
+     * emits -- grep-verified against renderForcedChangeForm(),
+     * renderInterstitial(), renderSetupScreen() (and every
+     * buildSetup*Html() step it calls), renderProfileSection(), and every
+     * SiteTwoFactorProvider::renderForm() implementation (Totp/Email/
+     * BackupCodes) -- including the inline TOTP QR <svg>/<rect> emitted by
+     * QrEncoder::toSvg(). Each value placed into the markup is still
+     * esc_html()/esc_attr()/esc_url()'d at assembly time (belt-and-
+     * suspenders); wp_kses() here is the visible escape-at-output-boundary
+     * pass the 2026-07 wp.org review asked for.
+     *
+     * @return array<string,array<string,bool>>
+     */
+    private static function allowedFormKses(): array
+    {
+        return [
+            'form'   => ['name' => true, 'id' => true, 'action' => true, 'method' => true],
+            'p'      => ['class' => true, 'style' => true],
+            'label'  => ['for' => true],
+            'br'     => [],
+            'a'      => ['href' => true, 'class' => true, 'download' => true],
+            'h2'     => [],
+            'h3'     => [],
+            'em'     => [],
+            'span'   => ['style' => true],
+            'table'  => ['class' => true, 'style' => true],
+            'tr'     => ['style' => true],
+            'td'     => ['style' => true],
+            'th'     => ['scope' => true],
+            'strong' => [],
+            'small'  => [],
+            'code'   => ['id' => true, 'style' => true],
+            'ol'     => ['style' => true],
+            'ul'     => [],
+            'li'     => [],
+            'div'    => ['style' => true],
+            'button' => ['type' => true, 'name' => true, 'value' => true, 'class' => true],
+            'input'  => [
+                'type'         => true,
+                'name'         => true,
+                'id'           => true,
+                'value'        => true,
+                'class'        => true,
+                'autocomplete' => true,
+                'inputmode'    => true,
+                'pattern'      => true,
+                'maxlength'    => true,
+                'placeholder'  => true,
+                'required'     => true,
+                'autofocus'    => true,
+            ],
+            // The TOTP QR code (QrEncoder::toSvg()) is inline SVG, not user
+            // input: only the secret + issuer name feed it, and both go
+            // through rawurlencode() before QR encoding.
+            'svg'    => [
+                'xmlns'      => true,
+                'width'      => true,
+                'height'     => true,
+                'viewbox'    => true,
+                'role'       => true,
+                'aria-label' => true,
+            ],
+            'rect'   => [
+                'x'      => true,
+                'y'      => true,
+                'width'  => true,
+                'height' => true,
+                'fill'   => true,
+            ],
+        ];
+    }
+
+    /**
+     * URL protocols allowed inside {@see allowedFormKses()} markup, extending
+     * WP's default allowed protocols with `data:`.
+     *
+     * The backup-codes setup step's client-side "Download backup codes" link
+     * (see buildSetupBackupHtml()) is a `data:text/plain,...` URI so the codes
+     * never make a server round-trip; `data:` is not in
+     * wp_allowed_protocols() by default, so without this addition wp_kses()
+     * would strip the scheme from that href and leave a broken link.
+     *
+     * @return string[]
+     */
+    private static function allowedFormProtocols(): array
+    {
+        return array_merge(wp_allowed_protocols(), ['data']);
+    }
+
+    /**
      * Render the forced password-change form and die().
      *
      * @param \WP_User            $user
@@ -516,7 +612,10 @@ final class Site2faModule
         $formHtml .= esc_attr__('Change Password', 'wpmgr-agent') . '">';
         $formHtml .= '</p></form>';
 
-        echo $formHtml; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- fully escaped above; each component escaped with esc_html/esc_attr/esc_url individually
+        // Escape-at-output-boundary: every dynamic value above was already
+        // esc_html()/esc_attr()/esc_url()'d at assembly time; wp_kses() here
+        // is the visible boundary escape (see allowedFormKses()).
+        echo wp_kses($formHtml, self::allowedFormKses(), self::allowedFormProtocols());
 
         if (function_exists('login_footer')) {
             login_footer();
@@ -1584,7 +1683,11 @@ final class Site2faModule
         $formHtml .= '</p>';
         $formHtml .= '</form>';
 
-        echo $formHtml; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- fully escaped above; each component escaped with esc_html/esc_attr/esc_url individually
+        // Escape-at-output-boundary: every dynamic value above was already
+        // esc_html()/esc_attr()/esc_url()'d at assembly time (including the
+        // active provider's own renderForm()); wp_kses() here is the visible
+        // boundary escape (see allowedFormKses()).
+        echo wp_kses($formHtml, self::allowedFormKses(), self::allowedFormProtocols());
 
         if (function_exists('login_footer')) {
             login_footer();
@@ -1657,7 +1760,11 @@ final class Site2faModule
         $formHtml .= '</p>';
         $formHtml .= '</form>';
 
-        echo $formHtml; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- fully escaped above; each component escaped with esc_html/esc_attr/esc_url individually
+        // Escape-at-output-boundary: every dynamic value above (including
+        // every buildSetup*Html() step fragment) was already
+        // esc_html()/esc_attr()/esc_url()'d at assembly time; wp_kses() here
+        // is the visible boundary escape (see allowedFormKses()).
+        echo wp_kses($formHtml, self::allowedFormKses(), self::allowedFormProtocols());
 
         if (function_exists('login_footer')) {
             login_footer();
@@ -1835,7 +1942,13 @@ final class Site2faModule
         $html .= '<p>' . esc_html__('Scan the QR code below with your authenticator app (Google Authenticator, Authy, 1Password, etc.), or enter the secret key manually.', 'wpmgr-agent') . '</p>';
 
         if ($qrSvg !== '') {
-            $html .= '<div style="margin:16px 0;text-align:center">' . $qrSvg . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- QrEncoder::toSvg() generates inline SVG with esc_attr'd attributes; never contains user-supplied data (only the secret + issuer name go through rawurlencode before QR encoding)
+            // QrEncoder::toSvg() generates inline SVG with esc_attr()'d
+            // attributes; it never contains user-supplied data (only the
+            // secret + issuer name go through rawurlencode() before QR
+            // encoding). This fragment is returned up to renderSetupScreen(),
+            // whose echo runs the whole assembled form through wp_kses()
+            // (see allowedFormKses(), which allow-lists svg/rect).
+            $html .= '<div style="margin:16px 0;text-align:center">' . $qrSvg . '</div>';
         } else {
             $html .= '<p>' . esc_html__('QR code unavailable. Please use the manual entry key below.', 'wpmgr-agent') . '</p>';
         }
@@ -1954,7 +2067,11 @@ final class Site2faModule
             $html .= '<p>' . esc_html__('You have the following methods configured:', 'wpmgr-agent') . '</p>';
             $html .= '<ul>';
             foreach ($enabled as $label) {
-                $html .= '<li>' . $label . '</li>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- each $label already esc_html()'d above
+                // $label is already esc_html()'d above; this fragment is
+                // returned up to renderSetupScreen(), whose echo runs the
+                // whole assembled form through wp_kses() (see
+                // allowedFormKses()).
+                $html .= '<li>' . $label . '</li>';
             }
             $html .= '</ul>';
         }
@@ -2308,7 +2425,10 @@ final class Site2faModule
         $html .= '<input type="hidden" name="wpmgr_2fa_profile_nonce" value="' . esc_attr($nonce) . '">';
         $html .= '<input type="hidden" name="wpmgr_2fa_profile_user_id" value="' . esc_attr((string) ((int) $profileUser->ID)) . '">';
 
-        echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- fully escaped above; each component escaped with esc_html/esc_attr/esc_url individually
+        // Escape-at-output-boundary: every dynamic value above was already
+        // esc_html()/esc_attr()'d at assembly time; wp_kses() here is the
+        // visible boundary escape (see allowedFormKses()).
+        echo wp_kses($html, self::allowedFormKses(), self::allowedFormProtocols());
     }
 
     /**

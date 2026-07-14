@@ -78,3 +78,4 @@ Thumbs.db
 # local wp-cli (Plugin Check harness)
 wp-cli.phar
 wp-cli.phar.asc
+docs/security/wporg-t13-*.md

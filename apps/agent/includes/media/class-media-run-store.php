@@ -49,6 +49,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Media;
 
+use WPMgr\Agent\Support\LongRunningJob;
+
 /**
  * Persist + drain a bulk media batch in bounded background chunks.
  */
@@ -96,7 +98,7 @@ final class MediaRunStore
      *
      * 20s stays comfortably under any sane request_terminate_timeout while
      * letting a single run clear ~100+ local restores or ~10-20 S3-bound
-     * optimizes. set_time_limit(0) + ignore_user_abort(true) keep the worker
+     * optimizes. A bounded set_time_limit() + ignore_user_abort(true) keep the worker
      * alive for the full slice.
      */
     private const TIME_BUDGET_SECONDS = 20.0;
@@ -226,7 +228,7 @@ final class MediaRunStore
         // REST request, so it may run for the full time budget. ignore_user_abort
         // keeps it alive even if the loopback spawn_cron connection is dropped.
         if (function_exists('set_time_limit')) {
-            @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running media background run must not hit max_execution_time; @-guarded, no-op when disabled
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running media background run must not hit max_execution_time; @-guarded, no-op when disabled
         }
         if (function_exists('ignore_user_abort')) {
             @ignore_user_abort(true);

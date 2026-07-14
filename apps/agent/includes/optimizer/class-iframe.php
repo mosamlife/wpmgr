@@ -125,7 +125,7 @@ final class IFrame
             . 'f.setAttribute("allowfullscreen","1");f.style.position="absolute";f.style.inset="0";'
             . 'f.style.width="100%";f.style.height="100%";e.innerHTML="";e.appendChild(f);}';
 
-        // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedStylesheet,WordPress.WP.EnqueuedResources.NonEnqueuedScript -- injected into the cache-write output buffer after wp_head has run; WP's enqueue API is inapplicable in this OB callback (see class-rum-injector.php for the canonical note)
+        // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedStylesheet,WordPress.WP.EnqueuedResources.NonEnqueuedScript -- this class only runs from Optimizer::run(), called by CacheWriter's ob_start() callback (class-cache-writer.php) on the fully-rendered HTML string of a cacheable MISS, well after wp_head has already printed; the transform rewrites body <iframe> markup already in the buffered string, so it can only operate as a post-hoc string rewrite -- WP's enqueue API has no queue left to append to at this point
         $assets = '<style data-wpmgr-yt-assets>' . $css . '</style><script data-wpmgr-yt-assets>' . $js . '</script>';
         if (stripos($html, '</head>') !== false) {
             return (string) preg_replace('/<\/head>/i', $assets . '</head>', $html, 1);

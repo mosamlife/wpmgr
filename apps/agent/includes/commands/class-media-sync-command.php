@@ -30,6 +30,7 @@ namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Media\MediaAttachmentRow;
 use WPMgr\Agent\Media\MediaUploader;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Enumerates attachments and pushes them to the CP in <=200-row pages.
@@ -77,7 +78,7 @@ final class MediaSyncCommand implements CommandInterface
         // (the dispatch is bounded by the CP's 120s media commander) and survive
         // a dropped loopback connection. Mirrors the backup/diagnostics paths.
         if (function_exists('set_time_limit')) {
-            @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
         }
         if (function_exists('ignore_user_abort')) {
             @ignore_user_abort(true);
