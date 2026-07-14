@@ -375,10 +375,13 @@ SELECT
     (SELECT MAX(finished_at) FROM backup_snapshots x
      WHERE x.tenant_id = s.tenant_id AND x.site_id = s.id AND x.status = 'failed')
                     AS last_failed_at,
-    -- latest completed size
-    (SELECT total_size FROM backup_snapshots x
-     WHERE x.tenant_id = s.tenant_id AND x.site_id = s.id AND x.status = 'completed'
-     ORDER BY finished_at DESC, x.id DESC LIMIT 1)
+    -- latest completed size (COALESCE: a site with zero completed snapshots
+    -- must not NULL-scan into the non-nullable int64 LatestSizeBytes column)
+    COALESCE(
+        (SELECT total_size FROM backup_snapshots x
+         WHERE x.tenant_id = s.tenant_id AND x.site_id = s.id AND x.status = 'completed'
+         ORDER BY finished_at DESC, x.id DESC LIMIT 1),
+        0)
                     AS latest_size_bytes,
     -- in-flight count (pending or running)
     (SELECT COUNT(*) FROM backup_snapshots x
@@ -407,7 +410,7 @@ type FleetBackupHealthRow struct {
 	SiteUrl         string             `json:"site_url"`
 	LastCompletedAt interface{}        `json:"last_completed_at"`
 	LastFailedAt    interface{}        `json:"last_failed_at"`
-	LatestSizeBytes int64              `json:"latest_size_bytes"`
+	LatestSizeBytes interface{}        `json:"latest_size_bytes"`
 	InFlightCount   int64              `json:"in_flight_count"`
 	ScheduleCadence *string            `json:"schedule_cadence"`
 	NextRunAt       pgtype.Timestamptz `json:"next_run_at"`

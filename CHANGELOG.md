@@ -8,6 +8,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.58] - 2026-07-14
+
+### Fixed
+
+- Bulk update runs no longer trigger a separate WordPress.org update check for every item in the batch (GH #218). The earlier fix that forces a fresh check before deciding "nothing to update" was running once per item, so a batch of N items made N full-catalog checks back to back, each discarding the previous result, which could intermittently leave a genuinely-pending update reported as up to date. The fresh check now runs once per run per component type, so the whole batch shares one guaranteed-fresh result.
+- Plugin and theme updates no longer fail intermittently with "Could not copy file" on hosts whose system temporary directory is shared with PHP session storage and has grown to tens of thousands of stale files (GH #216). The agent now treats a writable-but-pathologically-overloaded default temp directory as unusable and falls back to its own dedicated, clean upload-directory temp location for the unpack step (only when the default is genuinely unhealthy).
+- The fleet backup health endpoint no longer returns a 500 for the whole fleet when a site has never completed a backup (GH #214). A site with no completed snapshot now reports as Unprotected with a zero size instead of failing the aggregation. Affects installs that rely on the instance-wide storage settings and have any new or monitoring-only site.
+- The bulk Update-sites wizard's Plugins/Themes tab badges now count only components that actually have a pending update, matching the list shown below them (GH #217). Previously a tab with components but no available updates showed a nonzero badge that contradicted the "Showing 0 with available updates" text.
+- The hide-login feature no longer blocks front-end AJAX (GH #219). It was 404ing logged-out requests to `admin-ajax.php` (and `admin-post.php`), which many themes and page builders use for front-end forms; those endpoints are now excluded from the block while the actual login and dashboard pages stay hidden.
+- Two-factor sign-in is clearer and slightly more forgiving (GH #215). The "incorrect code" message now explains that a code can only be used once (re-submitting the same code, for example from a password manager, is correctly rejected until your authenticator shows the next one); the accepted time window was widened to plus or minus 60 seconds for minor clock drift; and the code used to finish 2FA setup can no longer be reused for the first login. The single-use replay protection is unchanged.
+
 ## [0.61.57] - 2026-07-14
 
 ### Changed

@@ -12,6 +12,10 @@
     "is_dir",
     "is_writable",
     "opcache_invalidate",
-    "file_put_contents"
+    "file_put_contents",
+    "opendir",
+    "readdir",
+    "closedir",
+    "time"
   ]
 }

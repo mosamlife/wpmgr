@@ -23,6 +23,14 @@
  *   4. The forced check runs at most ONCE per availableVersion() call, never
  *      in a loop, and never at all for an explicit (non-'latest') version
  *      request.
+ *   5. GitHub issue #218 (a regression from #208/#212): resolving MULTIPLE
+ *      items of the same type in one run (mirroring UpdateCommand::
+ *      execute()'s per-item foreach over a bulk `update` task) forces the
+ *      fresh check at most ONCE PER RUN, not once per item — a single-call
+ *      ->once() assertion on one resolution (item 4 above) would not catch
+ *      a regression here; see test_plugin_forced_check_runs_once_per_run_
+ *      not_once_per_item_across_multiple_slugs() below, which resolves two
+ *      different slugs on the SAME runner instance.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -219,6 +227,54 @@ final class UpdateRunnerAvailabilityTest extends TestCase
         $runner = new UpdateRunner();
 
         $this->assertSame('', $runner->availableVersion('plugin', 'akismet/akismet.php', 'latest'));
+    }
+
+    public function test_plugin_forced_check_runs_once_per_run_not_once_per_item_across_multiple_slugs(): void
+    {
+        // GH #218 regression test — MULTI-ITEM proof. UpdateCommand::execute()
+        // calls availableVersion() once PER ITEM in its foreach over a bulk
+        // 'latest' update task; before this fix each call unconditionally
+        // deleted the transient and re-forced a full wp.org round-trip,
+        // discarding the transient the PRIOR item's call had just populated.
+        // A single-call ->once() assertion on ONE resolution (as used by the
+        // sibling tests above) would NOT catch that: it only proves the
+        // check runs at most once for a single availableVersion() call. Here
+        // we resolve TWO different slugs on the SAME runner instance and
+        // still expect wp_update_plugins() to fire only ONCE for the whole
+        // run, with BOTH slugs correctly resolved from that one shared fresh
+        // transient.
+        $transient = false;
+        Functions\expect('wp_update_plugins')
+            ->once()
+            ->andReturnUsing(function () use (&$transient): void {
+                $entryA              = new \stdClass();
+                $entryA->new_version = '5.3.1';
+                $entryB              = new \stdClass();
+                $entryB->new_version = '2.0.1';
+
+                $populated           = new \stdClass();
+                $populated->response = [
+                    'akismet/akismet.php'   => $entryA,
+                    'hello-dolly/hello.php' => $entryB,
+                ];
+                $transient           = $populated;
+            });
+        Functions\when('get_site_transient')->alias(static function (string $key) use (&$transient) {
+            return $key === 'update_plugins' ? $transient : false;
+        });
+
+        $runner = new UpdateRunner();
+
+        $this->assertSame(
+            '5.3.1',
+            $runner->availableVersion('plugin', 'akismet/akismet.php', 'latest'),
+            'the first item in a bulk run must resolve its own pending version'
+        );
+        $this->assertSame(
+            '2.0.1',
+            $runner->availableVersion('plugin', 'hello-dolly/hello.php', 'latest'),
+            'a second item of the SAME type in the SAME run must resolve from the shared fresh transient the first call already populated, without re-forcing a second wp.org round-trip'
+        );
     }
 
     // =========================================================================

@@ -4,9 +4,11 @@
  *
  * Algorithm:
  *   - SHA1 / 6 digits / 30-second period (matches major authenticator apps).
- *   - ±1 step skew window to tolerate clock drift.
+ *   - ±2 step (±60s) skew window to tolerate clock drift (GH #215).
  *   - Single-use step burn: the accepted counter step is stored in user-meta
- *     so the same code cannot be replayed within its validity window.
+ *     so the same code cannot be replayed within its validity window, even
+ *     across the wider skew window; the enrollment activation step is burned
+ *     too, so the setup-confirm code cannot be reused as the first login.
  *   - TOTP secret (160-bit, base32-encoded) stored encrypted in user-meta via
  *     the agent's AgeCrypto (AgeIdentity keypair). Decrypt failure = provider
  *     reports "configured but unusable" (never silent bypass).
@@ -54,8 +56,14 @@ final class TotpProvider implements SiteTwoFactorProvider
     /** Code length in digits. */
     private const DIGITS = 6;
 
-    /** Acceptable window (±N steps on either side of current). */
-    private const WINDOW = 1;
+    /**
+     * Acceptable window (±N steps on either side of current), i.e. ±(N*PERIOD)
+     * seconds of clock-drift tolerance. Widened from 1 to 2 (±60s) to absorb
+     * client clock drift (GH #215); the single-use step burn below still
+     * prevents replay across the wider window — a step is only ever accepted
+     * once regardless of how many steps the window spans.
+     */
+    private const WINDOW = 2;
 
     private AgeIdentity $ageIdentity;
 
@@ -204,6 +212,11 @@ final class TotpProvider implements SiteTwoFactorProvider
             if (hash_equals($this->generateCode($secret, $counter), $code)) {
                 // Code valid: promote pending → active.
                 $this->storeSecretToMeta($user, $secret, self::META_SECRET);
+                // Burn the activation step so the same confirm code cannot be
+                // replayed as the very first login validate() call (the
+                // activation step was previously never recorded in
+                // META_LAST_USED, leaving a one-time replay window).
+                update_user_meta((int) $user->ID, self::META_LAST_USED, $counter);
                 // Clear pending (it is now active).
                 if (function_exists('delete_user_meta')) {
                     delete_user_meta((int) $user->ID, self::META_PENDING_SECRET);
