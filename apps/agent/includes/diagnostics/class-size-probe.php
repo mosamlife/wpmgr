@@ -11,7 +11,7 @@
  *   1. `du -sb <dir>` — O(1) on most Linux/macOS hosts. Gated by
  *      execAvailable() (function_exists + disable_functions + safe_mode +
  *      open_basedir + live smoke test).
- *   2. WP core recurse_dirsize() under set_time_limit(0) with an exclude list
+ *   2. WP core recurse_dirsize() under a bounded set_time_limit() with an exclude list
  *      (own staging dirs, node_modules, vendor, cache layers). Method = "php".
  *   3. Per-dir miss: keep prior value from lastGood, mark result partial=true.
  *
@@ -45,6 +45,8 @@
 declare(strict_types=1);
 
 namespace WPMgr\Agent\Diagnostics;
+
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Stateless collaborator; instances are cheap (no DB hit in __construct).
@@ -126,7 +128,7 @@ final class SizeProbe
         // killed by the push request's max_execution_time (same guard the
         // dedicated cron handler applies in Plugin::runSizeProbe).
         if (function_exists('set_time_limit')) {
-            @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running dirsize walk must not hit max_execution_time; @-guarded, no-op when disabled
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running dirsize walk must not hit max_execution_time; @-guarded, no-op when disabled
         }
 
         try {
@@ -160,7 +162,7 @@ final class SizeProbe
     /**
      * Run the full size computation and persist the result.
      *
-     * Safe to call under a dedicated cron event (set_time_limit(0) is called
+     * Safe to call under a dedicated cron event (a bounded set_time_limit() is called
      * by the handler in Plugin::registerHooks before invoking this). Also safe
      * to call after fastcgi_finish_request — a PHP-FPM kill mid-walk leaves
      * the previously-persisted last-good intact.
@@ -437,7 +439,7 @@ final class SizeProbe
     }
 
     /**
-     * Measure a directory using WP core's recurse_dirsize() with set_time_limit(0)
+     * Measure a directory using WP core's recurse_dirsize() with a bounded set_time_limit()
      * and our exclude list. Called only from the dedicated cron context.
      *
      * @param string $dir Absolute directory path.
@@ -448,10 +450,11 @@ final class SizeProbe
         if ($dir === '' || !is_dir($dir) || !function_exists('recurse_dirsize')) {
             return null;
         }
-        // Ensure there is no time ceiling on this call (caller has already
-        // called set_time_limit(0) in the cron handler, but be explicit).
+        // Ensure there is a generous (not just the request default) time
+        // ceiling on this call (caller has already applied the same bound in the
+        // cron handler, but be explicit).
         if (function_exists('set_time_limit')) {
-            @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running recurse_dirsize walk must not hit max_execution_time; @-guarded, no-op when disabled
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running recurse_dirsize walk must not hit max_execution_time; @-guarded, no-op when disabled
         }
 
         $exclude = $this->excludeList();

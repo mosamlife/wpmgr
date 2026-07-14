@@ -32,6 +32,7 @@ namespace WPMgr\Agent\Backup;
 
 use WPMgr\Agent\Schema;
 use WPMgr\Agent\Support\DebugLog;
+use WPMgr\Agent\Support\LongRunningJob;
 
 final class Watchdog
 {
@@ -279,7 +280,7 @@ final class Watchdog
             return;
         }
         // Lift PHP's per-request caps — this cron worker may run for minutes.
-        @set_time_limit(0); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup dispatch must not hit max_execution_time; @-guarded
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup dispatch must not hit max_execution_time; @-guarded
         @ignore_user_abort(true);
         try {
             (new TaskRunner($params))->run();

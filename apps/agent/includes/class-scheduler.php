@@ -46,7 +46,7 @@ final class Scheduler
      * Reliable-diagnostics fix — dedicated directory-size computation cron hook
      * (daily, offset ~15 minutes before the diagnostics push). Decouples the
      * tree walk from the push request so recurse_dirsize or du runs in its own
-     * request with set_time_limit(0), not inline under the 10s HTTP timeout.
+     * request with a bounded set_time_limit(), not inline under the 10s HTTP timeout.
      * The callback is bound by Plugin::registerHooks; Scheduler only owns the
      * schedule, mirroring HOOK_DIAGNOSTICS.
      */

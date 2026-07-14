@@ -6,11 +6,22 @@
  * cache-write output buffer (Optimizer stage 11), which never ran when WPmgr
  * page caching was off (the norm when a third-party page cache serves the
  * site) or on a third-party cache HIT — so RUM silently collected zero data.
- * RUM is now injected by RumInjector::renderHead(), bound to `wp_head`
- * independent of the optimizer/cache pipeline. These tests cover both the
- * new injector behaviour and the two core regression proofs: (1) a RUM-only
- * config no longer activates the optimizer buffer, and (2) the beacon still
- * renders when the optimizer/page-cache is fully disabled.
+ * RUM is now injected by RumInjector::renderHead(), bound to
+ * `wp_enqueue_scripts` independent of the optimizer/cache pipeline. These
+ * tests cover both the injector behaviour and the two core regression
+ * proofs: (1) a RUM-only config no longer activates the optimizer buffer,
+ * and (2) the beacon still enqueues when the optimizer/page-cache is fully
+ * disabled.
+ *
+ * 2026-07 wp.org review fix: RumInjector used to `echo` raw <script> tags
+ * from a `wp_head` priority-99 callback (with two now-deleted
+ * `NonEnqueuedScript` phpcs:ignore suppressions and a docblock claiming
+ * WP's enqueue API was "inapplicable at this late priority" -- which was
+ * incorrect: `wp_enqueue_scripts` itself fires from inside `wp_head` at
+ * priority 1, before any priority-99 callback). It now calls
+ * wp_enqueue_script() + wp_add_inline_script() instead. These tests mock
+ * both functions (plus wp_version/add_filter for the WP<6.3 async fallback)
+ * and assert on the CALLS made rather than on echoed markup.
  *
  * Covered invariants:
  *   1. rumEnabled defaults to false.
@@ -22,12 +33,12 @@
  *      (RUM no longer rides the optimizer buffer — core regression proof).
  *   7. anyHtmlTransformEnabled() returns false when rumEnabled is off and all others off.
  *   8. PerfConfig round-trips RUM fields through toArray() -> constructor.
- *   9. RumInjector::renderHead(): flag OFF => nothing echoed.
- *  10. RumInjector::renderHead(): flag ON, empty key => nothing echoed.
- *  11. RumInjector::renderHead(): flag ON, empty url => nothing echoed.
- *  12. RumInjector::renderHead(): valid config, anon/GET/200 => echoes inline
- *      config + async external script.
- *  13. RumInjector::renderHead(): emits EXACTLY ONCE across two invocations
+ *   9. RumInjector::renderHead(): flag OFF => nothing enqueued.
+ *  10. RumInjector::renderHead(): flag ON, empty key => nothing enqueued.
+ *  11. RumInjector::renderHead(): flag ON, empty url => nothing enqueued.
+ *  12. RumInjector::renderHead(): valid config, anon/GET/200 => enqueues the
+ *      collector script + inline config, in that dependency order.
+ *  13. RumInjector::renderHead(): enqueues EXACTLY ONCE across two invocations
  *      (static once-per-request guard).
  *  14. RumInjector::renderHead(): sample_rate is clamped to [0,1] in the JSON config.
  *  15. RumInjector::renderHead(): CSP with nonce and without unsafe-inline => skip.
@@ -36,7 +47,7 @@
  *  18. RumInjector::renderHead(): REQUEST_METHOD POST => skip (GET-only guard).
  *  19. RumInjector::renderHead(): is_404() true => skip (200-only guard).
  *  20. RumInjector::renderHead(): post_password_required() true => skip.
- *  21. RumInjector::renderHead(): still emits when the optimizer/page-cache is
+ *  21. RumInjector::renderHead(): still enqueues when the optimizer/page-cache is
  *      fully disabled (core regression proof — RUM no longer requires
  *      CacheConfig->enabled or PerfConfig->anyHtmlTransformEnabled()).
  *  22. Optimizer::isActive() is false when ONLY rumEnabled is on.
@@ -44,8 +55,17 @@
  *      (proves the removed stage 11 is gone; RumInjector is not called from
  *      the pipeline at all).
  *  24. RumInjector::renderHead(): a hostile key/url containing `</script>` and
- *      `<!--<script>` is JSON_HEX_*-escaped so the emitted inline script can
- *      never be broken out of (script-sink hardening regression guard).
+ *      `<!--<script>` is JSON_HEX_*-escaped so the emitted inline script config
+ *      can never be broken out of (script-sink hardening regression guard).
+ *  25. On WP >= 6.3, wp_enqueue_script() is called with the array
+ *      in_footer/strategy=async form and no script_loader_tag filter is
+ *      registered.
+ *  26. On WP < 6.3 (or unknown), wp_enqueue_script() is called with a plain
+ *      bool(false) in_footer and the script_loader_tag async fallback filter
+ *      IS registered.
+ *  27. RumInjector::filterAsyncScriptTag() adds `async` to this plugin's own
+ *      handle's tag, leaves other handles' tags untouched, and does not
+ *      double up `async` if already present.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -76,6 +96,15 @@ final class OptimizerRumTest extends TestCase
     /** @var array<string,mixed> Saved $_SERVER to restore in tear_down(). */
     private array $savedServer = [];
 
+    /** @var list<array{handle:string,src:string,deps:mixed,ver:mixed,args:mixed}> */
+    private array $enqueuedScripts = [];
+
+    /** @var list<array{handle:string,data:string,position:string}> */
+    private array $inlineScripts = [];
+
+    /** @var list<array{hook:string,callback:mixed,priority:int}> */
+    private array $registeredFilters = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -83,6 +112,10 @@ final class OptimizerRumTest extends TestCase
 
         $this->savedServer = $_SERVER;
         $_SERVER['REQUEST_METHOD'] = 'GET';
+
+        $this->enqueuedScripts   = [];
+        $this->inlineScripts     = [];
+        $this->registeredFilters = [];
 
         $this->options = [];
         Functions\when('get_option')->alias(fn ($k, $d = false) => $this->options[$k] ?? $d);
@@ -107,6 +140,23 @@ final class OptimizerRumTest extends TestCase
         Functions\when('home_url')->justReturn('https://example.com');
         Functions\when('get_site_option')->alias(fn ($k, $d = false) => $d);
 
+        Functions\when('wp_enqueue_script')->alias(function ($handle, $src = '', $deps = [], $ver = false, $args = false) {
+            $this->enqueuedScripts[] = ['handle' => $handle, 'src' => $src, 'deps' => $deps, 'ver' => $ver, 'args' => $args];
+            return true;
+        });
+        Functions\when('wp_add_inline_script')->alias(function ($handle, $data, $position = 'after') {
+            $this->inlineScripts[] = ['handle' => $handle, 'data' => $data, 'position' => $position];
+            return true;
+        });
+        Functions\when('add_filter')->alias(function ($hook, $callback, $priority = 10, $acceptedArgs = 1) {
+            $this->registeredFilters[] = ['hook' => $hook, 'callback' => $callback, 'priority' => $priority];
+            return true;
+        });
+
+        // Unset by default: coreSupportsScriptStrategy() must treat an
+        // unknown version as WP<6.3 (the safe default).
+        unset($GLOBALS['wp_version']);
+
         // The once-per-request static guard must not leak between tests.
         $this->resetRumEmitted();
 
@@ -118,6 +168,7 @@ final class OptimizerRumTest extends TestCase
     protected function tear_down(): void
     {
         $_SERVER = $this->savedServer;
+        unset($GLOBALS['wp_version']);
         $this->resetRumEmitted();
         Monkey\tearDown();
         parent::tear_down();
@@ -147,14 +198,35 @@ final class OptimizerRumTest extends TestCase
         ], $overrides));
     }
 
-    /**
-     * @return string Captured echo output of a renderHead() call.
-     */
-    private function render(PerfConfig $config): string
+    private function render(PerfConfig $config): void
     {
-        ob_start();
         (new RumInjector($config))->renderHead();
-        return (string) ob_get_clean();
+    }
+
+    /**
+     * @return array{handle:string,src:string,deps:mixed,ver:mixed,args:mixed}|null
+     */
+    private function enqueuedRumScript(): ?array
+    {
+        foreach ($this->enqueuedScripts as $call) {
+            if ($call['handle'] === RumInjector::SCRIPT_HANDLE) {
+                return $call;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * @return array{handle:string,data:string,position:string}|null
+     */
+    private function inlineRumScript(): ?array
+    {
+        foreach ($this->inlineScripts as $call) {
+            if ($call['handle'] === RumInjector::SCRIPT_HANDLE) {
+                return $call;
+            }
+        }
+        return null;
     }
 
     // ---- PerfConfig coercion tests ----
@@ -249,63 +321,70 @@ final class OptimizerRumTest extends TestCase
 
     public function test_render_noop_when_rum_disabled(): void
     {
-        $c   = new PerfConfig(['rum_enabled' => false]);
-        $out = $this->render($c);
-        $this->assertSame('', $out);
+        $c = new PerfConfig(['rum_enabled' => false]);
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts);
+        $this->assertSame([], $this->inlineScripts);
     }
 
     public function test_render_noop_when_key_empty(): void
     {
-        $c   = $this->makeConfig(['rum_beacon_key' => '']);
-        $out = $this->render($c);
-        $this->assertSame('', $out);
+        $c = $this->makeConfig(['rum_beacon_key' => '']);
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts);
     }
 
     public function test_render_noop_when_url_empty(): void
     {
-        $c   = $this->makeConfig(['rum_ingest_url' => '']);
-        $out = $this->render($c);
-        $this->assertSame('', $out);
+        $c = $this->makeConfig(['rum_ingest_url' => '']);
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts);
     }
 
-    public function test_render_emits_inline_config_and_external_script(): void
+    public function test_render_enqueues_collector_script_and_inline_config(): void
     {
-        $c   = $this->makeConfig();
-        $out = $this->render($c);
+        $c = $this->makeConfig();
+        $this->render($c);
 
-        $this->assertStringContainsString('data-wpmgr-rum-config', $out);
-        $this->assertStringContainsString('window.__WPMGR_RUM__', $out);
-        $this->assertStringContainsString('"TESTBEACONKEY"', $out);
-        $this->assertStringContainsString('cp.example.com', $out);
+        $script = $this->enqueuedRumScript();
+        $this->assertNotNull($script, 'the collector script must be enqueued');
+        $this->assertStringContainsString('wpmgr-rum.min.js', $script['src']);
 
-        $this->assertStringContainsString('wpmgr-rum.min.js', $out);
-        $this->assertStringContainsString('async', $out);
-        $this->assertStringNotContainsString('defer', $out);
+        $inline = $this->inlineRumScript();
+        $this->assertNotNull($inline, 'the config must be added as an inline script');
+        $this->assertSame('before', $inline['position'], 'config must print BEFORE the collector script');
+        $this->assertStringContainsString('window.__WPMGR_RUM__', $inline['data']);
+        $this->assertStringContainsString('"TESTBEACONKEY"', $inline['data']);
+        $this->assertStringContainsString('cp.example.com', $inline['data']);
     }
 
-    public function test_render_emits_exactly_once_across_two_invocations(): void
+    public function test_render_enqueues_exactly_once_across_two_invocations(): void
     {
         $c = $this->makeConfig();
 
-        $out1 = $this->render($c);
-        $out2 = $this->render($c);
+        $this->render($c);
+        $this->render($c);
 
-        $this->assertStringContainsString('data-wpmgr-rum-config', $out1, 'First wp_head invocation must emit the beacon');
-        $this->assertSame('', $out2, 'Second wp_head invocation in the same request must be a no-op');
+        $this->assertCount(1, $this->enqueuedScripts, 'a second wp_enqueue_scripts invocation in the same request must be a no-op');
+        $this->assertCount(1, $this->inlineScripts);
     }
 
     public function test_render_sample_rate_clamped_in_json(): void
     {
-        $c   = $this->makeConfig(['rum_sample_rate' => 2.0]);
-        $out = $this->render($c);
-        $this->assertStringContainsString('"rate":1', $out);
+        $c = $this->makeConfig(['rum_sample_rate' => 2.0]);
+        $this->render($c);
+
+        $inline = $this->inlineRumScript();
+        $this->assertNotNull($inline);
+        $this->assertStringContainsString('"rate":1', $inline['data']);
     }
 
     /**
      * Script-sink hardening regression guard. $key/$url are CP-controlled
-     * today (not reachable by end-user input), but buildSnippet() must apply
-     * JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT to the config
-     * JSON regardless, as defense-in-depth for an inline <script> sink.
+     * today (not reachable by end-user input), but the config JSON must apply
+     * JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT regardless, as
+     * defense-in-depth for an inline <script> sink (wp_add_inline_script()
+     * does not itself escape its $data argument).
      *
      * The hostile payload deliberately contains NO forward slash, so this
      * test exercises the JSON_HEX_* flags specifically rather than PHP's
@@ -317,17 +396,19 @@ final class OptimizerRumTest extends TestCase
         $hostileKey = 'K<!--<script>alert(1)';
         $hostileUrl = 'https://cp.example.com/rum<script>alert(2)';
 
-        $c   = $this->makeConfig([
+        $c = $this->makeConfig([
             'rum_beacon_key' => $hostileKey,
             'rum_ingest_url' => $hostileUrl,
         ]);
-        $out = $this->render($c);
+        $this->render($c);
 
-        $this->assertNotSame('', $out);
+        $inline = $this->inlineRumScript();
+        $this->assertNotNull($inline);
+        $out = $inline['data'];
 
         // No raw "<!--" or "<script" from the hostile payload may survive
-        // into the emitted HTML — both legitimate <script> tags we construct
-        // come from static PHP string literals, never from $key/$url.
+        // into the emitted inline script -- the hostile bytes come only
+        // from $key/$url, never from a static PHP string literal.
         $this->assertStringNotContainsString('<!--', $out, 'Hostile key/url must not inject a raw HTML comment open');
         $this->assertStringNotContainsString('<script>alert', $out, 'Hostile key/url must not inject a raw second <script> tag');
 
@@ -349,9 +430,9 @@ final class OptimizerRumTest extends TestCase
             "Content-Security-Policy: default-src 'self'; script-src 'nonce-abc123'",
         ]);
 
-        $c   = $this->makeConfig();
-        $out = $this->render($c);
-        $this->assertSame('', $out, 'Should skip injection on strict nonce CSP');
+        $c = $this->makeConfig();
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts, 'Should skip injection on strict nonce CSP');
     }
 
     public function test_render_allows_when_csp_has_unsafe_inline(): void
@@ -360,49 +441,49 @@ final class OptimizerRumTest extends TestCase
             "Content-Security-Policy: script-src 'nonce-abc123' 'unsafe-inline'",
         ]);
 
-        $c   = $this->makeConfig();
-        $out = $this->render($c);
-        $this->assertStringContainsString('data-wpmgr-rum-config', $out);
+        $c = $this->makeConfig();
+        $this->render($c);
+        $this->assertNotNull($this->enqueuedRumScript());
     }
 
     public function test_render_skips_when_user_logged_in(): void
     {
         Functions\when('is_user_logged_in')->justReturn(true);
 
-        $c   = $this->makeConfig();
-        $out = $this->render($c);
-        $this->assertSame('', $out, 'Anonymous-only guard: must not beacon a logged-in visitor');
+        $c = $this->makeConfig();
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts, 'Anonymous-only guard: must not beacon a logged-in visitor');
     }
 
     public function test_render_skips_on_post_request(): void
     {
         $_SERVER['REQUEST_METHOD'] = 'POST';
 
-        $c   = $this->makeConfig();
-        $out = $this->render($c);
-        $this->assertSame('', $out, 'GET-only guard: wp_head firing during a POST must not beacon');
+        $c = $this->makeConfig();
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts, 'GET-only guard: firing during a POST must not beacon');
     }
 
     public function test_render_skips_on_404(): void
     {
         Functions\when('is_404')->justReturn(true);
 
-        $c   = $this->makeConfig();
-        $out = $this->render($c);
-        $this->assertSame('', $out, '200-only guard: must not beacon a 404 response');
+        $c = $this->makeConfig();
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts, '200-only guard: must not beacon a 404 response');
     }
 
     public function test_render_skips_on_password_protected(): void
     {
         Functions\when('post_password_required')->justReturn(true);
 
-        $c   = $this->makeConfig();
-        $out = $this->render($c);
-        $this->assertSame('', $out, 'Password-protected content must not beacon');
+        $c = $this->makeConfig();
+        $this->render($c);
+        $this->assertSame([], $this->enqueuedScripts, 'Password-protected content must not beacon');
     }
 
     /**
-     * Core regression proof: the beacon must render even when the optimizer
+     * Core regression proof: the beacon must enqueue even when the optimizer
      * (and therefore any WPMgr page-cache buffer) is completely disabled.
      * This is the GH #154 fix — RUM no longer requires
      * PerfConfig::anyHtmlTransformEnabled() / CacheConfig->enabled to be true.
@@ -417,10 +498,96 @@ final class OptimizerRumTest extends TestCase
         $opt = new Optimizer($c);
         $this->assertFalse($opt->isActive());
 
-        // Yet the wp_head-bound RUM injector still emits.
-        $out = $this->render($c);
-        $this->assertStringContainsString('data-wpmgr-rum-config', $out);
-        $this->assertStringContainsString('wpmgr-rum.min.js', $out);
+        // Yet the wp_enqueue_scripts-bound RUM injector still enqueues.
+        $this->render($c);
+        $this->assertNotNull($this->enqueuedRumScript());
+        $this->assertNotNull($this->inlineRumScript());
+    }
+
+    // ---- WP<6.3 async fallback tests (2026-07 wp.org review fix) ----
+
+    public function test_render_on_wp63_plus_uses_strategy_array_and_registers_no_fallback_filter(): void
+    {
+        $GLOBALS['wp_version'] = '6.4-alpha';
+
+        $c = $this->makeConfig();
+        $this->render($c);
+
+        $script = $this->enqueuedRumScript();
+        $this->assertNotNull($script);
+        $this->assertIsArray($script['args'], 'WP 6.3+ must use the array in_footer/strategy form');
+        $this->assertSame(false, $script['args']['in_footer'] ?? null);
+        $this->assertSame('async', $script['args']['strategy'] ?? null);
+
+        $this->assertSame(
+            [],
+            array_filter($this->registeredFilters, static fn ($f) => $f['hook'] === 'script_loader_tag'),
+            'WP 6.3+ must not need the script_loader_tag async fallback'
+        );
+    }
+
+    public function test_render_on_wp62_uses_bool_infooter_and_registers_fallback_filter(): void
+    {
+        $GLOBALS['wp_version'] = '6.2.2';
+
+        $c = $this->makeConfig();
+        $this->render($c);
+
+        $script = $this->enqueuedRumScript();
+        $this->assertNotNull($script);
+        $this->assertSame(
+            false,
+            $script['args'],
+            'WP<6.3 must pass a plain bool(false) in_footer, never an array (which PHP would coerce to true)'
+        );
+
+        $fallback = array_values(array_filter(
+            $this->registeredFilters,
+            static fn ($f) => $f['hook'] === 'script_loader_tag'
+        ));
+        $this->assertNotEmpty($fallback, 'WP<6.3 must register the script_loader_tag async fallback filter');
+        $this->assertSame([RumInjector::class, 'filterAsyncScriptTag'], $fallback[0]['callback']);
+    }
+
+    public function test_render_with_unknown_wp_version_defaults_to_wp62_safe_path(): void
+    {
+        // $GLOBALS['wp_version'] is unset in set_up(); coreSupportsScriptStrategy()
+        // must default to the safe (bool + filter) path rather than risk the
+        // footer-forcing array coercion on an unrecognized/older core.
+        $c = $this->makeConfig();
+        $this->render($c);
+
+        $script = $this->enqueuedRumScript();
+        $this->assertNotNull($script);
+        $this->assertSame(false, $script['args']);
+    }
+
+    public function test_filter_async_script_tag_adds_async_to_own_handle(): void
+    {
+        $tag = '<script src="https://example.com/wp-content/plugins/wpmgr-agent/assets/wpmgr-rum.min.js?ver=1.0.0" id="wpmgr-rum-js"></script>';
+
+        $out = RumInjector::filterAsyncScriptTag($tag, RumInjector::SCRIPT_HANDLE);
+
+        $this->assertStringContainsString('async src=', $out);
+    }
+
+    public function test_filter_async_script_tag_leaves_other_handles_untouched(): void
+    {
+        $tag = '<script src="https://example.com/some-other-plugin.js" id="some-other-plugin-js"></script>';
+
+        $out = RumInjector::filterAsyncScriptTag($tag, 'some-other-plugin');
+
+        $this->assertSame($tag, $out);
+    }
+
+    public function test_filter_async_script_tag_does_not_double_up_async(): void
+    {
+        $tag = '<script async src="https://example.com/wp-content/plugins/wpmgr-agent/assets/wpmgr-rum.min.js" id="wpmgr-rum-js"></script>';
+
+        $out = RumInjector::filterAsyncScriptTag($tag, RumInjector::SCRIPT_HANDLE);
+
+        $this->assertSame($tag, $out, 'must not double up async if already present (e.g. a future core also adding it)');
+        $this->assertSame(1, substr_count($out, 'async'));
     }
 
     // ---- Optimizer pipeline tests (stage 11 removal) ----
@@ -442,7 +609,7 @@ final class OptimizerRumTest extends TestCase
     {
         // Even if some OTHER transform is also on (so the pipeline actually
         // runs), the RUM marker must never appear in the optimizer's output —
-        // stage 11 is gone; RumInjector is reached only via wp_head now.
+        // stage 11 is gone; RumInjector is reached only via wp_enqueue_scripts now.
         $config = new PerfConfig([
             'cache_link_prefetch' => true,
             'rum_enabled'         => true,

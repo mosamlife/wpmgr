@@ -24,10 +24,10 @@
  * was only ever injected inside THIS cache-writer output buffer — so a site
  * with WPMgr page caching off (the norm when a third-party page cache serves
  * the site), or a page served from a third-party cache HIT, never received the
- * collector at all and RUM silently collected zero data. RUM is now injected
- * by RumInjector::renderHead(), bound directly to the `wp_head` action
- * (Plugin::registerRumHooks()), independent of this optimizer/cache pipeline
- * entirely.
+ * collector at all and RUM silently collected zero data. RUM is now enqueued
+ * by RumInjector::renderHead(), bound directly to the `wp_enqueue_scripts`
+ * action (Plugin::registerRumHooks()), independent of this optimizer/cache
+ * pipeline entirely.
  *
  * Every transform is config-gated and a no-op when its flag is off. The whole
  * run() is wrapped so a transform failure can never corrupt or drop the page —

@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.57] - 2026-07-14
+
+### Changed
+
+- Agent code-quality and WordPress.org-compliance hardening, with no behavior change for managed sites. The real-user-monitoring collector now loads through the standard `wp_enqueue_script` async mechanism instead of a hand-built script tag; the two-factor and forced-password-change login screens now escape their output through `wp_kses` with an explicit tag allowlist at the output boundary; the long-running backup, restore, dump, and media routines now use a bounded 900-second time limit instead of an unlimited one; the CloudPanel integration inline-sanitizes its server-variable reads; and a stale storage-path note and a broken readme link were corrected. These improvements land in both the self-hosted agent and the WordPress.org build (fleet-agent-site-manager), which keeps the operator features (auto-login, updates, backups) and strips only the self-updater.
+
 ## [0.61.56] - 2026-07-11
 
 ### Fixed

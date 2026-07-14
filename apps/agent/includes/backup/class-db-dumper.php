@@ -56,6 +56,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Support\LongRunningJob;
+
 /**
  * Streaming DB dumper. Constructs its OWN mysqli connection from the
  * supplied credentials — does NOT reuse WordPress's global $wpdb so it
@@ -112,7 +114,7 @@ final class DbDumper
      */
     public function dump(string $outPath, array $resume, callable $progress): array
     {
-        @set_time_limit(0); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running DB dump must not hit max_execution_time; @-guarded
+        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running DB dump must not hit max_execution_time; @-guarded
         @ignore_user_abort(true);
 
         if (!empty($resume['done'])) {

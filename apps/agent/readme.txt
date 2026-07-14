@@ -4,7 +4,7 @@ Tags: backup, restore, performance, cache, security
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.1
-Stable tag: 0.36.0
+Stable tag: 0.61.56
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -111,7 +111,7 @@ Every management action (enrollment, diagnostics, heartbeat, backup progress, ca
 
 **Have I Been Pwned (https://haveibeenpwned.com) -- via the WPMgr control plane**
 
-When the optional password-policy breach check is enabled and a site user sets or changes a password, the plugin computes the SHA-1 hash of the candidate password and sends only the first 5 characters of that hash (a k-anonymity range query) to the WPMgr control plane. The full password and the full hash never leave the site. The WPMgr control plane relays the 5-character prefix to the Have I Been Pwned range API (https://haveibeenpwned.com/API/v3#searchingPwnedPasswordsByRange), receives back a list of matching hash suffixes and breach counts, and returns that list to the agent. The agent then checks the remaining 35-character suffix locally to determine whether the password is known-breached. No full password, no full hash, and no user identity is transmitted at any point in this flow. This check is off by default; it runs only when the breach-check policy is active and only at the moment of a password set or change. Data flow: site sends the 5-character prefix to the WPMgr control plane, which forwards the range query to Have I Been Pwned. Have I Been Pwned Terms https://haveibeenpwned.com/Terms -- Have I Been Pwned Privacy https://haveibeenpwned.com/Privacy. The WPMgr control-plane hop is also covered by the terms above: Terms https://manage.wpmgr.app/terms -- Privacy https://manage.wpmgr.app/privacy.
+When the optional password-policy breach check is enabled and a site user sets or changes a password, the plugin computes the SHA-1 hash of the candidate password and sends only the first 5 characters of that hash (a k-anonymity range query) to the WPMgr control plane. The full password and the full hash never leave the site. The WPMgr control plane relays the 5-character prefix to the Have I Been Pwned range API (https://haveibeenpwned.com/API/v3#searchingPwnedPasswordsByRange), receives back a list of matching hash suffixes and breach counts, and returns that list to the agent. The agent then checks the remaining 35-character suffix locally to determine whether the password is known-breached. No full password, no full hash, and no user identity is transmitted at any point in this flow. This check is off by default; it runs only when the breach-check policy is active and only at the moment of a password set or change. Data flow: site sends the 5-character prefix to the WPMgr control plane, which forwards the range query to Have I Been Pwned. Have I Been Pwned Terms https://haveibeenpwned.com/TermsOfUse -- Have I Been Pwned Privacy https://haveibeenpwned.com/Privacy. The WPMgr control-plane hop is also covered by the terms above: Terms https://manage.wpmgr.app/terms -- Privacy https://manage.wpmgr.app/privacy.
 
 **Object storage (configured by your control plane)**
 
@@ -141,9 +141,9 @@ When the "self-host third-party assets" optimization is enabled, the plugin down
 
 Postmark is a transactional email delivery service operated by Wildbit LLC. When Postmark is the configured email transport for this site, the plugin POSTs outgoing email to https://api.postmarkapp.com/email. Data sent: sender address, recipient addresses (To/Cc/Bcc), subject, message body (HTML and/or plain text), and any attachments. Trigger: only when Postmark is selected as the active email provider and an outgoing email is sent from this site. Terms https://postmarkapp.com/terms-of-service -- Privacy https://postmarkapp.com/privacy-policy
 
-**Amazon SES (https://email.{region}.amazonaws.com)**
+**Amazon SES (https://aws.amazon.com/ses/)**
 
-Amazon Simple Email Service (SES) is an email delivery service operated by Amazon Web Services, Inc. When Amazon SES is the configured email transport for this site, the plugin POSTs a raw MIME message to https://email.{region}.amazonaws.com/ (where {region} is the AWS region you configure, e.g. us-east-1). Data sent: sender address, recipient addresses (To/Cc/Bcc), subject, message body (HTML and/or plain text), and any attachments, encoded as a raw MIME message signed with AWS Signature Version 4. Trigger: only when Amazon SES is selected as the active email provider and an outgoing email is sent from this site. Terms https://aws.amazon.com/service-terms/ -- Privacy https://aws.amazon.com/privacy/
+Amazon Simple Email Service (SES) is an email delivery service operated by Amazon Web Services, Inc. When Amazon SES is the configured email transport for this site, the plugin POSTs a raw MIME message to the regional SES API endpoint (https://email.{region}.amazonaws.com/ -- {region} = your configured AWS region, e.g. us-east-1). Data sent: sender address, recipient addresses (To/Cc/Bcc), subject, message body (HTML and/or plain text), and any attachments, encoded as a raw MIME message signed with AWS Signature Version 4. Trigger: only when Amazon SES is selected as the active email provider and an outgoing email is sent from this site. Terms https://aws.amazon.com/service-terms/ -- Privacy https://aws.amazon.com/privacy/
 
 **Mailgun (https://api.mailgun.net, https://api.eu.mailgun.net)**
 

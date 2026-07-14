@@ -78,7 +78,7 @@ final class SpeculationRules
         ];
 
         $json = (string) json_encode($rules, JSON_UNESCAPED_SLASHES);
-        // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedScript -- injected into the cache-write output buffer after wp_head has run; WP's enqueue API is inapplicable in this OB callback (see class-rum-injector.php for the canonical note)
+        // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedScript -- this class only runs from Optimizer::run(), called by CacheWriter's ob_start() callback (class-cache-writer.php) on the fully-rendered HTML string of a cacheable MISS, well after wp_head has already printed; the speculation-rules tag is spliced into the already-buffered string, so it can only operate as a post-hoc string rewrite -- WP's enqueue API has no queue left to append to at this point
         $tag  = '<script type="speculationrules">' . $json . '</script>';
 
         if (stripos($html, '</head>') !== false) {

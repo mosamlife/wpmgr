@@ -119,6 +119,7 @@ use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ErrorMonitor;
 use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
+use WPMgr\Agent\Support\LongRunningJob;
 use WPMgr\Agent\Support\MuPluginInstaller;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateChecker;
@@ -675,12 +676,14 @@ final class Plugin
         // that buffer, so a site with WPMgr page caching OFF (the norm when a
         // third-party page cache serves the site) or served from a third-party
         // cache HIT never received the collector and silently reported zero
-        // data. wp_head fires on every WordPress-rendered response regardless of
-        // any cache path, so binding there is the cache-independent fix. Bound
-        // on `init`; registerRumHooks() reads the perf config once and only adds
-        // the wp_head hook when rumEnabled is on, so an inert site pays just a
-        // single option read. A real method (not a closure) keeps the hook table
-        // serialization-safe.
+        // data. wp_enqueue_scripts fires on every WordPress-rendered response
+        // regardless of any cache path, so binding there is the cache-independent
+        // fix (and, per the 2026-07 wp.org review fix, lets the collector be
+        // enqueued via wp_enqueue_script() instead of echoed). Bound on `init`;
+        // registerRumHooks() reads the perf config once and only adds the
+        // wp_enqueue_scripts hook when rumEnabled is on, so an inert site pays
+        // just a single option read. A real method (not a closure) keeps the
+        // hook table serialization-safe.
         add_action('init', [$this, 'registerRumHooks'], 0);
 
         // DB-classify source-scan cache busting. When a plugin is activated or
@@ -707,9 +710,10 @@ final class Plugin
         add_action(Scheduler::HOOK_DIAGNOSTICS, [$this, 'runDiagnostics']);
 
         // Reliable-diagnostics — dedicated size-refresh cron handler. Runs the
-        // SizeProbe walk under set_time_limit(0) so recurse_dirsize/du has no
-        // ceiling imposed by the push request's max_execution_time. Plugin owns
-        // the binding; Scheduler owns the schedule (additive).
+        // SizeProbe walk under a bounded LongRunningJob::TIME_LIMIT_SECONDS cap
+        // so recurse_dirsize/du has a generous but non-infinite ceiling, well
+        // past the push request's normal max_execution_time. Plugin owns the
+        // binding; Scheduler owns the schedule (additive).
         add_action(Scheduler::HOOK_SIZES, [$this, 'runSizeProbe']);
 
         // Register the pre_recurse_dirsize filter (WP 5.6+) so WP core's own
@@ -1704,16 +1708,17 @@ final class Plugin
             fastcgi_finish_request();
         }
         if (function_exists('set_time_limit')) {
-            @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
         }
         (new SizeProbe())->compute();
     }
 
     /**
      * Cron handler for the dedicated directory-size refresh event
-     * (Scheduler::HOOK_SIZES). Runs set_time_limit(0) so the du / recurse_dirsize
-     * walk has no time ceiling, then delegates to SizeProbe::compute() which
-     * persists the result to the non-autoloaded wp_option wpmgr_agent_dir_sizes.
+     * (Scheduler::HOOK_SIZES). Runs under a bounded LongRunningJob::TIME_LIMIT_SECONDS
+     * cap so the du / recurse_dirsize walk has a generous but non-infinite
+     * ceiling, then delegates to SizeProbe::compute() which persists the
+     * result to the non-autoloaded wp_option wpmgr_agent_dir_sizes.
      * A WP-Cron kill mid-walk leaves the previously-persisted last-good intact
      * (SizeProbe::compute() writes atomically via update_option at the end).
      *
@@ -1727,7 +1732,7 @@ final class Plugin
     public function runSizeProbe(): void
     {
         if (function_exists('set_time_limit')) {
-            @set_time_limit(0); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
         }
         (new SizeProbe())->compute();
     }
@@ -2133,18 +2138,25 @@ final class Plugin
     }
 
     /**
-     * RUM (Real User Monitoring) — bind the wp_head beacon-injection callback.
+     * RUM (Real User Monitoring) — bind the beacon-injection callback.
      *
      * Cache-independent by design (GH #154): the RUM collector used to be
      * injected only inside the page-cache/optimizer output buffer (Optimizer
      * stage 11), so a site with WPMgr page caching OFF — the norm when a
      * third-party page cache serves the site — or served from a third-party
      * cache HIT never got the collector, and rum_rollup stayed empty with no
-     * warning. wp_head is independent of any cache path: it fires on every
-     * WordPress-rendered response, so binding the injector there (at a late
-     * priority so it never blocks other <head> output) fixes the gap. Reads
-     * the perf config once and only registers the wp_head hook when rumEnabled
-     * is on, so an inert site pays just a single option read.
+     * warning. wp_enqueue_scripts is independent of any cache path: it fires
+     * on every WordPress-rendered response, so binding the injector there
+     * fixes the gap.
+     *
+     * 2026-07 wp.org review fix: this used to bind at `wp_head` priority 99
+     * and have RumInjector echo raw <script> tags directly. It is now bound
+     * to `wp_enqueue_scripts` (which WordPress core itself fires from inside
+     * `wp_head` at priority 1 -- i.e. BEFORE the previous priority-99 binding
+     * even ran), and RumInjector uses wp_enqueue_script()/wp_add_inline_script()
+     * instead of an echo. Reads the perf config once and only registers the
+     * hook when rumEnabled is on, so an inert site pays just a single option
+     * read.
      *
      * @return void
      */
@@ -2154,14 +2166,11 @@ final class Plugin
         if (!$config->rumEnabled || !function_exists('add_action')) {
             return;
         }
-        // Priority 99: prints near the end of <head>, faithfully replacing the
-        // former splice-before-</head> position without depending on any output
-        // buffer being open.
-        add_action('wp_head', [$this, 'renderRumHead'], 99);
+        add_action('wp_enqueue_scripts', [$this, 'renderRumHead']);
     }
 
     /**
-     * wp_head callback (priority 99, bound by {@see registerRumHooks()}).
+     * wp_enqueue_scripts callback bound by {@see registerRumHooks()}.
      * Builds a fresh RumInjector (it loads PerfConfig itself) and delegates to
      * its per-request guard chain (anonymous/GET/200/CSP/etc — see
      * RumInjector::renderHead()). A real method (not a closure) keeps the hook

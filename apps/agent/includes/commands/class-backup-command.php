@@ -43,6 +43,7 @@ use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Schema;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\DebugLog;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Accepts a `backup` command from the CP, seeds the task row, and drives
@@ -287,7 +288,7 @@ final class BackupCommand implements CommandInterface
         //   4. The FPM worker runs the backup while the FCGI connection is
         //      closed (fastcgi_finish_request). On hosts where
         //      fastcgi_finish_request does not fully close the upstream
-        //      connection, ignore_user_abort(true) + set_time_limit(0)
+        //      connection, ignore_user_abort(true) + a bounded set_time_limit()
         //      ensure the runner is not killed mid-backup.
         //
         // Note: spawn_cron() is still called even on gated sites as a belt-
@@ -313,7 +314,7 @@ final class BackupCommand implements CommandInterface
                 if (function_exists('fastcgi_finish_request')) {
                     fastcgi_finish_request(); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- intentional early-flush of the FCGI connection so the CP receives the ACK before TaskRunner runs
                 }
-                @set_time_limit(0); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup runner must not hit max_execution_time; @-guarded
+                @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup runner must not hit max_execution_time; @-guarded
                 @ignore_user_abort(true);
                 try {
                     (new TaskRunner($shutdownParams))->run();
