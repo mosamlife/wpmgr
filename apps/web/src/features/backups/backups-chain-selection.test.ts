@@ -22,20 +22,66 @@ function snap(overrides: Partial<BackupSnapshot> & { id: string }): BackupSnapsh
   };
 }
 
-// A 3-member chain: gen 0 (base), gen 1, gen 2 (tip).
+// A 3-member linear chain: gen 0 (base), gen 1 (child of base), gen 2 (tip,
+// child of gen1) — parent_snapshot_id mirrors generation order here so the
+// pre-existing tri-state tests below still hold under the parent-id fix.
 const base = snap({ id: "base", chain_id: "chain-1", generation: 0 });
-const gen1 = snap({ id: "gen1", chain_id: "chain-1", generation: 1 });
-const gen2 = snap({ id: "gen2", chain_id: "chain-1", generation: 2 });
+const gen1 = snap({
+  id: "gen1",
+  chain_id: "chain-1",
+  generation: 1,
+  parent_snapshot_id: "base",
+});
+const gen2 = snap({
+  id: "gen2",
+  chain_id: "chain-1",
+  generation: 2,
+  parent_snapshot_id: "gen1",
+});
 const chain = [base, gen1, gen2];
 
 describe("chainDependents", () => {
-  it("returns every member with a strictly higher generation", () => {
-    expect(chainDependents(chain, base).map((m) => m.id)).toEqual([
-      "gen1",
-      "gen2",
-    ]);
+  it("returns every member whose parent_snapshot_id is this member's id", () => {
+    expect(chainDependents(chain, base).map((m) => m.id)).toEqual(["gen1"]);
     expect(chainDependents(chain, gen1).map((m) => m.id)).toEqual(["gen2"]);
     expect(chainDependents(chain, gen2)).toEqual([]);
+  });
+
+  it("GH #221: a failed same-generation sibling with no real children shows zero dependents", () => {
+    // A chain where a failed attempt and a successful retry share a parent
+    // and generation: A(gen0) -> S(gen1, parent A) + F(gen1, parent A,
+    // failed 0-byte) -> C(gen2, parent S). Only S produced a child; F has
+    // none, even though it shares S's generation.
+    const chainA = snap({ id: "A", chain_id: "chain-2", generation: 0 });
+    const chainS = snap({
+      id: "S",
+      chain_id: "chain-2",
+      generation: 1,
+      parent_snapshot_id: "A",
+      status: "completed",
+    });
+    const chainF = snap({
+      id: "F",
+      chain_id: "chain-2",
+      generation: 1,
+      parent_snapshot_id: "A",
+      status: "failed",
+      total_size: 0,
+    });
+    const chainC = snap({
+      id: "C",
+      chain_id: "chain-2",
+      generation: 2,
+      parent_snapshot_id: "S",
+    });
+    const members = [chainA, chainS, chainF, chainC];
+
+    expect(chainDependents(members, chainF)).toEqual([]);
+    expect(chainDependents(members, chainS).map((m) => m.id)).toEqual(["C"]);
+    expect(chainDependents(members, chainA).map((m) => m.id)).toEqual([
+      "S",
+      "F",
+    ]);
   });
 });
 
@@ -64,15 +110,19 @@ describe("memberCheckState", () => {
   });
 
   it("is indeterminate when selected but a dependent is not", () => {
+    // gen1's direct dependent is gen2 (parent_snapshot_id: "gen1"), not
+    // selected here — base is unaffected since its only direct dependent
+    // (gen1) IS selected.
     const selected = new Set(["base", "gen1"]); // gen2 not selected
-    expect(memberCheckState(selected, chain, base)).toBe("indeterminate");
+    expect(memberCheckState(selected, chain, gen1)).toBe("indeterminate");
+    expect(memberCheckState(selected, chain, base)).toBe("checked");
   });
 
   it("is indeterminate when a dependent is non-terminal and can never be selected", () => {
     const running = { ...gen2, status: "running" as const };
     const members = [base, gen1, running];
     const selected = new Set(["base", "gen1"]);
-    expect(memberCheckState(selected, members, base)).toBe("indeterminate");
+    expect(memberCheckState(selected, members, gen1)).toBe("indeterminate");
   });
 });
 

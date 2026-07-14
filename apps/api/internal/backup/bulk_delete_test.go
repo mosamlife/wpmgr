@@ -39,8 +39,8 @@ func TestBulkDelete_ChainOrphanRefusal(t *testing.T) {
 	tenantID, siteID := uuid.New(), uuid.New()
 	chainID := uuid.New()
 	base := Snapshot{ID: chainID, TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 0}
-	mid := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 1, IsIncremental: true}
-	tip := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 2, IsIncremental: true}
+	mid := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 1, IsIncremental: true, ParentSnapshotID: &base.ID}
+	tip := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 2, IsIncremental: true, ParentSnapshotID: &mid.ID}
 	repo.addChainSnap(chainID, base)
 	repo.addChainSnap(chainID, mid)
 	repo.addChainSnap(chainID, tip)
@@ -78,8 +78,8 @@ func TestBulkDelete_DeleteOrderNewestFirst(t *testing.T) {
 	tenantID, siteID := uuid.New(), uuid.New()
 	chainID := uuid.New()
 	base := Snapshot{ID: chainID, TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 0, TotalSize: 100}
-	gen1 := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 1, IsIncremental: true, TotalSize: 10}
-	gen2 := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 2, IsIncremental: true, TotalSize: 20}
+	gen1 := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 1, IsIncremental: true, TotalSize: 10, ParentSnapshotID: &base.ID}
+	gen2 := Snapshot{ID: uuid.New(), TenantID: tenantID, SiteID: siteID, Status: StatusCompleted, ChainID: &chainID, Generation: 2, IsIncremental: true, TotalSize: 20, ParentSnapshotID: &gen1.ID}
 	repo.addChainSnap(chainID, base)
 	repo.addChainSnap(chainID, gen1)
 	repo.addChainSnap(chainID, gen2)

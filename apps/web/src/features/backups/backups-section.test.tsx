@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import type { Me } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
@@ -114,5 +114,85 @@ describe("BackupsSection — snapshot row navigation (GH #188)", () => {
     const tipLink = await screen.findByRole("link", { name: "View" });
     expect(tipLink).toHaveAttribute("href", "/sites/site-42/backups/snap-incr");
     expect(tipLink.getAttribute("href")).not.toMatch(/^\/backups\//);
+  });
+});
+
+describe("BackupsSection — chain-of-custody dependents (GH #221)", () => {
+  it("shows a failed same-generation sibling with no real children as plain Delete, not '+1 dependents'", async () => {
+    // A(gen0) -> S(gen1, parent A, completed) + F(gen1, parent A, failed
+    // 0-byte) -> C(gen2, parent S). F shares S's generation but produced no
+    // children of its own, so it must show plain "Delete". S is the real
+    // parent of C and must show "Delete + 1 dependents".
+    const chainA = buildSnapshot({
+      id: "snap-a",
+      site_id: "site-42",
+      chain_id: "chain-221",
+      generation: 0,
+      is_incremental: false,
+    });
+    const chainS = buildSnapshot({
+      id: "snap-s",
+      site_id: "site-42",
+      chain_id: "chain-221",
+      generation: 1,
+      is_incremental: true,
+      parent_snapshot_id: "snap-a",
+      status: "completed",
+    });
+    const chainF = buildSnapshot({
+      id: "snap-f",
+      site_id: "site-42",
+      chain_id: "chain-221",
+      generation: 1,
+      is_incremental: true,
+      parent_snapshot_id: "snap-a",
+      status: "failed",
+      total_size: 0,
+    });
+    const chainC = buildSnapshot({
+      id: "snap-c",
+      site_id: "site-42",
+      chain_id: "chain-221",
+      generation: 2,
+      is_incremental: true,
+      parent_snapshot_id: "snap-s",
+    });
+    mockedUseBackups.mockReturnValue(
+      mockQueryResult({ data: [chainA, chainS, chainF, chainC] }),
+    );
+
+    renderWithProviders(<BackupsSection siteId="site-42" canOperate={true} />, {
+      withRouter: true,
+      initialPath: "/sites/site-42/backups",
+    });
+
+    const expandButton = await screen.findByRole("button", {
+      name: "Expand chain members",
+    });
+    fireEvent.click(expandButton);
+
+    const memberRows = screen.getAllByTestId("backup-chain-member");
+    function rowForSnapshot(id: string) {
+      const row = memberRows.find((r) =>
+        within(r)
+          .getByRole("link", { name: "View" })
+          .getAttribute("href")
+          ?.endsWith(`/${id}`),
+      );
+      if (!row) throw new Error(`no member row found for snapshot ${id}`);
+      return row;
+    }
+
+    // F (the failed, 0-byte snapshot) has zero real dependents.
+    expect(
+      within(rowForSnapshot("snap-f")).getByRole("button", { name: "Delete" }),
+    ).toBeInTheDocument();
+
+    // S is the real parent of C and correctly still shows its dependent.
+    expect(
+      within(rowForSnapshot("snap-s")).getByRole("button", {
+        name: "Delete + 1 dependents",
+      }),
+    ).toBeInTheDocument();
   });
 });

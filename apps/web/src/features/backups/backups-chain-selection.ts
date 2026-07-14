@@ -4,22 +4,26 @@ import { isTerminal } from "./use-backups";
 
 // Chain-aware selection helpers for the bulk-delete surface (issue #115).
 //
-// Dependents are locally derivable straight off the list DTO: any member of
-// the same chain_id with a strictly higher `generation` depends on this one
-// (the server refuses to delete a snapshot that still has a later increment —
-// "chain_has_dependents"). These are pure functions so the checkbox
-// tri-state logic and the auto-expand-on-check behaviour are unit-testable
-// without mounting <BackupsSection>.
+// Dependents are locally derivable straight off the list DTO: any member
+// whose `parent_snapshot_id` points at this one is a direct dependent (the
+// server refuses to delete a snapshot that still has a later increment —
+// "chain_has_dependents"). This MUST follow the actual `parent_snapshot_id`
+// chain of custody rather than `generation` — a chain can have multiple
+// members at the same generation (a failed attempt plus a successful retry,
+// both children of the same parent), and a later member's real parent is
+// whichever sibling actually produced it, not every same-or-lower-generation
+// member (GH #221). These are pure functions so the checkbox tri-state logic
+// and the auto-expand-on-check behaviour are unit-testable without mounting
+// <BackupsSection>.
 
 export type CheckState = "checked" | "indeterminate" | "unchecked";
 
-/** All members of `members` with a strictly higher generation than `member`. */
+/** All members of `members` whose `parent_snapshot_id` is `member.id`. */
 export function chainDependents(
   members: readonly BackupSnapshot[],
   member: BackupSnapshot,
 ): BackupSnapshot[] {
-  const gen = member.generation ?? 0;
-  return members.filter((m) => (m.generation ?? 0) > gen);
+  return members.filter((m) => m.parent_snapshot_id === member.id);
 }
 
 /** Terminal-only dependents — the subset eligible to be auto-selected. */
