@@ -59,6 +59,7 @@ require (
 	github.com/pquerna/otp v1.5.0
 	github.com/stripe/stripe-go/v86 v86.1.0
 	github.com/tdewolff/font v0.0.0-20260527091451-1663e68cb8a4
+	golang.org/x/crypto v0.52.0
 	golang.org/x/image v0.41.0
 )
 
@@ -216,7 +217,6 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.25.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect

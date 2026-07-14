@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.60] - 2026-07-14
+
+### Fixed
+
+- Stored secrets (SMTP password, per-site email and destination credentials, object-cache credentials, and two-factor secrets) now survive a restart on a self-hosted install that has not set an explicit secrets-at-rest key. Previously, if `WPMGR_SITE_DEST_AGE_SECRET` was empty, the control plane generated a fresh random encryption key on every boot, so every container restart or reboot orphaned everything encrypted at rest. The most visible symptom was having to re-enter the SMTP password almost daily (and notifications silently stopping until you did); it could also make two-factor sign-in fail after a restart. The key is now derived, stably, from the already-required `WPMGR_SESSION_SECRET` when no explicit key is set, so a self-host works without extra configuration and nothing is lost on restart. The encryption key is still never stored in the database.
+
+  Upgrade note: an install that was running without an explicit `WPMGR_SITE_DEST_AGE_SECRET` (so it was on the old per-boot key) will switch to the new stable derived key on this upgrade. Any secret that was encrypted under the old key needs to be re-entered once (re-save the SMTP password, and re-enroll two-factor from a recovery code if it was set up); after that it persists permanently. Installs that already set an explicit key are unaffected. Control plane only; no agent change.
+
 ## [0.61.59] - 2026-07-14
 
 ### Fixed

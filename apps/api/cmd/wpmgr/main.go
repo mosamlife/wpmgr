@@ -43,6 +43,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/cryptbox"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/dbclean"
@@ -126,6 +127,53 @@ func main() {
 		slog.Error("fatal", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+// ageIdentityDeriveInfo is the fixed HKDF info label used to derive the
+// shared secret-at-rest age identity from the session secret. It exists
+// purely for domain separation (see cryptbox.DeriveAgeIdentity) and must
+// never change once any install has booted with it — changing it would be
+// equivalent to rotating to a brand-new random key and orphan every stored
+// secret, exactly like the bug this derivation fixes.
+const ageIdentityDeriveInfo = "wpmgr-age-identity-v1"
+
+// resolveAgeIdentity picks the control plane's ONE shared secret-at-rest age
+// identity (used for SMTP passwords, per-site email creds, object-cache
+// creds, S3 backup-destination secrets, and TOTP 2FA secrets).
+//
+// Precedence:
+//  1. An explicit, non-empty envKey (WPMGR_SITE_DEST_AGE_SECRET) always wins.
+//     If it is set but fails to parse, this is a hard, fail-fast error in
+//     EVERY mode (dev, self-host, production) — a bad explicit key must
+//     never be silently swallowed in favor of a different, surprising key.
+//  2. Otherwise the identity is deterministically derived from sessionSecret
+//     (the control plane's already-validated, restart-stable
+//     WPMGR_SESSION_SECRET) via cryptbox.DeriveAgeIdentity. This is what
+//     makes a default self-host — which sets no explicit age secret and may
+//     not even set WPMGR_ENV=production — get a STABLE key across restarts
+//     instead of cryptbox.NewAgeIdentity("")'s fresh-random-key-every-boot,
+//     which previously orphaned every stored secret on every restart/reboot.
+//
+// sessionSecret must already be validated (config.ValidateSessionSecret) by
+// the caller so this function never has to re-derive that decision; it is
+// intentionally the exact same value the session store itself uses, so the
+// two can never diverge.
+//
+// It returns the identity plus a short, key-material-free description of
+// which path was taken, suitable for an INFO log line.
+func resolveAgeIdentity(envKey, sessionSecret string) (*cryptbox.AgeIdentity, string, error) {
+	if strings.TrimSpace(envKey) != "" {
+		id, err := cryptbox.NewAgeIdentity(envKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("WPMGR_SITE_DEST_AGE_SECRET is set but invalid: %w", err)
+		}
+		return id, "explicit WPMGR_SITE_DEST_AGE_SECRET", nil
+	}
+	id, err := cryptbox.DeriveAgeIdentity([]byte(sessionSecret), ageIdentityDeriveInfo)
+	if err != nil {
+		return nil, "", fmt.Errorf("derive age identity from session secret: %w", err)
+	}
+	return id, "derived from WPMGR_SESSION_SECRET", nil
 }
 
 // run bootstraps the control plane: migrations, services, River worker pool,
@@ -822,17 +870,20 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// configuration ahead of enabling backups. The registry is bound to the
 	// backup service via SetRegistry below.
 	siteDestRepo := sitedestination.NewRepo(pool)
-	// ADR-045: refuse to boot in production without a stable age secret. An empty
-	// secret yields a fresh ephemeral key on every restart, which would orphan
-	// every stored SMTP password and site-destination secret (mirrors the
-	// session-secret guard).
-	if cfg.IsProduction() && strings.TrimSpace(os.Getenv("WPMGR_SITE_DEST_AGE_SECRET")) == "" {
-		return fmt.Errorf("WPMGR_SITE_DEST_AGE_SECRET is required in production: an empty secret uses an ephemeral key that orphans stored SMTP passwords and site-destination secrets on restart")
-	}
-	siteDestAgeID, err := sitedestination.NewAgeIdentity(os.Getenv("WPMGR_SITE_DEST_AGE_SECRET"))
+	// ADR-045 (and its self-host follow-up fix): resolve the shared
+	// secret-at-rest age identity used for SMTP passwords, per-site email
+	// creds, object-cache creds, S3 backup-destination secrets, and TOTP 2FA
+	// secrets. An explicit WPMGR_SITE_DEST_AGE_SECRET always wins; otherwise
+	// the identity is deterministically derived from the session secret
+	// (already validated non-empty and >=32 bytes above), which is stable
+	// across restarts in every mode — never an ephemeral random key, which
+	// would silently orphan every stored secret on the next restart/reboot.
+	// See resolveAgeIdentity for the full precedence and failure behavior.
+	siteDestAgeID, ageIdentitySource, err := resolveAgeIdentity(os.Getenv("WPMGR_SITE_DEST_AGE_SECRET"), cfg.Auth.SessionSecret)
 	if err != nil {
 		return fmt.Errorf("site destination age identity: %w", err)
 	}
+	logger.Info("secret-at-rest age identity resolved", slog.String("source", ageIdentitySource))
 	siteDestSvc := sitedestination.NewService(siteDestRepo, siteDestAgeID, logger)
 	siteDestH := sitedestination.NewHandler(siteDestSvc, auditRec)
 

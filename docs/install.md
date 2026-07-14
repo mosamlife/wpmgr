@@ -30,7 +30,7 @@ at boot, so the app accepts them on the first try — are:
 | `WPMGR_SESSION_SECRET` | random ≥32-byte string | hard-fails boot if empty/too short |
 | `WPMGR_AGENT_SIGNING_PRIVATE_KEY` | base64-std of the **raw** 64-byte Ed25519 key | signs CP→agent commands; rejected in prod if it's the committed dev key |
 | `WPMGR_AGENT_SIGNING_PUBLIC_KEY` | base64-std of the **raw** 32-byte Ed25519 key | the public half agents verify with |
-| `WPMGR_SITE_DEST_AGE_SECRET` | age X25519 secret (`AGE-SECRET-KEY-1…`) | secrets-at-rest key; **hard-fails prod boot if empty** |
+| `WPMGR_SITE_DEST_AGE_SECRET` | age X25519 secret (`AGE-SECRET-KEY-1…`) | secrets-at-rest key. **Optional**: if empty, a stable key is derived from `WPMGR_SESSION_SECRET` (secrets survive restarts). Set explicitly for an isolated, independently rotatable key |
 
 > The values must be base64 of the **raw key bytes**, not of a PEM file — the old
 > `base64 < key.pem` recipe produced keys the runtime rejected. The generator
