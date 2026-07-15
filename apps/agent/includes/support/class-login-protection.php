@@ -740,8 +740,10 @@ final class LoginProtection
         $requestId = $this->requestId();
         $message   = $this->blockMessage($category);
 
-        // Build safe HTML. htmlspecialchars is used directly so the class works
-        // outside a full WP bootstrap (e.g. mu-plugin early load).
+        // Build safe HTML. htmlspecialchars() is used for the two dynamic
+        // values as belt-and-suspenders escape-early hardening; the visible
+        // escape-at-the-sink pass below (wp_kses()) is what actually makes
+        // this XSS-safe as far as static analysis (and a reviewer) can see.
         $safeMessage   = htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $safeRequestId = htmlspecialchars($requestId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
@@ -751,7 +753,25 @@ final class LoginProtection
             . '<p style="color:#999;font-size:0.85em;">Reference ID: ' . $safeRequestId . '</p>'
             . '</div>';
 
-        wp_die($html, 'Login Blocked', ['response' => 403, 'back_link' => false]); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $html is pre-escaped via htmlspecialchars() on non-user-controlled values; outer markup is static
+        // terminate() is only ever reached via the 'authenticate' filter
+        // (registered by install(), which itself only runs from Plugin::boot()
+        // during a normal request), deep inside a fully-booted WordPress
+        // request -- wp_kses() (loaded very early in wp-settings.php, long
+        // before any filter/hook fires) is therefore always available here,
+        // so the call is unconditional. wp_kses() is called directly as the
+        // wp_die() argument (rather than via an intermediate assignment) so
+        // the escaping is visible at the sink to both static analysis and a
+        // reviewer reading this code.
+        $allowedHtml = [
+            'div'    => ['style' => true],
+            'h2'     => [],
+            'p'      => ['style' => true],
+            'strong' => [],
+            'br'     => [],
+            'code'   => [],
+        ];
+
+        wp_die(wp_kses($html, $allowedHtml), 'Login Blocked', ['response' => 403, 'back_link' => false]);
         // wp_die() never returns.
     }
 

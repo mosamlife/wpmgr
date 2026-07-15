@@ -214,18 +214,18 @@ final class EngineCoreContractTest extends TestCase
 	}
 
 	// -------------------------------------------------------------------------
-	// LOW — wp_cache_errors journal appended in journalError
+	// LOW — wpmgr_object_cache_errors journal appended in journalError
 	// -------------------------------------------------------------------------
 
 	public function test_invalid_key_appends_to_global_errors(): void
 	{
 		// Clear the global errors array.
-		$GLOBALS['wp_object_cache_errors'] = [];
+		$GLOBALS['wpmgr_object_cache_errors'] = [];
 		// Trigger a validation failure.
 		$this->oc->set( '', 'val' );
 		// The global errors array must have been appended to.
-		$errors = $GLOBALS['wp_object_cache_errors'] ?? [];
-		$this->assertNotEmpty( $errors, 'journalError must append to $GLOBALS[wp_object_cache_errors]' );
+		$errors = $GLOBALS['wpmgr_object_cache_errors'] ?? [];
+		$this->assertNotEmpty( $errors, 'journalError must append to $GLOBALS[wpmgr_object_cache_errors]' );
 	}
 
 	// -------------------------------------------------------------------------

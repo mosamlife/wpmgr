@@ -3560,14 +3560,12 @@ class WPMgr_Object_Cache
 		}
 		$this->errorJournal[] = $class;
 
-		// LOW: append to $GLOBALS['wp_object_cache_errors'] for Core compatibility.
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- $wp_object_cache_errors is a WP core global, not plugin-defined
-		if ( ! isset( $GLOBALS['wp_object_cache_errors'] ) || ! is_array( $GLOBALS['wp_object_cache_errors'] ) ) {
-			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- WP core global
-			$GLOBALS['wp_object_cache_errors'] = [];
+		// LOW: append to $GLOBALS['wpmgr_object_cache_errors'], a plugin-owned
+		// diagnostic journal (not a WP core global).
+		if ( ! isset( $GLOBALS['wpmgr_object_cache_errors'] ) || ! is_array( $GLOBALS['wpmgr_object_cache_errors'] ) ) {
+			$GLOBALS['wpmgr_object_cache_errors'] = [];
 		}
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- WP core global
-		$GLOBALS['wp_object_cache_errors'][] = '[' . $class . '] ' . $message;
+		$GLOBALS['wpmgr_object_cache_errors'][] = '[' . $class . '] ' . $message;
 
 		if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
 			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- WP_DEBUG-gated diagnostic

@@ -10,7 +10,10 @@
  * Computation order (first success wins per directory):
  *   1. `du -sb <dir>` — O(1) on most Linux/macOS hosts. Gated by
  *      execAvailable() (function_exists + disable_functions + safe_mode +
- *      open_basedir + live smoke test).
+ *      open_basedir + live smoke test). NEVER used in the wp.org distribution
+ *      build (WPMGR_WPORG_BUILD) — execAvailable() short-circuits to false
+ *      there, so the wp.org build never shells out and always falls through
+ *      to step 2.
  *   2. WP core recurse_dirsize() under a bounded set_time_limit() with an exclude list
  *      (own staging dirs, node_modules, vendor, cache layers). Method = "php".
  *   3. Per-dir miss: keep prior value from lastGood, mark result partial=true.
@@ -504,7 +507,11 @@ final class SizeProbe
      * Hard feature-detect for exec availability. Result is cached in a 1-hour
      * transient so the smoke-test does not run on every cron tick.
      *
-     * Gates: function_exists('exec'), exec not in disable_functions, safe_mode
+     * Gates: the wp.org distribution build (WPMGR_WPORG_BUILD) never shells
+     * out — it always returns false here so compute()/preRecurseDirsizeFilter()
+     * fall through to the pure-PHP recurse_dirsize() path (see phpBytes()).
+     * Self-hosted installs keep the du fast path. When not the wp.org build,
+     * gates: function_exists('exec'), exec not in disable_functions, safe_mode
      * off, live smoke test `exec('echo wpmgrprobe')` === 'wpmgrprobe', and
      * (when open_basedir is set) the ABSPATH is inside open_basedir.
      *
@@ -512,6 +519,14 @@ final class SizeProbe
      */
     private function execAvailable(): bool
     {
+        // The wp.org-distributed build never shells out, full stop — dirsize
+        // computation always uses the pure-PHP recurse_dirsize() fallback
+        // (phpBytes()). This also means the `echo wpmgrprobe` capability
+        // smoke-test in runExecProbe() is never reached in that build.
+        if (defined('WPMGR_WPORG_BUILD') && WPMGR_WPORG_BUILD) {
+            return false;
+        }
+
         // Check transient cache first.
         if (function_exists('get_transient')) {
             $cached = get_transient(self::EXEC_PROBE_KEY);

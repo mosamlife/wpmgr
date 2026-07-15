@@ -220,11 +220,15 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	#   License      -> GPLv2 or later            (§3 recommended posture)
 	#   License URI  -> gnu.org GPL-2.0 URL       (§3)
 	#   Text Domain  -> fleet-agent-site-manager  (matches new slug)
+	#   WPMGR_AGENT_DISPLAY_NAME -> Fleet Agent Site Manager (admin menu/page
+	#   title constant; keeps the wp.org admin screen name consistent with the
+	#   listing identity above instead of showing the self-hosted "WPMgr Agent")
 	sed -i.bak \
 		-e "s|^ \* Plugin Name:.*| * Plugin Name:       Fleet Agent Site Manager|" \
 		-e "s|^ \* License:.*| * License:           GPLv2 or later|" \
 		-e "s|^ \* License URI:.*| * License URI:       https://www.gnu.org/licenses/gpl-2.0.html|" \
 		-e "s|^ \* Text Domain:.*| * Text Domain:       fleet-agent-site-manager|" \
+		-e "s|define('WPMGR_AGENT_DISPLAY_NAME', 'WPMgr Agent');|define('WPMGR_AGENT_DISPLAY_NAME', 'Fleet Agent Site Manager');|" \
 		release/fleet-agent-site-manager/fleet-agent-site-manager.php
 	rm -f release/fleet-agent-site-manager/fleet-agent-site-manager.php.bak
 	# Inject the WPMGR_WPORG_BUILD constant immediately after the WPMGR_AGENT_VERSION

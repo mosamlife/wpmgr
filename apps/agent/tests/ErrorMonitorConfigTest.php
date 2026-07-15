@@ -12,7 +12,11 @@
  *   - loadConfig(): safe defaults when option is absent / corrupt JSON /
  *     out-of-range values; md5 entry validation (junk entries dropped).
  *   - record(): early-return when md5 is in ignore_md5s; early-return when
- *     non-fatal code is outside error_level mask; fatal codes always recorded.
+ *     non-fatal code is outside error_level mask; fatal codes always recorded
+ *     (all three isolated with an explicit enabled=true config).
+ *   - install()/record(): a DISABLED monitor (the default) is a true no-op —
+ *     installs neither PHP error handler, and record() writes no row even
+ *     for a fatal code (2026-07 wp.org review fix).
  *   - SyncErrorConfigCommand::execute(): missing/wrong-type error_level;
  *     optional ignore_md5s; delegates to ErrorMonitor::applyConfig().
  *
@@ -181,6 +185,8 @@ final class ErrorMonitorConfigTest extends TestCase
         $md5     = md5($code . ':' . $file . ':' . $line . ':' . $message);
 
         $encoded = (string) json_encode([
+            // Isolate the ignore-list gate from the enabled gate.
+            'enabled'     => true,
             'error_level' => E_WARNING | E_NOTICE | E_DEPRECATED,
             'ignore_md5s' => [$md5],
         ]);
@@ -227,7 +233,9 @@ final class ErrorMonitorConfigTest extends TestCase
     public function test_record_drops_non_fatal_outside_configured_level(): void
     {
         // Config: only capture E_WARNING; E_NOTICE is outside the mask.
+        // Isolate the level-mask gate from the enabled gate.
         $encoded = (string) json_encode([
+            'enabled'     => true,
             'error_level' => E_WARNING,
             'ignore_md5s' => [],
         ]);
@@ -274,8 +282,10 @@ final class ErrorMonitorConfigTest extends TestCase
 
     public function test_record_always_captures_fatal_regardless_of_level(): void
     {
-        // Config: level = 0 (capture no non-fatals).
+        // Config: level = 0 (capture no non-fatals). Isolate the fatal-bypass
+        // behaviour of the level-mask gate from the enabled gate.
         $encoded = (string) json_encode([
+            'enabled'     => true,
             'error_level' => 0,
             'ignore_md5s' => [],
         ]);
@@ -317,6 +327,70 @@ final class ErrorMonitorConfigTest extends TestCase
         $monitor->record(E_ERROR, 'Fatal error', '/app/crash.php', 1, 'fatal');
 
         $this->assertTrue($wpdbSpy->queryCalled, 'Fatal error must reach the DB UPDATE path');
+        unset($GLOBALS['wpdb']);
+    }
+
+    // -------------------------------------------------------------------------
+    // 2026-07 wp.org review fix — a DISABLED monitor is a true no-op:
+    // install() registers no handler, and record() persists nothing even for
+    // a fatal, mirroring how the mu-plugin trap file is already gated.
+    // -------------------------------------------------------------------------
+
+    public function test_disabled_monitor_installs_no_handler_and_records_nothing(): void
+    {
+        // enabled is absent -> defaults false, same as a fresh activation.
+        $encoded = (string) json_encode([
+            'error_level' => E_WARNING | E_NOTICE | E_DEPRECATED,
+            'ignore_md5s' => [],
+        ]);
+        Functions\when('get_option')->justReturn($encoded);
+
+        $monitor = $this->makeMonitor();
+        $this->assertFalse($monitor->isEnabled(), 'sanity: monitor must be disabled for this test');
+
+        // install() must register NEITHER the error handler NOR the shutdown
+        // handler while disabled.
+        Functions\expect('set_error_handler')->never();
+        Functions\expect('register_shutdown_function')->never();
+
+        $monitor->install();
+
+        // record() must write nothing, even for a fatal code that would
+        // otherwise always bypass the level-mask gate.
+        $wpdbSpy = new class {
+            public string $prefix = 'wp_';
+            public bool $called   = false;
+
+            public function query(string $q)
+            {
+                $this->called = true;
+                return 0;
+            }
+
+            public function prepare(string $q, mixed ...$args): string
+            {
+                return $q;
+            }
+
+            public function insert(string $table, array $data, array $formats): bool
+            {
+                $this->called = true;
+                return true;
+            }
+
+            public function get_var(string $q): int
+            {
+                return 0;
+            }
+        };
+        $GLOBALS['wpdb'] = $wpdbSpy;
+
+        $monitor->record(E_ERROR, 'Fatal error', '/app/crash.php', 1, 'fatal');
+
+        $this->assertFalse(
+            $wpdbSpy->called,
+            'record() must write nothing when the monitor is disabled, even for a fatal code'
+        );
         unset($GLOBALS['wpdb']);
     }
 

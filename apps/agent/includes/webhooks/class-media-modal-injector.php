@@ -8,15 +8,21 @@
  * 740-757):
  *   - wp_prepare_attachment_for_js  -> stuff a `wpmgr_media_optimizer` HTML
  *     attribute into each attachment's Backbone model (only when optimizable).
- *   - admin_footer-upload.php        -> a JS monkey-patch of
- *     wp.media.view.Attachment.prototype.render that mounts the stats panel
- *     `beforebegin` of `.settings` (null-safe via ?.).
+ *   - admin_enqueue_scripts          -> (screen-guarded to upload.php) enqueue
+ *     a JS monkey-patch of wp.media.view.Attachment.prototype.render that
+ *     mounts the stats panel `beforebegin` of `.settings` (null-safe via ?.).
  *   - add_meta_boxes_attachment      -> a `side` meta box echoing the SAME HTML.
  *
  * SECURITY: the injected HTML is built by StatsRenderer (fully escaped). The JS
  * reads the string straight off the model attribute and inserts it — so the
  * escaping done in StatsRenderer is what makes this XSS-safe. The meta box echo
  * is the same escaped string. No nonce needed (read-only render; no actions).
+ *
+ * 2026-07 wp.org review fix: the modal-patch script used to be hand-printed
+ * via a raw `echo '<script>...'` bound to `admin_footer-upload.php`. It is
+ * now registered as a real (inline-only, no external src) script handle via
+ * wp_enqueue_script()/wp_add_inline_script() on `admin_enqueue_scripts`, still
+ * screen-guarded so it loads ONLY on the Media Library (upload.php) screen.
  *
  * @package WPMgr\Agent\Webhooks
  */
@@ -34,6 +40,9 @@ final class MediaModalInjector
 {
     /** The Backbone model attribute carrying the pre-rendered stats HTML. */
     public const MODEL_ATTR = 'wpmgr_media_optimizer';
+
+    /** wp_enqueue_script()/wp_add_inline_script() handle for the modal patch. */
+    public const SCRIPT_HANDLE = 'wpmgr-media-stats';
 
     private StatsRenderer $renderer;
 
@@ -54,7 +63,7 @@ final class MediaModalInjector
         }
         add_filter('wp_prepare_attachment_for_js', [$this, 'injectModelAttribute'], 10, 2);
         add_action('add_meta_boxes_attachment', [$this, 'registerMetaBox']);
-        add_action('admin_footer-upload.php', [$this, 'printModalScript']);
+        add_action('admin_enqueue_scripts', [$this, 'enqueueModalScript']);
     }
 
     /**
@@ -155,19 +164,39 @@ final class MediaModalInjector
     }
 
     /**
-     * admin_footer-upload.php: print the Backbone render monkey-patch that
-     * mounts the stats panel beforebegin of `.settings`. The HTML is read from
-     * the (already-escaped) model attribute.
+     * admin_enqueue_scripts: enqueue (screen-guarded to the Media Library
+     * upload.php screen) the Backbone render monkey-patch that mounts the
+     * stats panel beforebegin of `.settings`. The HTML is read from the
+     * (already-escaped) model attribute.
      *
+     * The script has no external src -- its body is inline-only, so a
+     * src-less handle is registered purely to carry the inline body via
+     * wp_add_inline_script() (the standard WP idiom for inline-only script
+     * content). Declaring the core `media-views` handle as a dependency
+     * guarantees wp.media.view.Attachment exists by the time this callback
+     * runs, regardless of exactly when admin_enqueue_scripts fired relative
+     * to wp_enqueue_media().
+     *
+     * @param string $hook Current admin page hook suffix.
      * @return void
      */
-    public function printModalScript(): void
+    public function enqueueModalScript(string $hook): void
     {
+        if ($hook !== 'upload.php') {
+            return;
+        }
+        if (!function_exists('wp_enqueue_script') || !function_exists('wp_add_inline_script')) {
+            return;
+        }
+
+        $ver = defined('WPMGR_AGENT_VERSION') ? (string) constant('WPMGR_AGENT_VERSION') : false;
+
+        wp_enqueue_script(self::SCRIPT_HANDLE, '', ['media-views'], $ver, true);
+
         $attr = self::MODEL_ATTR;
         // The attribute name is a constant; the HTML it carries was escaped in
-        // StatsRenderer. textContent of the mount class is static.
-        echo '<script id="wpmgr-media-stats-js">'
-            . '((Attachment) => {'
+        // StatsRenderer.
+        $inline = '((Attachment) => {'
             . 'if (!Attachment || !Attachment.prototype) return;'
             . 'const originalRender = Attachment.prototype.render;'
             . 'Attachment.prototype.render = function () {'
@@ -179,8 +208,9 @@ final class MediaModalInjector
             . 'settings.insertAdjacentHTML("beforebegin", "<div class=\"wpmgr-media-stats-panel details\">" + html + "</div>");'
             . '}'
             . '};'
-            . '})(window.wp && wp.media && wp.media.view ? wp.media.view.Attachment : null);'
-            . '</script>';
+            . '})(window.wp && wp.media && wp.media.view ? wp.media.view.Attachment : null);';
+
+        wp_add_inline_script(self::SCRIPT_HANDLE, $inline);
     }
 
     /**

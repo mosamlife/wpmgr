@@ -16,6 +16,10 @@
     "opendir",
     "readdir",
     "closedir",
-    "time"
+    "time",
+    "disk_total_space",
+    "disk_free_space",
+    "set_error_handler",
+    "register_shutdown_function"
   ]
 }

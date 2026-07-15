@@ -834,9 +834,21 @@ final class LoginProtectionTest extends TestCase
         $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 5, failurePerIp: 10);
 
         $wpDieArgs = null;
-        Functions\when('wp_die')->alias(function ($message, $title = '', $args = []) use (&$wpDieArgs) {
-            $wpDieArgs = $args;
+        $wpDieMessage = null;
+        Functions\when('wp_die')->alias(function ($message, $title = '', $args = []) use (&$wpDieArgs, &$wpDieMessage) {
+            $wpDieArgs    = $args;
+            $wpDieMessage = $message;
             throw new \RuntimeException('wp_die called');
+        });
+
+        // The block page is passed through wp_kses() at the sink (2026-07
+        // wp.org review fix). Stub it as a pass-through so this test can
+        // assert wp_kses() was actually invoked with the module's own
+        // allowlist, not just that some HTML reached wp_die().
+        $ksesCalls = [];
+        Functions\when('wp_kses')->alias(function ($html, $allowed = []) use (&$ksesCalls) {
+            $ksesCalls[] = $allowed;
+            return $html;
         });
 
         $lp = $this->makeProtection();
@@ -851,6 +863,10 @@ final class LoginProtectionTest extends TestCase
         $this->assertTrue($threw, 'PROTECT mode must call wp_die() on a block');
         $this->assertIsArray($wpDieArgs);
         $this->assertSame(403, $wpDieArgs['response'] ?? null, 'PROTECT mode must terminate with a 403 response');
+        $this->assertCount(1, $ksesCalls, 'the block page must be passed through wp_kses() exactly once');
+        $this->assertArrayHasKey('div', $ksesCalls[0], 'wp_kses() must be called with the module\'s own allowlist');
+        $this->assertIsString($wpDieMessage);
+        $this->assertStringContainsString('WPMgr Login Protection', $wpDieMessage);
     }
 
     public function test_onauthenticate_audit_mode_never_calls_wp_die_on_block(): void
