@@ -508,6 +508,23 @@ final class Plugin
         // extra on the overwhelmingly common no-marker boot.
         add_action('plugins_loaded', [$this, 'maybeDisarmUpdateWatchdog']);
 
+        // GitHub issue #226 — WP-Cron-INDEPENDENT, throttled reclaim trigger
+        // for the wpmgr-snapshots/ store. Root cause: the only existing
+        // reclaim paths — pruneForSlug() (runs only at the SAME slug's next
+        // capture()) and gcExpired() (bound to the daily wpmgr_snapshot_gc
+        // cron event, or invoked opportunistically at the start of an
+        // `update` command) — both require something else to happen again
+        // later. A fleet that bulk-updates once and goes quiet (or has
+        // DISABLE_WP_CRON set) never sees either again, so a successful
+        // update's own snapshot never gets reclaimed. Binding this to
+        // plugins_loaded fires SnapshotManager::maybeGc() on every request
+        // the agent serves post-enrollment — including the control plane's
+        // own uptime probes and every signed command — so reclaim no longer
+        // depends on cron or another update ever running. maybeGc() itself
+        // throttles the actual sweep to once per hour via a stored option, so
+        // this costs one cheap get_option() read on every other request.
+        add_action('plugins_loaded', [$this, 'maybeGcSnapshots']);
+
         // M14: Guard against Performance Lab disabling our object-cache drop-in.
         // When the OC is configured (config file exists), register the filter so
         // Performance Lab cannot suppress it.
@@ -1304,6 +1321,30 @@ final class Plugin
     public function maybeDisarmUpdateWatchdog(): void
     {
         UpdateWatchdogMarker::disarmHealthy();
+    }
+
+    /**
+     * GitHub issue #226 — WP-Cron-independent GC trigger for the
+     * wpmgr-snapshots/ store. See registerHooks()'s binding comment for the
+     * root cause this closes; SnapshotManager::maybeGc() itself throttles the
+     * actual sweep to once per hour via a stored option and never lets a GC
+     * failure propagate, so this is cheap and safe to call on every request.
+     *
+     * Gated on isEnrolled(), mirroring maybeRescheduleCron() /
+     * maybeDisarmUpdateWatchdog(): a not-yet-enrolled site has never had an
+     * update (and therefore never a snapshot) to reclaim, and skipping keeps
+     * this from perturbing the one-shot auto-deactivate safety window that
+     * only matters while not enrolled.
+     *
+     * @return void
+     */
+    public function maybeGcSnapshots(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+
+        SnapshotManager::maybeGc();
     }
 
     /**

@@ -8,7 +8,11 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.61] - 2026-07-15
+## [0.61.62] - 2026-07-15
+
+### Fixed
+
+- Pre-update rollback snapshots (captured under `wp-content/uploads/wpmgr-snapshots/` before each plugin, theme, or core update so a failed update can be rolled back) are now reliably cleaned up instead of accumulating indefinitely (GH #226). Previously the only cleanup ran either on a WordPress cron event (which never fires on sites with `DISABLE_WP_CRON` or very little traffic) or at the start of the next update, so a site that ran a batch of updates once and then went quiet kept every snapshot forever, quietly consuming disk space and inodes. Cleanup now runs opportunistically on ordinary agent activity (no dependency on WordPress cron), a snapshot whose update succeeded is reclaimed within about an hour once it is safely past the rollback window, and any already-accumulated snapshots are swept on the first request after upgrading. Snapshots are never removed while a rollback could still be needed (a fixed minimum retention protects the control plane's post-update health-probe window and the update-safety watchdog), and a snapshot left behind by a failed rollback is still retained for a few days for manual recovery. Agent only; no change to update, backup, or rollback behavior.
 
 ### Changed
 
