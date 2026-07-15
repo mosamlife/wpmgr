@@ -556,6 +556,20 @@ final class UpdateCommand implements CommandInterface
                     // response — see UpdateWatchdogMarker::arm()'s own doc.
                     if ($type !== 'core' && $status === 'succeeded' && $snapshotId !== '') {
                         $this->armUpdateWatchdog($type, $slug, $snapshotId, $toVersion);
+
+                        // GitHub issue #226 — mark this snapshot's meta as
+                        // succeeded so SnapshotManager::gcExpired()'s two-tier
+                        // reclaim can drop it in ~1h instead of waiting out
+                        // the full 72h orphan backstop (the root cause of
+                        // #226: a successful update never had a reclaim path
+                        // of its own). Orthogonal to arming the watchdog
+                        // above — the snapshot must still exist for that —
+                        // and gated on the exact same "genuinely succeeded AND
+                        // a snapshot was captured" condition. Best-effort:
+                        // markSucceeded() itself never throws; a failure here
+                        // just leaves this snapshot on the unchanged 72h
+                        // backstop.
+                        $this->snapshots->markSucceeded($snapshotId);
                     }
 
                     return $this->result($type, $slug, $fromVersion, $toVersion, $status, $snapshotId, $log);

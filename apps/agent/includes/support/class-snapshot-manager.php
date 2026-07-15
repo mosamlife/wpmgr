@@ -108,6 +108,42 @@ class SnapshotManager
     private const GC_BACKSTOP_TTL_SECONDS = 259200; // 72h
 
     /**
+     * GitHub issue #226 — throttle for maybeGc()'s WP-Cron-independent GC
+     * trigger (see that method's doc for the root cause this closes: a
+     * successful update never had ANY reclaim path of its own, and the two
+     * that exist for other cases — pruneForSlug() at the slug's NEXT
+     * capture(), and gcExpired() from the daily cron event or the
+     * opportunistic call at the start of an `update` command — both require
+     * something else to happen first that a quiet, done-updating site may
+     * never see again). 1 hour bounds the full snapshot-store sweep this
+     * throttle guards to a single cheap get_option() read on every OTHER
+     * request in between, on every request the agent serves (not cron-only).
+     */
+    private const GC_THROTTLE_SECONDS = 3600; // 1h
+
+    /**
+     * GitHub issue #226 — reclaim TTL for a snapshot whose meta has been
+     * explicitly marked succeeded via markSucceeded(). 1 hour is 6x
+     * MIN_KEEP_AGE_SECONDS's 10-minute CP-rollback/watchdog-marker survival
+     * floor and comfortably past the 45-minute stale-task reaper window that
+     * terminalizes a stuck task WITHOUT ever issuing a rollback — by the time
+     * this TTL elapses nothing in the system can still need this snapshot.
+     * Reclaiming a genuinely-succeeded update's snapshot on this short a
+     * cadence, rather than only via the 72h GC_BACKSTOP_TTL_SECONDS meant for
+     * orphans that never resolve on their own, is what closes the root cause
+     * of a fleet that bulk-updates once and goes quiet never reclaiming disk.
+     */
+    private const SUCCESS_RECLAIM_TTL_SECONDS = 3600; // 1h
+
+    /**
+     * GitHub issue #226 — autoloaded option backing maybeGc()'s throttle
+     * timestamp. Autoloaded (not opt-out like the opcache-version option
+     * elsewhere in this codebase) since it is read on effectively every
+     * enrolled request via Plugin::maybeGcSnapshots().
+     */
+    private const OPTION_GC_LAST = 'wpmgr_snapshot_gc_last';
+
+    /**
      * Capture a pre-update snapshot for an item.
      *
      * For plugin/theme the live source directory is copied into the snapshot
@@ -428,6 +464,51 @@ class SnapshotManager
         return $this->deleteDir($dir);
     }
 
+    /**
+     * GitHub issue #226 — stamp a snapshot's meta.json with a terminal-success
+     * marker once UpdateCommand has verified the item it was captured for
+     * genuinely succeeded (see UpdateCommand's call site for the exact gate).
+     * This is the other half of gcExpired()'s two-tier reclaim decision (see
+     * its doc): a marked-succeeded snapshot is reclaimed after only
+     * SUCCESS_RECLAIM_TTL_SECONDS (1h) instead of waiting out the full
+     * GC_BACKSTOP_TTL_SECONDS (72h) meant for orphans that never resolve.
+     *
+     * Best-effort and deliberately never throws: marking succeeded is a
+     * disk-reclaim OPTIMIZATION, not a correctness requirement — a snapshot
+     * whose meta could not be read or rewritten here (a since-vanished
+     * directory, a permissions hiccup, a genuinely unreadable meta.json)
+     * simply falls back to the unchanged 72h backstop, which still reclaims
+     * it eventually. Never call this before the update it documents has been
+     * independently verified complete; it is purely a GC-timing hint.
+     *
+     * @param string $snapshotId Snapshot identifier captured for the apply
+     *                            that just succeeded.
+     * @return void
+     */
+    public function markSucceeded(string $snapshotId): void
+    {
+        try {
+            $base = $this->snapshotBaseDir();
+            if ($base === '') {
+                return;
+            }
+            $dir = $this->resolveSnapshotDir($base, $snapshotId);
+            if ($dir === '') {
+                return;
+            }
+            $meta = $this->readMeta($dir);
+            if ($meta === null) {
+                return;
+            }
+            $meta['succeeded_at'] = time();
+            @file_put_contents($dir . '/meta.json', (string) json_encode($meta));
+        } catch (\Throwable $e) {
+            // Never let a GC-timing optimization affect the caller — the
+            // snapshot simply falls back to the 72h backstop (safe
+            // degradation, see this method's doc).
+        }
+    }
+
     // ---------------------------------------------------------------------
     // M1 (issue #131) — bounded snapshot GC
     // ---------------------------------------------------------------------
@@ -551,20 +632,81 @@ class SnapshotManager
     }
 
     /**
+     * GitHub issue #226 — WP-Cron-INDEPENDENT, throttled trigger for
+     * gcExpired(). Root cause this closes: gcExpired() itself only ever ran
+     * from the `wpmgr_snapshot_gc` daily cron event (dead on
+     * `DISABLE_WP_CRON`/an idle site with no visitor traffic to fire the
+     * wp-cron.php pseudo-cron request) or opportunistically at the START of
+     * an `update` command (never arrives once a fleet stops sending updates)
+     * — so a site that bulk-updates once and goes quiet never reclaimed a
+     * single snapshot again. Plugin::maybeGcSnapshots() binds this to
+     * `plugins_loaded`, so it now runs on EVERY request the agent serves post
+     * enrollment — including the control plane's own uptime probes and every
+     * signed command — independent of cron entirely.
+     *
+     * Throttled to at most once per GC_THROTTLE_SECONDS (1h) via a stored
+     * option, so the actual sweep (a scandir() + per-entry meta read) still
+     * only runs hourly at most; every other request pays just one cheap
+     * get_option() read. The throttle timestamp is stamped BEFORE gcExpired()
+     * runs — not after a successful return — so a slow or failing sweep can
+     * never be retried on every single request within the same hour; the
+     * next throttled attempt an hour later gets a fresh try regardless of
+     * whether this one succeeded.
+     *
+     * gcExpired() itself is wrapped in try/catch: a GC sweep is disk-hygiene
+     * housekeeping, never a condition that may break the request (or hook)
+     * that happened to trigger it.
+     *
+     * `static::gcExpired()`, not `self::gcExpired()` — late static binding
+     * keeps this in the same test-double seam gcExpired() itself already
+     * documents (a subclass overriding gcExpired() is still reached via
+     * `SubclassName::maybeGc()`).
+     *
+     * @return void
+     */
+    public static function maybeGc(): void
+    {
+        if (!function_exists('get_option') || !function_exists('update_option')) {
+            return;
+        }
+
+        $now  = time();
+        $last = (int) get_option(self::OPTION_GC_LAST, 0);
+        if ($now - $last < self::GC_THROTTLE_SECONDS) {
+            return;
+        }
+
+        // Stamp BEFORE running — see this method's doc for why.
+        update_option(self::OPTION_GC_LAST, $now, true);
+
+        try {
+            static::gcExpired();
+        } catch (\Throwable $e) {
+            // A GC sweep failure must never break the caller (a request
+            // handler bound to plugins_loaded); the next throttled attempt
+            // an hour from now gets a fresh try.
+        }
+    }
+
+    /**
      * GC cron backstop — sweep the WHOLE snapshot store for any directory
-     * older than GC_BACKSTOP_TTL_SECONDS, independent of the per-slug prune
-     * in pruneForSlug() above. This is the safety net for what count-based
-     * pruning structurally cannot reach: a snapshot whose slug was later
-     * uninstalled or renamed (so it will never again be the target of a
-     * capture() call that would prune it), a core meta-only snapshot from a
-     * repeatedly-requested `snapshot=true` core update, or a crashed capture
-     * that left a directory behind with no readable meta.json at all.
+     * eligible under {@see shouldReclaim()}'s two-tier age decision,
+     * independent of the per-slug prune in pruneForSlug() above. This is the
+     * safety net for what count-based pruning structurally cannot reach: a
+     * snapshot whose slug was later uninstalled or renamed (so it will never
+     * again be the target of a capture() call that would prune it), a core
+     * meta-only snapshot from a repeatedly-requested `snapshot=true` core
+     * update, or a crashed capture that left a directory behind with no
+     * readable meta.json at all.
      * ALSO sweeps stranded `.wpmgr-old-<snap_id>` asides left behind in the
      * live plugins/themes tree (F4, issue #131 final-hardening review) — see
      * sweepStrandedAsides()'s doc. Bound to the `wpmgr_snapshot_gc` recurring
-     * cron event — see scheduleGc() — AND invoked opportunistically from the
-     * start of the `update` command (C, same review) since WP-Cron is
-     * unreliable on `DISABLE_WP_CRON`/dormant sites.
+     * cron event — see scheduleGc() — invoked opportunistically from the
+     * start of the `update` command (C, issue #131 final-hardening review),
+     * and (GitHub issue #226) driven WP-Cron-independently on every enrolled
+     * request via maybeGc() above, since WP-Cron is unreliable on
+     * `DISABLE_WP_CRON`/dormant sites and a quiet fleet may never send
+     * another `update` command either.
      *
      * `new static()`, not `new self()` — late static binding lets a test
      * double subclass override strandedAsideRoots() and still exercise this
@@ -594,7 +736,7 @@ class SnapshotManager
                         continue;
                     }
                     $age = $now - $mgr->snapshotAge($dir);
-                    if ($age < self::GC_BACKSTOP_TTL_SECONDS) {
+                    if (!$mgr->shouldReclaim($age, $mgr->isMarkedSucceeded($dir))) {
                         continue;
                     }
                     $mgr->deleteDir($dir);
@@ -603,6 +745,62 @@ class SnapshotManager
         }
 
         $mgr->sweepStrandedAsides();
+    }
+
+    /**
+     * GitHub issue #226 — the two-tier reclaim decision every snapshot
+     * directory in gcExpired()'s sweep is evaluated against:
+     *
+     *   - DEFENSIVE FLOOR: never reclaim anything younger than
+     *     MIN_KEEP_AGE_SECONDS (10 min), regardless of the success marker.
+     *     This is belt-and-suspenders — SUCCESS_RECLAIM_TTL_SECONDS (1h) is
+     *     already 6x this floor, so it can never actually fire under real
+     *     constant values today — but it is kept as an explicit, independent
+     *     check rather than relying on that ordering never changing.
+     *   - Marked succeeded (see markSucceeded()): reclaimed once older than
+     *     SUCCESS_RECLAIM_TTL_SECONDS (1h) — comfortably past both the CP's
+     *     post-update health-probe/rollback window and the 45-minute
+     *     stale-task reaper that terminalizes a stuck task without ever
+     *     issuing a rollback.
+     *   - Unmarked (an in-progress apply that never reached the success
+     *     marker, a failed-rollback broken-site snapshot kept for manual
+     *     recovery, an orphan/renamed slug, a core meta-only snapshot, or a
+     *     crashed capture with no readable meta at all): reclaimed only once
+     *     older than the original GC_BACKSTOP_TTL_SECONDS (72h), unchanged.
+     *
+     * Isolated into its own pure method (rather than inlined in gcExpired()'s
+     * loop) so this exact decision matrix is independently testable.
+     *
+     * @param int  $age       Snapshot age in seconds (see snapshotAge()).
+     * @param bool $succeeded Whether the snapshot's meta carries a
+     *                         markSucceeded() marker.
+     * @return bool True when this snapshot should be reclaimed now.
+     */
+    private function shouldReclaim(int $age, bool $succeeded): bool
+    {
+        if ($age < self::MIN_KEEP_AGE_SECONDS) {
+            return false;
+        }
+
+        $threshold = $succeeded ? self::SUCCESS_RECLAIM_TTL_SECONDS : self::GC_BACKSTOP_TTL_SECONDS;
+
+        return $age >= $threshold;
+    }
+
+    /**
+     * Whether a snapshot directory's meta.json carries a markSucceeded()
+     * marker. Returns false (never reclaim early) for a directory whose meta
+     * is missing or unreadable — exactly the crashed-capture / orphan cases
+     * gcExpired()'s unmarked branch (the unchanged 72h backstop) exists for.
+     *
+     * @param string $dir Absolute snapshot directory.
+     * @return bool
+     */
+    private function isMarkedSucceeded(string $dir): bool
+    {
+        $meta = $this->readMeta($dir);
+
+        return $meta !== null && isset($meta['succeeded_at']);
     }
 
     /**

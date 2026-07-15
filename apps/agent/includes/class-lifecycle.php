@@ -465,6 +465,7 @@ final class Lifecycle
             ObjectCacheConfig::OPTION_CONFIG_HASH,
             ObjectCacheHeartbeat::OPTION_STATS,
             'wpmgr_oc_outage_marker', // WPMgr_Object_Cache::FAILBACK_MARKER_OPTION (H5).
+            'wpmgr_snapshot_gc_last', // SnapshotManager::OPTION_GC_LAST (GH #226 GC throttle stamp).
         ];
     }
 }

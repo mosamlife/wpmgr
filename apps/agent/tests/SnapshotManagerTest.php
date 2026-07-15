@@ -53,6 +53,14 @@ final class SnapshotManagerTest extends TestCase
     /** wpmgr-snapshots store under $uploadsDir. */
     private string $snapshotsBase = '';
 
+    /**
+     * In-memory wp-option store backing get_option()/update_option() —
+     * needed for maybeGc()'s throttle timestamp (GitHub issue #226).
+     *
+     * @var array<string,mixed>
+     */
+    private array $options = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -64,6 +72,15 @@ final class SnapshotManagerTest extends TestCase
         mkdir($this->uploadsDir, 0755, true);
 
         Functions\when('wp_upload_dir')->justReturn(['basedir' => $this->uploadsDir]);
+
+        $this->options = [];
+        Functions\when('get_option')->alias(function ($name, $default = false) {
+            return $this->options[$name] ?? $default;
+        });
+        Functions\when('update_option')->alias(function ($name, $value) {
+            $this->options[$name] = $value;
+            return true;
+        });
     }
 
     protected function tear_down(): void
@@ -144,18 +161,27 @@ final class SnapshotManagerTest extends TestCase
     /**
      * Seed a snapshot directory directly on disk (bypassing capture()) with a
      * controlled created_at, for prune/GC tests that need precise ages.
+     *
+     * @param bool $succeeded GitHub issue #226 — when true, stamps the same
+     *                         `succeeded_at` marker markSucceeded() writes, so
+     *                         GC tests can seed a two-tier scenario directly
+     *                         without a real capture()/markSucceeded() round trip.
      */
-    private function seedSnapshot(string $type, string $slug, int $createdAt): string
+    private function seedSnapshot(string $type, string $slug, int $createdAt, bool $succeeded = false): string
     {
         $id  = 'snap_' . bin2hex(random_bytes(12));
         $dir = $this->snapshotsBase . '/' . $id;
         mkdir($dir, 0755, true);
-        file_put_contents($dir . '/meta.json', (string) json_encode([
+        $meta = [
             'type'         => $type,
             'slug'         => $slug,
             'from_version' => '1.0',
             'created_at'   => $createdAt,
-        ]));
+        ];
+        if ($succeeded) {
+            $meta['succeeded_at'] = $createdAt;
+        }
+        file_put_contents($dir . '/meta.json', (string) json_encode($meta));
 
         return $id;
     }
@@ -396,6 +422,247 @@ final class SnapshotManagerTest extends TestCase
             is_dir($this->snapshotsBase . '/' . $r['snapshot_id']),
             'M1: a freshly captured snapshot must never be swept by the GC backstop — it is nowhere near the 72h TTL'
         );
+    }
+
+    // =========================================================================
+    // GitHub issue #226 — maybeGc() WP-Cron-independent throttled trigger
+    // =========================================================================
+
+    /**
+     * A SnapshotManager subclass whose gcExpired() is fully test-controlled
+     * (a static call counter, optionally throwing) — exercised via maybeGc()'s
+     * `static::gcExpired()` late-static-binding call, exactly the same seam
+     * gcExpired() itself already documents for strandedAsideRoots() overrides.
+     *
+     * @param bool $throws Whether gcExpired() should throw after recording the call.
+     * @return class-string<SnapshotManager>
+     */
+    private function managerClassCountingGcExpiredCalls(bool $throws = false): string
+    {
+        $class = new class extends SnapshotManager {
+            public static int $calls  = 0;
+            public static bool $throws = false;
+
+            public static function gcExpired(): void
+            {
+                self::$calls++;
+                if (self::$throws) {
+                    throw new \RuntimeException('simulated GC sweep failure');
+                }
+            }
+        };
+        $class::$calls  = 0;
+        $class::$throws = $throws;
+
+        return get_class($class);
+    }
+
+    public function test_maybe_gc_runs_on_first_call_skips_within_the_throttle_window_and_runs_again_after_it_elapses(): void
+    {
+        $now = 1_700_000_000;
+        Functions\when('time')->alias(static function () use (&$now) {
+            return $now;
+        });
+
+        $class = $this->managerClassCountingGcExpiredCalls();
+
+        // No stored throttle timestamp yet -> must run.
+        $class::maybeGc();
+        $this->assertSame(1, $class::$calls, 'the first ever call must run gcExpired()');
+
+        // Well within GC_THROTTLE_SECONDS (1h) -> must be skipped.
+        $now += 10;
+        $class::maybeGc();
+        $this->assertSame(1, $class::$calls, 'a call within the throttle window must skip gcExpired()');
+
+        // Past GC_THROTTLE_SECONDS since the stamped timestamp -> must run again.
+        $now += 3700;
+        $class::maybeGc();
+        $this->assertSame(2, $class::$calls, 'a call past the throttle window must run gcExpired() again');
+    }
+
+    public function test_maybe_gc_stamps_the_throttle_before_running_so_a_throwing_gc_expired_never_propagates_or_retries_every_request(): void
+    {
+        $class = $this->managerClassCountingGcExpiredCalls(throws: true);
+
+        // Must not throw even though the wrapped gcExpired() itself throws.
+        $class::maybeGc();
+        $this->assertSame(1, $class::$calls);
+
+        // Calling again immediately must NOT re-invoke gcExpired() — proving
+        // the throttle timestamp was stamped BEFORE gcExpired() ran (not only
+        // after a successful return), so a failing sweep cannot be retried on
+        // every single subsequent request within the same throttle window.
+        $class::maybeGc();
+        $this->assertSame(
+            1,
+            $class::$calls,
+            'the throttle timestamp must be stamped before gcExpired() runs, so a throw does not cause a retry on every request'
+        );
+    }
+
+    // =========================================================================
+    // GitHub issue #226 — two-tier reclaim decision (shouldReclaim()) + gcExpired()
+    // =========================================================================
+
+    public function test_should_reclaim_two_tier_decision_matrix(): void
+    {
+        $mgr    = new SnapshotManager();
+        $method = new \ReflectionMethod(SnapshotManager::class, 'shouldReclaim');
+
+        // Succeeded-marked, aged 90 minutes: past the 1h SUCCESS_RECLAIM_TTL_SECONDS -> reclaim.
+        $this->assertTrue(
+            (bool) $method->invoke($mgr, 90 * 60, true),
+            'a succeeded-marked snapshot past 1h must be reclaimed'
+        );
+
+        // Unmarked, aged 90 minutes: well under the 72h backstop -> kept.
+        $this->assertFalse(
+            (bool) $method->invoke($mgr, 90 * 60, false),
+            'an UNMARKED snapshot under 72h must be kept — only a success marker shortens the TTL'
+        );
+
+        // Unmarked, aged past 72h -> reclaim (the unchanged orphan backstop).
+        $this->assertTrue(
+            (bool) $method->invoke($mgr, 73 * 3600, false),
+            'an unmarked snapshot past the 72h backstop must still be reclaimed'
+        );
+
+        // Succeeded-marked but younger than MIN_KEEP_AGE_SECONDS (600s) — the
+        // defensive floor must override the marker regardless.
+        $this->assertFalse(
+            (bool) $method->invoke($mgr, 599, true),
+            'DEFENSIVE FLOOR: nothing younger than MIN_KEEP_AGE_SECONDS may ever be reclaimed, even when marked succeeded'
+        );
+
+        // Unmarked and younger than MIN_KEEP_AGE_SECONDS -> kept either way.
+        $this->assertFalse(
+            (bool) $method->invoke($mgr, 599, false),
+            'an unmarked snapshot younger than MIN_KEEP_AGE_SECONDS must also be kept'
+        );
+    }
+
+    public function test_gc_expired_reclaims_an_unmarked_snapshot_past_72h_and_a_succeeded_marked_snapshot_past_1h_with_no_wp_cron_involved(): void
+    {
+        $mgr = $this->managerWithNoLiveSource();
+        $mgr->capture('plugin', 'warmup/warmup.php', '1.0');
+
+        $unmarkedOrphan = $this->seedSnapshot('plugin', 'orphan/orphan.php', time() - (73 * 3600));
+        $succeededOld   = $this->seedSnapshot('plugin', 'done/done.php', time() - (61 * 60), true);
+
+        // Direct call, exactly as Plugin::maybeGcSnapshots() -> SnapshotManager::maybeGc()
+        // reaches it on plugins_loaded — no WP-Cron event involved at all.
+        SnapshotManager::gcExpired();
+
+        $this->assertFalse(
+            is_dir($this->snapshotsBase . '/' . $unmarkedOrphan),
+            'GitHub issue #226: an unmarked orphan past the 72h backstop must reclaim via a direct gcExpired() call, cron or not'
+        );
+        $this->assertFalse(
+            is_dir($this->snapshotsBase . '/' . $succeededOld),
+            'GitHub issue #226: a succeeded-marked snapshot past the 1h SUCCESS_RECLAIM_TTL must reclaim long before the 72h backstop'
+        );
+    }
+
+    public function test_gc_expired_keeps_a_succeeded_marked_snapshot_younger_than_the_min_keep_age_floor(): void
+    {
+        $mgr = $this->managerWithNoLiveSource();
+        $mgr->capture('plugin', 'warmup/warmup.php', '1.0');
+
+        // Marked succeeded but only 5 minutes old — well under
+        // MIN_KEEP_AGE_SECONDS (600s) — must survive regardless of the marker.
+        $freshSucceeded = $this->seedSnapshot('plugin', 'fresh/fresh.php', time() - 300, true);
+
+        SnapshotManager::gcExpired();
+
+        $this->assertTrue(
+            is_dir($this->snapshotsBase . '/' . $freshSucceeded),
+            'a snapshot younger than MIN_KEEP_AGE_SECONDS must never be reclaimed, even when marked succeeded'
+        );
+    }
+
+    public function test_gc_expired_keeps_an_unmarked_snapshot_between_1h_and_72h_but_reclaims_a_succeeded_marked_one_at_the_same_age(): void
+    {
+        $mgr = $this->managerWithNoLiveSource();
+        $mgr->capture('plugin', 'warmup/warmup.php', '1.0');
+
+        $ageSeconds       = 90 * 60; // 90 minutes: past the 1h SUCCESS TTL, well under the 72h backstop.
+        $unmarkedSameAge  = $this->seedSnapshot('plugin', 'still-unresolved/still-unresolved.php', time() - $ageSeconds);
+        $succeededSameAge = $this->seedSnapshot('plugin', 'succeeded/succeeded.php', time() - $ageSeconds, true);
+
+        SnapshotManager::gcExpired();
+
+        $this->assertTrue(
+            is_dir($this->snapshotsBase . '/' . $unmarkedSameAge),
+            'an UNMARKED snapshot aged 90 minutes (< 72h) must be KEPT'
+        );
+        $this->assertFalse(
+            is_dir($this->snapshotsBase . '/' . $succeededSameAge),
+            'a succeeded-MARKED snapshot at the SAME 90-minute age must be RECLAIMED — only the marker changes the outcome'
+        );
+    }
+
+    // =========================================================================
+    // GitHub issue #226 — markSucceeded()
+    // =========================================================================
+
+    public function test_mark_succeeded_stamps_the_meta_and_the_snapshot_then_reclaims_after_the_success_ttl(): void
+    {
+        $source = $this->root . '/plugins-src/demo-succeed';
+        mkdir($source, 0755, true);
+        file_put_contents($source . '/demo-succeed.php', "<?php\n// v1\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $source;
+
+        $snap = $mgr->capture('plugin', 'demo-succeed/demo-succeed.php', '1.0');
+        $this->assertNotSame('', $snap['snapshot_id']);
+
+        $dir = $this->snapshotsBase . '/' . $snap['snapshot_id'];
+
+        $mgr->markSucceeded($snap['snapshot_id']);
+
+        $meta = json_decode((string) file_get_contents($dir . '/meta.json'), true);
+        $this->assertArrayHasKey('succeeded_at', $meta, 'markSucceeded() must stamp the meta with a success marker');
+
+        // Age the snapshot past SUCCESS_RECLAIM_TTL_SECONDS (1h) but still
+        // well under GC_BACKSTOP_TTL_SECONDS (72h) — only the success
+        // marker's shorter TTL can explain an early reclaim here.
+        $meta['created_at'] = time() - (90 * 60);
+        file_put_contents($dir . '/meta.json', (string) json_encode($meta));
+
+        SnapshotManager::gcExpired();
+
+        $this->assertFalse(
+            is_dir($dir),
+            'a snapshot marked succeeded by markSucceeded() must reclaim ~1h after success, long before the 72h backstop'
+        );
+    }
+
+    public function test_mark_succeeded_is_a_safe_no_op_for_an_unknown_snapshot_id(): void
+    {
+        $mgr = $this->managerWithNoLiveSource();
+        $mgr->capture('plugin', 'warmup/warmup.php', '1.0'); // force the store to exist
+
+        // Must not throw even though this snapshot id was never captured.
+        $mgr->markSucceeded('snap_' . bin2hex(random_bytes(12)));
+
+        $this->addToAssertionCount(1);
+    }
+
+    public function test_mark_succeeded_is_a_safe_no_op_when_the_snapshot_store_is_unavailable(): void
+    {
+        $mgr = new class extends SnapshotManager {
+            protected function snapshotBaseDir(): string
+            {
+                return '';
+            }
+        };
+
+        // Must not throw even though the store cannot be resolved at all.
+        $mgr->markSucceeded('snap_' . bin2hex(random_bytes(12)));
+
+        $this->addToAssertionCount(1);
     }
 
     // =========================================================================

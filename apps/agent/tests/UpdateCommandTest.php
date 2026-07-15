@@ -179,6 +179,11 @@ final class UpdateCommandTest extends TestCase
             public array $restored = [];
             /** Whether restore() should report success. */
             public bool $restoreSucceeds = true;
+            /**
+             * @var array<int,string> Snapshot ids passed to markSucceeded()
+             *     (GitHub issue #226).
+             */
+            public array $markedSucceeded = [];
 
             public function capture(string $type, string $slug, string $fromVersion): array
             {
@@ -203,6 +208,11 @@ final class UpdateCommandTest extends TestCase
                 // always report the snapshot present so that gate never blocks
                 // a restore this test otherwise expects.
                 return true;
+            }
+
+            public function markSucceeded(string $snapshotId): void
+            {
+                $this->markedSucceeded[] = $snapshotId;
             }
         };
     }
@@ -1693,6 +1703,11 @@ final class UpdateCommandTest extends TestCase
         return new class ($live, $payload) extends SnapshotManager {
             /** @var array<int,array{string,string,string}> */
             public array $captured = [];
+            /**
+             * @var array<int,string> Snapshot ids passed to markSucceeded()
+             *     (GitHub issue #226).
+             */
+            public array $markedSucceeded = [];
 
             public function __construct(private string $live, private string $payload)
             {
@@ -1718,6 +1733,11 @@ final class UpdateCommandTest extends TestCase
             public function resolvedRestorePaths(string $type, string $slug, string $snapshotId): array
             {
                 return ['live' => $this->live, 'payload' => $this->payload];
+            }
+
+            public function markSucceeded(string $snapshotId): void
+            {
+                $this->markedSucceeded[] = $snapshotId;
             }
         };
     }
@@ -1894,6 +1914,131 @@ final class UpdateCommandTest extends TestCase
 
         $this->assertSame('succeeded', $out['results'][0]['status'], 'the apply itself must still succeed');
         $this->assertFileDoesNotExist($this->watchdogMarkerFile(), 'an unresolvable live/payload path must silently skip arming, never affect the response');
+    }
+
+    // =========================================================================
+    // GitHub issue #226 — SnapshotManager::markSucceeded() call site
+    // =========================================================================
+
+    public function test_successful_apply_marks_the_snapshot_succeeded_without_disturbing_the_watchdog_arm(): void
+    {
+        $this->cleanWatchdogMarker();
+
+        $live    = sys_get_temp_dir() . '/wpmgr-mark-succeeded-live-' . bin2hex(random_bytes(6));
+        $payload = sys_get_temp_dir() . '/wpmgr-mark-succeeded-payload-' . bin2hex(random_bytes(6));
+        mkdir($live, 0755, true);
+        mkdir($payload, 0755, true);
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php'] = '5.0';
+
+        $snapshots = $this->spySnapshotsWithResolvedPaths($live, $payload);
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+
+        $this->assertSame('succeeded', $out['results'][0]['status']);
+        $this->assertSame(
+            ['snap_test123'],
+            $snapshots->markedSucceeded,
+            'GitHub issue #226: a genuinely successful apply must mark its captured snapshot succeeded'
+        );
+        $this->assertFileExists(
+            $this->watchdogMarkerFile(),
+            'marking the snapshot succeeded must not disturb the watchdog arm — the snapshot must still exist for it'
+        );
+
+        $this->rrmdir($live);
+        $this->rrmdir($payload);
+        $this->cleanWatchdogMarker();
+    }
+
+    public function test_failed_apply_does_not_mark_the_snapshot_succeeded(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php']  = '5.0';
+        $runner->available['plugin:akismet/akismet.php'] = '5.3';
+        $runner->applySucceeds                           = false;
+
+        $snapshots = $this->spySnapshots();
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => 'latest']],
+        ]);
+
+        $this->assertSame('failed', $out['results'][0]['status']);
+        $this->assertSame(
+            [],
+            $snapshots->markedSucceeded,
+            'GitHub issue #226: a failed apply must never mark its snapshot succeeded'
+        );
+    }
+
+    public function test_incomplete_apply_that_is_auto_restored_does_not_mark_the_snapshot_succeeded(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:kadence-blocks/kadence-blocks.php']  = '3.2.0';
+        $runner->available['plugin:kadence-blocks/kadence-blocks.php'] = '3.2.1';
+        $runner->completeOverride['plugin:kadence-blocks/kadence-blocks.php'] = false;
+
+        $snapshots = $this->spySnapshots();
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'kadence-blocks/kadence-blocks.php', 'version' => 'latest']],
+        ]);
+
+        $this->assertSame('failed', $out['results'][0]['status']);
+        $this->assertSame(
+            [],
+            $snapshots->markedSucceeded,
+            'GitHub issue #226: an incomplete apply that gets auto-restored must never mark its snapshot succeeded'
+        );
+    }
+
+    public function test_up_to_date_apply_does_not_mark_any_snapshot_succeeded(): void
+    {
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:akismet/akismet.php']  = '5.3';
+        $runner->available['plugin:akismet/akismet.php'] = '5.3';
+
+        $snapshots = $this->spySnapshots();
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'snapshot' => true,
+            'items'    => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'version' => '5.3']],
+        ]);
+
+        $this->assertSame('up_to_date', $out['results'][0]['status']);
+        $this->assertSame(
+            [],
+            $snapshots->markedSucceeded,
+            'an up_to_date item (nothing changed) must never mark a snapshot succeeded'
+        );
+    }
+
+    public function test_core_succeeded_apply_never_marks_a_snapshot_succeeded(): void
+    {
+        // D3: core has no directory-level snapshot at all — snapshotId is
+        // always '' for core — so there is nothing for markSucceeded() to
+        // mark, even on a genuinely successful core apply.
+        $runner = $this->spyRunner();
+        $runner->versions['core:core']  = '6.4';
+        $runner->available['core:core'] = '6.5';
+
+        $snapshots = $this->spySnapshots();
+        $cmd       = new UpdateCommand($snapshots, $runner);
+
+        $out = $cmd->execute([], [
+            'items' => [['type' => 'core', 'slug' => '', 'version' => 'latest']],
+        ]);
+
+        $this->assertSame('succeeded', $out['results'][0]['status']);
+        $this->assertSame([], $snapshots->markedSucceeded);
     }
 
     /** Recursive delete used only for test fixture cleanup. */
