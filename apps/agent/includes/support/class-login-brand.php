@@ -14,8 +14,10 @@
  *   - All three fields are treated as UNTRUSTED input from the control plane.
  *   - Validated on store (applyConfig): URLs checked with esc_url_raw + scheme
  *     in {http, https} only — javascript:, data:, ftp:, etc. are rejected.
- *   - Escaped on output (install hooks): esc_url() for URLs, wp_kses() with a
- *     narrow allowlist for message, esc_url() again inside the <style> block.
+ *   - Escaped on output (install hooks): esc_url() for URLs (the logo URL is
+ *     re-escaped again where it is embedded in the wp_add_inline_style() rule
+ *     enqueued via login_enqueue_scripts — see enqueueLogoStyle()), wp_kses()
+ *     with a narrow allowlist for the message.
  *   - A missing or corrupt option NEVER fatals the login page — every path is
  *     guarded by try/catch and function_exists checks.
  *   - Hooks are bound ONLY when at least one field is non-empty, so a

@@ -63,6 +63,10 @@ No. The command dispatcher accepts only a closed, named allow-list of commands. 
 
 All outbound communication stops immediately. The control plane can no longer reach the site. Stored cache files, optimized images, and backup archives that already exist on disk are not automatically removed -- you can clean those up from the plugin settings before deactivating.
 
+= Does this plugin write any files outside its own folder? =
+
+Only for a small number of opt-in features that must run before WordPress finishes loading your other plugins. Enabling the optional Error Monitor writes a small must-use plugin file to wp-content/mu-plugins/ so a fatal error occurring during another plugin's own startup can still be captured and reported; disabling Error Monitor removes that file. The same pattern is used by the optional login-protection ban list (a must-use file that enforces IP and user-agent blocks at the earliest possible point in the request) and by the automatic update-safety watchdog, which is present only while a site is connected to a control plane (it is inert until an update is actually in progress, and is removed if you disconnect the site). No other feature writes outside the plugin's own folder.
+
 == Privacy / What data is sent and where ==
 
 This plugin does not contact any external service until you connect it to a WPMgr control plane that you choose. There is NO default endpoint; the agent is inert until you supply a control-plane URL and complete a one-time, signed enrollment from that control plane. The control plane is software you point the agent at -- either a WPMgr instance you self-host, or the hosted WPMgr service at https://manage.wpmgr.app.
@@ -179,6 +183,60 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
+The entries below summarize the notable changes since 0.36.0. This project ships frequently; not every intermediate patch release is listed here individually -- see the full history at https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md.
+
+= 0.61.57 =
+* Hardening: code-quality and WordPress.org-compliance pass with no behavior change for connected sites. Real User Monitoring now loads through the standard wp_enqueue_script mechanism instead of a hand-built script tag; the two-factor and forced-password-change login screens now escape their output through an explicit allowed-tag list at the point of output; the long-running backup, restore, database-dump, and media routines now use a bounded time limit instead of an unbounded one; and the CloudPanel cache-purge integration sanitizes its server-variable reads inline.
+
+= 0.61.39 =
+* Fix: the agent no longer overwrites a working Real User Monitoring beacon key with an empty one. Pairs with a control-plane-side recovery mechanism for the rare case where the one-time key delivery to a site was lost.
+
+= 0.61.33 =
+* Fix: backup destinations other than managed control-plane storage now actually work. A local folder on the server or your own S3-compatible bucket could be configured and pass "Test connection", but every backup still went to managed storage because the destination was never threaded through to the backup run. Full and incremental backups now run to the configured destination, and restore reads back from it; for your own bucket, the control plane signs the uploads and downloads so the site never holds your storage credentials.
+
+= 0.61.27 =
+* Fix: Real User Monitoring now collects data on sites running any page cache, not just this plugin's own. The measurement script was previously injected only inside this plugin's own cache output; it is now injected on a standard WordPress hook during page generation, so a dedicated caching plugin (or no page cache at all) no longer silently prevents Real User Monitoring data from arriving.
+
+= 0.61.25 =
+* Fix: restore no longer silently drops plugin or theme files whose path happens to contain a reserved WordPress drop-in name (for example a plugin's own class-db.php), which could leave a restored site broken while the restore reported success. Restore now matches its protected-file exclusions by exact path instead of substring, so only genuine root drop-ins (db.php, object-cache.php, advanced-cache.php) and config files are held back.
+
+= 0.57.0 / 0.56.0 =
+* New: vulnerability scanning. Installed plugins, themes, and the WordPress core version are checked against the free Wordfence Intelligence vulnerability feed; findings (severity, affected version range, fixed version, CVE references) surface in the control-plane dashboard, with one-click remediation using the existing update flow. Requires a free Wordfence Intelligence API key configured on the control plane; the agent reports inventory only, the feed lookup itself runs on the control plane.
+
+= 0.55.0 =
+* New: guided two-factor enrollment for WordPress site users. Once an operator requires 2FA for a role, an affected user is walked through scanning a QR code, confirming a code, and saving backup codes on their next login, or can start enrollment proactively from their profile.
+
+= 0.54.0 =
+* New: optional, per-site, off-by-default two-factor authentication for WordPress site users (authenticator app, email one-time code, or single-use backup codes), with configurable grace logins and a remember-this-device window. The control plane and wp-config recovery constants can always bypass enforcement so an operator can never be locked out.
+* New: optional password policy (minimum strength, known-compromised-password check via a privacy-preserving prefix query, reuse blocking, optional expiry with a forced-change screen).
+* New: optional hide-login, which moves the login page to a secret per-site address.
+
+= 0.53.0 =
+* New: file integrity monitoring. A scan (core files, wp-content, or the full install) compares file hashes against WordPress.org checksums for core and wp.org-hosted plugins/themes, and against a learned per-site baseline for everything else, flagging changed, added, or removed files.
+
+= 0.52.0 =
+* New: per-site WordPress hardening controls (disable file editor, restrict XML-RPC and the REST API, restrict login identifiers, force unique nicknames, block author-archive user enumeration, force SSL/HSTS, disable directory browsing, block PHP execution in uploads, protect system files). All off by default and opt-in; the control plane and the operator's own session can never be locked out by a hardening rule.
+* New: a per-site ban list (blocked IP addresses, CIDR ranges, and user agents), enforced at early boot and at the web-server config level. Broad blocks covering all addresses or private/loopback ranges are rejected, and the operator's own allow-listed IPs always bypass the ban.
+
+= 0.51.2 =
+* Changed: the early-boot security helpers (the login-protection ban list and the Error Monitor fatal-error trap) are now installed as a must-use plugin file only once you turn on the corresponding feature, and removed again the moment you turn it off or deactivate the plugin. A freshly activated agent writes nothing outside its own plugin folder until you opt in to one of these features.
+
+= 0.48.2 =
+* Fix: one-click "Log in to wp-admin" no longer triggers a second two-factor challenge on sites running Solid Security or the official Two Factor plugin; it now lands directly in wp-admin. Sites running SecuPress (which replaces the login flow entirely) now get a clear "sign in normally" message instead of a loop.
+
+= 0.46.0 =
+* Changed: local backups are stored under the uploads directory (with a deny-all .htaccess and an index.php guard) instead of wp-content directly, with a best-effort migration of any existing local backups.
+* Changed: the object-cache drop-in installer's transient cleanup and the media URL rewriter's postmeta lookup now bind their values through prepared-statement placeholders.
+
+= 0.45.0 =
+* New: the page-cache drop-in nudges WP-Cron on a cache hit when the cron marker is more than 60 seconds stale, so scheduled tasks keep running on a fully page-cached, low-traffic site where WordPress itself rarely boots.
+
+= 0.44.0 =
+* New: a signed, cheap liveness ("ping") command the control plane can use to verify a quiet site is actually reachable (and wake WP-Cron) before ever marking it disconnected, instead of relying solely on traffic-driven heartbeats.
+
+= 0.41.0 =
+* New: an optional, off-by-default persistent Redis object cache for the dynamic, uncacheable side of WordPress (logged-in users, admin screens, carts and checkout, REST responses, and database round-trips the page cache cannot serve). Configured and tested per site from the control plane before it can be enabled; degrades safely to an in-memory array cache on any connection failure so the site never goes down because of it.
+
 = 0.36.0 =
 * New: multiple named email connections with per-connection encrypted credentials. Define additional provider connections (for example "ses-backup") alongside the primary, each with its own provider, settings, and encrypted secret stored separately in the agent keystore.
 * New: per-sender routing and automatic fallback retry. The agent routes outgoing mail by matching the FROM address to a connection key, falls back to the default connection, and retries exactly once via a configured fallback connection when the primary send fails (fallback is disabled for test sends). The email log records the connection key actually used and prefixes the response with the primary failure reason when a fallback fired.
@@ -236,6 +294,18 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 * Fix: PHP and JS CI jobs green.
 
 == Upgrade Notice ==
+
+= 0.61.57 =
+WordPress.org compliance and code-quality hardening (safer output escaping, standard script enqueueing, bounded long-running operations). No behavior change for connected sites. Safe to update in place.
+
+= 0.61.25 =
+Fixes a restore bug that could silently drop plugin or theme files whose path contained a reserved drop-in name, leaving a restored site broken while reporting success. If a restore on an older version left a site broken, re-restore the same snapshot on this version.
+
+= 0.54.0 =
+Adds optional, off-by-default two-factor authentication, password policy, and hide-login controls for your WordPress site's own users. All opt-in per site from your control plane; nothing changes until you enable them. Safe to update in place.
+
+= 0.41.0 =
+Adds an optional, off-by-default persistent Redis object cache. Requires configuring and testing a Redis connection from your control plane before it activates. Safe to update in place.
 
 = 0.33.9 =
 WordPress.org compliance hardening: input sanitization, uploads-directory storage, REST token binding, enqueued login style, and external-service + source documentation. Safe to update in place.

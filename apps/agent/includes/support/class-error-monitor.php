@@ -42,9 +42,12 @@
  * S1.2 — error config (ignore-list + level):
  *   - `wpmgr_error_config` wp-option holds
  *     `{ "enabled": <bool>, "error_level": <int>, "ignore_md5s": [...] }`.
- *   - `enabled`: operator opt-in flag. DEFAULT FALSE (absent key = false). Only
- *     the mu-plugin FILE write is gated on this; the in-process set_error_handler
- *     / register_shutdown_function installation (install()) is unconditional.
+ *   - `enabled`: operator opt-in flag. DEFAULT FALSE (absent key = false). Gates
+ *     the mu-plugin FILE write, the in-process set_error_handler /
+ *     register_shutdown_function installation (install()), AND every row write
+ *     (record()) — when off, this feature is a true no-op (2026-07 wp.org
+ *     review fix; previously only the mu-plugin file write was gated and
+ *     install() ran unconditionally on every request regardless of the toggle).
  *   - `error_level`: bitmask of non-fatal codes to capture; fatals always captured.
  *   - `ignore_md5s`: fingerprints to drop entirely (no INSERT/UPDATE).
  *   - Config is written by the `sync_error_config` signed command and read on
@@ -200,10 +203,11 @@ final class ErrorMonitor
     }
 
     /**
-     * Whether the operator has explicitly opted in to the error-monitor
-     * mu-plugin FILE write. Defaults false until a sync_error_config command
-     * with enabled=true is received. The in-process set_error_handler /
-     * register_shutdown_function (install()) is unconditional and unaffected.
+     * Whether the operator has explicitly opted in to the error monitor.
+     * Defaults false until a sync_error_config command with enabled=true is
+     * received. Gates the mu-plugin FILE write, the in-process
+     * set_error_handler / register_shutdown_function installation
+     * (install()), and every row write (record()) — false is a true no-op.
      *
      * @return bool
      */
@@ -216,6 +220,13 @@ final class ErrorMonitor
      * Install the error + shutdown handlers. Idempotent — repeated calls are
      * safe (set_error_handler stacks; we keep a static flag so we install at
      * most once per request).
+     *
+     * True no-op when disabled (2026-07 wp.org review fix): the operator's
+     * `enabled` flag now gates this method exactly like it already gates the
+     * mu-plugin trap FILE write — when off (the default), install() installs
+     * NO error handler, NO shutdown handler, and drains nothing, so a fresh
+     * activation changes no global PHP behaviour at all. record() carries the
+     * same gate as defense-in-depth for any other call path.
      *
      * The set_error_handler mask is computed from the stored config, intersected
      * with HANDLEABLE_NON_FATAL so config can only NARROW the captured set, never
@@ -232,6 +243,10 @@ final class ErrorMonitor
             return;
         }
         $installed = true;
+
+        if (!$this->isEnabled()) {
+            return;
+        }
 
         // Drain any errors the mu-plugin captured before plugins_loaded.
         $this->drainBootstrapQueue();
@@ -342,6 +357,11 @@ final class ErrorMonitor
      * Insert-or-update one error row.
      *
      * Early-return gates (applied in order before any DB work):
+     *   0. Disabled: when the operator has not opted in, record() writes NO
+     *      rows at all (defense-in-depth: install() already never registers
+     *      the handlers that would call this when disabled, but this gate
+     *      keeps every other call path — drainBootstrapQueue(), direct calls
+     *      — a true no-op too).
      *   1. md5 ignore-list: if the fingerprint appears in the CP-pushed
      *      `ignore_md5s` config list, the error is dropped entirely.
      *   2. Level mask: if the error code is non-fatal AND is not within the
@@ -360,6 +380,10 @@ final class ErrorMonitor
      */
     public function record(int $code, string $message, string $file, int $line, string $severity, ?string $backtraceCompressed = null): void
     {
+        if (!$this->isEnabled()) {
+            return;
+        }
+
         global $wpdb;
         if (!is_object($wpdb)) {
             return;

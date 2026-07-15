@@ -155,9 +155,39 @@ if (!function_exists('wp_unslash')) {
     }
 }
 
+if (!function_exists('map_deep')) {
+    /**
+     * Maps a function to all non-iterable elements of an array or object —
+     * mirrors the real WP implementation (recurses into arrays/objects,
+     * applies the callback only to scalar leaf values).
+     *
+     * @param mixed    $value    The array, object, or scalar to map.
+     * @param callable $callback The function to map onto $value.
+     * @return mixed
+     */
+    function map_deep(mixed $value, callable $callback): mixed
+    {
+        if (is_array($value)) {
+            foreach ($value as $index => $item) {
+                $value[$index] = map_deep($item, $callback);
+            }
+        } elseif (is_object($value)) {
+            $objectVars = get_object_vars($value);
+            foreach ($objectVars as $propertyName => $propertyValue) {
+                $value->$propertyName = map_deep($propertyValue, $callback);
+            }
+        } else {
+            $value = call_user_func($callback, $value);
+        }
+        return $value;
+    }
+}
+
 if (!function_exists('sanitize_text_field')) {
     /**
-     * Sanitizes a string from user input — approximates the real WP implementation.
+     * Sanitizes a string from user input — mirrors the real WP implementation,
+     * including the percent-encoded-octet strip (e.g. "%2f" is removed
+     * entirely, not decoded) that _sanitize_text_fields() performs in core.
      *
      * @param string $str Value to sanitize.
      * @return string
@@ -166,7 +196,18 @@ if (!function_exists('sanitize_text_field')) {
     {
         $filtered = strip_tags($str);
         $filtered = preg_replace('/[\r\n\t ]+/', ' ', $filtered) ?? '';
-        return trim($filtered);
+        $filtered = trim($filtered);
+
+        $found = false;
+        while (preg_match('/%[a-f0-9]{2}/i', $filtered)) {
+            $filtered = (string) preg_replace('/%[a-f0-9]{2}/i', '', $filtered);
+            $found    = true;
+        }
+        if ($found) {
+            $filtered = trim((string) preg_replace('/ +/', ' ', $filtered));
+        }
+
+        return $filtered;
     }
 }
 

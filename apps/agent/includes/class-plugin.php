@@ -758,11 +758,13 @@ final class Plugin
         // report must never interfere with the heartbeat itself.
         add_action(Scheduler::HOOK_HEARTBEAT, [$this, 'shipPerfReport'], 35);
 
-        // ADR-037 Sprint 2 — install the error monitor (in-process handler
-        // registration) unconditionally. The mu-plugin FILE write is gated on
-        // the operator's explicit opt-in (enabled=true in the stored config) so
-        // a fresh plugin activation writes zero executable files without consent.
-        // On opt-out or when the flag has never been set, remove a stale copy.
+        // ADR-037 Sprint 2 — install the error monitor. install() (and the
+        // record() it leads to) is itself gated on the operator's explicit
+        // opt-in (enabled=true in the stored config), so a fresh plugin
+        // activation installs no handler and writes zero rows without
+        // consent, on top of the mu-plugin FILE write being gated the same
+        // way. On opt-out or when the flag has never been set, remove a
+        // stale mu-plugin copy.
         $this->errorMonitor->install();
         if ($this->errorMonitor->isEnabled()) {
             $this->muInstaller->install();
@@ -2140,6 +2142,13 @@ final class Plugin
     /**
      * RUM (Real User Monitoring) — bind the beacon-injection callback.
      *
+     * Current implementation: bound to `wp_enqueue_scripts` (which WordPress
+     * core itself fires from inside `wp_head` at priority 1), and RumInjector
+     * enqueues the collector via wp_enqueue_script()/wp_add_inline_script() —
+     * see {@see RumInjector::enqueue()}. Reads the perf config once and only
+     * registers the hook when rumEnabled is on, so an inert site pays just a
+     * single option read.
+     *
      * Cache-independent by design (GH #154): the RUM collector used to be
      * injected only inside the page-cache/optimizer output buffer (Optimizer
      * stage 11), so a site with WPMgr page caching OFF — the norm when a
@@ -2147,16 +2156,10 @@ final class Plugin
      * cache HIT never got the collector, and rum_rollup stayed empty with no
      * warning. wp_enqueue_scripts is independent of any cache path: it fires
      * on every WordPress-rendered response, so binding the injector there
-     * fixes the gap.
-     *
-     * 2026-07 wp.org review fix: this used to bind at `wp_head` priority 99
-     * and have RumInjector echo raw <script> tags directly. It is now bound
-     * to `wp_enqueue_scripts` (which WordPress core itself fires from inside
-     * `wp_head` at priority 1 -- i.e. BEFORE the previous priority-99 binding
-     * even ran), and RumInjector uses wp_enqueue_script()/wp_add_inline_script()
-     * instead of an echo. Reads the perf config once and only registers the
-     * hook when rumEnabled is on, so an inert site pays just a single option
-     * read.
+     * fixes the gap. A prior iteration of this fix bound at a late wp_head
+     * priority and printed the collector's markup directly instead of using
+     * the enqueue APIs; that has since been replaced by the enqueue-based
+     * approach described above.
      *
      * @return void
      */

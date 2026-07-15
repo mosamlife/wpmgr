@@ -3,7 +3,7 @@
  * Plugin Name:       WPMgr Agent
  * Plugin URI:        https://github.com/mosamlife/wpmgr
  * Description:        Connects this WordPress site to a WPMgr control plane for backups, updates, monitoring, and security scanning.
- * Version:           0.61.60
+ * Version:           0.61.61
  * Requires at least: 6.2
  * Requires PHP:      8.1
  * Author:            WPMgr contributors
@@ -20,7 +20,15 @@ if (!defined('ABSPATH')) {
     exit; // No direct access.
 }
 
-define('WPMGR_AGENT_VERSION', '0.61.60');
+define('WPMGR_AGENT_VERSION', '0.61.61');
+
+// Display name shown on the admin settings screen (menu label, page title).
+// Kept as its own constant (rather than hard-coded strings in class-admin.php)
+// so the wp.org build can rewrite it to match that build's listing identity
+// ("Fleet Agent Site Manager") without touching the self-hosted build, which
+// keeps "WPMgr Agent". See the agent-zip-wporg Makefile target.
+define('WPMGR_AGENT_DISPLAY_NAME', 'WPMgr Agent');
+
 define('WPMGR_AGENT_FILE', __FILE__);
 define('WPMGR_AGENT_DIR', plugin_dir_path(__FILE__));
 

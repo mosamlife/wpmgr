@@ -142,8 +142,8 @@ final class Admin
     public function registerMenu(): void
     {
         add_menu_page(
-            'WPMgr Agent',
-            'WPMgr',
+            esc_html(WPMGR_AGENT_DISPLAY_NAME),
+            esc_html(WPMGR_AGENT_DISPLAY_NAME),
             'manage_options',
             self::PAGE_SLUG,
             [$this, 'renderPage'],
@@ -171,7 +171,7 @@ final class Admin
         $actionUrl = esc_url(admin_url('admin-post.php'));
 
         echo '<div class="wrap">';
-        echo '<h1>' . esc_html('WPMgr Agent') . '</h1>';
+        echo '<h1>' . esc_html(WPMGR_AGENT_DISPLAY_NAME) . '</h1>';
 
         // --- Revoked notice (ADR-039) ---
         // If the control plane disconnected this site from the dashboard, the
@@ -181,66 +181,66 @@ final class Admin
         $this->renderRevokedNotice();
 
         // --- Status panel ---
-        echo '<h2>' . esc_html('Status') . '</h2>';
+        echo '<h2>' . esc_html__('Status', 'wpmgr-agent') . '</h2>';
         echo '<table class="form-table"><tbody>';
-        echo '<tr><th>' . esc_html('Enrollment') . '</th><td>'
+        echo '<tr><th>' . esc_html__('Enrollment', 'wpmgr-agent') . '</th><td>'
             . ($enrolled
-                ? '<strong style="color:#1a7f37;">' . esc_html('Enrolled') . '</strong>'
-                : '<strong style="color:#b32d2e;">' . esc_html('Not enrolled') . '</strong>')
+                ? '<strong style="color:#1a7f37;">' . esc_html__('Enrolled', 'wpmgr-agent') . '</strong>'
+                : '<strong style="color:#b32d2e;">' . esc_html__('Not enrolled', 'wpmgr-agent') . '</strong>')
             . '</td></tr>';
-        echo '<tr><th>' . esc_html('Site ID') . '</th><td>' . esc_html($siteId !== '' ? $siteId : '—') . '</td></tr>';
-        echo '<tr><th>' . esc_html('Tenant ID') . '</th><td>' . esc_html($tenantId !== '' ? $tenantId : '—') . '</td></tr>';
-        echo '<tr><th>' . esc_html('Last heartbeat') . '</th><td>' . esc_html($this->formatTime($lastBeat)) . '</td></tr>';
-        echo '<tr><th>' . esc_html('Last metadata sync') . '</th><td>' . esc_html($this->formatTime($lastMeta)) . '</td></tr>';
+        echo '<tr><th>' . esc_html__('Site ID', 'wpmgr-agent') . '</th><td>' . esc_html($siteId !== '' ? $siteId : '—') . '</td></tr>';
+        echo '<tr><th>' . esc_html__('Tenant ID', 'wpmgr-agent') . '</th><td>' . esc_html($tenantId !== '' ? $tenantId : '—') . '</td></tr>';
+        echo '<tr><th>' . esc_html__('Last heartbeat', 'wpmgr-agent') . '</th><td>' . esc_html($this->formatTime($lastBeat)) . '</td></tr>';
+        echo '<tr><th>' . esc_html__('Last metadata sync', 'wpmgr-agent') . '</th><td>' . esc_html($this->formatTime($lastMeta)) . '</td></tr>';
         echo '</tbody></table>';
 
         // --- Control-plane URL form ---
-        echo '<h2>' . esc_html('Control plane') . '</h2>';
+        echo '<h2>' . esc_html__('Control plane', 'wpmgr-agent') . '</h2>';
         echo '<form method="post" action="' . esc_url($actionUrl) . '">';
         wp_nonce_field(self::ACTION_SAVE_URL);
         echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_SAVE_URL) . '" />';
         echo '<table class="form-table"><tbody><tr><th><label for="wpmgr_cp_url">'
-            . esc_html('Control-plane URL') . '</label></th><td>';
+            . esc_html__('Control-plane URL', 'wpmgr-agent') . '</label></th><td>';
         echo '<input type="url" id="wpmgr_cp_url" name="wpmgr_cp_url" class="regular-text" value="'
             . esc_attr($cpUrl) . '" placeholder="https://control-plane.example.com" />';
-        echo '<p class="description">' . esc_html('Base URL of your WPMgr control plane (https in production).') . '</p>';
+        echo '<p class="description">' . esc_html__('Base URL of your WPMgr control plane (https in production).', 'wpmgr-agent') . '</p>';
         echo '</td></tr></tbody></table>';
-        submit_button('Save URL');
+        submit_button(esc_html__('Save URL', 'wpmgr-agent'));
         echo '</form>';
 
         // --- Enrollment form ---
         if (!$enrolled) {
-            echo '<h2>' . esc_html('Enroll') . '</h2>';
+            echo '<h2>' . esc_html__('Enroll', 'wpmgr-agent') . '</h2>';
             echo '<form method="post" action="' . esc_url($actionUrl) . '">';
             wp_nonce_field(self::ACTION_ENROLL);
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_ENROLL) . '" />';
             echo '<table class="form-table"><tbody><tr><th><label for="wpmgr_pairing_code">'
-                . esc_html('Pairing code') . '</label></th><td>';
+                . esc_html__('Pairing code', 'wpmgr-agent') . '</label></th><td>';
             echo '<input type="text" id="wpmgr_pairing_code" name="wpmgr_pairing_code" class="regular-text" autocomplete="off" />';
-            echo '<p class="description">' . esc_html('Paste the pairing code from your control-plane dashboard.') . '</p>';
+            echo '<p class="description">' . esc_html__('Paste the pairing code from your control-plane dashboard.', 'wpmgr-agent') . '</p>';
             echo '</td></tr></tbody></table>';
-            submit_button('Enroll');
+            submit_button(esc_html__('Enroll', 'wpmgr-agent'));
             echo '</form>';
         } else {
             // --- Sync now ---
-            echo '<h2>' . esc_html('Sync') . '</h2>';
+            echo '<h2>' . esc_html__('Sync', 'wpmgr-agent') . '</h2>';
             echo '<form method="post" action="' . esc_url($actionUrl) . '">';
             wp_nonce_field(self::ACTION_SYNC);
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_SYNC) . '" />';
-            submit_button('Sync now', 'secondary');
+            submit_button(esc_html__('Sync now', 'wpmgr-agent'), 'secondary');
             echo '</form>';
 
             // --- Check for updates (ADR-042) ---
             // Hidden when the updater is unavailable (wp.org distribution build).
             if ($this->updateChecker !== null) {
-                echo '<h2>' . esc_html('Agent update') . '</h2>';
+                echo '<h2>' . esc_html__('Agent update', 'wpmgr-agent') . '</h2>';
                 echo '<p class="description">'
-                    . esc_html('Force an immediate check for a new WPMgr agent version. The result appears in Plugins > Updates.')
+                    . esc_html__('Force an immediate check for a new WPMgr agent version. The result appears in Plugins > Updates.', 'wpmgr-agent')
                     . '</p>';
                 echo '<form method="post" action="' . esc_url($actionUrl) . '">';
                 wp_nonce_field(self::ACTION_CHECK_UPDATE);
                 echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_CHECK_UPDATE) . '" />';
-                submit_button('Check for updates', 'secondary');
+                submit_button(esc_html__('Check for updates', 'wpmgr-agent'), 'secondary');
                 echo '</form>';
             }
 
@@ -252,36 +252,36 @@ final class Admin
             // (which only clears, leaving the site unenrolled) and never a
             // hidden side effect of editing the code field. JS confirm() guards
             // an accidental click.
-            echo '<h2>' . esc_html('Re-enroll') . '</h2>';
+            echo '<h2>' . esc_html__('Re-enroll', 'wpmgr-agent') . '</h2>';
             echo '<p class="description">'
-                . esc_html('Wipes this site\'s current pairing and re-enrolls with a fresh identity using a new pairing code (mint one from your dashboard). Prior backups remain decryptable.')
+                . esc_html__('Wipes this site\'s current pairing and re-enrolls with a fresh identity using a new pairing code (mint one from your dashboard). Prior backups remain decryptable.', 'wpmgr-agent')
                 . '</p>';
             echo '<form method="post" action="' . esc_url($actionUrl) . '" onsubmit="return confirm(\''
-                . esc_js('Re-enroll this site? The current pairing and keys will be wiped, then re-enrolled with the new code.')
+                . esc_js(__('Re-enroll this site? The current pairing and keys will be wiped, then re-enrolled with the new code.', 'wpmgr-agent'))
                 . '\');">';
             wp_nonce_field(self::ACTION_REENROLL);
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_REENROLL) . '" />';
             echo '<table class="form-table"><tbody><tr><th><label for="wpmgr_reenroll_code">'
-                . esc_html('New pairing code') . '</label></th><td>';
+                . esc_html__('New pairing code', 'wpmgr-agent') . '</label></th><td>';
             echo '<input type="text" id="wpmgr_reenroll_code" name="wpmgr_pairing_code" class="regular-text" autocomplete="off" />';
             echo '</td></tr></tbody></table>';
-            submit_button('Re-enroll', 'primary');
+            submit_button(esc_html__('Re-enroll', 'wpmgr-agent'), 'primary');
             echo '</form>';
 
             // --- Disconnect (clear pairing without re-pairing) ---
             // Clears site_id, tenant_id, the CP public key, and this site's
             // Ed25519 keypair. The age identity (chunk-encryption secret) is
             // preserved so prior ciphertext stays decryptable.
-            echo '<h2>' . esc_html('Disconnect') . '</h2>';
+            echo '<h2>' . esc_html__('Disconnect', 'wpmgr-agent') . '</h2>';
             echo '<p class="description">'
-                . esc_html('Clears this site\'s pairing with the current control plane without re-enrolling. Prior backups remain decryptable.')
+                . esc_html__('Clears this site\'s pairing with the current control plane without re-enrolling. Prior backups remain decryptable.', 'wpmgr-agent')
                 . '</p>';
             echo '<form method="post" action="' . esc_url($actionUrl) . '" onsubmit="return confirm(\''
-                . esc_js('Disconnect from the current control plane? You will need to paste a new pairing code to re-enroll.')
+                . esc_js(__('Disconnect from the current control plane? You will need to paste a new pairing code to re-enroll.', 'wpmgr-agent'))
                 . '\');">';
             wp_nonce_field(self::ACTION_DISCONNECT);
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_DISCONNECT) . '" />';
-            submit_button('Disconnect', 'delete');
+            submit_button(esc_html__('Disconnect', 'wpmgr-agent'), 'delete');
             echo '</form>';
         }
 
@@ -312,11 +312,12 @@ final class Admin
      */
     private function renderConnectionKeySection(string $actionUrl): void
     {
-        echo '<h2>' . esc_html('Connection key') . '</h2>';
+        echo '<h2>' . esc_html__('Connection key', 'wpmgr-agent') . '</h2>';
         echo '<p class="description">'
-            . esc_html('For control planes that cannot reach this site directly (firewalled hosts, private networks). '
-                     . 'Click "Mint key" to generate a one-time pairing code valid for 15 minutes. '
-                     . 'Paste it into the CP\'s "Add site from connection key" flow.')
+            . esc_html__(
+                'For control planes that cannot reach this site directly (firewalled hosts, private networks). Click "Mint key" to generate a one-time pairing code valid for 15 minutes. Paste it into the CP\'s "Add site from connection key" flow.',
+                'wpmgr-agent'
+            )
             . '</p>';
 
         $record = $this->readConnectionKey();
@@ -332,10 +333,11 @@ final class Admin
 
             echo '<div class="notice notice-warning inline" style="padding:12px;margin:10px 0;">';
             echo '<p style="margin:0 0 8px;"><strong>'
-                . esc_html('Anyone with this key can re-pair your site to a different control plane. Treat it like a password.')
+                . esc_html__('Anyone with this key can re-pair your site to a different control plane. Treat it like a password.', 'wpmgr-agent')
                 . '</strong></p>';
             echo '<p style="margin:0 0 8px;">'
-                . esc_html(sprintf('Key expires in %d:%02d.', $mm, $ss))
+                /* translators: 1: minutes remaining, 2: seconds remaining (zero-padded). */
+                . esc_html(sprintf(__('Key expires in %1$d:%2$02d.', 'wpmgr-agent'), $mm, $ss))
                 . '</p>';
             echo '<textarea readonly rows="3" cols="80" '
                 . 'style="font-family:monospace;font-size:12px;width:100%;max-width:720px;" '
@@ -348,20 +350,20 @@ final class Admin
             echo '<form method="post" action="' . esc_url($actionUrl) . '" style="display:inline-block;">';
             wp_nonce_field(self::ACTION_REVOKE_CONNECTION_KEY);
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_REVOKE_CONNECTION_KEY) . '" />';
-            submit_button('Revoke', 'delete', 'submit', false);
+            submit_button(esc_html__('Revoke', 'wpmgr-agent'), 'delete', 'submit', false);
             echo '</form>';
         } else {
             // No active key. If the existing record is expired/used, advise.
             if ($record !== null && !empty($record['used_at'])) {
-                echo '<p>' . esc_html('Previous key was accepted by the control plane.') . '</p>';
+                echo '<p>' . esc_html__('Previous key was accepted by the control plane.', 'wpmgr-agent') . '</p>';
             } elseif ($record !== null) {
-                echo '<p>' . esc_html('Previous key has expired.') . '</p>';
+                echo '<p>' . esc_html__('Previous key has expired.', 'wpmgr-agent') . '</p>';
             }
 
             echo '<form method="post" action="' . esc_url($actionUrl) . '">';
             wp_nonce_field(self::ACTION_MINT_CONNECTION_KEY);
             echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_MINT_CONNECTION_KEY) . '" />';
-            submit_button('Mint key', 'secondary');
+            submit_button(esc_html__('Mint key', 'wpmgr-agent'), 'secondary');
             echo '</form>';
         }
     }
@@ -424,9 +426,9 @@ final class Admin
         $stored = $this->settings->setControlPlaneUrl($raw);
 
         if ($stored === '' && $raw !== '') {
-            $this->notice('error', 'That control-plane URL is not valid. Use an http(s) URL.');
+            $this->notice('error', __('That control-plane URL is not valid. Use an http(s) URL.', 'wpmgr-agent'));
         } else {
-            $this->notice('success', 'Control-plane URL saved.');
+            $this->notice('success', __('Control-plane URL saved.', 'wpmgr-agent'));
         }
 
         $this->redirectBack();
@@ -450,7 +452,7 @@ final class Admin
             : '';
 
         if ($code === '') {
-            $this->notice('error', 'Enter a pairing code.');
+            $this->notice('error', __('Enter a pairing code.', 'wpmgr-agent'));
             $this->redirectBack();
             return;
         }
@@ -521,7 +523,7 @@ final class Admin
         $this->guard(self::ACTION_SYNC);
 
         if (!$this->settings->isEnrolled()) {
-            $this->notice('error', 'Enroll before syncing.');
+            $this->notice('error', __('Enroll before syncing.', 'wpmgr-agent'));
             $this->redirectBack();
             return;
         }
@@ -530,12 +532,13 @@ final class Admin
         $meta = $this->enrollment->pushMetadata();
 
         if ($beat['ok'] && $meta['ok']) {
-            $this->notice('success', 'Sync complete.');
+            $this->notice('success', __('Sync complete.', 'wpmgr-agent'));
         } else {
             $failed = !$beat['ok'] ? $beat : $meta;
-            $msg    = 'Sync failed';
+            $msg    = __('Sync failed', 'wpmgr-agent');
             if ($failed['status'] > 0) {
-                $msg .= ' (HTTP ' . $failed['status'] . ')';
+                /* translators: %d: HTTP status code. */
+                $msg .= ' ' . sprintf(__('(HTTP %d)', 'wpmgr-agent'), $failed['status']);
             }
             $msg .= ': ' . $failed['message'];
             $this->notice('error', $msg);
@@ -586,8 +589,8 @@ final class Admin
         $this->settings->clearLastSyncTimestamps();
 
         $msg = $notified
-            ? 'Disconnected and notified the control plane. Paste a fresh pairing code to re-enroll.'
-            : 'Disconnected locally (the control plane will catch up shortly). Paste a fresh pairing code to re-enroll.';
+            ? __('Disconnected and notified the control plane. Paste a fresh pairing code to re-enroll.', 'wpmgr-agent')
+            : __('Disconnected locally (the control plane will catch up shortly). Paste a fresh pairing code to re-enroll.', 'wpmgr-agent');
         $this->notice('success', $msg);
         $this->redirectBack();
     }
@@ -617,7 +620,7 @@ final class Admin
             : '';
 
         if ($code === '') {
-            $this->notice('error', 'Enter a fresh pairing code to re-enroll.');
+            $this->notice('error', __('Enter a fresh pairing code to re-enroll.', 'wpmgr-agent'));
             $this->redirectBack();
             return;
         }
@@ -634,11 +637,11 @@ final class Admin
         unset($code);
 
         if ($result['ok']) {
-            $this->notice('success', 'Re-enrolled with a fresh identity. ' . $result['message']);
+            $this->notice('success', __('Re-enrolled with a fresh identity.', 'wpmgr-agent') . ' ' . $result['message']);
         } else {
             $this->notice(
                 'error',
-                'Re-enroll failed (previous pairing was already cleared): ' . $result['message']
+                __('Re-enroll failed (previous pairing was already cleared):', 'wpmgr-agent') . ' ' . $result['message']
             );
         }
 
@@ -667,7 +670,7 @@ final class Admin
         ) {
             $this->notice(
                 'error',
-                'A connection key is already active. Revoke it or wait for it to expire before minting another.'
+                __('A connection key is already active. Revoke it or wait for it to expire before minting another.', 'wpmgr-agent')
             );
             $this->redirectBack();
             return;
@@ -676,7 +679,7 @@ final class Admin
         try {
             $rawBytes = random_bytes(32);
         } catch (\Throwable $e) {
-            $this->notice('error', 'Could not generate a secure random token: ' . $e->getMessage());
+            $this->notice('error', __('Could not generate a secure random token:', 'wpmgr-agent') . ' ' . $e->getMessage());
             $this->redirectBack();
             return;
         }
@@ -690,7 +693,7 @@ final class Admin
         ];
         update_option(self::OPTION_CONNECTION_KEY, $record, false);
 
-        $this->notice('success', 'Connection key minted. Valid for 15 minutes.');
+        $this->notice('success', __('Connection key minted. Valid for 15 minutes.', 'wpmgr-agent'));
         $this->redirectBack();
     }
 
@@ -704,7 +707,7 @@ final class Admin
         $this->guard(self::ACTION_REVOKE_CONNECTION_KEY);
 
         delete_option(self::OPTION_CONNECTION_KEY);
-        $this->notice('success', 'Connection key revoked.');
+        $this->notice('success', __('Connection key revoked.', 'wpmgr-agent'));
         $this->redirectBack();
     }
 
@@ -724,19 +727,19 @@ final class Admin
         $this->guard(self::ACTION_CHECK_UPDATE);
 
         if ($this->updateChecker === null) {
-            $this->notice('error', 'Update checking is not available in this build.');
+            $this->notice('error', __('Update checking is not available in this build.', 'wpmgr-agent'));
             $this->redirectBack();
             return;
         }
 
         if (!$this->settings->isEnrolled()) {
-            $this->notice('error', 'Enroll before checking for updates.');
+            $this->notice('error', __('Enroll before checking for updates.', 'wpmgr-agent'));
             $this->redirectBack();
             return;
         }
 
         $this->updateChecker->checkNow();
-        $this->notice('success', 'Checked for updates.');
+        $this->notice('success', __('Checked for updates.', 'wpmgr-agent'));
         $this->redirectBack();
     }
 
@@ -749,7 +752,7 @@ final class Admin
     private function guard(string $action): void
     {
         if (!current_user_can('manage_options')) {
-            wp_die('Insufficient permissions.', '', ['response' => 403]);
+            wp_die(esc_html__('Insufficient permissions.', 'wpmgr-agent'), '', ['response' => 403]);
         }
         check_admin_referer($action);
     }
@@ -810,11 +813,16 @@ final class Admin
             return;
         }
 
-        $when = $marker['at'] > 0 ? ' on ' . $this->formatTime($marker['at']) : '';
+        if ($marker['at'] > 0) {
+            /* translators: %s: date and time the site was disconnected. */
+            $headline = sprintf(__('This site was disconnected from your WPMgr dashboard on %s.', 'wpmgr-agent'), $this->formatTime($marker['at']));
+        } else {
+            $headline = __('This site was disconnected from your WPMgr dashboard.', 'wpmgr-agent');
+        }
 
         echo '<div class="notice notice-warning"><p><strong>'
-            . esc_html('This site was disconnected from your WPMgr dashboard') . esc_html($when) . '.</strong> '
-            . esc_html('The agent stopped reporting and was deactivated. To reconnect, paste a fresh pairing code into the Enroll form below.')
+            . esc_html($headline) . '</strong> '
+            . esc_html__('The agent stopped reporting and was deactivated. To reconnect, paste a fresh pairing code into the Enroll form below.', 'wpmgr-agent')
             . '</p></div>';
     }
 
@@ -827,7 +835,7 @@ final class Admin
     private function formatTime(int $ts): string
     {
         if ($ts <= 0) {
-            return 'never';
+            return __('never', 'wpmgr-agent');
         }
 
         if (function_exists('wp_date')) {

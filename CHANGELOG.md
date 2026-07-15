@@ -8,6 +8,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.61] - 2026-07-15
+
+### Changed
+
+- Second WordPress.org-directory-compliance hardening pass for the agent, in response to the directory review, with no behavior change for managed sites. Every item lands in both the self-hosted agent and the WordPress.org build (fleet-agent-site-manager), which keeps the operator features (auto-login, updates, backups) and strips only the self-updater:
+  - The two-factor and forced-password-change login screens now escape at the output boundary through `wp_kses()` with an explicit tag allowlist, and the remaining output-escaping suppressions are removed (swept plugin-wide).
+  - The media-library helper script is now enqueued through `wp_enqueue_script()` on the upload screen instead of being printed inline.
+  - The admin settings screen is fully internationalized, and its displayed name follows the build identity: the self-hosted build keeps "WPMgr Agent", and the WordPress.org build shows "Fleet Agent Site Manager" to match its listing.
+  - The object cache's internal error store now uses a plugin-prefixed global, and the optional error monitor registers no error or shutdown handlers at all unless it is explicitly enabled (a true no-op when off, which is the default).
+  - Directory sizing in the WordPress.org build uses a pure-PHP fallback with no shell-outs; the self-hosted build keeps its faster native path.
+  - A dead raw-cURL multi-request path was removed so every outbound request goes through the WordPress HTTP API; page-cache-key assembly now unslashes cookie input while staying byte-identical to the pre-WordPress serve path (covered by a new parity test); a critical-CSS output edge case was tightened; and the readme changelog and upgrade notices were brought current.
+
 ## [0.61.60] - 2026-07-14
 
 ### Fixed

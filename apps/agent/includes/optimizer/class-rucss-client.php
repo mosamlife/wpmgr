@@ -517,6 +517,13 @@ final class RucssClient
      */
     private function applyUsedCss(string $html, string $usedCss): string
     {
+        // Belt-and-suspenders break-out guard: $usedCss is computed by a
+        // trusted first-party compute service, but a stray literal "</style"
+        // inside it (e.g. from an unusual selector/content value) would
+        // otherwise close the tag early and let the remainder of $usedCss
+        // render as raw HTML. Neutralize any case-insensitive "</style"
+        // sequence before inlining.
+        $usedCss = str_ireplace('</style', '<\/style', $usedCss);
         // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedStylesheet -- this class only runs from Optimizer::run(), called by CacheWriter's ob_start() callback (class-cache-writer.php) on the fully-rendered HTML string of a cacheable MISS, well after wp_head has already printed; the RUCSS transform rewrites a <style>/<link href> already in the buffered string, so it can only operate as a post-hoc string rewrite -- WP's enqueue API has no queue left to append to at this point
         $styleTag = '<style id="wpmgr-used-css">' . $usedCss . '</style>';
         if (stripos($html, '</head>') !== false) {
