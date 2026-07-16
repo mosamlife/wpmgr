@@ -158,6 +158,12 @@ export function SiteCard({
   const updatesCount = site.updates_available ?? 0;
   const backupStatus = (site.last_backup_status as BackupChipStatus | null) ?? null;
   const backupTime = site.last_backup_at ?? null;
+  // GH #231 — show a relative label ("2h ago") in the chip, with the exact
+  // absolute timestamp on hover, matching the /backups page convention.
+  const backupTimeRelative = relativeTime(backupTime) ?? undefined;
+  const backupTimeTitle = backupTime
+    ? new Date(backupTime).toLocaleString()
+    : undefined;
 
   const capabilityItems = buildCapabilityItems(site);
   const isCompact = cardSize === "compact";
@@ -322,7 +328,8 @@ export function SiteCard({
           {backupStatus ? (
             <BackupChip
               status={backupStatus}
-              time={backupTime ?? undefined}
+              time={backupTimeRelative}
+              title={backupTimeTitle}
             />
           ) : (
             <span className="text-xs text-muted-foreground">No backups yet</span>

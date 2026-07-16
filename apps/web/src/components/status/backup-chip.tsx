@@ -13,6 +13,11 @@ export interface BackupChipProps {
   /** When provided on failed backups, renders an inline "Retry" link button. */
   onRetry?: () => void;
   className?: string;
+  /**
+   * Native `title` tooltip — pass the exact absolute timestamp so hovering
+   * the chip reveals full precision alongside the relative `time` text.
+   */
+  title?: string;
 }
 
 const statusBg: Record<BackupChipStatus, string> = {
@@ -35,9 +40,11 @@ export function BackupChip({
   progressPercent,
   onRetry,
   className,
+  title,
 }: BackupChipProps) {
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium",
         statusBg[status],

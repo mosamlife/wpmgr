@@ -42,7 +42,7 @@ import {
   connectionStateOf,
   type ConnectionState,
 } from "@/features/sites/connection-state";
-import { cn } from "@/lib/utils";
+import { cn, relativeTime } from "@/lib/utils";
 import {
   rowHeightFor,
   useSitesDensity,
@@ -449,10 +449,14 @@ function buildColumns(
       cell: ({ row }) => {
         const status = row.original.backupStatus;
         if (!status) return <span aria-hidden="true" />;
+        // GH #231 — relative label in the chip, exact timestamp on hover
+        // (matches the /backups page's relativeTime + title convention).
+        const iso = row.original.backupTime;
         return (
           <BackupChip
             status={status}
-            time={row.original.backupTime ?? undefined}
+            time={relativeTime(iso) ?? undefined}
+            title={iso ? new Date(iso).toLocaleString() : undefined}
           />
         );
       },
