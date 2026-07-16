@@ -171,7 +171,7 @@ No other third-party libraries are bundled in the plugin zip. Image encoding and
 
 This plugin ships two minified JavaScript files. Their human-readable source and build tooling are in the public repository at https://github.com/mosamlife/wpmgr.
 
-* **assets/wpmgr-rum.min.js** -- Real User Monitoring collector. TypeScript source: apps/tracker/src/index.ts and apps/tracker/src/vitals.ts. Build: cd apps/tracker && npm install && npm run build (esbuild IIFE bundle, also bundles Google web-vitals under its Apache-2.0 license).
+* **assets/wpmgr-rum.min.js** -- Real User Monitoring collector. The readable, non-minified build ships alongside the plugin at assets/wpmgr-rum.js. TypeScript source: apps/tracker/src/index.ts and apps/tracker/src/vitals.ts. Build: cd apps/tracker && npm install && npm run build (esbuild IIFE bundle, also bundles Google web-vitals under its Apache-2.0 license; the same build produces both the minified and readable outputs).
 * **assets/wpmgr-delay.min.js** -- deferred-script runtime. The readable source ships alongside the plugin at assets/wpmgr-delay.js in the same repository.
 
 == Screenshots ==
