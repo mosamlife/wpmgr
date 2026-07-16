@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.63] - 2026-07-16
+
+### Changed
+
+- The real-user-monitoring collector now also ships a readable, non-minified build (`assets/wpmgr-rum.js`) alongside the minified `assets/wpmgr-rum.min.js`, matching how the delay script already ships its readable source, so the distributed package includes human-readable source for every bundled script (the TypeScript source and build command remain documented in the readme and public repository). WordPress.org-directory transparency only; no runtime or behavior change.
+
 ## [0.61.62] - 2026-07-15
 
 ### Fixed
