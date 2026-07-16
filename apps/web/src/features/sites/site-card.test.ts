@@ -4,6 +4,7 @@
  * connection-state-badge.test.ts / sites-filter.test.ts).
  */
 import { describe, it, expect } from "vitest";
+import { relativeTime } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // SslChip — threshold logic
@@ -295,6 +296,56 @@ describe("calm zero-states — backups", () => {
   it("last_backup_status 'failed' shows the BackupChip", () => {
     const backupStatus = "failed" as string | null;
     expect(backupStatus != null).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GH #231 — Sites list "last backup" renders relative time (matches
+// /backups), with the exact absolute timestamp preserved on hover.
+// ---------------------------------------------------------------------------
+// Mirrors the derivation in site-card.tsx / sites-table.tsx: the BackupChip
+// `time` prop takes the shared `relativeTime()` label (never a raw ISO
+// string), and `title` carries the absolute timestamp for hover precision.
+
+function deriveBackupChipProps(lastBackupAt: string | null, now?: number) {
+  return {
+    time: relativeTime(lastBackupAt, now) ?? undefined,
+    title: lastBackupAt ? new Date(lastBackupAt).toLocaleString() : undefined,
+  };
+}
+
+describe("last-backup formatting — relative time + hover precision (GH #231)", () => {
+  const NOW = new Date("2026-06-16T12:00:00Z").getTime();
+
+  it("renders a short relative label, not the raw ISO timestamp", () => {
+    const twoHoursAgo = new Date(NOW - 2 * 60 * 60 * 1000).toISOString();
+    const { time } = deriveBackupChipProps(twoHoursAgo, NOW);
+    expect(time).toBe("2h ago");
+    expect(time).not.toContain("T"); // not an ISO string leaking through
+  });
+
+  it("renders 'just now' for a very recent backup", () => {
+    const secondsAgo = new Date(NOW - 5 * 1000).toISOString();
+    const { time } = deriveBackupChipProps(secondsAgo, NOW);
+    expect(time).toBe("just now");
+  });
+
+  it("renders day-granularity labels for older backups", () => {
+    const threeDaysAgo = new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const { time } = deriveBackupChipProps(threeDaysAgo, NOW);
+    expect(time).toBe("3d ago");
+  });
+
+  it("carries the exact absolute timestamp in `title` for hover precision", () => {
+    const iso = new Date(NOW - 2 * 60 * 60 * 1000).toISOString();
+    const { title } = deriveBackupChipProps(iso, NOW);
+    expect(title).toBe(new Date(iso).toLocaleString());
+  });
+
+  it("null last_backup_at yields no time/title (caller shows 'No backups yet')", () => {
+    const { time, title } = deriveBackupChipProps(null, NOW);
+    expect(time).toBeUndefined();
+    expect(title).toBeUndefined();
   });
 });
 

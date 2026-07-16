@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.66] - 2026-07-17
+
+### Changed
+
+- The Sites list now shows each site's last backup as a human-readable relative time (for example "2h ago"), with the exact date and time on hover, matching how the Backups page already displays it, instead of a raw timestamp (GH #231). Dashboard only.
+
 ## [0.61.65] - 2026-07-16
 
 ### Changed
