@@ -8,7 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.63] - 2026-07-16
+## [0.61.64] - 2026-07-16
+
+### Fixed
+
+- Scheduled backups no longer stall permanently at "queued" and are now reliably recovered (GH #232). A scheduled backup started only through WordPress cron (with a single in-process fallback that was active only on hosts where the loopback was gated), and its self-healing watchdog ran on that same cron; on a quiet, off-peak, or `DISABLE_WP_CRON` site the run could silently never start and the watchdog could silently never fire, leaving the task at "queued" forever with no error and the built-in resume never engaging (reported across a fleet as a rotating ~10-30% of sites failing nightly). The backup now always starts in-process (independent of WordPress cron), a request-driven sweeper re-dispatches any genuinely stalled task without needing a cron tick (so resume actually engages), and each stalled row now records how far it got for diagnosis. Concurrent execution of the same backup is prevented by a connection-independent file lock in addition to a database advisory lock, so a dropped database connection mid-dump can never let a second runner corrupt the in-progress backup. Agent only.
+- The dashboard no longer shows a "no website" error when you switch organizations while viewing a single site (GH #233). If the site you were viewing does not belong to the newly selected organization, you are now routed to that organization's Sites list instead of a dead page.
 
 ### Changed
 

@@ -264,69 +264,83 @@ final class BackupCommand implements CommandInterface
 
         // --- 6. Trigger the backup runner ---------------------------------
         //
-        // Strategy: probe the wp-cron loopback URL (a lightweight HEAD/GET
-        // with no redirect-following) to detect whether the front-end is
-        // gated by a membership or privacy plugin. On gated sites every
-        // request to /wp-cron.php returns a 3xx redirect to a login page,
-        // which means spawn_cron() dispatches the backup event to a cron
-        // worker that immediately redirects away and never runs TaskRunner.
-        // The result is an empty run dir (no environment.json) and a
-        // "no progress for >2m0s" watchdog stall.
+        // GitHub issue #232: scheduled backups intermittently stalled
+        // PERMANENTLY at phase=queued because the ONLY cron-independent
+        // starter — the in-process shutdown-function runner below — used to
+        // register ONLY when isLoopbackGated() detected a membership/privacy
+        // redirect. On a non-gated site with no visitor traffic in the next
+        // few seconds (or DISABLE_WP_CRON, where spawn_cron() is a documented
+        // no-op), NOTHING invoked TaskRunner::run() for the first time, so
+        // the freshly-seeded row never left `queued` (started_at ==
+        // last_progress_at, resume_count=0 — no cron tick ever arrived to
+        // even attempt a resume). The fix: register the in-process runner
+        // UNCONDITIONALLY on every trigger — it is a durable, cron-
+        // INDEPENDENT starter that runs in the SAME FPM worker that already
+        // produced the ACK response to the CP, so it fires regardless of
+        // cron health.
         //
-        // Detected gates: HTTP 3xx status, WP_Error (DNS/connect failure).
-        // When the loopback IS accessible (2xx / 4xx / 5xx — anything that
-        // is NOT a redirect), spawn_cron() is used as before (the separate-
-        // FPM-worker approach that fixed the 1panel/openresty FCGI timeout).
-        //
-        // When the loopback is gated, we fall back to in-process execution:
-        //   1. Register a PHP shutdown handler (fires after execute() returns
-        //      and WP REST flushes the response body to FPM).
-        //   2. The handler calls fastcgi_finish_request() (defensive — WP has
-        //      already closed its output buffers at this point) then runs
-        //      TaskRunner::run() directly in the same PHP process.
-        //   3. execute() returns the ACK normally. The CP sees 200 < 1 s.
-        //   4. The FPM worker runs the backup while the FCGI connection is
+        //   1. A PHP shutdown handler (fires after execute() returns and WP
+        //      REST flushes the response body to FPM) calls
+        //      fastcgi_finish_request() (defensive — WP has usually already
+        //      closed its output buffers) then runs TaskRunner::run()
+        //      directly in the same PHP process.
+        //   2. execute() returns the ACK normally. The CP sees 200 < 1 s.
+        //   3. The FPM worker runs the backup while the FCGI connection is
         //      closed (fastcgi_finish_request). On hosts where
         //      fastcgi_finish_request does not fully close the upstream
         //      connection, ignore_user_abort(true) + a bounded set_time_limit()
         //      ensure the runner is not killed mid-backup.
         //
-        // Note: spawn_cron() is still called even on gated sites as a belt-
-        // and-suspenders measure — it costs nothing if the loopback is gated
-        // and acts as a secondary trigger in case the in-process path is also
-        // unreliable on an unusual SAPI configuration.
+        // wp_schedule_single_event('wpmgr_backup_run') + spawn_cron() below
+        // are KEPT as secondary triggers (they preserve the #131 watchdog +
+        // the separate-FPM-worker FCGI-timeout fix for hosts where the
+        // in-process path is unreliable on an unusual SAPI configuration).
+        // The now-guaranteed double-fire this creates — the in-process
+        // runner AND the separate wp-cron-dispatched worker both calling
+        // TaskRunner::run() for the same snapshot — is handled by
+        // TaskRunner::run()'s own GH #232 MySQL advisory run-lock: whichever
+        // process arrives second loses the lock and returns without
+        // mutating phase.
         if (function_exists('wp_schedule_single_event')) {
             wp_schedule_single_event(time(), 'wpmgr_backup_run', [$snapshotId]);
         }
 
-        $loopbackGated = $this->isLoopbackGated();
-        if ($loopbackGated) {
-            // Loopback is gated: run TaskRunner in-process after the ACK
-            // is sent. Capture the params in a local variable so the closure
-            // does not hold a reference to $this (which would keep the entire
-            // BackupCommand object alive through the shutdown chain).
-            $shutdownParams = $runnerParams;
-            register_shutdown_function(static function () use ($shutdownParams): void {
-                // fastcgi_finish_request() is only available under PHP-FPM.
-                // Call it defensively: WP has already closed its own output
-                // buffers before shutdown handlers run, so the response was
-                // most likely already sent. This is a belt-and-suspenders flush.
-                if (function_exists('fastcgi_finish_request')) {
-                    fastcgi_finish_request(); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- intentional early-flush of the FCGI connection so the CP receives the ACK before TaskRunner runs
-                }
-                @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup runner must not hit max_execution_time; @-guarded
-                @ignore_user_abort(true);
-                try {
-                    (new TaskRunner($shutdownParams))->run();
-                } catch (\Throwable $e) {
-                    \WPMgr\Agent\Support\DebugLog::write('WPMgr Backup: in-process runner fatal: ' . $e->getMessage());
-                }
-            });
+        // isLoopbackGated() is still probed — its own DebugLog side effect
+        // surfaces likely membership/privacy-gate hosts for diagnostics —
+        // but its result no longer decides whether the in-process runner
+        // below registers (see the trigger doc above).
+        if ($this->isLoopbackGated()) {
+            DebugLog::write(sprintf(
+                'WPMgr Backup: snapshot %s loopback probe reports gated; the always-on in-process shutdown runner is the primary starter for this run',
+                $snapshotId
+            ));
         }
 
-        // Always fire spawn_cron: on non-gated sites it is the primary
-        // trigger; on gated sites it is a no-op (the loopback redirects
-        // away) but the in-process shutdown above covers the gap.
+        // Capture the params in a local variable so the closure does not
+        // hold a reference to $this (which would keep the entire
+        // BackupCommand object alive through the shutdown chain).
+        $shutdownParams = $runnerParams;
+        register_shutdown_function(static function () use ($shutdownParams): void {
+            // fastcgi_finish_request() is only available under PHP-FPM.
+            // Call it defensively: WP has already closed its own output
+            // buffers before shutdown handlers run, so the response was
+            // most likely already sent. This is a belt-and-suspenders flush.
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request(); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- intentional early-flush of the FCGI connection so the CP receives the ACK before TaskRunner runs
+            }
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup runner must not hit max_execution_time; @-guarded
+            @ignore_user_abort(true);
+            try {
+                (new TaskRunner($shutdownParams))->run();
+            } catch (\Throwable $e) {
+                \WPMgr\Agent\Support\DebugLog::write('WPMgr Backup: in-process runner fatal: ' . $e->getMessage());
+            }
+        });
+
+        // Always fire spawn_cron: it is the primary trigger on non-gated
+        // sites and a harmless no-op on gated ones (the loopback redirects
+        // away) — the always-on in-process shutdown runner above covers the
+        // gap either way.
         if (function_exists('spawn_cron')) {
             @spawn_cron(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- spawn_cron may emit a harmless notice when DISABLE_WP_CRON is set; @-suppressed intentionally
         }

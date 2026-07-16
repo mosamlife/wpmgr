@@ -154,6 +154,19 @@ final class BackupJanitorTest extends TestCase
         return $dir;
     }
 
+    /**
+     * Seed a bare `<snapshot_id>.lock` coordination file (TaskRunner's
+     * flock() guard — see class-task-runner.php's fileLockPath()) directly
+     * in the runs base, alongside (never inside) any run directory.
+     */
+    private function seedLockFile(string $id): string
+    {
+        $file = $this->runsBase . '/' . $id . '.lock';
+        touch($file);
+
+        return $file;
+    }
+
     /** A 36-character UUID-shaped snapshot id matching BackupJanitor's run-id regex. */
     private function newSnapshotId(): string
     {
@@ -281,6 +294,72 @@ final class BackupJanitorTest extends TestCase
         $this->assertTrue(
             is_dir($this->runsBase . '/restores'),
             'a sibling non-run directory (e.g. restores/) under the same base must never be touched'
+        );
+    }
+
+    // =========================================================================
+    // gcRuns() — GH #232 follow-up: sweeping <snapshot_id>.lock FILES.
+    // =========================================================================
+
+    public function test_aged_orphan_lock_file_is_swept(): void
+    {
+        $id   = $this->newSnapshotId();
+        $file = $this->seedLockFile($id);
+        touch($file, time() - (7 * 3600)); // past RUNS_GC_AGE_SECONDS (6h)
+        clearstatcache(true, $file);
+
+        // No wpmgr_backup_tasks row — the run this lock file belonged to
+        // crashed before reaching its own `finally` cleanup (fatal/OOM/
+        // SIGKILL), or completed/failed and its row is already gone.
+        $GLOBALS['wpdb'] = $this->fakeWpdb(null);
+
+        $class = $this->janitorClassWithBase($this->runsBase);
+        $class::gcRuns();
+
+        $this->assertFalse(
+            is_file($file),
+            'an aged orphan <snapshot_id>.lock file left by a crashed run must be swept — the same leak class as #151, for the sibling lock-file artifact'
+        );
+    }
+
+    public function test_active_runs_lock_file_is_not_swept_even_when_old(): void
+    {
+        $id   = $this->newSnapshotId();
+        $file = $this->seedLockFile($id);
+        touch($file, time() - (7 * 3600)); // past the age gate
+        clearstatcache(true, $file);
+
+        // A live task row: non-terminal phase, progress posted just now —
+        // the same belt-and-suspenders veto the directory sweep uses.
+        $GLOBALS['wpdb'] = $this->fakeWpdb([
+            'phase'            => TaskRunner::PHASE_ARCHIVING_FILES,
+            'last_progress_at' => time(),
+        ]);
+
+        $class = $this->janitorClassWithBase($this->runsBase);
+        $class::gcRuns();
+
+        $this->assertTrue(
+            is_file($file),
+            'a lock file whose task row reports an active, recently-progressing phase must be spared regardless of age'
+        );
+    }
+
+    public function test_fresh_lock_file_under_the_age_threshold_is_kept(): void
+    {
+        $id   = $this->newSnapshotId();
+        $file = $this->seedLockFile($id);
+        touch($file, time());
+        clearstatcache(true, $file);
+
+        $GLOBALS['wpdb'] = $this->fakeWpdb(null);
+
+        $class = $this->janitorClassWithBase($this->runsBase);
+        $class::gcRuns();
+
+        $this->assertTrue(
+            is_file($file),
+            'a lock file younger than RUNS_GC_AGE_SECONDS must never be swept, task row or not'
         );
     }
 

@@ -171,6 +171,60 @@ final class TaskRunner
      * resume from). NEVER throws — top-level catch translates any escape into
      * a `failed` phase + progress post.
      *
+     * GitHub issue #232: two independent, layered mutual-exclusion guards are
+     * taken before any phase work, because the now-guaranteed double-fire of
+     * the in-process shutdown-function runner (BackupCommand::execute()
+     * registers it unconditionally) racing the separate FPM worker
+     * `wp_schedule_single_event('wpmgr_backup_run')` + `spawn_cron()` dispatch
+     * (Watchdog::dispatch()) — and now also the WP-Cron-independent
+     * Watchdog::sweepStalled() reaper — means two or more processes CAN
+     * legitimately reach run() for the same snapshot_id at nearly the same
+     * instant:
+     *
+     *   1. GET_LOCK(name, 0) — a fast, cheap, cross-process reject. Grants a
+     *      MySQL named lock to AT MOST one session at a time; a non-blocking
+     *      second caller gets '0' immediately. Adversarial review finding
+     *      (post-ship): GET_LOCK is scoped to $wpdb's OWN mysqli CONNECTION
+     *      and is SILENTLY released the instant that connection drops — a
+     *      short `wait_timeout` on a managed host, a MySQL restart/failover,
+     *      or `$wpdb->check_connection()` auto-reconnecting after "server
+     *      has gone away" can all sever the connection mid-backup (e.g.
+     *      during a large-table dump in DbDumper, which streams over its own
+     *      separate mysqli handle and only calls back to $wpdb once per
+     *      table). The winner's session-scoped lock vanishes while the
+     *      winner keeps running — a SECOND caller (e.g. the reaper, once
+     *      last_progress_at goes stale) can then legitimately win GET_LOCK
+     *      while the first is still alive, so GET_LOCK ALONE is NOT
+     *      sufficient for correctness; it is now only the fast early-reject.
+     *   2. flock(LOCK_EX|LOCK_NB) on a deterministic per-snapshot lock file
+     *      (see fileLockPath()) — the AUTHORITATIVE guard. It is entirely
+     *      independent of $wpdb's connection state: the OS holds it for as
+     *      long as this PHP process is alive, and releases it automatically
+     *      the instant the process exits for ANY reason (including a
+     *      SIGKILL that skips every PHP-level `finally`) — so a second
+     *      caller's non-blocking acquire attempt correctly reports
+     *      "contended" for as long as the first is genuinely still running,
+     *      regardless of what happened to its DB connection in the
+     *      meantime. flock() is a single-node primitive — correct here
+     *      because a given site's backup always runs on the one WP node
+     *      whose local disk holds the scratch dir.
+     *
+     * Guard order: GET_LOCK first (cheap, no filesystem I/O) — a '0' is a
+     * fast reject with no need to even attempt the flock. Otherwise ('1' or
+     * null) the flock is attempted; losing IT is authoritative and rejects
+     * regardless of the GET_LOCK outcome (this is exactly what closes the
+     * dead-connection gap: GET_LOCK can hand out '1' to a second caller once
+     * the true owner's connection has silently dropped, but the true owner's
+     * OS-level flock is untouched by that and still rejects the second
+     * caller). A loser via EITHER guard writes the SAME lock_contended
+     * breadcrumb and returns WITHOUT mutating phase. If flock itself cannot
+     * even be attempted (path unresolvable, or the filesystem/permissions
+     * prevent opening the lock file — e.g. an exotic FS without flock()
+     * support), that degrades SAFELY to today's GET_LOCK-only behavior
+     * rather than blocking the run; the phase machine is already
+     * idempotent/re-entrant and the CP tolerates duplicate presigns via a
+     * 422, so that worst case is no worse than pre-#232 behavior.
+     *
      * @return string Terminal phase reached this invocation. One of
      *                PHASE_COMPLETED, PHASE_FAILED, or — if a future phase
      *                handler yields mid-run on a soft cap — the in-progress
@@ -183,6 +237,75 @@ final class TaskRunner
         @ignore_user_abort(true);
 
         $currentPhase = self::PHASE_QUEUED;
+
+        // ---- GH #232 guard 1: GET_LOCK — fast, cheap, cross-process reject.
+        //   '1'  => we won the lock — proceed to the (authoritative) flock
+        //           check below, and RELEASE_LOCK in the finally regardless
+        //           of how this invocation ends.
+        //   '0'  => another session already holds the lock and is provably
+        //           making progress (or about to) — write a lock_contended
+        //           breadcrumb and return WITHOUT mutating phase. Fast
+        //           reject: never even attempts the flock.
+        //   null => GET_LOCK() is unsupported (non-MySQL $wpdb, or the query
+        //           itself failed) — fall through to the flock check, which
+        //           is now the sole guard for this invocation.
+        $lockToken = $this->getLock();
+        if ($lockToken === '0') {
+            try {
+                $this->recordLockContended();
+            } catch (\Throwable $_) {
+                // Swallow — a breadcrumb write failure must never propagate
+                // from the loser path; run() never throws.
+            }
+            try {
+                $task = $this->loadTask();
+                return $task !== null ? (string) $task['phase'] : self::PHASE_QUEUED;
+            } catch (\Throwable $_) {
+                return self::PHASE_QUEUED;
+            }
+        }
+        $lockHeld = ($lockToken === '1');
+
+        // ---- GH #232 guard 2: flock — connection-independent, AUTHORITATIVE.
+        // Attempted regardless of the GET_LOCK outcome above ('1' or null):
+        // this is precisely what catches the dead-$wpdb-connection scenario
+        // where GET_LOCK handed out '1' to a second caller because the true
+        // owner's MySQL session silently dropped mid-backup while the owner
+        // (and its flock) is still alive.
+        $fileLock = $this->acquireFileLock();
+        if ($fileLock['contended']) {
+            // Authoritative loser. Release the GET_LOCK we may have just won
+            // (cleanup hygiene — this session is not doing any further work
+            // that needs it) before writing the SAME lock_contended
+            // breadcrumb the GET_LOCK-loser path above uses.
+            if ($lockHeld) {
+                $this->releaseLock();
+            }
+            try {
+                $this->recordLockContended();
+            } catch (\Throwable $_) {
+                // Swallow — see the GET_LOCK-loser path above.
+            }
+            try {
+                $task = $this->loadTask();
+                return $task !== null ? (string) $task['phase'] : self::PHASE_QUEUED;
+            } catch (\Throwable $_) {
+                return self::PHASE_QUEUED;
+            }
+        }
+        /** @var resource|null $fileLockHandle */
+        $fileLockHandle = $fileLock['handle'];
+
+        // GH #232 lock-file GC follow-up: set to true at every point this
+        // invocation reaches a TERMINAL outcome for the snapshot (already
+        // terminal on load, completed, or failed) — never on a loser return
+        // above (those return before this point) and never left false by an
+        // in-progress run, since every path through the try/catch below ends
+        // in exactly one of the three terminal returns. Read in the
+        // `finally` to decide whether OUR OWN lock file (the one this
+        // invocation created/held) should be unlinked now that the snapshot
+        // will never be re-entered again.
+        $terminal = false;
 
         try {
             // ---- Seed or load the task row. ------------------------------
@@ -201,7 +324,23 @@ final class TaskRunner
 
             // Terminal? Re-entry is a no-op.
             if ($currentPhase === self::PHASE_COMPLETED || $currentPhase === self::PHASE_FAILED) {
+                $terminal = true;
                 return $currentPhase;
+            }
+
+            // GH #232: stamp the runner_started breadcrumb now that we hold
+            // at least one real exclusivity guard (GET_LOCK and/or flock) and
+            // have a loaded/seeded row. Feeds the observability ladder
+            // alongside Watchdog::dispatch()'s dispatch_entered stamp:
+            //   no stage + last_progress_at==started_at => hook never fired
+            //   stage=dispatch_entered                  => hook fired, runner never advanced
+            //   stage=runner_started                     => a lock held, first phase failed to persist
+            //   phase past 'queued'                      => advanced
+            // Never stamped when BOTH guards were unavailable (a fully
+            // degraded environment — no lock semantics apply there at all).
+            if ($lockHeld || $fileLockHandle !== null) {
+                $subState['stage'] = 'runner_started';
+                $this->saveTaskState($currentPhase, $subState);
             }
 
             // ---- Phase dispatch loop. ------------------------------------
@@ -215,6 +354,12 @@ final class TaskRunner
                         // First entry: announce we're alive and pick the next phase.
                         $this->postProgress('queued', ['kind' => $this->kind(), 'started_at' => time()]);
                         $next = $this->nextAfterQueued();
+                        \WPMgr\Agent\Support\DebugLog::write(sprintf(
+                            'WPMgr TaskRunner: advancing phase %s -> %s for snapshot %s',
+                            $currentPhase,
+                            $next,
+                            $this->snapshotId()
+                        ));
                         $this->saveTaskState($next, $subState);
                         $currentPhase = $next;
                         break;
@@ -222,24 +367,48 @@ final class TaskRunner
                     case self::PHASE_DUMPING_DB:
                         $subState = $this->runDumpingDb($subState);
                         $next     = $this->nextAfterDumpingDb();
+                        \WPMgr\Agent\Support\DebugLog::write(sprintf(
+                            'WPMgr TaskRunner: advancing phase %s -> %s for snapshot %s',
+                            $currentPhase,
+                            $next,
+                            $this->snapshotId()
+                        ));
                         $this->saveTaskState($next, $subState);
                         $currentPhase = $next;
                         break;
 
                     case self::PHASE_ARCHIVING_FILES:
                         $subState = $this->runArchivingFiles($subState);
+                        \WPMgr\Agent\Support\DebugLog::write(sprintf(
+                            'WPMgr TaskRunner: advancing phase %s -> %s for snapshot %s',
+                            $currentPhase,
+                            self::PHASE_ENCRYPTING_UPLOADING,
+                            $this->snapshotId()
+                        ));
                         $this->saveTaskState(self::PHASE_ENCRYPTING_UPLOADING, $subState);
                         $currentPhase = self::PHASE_ENCRYPTING_UPLOADING;
                         break;
 
                     case self::PHASE_ENCRYPTING_UPLOADING:
                         $subState = $this->runEncryptingUploading($subState);
+                        \WPMgr\Agent\Support\DebugLog::write(sprintf(
+                            'WPMgr TaskRunner: advancing phase %s -> %s for snapshot %s',
+                            $currentPhase,
+                            self::PHASE_SUBMITTING_MANIFEST,
+                            $this->snapshotId()
+                        ));
                         $this->saveTaskState(self::PHASE_SUBMITTING_MANIFEST, $subState);
                         $currentPhase = self::PHASE_SUBMITTING_MANIFEST;
                         break;
 
                     case self::PHASE_SUBMITTING_MANIFEST:
                         $this->runSubmittingManifest($subState);
+                        \WPMgr\Agent\Support\DebugLog::write(sprintf(
+                            'WPMgr TaskRunner: advancing phase %s -> %s for snapshot %s',
+                            $currentPhase,
+                            self::PHASE_COMPLETED,
+                            $this->snapshotId()
+                        ));
                         $this->saveTaskState(self::PHASE_COMPLETED, $subState);
                         $currentPhase = self::PHASE_COMPLETED;
                         break;
@@ -253,6 +422,7 @@ final class TaskRunner
             $this->cleanupOnCompleted();
             $this->postProgress(self::PHASE_COMPLETED, ['snapshot_id' => $this->snapshotId()]);
 
+            $terminal = true;
             return self::PHASE_COMPLETED;
         } catch (\Throwable $e) {
             \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: phase ' . $currentPhase . ' failed: ' . $e->getMessage());
@@ -292,7 +462,319 @@ final class TaskRunner
                 // Swallow.
             }
 
+            $terminal = true;
             return self::PHASE_FAILED;
+        } finally {
+            // GH #232: release BOTH guards regardless of how this invocation
+            // ends (completed, failed, or an escape the outer catch didn't
+            // anticipate) — never on the loser/no-lock-held paths above,
+            // which already returned and hold nothing to release here.
+            if ($lockHeld) {
+                $this->releaseLock();
+            }
+            if ($fileLockHandle !== null) {
+                // Release the flock FIRST (LOCK_UN + fclose) — only THEN,
+                // with the fd closed, unlink the lock file itself. Doing it
+                // in this order (never unlink-before-release) avoids any
+                // platform-specific flock-vs-unlink-on-an-open-fd subtlety.
+                $this->releaseFileLock($fileLockHandle);
+
+                // GH #232 lock-file GC follow-up: only the WINNER that
+                // brought this snapshot to a genuinely terminal state
+                // reclaims its own lock file — never on a contended-loser
+                // return (those exit above, before this finally is even
+                // reached) and never mid-run, so an in-flight winner's lock
+                // file is never removed out from under a legitimately
+                // waiting resumer. A crashed run that never reaches this
+                // `finally` at all (fatal/OOM/SIGKILL) leaks its lock file
+                // exactly like it always leaked its scratch dir before GH
+                // #151 — BackupJanitor::gcRuns() is the age-gated backstop
+                // for both.
+                if ($terminal) {
+                    $this->cleanupFileLock();
+                }
+            }
+        }
+    }
+
+    // ==================================================================
+    // Advisory run-lock (GitHub issue #232)
+    // ==================================================================
+
+    /**
+     * MySQL advisory-lock name for this snapshot's run. 9 + 36 = 45 chars,
+     * well under MySQL's 64-character GET_LOCK() name limit.
+     */
+    private function lockName(): string
+    {
+        return 'wpmgr_bk_' . $this->snapshotId();
+    }
+
+    /**
+     * Best-effort, non-blocking (timeout=0) MySQL advisory lock acquire.
+     *
+     * Adversarial-review correction: this is a FAST, CHEAP early-reject only
+     * — it is NOT, by itself, a reliable mutual-exclusion guarantee. GET_LOCK
+     * is scoped to $wpdb's own mysqli connection and is silently released the
+     * instant that connection drops (a short `wait_timeout` on a managed
+     * host, a MySQL restart/failover, or `$wpdb->check_connection()`
+     * reconnecting after "server has gone away" — all plausible mid-backup,
+     * e.g. during a large-table dump that only calls back to $wpdb once per
+     * table). A dropped connection can hand a genuinely-still-alive winner's
+     * '1' to a SECOND caller, so this alone can NOT promise "always exactly
+     * one winner, never two" — see run()'s doc for why flock() (guard 2) is
+     * the connection-independent, AUTHORITATIVE backstop that closes this
+     * exact gap, and why a caller who is a fast reject here ('0') never even
+     * needs to reach the more expensive flock check.
+     *
+     * @return string|null '1' when we won the lock, '0' when another session
+     *                      already holds it (fast reject — no flock attempt
+     *                      needed), null when GET_LOCK() is unsupported
+     *                      (non-MySQL $wpdb driver) or the probe itself
+     *                      failed — either way, run() still attempts the
+     *                      authoritative flock() guard next.
+     */
+    private function getLock(): ?string
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return null;
+        }
+        try {
+            /** @phpstan-ignore-next-line */
+            $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
+        } catch (\Throwable $e) {
+            return null;
+        }
+        return $result === null ? null : (string) $result;
+    }
+
+    /**
+     * Release the advisory lock acquired by getLock(). Best-effort — MySQL
+     * releases the lock automatically when this session's connection closes,
+     * so a failed RELEASE_LOCK() here is never fatal.
+     */
+    private function releaseLock(): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+        try {
+            /** @phpstan-ignore-next-line */
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
+        } catch (\Throwable $e) {
+            // Swallow — MySQL releases the lock automatically on connection close.
+        }
+    }
+
+    /**
+     * Deterministic per-snapshot flock() lock-file path (GitHub issue #232
+     * adversarial-review follow-up — see run()'s doc for the full
+     * dead-connection rationale this guard closes).
+     *
+     * Derived from the PARENT of the per-snapshot scratch dir (the shared
+     * "runs" base, e.g. `wp-content/wpmgr-agent/runs/`) rather than the
+     * per-snapshot scratch dir itself, so the lock path is resolvable and
+     * stable even before that per-snapshot directory has been created — a
+     * watchdog resume or the reaper can race the very first
+     * ensureScratchDir() call. Falls back to deriving the same "runs" base
+     * from wp_content_path when scratch_dir itself is empty/malformed
+     * (defensive; both params are always set together in practice).
+     *
+     * @return string Absolute lock-file path, or '' when neither base can be
+     *                resolved at all (BackupCommand always sets scratch_dir
+     *                before a runner is ever constructed, so this is only
+     *                reachable via a malformed/hand-built params array).
+     */
+    private function fileLockPath(): string
+    {
+        $scratch = $this->scratchDir();
+        $base    = $scratch !== '' ? dirname($scratch) : '';
+
+        if ($base === '' || $base === '.' || $base === DIRECTORY_SEPARATOR) {
+            $contentPath = $this->wpContentPath();
+            $base        = $contentPath !== '' ? rtrim($contentPath, '/\\') . '/wpmgr-agent/runs' : '';
+        }
+
+        if ($base === '') {
+            return '';
+        }
+
+        return rtrim($base, '/\\') . DIRECTORY_SEPARATOR . $this->snapshotId() . '.lock';
+    }
+
+    /**
+     * Acquire the AUTHORITATIVE, connection-independent mutual-exclusion
+     * guard for this snapshot's run (GitHub issue #232 adversarial-review
+     * follow-up — see run()'s doc for the full rationale).
+     *
+     * Unlike getLock() (MySQL GET_LOCK, silently released if $wpdb's
+     * connection drops mid-run), this flock() is held by the OS for as long
+     * as this PHP process is alive and is released automatically the
+     * instant it exits for ANY reason — including a SIGKILL that skips every
+     * PHP-level `finally` — so a second caller's non-blocking attempt
+     * correctly reports contention for as long as the first caller is
+     * genuinely still running, independent of what happened to its database
+     * connection in the meantime.
+     *
+     * Three outcomes, distinguished so a caller can tell "no one else is
+     * running this" from "flock itself isn't usable right now":
+     *   - ['handle' => resource, 'contended' => false]  — WON the lock. The
+     *     caller must keep the handle open for the whole run and pass it to
+     *     releaseFileLock() when done.
+     *   - ['handle' => null,     'contended' => true]   — LOST: another live
+     *     process holds this exact snapshot's lock file right now (the
+     *     authoritative "someone else is really still running this" signal).
+     *   - ['handle' => null,     'contended' => false]  — the guard could not
+     *     even be attempted (no resolvable path, or the filesystem/
+     *     permissions prevent opening the lock file — e.g. an exotic FS
+     *     without flock() support). Degrades SAFELY: the caller proceeds
+     *     exactly as it would have before this guard existed.
+     *
+     * @return array{handle:resource|null,contended:bool}
+     */
+    private function acquireFileLock(): array
+    {
+        $path = $this->fileLockPath();
+        if ($path === '') {
+            return ['handle' => null, 'contended' => false];
+        }
+
+        $dir = dirname($path);
+        if (!is_dir($dir) && !wp_mkdir_p($dir) && !is_dir($dir)) {
+            return ['handle' => null, 'contended' => false];
+        }
+
+        // 'c': create the file if it does not exist yet, but never truncate
+        // an existing one — only flock()'s exclusivity matters here, the
+        // file's contents are never read or written by this guard.
+        $handle = @fopen($path, 'c'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- headless agent; WP_Filesystem has no flock()-equivalent API and is never initialized in this context; small, server-derived, empty coordination file
+        if ($handle === false) {
+            return ['handle' => null, 'contended' => false];
+        }
+        @chmod($path, 0600); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- explicit security perms on our own coordination file; WP_Filesystem would coerce to wider FS_CHMOD_FILE
+
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            // Genuinely contended: another live PHP process holds this exact
+            // snapshot's lock right now, regardless of its $wpdb connection
+            // state. This is the authoritative reject.
+            fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- releasing our own failed-lock-attempt handle, not a WP_Filesystem-managed resource
+            return ['handle' => null, 'contended' => true];
+        }
+
+        return ['handle' => $handle, 'contended' => false];
+    }
+
+    /**
+     * Release + close a flock handle returned by acquireFileLock(). Safe to
+     * call with a non-resource (a no-op). Best-effort: a failed
+     * flock(LOCK_UN) is never fatal — the OS releases the lock automatically
+     * the instant this process exits for any reason.
+     *
+     * @param resource|null $handle
+     */
+    private function releaseFileLock($handle): void
+    {
+        if ($handle === null || !is_resource($handle)) {
+            return;
+        }
+        flock($handle, LOCK_UN);
+        fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- releasing our own advisory lock handle; WP_Filesystem has no flock()-equivalent API and is never initialized in this headless agent context
+    }
+
+    /**
+     * Reclaim this run's own `<snapshot_id>.lock` coordination file — GH
+     * #232 follow-up: without this, one empty 0-byte file per snapshot
+     * accumulates in the runs base forever (thousands over time on an
+     * active fleet). Called from run()'s `finally`, AFTER
+     * releaseFileLock() has already run flock(LOCK_UN) + fclose() on this
+     * same handle — the fd is closed before the path is ever touched here,
+     * so there is no unlink-against-an-open-fd ordering subtlety. Only
+     * called when this invocation reached a genuinely TERMINAL outcome
+     * (see run()'s `$terminal` doc) — a run that crashes before reaching
+     * this `finally` at all (fatal/OOM/SIGKILL) still leaks its lock file,
+     * exactly like it always leaked its scratch dir before GH #151;
+     * BackupJanitor::gcRuns() is the age-gated backstop for both.
+     *
+     * Best-effort: a failed unlink here is cosmetic disk-hygiene, never a
+     * correctness concern — the file is empty and carries no state, and a
+     * lingering one is reclaimed by the janitor regardless.
+     */
+    private function cleanupFileLock(): void
+    {
+        $path = $this->fileLockPath();
+        if ($path === '' || !is_file($path)) {
+            return;
+        }
+        wp_delete_file($path);
+    }
+
+    /**
+     * Record a `lock_contended` breadcrumb on the task row WITHOUT touching
+     * `phase` — called when getLock() reports we lost the race to another
+     * session that is provably already running this task.
+     *
+     * Reads the RAW sub_state column value directly (NOT through loadTask(),
+     * which follows the sidecar-spill pointer and would rehydrate a
+     * potentially large de-sidecared cursor). Merging 'stage' into whatever
+     * tiny envelope already lives in the column — a genuine small sub_state
+     * OR a `{"_sidecar":true,...}` pointer object — keeps this write always
+     * small and never risks re-writing a large cursor inline (the exact
+     * @@max_allowed_packet overflow the sidecar exists to prevent).
+     *
+     * Best-effort: a failure here must never throw — the caller (run()'s
+     * loser path) already wraps this in its own try/catch, but every DB call
+     * inside is additionally guarded so nothing here can escalate on its own.
+     */
+    private function recordLockContended(): void
+    {
+        \WPMgr\Agent\Support\DebugLog::write(
+            'WPMgr TaskRunner: lock contended for snapshot ' . $this->snapshotId()
+            . ' — another session already holds the run-lock; skipping re-entry without mutating phase'
+        );
+
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+        $table = $this->tableName();
+        if ($table === '') {
+            return;
+        }
+
+        try {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); value bound via %s placeholder
+            $sql      = "SELECT sub_state FROM {$table} WHERE snapshot_id = %s LIMIT 1";
+            /** @phpstan-ignore-next-line */
+            $prepared = $wpdb->prepare($sql, $this->snapshotId()); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
+            /** @phpstan-ignore-next-line */
+            $raw = $wpdb->get_var($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct read on plugin-owned table; value is the output of $wpdb->prepare(); $table comes from tableName() (prefix+constant), opaque to static analysis but not user input
+
+            $envelope = [];
+            if (is_string($raw) && $raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $envelope = $decoded;
+                }
+            }
+            $envelope['stage'] = 'lock_contended';
+            $encoded = json_encode($envelope);
+            if ($encoded === false) {
+                return;
+            }
+
+            /** @phpstan-ignore-next-line */
+            $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb-only write, phase column untouched
+                $table,
+                ['sub_state' => $encoded],
+                ['snapshot_id' => $this->snapshotId()],
+                ['%s'],
+                ['%s']
+            );
+        } catch (\Throwable $e) {
+            // Swallow — a breadcrumb write failure must never surface from
+            // the loser path.
         }
     }
 

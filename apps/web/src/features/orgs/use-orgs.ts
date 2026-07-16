@@ -2,6 +2,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
@@ -9,6 +10,7 @@ import { client } from "@wpmgr/api";
 
 import { toError } from "@/features/auth/use-auth";
 import { resetSiteStream } from "@/features/sites/use-site-events";
+import { sitesKeys, NotFoundError as SiteNotFoundError } from "@/features/sites/use-sites";
 import { toast } from "@/components/toast";
 import { router } from "@/router";
 
@@ -88,6 +90,56 @@ export function useCreateOrg(): UseMutationResult<
 }
 
 // ---------------------------------------------------------------------------
+// GH #233 — org switch off a site-detail route for a site the new org
+// doesn't have.
+//
+// Matches a site-detail path — "/sites/<id>", "/sites/<id>/health",
+// "/sites/<id>/backups/<snapshotId>", etc. Deliberately does NOT match the
+// bare "/sites" list route (no id segment after it), so the normal case
+// (switching org while already on the list, or on a non-site route like
+// /dashboard) never triggers a redirect.
+const SITE_DETAIL_PATH = /^\/sites\/([^/]+)/;
+
+function siteIdFromPathname(pathname: string): string | null {
+  const match = SITE_DETAIL_PATH.exec(pathname);
+  return match?.[1] ?? null;
+}
+
+/**
+ * An org switch can leave a mounted site-detail route (`/sites/$siteId/...`)
+ * pointing at a site that belongs to the PREVIOUS org — it does not exist
+ * under the newly-activated one, and the CP's `getSite` 404s. The caller's
+ * `resetQueries()` already reset + refetched that route's `useSite(siteId)`
+ * query (it's observed, since we're on that very route) under the new
+ * session; if that refetch came back NotFound, staying put would surface a
+ * raw "site not found" error for what is really just an org mismatch, not a
+ * deleted/missing site. Redirect to `/sites` (the new org's default list)
+ * instead — the same place a hard reload would land an operator whose deep
+ * link no longer resolves.
+ *
+ * This is a no-op for every other route (dashboard, /sites itself, settings,
+ * ...) and for a site that DOES exist in the new org (no NotFoundError → no
+ * redirect, the tab just shows the new org's version of that site).
+ *
+ * Proactive check (reading the just-reset query state) rather than a
+ * catch-in-the-route approach: it composes with the existing
+ * resetQueries/resetSiteStream/router.invalidate sequence already
+ * orchestrated here for a tenant-context change, so there is exactly one
+ * place that reacts to "the active org changed out from under the current
+ * page" instead of duplicating that reaction in the route's error boundary.
+ */
+async function redirectIfSiteRouteWentStale(
+  queryClient: QueryClient,
+): Promise<void> {
+  const siteId = siteIdFromPathname(router.state.location.pathname);
+  if (!siteId) return;
+  const state = queryClient.getQueryState(sitesKeys.detail(siteId));
+  if (state?.error instanceof SiteNotFoundError) {
+    await router.navigate({ to: "/sites" });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/v1/orgs/{orgId}/activate
 // Switch the session's active org. Actively resets + refetches ALL server
 // state (GH #186 — a passive `clear()` never notifies mounted observers) so
@@ -130,6 +182,10 @@ export function useActivateOrg(): UseMutationResult<
       // (push) path re-establishes under the new tenant too, with a fresh
       // cursor (see resetSiteStream's doc for why the cursor must be dropped).
       resetSiteStream();
+      // GH #233: if we just landed on a site-detail route for a site the
+      // newly-activated org doesn't have, get off that dead page BEFORE
+      // re-running loaders below — see redirectIfSiteRouteWentStale's doc.
+      await redirectIfSiteRouteWentStale(queryClient);
       // Re-run the `_authed` route's beforeLoad/loaders (ensureMe, the
       // superadmin bounce, per-route prefetches, ...) under the new tenant —
       // the same thing a hard browser reload does.
