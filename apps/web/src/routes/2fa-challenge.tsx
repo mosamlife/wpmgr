@@ -56,6 +56,34 @@ export const Route = createFileRoute("/2fa-challenge")({
 
 type Mode = "totp" | "recovery" | "webauthn";
 
+// Maps a challenge-mutation error `code` to house-style, actionable copy.
+// Exported (module-level, pure) so GH #215's fix can be pinned in a unit test
+// without mounting the whole route + form flow; mirrors `mapDeleteOrgError`
+// in `features/orgs/use-orgs.ts`.
+export function getErrorMessage(code: string): string {
+  switch (code) {
+    case "challenge_expired":
+      return "This login session has expired. Please sign in again.";
+    case "too_many_attempts":
+      return "Too many failed attempts. This session is locked. Please sign in again.";
+    case "invalid_code":
+      return "Incorrect code. Please check and try again.";
+    case "codes_exhausted":
+      return "All recovery codes have been used. Contact your administrator.";
+    case "recovery_code_already_used":
+      return "That recovery code has already been used.";
+    case "totp_decrypt_failed":
+      // The server can no longer decrypt the stored TOTP secret (its
+      // secrets-at-rest key changed on a self-host, GH #215) -- a server
+      // configuration problem, not a wrong code. Recovery codes are hashed
+      // (not encrypted), so they still work here; point the operator at the
+      // "Use a recovery code" switcher already rendered on this screen.
+      return "Your two-factor secret couldn't be decrypted because the server's encryption key changed. This is a server configuration issue, not a wrong code. Sign in with a recovery code below, then re-enroll two-factor after pinning a stable encryption key (WPMGR_SITE_DEST_AGE_SECRET).";
+    default:
+      return "Verification failed. Please try again.";
+  }
+}
+
 function TwoFaChallengePage() {
   const search = Route.useSearch();
   const navigate = useNavigate();
@@ -78,23 +106,6 @@ function TwoFaChallengePage() {
 
   // Shared error / success handling
   const [errorCode, setErrorCode] = useState<string | null>(null);
-
-  function getErrorMessage(code: string): string {
-    switch (code) {
-      case "challenge_expired":
-        return "This login session has expired. Please sign in again.";
-      case "too_many_attempts":
-        return "Too many failed attempts. This session is locked. Please sign in again.";
-      case "invalid_code":
-        return "Incorrect code. Please check and try again.";
-      case "codes_exhausted":
-        return "All recovery codes have been used. Contact your administrator.";
-      case "recovery_code_already_used":
-        return "That recovery code has already been used.";
-      default:
-        return "Verification failed. Please try again.";
-    }
-  }
 
   const isExpiredOrLocked =
     errorCode === "challenge_expired" || errorCode === "too_many_attempts";

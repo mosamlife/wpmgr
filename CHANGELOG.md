@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.65] - 2026-07-16
+
+### Changed
+
+- Two-factor and other stored secrets that can no longer be decrypted (because the secrets-at-rest encryption key changed) now fail loudly and clearly instead of looking like a wrong code (GH #215). If the encryption key is not pinned on a self-hosted install and the platform regenerates it across restarts, the previously-stored secret can no longer be read. The control plane now logs a fingerprint of the resolved key at startup (so a changed key across restarts is visible), warns at boot when stored secrets no longer decrypt (with the exact remediation: pin a stable `WPMGR_SITE_DEST_AGE_SECRET`), and shows a precise "the server's encryption key changed, sign in with a recovery code and re-enroll" message at the two-factor prompt instead of a generic failure. This is a diagnosability improvement; the underlying encryption behavior is unchanged (a pinned key was and remains stable across restarts).
+
+### Fixed
+
+- Website screenshots for slow-loading or uncached pages are no longer blank (GH #229). The capture worker previously snapshotted almost immediately; it now waits for the page load, network idle, and DOM to settle (with a short additional render delay), all bounded by a hard timeout so a slow page degrades to a best-effort partial capture rather than hanging or coming back blank.
+
 ## [0.61.64] - 2026-07-16
 
 ### Fixed

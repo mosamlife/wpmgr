@@ -883,7 +883,24 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("site destination age identity: %w", err)
 	}
-	logger.Info("secret-at-rest age identity resolved", slog.String("source", ageIdentitySource))
+	// recipient_fingerprint is a short, non-secret digest of the identity's
+	// PUBLIC recipient (see ageRecipientFingerprint) — never the secret key.
+	// Comparing this value across two boots is a definitive, at-a-glance
+	// signal of whether the resolved secrets-at-rest key rotated (GH #215:
+	// on a PaaS that regenerates WPMGR_SESSION_SECRET per deploy, the derived
+	// key silently rotated and only surfaced later as an unrelated "invalid
+	// 2FA code"/mail-send failure with no boot-time signal).
+	logger.Info("secret-at-rest age identity resolved",
+		slog.String("source", ageIdentitySource),
+		slog.String("recipient_fingerprint", ageRecipientFingerprint(siteDestAgeID)),
+	)
+	// Best-effort, non-fatal boot-time self-check (GH #215 follow-up): sample
+	// a bounded set of already-stored at-rest ciphertexts and confirm the
+	// resolved identity can still decrypt them, warning loudly (but never
+	// blocking/crashing boot) if the key has evidently rotated. See
+	// ageIdentitySelfCheck's doc comment in age_selfcheck.go for the full
+	// decision logic and boot-safety guarantees.
+	ageIdentitySelfCheck(ctx, pool, siteDestAgeID, logger)
 	siteDestSvc := sitedestination.NewService(siteDestRepo, siteDestAgeID, logger)
 	siteDestH := sitedestination.NewHandler(siteDestSvc, auditRec)
 

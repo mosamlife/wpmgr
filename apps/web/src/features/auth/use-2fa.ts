@@ -358,6 +358,19 @@ export function useTotpChallenge() {
         }
         throw Object.assign(new Error("invalid_code"), { code: "invalid_code" });
       }
+      // A 500 with code `totp_decrypt_failed` means the server can no longer
+      // decrypt the operator's stored TOTP secret (the secrets-at-rest key
+      // changed on a self-host, e.g. GH #215) -- a server configuration
+      // problem, not a wrong code. The generic `toError` fallback below would
+      // otherwise surface this as an indistinguishable "Verification failed"
+      // banner, so it must be branched out here like the 401/410 cases above.
+      if (result.response?.status === 500) {
+        const raw = result.error as Record<string, unknown> | null | undefined;
+        const code = raw && typeof raw["code"] === "string" ? raw["code"] : "";
+        if (code === "totp_decrypt_failed") {
+          throw Object.assign(new Error("totp_decrypt_failed"), { code: "totp_decrypt_failed" });
+        }
+      }
       if (result.error !== undefined) throw toError(result.error);
       return result.data as ChallengeCompleteResult;
     },
