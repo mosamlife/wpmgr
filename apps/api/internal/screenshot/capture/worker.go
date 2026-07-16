@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -54,6 +55,57 @@ const defaultConcurrency = 2
 // captureTimeout is the hard per-capture deadline (Chromium launch + navigate
 // + screenshot + upload). 15 s covers slow sites.
 const captureTimeout = 15 * time.Second
+
+// Ready-wait tuning (GH #229). Slow-hosting / uncached pages otherwise
+// screenshot blank because the capture fires before the page has painted.
+// waitUntilReady waits for the load event + network/DOM stability + a fixed
+// settle, all hard-bounded so a genuinely broken or slow page degrades to a
+// best-effort partial screenshot rather than hanging the worker.
+const (
+	// networkIdleWindow is the least quiet period WaitStable requires before it
+	// treats the network/DOM as idle. It is the stability WINDOW, not a timeout —
+	// the timeout is the ready-wait budget below.
+	networkIdleWindow = 500 * time.Millisecond
+
+	// renderSettleWait is the fixed post-stability settle that lets late,
+	// lazy-loaded / JS-rendered content paint after the network goes idle.
+	renderSettleWait = 1500 * time.Millisecond
+
+	// defaultReadyWaitBudget caps the TOTAL time waitUntilReady may spend (load +
+	// stability + settle). Chosen below captureTimeout so navigation, the wait,
+	// the screenshot, and the upload all fit inside the job deadline.
+	defaultReadyWaitBudget = 8 * time.Second
+)
+
+// readyWaitBudget resolves the ready-wait ceiling. Honors the optional
+// WPMGR_SCREENSHOT_READY_WAIT override (whole seconds — for self-hosters on
+// especially slow hosting), clamped to (0, captureTimeout] so a misconfiguration
+// can never let a single capture outlast its own capture/job deadline.
+func readyWaitBudget() time.Duration {
+	if v := os.Getenv("WPMGR_SCREENSHOT_READY_WAIT"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			d := time.Duration(secs) * time.Second
+			if d > captureTimeout {
+				d = captureTimeout
+			}
+			return d
+		}
+	}
+	return defaultReadyWaitBudget
+}
+
+// settleClamp returns the fixed render-settle delay, shortened to whatever time
+// is left in the ready-wait budget so the settle sleep can never push the total
+// wait past the budget. Returns 0 when no budget remains.
+func settleClamp(remaining time.Duration) time.Duration {
+	if remaining <= 0 {
+		return 0
+	}
+	if remaining < renderSettleWait {
+		return remaining
+	}
+	return renderSettleWait
+}
 
 // captureWidth / captureHeight are the 1x viewport dimensions.
 const (
@@ -352,12 +404,10 @@ func (w *Worker) capture(ctx context.Context, siteURL string) (img1x, img2x []by
 		return nil, nil, fmt.Errorf("navigate %s: %w", siteURL, navErr)
 	}
 
-	// Wait for the page to be visually stable. Use a short idle wait so a
-	// continuously-polling page doesn't stall us. WaitIdle returns on
-	// network-idle (no pending requests for idleTime).
-	idleCtx, idleCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer idleCancel()
-	_ = page.Context(idleCtx).WaitIdle(2 * time.Second)
+	// 4a. Wait for the page to actually finish rendering before capturing so
+	//     slow-hosting / uncached sites don't screenshot blank (GH #229). This
+	//     is best-effort and hard-bounded — see waitUntilReady.
+	w.waitUntilReady(ctx, page)
 
 	// 5. Take the 1x screenshot (WebP, 85% quality).
 	shot1x, snapErr := page.Screenshot(false, &proto.PageCaptureScreenshot{
@@ -389,6 +439,45 @@ func (w *Worker) capture(ctx context.Context, siteURL string) (img1x, img2x []by
 	}
 
 	return shot1x, shot2x, nil
+}
+
+// waitUntilReady blocks until the page is visually ready to screenshot, or the
+// ready-wait budget elapses — whichever comes first (GH #229). Without it,
+// slow-hosting or uncached pages screenshot blank because the capture fires
+// before the page has painted. Every step is best-effort and hard-bounded:
+//
+//   - readyCtx caps the load + network/DOM stability wait at readyWaitBudget()
+//     (also transitively bounded by the caller's capture ctx, which carries the
+//     captureTimeout deadline).
+//   - WaitStable's argument is the least-idle WINDOW, not a timeout; the timeout
+//     is readyCtx, so a page that never stabilizes ends the wait at the budget
+//     instead of looping forever.
+//   - the trailing fixed settle (so late lazy-loaded / JS-rendered paints land)
+//     is clamped to the budget's remaining time.
+//
+// It deliberately NEVER returns an error and NEVER weakens the navigation ctx or
+// SSRF proxy: a page that never stabilizes is captured with whatever HAS
+// rendered, because a partial screenshot beats both a blank one and a hung
+// worker. It cannot hang — both the stability wait and the settle are bounded,
+// and the whole function is bounded by the caller's ctx.
+func (w *Worker) waitUntilReady(ctx context.Context, page *rod.Page) {
+	deadline := time.Now().Add(readyWaitBudget())
+	readyCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	// Load event + network-request idle + DOM stability, all bounded by readyCtx.
+	// The error (including deadline-exceeded) is intentionally ignored — we go on
+	// to capture whatever has rendered.
+	_ = page.Context(readyCtx).WaitStable(networkIdleWindow)
+
+	// Fixed settle for late lazy-loaded images / JS-rendered content, clamped so
+	// it can never extend the total wait past the budget.
+	if settle := settleClamp(time.Until(deadline)); settle > 0 {
+		select {
+		case <-time.After(settle):
+		case <-ctx.Done():
+		}
+	}
 }
 
 func (w *Worker) publish(ctx context.Context, a screenshot.CaptureArgs, data map[string]any) {
