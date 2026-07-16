@@ -7,12 +7,17 @@
  * `completed` phase transition — the failure path deletes the
  * `wpmgr_backup_tasks` row without cleaning scratch, leaking the DB dump,
  * zip parts, and chunk files of every failed run forever. This class sweeps
- * those leaked directories on an age-gated cadence. Full design rationale
- * (the "a just-failed run has no task row" subtlety, the age-threshold
- * reasoning, and the task-row veto) is in the design notes at the bottom of
- * this file — kept there so the ABSPATH direct-access guard below stays
- * within the first ~50 lines of the file, which is what Plugin Check's
- * Direct_File_Access_Check regex fallback scans.
+ * those leaked directories on an age-gated cadence. GH #232 follow-up: the
+ * same sweep also reclaims the sibling `<snapshot_id>.lock` coordination
+ * FILE TaskRunner's flock() guard creates alongside each run directory —
+ * TaskRunner::run() reclaims its own on a normal terminal exit, but a run
+ * that crashes before reaching that cleanup (fatal/OOM/SIGKILL) leaks the
+ * lock file exactly like it always leaked the run directory. Full design
+ * rationale (the "a just-failed run has no task row" subtlety, the
+ * age-threshold reasoning, and the task-row veto) is in the design notes at
+ * the bottom of this file — kept there so the ABSPATH direct-access guard
+ * below stays within the first ~50 lines of the file, which is what Plugin
+ * Check's Direct_File_Access_Check regex fallback scans.
  *
  * @package WPMgr\Agent\Backup
  */
@@ -80,6 +85,43 @@ class BackupJanitor
         $now = time();
         foreach ($items as $item) {
             if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            // GH #232 follow-up: TaskRunner's flock() coordination file,
+            // `<snapshot_id>.lock` — created alongside (never inside) the
+            // per-snapshot run directory, so it is resolvable even before
+            // that directory exists (see TaskRunner::fileLockPath()'s doc).
+            // TaskRunner::run()'s own `finally` reclaims a run's OWN lock
+            // file once it reaches a genuinely terminal outcome, but a run
+            // that crashes before ever reaching that `finally` (fatal/OOM/
+            // SIGKILL) leaks it forever — the exact same class of leak GH
+            // #151 exists to fix for the run DIRECTORY, now for this
+            // sibling artifact. Same age gate + isActiveRun() veto as the
+            // directory sweep below; a file, not a directory, so it is
+            // reclaimed with a plain unlink rather than deleteDir().
+            if (preg_match('/^[0-9a-fA-F-]{36}\.lock$/', $item) === 1) {
+                $lockFile = $base . '/' . $item;
+                if (!is_file($lockFile) || is_link($lockFile)) {
+                    continue;
+                }
+
+                $lockMtime = @filemtime($lockFile);
+                if ($lockMtime === false) {
+                    // Fail-safe: cannot determine age — retain rather than
+                    // risk deleting a lock a still-running process holds.
+                    continue;
+                }
+                if (($now - $lockMtime) < self::RUNS_GC_AGE_SECONDS) {
+                    continue; // Too fresh — could still belong to an active run.
+                }
+
+                $snapshotId = substr($item, 0, -5); // Strip the '.lock' suffix.
+                if ($j->isActiveRun($snapshotId)) {
+                    continue; // Belt-and-suspenders: the task row says it's still live.
+                }
+
+                wp_delete_file($lockFile);
                 continue;
             }
 

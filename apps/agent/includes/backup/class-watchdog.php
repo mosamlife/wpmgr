@@ -64,10 +64,46 @@ final class Watchdog
      * WP-Cron callbacks MUST NOT return a value (return-value handling is
      * undefined across WP-Cron implementations).
      *
+     * GitHub issue #232: run() is now a thin wrapper around
+     * resumeIfStalled() — the cron path is unchanged (no #131 regression),
+     * but the resume logic is now ALSO reachable from sweepStalled(), the
+     * WP-Cron-INDEPENDENT reaper bound to plugins_loaded via
+     * Plugin::maybeSweepStalledBackups().
+     *
      * @param string $snapshotId UUID of the snapshot to inspect.
      * @return void
      */
     public static function run(string $snapshotId): void
+    {
+        self::resumeIfStalled($snapshotId);
+    }
+
+    /**
+     * Resume a stalled backup task, or reschedule the watchdog if it's still
+     * healthy. Reusable entry point (GitHub issue #232): called by run() (the
+     * `wpmgr_backup_watchdog` WP-Cron callback) AND by sweepStalled() (the
+     * WP-Cron-INDEPENDENT reaper driven from ordinary request traffic).
+     *
+     *   - If terminal (`completed` / `failed`), do nothing (best-effort
+     *     defensive DELETE).
+     *   - If active but `last_progress_at < now() - STALL_THRESHOLD_SECONDS`,
+     *     the runner has stalled (PHP process killed, FPM worker recycled,
+     *     hosting restart…). Increment `resume_count` (cap at `max_resumes`)
+     *     and re-enter `TaskRunner::run()` from the persisted `sub_state`.
+     *   - If active but still posting progress, reschedule the watchdog
+     *     itself for another +120s. Belt-and-suspenders: even if the
+     *     runner never crashes, the watchdog stays alive long enough to
+     *     observe the eventual `completed`/`failed` transition.
+     *
+     * Every guard below is preserved VERBATIM from the pre-#232 run(): the
+     * 7200s hard-ceiling delete, the late-phase (encrypting_uploading /
+     * submitting_manifest) delete, the STALL_THRESHOLD_SECONDS staleness
+     * check, and the resume_count >= max_resumes -> mark-failed guard.
+     *
+     * @param string $snapshotId UUID of the snapshot to inspect.
+     * @return void
+     */
+    public static function resumeIfStalled(string $snapshotId): void
     {
         if ($snapshotId === '' || !preg_match('/^[a-f0-9-]{36}$/i', $snapshotId)) {
             return;
@@ -245,6 +281,17 @@ final class Watchdog
             DebugLog::write(sprintf('WPMgr Backup: dispatch cannot find task row for snapshot %s', $snapshotId));
             return;
         }
+
+        // GitHub issue #232: durable breadcrumb the very moment dispatch() is
+        // entered — the FIRST possible write after BackupCommand seeds
+        // phase=queued that is reachable even if TaskRunner::run() below
+        // never advances phase at all (e.g. it crashes before its own first
+        // saveTaskState). Distinguishes "the wpmgr_backup_run hook fired but
+        // the runner made zero progress" from "the hook never fired at all"
+        // — see the observability ladder in TaskRunner::run()'s GET_LOCK doc.
+        self::stampStage($snapshotId, 'dispatch_entered');
+        DebugLog::write(sprintf('WPMgr Backup: dispatch entered for snapshot %s', $snapshotId));
+
         $phase = (string) ($row['phase'] ?? '');
         if ($phase === TaskRunner::PHASE_COMPLETED || $phase === TaskRunner::PHASE_FAILED) {
             // Terminal. DELETE the row so this and any future stale
@@ -304,6 +351,142 @@ final class Watchdog
             return;
         }
         wp_schedule_single_event(time() + max(1, $delay), self::HOOK, [$snapshotId]);
+    }
+
+    /**
+     * GitHub issue #232 — WP-Cron-INDEPENDENT reaper. Finds every
+     * wpmgr_backup_tasks row that is non-terminal AND has gone stale (no
+     * progress for STALL_THRESHOLD_SECONDS) and resumes each one through
+     * resumeIfStalled(). Uses the existing `KEY phase` + `KEY
+     * last_progress_at` indexes already on the table (see
+     * Schema::BACKUP_TASKS_TABLE) — no migration required.
+     *
+     * Safe to call from an ordinary request — Plugin::maybeSweepStalledBackups()
+     * binds this to `plugins_loaded`, throttled to once per 60s. Each
+     * resumeIfStalled() re-enters TaskRunner::run(), which now takes the GH
+     * #232 advisory run-lock before doing any phase work — so a sweep that
+     * races an already-live runner in a separate PHP process/DB connection is
+     * a harmless no-op (the sweep's TaskRunner instance loses the lock and
+     * returns without mutating phase).
+     *
+     * @param int $limit Maximum number of stalled rows to resume per call —
+     *                    bounds the worst-case cost of a single request that
+     *                    happens to trigger the sweep.
+     * @return void
+     */
+    public static function sweepStalled(int $limit = 20): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+
+        $table     = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+        $cutoff    = time() - self::STALL_THRESHOLD_SECONDS;
+        $safeLimit = max(1, $limit);
+
+        try {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); values bound via placeholders
+            $sql = "SELECT snapshot_id FROM {$table}
+                    WHERE phase NOT IN (%s, %s) AND last_progress_at < %d
+                    ORDER BY started_at ASC
+                    LIMIT %d";
+            /** @phpstan-ignore-next-line — dynamic wpdb. */
+            $prepared = $wpdb->prepare(
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $sql is a hard-coded query template with placeholders only; values are bound by this very prepare() call
+                $sql,
+                TaskRunner::PHASE_COMPLETED,
+                TaskRunner::PHASE_FAILED,
+                $cutoff,
+                $safeLimit
+            );
+            /** @phpstan-ignore-next-line — dynamic wpdb. */
+            $rows = $wpdb->get_col($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- direct read on plugin-owned table; value is the output of $wpdb->prepare()
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Backup: sweepStalled query failed: ' . $e->getMessage());
+            return;
+        }
+
+        if (!is_array($rows)) {
+            return;
+        }
+
+        foreach ($rows as $snapshotId) {
+            if (!is_string($snapshotId) || $snapshotId === '') {
+                continue;
+            }
+            try {
+                self::resumeIfStalled($snapshotId);
+            } catch (\Throwable $e) {
+                DebugLog::write(sprintf('WPMgr Backup: sweepStalled resume failed for %s: %s', $snapshotId, $e->getMessage()));
+            }
+        }
+    }
+
+    /**
+     * Stamp a durable `sub_state.stage` breadcrumb on the task row, and touch
+     * `last_progress_at` to `now` (so a fired-then-killed hook is
+     * distinguishable from one that never fired, and becomes
+     * sweepStalled()-detectable). Feeds the observability ladder documented
+     * on TaskRunner::run() and dispatch() above:
+     *
+     *   no stage + last_progress_at==started_at => hook never fired
+     *   stage=dispatch_entered                   => hook fired, runner never advanced
+     *   stage=runner_started                     => lock held, first phase failed to persist
+     *   phase past 'queued'                      => advanced
+     *
+     * Reads the RAW sub_state column value directly (never through
+     * TaskRunner's sidecar-aware loadTask(), which would rehydrate a
+     * potentially large de-sidecared cursor). Merging 'stage' into whatever
+     * tiny envelope already lives in the column — a genuine small sub_state
+     * OR a `{"_sidecar":true,...}` pointer object — keeps this write always
+     * small. Best-effort: a breadcrumb write failure must never propagate.
+     *
+     * @param string $snapshotId Snapshot UUID.
+     * @param string $stage      Breadcrumb value to stamp.
+     * @return void
+     */
+    private static function stampStage(string $snapshotId, string $stage): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+        $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+
+        try {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); value bound via %s placeholder
+            $sql = "SELECT sub_state FROM {$table} WHERE snapshot_id = %s LIMIT 1";
+            /** @phpstan-ignore-next-line — dynamic wpdb. */
+            $prepared = $wpdb->prepare($sql, $snapshotId); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
+            /** @phpstan-ignore-next-line — dynamic wpdb. */
+            $raw = $wpdb->get_var($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- direct read on plugin-owned table; value is the output of $wpdb->prepare()
+
+            $envelope = [];
+            if (is_string($raw) && $raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $envelope = $decoded;
+                }
+            }
+            $envelope['stage'] = $stage;
+            $encoded = json_encode($envelope);
+            if ($encoded === false) {
+                return;
+            }
+
+            /** @phpstan-ignore-next-line — dynamic wpdb. */
+            @$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb write, correctness requires a live write
+                $table,
+                ['sub_state' => $encoded, 'last_progress_at' => time()],
+                ['snapshot_id' => $snapshotId],
+                ['%s', '%d'],
+                ['%s']
+            );
+        } catch (\Throwable $e) {
+            // Swallow — a breadcrumb write failure must never break
+            // dispatch()/resumeIfStalled().
+        }
     }
 
     /**

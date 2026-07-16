@@ -151,6 +151,24 @@ final class Plugin
      */
     public const OPTION_LAST_DIAGNOSTICS_AT = 'wpmgr_agent_last_diagnostics_at';
 
+    /**
+     * GitHub issue #232 — Unix timestamp of the last stalled-backup reaper
+     * sweep (Watchdog::sweepStalled()), stamped BEFORE the sweep runs. Read
+     * by maybeSweepStalledBackups() to throttle the sweep to once per
+     * BACKUP_SWEEP_THROTTLE_SECONDS. Mirrors
+     * SnapshotManager::OPTION_GC_LAST's throttle pattern exactly. Owned by
+     * the agent — removed on uninstall via Lifecycle::ownedOptions().
+     */
+    public const OPTION_BACKUP_SWEEP_LAST = 'wpmgr_backup_sweep_last';
+
+    /**
+     * Throttle window for maybeSweepStalledBackups(): the actual sweep (a
+     * bounded SELECT + at most 20 TaskRunner re-entries, each lock-guarded)
+     * runs at most once per this many seconds; every other request pays only
+     * one cheap get_option() read.
+     */
+    private const BACKUP_SWEEP_THROTTLE_SECONDS = 60;
+
     private static ?Plugin $instance = null;
 
     private Keystore $keystore;
@@ -524,6 +542,25 @@ final class Plugin
         // throttles the actual sweep to once per hour via a stored option, so
         // this costs one cheap get_option() read on every other request.
         add_action('plugins_loaded', [$this, 'maybeGcSnapshots']);
+
+        // GitHub issue #232 — WP-Cron-INDEPENDENT, throttled reaper trigger
+        // for `wpmgr_backup_tasks` rows stalled at phase=queued (or any other
+        // non-terminal phase). Root cause: BackupCommand's ONLY cron-
+        // independent starter used to be gated on isLoopbackGated(), and its
+        // recovery path (Watchdog's own `wpmgr_backup_watchdog` cron event)
+        // is itself just as WP-Cron-dependent — so on a non-gated,
+        // low-traffic/off-peak site (or DISABLE_WP_CRON) a freshly-seeded
+        // task row could get stuck at `queued` forever with nothing left to
+        // ever re-check it. Binding this to plugins_loaded — mirroring
+        // maybeGcSnapshots() immediately above — fires
+        // Watchdog::sweepStalled() on every request the agent serves
+        // post-enrollment, including the control plane's own ~60s
+        // heartbeat/uptime/diagnostic REST hits, so recovery no longer
+        // depends on WP-Cron ticking at all. maybeSweepStalledBackups()
+        // itself throttles the actual sweep to once per 60s via a stored
+        // option (stamped BEFORE the sweep runs), so this costs one cheap
+        // get_option() read on every other request.
+        add_action('plugins_loaded', [$this, 'maybeSweepStalledBackups']);
 
         // M14: Guard against Performance Lab disabling our object-cache drop-in.
         // When the OC is configured (config file exists), register the filter so
@@ -1345,6 +1382,53 @@ final class Plugin
         }
 
         SnapshotManager::maybeGc();
+    }
+
+    /**
+     * GitHub issue #232 — WP-Cron-independent reaper trigger for stalled
+     * `wpmgr_backup_tasks` rows. See registerHooks()'s binding comment (next
+     * to maybeGcSnapshots(), immediately above) for the root cause this
+     * closes.
+     *
+     * Mirrors maybeGcSnapshots() / SnapshotManager::maybeGc() exactly:
+     *   - Gated on isEnrolled(): a not-yet-enrolled site has never had a
+     *     backup scheduled (and therefore never a stalled row) to reap.
+     *   - Throttled to once per BACKUP_SWEEP_THROTTLE_SECONDS (60s) via a
+     *     stored option, stamped BEFORE the sweep runs — a slow or failing
+     *     sweep can never be retried on every single request within the
+     *     window; the next throttled attempt gets a fresh try regardless of
+     *     whether this one succeeded.
+     *   - Watchdog::sweepStalled() is wrapped in try/catch: a reaper sweep
+     *     is best-effort recovery housekeeping, never a condition that may
+     *     break the request (or hook) that happened to trigger it.
+     *
+     * @return void
+     */
+    public function maybeSweepStalledBackups(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        if (!function_exists('get_option') || !function_exists('update_option')) {
+            return;
+        }
+
+        $now  = time();
+        $last = (int) get_option(self::OPTION_BACKUP_SWEEP_LAST, 0);
+        if ($now - $last < self::BACKUP_SWEEP_THROTTLE_SECONDS) {
+            return;
+        }
+
+        // Stamp BEFORE running — see this method's doc for why.
+        update_option(self::OPTION_BACKUP_SWEEP_LAST, $now, true);
+
+        try {
+            Watchdog::sweepStalled();
+        } catch (\Throwable $e) {
+            // A reaper sweep failure must never break the caller (a request
+            // handler bound to plugins_loaded); the next throttled attempt
+            // 60s from now gets a fresh try.
+        }
     }
 
     /**
