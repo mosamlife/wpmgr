@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Archive } from "lucide-react";
+import { Archive, Search } from "lucide-react";
 import { z } from "zod";
 
 import { useClients } from "@/features/clients/use-clients";
@@ -10,7 +10,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
 import { FilterEmpty, SitesPageEmpty } from "@/components/empty";
 import { PageHeader } from "@/components/shared/page-header";
-import { useSites, useDeleteSite, sitesQueryOptions } from "@/features/sites/use-sites";
+import {
+  useSites,
+  useDeleteSite,
+  sitesQueryOptions,
+  type TagMatchMode,
+} from "@/features/sites/use-sites";
+import { useTags } from "@/features/tags/use-tags";
+import { useTagColorMap } from "@/features/tags/use-tag-color-map";
+import { TagChip } from "@/features/sites/tag-chip";
 import { SitesTable } from "@/features/sites/sites-table";
 import { SitesGrid, SitesGridSkeleton } from "@/features/sites/sites-grid";
 import { SitesToolbar } from "@/features/sites/sites-toolbar";
@@ -33,6 +41,7 @@ import {
 } from "@/features/updates/update-wizard";
 import { useMe, canOperate } from "@/features/auth/use-auth";
 import { useBulkBackup } from "@/features/backups/use-bulk-backup";
+import { useBulkAction } from "@/features/sites/use-bulk-action";
 import { toast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 import { connectionStateOf } from "@/features/sites/connection-state";
@@ -55,6 +64,9 @@ const searchSchema = z.object({
   q: z.string().optional(),
   status: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
+  // GH #230 "rich tags" — match semantics across `tags`: "any" (OR, default)
+  // or "all" (AND). Mirrors the /sites `tags_match` query param.
+  tagMode: z.enum(["any", "all"]).optional(),
   client: z.string().optional(),
   archived: z.boolean().optional(),
   view: z.enum(["list", "grid"]).optional(),
@@ -73,9 +85,10 @@ export const Route = createFileRoute("/_authed/sites/")({
   // the render without benefit (the component already handles isPending).
   //
   // Scope: this loader runs only for /_authed/sites/ — no other authed route
-  // fires this prefetch. The key matches sitesKeys.list(undefined,"active",
-  // undefined) exactly, so useSites() with no args subscribes to the
-  // already-in-flight query; TanStack Query deduplicates by key.
+  // fires this prefetch. The key matches sitesKeys.list("active") exactly
+  // (the default, filter-free view), so useSites({ view: "active" }) with no
+  // other filters subscribes to the already-in-flight query; TanStack Query
+  // deduplicates by key.
   loader: ({ context: { queryClient } }) => {
     void queryClient.prefetchQuery(sitesQueryOptions());
   },
@@ -142,6 +155,8 @@ function SitesPage() {
   // new array reference each time when status/tags are absent from the URL).
   const selectedStatuses = useMemo(() => search.status ?? [], [search.status]);
   const selectedTags = useMemo(() => search.tags ?? [], [search.tags]);
+  const tagMode: TagMatchMode = search.tagMode ?? "any";
+  const hasTagsFilter = selectedTags.length > 0;
   const appliedClientId = search.client ?? null;
   const showArchived = search.archived ?? false;
 
@@ -164,16 +179,33 @@ function SitesPage() {
 
   const [setClientOpen, setSetClientOpen] = useState(false);
 
+  // GH #230 "rich tags" — tag filtering is now SERVER-SIDE (?tags=&tags_match=).
   const { data: sites, isPending, isError, error, refetch, isFetching } =
-    useSites(undefined, {
+    useSites({
       view: showArchived ? "archived" : "active",
       clientId: appliedClientId ?? undefined,
+      tags: selectedTags,
+      tagsMatch: tagMode,
     });
 
-  // When the active bucket is empty, also fetch archived so we can surface a
-  // "Disconnected sites" panel above the onboarding empty state.
-  const activeIsEmpty = !isPending && !isError && (sites?.length ?? 0) === 0;
-  const { data: archivedSites } = useSites(undefined, {
+  const { data: tagsRegistry } = useTags();
+
+  // Active on any filter axis, including the (now server-side) tags filter.
+  // A tag filter that matches nothing legitimately returns `sites: []` —
+  // that must render as a filtered-empty state, never the onboarding empty
+  // state (which means "this tenant has no sites at all").
+  const hasActiveFilters =
+    Boolean(search.q?.trim()) ||
+    selectedStatuses.length > 0 ||
+    hasTagsFilter ||
+    Boolean(appliedClientId);
+
+  // When the active bucket is empty (and no filters are narrowing it), also
+  // fetch archived so we can surface a "Disconnected sites" panel above the
+  // onboarding empty state.
+  const activeIsEmpty =
+    !isPending && !isError && !hasActiveFilters && (sites?.length ?? 0) === 0;
+  const { data: archivedSites } = useSites({
     view: "archived",
     clientId: appliedClientId ?? undefined,
   });
@@ -194,14 +226,6 @@ function SitesPage() {
   const [openAdminSites, setOpenAdminSites] = useState<Site[] | null>(null);
 
   // ── Derived filter options ─────────────────────────────────────────────────
-
-  const tagOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of sites ?? []) {
-      for (const t of s.tags ?? []) set.add(t);
-    }
-    return Array.from(set).sort();
-  }, [sites]);
 
   /**
    * Status options are derived from the actual connection_state values present
@@ -236,6 +260,11 @@ function SitesPage() {
   //
   // 4. useSitesLiveSync is untouched here; filters are a pure client-side
   //    derive over the TanStack Query cache, not a re-fetch trigger.
+  //
+  // GH #230 "rich tags": the TAGS axis moved server-side (see the `useSites`
+  // call above) — `sites` already reflects the tags/tagMode filter. Text
+  // search still matches tag values (a tag is part of a site's searchable
+  // text), but no longer independently FILTERS by tag client-side.
 
   const visibleSites = useMemo(() => {
     if (!sites) return [];
@@ -243,10 +272,9 @@ function SitesPage() {
     const q = (search.q ?? "").trim().toLowerCase();
     const hasQ = q.length > 0;
     const hasStatus = selectedStatuses.length > 0;
-    const hasTags = selectedTags.length > 0;
 
-    // Fast path: no active filters.
-    if (!hasQ && !hasStatus && !hasTags) return sites;
+    // Fast path: no active client-side filters.
+    if (!hasQ && !hasStatus) return sites;
 
     return sites.filter((s) => {
       // Text search — matches name, url, or any tag.
@@ -264,16 +292,9 @@ function SitesPage() {
         if (!selectedStatuses.includes(label)) return false;
       }
 
-      // Tags filter — OR within selected tags (a site is visible if it has
-      // ANY of the selected tags).
-      if (hasTags) {
-        const siteTags = s.tags ?? [];
-        if (!siteTags.some((t) => selectedTags.includes(t))) return false;
-      }
-
       return true;
     });
-  }, [sites, search.q, selectedStatuses, selectedTags]);
+  }, [sites, search.q, selectedStatuses]);
 
   // INVARIANT: read from the FULL sites array, not visibleSites.
   const selectedSites: Site[] = (sites ?? []).filter((s) =>
@@ -304,8 +325,19 @@ function SitesPage() {
         q: undefined,
         status: undefined,
         tags: undefined,
+        tagMode: undefined,
         client: undefined,
       }),
+      replace: true,
+    });
+  }, [navigate]);
+
+  // "Clear tag filters" — narrower than "Clear filters": leaves search/status/
+  // client alone, only resets the tags axis (used by the tags-specific
+  // zero-result state).
+  const handleClearTagFilters = useCallback(() => {
+    void navigate({
+      search: (prev: SitesSearch) => ({ ...prev, tags: undefined, tagMode: undefined }),
       replace: true,
     });
   }, [navigate]);
@@ -325,12 +357,12 @@ function SitesPage() {
     return parts.join(" ");
   }, [search.q, selectedStatuses, selectedTags, appliedClientId, clientOptions]);
 
+  // GH #230: sites can legitimately be `[]` because the (server-side) tags
+  // filter matched nothing, not just because client-side text/status
+  // filters narrowed a non-empty list — gate on `hasActiveFilters` rather
+  // than `sites.length > 0`.
   const showFilterEmpty =
-    !isPending &&
-    !isError &&
-    sites !== undefined &&
-    sites.length > 0 &&
-    visibleSites.length === 0;
+    !isPending && !isError && hasActiveFilters && visibleSites.length === 0;
 
   // ── Auto-login ─────────────────────────────────────────────────────────────
 
@@ -578,9 +610,15 @@ function SitesPage() {
     setOpenAdminSites(targets);
   }, [autoLogin, selectedSites, selection]);
 
+  // GH #230 "rich tags" — opens the bulk tag-edit drawer (tri-state TagPicker
+  // + "Apply to N sites"). Targets come from the FULL `selection.selected`
+  // set, matching every other bulk action's invariant (never `visibleSites`).
+  const bulkAction = useBulkAction();
   const handleBulkTag = useCallback(() => {
-    toast.info(`Tagging ${selection.count} sites lands in Sprint 4`);
-  }, [selection.count]);
+    const ids = Array.from(selection.selected);
+    if (ids.length === 0) return;
+    bulkAction.openTagEdit(ids);
+  }, [selection, bulkAction]);
 
   const handleBulkSetClient = useCallback(() => {
     setSetClientOpen(true);
@@ -648,7 +686,7 @@ function SitesPage() {
           retryLabel="Reload sites"
           isRetrying={isFetching}
         />
-      ) : sites.length === 0 ? (
+      ) : sites.length === 0 && !hasActiveFilters ? (
         <>
           {disconnectedSites ? (
             <DisconnectedSitesPanel
@@ -670,20 +708,33 @@ function SitesPage() {
             densityState={densityState}
             search={search.q ?? ""}
             onSearchChange={handleSearchChange}
-            tagOptions={tagOptions}
+            tagRegistry={tagsRegistry ?? []}
             selectedTags={selectedTags}
             onTagToggle={(tag) => {
               const next = selectedTags.includes(tag)
                 ? selectedTags.filter((t) => t !== tag)
                 : [...selectedTags, tag];
               void navigate({
-                search: (prev: SitesSearch) => ({ ...prev, tags: next.length ? next : undefined }),
+                search: (prev: SitesSearch) => ({
+                  ...prev,
+                  tags: next.length ? next : undefined,
+                  // A match-mode choice is only meaningful with 2+ tags;
+                  // drop it once the selection falls below that.
+                  tagMode: next.length >= 2 ? prev.tagMode : undefined,
+                }),
                 replace: true,
               });
             }}
             onTagsClear={() => {
               void navigate({
-                search: (prev: SitesSearch) => ({ ...prev, tags: undefined }),
+                search: (prev: SitesSearch) => ({ ...prev, tags: undefined, tagMode: undefined }),
+                replace: true,
+              });
+            }}
+            tagMode={tagMode}
+            onTagModeChange={(mode) => {
+              void navigate({
+                search: (prev: SitesSearch) => ({ ...prev, tagMode: mode === "any" ? undefined : mode }),
                 replace: true,
               });
             }}
@@ -760,10 +811,19 @@ function SitesPage() {
           ) : null}
 
           {showFilterEmpty ? (
-            <FilterEmpty
-              description={filterDescription}
-              onClearFilters={handleClearAllFilters}
-            />
+            // The tag-specific empty state applies only when the (server-
+            // side) tags filter is the reason `sites` itself came back
+            // empty. If `sites` has rows but a client-side axis (search or
+            // status) narrowed them to zero, the generic FilterEmpty is the
+            // accurate message even when tags are also selected.
+            hasTagsFilter && (sites?.length ?? 0) === 0 ? (
+              <TagsFilterEmpty tags={selectedTags} onClear={handleClearTagFilters} />
+            ) : (
+              <FilterEmpty
+                description={filterDescription}
+                onClearFilters={handleClearAllFilters}
+              />
+            )
           ) : view === "grid" ? (
             <SitesGrid
               sites={visibleSites}
@@ -1010,6 +1070,49 @@ function DisconnectedSitesPanel({
         onRemove={onRemove}
       />
     </section>
+  );
+}
+
+/**
+ * GH #230 "rich tags" — the tag-specific zero-result state, shown when the
+ * server-side tags filter matched no sites. Distinct from the generic
+ * `FilterEmpty` because the fix is narrower (drop just the tags axis, not
+ * every filter) and the operator benefits from seeing exactly which tags
+ * came up empty.
+ */
+function TagsFilterEmpty({
+  tags,
+  onClear,
+}: {
+  tags: readonly string[];
+  onClear: () => void;
+}) {
+  const colorMap = useTagColorMap();
+  return (
+    <div
+      role="status"
+      aria-label="No sites match these tags"
+      className="flex flex-col items-center gap-3 py-12 text-center"
+    >
+      <Search
+        aria-hidden="true"
+        strokeWidth={1.5}
+        className="size-8 text-muted-foreground/50"
+      />
+      <p className="text-balance text-sm text-foreground">No sites match these tags</p>
+      <div className="flex flex-wrap items-center justify-center gap-1">
+        {tags.map((name) => (
+          <TagChip key={name} tag={{ name, color: colorMap.get(name) }} />
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={onClear}
+        className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 transition-colors hover:underline focus-visible:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      >
+        Clear tag filters
+      </button>
+    </div>
   );
 }
 

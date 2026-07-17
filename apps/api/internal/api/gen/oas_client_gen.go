@@ -268,6 +268,17 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/enrollment-codes
 	BeginReEnrollment(ctx context.Context, params BeginReEnrollmentParams) (BeginReEnrollmentRes, error)
+	// BulkApplyTags invokes bulkApplyTags operation.
+	//
+	// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
+	// site id is checked against the caller's collaborator allowlist
+	// independently; sites the caller cannot access (or that don't exist in
+	// this tenant) are returned with `ok: false` rather than failing the
+	// whole call. `add` names are registered into the tag registry in the
+	// same transaction. Requires the `site.write` permission.
+	//
+	// POST /api/v1/tags/bulk-apply
+	BulkApplyTags(ctx context.Context, request *BulkTagApplyRequest) (BulkApplyTagsRes, error)
 	// BulkConfigCache invokes bulkConfigCache operation.
 	//
 	// Spreads a preset's toggles (`safe`, `balanced`, or `aggressive`) onto
@@ -568,6 +579,12 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/shares
 	CreateSiteShare(ctx context.Context, request *CreateSiteShareRequest, params CreateSiteShareParams) (CreateSiteShareRes, error)
+	// CreateTag invokes createTag operation.
+	//
+	// Create a new tag in the registry.
+	//
+	// POST /api/v1/tags
+	CreateTag(ctx context.Context, request *SiteTagCreate) (CreateTagRes, error)
 	// CreateTenant invokes createTenant operation.
 	//
 	// Create a tenant.
@@ -704,6 +721,14 @@ type Invoker interface {
 	//
 	// DELETE /api/v1/sites/{siteId}/shares/{userId}
 	DeleteSiteShare(ctx context.Context, params DeleteSiteShareParams) (DeleteSiteShareRes, error)
+	// DeleteTag invokes deleteTag operation.
+	//
+	// Removes the tag from the registry AND from every site (and every
+	// unexpired, unredeemed pairing code) currently carrying it, in one
+	// transaction.
+	//
+	// DELETE /api/v1/tags/{tagId}
+	DeleteTag(ctx context.Context, params DeleteTagParams) (DeleteTagRes, error)
 	// DisableCache invokes disableCache operation.
 	//
 	// Turns off agent-side page caching. Returns an `{ok, detail}` ack.
@@ -1633,6 +1658,15 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites
 	ListSites(ctx context.Context, params ListSitesParams) (*SiteList, error)
+	// ListTags invokes listTags operation.
+	//
+	// Lists every tag in the tenant's registry (m100), sorted
+	// case-insensitively by name, with a live `usage_count` (the number of
+	// sites currently carrying it — unused tags with usage_count 0 are
+	// legitimate). No pagination: a tenant's tag vocabulary is small.
+	//
+	// GET /api/v1/tags
+	ListTags(ctx context.Context) (*SiteTagList, error)
 	// ListTenants invokes listTenants operation.
 	//
 	// List tenants.
@@ -2374,6 +2408,19 @@ type Invoker interface {
 	//
 	// PUT /api/v1/sites/{siteId}/files/settings
 	UpdateSiteFilesSettings(ctx context.Context, request *UpdateFileManagerSettingsRequest, params UpdateSiteFilesSettingsParams) (UpdateSiteFilesSettingsRes, error)
+	// UpdateTag invokes updateTag operation.
+	//
+	// A color-only body just updates the color. A `name` change renames the
+	// tag and propagates the new name onto every site (and every unexpired,
+	// unredeemed pairing code) currently carrying the old name, in the same
+	// transaction. Renaming onto an existing name returns 409
+	// `tag_name_exists` unless `merge: true`, in which case the source tag
+	// is merged into the existing survivor (sites are rewritten to the
+	// survivor's name, deduplicated; the survivor's color is kept unless
+	// this request also sets `color`).
+	//
+	// PATCH /api/v1/tags/{tagId}
+	UpdateTag(ctx context.Context, request *SiteTagUpdate, params UpdateTagParams) (UpdateTagRes, error)
 	// VerifyAudit invokes verifyAudit operation.
 	//
 	// Verify the integrity of the audit hash-chain (admin+).
@@ -4795,6 +4842,88 @@ func (c *Client) sendBeginReEnrollment(ctx context.Context, params BeginReEnroll
 
 	stage = "DecodeResponse"
 	result, err := decodeBeginReEnrollmentResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// BulkApplyTags invokes bulkApplyTags operation.
+//
+// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
+// site id is checked against the caller's collaborator allowlist
+// independently; sites the caller cannot access (or that don't exist in
+// this tenant) are returned with `ok: false` rather than failing the
+// whole call. `add` names are registered into the tag registry in the
+// same transaction. Requires the `site.write` permission.
+//
+// POST /api/v1/tags/bulk-apply
+func (c *Client) BulkApplyTags(ctx context.Context, request *BulkTagApplyRequest) (BulkApplyTagsRes, error) {
+	res, err := c.sendBulkApplyTags(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendBulkApplyTags(ctx context.Context, request *BulkTagApplyRequest) (res BulkApplyTagsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("bulkApplyTags"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/tags/bulk-apply"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, BulkApplyTagsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/tags/bulk-apply"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeBulkApplyTagsRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeBulkApplyTagsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -7433,6 +7562,83 @@ func (c *Client) sendCreateSiteShare(ctx context.Context, request *CreateSiteSha
 	return result, nil
 }
 
+// CreateTag invokes createTag operation.
+//
+// Create a new tag in the registry.
+//
+// POST /api/v1/tags
+func (c *Client) CreateTag(ctx context.Context, request *SiteTagCreate) (CreateTagRes, error) {
+	res, err := c.sendCreateTag(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendCreateTag(ctx context.Context, request *SiteTagCreate) (res CreateTagRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createTag"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/tags"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateTagOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/tags"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateTagRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateTagResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // CreateTenant invokes createTenant operation.
 //
 // Create a tenant.
@@ -9034,6 +9240,100 @@ func (c *Client) sendDeleteSiteShare(ctx context.Context, params DeleteSiteShare
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteShareResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// DeleteTag invokes deleteTag operation.
+//
+// Removes the tag from the registry AND from every site (and every
+// unexpired, unredeemed pairing code) currently carrying it, in one
+// transaction.
+//
+// DELETE /api/v1/tags/{tagId}
+func (c *Client) DeleteTag(ctx context.Context, params DeleteTagParams) (DeleteTagRes, error) {
+	res, err := c.sendDeleteTag(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendDeleteTag(ctx context.Context, params DeleteTagParams) (res DeleteTagRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("deleteTag"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/api/v1/tags/{tagId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, DeleteTagOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/api/v1/tags/"
+	{
+		// Encode "tagId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tagId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TagId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeDeleteTagResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -20770,6 +21070,49 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 		}
 	}
 	{
+		// Encode "tags" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "tags",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if params.Tags != nil {
+				return e.EncodeArray(func(e uri.Encoder) error {
+					for i, item := range params.Tags {
+						if err := func() error {
+							return e.EncodeValue(conv.StringToString(item))
+						}(); err != nil {
+							return errors.Wrapf(err, "[%d]", i)
+						}
+					}
+					return nil
+				})
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "tags_match" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "tags_match",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.TagsMatch.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
 		// Encode "state" parameter.
 		cfg := uri.QueryParameterEncodingConfig{
 			Name:    "state",
@@ -20821,6 +21164,83 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 
 	stage = "DecodeResponse"
 	result, err := decodeListSitesResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListTags invokes listTags operation.
+//
+// Lists every tag in the tenant's registry (m100), sorted
+// case-insensitively by name, with a live `usage_count` (the number of
+// sites currently carrying it — unused tags with usage_count 0 are
+// legitimate). No pagination: a tenant's tag vocabulary is small.
+//
+// GET /api/v1/tags
+func (c *Client) ListTags(ctx context.Context) (*SiteTagList, error) {
+	res, err := c.sendListTags(ctx)
+	return res, err
+}
+
+func (c *Client) sendListTags(ctx context.Context) (res *SiteTagList, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listTags"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/tags"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListTagsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/tags"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListTagsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -28017,6 +28437,108 @@ func (c *Client) sendUpdateSiteFilesSettings(ctx context.Context, request *Updat
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateSiteFilesSettingsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// UpdateTag invokes updateTag operation.
+//
+// A color-only body just updates the color. A `name` change renames the
+// tag and propagates the new name onto every site (and every unexpired,
+// unredeemed pairing code) currently carrying the old name, in the same
+// transaction. Renaming onto an existing name returns 409
+// `tag_name_exists` unless `merge: true`, in which case the source tag
+// is merged into the existing survivor (sites are rewritten to the
+// survivor's name, deduplicated; the survivor's color is kept unless
+// this request also sets `color`).
+//
+// PATCH /api/v1/tags/{tagId}
+func (c *Client) UpdateTag(ctx context.Context, request *SiteTagUpdate, params UpdateTagParams) (UpdateTagRes, error) {
+	res, err := c.sendUpdateTag(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendUpdateTag(ctx context.Context, request *SiteTagUpdate, params UpdateTagParams) (res UpdateTagRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("updateTag"),
+		semconv.HTTPRequestMethodKey.String("PATCH"),
+		semconv.URLTemplateKey.String("/api/v1/tags/{tagId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, UpdateTagOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/api/v1/tags/"
+	{
+		// Encode "tagId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tagId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TagId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PATCH", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeUpdateTagRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeUpdateTagResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

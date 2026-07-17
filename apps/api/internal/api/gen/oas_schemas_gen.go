@@ -6911,7 +6911,45 @@ func (s *BulkResultList) SetResults(val []BulkResult) {
 	s.Results = val
 }
 
+func (*BulkResultList) bulkApplyTagsRes()   {}
 func (*BulkResultList) bulkConfigCacheRes() {}
+
+// Ref: #/components/schemas/BulkTagApplyRequest
+type BulkTagApplyRequest struct {
+	SiteIds []uuid.UUID `json:"site_ids"`
+	Add     []string    `json:"add"`
+	Remove  []string    `json:"remove"`
+}
+
+// GetSiteIds returns the value of SiteIds.
+func (s *BulkTagApplyRequest) GetSiteIds() []uuid.UUID {
+	return s.SiteIds
+}
+
+// GetAdd returns the value of Add.
+func (s *BulkTagApplyRequest) GetAdd() []string {
+	return s.Add
+}
+
+// GetRemove returns the value of Remove.
+func (s *BulkTagApplyRequest) GetRemove() []string {
+	return s.Remove
+}
+
+// SetSiteIds sets the value of SiteIds.
+func (s *BulkTagApplyRequest) SetSiteIds(val []uuid.UUID) {
+	s.SiteIds = val
+}
+
+// SetAdd sets the value of Add.
+func (s *BulkTagApplyRequest) SetAdd(val []string) {
+	s.Add = val
+}
+
+// SetRemove sets the value of Remove.
+func (s *BulkTagApplyRequest) SetRemove(val []string) {
+	s.Remove = val
+}
 
 // The latest cache gauges the agent reported for a site.
 // Ref: #/components/schemas/CacheStats
@@ -9226,6 +9264,14 @@ type CreateSiteShareUnprocessableEntity Error
 
 func (*CreateSiteShareUnprocessableEntity) createSiteShareRes() {}
 
+type CreateTagConflict Error
+
+func (*CreateTagConflict) createTagRes() {}
+
+type CreateTagUnprocessableEntity Error
+
+func (*CreateTagUnprocessableEntity) createTagRes() {}
+
 type CreateTenantConflict Error
 
 func (*CreateTenantConflict) createTenantRes() {}
@@ -10011,6 +10057,11 @@ func (*DeleteSiteShareNotFound) deleteSiteShareRes() {}
 type DeleteSiteShareUnauthorized Error
 
 func (*DeleteSiteShareUnauthorized) deleteSiteShareRes() {}
+
+// DeleteTagNoContent is response for DeleteTag operation.
+type DeleteTagNoContent struct{}
+
+func (*DeleteTagNoContent) deleteTagRes() {}
 
 // Response for GET /email/deliverability. Contains per-site deliverability aggregates sorted by
 // bounce_rate DESC then total DESC (riskiest first).
@@ -11482,6 +11533,7 @@ func (*Error) agentMediaSyncBatchRes()            {}
 func (*Error) agentMediaSyncFinalizeRes()         {}
 func (*Error) archiveSiteRes()                    {}
 func (*Error) beginReEnrollmentRes()              {}
+func (*Error) bulkApplyTagsRes()                  {}
 func (*Error) bulkConfigCacheRes()                {}
 func (*Error) bulkDeleteBackupsRes()              {}
 func (*Error) createBackupRes()                   {}
@@ -11490,6 +11542,7 @@ func (*Error) createRestoreRes()                  {}
 func (*Error) createSiteRes()                     {}
 func (*Error) createUpdateRunRes()                {}
 func (*Error) deleteSiteRes()                     {}
+func (*Error) deleteTagRes()                      {}
 func (*Error) enableObjectCacheRes()              {}
 func (*Error) getBackupRes()                      {}
 func (*Error) getBackupScheduleRes()              {}
@@ -15519,6 +15572,47 @@ func (s *ListSitesState) UnmarshalText(data []byte) error {
 		return nil
 	case ListSitesStateArchived:
 		*s = ListSitesStateArchived
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ListSitesTagsMatch string
+
+const (
+	ListSitesTagsMatchAny ListSitesTagsMatch = "any"
+	ListSitesTagsMatchAll ListSitesTagsMatch = "all"
+)
+
+// AllValues returns all ListSitesTagsMatch values.
+func (ListSitesTagsMatch) AllValues() []ListSitesTagsMatch {
+	return []ListSitesTagsMatch{
+		ListSitesTagsMatchAny,
+		ListSitesTagsMatchAll,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListSitesTagsMatch) MarshalText() ([]byte, error) {
+	switch s {
+	case ListSitesTagsMatchAny:
+		return []byte(s), nil
+	case ListSitesTagsMatchAll:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListSitesTagsMatch) UnmarshalText(data []byte) error {
+	switch ListSitesTagsMatch(data) {
+	case ListSitesTagsMatchAny:
+		*s = ListSitesTagsMatchAny
+		return nil
+	case ListSitesTagsMatchAll:
+		*s = ListSitesTagsMatchAll
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -21619,6 +21713,52 @@ func (o OptListSitesState) Get() (v ListSitesState, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptListSitesState) Or(d ListSitesState) ListSitesState {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptListSitesTagsMatch returns new OptListSitesTagsMatch with value set to v.
+func NewOptListSitesTagsMatch(v ListSitesTagsMatch) OptListSitesTagsMatch {
+	return OptListSitesTagsMatch{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListSitesTagsMatch is optional ListSitesTagsMatch.
+type OptListSitesTagsMatch struct {
+	Value ListSitesTagsMatch
+	Set   bool
+}
+
+// IsSet returns true if OptListSitesTagsMatch was set.
+func (o OptListSitesTagsMatch) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListSitesTagsMatch) Reset() {
+	var v ListSitesTagsMatch
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListSitesTagsMatch) SetTo(v ListSitesTagsMatch) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListSitesTagsMatch) Get() (v ListSitesTagsMatch, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListSitesTagsMatch) Or(d ListSitesTagsMatch) ListSitesTagsMatch {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -36049,6 +36189,158 @@ func (s *SiteStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+// A tenant-level tag registry entry (GH #230 "rich tags", m100). Owns
+// existence/color/canonical name; sites.tags (the site's own text[])
+// remains the assignment store.
+// Ref: #/components/schemas/SiteTag
+type SiteTag struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	// Lowercase "#rrggbb" hex code, or "" for auto (client derives a deterministic color from the name).
+	Color string `json:"color"`
+	// Number of sites in the tenant currently carrying this tag. 0 is a legitimate, unused tag.
+	UsageCount int64     `json:"usage_count"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *SiteTag) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetName returns the value of Name.
+func (s *SiteTag) GetName() string {
+	return s.Name
+}
+
+// GetColor returns the value of Color.
+func (s *SiteTag) GetColor() string {
+	return s.Color
+}
+
+// GetUsageCount returns the value of UsageCount.
+func (s *SiteTag) GetUsageCount() int64 {
+	return s.UsageCount
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *SiteTag) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *SiteTag) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetName sets the value of Name.
+func (s *SiteTag) SetName(val string) {
+	s.Name = val
+}
+
+// SetColor sets the value of Color.
+func (s *SiteTag) SetColor(val string) {
+	s.Color = val
+}
+
+// SetUsageCount sets the value of UsageCount.
+func (s *SiteTag) SetUsageCount(val int64) {
+	s.UsageCount = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *SiteTag) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+func (*SiteTag) createTagRes() {}
+func (*SiteTag) updateTagRes() {}
+
+// Ref: #/components/schemas/SiteTagCreate
+type SiteTagCreate struct {
+	Name string `json:"name"`
+	// Optional lowercase "#rrggbb" hex code. Omitted or "" = auto.
+	Color OptString `json:"color"`
+}
+
+// GetName returns the value of Name.
+func (s *SiteTagCreate) GetName() string {
+	return s.Name
+}
+
+// GetColor returns the value of Color.
+func (s *SiteTagCreate) GetColor() OptString {
+	return s.Color
+}
+
+// SetName sets the value of Name.
+func (s *SiteTagCreate) SetName(val string) {
+	s.Name = val
+}
+
+// SetColor sets the value of Color.
+func (s *SiteTagCreate) SetColor(val OptString) {
+	s.Color = val
+}
+
+// Ref: #/components/schemas/SiteTagList
+type SiteTagList struct {
+	Items []SiteTag `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *SiteTagList) GetItems() []SiteTag {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *SiteTagList) SetItems(val []SiteTag) {
+	s.Items = val
+}
+
+// Ref: #/components/schemas/SiteTagUpdate
+type SiteTagUpdate struct {
+	// When present, renames the tag (propagated to every site + unredeemed pairing code carrying the old
+	// name).
+	Name OptString `json:"name"`
+	// When present, sets the tag's color ("" resets to auto).
+	Color OptString `json:"color"`
+	// When the new `name` collides with an existing tag, merge the
+	// source tag INTO that existing survivor instead of returning 409
+	// tag_name_exists.
+	Merge OptBool `json:"merge"`
+}
+
+// GetName returns the value of Name.
+func (s *SiteTagUpdate) GetName() OptString {
+	return s.Name
+}
+
+// GetColor returns the value of Color.
+func (s *SiteTagUpdate) GetColor() OptString {
+	return s.Color
+}
+
+// GetMerge returns the value of Merge.
+func (s *SiteTagUpdate) GetMerge() OptBool {
+	return s.Merge
+}
+
+// SetName sets the value of Name.
+func (s *SiteTagUpdate) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetColor sets the value of Color.
+func (s *SiteTagUpdate) SetColor(val OptString) {
+	s.Color = val
+}
+
+// SetMerge sets the value of Merge.
+func (s *SiteTagUpdate) SetMerge(val OptBool) {
+	s.Merge = val
+}
+
 // Ref: #/components/schemas/SiteTags
 type SiteTags struct {
 	Tags []string `json:"tags"`
@@ -37196,6 +37488,18 @@ func (*UpdateSiteFilesSettingsNotFound) updateSiteFilesSettingsRes() {}
 type UpdateSiteFilesSettingsUnauthorized Error
 
 func (*UpdateSiteFilesSettingsUnauthorized) updateSiteFilesSettingsRes() {}
+
+type UpdateTagConflict Error
+
+func (*UpdateTagConflict) updateTagRes() {}
+
+type UpdateTagNotFound Error
+
+func (*UpdateTagNotFound) updateTagRes() {}
+
+type UpdateTagUnprocessableEntity Error
+
+func (*UpdateTagUnprocessableEntity) updateTagRes() {}
 
 // Ref: #/components/schemas/UpdateTask
 type UpdateTask struct {

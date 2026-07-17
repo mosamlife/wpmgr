@@ -64,18 +64,24 @@ function stateLabel(s: Site): string {
   return CONNECTION_STATE_LABELS[raw] ?? raw;
 }
 
+// GH #230 "rich tags" — the TAGS axis moved server-side (see use-sites.ts's
+// `tags`/`tagsMatch` query params); this pure function now mirrors ONLY the
+// client-side axes still applied over the (already tag-filtered) `sites`
+// array in routes/_authed/sites/index.tsx's `visibleSites` memo: free-text
+// search (which still matches a site's tag VALUES, since a tag is part of a
+// site's searchable text) and status. There is no independent tags-axis
+// predicate anymore — server-side tag filtering has its own coverage in
+// use-sites.test.ts / the FE contract test.
 function filterSites(
   sites: Site[],
   q: string,
   selectedStatuses: string[],
-  selectedTags: string[],
 ): Site[] {
   const query = q.trim().toLowerCase();
   const hasQ = query.length > 0;
   const hasStatus = selectedStatuses.length > 0;
-  const hasTags = selectedTags.length > 0;
 
-  if (!hasQ && !hasStatus && !hasTags) return sites;
+  if (!hasQ && !hasStatus) return sites;
 
   return sites.filter((s) => {
     if (hasQ) {
@@ -86,10 +92,6 @@ function filterSites(
     }
     if (hasStatus) {
       if (!selectedStatuses.includes(stateLabel(s))) return false;
-    }
-    if (hasTags) {
-      const siteTags = s.tags ?? [];
-      if (!siteTags.some((t) => selectedTags.includes(t))) return false;
     }
     return true;
   });
@@ -107,29 +109,31 @@ describe("filterSites — text search", () => {
   ];
 
   it("returns all sites when q is empty", () => {
-    expect(filterSites(sites, "", [], [])).toHaveLength(3);
+    expect(filterSites(sites, "", [])).toHaveLength(3);
   });
 
   it("matches on site name (case-insensitive)", () => {
-    const result = filterSites(sites, "ALPHA", [], []);
+    const result = filterSites(sites, "ALPHA", []);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("1");
   });
 
   it("matches on url hostname substring", () => {
-    const result = filterSites(sites, "beta.example", [], []);
+    const result = filterSites(sites, "beta.example", []);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("2");
   });
 
-  it("matches on tag value", () => {
-    const result = filterSites(sites, "staging", [], []);
+  // GH #230: the tags AXIS moved server-side, but free-text search still
+  // matches a site's tag VALUES (a tag is part of the searchable haystack).
+  it("still matches on tag value via search (server-side tags axis is a separate filter)", () => {
+    const result = filterSites(sites, "staging", []);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("2");
   });
 
   it("returns empty when no site matches", () => {
-    expect(filterSites(sites, "zzz-no-match", [], [])).toHaveLength(0);
+    expect(filterSites(sites, "zzz-no-match", [])).toHaveLength(0);
   });
 });
 
@@ -144,61 +148,28 @@ describe("filterSites — status filter (OR within axis)", () => {
   const sites = [connected, degraded, disconnected];
 
   it("returns all when no statuses are selected", () => {
-    expect(filterSites(sites, "", [], [])).toHaveLength(3);
+    expect(filterSites(sites, "", [])).toHaveLength(3);
   });
 
   it("filters to a single status", () => {
-    const result = filterSites(sites, "", ["Connected"], []);
+    const result = filterSites(sites, "", ["Connected"]);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("c");
   });
 
   it("ORs multiple statuses so both matched sites are returned", () => {
-    const result = filterSites(sites, "", ["Connected", "Degraded"], []);
+    const result = filterSites(sites, "", ["Connected", "Degraded"]);
     expect(result).toHaveLength(2);
     expect(result.map((s) => s.id).sort()).toEqual(["c", "d"].sort());
   });
 
   it("returns empty when selected status matches nothing", () => {
-    expect(filterSites(sites, "", ["Archived"], [])).toHaveLength(0);
+    expect(filterSites(sites, "", ["Archived"])).toHaveLength(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tags filter — OR within axis
-// ---------------------------------------------------------------------------
-
-describe("filterSites — tags filter (OR within axis)", () => {
-  const sites = [
-    makeSite({ id: "1", tags: ["production", "client-a"] }),
-    makeSite({ id: "2", tags: ["staging"] }),
-    makeSite({ id: "3", tags: [] }),
-  ];
-
-  it("returns all when no tags are selected", () => {
-    expect(filterSites(sites, "", [], [])).toHaveLength(3);
-  });
-
-  it("matches a site with ANY of the selected tags", () => {
-    const result = filterSites(sites, "", [], ["production"]);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.id).toBe("1");
-  });
-
-  it("ORs multiple tags across different sites", () => {
-    const result = filterSites(sites, "", [], ["production", "staging"]);
-    expect(result).toHaveLength(2);
-    expect(result.map((s) => s.id).sort()).toEqual(["1", "2"].sort());
-  });
-
-  it("excludes sites with no matching tags", () => {
-    const result = filterSites(sites, "", [], ["production"]);
-    expect(result.find((s) => s.id === "3")).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// AND composition across filter axes
+// AND composition across the remaining client-side filter axes
 // ---------------------------------------------------------------------------
 
 describe("filterSites — AND composition across axes", () => {
@@ -208,25 +179,23 @@ describe("filterSites — AND composition across axes", () => {
     makeSite({ id: "3", name: "Beta prod", tags: ["production"], connection_state: "disconnected" }),
   ];
 
-  it("applies text AND status AND tags (all three active)", () => {
-    // "alpha" in name AND connected AND production tag
-    const result = filterSites(sites, "alpha", ["Connected"], ["production"]);
-    // Only site 1 (Alpha prod, connected, production)
-    expect(result).toHaveLength(1);
-    expect(result[0]?.id).toBe("1");
+  it("applies text AND status (both active)", () => {
+    // "alpha" in name AND connected
+    const result = filterSites(sites, "alpha", ["Connected"]);
+    // Sites 1 and 2 (both Alpha, both connected)
+    expect(result).toHaveLength(2);
+    expect(result.map((s) => s.id).sort()).toEqual(["1", "2"]);
   });
 
-  it("text AND status without tags", () => {
-    const result = filterSites(sites, "alpha", ["Connected"], []);
-    // Sites 1 and 2 (both Alpha, both connected)
+  it("text without status", () => {
+    const result = filterSites(sites, "alpha", []);
     expect(result).toHaveLength(2);
   });
 
-  it("status AND tags without text", () => {
-    const result = filterSites(sites, "", ["Connected"], ["production"]);
-    // Site 1 (connected AND production tag)
+  it("status without text", () => {
+    const result = filterSites(sites, "", ["Disconnected"]);
     expect(result).toHaveLength(1);
-    expect(result[0]?.id).toBe("1");
+    expect(result[0]?.id).toBe("3");
   });
 });
 
@@ -245,7 +214,7 @@ describe("selectedSites invariant — selection survives filter changes", () => 
 
   it("all 3 sites remain in the bulk target after filtering down to 1 visible", () => {
     // User searches "Alpha" — only site 1 is visible.
-    const visible = filterSites(sites, "alpha", [], []);
+    const visible = filterSites(sites, "alpha", []);
     expect(visible).toHaveLength(1);
 
     // But selectedSites reads from the FULL array, not visible.
@@ -254,13 +223,14 @@ describe("selectedSites invariant — selection survives filter changes", () => 
   });
 
   it("select 12 then filter: selection count stays at 12 regardless of visible rows", () => {
-    // Create 12 sites, select all, then filter to show 3.
+    // Create 12 sites, select all, then filter to show 3 (via search, since
+    // the tags axis is server-side and out of scope for this pure function).
     const batch = Array.from({ length: 12 }, (_, i) =>
-      makeSite({ id: `s${i}`, name: `Site ${i}`, tags: i < 3 ? ["show"] : [] }),
+      makeSite({ id: `s${i}`, name: i < 3 ? `Match ${i}` : `Site ${i}` }),
     );
     const batchSelectedIds = new Set(batch.map((s) => s.id));
 
-    const visible = filterSites(batch, "", [], ["show"]);
+    const visible = filterSites(batch, "match", []);
     expect(visible).toHaveLength(3);
 
     // Selection reads the full array.
@@ -281,11 +251,11 @@ describe("clear-all resets all filter axes", () => {
 
   it("after clearing all axes, all sites are visible", () => {
     // With filters active, only 1 site is visible.
-    const beforeClear = filterSites(sites, "alpha", ["Connected"], ["prod"]);
+    const beforeClear = filterSites(sites, "alpha", ["Connected"]);
     expect(beforeClear).toHaveLength(1);
 
-    // After clear (q="", no statuses, no tags), all are visible.
-    const afterClear = filterSites(sites, "", [], []);
+    // After clear (q="", no statuses), all are visible.
+    const afterClear = filterSites(sites, "", []);
     expect(afterClear).toHaveLength(2);
   });
 });

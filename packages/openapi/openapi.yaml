@@ -2024,10 +2024,32 @@ paths:
         - name: tag
           in: query
           required: false
-          description: Filter to sites carrying this tag.
+          deprecated: true
+          description: Deprecated alias for `tags` with a single value (any-match semantics). Prefer `tags`.
           schema:
             type: string
             maxLength: 64
+        - name: tags
+          in: query
+          required: false
+          explode: true
+          description: |
+            Filter to sites carrying these tags (M100, GH #230 "rich tags").
+            Repeat the param for multiple values (`?tags=a&tags=b`). Match
+            semantics are controlled by `tags_match` (default `any`).
+          schema:
+            type: array
+            items:
+              type: string
+              maxLength: 64
+        - name: tags_match
+          in: query
+          required: false
+          description: '`any` (tags && ...) or `all` (tags @> ...). Defaults to `any`.'
+          schema:
+            type: string
+            enum: [any, all]
+            default: any
         - name: state
           in: query
           required: false
@@ -2101,6 +2123,155 @@ paths:
                 $ref: "#/components/schemas/Site"
         "404":
           description: Site not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/tags:
+    get:
+      operationId: listTags
+      summary: List the tenant's tag registry (GH #230 rich tags)
+      description: |
+        Lists every tag in the tenant's registry (m100), sorted
+        case-insensitively by name, with a live `usage_count` (the number of
+        sites currently carrying it — unused tags with usage_count 0 are
+        legitimate). No pagination: a tenant's tag vocabulary is small.
+      tags: [sites]
+      responses:
+        "200":
+          description: The tenant's tags
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteTagList"
+    post:
+      operationId: createTag
+      summary: Create a new tag in the registry
+      tags: [sites]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteTagCreate"
+      responses:
+        "201":
+          description: The created tag (usage_count 0)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteTag"
+        "409":
+          description: A tag with this exact-case name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed (invalid_tag / invalid_color)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/tags/{tagId}:
+    patch:
+      operationId: updateTag
+      summary: Rename, recolor, or merge a tag
+      description: |
+        A color-only body just updates the color. A `name` change renames the
+        tag and propagates the new name onto every site (and every unexpired,
+        unredeemed pairing code) currently carrying the old name, in the same
+        transaction. Renaming onto an existing name returns 409
+        `tag_name_exists` unless `merge: true`, in which case the source tag
+        is merged into the existing survivor (sites are rewritten to the
+        survivor's name, deduplicated; the survivor's color is kept unless
+        this request also sets `color`).
+      tags: [sites]
+      parameters:
+        - name: tagId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteTagUpdate"
+      responses:
+        "200":
+          description: The updated (or merge-survivor) tag
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteTag"
+        "404":
+          description: Tag not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A tag with this exact-case name already exists (and merge was not requested)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed (invalid_tag / invalid_color)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteTag
+      summary: Delete a tag fleet-wide
+      description: |
+        Removes the tag from the registry AND from every site (and every
+        unexpired, unredeemed pairing code) currently carrying it, in one
+        transaction.
+      tags: [sites]
+      parameters:
+        - name: tagId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Tag deleted
+        "404":
+          description: Tag not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/tags/bulk-apply:
+    post:
+      operationId: bulkApplyTags
+      summary: Add and/or remove tags across many sites
+      description: |
+        Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
+        site id is checked against the caller's collaborator allowlist
+        independently; sites the caller cannot access (or that don't exist in
+        this tenant) are returned with `ok: false` rather than failing the
+        whole call. `add` names are registered into the tag registry in the
+        same transaction. Requires the `site.write` permission.
+      tags: [sites]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkTagApplyRequest"
+      responses:
+        "200":
+          description: Per-site apply results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkResultList"
+        "422":
+          description: Validation failed (e.g. neither add nor remove supplied)
           content:
             application/json:
               schema:
@@ -9143,6 +9314,82 @@ components:
             type: string
             minLength: 1
             maxLength: 64
+    SiteTag:
+      type: object
+      description: |
+        A tenant-level tag registry entry (GH #230 "rich tags", m100). Owns
+        existence/color/canonical name; sites.tags (the site's own text[])
+        remains the assignment store.
+      required: [id, name, color, usage_count, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 64
+        color:
+          type: string
+          description: Lowercase "#rrggbb" hex code, or "" for auto (client derives a deterministic color from the name).
+        usage_count:
+          type: integer
+          format: int64
+          description: Number of sites in the tenant currently carrying this tag. 0 is a legitimate, unused tag.
+        created_at:
+          type: string
+          format: date-time
+    SiteTagList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteTag"
+    SiteTagCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        color:
+          type: string
+          description: Optional lowercase "#rrggbb" hex code. Omitted or "" = auto.
+    SiteTagUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: When present, renames the tag (propagated to every site + unredeemed pairing code carrying the old name).
+        color:
+          type: string
+          description: When present, sets the tag's color ("" resets to auto).
+        merge:
+          type: boolean
+          default: false
+          description: |
+            When the new `name` collides with an existing tag, merge the
+            source tag INTO that existing survivor instead of returning 409
+            tag_name_exists.
+    BulkTagApplyRequest:
+      type: object
+      required: [site_ids]
+      properties:
+        site_ids:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { type: string, format: uuid }
+        add:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 64 }
+        remove:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 64 }
     PairingCodeCreate:
       type: object
       properties:

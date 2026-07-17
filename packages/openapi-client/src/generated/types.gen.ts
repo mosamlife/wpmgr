@@ -243,6 +243,62 @@ export type SiteTags = {
   tags: Array<string>;
 };
 
+/**
+ * A tenant-level tag registry entry (GH #230 "rich tags", m100). Owns
+ * existence/color/canonical name; sites.tags (the site's own text[])
+ * remains the assignment store.
+ *
+ */
+export type SiteTag = {
+  id: string;
+  name: string;
+  /**
+   * Lowercase "#rrggbb" hex code, or "" for auto (client derives a deterministic color from the name).
+   */
+  color: string;
+  /**
+   * Number of sites in the tenant currently carrying this tag. 0 is a legitimate, unused tag.
+   */
+  usage_count: number;
+  created_at: string;
+};
+
+export type SiteTagList = {
+  items: Array<SiteTag>;
+};
+
+export type SiteTagCreate = {
+  name: string;
+  /**
+   * Optional lowercase "#rrggbb" hex code. Omitted or "" = auto.
+   */
+  color?: string;
+};
+
+export type SiteTagUpdate = {
+  /**
+   * When present, renames the tag (propagated to every site + unredeemed pairing code carrying the old name).
+   */
+  name?: string;
+  /**
+   * When present, sets the tag's color ("" resets to auto).
+   */
+  color?: string;
+  /**
+   * When the new `name` collides with an existing tag, merge the
+   * source tag INTO that existing survivor instead of returning 409
+   * tag_name_exists.
+   *
+   */
+  merge?: boolean;
+};
+
+export type BulkTagApplyRequest = {
+  site_ids: Array<string>;
+  add?: Array<string>;
+  remove?: Array<string>;
+};
+
 export type PairingCodeCreate = {
   site_name?: string;
   tags?: Array<string>;
@@ -7944,9 +8000,22 @@ export type ListSitesData = {
     limit?: number;
     offset?: number;
     /**
-     * Filter to sites carrying this tag.
+     * Deprecated alias for `tags` with a single value (any-match semantics). Prefer `tags`.
+     *
+     * @deprecated
      */
     tag?: string;
+    /**
+     * Filter to sites carrying these tags (M100, GH #230 "rich tags").
+     * Repeat the param for multiple values (`?tags=a&tags=b`). Match
+     * semantics are controlled by `tags_match` (default `any`).
+     *
+     */
+    tags?: Array<string>;
+    /**
+     * `any` (tags && ...) or `all` (tags @> ...). Defaults to `any`.
+     */
+    tags_match?: "any" | "all";
     /**
      * Filter to a single connection_state. When omitted, archived sites are
      * hidden.
@@ -8081,6 +8150,139 @@ export type SetSiteTagsResponses = {
 
 export type SetSiteTagsResponse =
   SetSiteTagsResponses[keyof SetSiteTagsResponses];
+
+export type ListTagsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/tags";
+};
+
+export type ListTagsResponses = {
+  /**
+   * The tenant's tags
+   */
+  200: SiteTagList;
+};
+
+export type ListTagsResponse = ListTagsResponses[keyof ListTagsResponses];
+
+export type CreateTagData = {
+  body: SiteTagCreate;
+  path?: never;
+  query?: never;
+  url: "/api/v1/tags";
+};
+
+export type CreateTagErrors = {
+  /**
+   * A tag with this exact-case name already exists
+   */
+  409: Error;
+  /**
+   * Validation failed (invalid_tag / invalid_color)
+   */
+  422: Error;
+};
+
+export type CreateTagError = CreateTagErrors[keyof CreateTagErrors];
+
+export type CreateTagResponses = {
+  /**
+   * The created tag (usage_count 0)
+   */
+  201: SiteTag;
+};
+
+export type CreateTagResponse = CreateTagResponses[keyof CreateTagResponses];
+
+export type DeleteTagData = {
+  body?: never;
+  path: {
+    tagId: string;
+  };
+  query?: never;
+  url: "/api/v1/tags/{tagId}";
+};
+
+export type DeleteTagErrors = {
+  /**
+   * Tag not found
+   */
+  404: Error;
+};
+
+export type DeleteTagError = DeleteTagErrors[keyof DeleteTagErrors];
+
+export type DeleteTagResponses = {
+  /**
+   * Tag deleted
+   */
+  204: void;
+};
+
+export type DeleteTagResponse = DeleteTagResponses[keyof DeleteTagResponses];
+
+export type UpdateTagData = {
+  body: SiteTagUpdate;
+  path: {
+    tagId: string;
+  };
+  query?: never;
+  url: "/api/v1/tags/{tagId}";
+};
+
+export type UpdateTagErrors = {
+  /**
+   * Tag not found
+   */
+  404: Error;
+  /**
+   * A tag with this exact-case name already exists (and merge was not requested)
+   */
+  409: Error;
+  /**
+   * Validation failed (invalid_tag / invalid_color)
+   */
+  422: Error;
+};
+
+export type UpdateTagError = UpdateTagErrors[keyof UpdateTagErrors];
+
+export type UpdateTagResponses = {
+  /**
+   * The updated (or merge-survivor) tag
+   */
+  200: SiteTag;
+};
+
+export type UpdateTagResponse = UpdateTagResponses[keyof UpdateTagResponses];
+
+export type BulkApplyTagsData = {
+  body: BulkTagApplyRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/tags/bulk-apply";
+};
+
+export type BulkApplyTagsErrors = {
+  /**
+   * Validation failed (e.g. neither add nor remove supplied)
+   */
+  422: Error;
+};
+
+export type BulkApplyTagsError = BulkApplyTagsErrors[keyof BulkApplyTagsErrors];
+
+export type BulkApplyTagsResponses = {
+  /**
+   * Per-site apply results
+   */
+  200: BulkResultList;
+};
+
+export type BulkApplyTagsResponse =
+  BulkApplyTagsResponses[keyof BulkApplyTagsResponses];
 
 export type ListMediaAssetsData = {
   body?: never;

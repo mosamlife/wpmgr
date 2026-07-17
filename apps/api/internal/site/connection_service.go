@@ -107,11 +107,21 @@ func (s *connService) MintEnrollmentCode(ctx context.Context, in MintEnrollmentI
 	if u, err := url.Parse(in.URL); err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return EnrollmentCode{}, domain.Validation("site_url_scheme", "url must be an http or https URL")
 	}
+	// Validate BEFORE any write. CreatePending (step 1 below) commits in its
+	// OWN transaction, separate from the MintSiteBoundCode call (step 2) —
+	// a tag rejected only at step 2 would strand an orphaned
+	// pending_enrollment site with no code ever minted for it (m100 security
+	// review follow-up, GH #230). Normalize first (trim/dedupe) so the cap
+	// applies to the same tags CreatePending/MintSiteBoundCode will store.
+	in.Tags = normalizeTags(in.Tags)
+	if err := s.validator.Struct(in); err != nil {
+		return EnrollmentCode{}, err
+	}
 	name := in.Name
 	if name == "" {
 		name = in.URL
 	}
-	tags := normalizeTags(in.Tags)
+	tags := in.Tags
 
 	// 0. URL-dedup: look up any existing site (incl. archived) before the INSERT
 	// so we can return a structured 409 carrying site_id + connection_state

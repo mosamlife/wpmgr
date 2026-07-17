@@ -39,6 +39,33 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.69",
+    date: "2026-07-17",
+    summary: "Site tags: organize, filter, and bulk-manage your fleet with colored tags.",
+    items: [
+      {
+        tag: "Added",
+        text: "Sites can now be organized with tags. Create tags on the fly from a keyboard-first picker (type to search, press Enter to create), assign multiple tags per site from the site card, table row, or site settings, and every tag gets a consistent color automatically, with an optional custom color per tag.",
+      },
+      {
+        tag: "Added",
+        text: "Filter the Sites list by one or more tags with match-any or match-all semantics. Filters live in the URL so a filtered view can be bookmarked or shared, and clicking any tag chip jumps straight to that tag's sites.",
+      },
+      {
+        tag: "Added",
+        text: "Bulk tagging: select multiple sites and add or remove tags across all of them in one action, with a clear indicator when only some of the selected sites carry a tag.",
+      },
+      {
+        tag: "Added",
+        text: "A tag management page under Settings: rename a tag everywhere at once, merge duplicates, change colors, and delete with a usage count shown before anything is removed. Existing site tags are registered automatically on upgrade.",
+      },
+      {
+        tag: "Fixed",
+        text: "The Sites list stays fast even after long idle periods: uptime data shown on the list is now read from a compact per-site rollup instead of scanning the full probe history, with uptime percentages unchanged and exact.",
+      },
+    ],
+  },
+  {
     version: "0.61.40",
     date: "2026-07-08",
     summary: "Organizations can now be deleted, with a safety grace window.",

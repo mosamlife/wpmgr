@@ -14,9 +14,14 @@ WHERE id = $1 AND tenant_id = $2;
 -- the list is filtered to exactly that connection_state (e.g. 'archived' for
 -- the archived chip); when it is NULL every non-archived site is returned.
 -- When sqlc.narg('client_id') is set only sites belonging to that client are returned (m63).
+-- M100 (GH #230 "rich tags"): any_tags (tags && ...) and all_tags (tags @> ...)
+-- replace the single-tag filter; both are served by the sites_tags_idx GIN
+-- index. The service maps exactly ONE of them per request (legacy ?tag=
+-- becomes any_tags=[tag]).
 SELECT * FROM sites
 WHERE tenant_id = $1
-  AND (sqlc.narg('tag')::text IS NULL OR sqlc.narg('tag')::text = ANY (tags))
+  AND (sqlc.narg('any_tags')::text[] IS NULL OR tags && sqlc.narg('any_tags')::text[])
+  AND (sqlc.narg('all_tags')::text[] IS NULL OR tags @> sqlc.narg('all_tags')::text[])
   AND (
         (sqlc.narg('state')::text IS NULL AND connection_state <> 'archived')
         OR sqlc.narg('state')::text = connection_state

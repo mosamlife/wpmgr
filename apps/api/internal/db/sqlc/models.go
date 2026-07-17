@@ -1001,6 +1001,26 @@ type SiteShare struct {
 	CreatedAt time.Time          `json:"created_at"`
 }
 
+type SiteTag struct {
+	ID        uuid.UUID `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	Name      string    `json:"name"`
+	Color     string    `json:"color"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type SiteUptimeDaily struct {
+	TenantID       uuid.UUID   `json:"tenant_id"`
+	SiteID         uuid.UUID   `json:"site_id"`
+	Day            pgtype.Date `json:"day"`
+	UpChecks       int32       `json:"up_checks"`
+	TotalChecks    int32       `json:"total_checks"`
+	SumLatencyMs   float64     `json:"sum_latency_ms"`
+	LatencySamples int32       `json:"latency_samples"`
+	UpdatedAt      time.Time   `json:"updated_at"`
+}
+
 type SiteUptimeProbe struct {
 	ID         uuid.UUID          `json:"id"`
 	TenantID   uuid.UUID          `json:"tenant_id"`
@@ -1017,6 +1037,15 @@ type SiteUptimeProbe struct {
 	TlsIssuer  string             `json:"tls_issuer"`
 	TlsSubject string             `json:"tls_subject"`
 	ErrorText  string             `json:"error_text"`
+}
+
+type SiteUptimeStatus struct {
+	SiteID       uuid.UUID          `json:"site_id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	LatestUp     bool               `json:"latest_up"`
+	LastProbedAt time.Time          `json:"last_probed_at"`
+	TlsExpiry    pgtype.Timestamptz `json:"tls_expiry"`
+	UpdatedAt    time.Time          `json:"updated_at"`
 }
 
 type SiteVulnerability struct {

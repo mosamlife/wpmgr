@@ -48,6 +48,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	siteevents "github.com/mosamlife/wpmgr/apps/api/internal/site/events"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
+	"github.com/mosamlife/wpmgr/apps/api/internal/sitetag"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 	"github.com/mosamlife/wpmgr/apps/api/internal/uptime"
@@ -198,6 +199,9 @@ type Deps struct {
 	// ClientH serves the m63 agency-client management routes under
 	// /api/v1/clients. nil ⇒ routes not mounted.
 	ClientH *clientpkg.Handler
+	// SiteTagH serves the m100 (GH #230 "rich tags") tag-registry routes
+	// under /api/v1/tags. nil ⇒ routes not mounted.
+	SiteTagH *sitetag.Handler
 	// ReportH serves the m64 white-label report routes under
 	// /api/v1/clients/:clientId/report-schedule and /api/v1/clients/:clientId/reports.
 	// nil ⇒ routes not mounted.
@@ -423,6 +427,10 @@ func New(deps Deps) *Server {
 	v1Auth.Use(authz.RequireAuth())
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)
+	// m100 (GH #230 "rich tags") — tenant-level tag registry.
+	if deps.SiteTagH != nil {
+		deps.SiteTagH.Register(v1)
+	}
 	// M21 — tenant-scoped connection-lifecycle SSE stream (GET /sites/events).
 	if deps.SiteEventsH != nil {
 		deps.SiteEventsH.Register(v1)

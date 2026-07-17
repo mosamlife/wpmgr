@@ -298,12 +298,19 @@ type EventPublisher interface {
 
 // MintEnrollmentInput creates a site row in pending_enrollment plus a site-bound
 // single-use enrollment code (the site-first "Add site" flow).
+//
+// Tags carries the same cap as CreatePairingCodeInput.Tags (m100 follow-up,
+// GH #230 security review): this flow's CreatePending write (step 1, its own
+// committed transaction) used to run BEFORE any tag validation, so an
+// over-length tag could 500 out of MintSiteBoundCode (step 2) and strand an
+// orphaned pending_enrollment site with no code. connService.MintEnrollmentCode
+// now validates this struct FIRST, before any write.
 type MintEnrollmentInput struct {
 	TenantID  uuid.UUID
 	CreatedBy uuid.UUID
 	URL       string
 	Name      string
-	Tags      []string
+	Tags      []string `validate:"max=50,dive,min=1,max=64"`
 }
 
 // EnrollmentCode is a freshly minted code returned to the operator once.

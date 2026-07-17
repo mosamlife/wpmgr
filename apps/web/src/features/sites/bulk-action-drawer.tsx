@@ -16,12 +16,17 @@ import { cn } from "@/lib/utils";
 import { drawerUp, fade } from "@/lib/motion-presets";
 import { useSites } from "@/features/sites/use-sites";
 import { useUpdateRun, useRunEventStream } from "@/features/updates/use-updates";
-import type { UpdateTask } from "@wpmgr/api";
+import type { UpdateTask, BulkResult, Site, SiteTag } from "@wpmgr/api";
+
+import { TagPicker, type TagPickerState } from "@/features/sites/tag-picker";
+import { useTags, useCreateTag, useBulkApplyTags } from "@/features/tags/use-tags";
+import { toast } from "@/components/toast";
 
 import {
   BulkActionContext,
   type BulkActionContextValue,
   type BulkActionRunRef,
+  type TagEditStatus,
 } from "./use-bulk-action";
 
 // Sprint 3 / surface 4.10 — bulk action drawer.
@@ -49,14 +54,26 @@ import {
 // Provider
 // ---------------------------------------------------------------------------
 
+/** The stable id for a tracked ref, regardless of its kind. */
+function refId(ref: BulkActionRunRef): string {
+  return ref.kind === "update-run" ? ref.runId : ref.id;
+}
+
+let tagEditCounter = 0;
+/** Client-generated id for a new tag-edit session (no server id exists yet). */
+function nextTagEditId(): string {
+  tagEditCounter += 1;
+  return `tag-edit-${Date.now()}-${tagEditCounter}`;
+}
+
 /**
  * BulkActionProvider — mount once inside the AppShell, above the route
- * Outlet. Owns the stack of in-flight runs and renders one drawer at a
- * time. Children read state via `useBulkAction()`.
+ * Outlet. Owns the stack of tracked refs (update runs AND tag-edit sessions)
+ * and renders one drawer at a time. Children read state via `useBulkAction()`.
  */
 export function BulkActionProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<BulkActionRunRef[]>([]);
-  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [currentId, setCurrentId] = useState<string | null>(null);
   const [visible, setVisible] = useState<boolean>(false);
 
   // Snapshot ref so the imperative callbacks below don't re-create on
@@ -69,21 +86,46 @@ export function BulkActionProvider({ children }: { children: ReactNode }) {
 
   const openWithRun = useCallback((runId: string, title: string) => {
     setRuns((prev) => {
-      const existing = prev.find((r) => r.runId === runId);
+      const existing = prev.find((r) => r.kind === "update-run" && r.runId === runId);
       if (existing) {
         // Same run id triggered twice: refresh the title in place.
         return prev.map((r) =>
-          r.runId === runId ? { ...r, title } : r,
+          r.kind === "update-run" && r.runId === runId ? { ...r, title } : r,
         );
       }
-      return [...prev, { runId, title, settled: false }];
+      return [...prev, { kind: "update-run", runId, title, settled: false }];
     });
-    setCurrentRunId(runId);
+    setCurrentId(runId);
     setVisible(true);
   }, []);
 
-  const open = useCallback((runId: string) => {
-    setCurrentRunId(runId);
+  const openTagEdit = useCallback((siteIds: string[]) => {
+    const id = nextTagEditId();
+    const title = `Tag ${siteIds.length} ${siteIds.length === 1 ? "site" : "sites"}`;
+    setRuns((prev) => [
+      ...prev,
+      { kind: "tag-edit", id, title, siteIds, status: "editing", settled: false },
+    ]);
+    setCurrentId(id);
+    setVisible(true);
+    return id;
+  }, []);
+
+  const updateTagEdit = useCallback(
+    (id: string, patch: Partial<{ status: TagEditStatus; results: BulkResult[] }>) => {
+      setRuns((prev) =>
+        prev.map((r) =>
+          r.kind === "tag-edit" && r.id === id
+            ? { ...r, ...patch, settled: patch.status === "done" ? true : r.settled }
+            : r,
+        ),
+      );
+    },
+    [],
+  );
+
+  const open = useCallback((id: string) => {
+    setCurrentId(id);
     setVisible(true);
   }, []);
 
@@ -93,52 +135,61 @@ export function BulkActionProvider({ children }: { children: ReactNode }) {
 
   const reopenLatest = useCallback(() => {
     const all = runsRef.current;
-    const inFlight = [...all].reverse().find((r) => !r.settled);
+    const inFlight = [...all]
+      .reverse()
+      .find((r) => r.kind === "update-run" && !r.settled);
     const latest = inFlight ?? all[all.length - 1];
     if (!latest) return;
-    setCurrentRunId(latest.runId);
+    setCurrentId(refId(latest));
     setVisible(true);
   }, []);
 
   const markSettled = useCallback((runId: string) => {
     setRuns((prev) => {
-      const target = prev.find((r) => r.runId === runId);
+      const target = prev.find((r) => r.kind === "update-run" && r.runId === runId);
       if (!target || target.settled) return prev;
       return prev.map((r) =>
-        r.runId === runId ? { ...r, settled: true } : r,
+        r.kind === "update-run" && r.runId === runId ? { ...r, settled: true } : r,
       );
     });
   }, []);
 
+  // Bell-badge count: ONLY unsettled update-runs. A tag-edit session in
+  // progress never inflates the badge.
   const inFlightCount = useMemo(
-    () => runs.reduce((acc, r) => (r.settled ? acc : acc + 1), 0),
+    () =>
+      runs.reduce(
+        (acc, r) => (r.kind === "update-run" && !r.settled ? acc + 1 : acc),
+        0,
+      ),
     [runs],
   );
 
   const current = useMemo(
-    () => runs.find((r) => r.runId === currentRunId) ?? null,
-    [runs, currentRunId],
+    () => runs.find((r) => refId(r) === currentId) ?? null,
+    [runs, currentId],
   );
-  const currentTitle = current?.title ?? "";
 
   const value = useMemo<BulkActionContextValue>(
     () => ({
-      currentRunId,
-      currentTitle,
+      current,
       visible,
       open,
       openWithRun,
+      openTagEdit,
+      updateTagEdit,
       close,
       reopenLatest,
       markSettled,
       inFlightCount,
     }),
     [
-      currentRunId,
-      currentTitle,
+      current,
       visible,
       open,
       openWithRun,
+      openTagEdit,
+      updateTagEdit,
       close,
       reopenLatest,
       markSettled,
@@ -149,14 +200,58 @@ export function BulkActionProvider({ children }: { children: ReactNode }) {
   return (
     <BulkActionContext.Provider value={value}>
       {children}
-      <BulkActionDrawer
-        runId={currentRunId}
-        title={currentTitle}
+      <BulkActionDrawerHost
+        current={current}
         visible={visible}
         onClose={close}
         onSettled={markSettled}
+        onTagEditUpdate={updateTagEdit}
       />
     </BulkActionContext.Provider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Host — switch-renders the update-run drawer or the tag-edit drawer
+// ---------------------------------------------------------------------------
+
+function BulkActionDrawerHost({
+  current,
+  visible,
+  onClose,
+  onSettled,
+  onTagEditUpdate,
+}: {
+  current: BulkActionRunRef | null;
+  visible: boolean;
+  onClose: () => void;
+  onSettled: (runId: string) => void;
+  onTagEditUpdate: (
+    id: string,
+    patch: Partial<{ status: TagEditStatus; results: BulkResult[] }>,
+  ) => void;
+}) {
+  if (!current) return null;
+  if (current.kind === "update-run") {
+    // The update-run branch is BYTE-IDENTICAL to before generalization — see
+    // <BulkActionDrawer> below. SSE plumbing and per-row rendering untouched.
+    return (
+      <BulkActionDrawer
+        runId={current.runId}
+        title={current.title}
+        visible={visible}
+        onClose={onClose}
+        onSettled={onSettled}
+      />
+    );
+  }
+  return (
+    <TagEditDrawer
+      entry={current}
+      visible={visible}
+      onClose={onClose}
+      onUpdate={onTagEditUpdate}
+    />
   );
 }
 
@@ -582,4 +677,371 @@ function countTotals(rows: SiteRow[]): Totals {
 
 function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+// ---------------------------------------------------------------------------
+// TagEditDrawer / TagEditPanel — GH #230 "rich tags" bulk tag editor
+// ---------------------------------------------------------------------------
+//
+// Shares the same shell chrome (scrim, slide-up panel, Esc-to-close) as
+// <BulkActionDrawer> above, but the body is a single tri-state <TagPicker>
+// mounted INLINE (not in a Popover) plus a live add/remove diff footer.
+// Nothing here is optimistic: every toggle only mutates local pending state;
+// the operator's "Apply to N sites" click is the one and only network call
+// (POST /tags/bulk-apply).
+
+export interface TagEditEntry {
+  kind: "tag-edit";
+  id: string;
+  title: string;
+  siteIds: string[];
+  status: TagEditStatus;
+  results?: BulkResult[];
+  settled: boolean;
+}
+
+export interface TagEditDrawerProps {
+  entry: TagEditEntry;
+  visible: boolean;
+  onClose: () => void;
+  onUpdate: (
+    id: string,
+    patch: Partial<{ status: TagEditStatus; results: BulkResult[] }>,
+  ) => void;
+}
+
+export function TagEditDrawer({ entry, visible, onClose, onUpdate }: TagEditDrawerProps) {
+  useEffect(() => {
+    if (!visible) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, onClose]);
+
+  return (
+    <AnimatePresence>
+      {visible ? (
+        <div aria-hidden={!visible} className="fixed inset-0 z-50">
+          <motion.button
+            type="button"
+            aria-label="Close drawer"
+            tabIndex={-1}
+            onClick={onClose}
+            variants={fade}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="absolute inset-0 bg-[var(--scrim)]"
+          />
+
+          <motion.section
+            role="dialog"
+            aria-modal="false"
+            aria-labelledby="tag-edit-drawer-title"
+            variants={drawerUp}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className={cn(
+              "absolute bottom-0 left-0 right-0",
+              "max-h-[70vh] overflow-hidden",
+              "rounded-t-xl border-t border-border bg-card text-card-foreground shadow-lg",
+            )}
+          >
+            <div className="mx-auto mt-2 h-1.5 w-12 rounded-full bg-muted" aria-hidden="true" />
+            <TagEditPanel key={entry.id} entry={entry} onClose={onClose} onUpdate={onUpdate} />
+          </motion.section>
+        </div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+/** mixed -> checked -> unchecked -> checked -> … (mixed is only ever the
+ *  INITIAL state; once cycled away, an operator can only get back to it by
+ *  reopening the drawer, which reseeds `current` from a fresh initial map).
+ *  Exported for direct unit coverage (see bulk-action-drawer.test.tsx). */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper intentionally co-located with TagEditPanel/Drawer; exported only for direct unit-test coverage of the tri-state cycle logic.
+export function cycleTagState(state: TagPickerState): TagPickerState {
+  if (state === "mixed") return "checked";
+  if (state === "checked") return "unchecked";
+  return "checked";
+}
+
+/**
+ * Derive each registry tag's initial tri-state from the selected sites'
+ * cached tag sets: checked = every site has it, unchecked = no site has it,
+ * mixed = some do. Exported for direct unit coverage.
+ *
+ * `totalSelectedCount` defaults to `sites.length` (the pre-existing, "we
+ * already have everyone" behavior). Pass the ACTUAL number of selected
+ * sites explicitly when `sites` might be a partial resolve (adversarial-
+ * verify MEDIUM: selection can include sites from the archived view, or
+ * otherwise beyond whatever list caches happened to be loaded) — when fewer
+ * sites resolved than were selected, every tag's initial state is "mixed"
+ * (uncertain), NEVER "unchecked" or "checked": asserting either would be
+ * lying about the sites we couldn't see. The panel's loading-gate (below)
+ * exists specifically to make this branch rare, not to replace it.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- see cycleTagState above.
+export function deriveInitialTagState(
+  tags: readonly SiteTag[],
+  sites: readonly { tags: string[] }[],
+  totalSelectedCount: number = sites.length,
+): Map<string, TagPickerState> {
+  const map = new Map<string, TagPickerState>();
+  if (totalSelectedCount === 0) {
+    for (const tag of tags) map.set(tag.id, "unchecked");
+    return map;
+  }
+  const hasUnknownSites = sites.length < totalSelectedCount;
+  for (const tag of tags) {
+    if (hasUnknownSites) {
+      map.set(tag.id, "mixed");
+      continue;
+    }
+    const count = sites.filter((s) => s.tags.includes(tag.name)).length;
+    if (count === 0) map.set(tag.id, "unchecked");
+    else if (count === sites.length) map.set(tag.id, "checked");
+    else map.set(tag.id, "mixed");
+  }
+  return map;
+}
+
+/**
+ * Pure add/remove diff between the frozen `initial` tri-state map and the
+ * operator's `current` (pending) one. A tag only lands in `add`/`remove`
+ * when its state actually CHANGED from initial — an untouched "mixed" tag
+ * (never clicked) contributes nothing, matching the "mixed re-enterable
+ * only by reopening" rule (no click ever happened, so there is no diff to
+ * apply for it). Exported for direct unit coverage.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- see cycleTagState above.
+export function computeTagDiff(
+  tags: readonly SiteTag[],
+  initial: ReadonlyMap<string, TagPickerState>,
+  current: ReadonlyMap<string, TagPickerState>,
+): { add: string[]; remove: string[] } {
+  const add: string[] = [];
+  const remove: string[] = [];
+  for (const tag of tags) {
+    const initialState = initial.get(tag.id) ?? "unchecked";
+    const state = current.get(tag.id) ?? initialState;
+    if (state === initialState) continue;
+    if (state === "checked") add.push(tag.name);
+    else if (state === "unchecked") remove.push(tag.name);
+  }
+  return { add, remove };
+}
+
+function TagEditPanel({
+  entry,
+  onClose,
+  onUpdate,
+}: {
+  entry: TagEditEntry;
+  onClose: () => void;
+  onUpdate: (
+    id: string,
+    patch: Partial<{ status: TagEditStatus; results: BulkResult[] }>,
+  ) => void;
+}) {
+  // GH #230 adversarial-verify MEDIUM: `useSites()` alone is scoped to the
+  // ACTIVE view — a selection can include archived sites (or, in principle,
+  // any site outside whatever list caches happen to be loaded). Fetch BOTH
+  // buckets so the tri-state baseline can actually resolve every selected
+  // site's tags, not just the ones that happen to be in the active list.
+  const { data: activeSites, isPending: activePending } = useSites();
+  const { data: archivedSites, isPending: archivedPending } = useSites({ view: "archived" });
+  const { data: allTags } = useTags();
+  const createTag = useCreateTag();
+  const bulkApply = useBulkApplyTags();
+
+  const allSites = useMemo(() => {
+    // Dedupe by id: a site could in principle be present in both query
+    // results (e.g. a stale cache mid-transition), and double-counting it
+    // would corrupt the tri-state denominator below.
+    const byId = new Map<string, Site>();
+    for (const site of activeSites ?? []) byId.set(site.id, site);
+    for (const site of archivedSites ?? []) byId.set(site.id, site);
+    return [...byId.values()];
+  }, [activeSites, archivedSites]);
+
+  const sites = useMemo(
+    () => allSites.filter((s) => entry.siteIds.includes(s.id)),
+    [allSites, entry.siteIds],
+  );
+
+  const totalSelected = entry.siteIds.length;
+  const allResolved = sites.length === totalSelected;
+  // Block seeding while either bucket is still loading AND we don't yet have
+  // every selected site resolved — once both queries settle, `sites` is
+  // final (barring a genuinely deleted site, which `deriveInitialTagState`
+  // still handles honestly via its `hasUnknownSites` branch rather than by
+  // blocking forever).
+  const stillResolving = (activePending || archivedPending) && !allResolved;
+
+  // Freeze the initial per-tag tri-state exactly once, the first render
+  // where the registry AND the selected sites are resolved (or resolving is
+  // done, even if incomplete) — this is the diff baseline. Follows the same
+  // "adjust state during render" pattern used elsewhere in this codebase
+  // (see site-tags-editor's server-key reset) rather than an effect, so
+  // there is no extra render/flash before the picker shows the right
+  // glyphs. Held in state (not a ref): this codebase's stricter React
+  // Compiler lint config forbids reading/writing a ref's `.current` during
+  // render.
+  const [initial, setInitial] = useState<Map<string, TagPickerState> | null>(null);
+  const [current, setCurrent] = useState<Map<string, TagPickerState>>(new Map());
+  if (initial === null && allTags && !stillResolving) {
+    const seed = deriveInitialTagState(allTags, sites, totalSelected);
+    setInitial(seed);
+    setCurrent(new Map(seed));
+  }
+
+  function getState(tag: SiteTag): TagPickerState {
+    return current.get(tag.id) ?? "unchecked";
+  }
+
+  function handleToggle(tag: SiteTag) {
+    setCurrent((prev) => {
+      const next = new Map(prev);
+      next.set(tag.id, cycleTagState(prev.get(tag.id) ?? "unchecked"));
+      return next;
+    });
+  }
+
+  async function handleCreate(name: string): Promise<SiteTag> {
+    return createTag.mutateAsync({ name });
+  }
+
+  const diff = useMemo(
+    () => computeTagDiff(allTags ?? [], initial ?? new Map(), current),
+    [allTags, current, initial],
+  );
+
+  const siteNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const site of allSites) map.set(site.id, site.url || site.name);
+    return map;
+  }, [allSites]);
+
+  const applying = entry.status === "applying";
+  const done = entry.status === "done";
+  const canApply =
+    !stillResolving &&
+    initial !== null &&
+    !applying &&
+    !done &&
+    (diff.add.length > 0 || diff.remove.length > 0);
+
+  async function handleApply() {
+    onUpdate(entry.id, { status: "applying" });
+    try {
+      const result = await bulkApply.mutateAsync({
+        site_ids: entry.siteIds,
+        add: diff.add.length > 0 ? diff.add : undefined,
+        remove: diff.remove.length > 0 ? diff.remove : undefined,
+      });
+      const results = result.results ?? [];
+      onUpdate(entry.id, { status: "done", results });
+      const ok = results.filter((r) => r.ok).length;
+      const total = entry.siteIds.length;
+      if (ok === total) {
+        toast.success(`Tags updated on ${ok} of ${total} sites`);
+      } else {
+        toast.error(`Tags updated on ${ok} of ${total} sites`, {
+          description: "Some sites failed, see the drawer for details.",
+        });
+      }
+    } catch (err) {
+      onUpdate(entry.id, { status: "editing" });
+      toast.error("Could not update tags", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  return (
+    <>
+      <header className="flex items-start justify-between gap-4 px-6 pt-3 pb-2">
+        <h2 id="tag-edit-drawer-title" className="text-base font-semibold text-foreground">
+          Edit tags · {entry.siteIds.length} {entry.siteIds.length === 1 ? "site" : "sites"}
+        </h2>
+        <Button type="button" variant="ghost" size="icon" aria-label="Close drawer" onClick={onClose}>
+          <X aria-hidden="true" />
+        </Button>
+      </header>
+
+      <div className="max-h-[calc(70vh-11rem)] overflow-y-auto px-6 pb-2">
+        {stillResolving || initial === null ? (
+          // GH #230 adversarial-verify MEDIUM: block rather than seed from a
+          // partial resolve — the tri-state must never assert "none/all of
+          // these sites have this tag" while some selected sites' tags are
+          // still unknown (e.g. an archived-view selection this component's
+          // own active-view query wouldn't otherwise see).
+          <p role="status" className="py-6 text-center text-sm text-muted-foreground">
+            Loading tags for {totalSelected} {totalSelected === 1 ? "site" : "sites"}…
+          </p>
+        ) : done && entry.results ? (
+          <ul className="divide-y divide-border">
+            {entry.results.map((r) => (
+              <li key={r.site_id} className="flex items-center gap-3 py-2.5">
+                <StatusDot
+                  tone={r.ok ? "success" : "destructive"}
+                  label={r.ok ? "Applied" : "Failed"}
+                />
+                <span
+                  className="min-w-0 flex-1 truncate font-mono text-sm text-foreground"
+                  title={siteNameMap.get(r.site_id) ?? r.site_id}
+                >
+                  {siteNameMap.get(r.site_id) ?? shortId(r.site_id)}
+                </span>
+                <span className="min-w-0 flex-[2] truncate text-sm text-muted-foreground">
+                  {r.detail}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="rounded-md border border-border">
+            <TagPicker getState={getState} onToggle={handleToggle} onCreate={handleCreate} />
+          </div>
+        )}
+      </div>
+
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/40 px-6 py-3">
+        <p className="text-xs text-muted-foreground">
+          {done ? (
+            "Done."
+          ) : (
+            <>
+              Add <span className="font-mono tabular-nums">{diff.add.length}</span> tag(s) · Remove{" "}
+              <span className="font-mono tabular-nums">{diff.remove.length}</span> tag(s) ·{" "}
+              <span className="font-mono tabular-nums">{entry.siteIds.length}</span> sites
+            </>
+          )}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            {done ? "Close" : "Cancel"}
+          </Button>
+          {!done ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={!canApply}
+              onClick={() => void handleApply()}
+            >
+              {applying ? "Applying…" : `Apply to ${entry.siteIds.length} sites`}
+            </Button>
+          ) : null}
+        </div>
+      </footer>
+    </>
+  );
 }

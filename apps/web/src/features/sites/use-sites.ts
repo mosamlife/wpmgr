@@ -1,8 +1,11 @@
 import {
+  keepPreviousData,
   queryOptions,
   useQuery,
   useMutation,
   useQueryClient,
+  type QueryClient,
+  type QueryKey,
   type UseQueryResult,
   type UseMutationResult,
 } from "@tanstack/react-query";
@@ -31,11 +34,37 @@ import { toast } from "@/components/toast";
 /** Which connection-state bucket the list should surface. */
 export type SitesView = "active" | "archived";
 
+/** GH #230 "rich tags" — `any` (OR) or `all` (AND) match semantics across
+ *  the selected `tags` filter. Mirrors the OpenAPI `tags_match` param. */
+export type TagMatchMode = "any" | "all";
+
+export interface UseSitesOptions {
+  view?: SitesView;
+  clientId?: string;
+  /** Filter to sites carrying these tags (server-side, GH #230). */
+  tags?: readonly string[];
+  /** `any` (OR) or `all` (AND). Only meaningful with 2+ tags; defaults `any`. */
+  tagsMatch?: TagMatchMode;
+}
+
 export const sitesKeys = {
   all: ["sites"] as const,
   lists: () => [...sitesKeys.all, "list"] as const,
-  list: (tag?: string, view: SitesView = "active", clientId?: string) =>
-    [...sitesKeys.lists(), { tag: tag ?? null, view, clientId: clientId ?? null }] as const,
+  list: (
+    view: SitesView = "active",
+    clientId?: string,
+    tags?: readonly string[],
+    tagsMatch: TagMatchMode = "any",
+  ) =>
+    [
+      ...sitesKeys.lists(),
+      {
+        view,
+        clientId: clientId ?? null,
+        tags: tags && tags.length > 0 ? [...tags].sort() : null,
+        tagsMatch,
+      },
+    ] as const,
   detail: (id: string) => [...sitesKeys.all, "detail", id] as const,
 };
 
@@ -59,7 +88,7 @@ export class NotFoundError extends Error {
  */
 export const sitesQueryOptions = () =>
   queryOptions({
-    queryKey: sitesKeys.list(undefined, "active", undefined),
+    queryKey: sitesKeys.list("active"),
     queryFn: async () => {
       const { data, error } = await listSites({});
       if (error) throw toError(error);
@@ -68,29 +97,35 @@ export const sitesQueryOptions = () =>
   });
 
 /**
- * List sites, optionally filtered by a single tag (?tag=) and/or a client
- * UUID (?clientId=). Passing an empty or undefined tag lists all sites.
+ * List sites, optionally filtered by tags (server-side, GH #230 "rich tags")
+ * and/or a client UUID (?clientId=).
  *
  * The default ("active") view hides archived sites (the CP omits them unless
  * asked). Pass `view: "archived"` to fetch the archived bucket via
  * `?state=archived` — the Phase 5 "Archived" filter chip drives this.
  */
-export function useSites(
-  tag?: string,
-  options?: { view?: SitesView; clientId?: string },
-): UseQueryResult<Site[], Error> {
-  const trimmed = tag?.trim() ? tag.trim() : undefined;
+export function useSites(options?: UseSitesOptions): UseQueryResult<Site[], Error> {
   const view: SitesView = options?.view ?? "active";
   const clientId = options?.clientId || undefined;
+  const tags = options?.tags && options.tags.length > 0 ? options.tags : undefined;
+  const tagsMatch: TagMatchMode = options?.tagsMatch ?? "any";
   return useQuery({
-    queryKey: sitesKeys.list(trimmed, view, clientId),
+    queryKey: sitesKeys.list(view, clientId, tags, tagsMatch),
+    // GH #230 "rich tags" — toggling a tag filter changes the query key (the
+    // filter is now server-side); without this, the table would flash empty
+    // between the old and new result instead of holding the previous rows
+    // until the new ones land.
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       // The archived view passes `?state=archived`. For views that need extra
       // params we call the typed `listSites` with the full query object.
       if (view === "archived") {
-        const query: Record<string, string> = { state: "archived" };
-        if (trimmed) query.tag = trimmed;
+        const query: Record<string, string | string[]> = { state: "archived" };
         if (clientId) query.clientId = clientId;
+        if (tags) {
+          query.tags = [...tags];
+          if (tags.length > 1) query.tags_match = tagsMatch;
+        }
         // The client's response-style generics unwrap a responses-map.
         const { data, error } = await client.get<{ 200: SiteList }>({
           url: "/api/v1/sites",
@@ -101,8 +136,9 @@ export function useSites(
       }
       const { data, error } = await listSites({
         query: {
-          ...(trimmed ? { tag: trimmed } : {}),
           ...(clientId ? { clientId } : {}),
+          ...(tags ? { tags: [...tags] } : {}),
+          ...(tags && tags.length > 1 ? { tags_match: tagsMatch } : {}),
         },
       });
       if (error) throw toError(error);
@@ -166,15 +202,50 @@ export function usePairingCode(): UseMutationResult<
 }
 
 /**
- * Replace the tag set on a site (PUT tags). Optimistically updates the cached
- * detail entry, then reconciles with the server response and invalidates lists
- * (tag filters may now match differently).
+ * Read a site's tags from the FRESHEST cache entry available: the detail
+ * cache first (kept current by `useSetSiteTags`'s onMutate/onSuccess), else
+ * the first sites-list cache entry that contains this site (also patched by
+ * onMutate — every filter/view/tags-match variant, not just the one visible
+ * on screen), else the caller's own fallback (typically a possibly-stale
+ * prop). GH #230 (single-site tag-picker race, HIGH): callers that compute a
+ * toggle's next tag set MUST read through this — never trust a captured
+ * `site` prop directly, which can lag one render behind a just-applied
+ * optimistic patch.
+ */
+export function getCachedSiteTags(
+  queryClient: QueryClient,
+  siteId: string,
+  fallback: readonly string[],
+): string[] {
+  const detail = queryClient.getQueryData<Site>(sitesKeys.detail(siteId));
+  if (detail) return detail.tags;
+  for (const [, data] of queryClient.getQueriesData<Site[]>({
+    queryKey: sitesKeys.lists(),
+  })) {
+    const found = data?.find((s) => s.id === siteId);
+    if (found) return found.tags;
+  }
+  return [...fallback];
+}
+
+/**
+ * Replace the tag set on a site (PUT tags). Optimistically updates BOTH the
+ * cached detail entry AND every sites-list cache entry that currently
+ * contains this site (any filter/view/tags-match variant — GH #230 fix: a
+ * second rapid toggle reads `getCachedSiteTags` above, which scans exactly
+ * these caches, so it must see the first toggle's effect immediately, not
+ * after a network round trip), then reconciles with the server response and
+ * invalidates lists (tag filters may now match differently). Rolls back both
+ * on error.
  */
 export function useSetSiteTags(): UseMutationResult<
   Site,
   Error,
   { siteId: string; tags: string[] },
-  { previous: Site | undefined }
+  {
+    previousDetail: Site | undefined;
+    previousLists: Array<[QueryKey, Site[] | undefined]>;
+  }
 > {
   const queryClient = useQueryClient();
   return useMutation({
@@ -189,25 +260,45 @@ export function useSetSiteTags(): UseMutationResult<
       return data;
     },
     onMutate: async ({ siteId, tags }) => {
-      await queryClient.cancelQueries({ queryKey: sitesKeys.detail(siteId) });
-      const previous = queryClient.getQueryData<Site>(
+      await queryClient.cancelQueries({ queryKey: sitesKeys.all });
+
+      const previousDetail = queryClient.getQueryData<Site>(
         sitesKeys.detail(siteId),
       );
-      if (previous) {
+      if (previousDetail) {
         queryClient.setQueryData<Site>(sitesKeys.detail(siteId), {
-          ...previous,
+          ...previousDetail,
           tags,
         });
       }
-      return { previous };
+
+      // Snapshot every list cache BEFORE patching, for rollback, then patch
+      // every one that contains this site — the table, the grid, an
+      // archived-view fetch, any tags-filtered variant, all of them.
+      const previousLists = queryClient.getQueriesData<Site[]>({
+        queryKey: sitesKeys.lists(),
+      });
+      queryClient.setQueriesData<Site[]>(
+        { queryKey: sitesKeys.lists() },
+        (prev) => prev?.map((s) => (s.id === siteId ? { ...s, tags } : s)),
+      );
+
+      return { previousDetail, previousLists };
     },
     onError: (_error, { siteId }, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(sitesKeys.detail(siteId), context.previous);
+      if (context?.previousDetail) {
+        queryClient.setQueryData(sitesKeys.detail(siteId), context.previousDetail);
+      }
+      for (const [queryKey, data] of context?.previousLists ?? []) {
+        queryClient.setQueryData(queryKey, data);
       }
     },
     onSuccess: (site) => {
       queryClient.setQueryData(sitesKeys.detail(site.id), site);
+      queryClient.setQueriesData<Site[]>(
+        { queryKey: sitesKeys.lists() },
+        (prev) => prev?.map((s) => (s.id === site.id ? { ...s, tags: site.tags } : s)),
+      );
     },
     onSettled: (_data, _error, { siteId }) => {
       void queryClient.invalidateQueries({ queryKey: sitesKeys.detail(siteId) });

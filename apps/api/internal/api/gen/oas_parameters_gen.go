@@ -3,6 +3,7 @@
 package gen
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
@@ -2863,6 +2864,71 @@ func decodeDeleteSiteShareParams(args [2]string, argsEscaped bool, r *http.Reque
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "userId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// DeleteTagParams is parameters of deleteTag operation.
+type DeleteTagParams struct {
+	TagId uuid.UUID
+}
+
+func unpackDeleteTagParams(packed middleware.Parameters) (params DeleteTagParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tagId",
+			In:   "path",
+		}
+		params.TagId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeDeleteTagParams(args [1]string, argsEscaped bool, r *http.Request) (params DeleteTagParams, _ error) {
+	// Decode path: tagId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tagId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TagId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tagId",
 			In:   "path",
 			Err:  err,
 		}
@@ -15016,8 +15082,16 @@ func decodeListSiteSharesParams(args [1]string, argsEscaped bool, r *http.Reques
 type ListSitesParams struct {
 	Limit  OptInt32 `json:",omitempty,omitzero"`
 	Offset OptInt32 `json:",omitempty,omitzero"`
-	// Filter to sites carrying this tag.
+	// Deprecated alias for `tags` with a single value (any-match semantics). Prefer `tags`.
+	//
+	// Deprecated: schema marks this parameter as deprecated.
 	Tag OptString `json:",omitempty,omitzero"`
+	// Filter to sites carrying these tags (M100, GH #230 "rich tags").
+	// Repeat the param for multiple values (`?tags=a&tags=b`). Match
+	// semantics are controlled by `tags_match` (default `any`).
+	Tags []string `json:",omitempty"`
+	// `any` (tags && ...) or `all` (tags @> ...). Defaults to `any`.
+	TagsMatch OptListSitesTagsMatch `json:",omitempty,omitzero"`
 	// Filter to a single connection_state. When omitted, archived sites are
 	// hidden.
 	State OptListSitesState `json:",omitempty,omitzero"`
@@ -15051,6 +15125,24 @@ func unpackListSitesParams(packed middleware.Parameters) (params ListSitesParams
 		}
 		if v, ok := packed[key]; ok {
 			params.Tag = v.(OptString)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "tags",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Tags = v.([]string)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "tags_match",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.TagsMatch = v.(OptListSitesTagsMatch)
 		}
 	}
 	{
@@ -15282,6 +15374,144 @@ func decodeListSitesParams(args [0]string, argsEscaped bool, r *http.Request) (p
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "tag",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Decode query: tags.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "tags",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				return d.DecodeArray(func(d uri.Decoder) error {
+					var paramsDotTagsVal string
+					if err := func() error {
+						val, err := d.DecodeValue()
+						if err != nil {
+							return err
+						}
+
+						c, err := conv.ToString(val)
+						if err != nil {
+							return err
+						}
+
+						paramsDotTagsVal = c
+						return nil
+					}(); err != nil {
+						return err
+					}
+					params.Tags = append(params.Tags, paramsDotTagsVal)
+					return nil
+				})
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				var failures []validate.FieldError
+				for i, elem := range params.Tags {
+					if err := func() error {
+						if err := (validate.String{
+							MinLength:     0,
+							MinLengthSet:  false,
+							MaxLength:     64,
+							MaxLengthSet:  true,
+							Email:         false,
+							Hostname:      false,
+							Regex:         nil,
+							MinNumeric:    0,
+							MinNumericSet: false,
+							MaxNumeric:    0,
+							MaxNumericSet: false,
+						}).Validate(string(elem)); err != nil {
+							return errors.Wrap(err, "string")
+						}
+						return nil
+					}(); err != nil {
+						failures = append(failures, validate.FieldError{
+							Name:  fmt.Sprintf("[%d]", i),
+							Error: err,
+						})
+					}
+				}
+				if len(failures) > 0 {
+					return &validate.Error{Fields: failures}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tags",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: tags_match.
+	{
+		val := ListSitesTagsMatch("any")
+		params.TagsMatch.SetTo(val)
+	}
+	// Decode query: tags_match.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "tags_match",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotTagsMatchVal ListSitesTagsMatch
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotTagsMatchVal = ListSitesTagsMatch(c)
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.TagsMatch.SetTo(paramsDotTagsMatchVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.TagsMatch.Get(); ok {
+					if err := func() error {
+						if err := value.Validate(); err != nil {
+							return err
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tags_match",
 			In:   "query",
 			Err:  err,
 		}
@@ -20472,6 +20702,71 @@ func decodeUpdateSiteFilesSettingsParams(args [1]string, argsEscaped bool, r *ht
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// UpdateTagParams is parameters of updateTag operation.
+type UpdateTagParams struct {
+	TagId uuid.UUID
+}
+
+func unpackUpdateTagParams(packed middleware.Parameters) (params UpdateTagParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "tagId",
+			In:   "path",
+		}
+		params.TagId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeUpdateTagParams(args [1]string, argsEscaped bool, r *http.Request) (params UpdateTagParams, _ error) {
+	// Decode path: tagId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "tagId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.TagId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "tagId",
 			In:   "path",
 			Err:  err,
 		}

@@ -238,9 +238,24 @@ func (h *Handler) list(c *gin.Context) {
 	// site-scoped principals (they should see ONLY their granted sites).
 	in := ListInput{
 		TenantID: tenantID,
-		Tag:      c.Query("tag"),
 		Limit:    parseInt32(c.Query("limit"), 50),
 		Offset:   parseInt32(c.Query("offset"), 0),
+	}
+	// M100 (GH #230 "rich tags"): repeated ?tags=a&tags=b (+ ?tags_match=any|all,
+	// default any) replaces the single ?tag= filter. The legacy ?tag= query
+	// param is a deprecated alias for any-match with a single tag.
+	tags := c.QueryArray("tags")
+	if len(tags) == 0 {
+		if legacy := c.Query("tag"); legacy != "" {
+			tags = []string{legacy}
+		}
+	}
+	if len(tags) > 0 {
+		if c.Query("tags_match") == "all" {
+			in.AllTags = tags
+		} else {
+			in.AnyTags = tags
+		}
 	}
 	// M21: default hides archived sites; ?state=<connection_state> filters to a
 	// single state (e.g. archived chip). ?include_archived=true is a convenience

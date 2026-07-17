@@ -194,6 +194,12 @@ type Querier interface {
 	// so a caller that does not yet know the customer id (should not happen once
 	// a subscription exists, but keeps this query safe to reuse) cannot blank it.
 	ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error
+	// Bulk-apply's per-site write: computes dedup(tags ∪ @add) − @remove
+	// entirely in SQL from the CURRENT row (never from a stale client-side read).
+	// 0 affected rows means the site does not exist in this tenant (the handler
+	// has already excluded sites the caller cannot access via CanAccessSite
+	// before this runs).
+	ApplyTagDeltaToSite(ctx context.Context, arg ApplyTagDeltaToSiteParams) (int64, error)
 	// Soft-delete: sets archived_at without removing the row. Sites retain their
 	// client_id after archiving (they still show which client they were under).
 	ArchiveClient(ctx context.Context, arg ArchiveClientParams) (Client, error)
@@ -301,6 +307,9 @@ type Querier interface {
 	// How many non-archived sites are currently assigned to this client?
 	// Used for the delete-confirmation dialog.
 	CountSitesForClient(ctx context.Context, arg CountSitesForClientParams) (int64, error)
+	// Recomputes usage_count after a mutation (create/rename/merge/recolor) so
+	// the returned SiteTag never reports a stale count.
+	CountSitesWithTag(ctx context.Context, arg CountSitesWithTagParams) (int64, error)
 	// Counts tasks not yet in a terminal state, used to decide when a run completes.
 	CountUnfinishedTasksForRun(ctx context.Context, arg CountUnfinishedTasksForRunParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
@@ -352,6 +361,11 @@ type Querier interface {
 	// THAT site to connected rather than creating a new row.
 	CreateSiteBoundPairingCode(ctx context.Context, arg CreateSiteBoundPairingCodeParams) (PairingCode, error)
 	CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnrollParams) (Site, error)
+	// unique_violation (23505) on site_tags_tenant_name_key maps to 409
+	// tag_name_exists in the repo (exact-case unique; case-insensitive near-dupes
+	// like "Prod"/"prod" are intentionally NOT blocked here — the client steers
+	// around them, and rename+merge is the remedy after the fact).
+	CreateTag(ctx context.Context, arg CreateTagParams) (SiteTag, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
 	// M3 bulk-update queries. Every statement is tenant-scoped both explicitly
 	// (tenant_id in the WHERE/VALUES) and by RLS (the app.tenant_id policy).
@@ -424,6 +438,7 @@ type Querier interface {
 	DeleteReport(ctx context.Context, arg DeleteReportParams) (int64, error)
 	DeleteShare(ctx context.Context, arg DeleteShareParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	DeleteTagRow(ctx context.Context, arg DeleteTagRowParams) (int64, error)
 	// Remove a single credential by its primary key and user_id guard.
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (int64, error)
 	// Remove the registration session after FinishRegistration (or on failure).
@@ -853,6 +868,10 @@ type Querier interface {
 	// Returns site_perf_config rows with a stalled db_scan job (started but no
 	// result within the threshold). Runs under app.agent (cross-tenant).
 	GetStalledDBScanJobs(ctx context.Context, scanThreshold pgtype.Interval) ([]GetStalledDBScanJobsRow, error)
+	GetTag(ctx context.Context, arg GetTagParams) (SiteTag, error)
+	// Used by the rename-merge path to resolve the survivor tag when a rename
+	// collides with an existing name.
+	GetTagByName(ctx context.Context, arg GetTagByNameParams) (SiteTag, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
 	// Returns the M16 Phase A billing/plan fields used by internal/billing's
 	// entitlement resolution. tenants carries no RLS (see schema.sql); every
@@ -1395,6 +1414,10 @@ type Querier interface {
 	// the list is filtered to exactly that connection_state (e.g. 'archived' for
 	// the archived chip); when it is NULL every non-archived site is returned.
 	// When sqlc.narg('client_id') is set only sites belonging to that client are returned (m63).
+	// M100 (GH #230 "rich tags"): any_tags (tags && ...) and all_tags (tags @> ...)
+	// replace the single-tag filter; both are served by the sites_tags_idx GIN
+	// index. The service maps exactly ONE of them per request (legacy ?tag=
+	// becomes any_tags=[tag]).
 	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
 	// connected sites whose last heartbeat is older than the degrade cutoff.
 	// url is included so the active-verify sweeper can dial the agent without a
@@ -1428,6 +1451,13 @@ type Querier interface {
 	// backup_snapshots_running_progress_idx makes the predicate selective.
 	// Cross-tenant select via the GC RLS policy (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, dollar_1 pgtype.Interval) ([]ListStalledRunningSnapshotsRow, error)
+	// GH #230 "rich tags" — tenant-level tag registry (m100). site_tags owns
+	// existence/color/canonical name; sites.tags (text[]) remains the assignment
+	// store. See internal/sitetag for the orchestration that keeps them in sync.
+	// No pagination — a tenant's tag registry is small. usage_count is the
+	// number of sites (in this tenant) currently carrying the tag, computed live
+	// rather than stored so it can never drift from sites.tags.
+	ListTagsWithUsage(ctx context.Context, tenantID uuid.UUID) ([]ListTagsWithUsageRow, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
 	// ListTenantsForUser returns only the tenants the given user is a member of.
 	// It joins memberships under the memberships_self_read policy (app.user_id GUC),
@@ -1583,11 +1613,18 @@ type Querier interface {
 	// Prune dedup rows older than the given cutoff (run by the GC worker).
 	// Cross-tenant / InAgentTx.
 	PruneWebhookEventDedup(ctx context.Context, cutoffTs time.Time) (int64, error)
+	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
 	// Rotate the token of a still-pending invitation: overwrite token_hash (kills
 	// the old link), reset expiry + attempts, and clear any prior soft-revoke.
 	// Only an un-accepted row is touched (RETURNING -> ErrNoRows if already
 	// accepted). The new raw token is generated by the caller.
 	RegenerateInvitationToken(ctx context.Context, arg RegenerateInvitationTokenParams) (Invitation, error)
+	RemovePairingCodeTagName(ctx context.Context, arg RemovePairingCodeTagNameParams) error
+	RemoveSiteTagName(ctx context.Context, arg RemoveSiteTagNameParams) error
+	// May fail with unique_violation (23505) when @name collides with another
+	// tag in the same tenant — the repo maps that to either 409 tag_name_exists
+	// or drives the merge path, per the caller's `merge` flag.
+	RenameTagRow(ctx context.Context, arg RenameTagRowParams) (SiteTag, error)
 	// Replays events after a client cursor (?since / Last-Event-ID). ULIDs sort
 	// lexicographically, so event_id > $2 is monotonic-after.
 	ReplaySiteEvents(ctx context.Context, arg ReplaySiteEventsParams) ([]SiteEvent, error)
@@ -1616,6 +1653,20 @@ type Querier interface {
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (Invitation, error)
 	// Revoke a single trusted device by ID + user_id guard.
 	RevokeTrustedDevice(ctx context.Context, arg RevokeTrustedDeviceParams) error
+	// ---------------------------------------------------------------------------
+	// M100 — GH #230 "rich tags": keep an unredeemed code's tags in sync with a
+	// tag rename/delete so a code minted before the rename still enrolls its site
+	// with the CURRENT tag name (never a name that no longer exists in the
+	// registry). Scoped to unexpired + unredeemed codes only — a consumed or
+	// expired code's tags are already inert (Enroll never re-reads them).
+	// ---------------------------------------------------------------------------
+	RewritePairingCodeTagName(ctx context.Context, arg RewritePairingCodeTagNameParams) error
+	// Propagates a tag rename (or a merge's rewrite onto the survivor's name)
+	// across every site in the tenant currently carrying @old_name. The
+	// array_agg(DISTINCT ...) also dedups the array in the same statement, which
+	// is exactly what a merge needs when a site already carries both the source
+	// and the survivor name.
+	RewriteSiteTagName(ctx context.Context, arg RewriteSiteTagNameParams) error
 	// Stamp the in-flight db_clean job id + start time for the watchdog.
 	// Runs under app.agent (cross-tenant scheduled path) or InTenantTx (operator).
 	SetActiveDBCleanJob(ctx context.Context, arg SetActiveDBCleanJobParams) error
@@ -1919,6 +1970,13 @@ type Querier interface {
 	// Insert-or-update the per-site write opt-in flag (P2). Separate from the
 	// read opt-in so read and write can be toggled independently.
 	UpsertSiteFileManagerWrite(ctx context.Context, arg UpsertSiteFileManagerWriteParams) error
+	// Registers a batch of tag names into the tenant's registry, ignoring names
+	// already present (color untouched — the registry owns color, not the
+	// assignment path). Called from every write path that lands tag names onto
+	// sites.tags: site.Service.SetTags, pairing-code minting, and bulk-apply's
+	// `add` list — always in the SAME transaction as that write (binding
+	// invariant, m100).
+	UpsertTagNames(ctx context.Context, arg UpsertTagNamesParams) error
 }
 
 var _ Querier = (*Queries)(nil)

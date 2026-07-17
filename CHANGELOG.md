@@ -8,6 +8,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.69] - 2026-07-17
+
+### Added
+
+- Site tags (GH #230). Sites can now be organized with colored tags across the whole dashboard:
+  - Create and assign tags from a keyboard-first picker (type to search, Enter to create) on the site card, the sites table row, or site settings; a site can carry multiple tags, and tag edits apply instantly.
+  - Every tag gets a consistent, automatically assigned color (the same tag always renders the same color for everyone, readable in light and dark themes), with an optional per-tag custom color chosen from a curated palette.
+  - Filter the Sites list by one or more tags with match-any or match-all semantics, persisted in the URL so filtered views can be bookmarked and shared; clicking any tag chip filters to that tag.
+  - Bulk tagging: select multiple sites and add or remove tags across all of them in one action, with a mixed-state indicator when only some selected sites carry a tag and a per-site result report.
+  - A tag management page under Settings: rename a tag everywhere at once, merge duplicates, change colors, and delete with the usage count shown before anything is removed.
+  - Existing site tags are registered automatically on upgrade (a tenant-level tag registry with row-level security backs the feature; tag data stays on the site rows, so nothing about existing tags changes). Registry changes (create, rename, merge, recolor, delete) require organization-scoped access and are audit-logged.
+
 ## [0.61.68] - 2026-07-17
 
 ### Changed

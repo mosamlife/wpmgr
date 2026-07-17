@@ -307,10 +307,15 @@ func (r *pgRepo) Get(ctx context.Context, tenantID, id uuid.UUID) (Site, error) 
 }
 
 func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
-	var tag *string
-	if in.Tag != "" {
-		t := in.Tag
-		tag = &t
+	// nil (not empty-non-nil) slices are required so sqlc.narg's IS NULL check
+	// treats "no filter" correctly — an empty-but-non-nil []string still binds
+	// as a non-NULL empty array, which would match nothing.
+	var anyTags, allTags []string
+	if len(in.AnyTags) > 0 {
+		anyTags = in.AnyTags
+	}
+	if len(in.AllTags) > 0 {
+		allTags = in.AllTags
 	}
 	var state *string
 	if in.State != "" {
@@ -338,7 +343,8 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 	err := runTx(func(tx pgx.Tx) error {
 		rows, err := sqlc.New(tx).ListSites(ctx, sqlc.ListSitesParams{
 			TenantID: in.TenantID,
-			Tag:      tag,
+			AnyTags:  anyTags,
+			AllTags:  allTags,
 			State:    state,
 			Limit:    in.Limit,
 			Offset:   in.Offset,
@@ -441,7 +447,8 @@ func (r *pgRepo) SetTags(ctx context.Context, in SetTagsInput) (Site, error) {
 	}
 	var out Site
 	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).SetSiteTags(ctx, sqlc.SetSiteTagsParams{
+		q := sqlc.New(tx)
+		row, err := q.SetSiteTags(ctx, sqlc.SetSiteTagsParams{
 			ID:       in.SiteID,
 			TenantID: in.TenantID,
 			Tags:     tags,
@@ -451,6 +458,15 @@ func (r *pgRepo) SetTags(ctx context.Context, in SetTagsInput) (Site, error) {
 				return domain.NotFound("site_not_found", "site not found")
 			}
 			return domain.Internal("site_set_tags_failed", "failed to set site tags").WithCause(err)
+		}
+		// M100 (GH #230 "rich tags") binding invariant: every path that writes
+		// tag names onto a site upserts those names into the tenant's tag
+		// registry in the SAME transaction. Unused (usage 0) registry rows are
+		// legitimate; this only ever ADDS names, never removes.
+		if len(tags) > 0 {
+			if err := q.UpsertTagNames(ctx, sqlc.UpsertTagNamesParams{TenantID: in.TenantID, Names: tags}); err != nil {
+				return domain.Internal("site_set_tags_failed", "failed to register tag names").WithCause(err)
+			}
 		}
 		out = toModel(row)
 		return nil
@@ -490,7 +506,8 @@ func (r *pgRepo) CreatePairingCode(ctx context.Context, in CreatePairingCodeInpu
 
 	var out PairingCode
 	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).CreatePairingCode(ctx, sqlc.CreatePairingCodeParams{
+		q := sqlc.New(tx)
+		row, err := q.CreatePairingCode(ctx, sqlc.CreatePairingCodeParams{
 			TenantID:  in.TenantID,
 			CodeHash:  codeHash,
 			CreatedBy: createdBy,
@@ -500,6 +517,15 @@ func (r *pgRepo) CreatePairingCode(ctx context.Context, in CreatePairingCodeInpu
 		})
 		if err != nil {
 			return domain.Internal("pairing_code_create_failed", "failed to create pairing code").WithCause(err)
+		}
+		// M100 (GH #230 "rich tags") binding invariant: pairing-code minting is
+		// an operator-authenticated tx, so it upserts the code's tags into the
+		// registry here. The public /enroll consume path (app.enroll GUC) never
+		// does this — it has no operator tenant scope to write under.
+		if len(tags) > 0 {
+			if err := q.UpsertTagNames(ctx, sqlc.UpsertTagNamesParams{TenantID: in.TenantID, Names: tags}); err != nil {
+				return domain.Internal("pairing_code_create_failed", "failed to register tag names").WithCause(err)
+			}
 		}
 		out = toPairingCode(row)
 		return nil
@@ -578,6 +604,26 @@ func (r *pgRepo) Enroll(ctx context.Context, codeHash string, in EnrollInput) (S
 					return err
 				}
 			}
+			// NOTE (m100 follow-up, GH #230): this write does NOT upsert `tags`
+			// into the site_tags registry. This whole Enroll flow runs under
+			// InEnrollTx (the app.enroll GUC), and site_tags carries no
+			// app.enroll RLS policy (only tenant_isolation + agent — see m100
+			// migration; deliberately narrow, matching the binding invariant
+			// that "the app.enroll enrollment path needs ZERO registry
+			// writes"). A net-new tag name introduced here (from the legacy
+			// pairing code's stored tags, or a caller-supplied EnrollRequest.Tag
+			// not already in pc.Tags) still lands on sites.tags and is fully
+			// usable — it renders as a chip and is filterable via
+			// ?tags=/?tags_match= — it just won't appear as its own row in the
+			// tag registry (GET /api/v1/tags) until something else (a rename,
+			// a SetTags call, or a future reconcile sweep) upserts it. A clean
+			// fix would upsert here under InAgentTx instead of InEnrollTx (the
+			// agent policy IS available), but that's a second transaction for
+			// a rare edge case (CreatePairingCode already upserts every tag at
+			// MINT time — this only matters for the original create-at-enroll
+			// path's own stored pc.Tags, which per the mint-time upsert should
+			// already be registered); left as a documented gap rather than
+			// adding transaction complexity for it now.
 			row, cerr := q.CreateSiteForEnroll(ctx, sqlc.CreateSiteForEnrollParams{
 				TenantID:       pc.TenantID,
 				Url:            in.URL,

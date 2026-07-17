@@ -89,6 +89,10 @@ type BeginReEnrollmentRes interface {
 	beginReEnrollmentRes()
 }
 
+type BulkApplyTagsRes interface {
+	bulkApplyTagsRes()
+}
+
 type BulkConfigCacheRes interface {
 	bulkConfigCacheRes()
 }
@@ -177,6 +181,10 @@ type CreateSiteShareRes interface {
 	createSiteShareRes()
 }
 
+type CreateTagRes interface {
+	createTagRes()
+}
+
 type CreateTenantRes interface {
 	createTenantRes()
 }
@@ -227,6 +235,10 @@ type DeleteSiteRes interface {
 
 type DeleteSiteShareRes interface {
 	deleteSiteShareRes()
+}
+
+type DeleteTagRes interface {
+	deleteTagRes()
 }
 
 type DownloadPortalReportRes interface {
@@ -735,6 +747,10 @@ type UpdateSiteDestinationRes interface {
 
 type UpdateSiteFilesSettingsRes interface {
 	updateSiteFilesSettingsRes()
+}
+
+type UpdateTagRes interface {
+	updateTagRes()
 }
 
 type VerifyAuditRes interface {

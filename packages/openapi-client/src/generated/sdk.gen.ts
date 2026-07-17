@@ -69,6 +69,9 @@ import type {
   BeginReEnrollmentData,
   BeginReEnrollmentErrors,
   BeginReEnrollmentResponses,
+  BulkApplyTagsData,
+  BulkApplyTagsErrors,
+  BulkApplyTagsResponses,
   BulkConfigCacheData,
   BulkConfigCacheErrors,
   BulkConfigCacheResponses,
@@ -147,6 +150,9 @@ import type {
   CreateSiteShareData,
   CreateSiteShareErrors,
   CreateSiteShareResponses,
+  CreateTagData,
+  CreateTagErrors,
+  CreateTagResponses,
   CreateTenantData,
   CreateTenantErrors,
   CreateTenantResponses,
@@ -192,6 +198,9 @@ import type {
   DeleteSiteShareData,
   DeleteSiteShareErrors,
   DeleteSiteShareResponses,
+  DeleteTagData,
+  DeleteTagErrors,
+  DeleteTagResponses,
   DisableCacheData,
   DisableCacheResponses,
   DisableObjectCacheData,
@@ -477,6 +486,8 @@ import type {
   ListSiteSharesErrors,
   ListSiteSharesResponses,
   ListSitesResponses,
+  ListTagsData,
+  ListTagsResponses,
   ListTenantsData,
   ListTenantsResponses,
   ListUpdateRunsData,
@@ -683,6 +694,9 @@ import type {
   UpdateSiteFilesSettingsData,
   UpdateSiteFilesSettingsErrors,
   UpdateSiteFilesSettingsResponses,
+  UpdateTagData,
+  UpdateTagErrors,
+  UpdateTagResponses,
   VerifyAuditData,
   VerifyAuditErrors,
   VerifyAuditResponses,
@@ -1717,6 +1731,115 @@ export const setSiteTags = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/sites/{siteId}/tags",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List the tenant's tag registry (GH
+ *
+ * Lists every tag in the tenant's registry (m100), sorted
+ * case-insensitively by name, with a live `usage_count` (the number of
+ * sites currently carrying it — unused tags with usage_count 0 are
+ * legitimate). No pagination: a tenant's tag vocabulary is small.
+ *
+ */
+export const listTags = <ThrowOnError extends boolean = false>(
+  options?: Options<ListTagsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<ListTagsResponses, unknown, ThrowOnError>({
+    url: "/api/v1/tags",
+    ...options,
+  });
+
+/**
+ * Create a new tag in the registry
+ */
+export const createTag = <ThrowOnError extends boolean = false>(
+  options: Options<CreateTagData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateTagResponses,
+    CreateTagErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/tags",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Delete a tag fleet-wide
+ *
+ * Removes the tag from the registry AND from every site (and every
+ * unexpired, unredeemed pairing code) currently carrying it, in one
+ * transaction.
+ *
+ */
+export const deleteTag = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteTagData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    DeleteTagResponses,
+    DeleteTagErrors,
+    ThrowOnError
+  >({ url: "/api/v1/tags/{tagId}", ...options });
+
+/**
+ * Rename, recolor, or merge a tag
+ *
+ * A color-only body just updates the color. A `name` change renames the
+ * tag and propagates the new name onto every site (and every unexpired,
+ * unredeemed pairing code) currently carrying the old name, in the same
+ * transaction. Renaming onto an existing name returns 409
+ * `tag_name_exists` unless `merge: true`, in which case the source tag
+ * is merged into the existing survivor (sites are rewritten to the
+ * survivor's name, deduplicated; the survivor's color is kept unless
+ * this request also sets `color`).
+ *
+ */
+export const updateTag = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateTagData, ThrowOnError>,
+) =>
+  (options.client ?? client).patch<
+    UpdateTagResponses,
+    UpdateTagErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/tags/{tagId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Add and/or remove tags across many sites
+ *
+ * Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
+ * site id is checked against the caller's collaborator allowlist
+ * independently; sites the caller cannot access (or that don't exist in
+ * this tenant) are returned with `ok: false` rather than failing the
+ * whole call. `add` names are registered into the tag registry in the
+ * same transaction. Requires the `site.write` permission.
+ *
+ */
+export const bulkApplyTags = <ThrowOnError extends boolean = false>(
+  options: Options<BulkApplyTagsData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    BulkApplyTagsResponses,
+    BulkApplyTagsErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/tags/bulk-apply",
     ...options,
     headers: {
       "Content-Type": "application/json",

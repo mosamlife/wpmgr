@@ -87,6 +87,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	siteevents "github.com/mosamlife/wpmgr/apps/api/internal/site/events"
 	"github.com/mosamlife/wpmgr/apps/api/internal/sitedestination"
+	"github.com/mosamlife/wpmgr/apps/api/internal/sitetag"
 	"github.com/mosamlife/wpmgr/apps/api/internal/telemetry"
 	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
@@ -954,6 +955,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	clientRepo := clientpkg.NewRepo(pool)
 	clientSvc := clientpkg.NewService(clientRepo)
 	clientH := clientpkg.NewHandler(clientSvc, auditRec)
+
+	// m100 — GH #230 "rich tags" tenant-level tag registry. Stateless service +
+	// handler; no background workers.
+	siteTagRepo := sitetag.NewRepo(pool)
+	siteTagSvc := sitetag.NewService(siteTagRepo)
+	siteTagH := sitetag.NewHandler(siteTagSvc, auditRec)
 
 	// m64 — white-label client reports. Object storage is required to store HTML/PDF
 	// blobs and mint presigned URLs. When S3 is not configured the service degrades
@@ -2292,6 +2299,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		ScreenshotH: screenshotH,
 		// m63 — agency clients.
 		ClientH: clientH,
+		// m100 — GH #230 "rich tags" tag registry.
+		SiteTagH: siteTagH,
 		// m64 — white-label client reports.
 		ReportH: reportH,
 		// m66 — read-only client portal.
