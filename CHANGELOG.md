@@ -8,7 +8,11 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.67] - 2026-07-17
+## [0.61.68] - 2026-07-17
+
+### Changed
+
+- The Sites list's uptime enrichment no longer scans the full uptime-probe history on each load, so it stays fast even after idle (the durable fix for the post-idle Sites-list slowness, replacing the interim keep-warm from 0.61.67). The uptime worker now maintains a compact per-site daily rollup; the sites-list query reads that rollup for whole days plus a small, index-bounded read of just the two partial edge days, so its cost is proportional to the number of sites rather than the amount of uptime history. The uptime percentages and latencies remain exact to the second (identical to the previous window aggregate) so the numbers do not change. Control plane only; the rollup tables are created and backfilled from existing data automatically on upgrade, and are pruned on the same retention as the raw probes.
 
 ### Fixed
 

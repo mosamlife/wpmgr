@@ -122,6 +122,20 @@ func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
 		w.logger.Warn("uptime: clickhouse insert failed", slog.Any("error", err))
 	}
 
+	// m99: fold this sweep into the site_uptime_daily/site_uptime_status
+	// rollup so QueryFleetUptime (the /api/v1/sites uptime enrichment) never
+	// has to scan site_uptime_probes. Only the Postgres backend implements
+	// RollupWriter (ClickHouse deployments don't need it — see the
+	// RollupWriter doc comment); the type assertion makes this a clean no-op
+	// on ClickHouse and on every test double that doesn't implement it. A
+	// SEPARATE, best-effort step from InsertChecks above: a rollup failure
+	// must never affect probing/alerting, which is why it is only logged.
+	if rw, ok := w.store.(metrics.RollupWriter); ok {
+		if err := rw.UpsertRollup(ctx, checks); err != nil {
+			w.logger.Warn("uptime: rollup upsert failed", slog.Any("error", err))
+		}
+	}
+
 	// Update health_status + alert state per site (Postgres). Sequential: these
 	// are cheap RLS-scoped writes and avoid hammering the pool.
 	for _, s := range sites {

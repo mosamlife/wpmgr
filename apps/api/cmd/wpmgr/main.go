@@ -1075,18 +1075,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Wire the metrics store into the site service so site-list uptime fields
 	// are sourced from the active backend (ClickHouse or Postgres) rather than
 	// a direct read of site_uptime_probes (which is empty on ClickHouse installs).
+	// m99: QueryFleetUptime now reads the site_uptime_daily/site_uptime_status
+	// rollup (maintained incrementally by uptimeWorker via metrics.RollupWriter)
+	// instead of scanning site_uptime_probes, which is what made the interim
+	// keep-warm refresher (0.61.67, WPMGR_UPTIME_KEEPWARM) unnecessary — removed
+	// in the same change as this comment.
 	siteSvc.SetUptimeStore(metricsStore)
-
-	// INTERIM stopgap (WPMGR_UPTIME_KEEPWARM, default true): periodically
-	// re-run the fleet-uptime query for every tenant with enrolled sites so
-	// the 60s result cache above never expires unpopulated AND the Postgres
-	// buffer cache backing site_uptime_probes stays resident — this is what
-	// fixes the recurring ~7-8s post-idle GET /api/v1/sites stall. Reuses
-	// siteSvc.UptimeStore() (the SAME cache-wrapped instance List() reads) and
-	// the SAME cross-tenant enrolled-site list the probe worker already
-	// sweeps every ~60s. REMOVE once the site_uptime_daily rollup lands — see
-	// internal/site/uptime_keepwarm.go's file doc comment.
-	site.StartUptimeKeepWarm(ctx, cfg.Uptime.KeepWarmEnabled, siteSvc.UptimeStore(), newUptimeKeepWarmLister(uptimeRepo), logger)
 
 	// P4b — cron kick: periodically fire a GET to wp-cron.php for all enrolled
 	// sites so fully page-cached sites boot PHP and drain WP-Cron even with zero
@@ -3199,6 +3193,10 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// m85 — uptime-probe retention GC: prunes site_uptime_probes rows older
 	// than 90 days once per day. Bounding the table is the long-term fix for
 	// why the 30-day aggregate window grows expensive as rows accumulate.
+	// m99 follow-up: the SAME job also prunes the site_uptime_daily/
+	// site_uptime_status rollup tables past the same 90-day retention (see
+	// UptimeProbeGCWorker.Work), so a site's stale status can't outlive its
+	// raw-probe retention.
 	// RunOnStart: false — on a fresh deploy or right after the m85 covering
 	// index migration the table may be large; let Postgres settle before the
 	// first GC pass so the migration boot does not compete with the GC DELETE.
