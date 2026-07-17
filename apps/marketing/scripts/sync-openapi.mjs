@@ -29,6 +29,26 @@ mkdirSync(assetsDir, { recursive: true });
 // 1. Parse the source YAML and emit minified JSON.
 //    Minified is smaller and faster for the browser to parse.
 const spec = parse(readFileSync(specYaml, "utf8"));
+
+// Self-healing version stamp: the rendered doc always shows the release
+// version from the top CHANGELOG.md entry, so info.version can never drift
+// on wpmgr.app/docs even if the yaml bump is forgotten. Falls back to the
+// yaml's own value when the CHANGELOG cannot be parsed.
+try {
+  const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
+  const m = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m);
+  if (m && spec.info) {
+    if (spec.info.version !== m[1]) {
+      console.warn(
+        `sync-openapi: overriding spec info.version ${spec.info.version} -> ${m[1]} (top CHANGELOG.md entry)`,
+      );
+    }
+    spec.info.version = m[1];
+  }
+} catch {
+  // CHANGELOG.md missing/unreadable: keep the yaml's version.
+}
+
 writeFileSync(join(publicDir, "openapi.json"), JSON.stringify(spec));
 
 // 2. Vendor the pinned Scalar standalone bundle.

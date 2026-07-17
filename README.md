@@ -4,7 +4,7 @@
 
 WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress sites from one dashboard — all running on infrastructure you control. The control plane is a Go binary with a React dashboard; a lightweight PHP plugin on each managed site handles the work. Everything between the agent and the control plane is Ed25519-signed.
 
-[![Latest release](https://img.shields.io/badge/release-v0.50.5-blue?style=flat)](https://github.com/mosamlife/wpmgr/releases)
+[![Latest release](https://img.shields.io/github/v/release/mosamlife/wpmgr?label=release&style=flat)](https://github.com/mosamlife/wpmgr/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/mosamlife/wpmgr/ci.yml?branch=main&label=CI&style=flat)](https://github.com/mosamlife/wpmgr/actions/workflows/ci.yml)
 
@@ -16,7 +16,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
   <a href="https://wpmgr.app/docs/">API reference</a>
 </p>
 
-**v0.43.3** — open-source and production-usable for self-hosters.
+**v0.61.69** — open-source and production-usable for self-hosters.
 
 ---
 

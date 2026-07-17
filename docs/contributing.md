@@ -42,7 +42,9 @@ make dev           # full stack for local development
 make test          # all tests (Go + frontend)
 make build         # build api + web
 make lint          # go vet + pnpm lint
-make gen           # regenerate OpenAPI clients (Go + TS) from packages/openapi/openapi.yaml
+# Regenerate OpenAPI codegen (Go server types + TS client) from packages/openapi/openapi.yaml:
+cd apps/api && go generate ./internal/api/gen/...   # Go server types (ogen)
+pnpm -C packages/openapi-client generate            # TS client
 make agent-zip     # package the WordPress agent plugin
 ```
 
@@ -73,9 +75,10 @@ the backend domains. The Go binary entrypoint is `apps/api/cmd/wpmgr/main.go`.
 ## Contract-first API
 
 The OpenAPI spec at `packages/openapi/openapi.yaml` is the single source of
-truth. Change the spec, then run `make gen` to regenerate the Go server types
-(ogen, ADR-004) and the TS client. Don't hand-edit generated code. See
-[api.md](./api.md).
+truth. Change the spec, then regenerate the Go server types (ogen, ADR-004)
+with `go generate ./internal/api/gen/...` (run from `apps/api`) and the TS
+client with `pnpm -C packages/openapi-client generate`. Don't hand-edit
+generated code. See [api.md](./api.md).
 
 ## Commits & PRs
 

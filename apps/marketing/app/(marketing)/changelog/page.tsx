@@ -63,6 +63,155 @@ const RELEASES: ChangeEntry[] = [
         tag: "Fixed",
         text: "The Sites list stays fast even after long idle periods: uptime data shown on the list is now read from a compact per-site rollup instead of scanning the full probe history, with uptime percentages unchanged and exact.",
       },
+      {
+        tag: "Changed",
+        text: "The Sites list shows each site's last backup as a relative time (for example \"2h ago\"), with the exact date and time on hover (GH #231).",
+      },
+    ],
+  },
+  {
+    version: "0.61.64 - 0.61.65",
+    date: "2026-07-16",
+    summary: "Scheduled backups can no longer stall silently, and slow pages screenshot correctly.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Scheduled backups no longer stall permanently at \"queued\" (GH #232). A scheduled run previously depended on WordPress cron, which never fires on quiet or DISABLE_WP_CRON sites, and its watchdog ran on that same cron. Backups now always start in-process, a request-driven sweeper re-dispatches genuinely stalled tasks, and a connection-independent file lock prevents a second runner from ever corrupting an in-progress backup.",
+      },
+      {
+        tag: "Fixed",
+        text: "Website screenshots of slow-loading or uncached pages are no longer blank (GH #229). Capture now waits for page load, network idle, and the DOM to settle, bounded by a hard timeout so a slow page degrades to a best-effort partial capture.",
+      },
+      {
+        tag: "Fixed",
+        text: "Switching organizations while viewing a single site no longer lands on a dead \"no website\" page; you are routed to the new organization's Sites list (GH #233).",
+      },
+      {
+        tag: "Changed",
+        text: "Stored secrets that can no longer be decrypted because the server's encryption key changed now fail loudly and clearly instead of looking like a wrong two-factor code (GH #215): the control plane logs a key fingerprint at startup, warns at boot when stored secrets no longer decrypt (with the exact remediation, pin a stable WPMGR_SITE_DEST_AGE_SECRET), and the two-factor prompt shows a precise \"the server's encryption key changed\" message.",
+      },
+    ],
+  },
+  {
+    version: "0.61.62",
+    date: "2026-07-15",
+    summary: "Pre-update rollback snapshots are cleaned up reliably instead of accumulating forever.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Rollback snapshots captured before each plugin, theme, or core update are now reclaimed reliably (GH #226). Cleanup previously depended on WordPress cron, so a site that updated once and went quiet kept every snapshot forever, quietly consuming disk space. Cleanup now runs on ordinary agent activity, a snapshot whose update succeeded is reclaimed within about an hour once safely past the rollback window, and any backlog is swept on the first request after upgrading. Snapshots are never removed while a rollback could still be needed.",
+      },
+    ],
+  },
+  {
+    version: "0.61.58 - 0.61.60",
+    date: "2026-07-14",
+    summary: "Self-hosted secrets now survive restarts, plus a batch of fixes across updates, backups, hide-login, and two-factor.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Stored secrets (SMTP password, destination and object-cache credentials, two-factor secrets) now survive a restart on a self-hosted install that has not set an explicit secrets-at-rest key. The key is now derived stably from the already-required WPMGR_SESSION_SECRET, so nothing is lost on reboot. Upgrade note: installs that were on the old per-boot key need to re-enter affected secrets once.",
+      },
+      {
+        tag: "Fixed",
+        text: "A failed, empty backup snapshot can now be deleted on its own; the chain-safety guard now checks the real parent-snapshot chain of custody instead of generation numbers (GH #221).",
+      },
+      {
+        tag: "Fixed",
+        text: "Bulk update runs now make one guaranteed-fresh update check per run instead of one per item (GH #218), and updates no longer fail with \"Could not copy file\" on hosts whose shared temp directory has grown pathologically overloaded (GH #216).",
+      },
+      {
+        tag: "Fixed",
+        text: "The fleet backup health view no longer fails entirely when a site has never completed a backup; such a site now reports as Unprotected (GH #214).",
+      },
+      {
+        tag: "Fixed",
+        text: "Hide-login no longer blocks front-end AJAX: admin-ajax.php and admin-post.php are excluded while the login and dashboard pages stay hidden (GH #219).",
+      },
+      {
+        tag: "Fixed",
+        text: "Two-factor sign-in is clearer and slightly more forgiving: the single-use message explains why a re-submitted code is rejected, the accepted window widened to plus or minus 60 seconds, and the setup code can no longer be reused for the first login (GH #215). The bulk update wizard's tab badges now count only components with a real pending update (GH #217).",
+      },
+    ],
+  },
+  {
+    version: "0.61.55 - 0.61.56",
+    date: "2026-07-11",
+    summary: "Update rollback now recovers a site even when the update takes it fully down.",
+    items: [
+      {
+        tag: "Added",
+        text: "A new update watchdog loads before regular plugins and, when a plugin or theme update leaves the site fataling on every request, restores the pre-update snapshot directly at the filesystem level without needing WordPress to boot (GH #210). It fires only for a genuine post-update fatal within a short window, and disarms as soon as the site boots healthily, so it can never revert a working update.",
+      },
+      {
+        tag: "Fixed",
+        text: "Phantom updates whose target version equals the installed version are suppressed everywhere (GH #211), and the Refresh button on available updates now forces a real check against WordPress.org instead of returning a cached list (GH #212).",
+      },
+      {
+        tag: "Fixed",
+        text: "The self-hosted media-encoder no longer crash-loops on boot with an unprivileged database role, screenshots work on the bundled image, and an infrastructure capture failure is retried a bounded number of times instead of being recorded as success (GH #207).",
+      },
+      {
+        tag: "Fixed",
+        text: "Updates targeting \"latest\" no longer report \"already up to date\" from a momentarily stale cache, and heavy updates no longer spuriously report failed at the 30-second dispatch timeout (GH #208).",
+      },
+    ],
+  },
+  {
+    version: "0.61.54",
+    date: "2026-07-10",
+    summary: "Critical self-host fix: a misconfigured media-encoder could silently stop every scheduled job.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "On self-hosted installs where the media-encoder ran in the API's default database schema, it could silently take over background-job leader election and stop every scheduled fleet job, including backups, uptime checks, and cleanups, with no error anywhere (GH #205). The media-encoder now refuses to start in that misconfiguration, the safe dedicated schema is the built-in default with no configuration change needed, and any jobs left behind in the shared schema are cleaned up automatically.",
+      },
+    ],
+  },
+  {
+    version: "0.61.49 - 0.61.53",
+    date: "2026-07-10",
+    summary: "Sign up straight into a paid plan, honest fleet vitals, and the media-encoder on by default for self-host.",
+    items: [
+      {
+        tag: "Added",
+        text: "Choosing Starter, Agency, or Scale on the pricing page now carries that choice through signup and email verification into a checkout for the plan you picked, with a \"Skip for now\" option. Prices on the pricing page are fetched live from the payment providers at build time with a USD and INR currency toggle, backed by Stripe and Razorpay. Hosted only; self-host is unaffected.",
+      },
+      {
+        tag: "Changed",
+        text: "Self-hosted installs now run the media-encoder by default, so site screenshots and the Media Optimizer work on a default docker compose up; opt out with --scale media-encoder=0 (GH #187).",
+      },
+      {
+        tag: "Fixed",
+        text: "Fleet Core Web Vitals now count a site as passing only when LCP, INP, and CLS all pass (GH #195), the worst-offenders table shows each site's name and URL (GH #202), and the CLS distribution bar agrees with its p75 rating (GH #185).",
+      },
+      {
+        tag: "Fixed",
+        text: "Audit-log entries for backups, restores, and updates now show their site and match the site filter (GH #201), the \"sites with items to review\" database-health stat expands into the full linked list (GH #197), and the database-size 90-day history now populates automatically from each site's daily diagnostics (GH #196).",
+      },
+      {
+        tag: "Fixed",
+        text: "Switching organizations takes effect immediately (GH #186), backup detail pages have a real breadcrumb trail back to the site's backup list (GH #188), and a screenshot refresh that cannot run now stops with a clear warning instead of spinning forever (GH #187).",
+      },
+    ],
+  },
+  {
+    version: "0.61.41 - 0.61.48",
+    date: "2026-07-08",
+    summary: "A concentrated run of plugin and theme update reliability fixes, plus admin panel improvements.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A series of update-reliability fixes across restricted and standard hosts: a pre-update snapshot failure no longer blocks the update on open_basedir or symlinked wp-content setups; a stale filesystem cache no longer causes a perfectly good update to be reported failed and rolled back; a bulk update including a premium plugin that manages its own updates no longer fatals and strands the site in maintenance mode (GH #182); and the temporary-directory pin that collided with WordPress's own unpack folder on standard hosts was removed, so updates work everywhere again while restricted hosts keep a dedicated safe fallback.",
+      },
+      {
+        tag: "Added",
+        text: "Failed or rolled-back update tasks now show the complete agent log, including WordPress's own explanation of what went wrong, with a \"View log\" toggle and a copy button.",
+      },
+      {
+        tag: "Fixed",
+        text: "Two-factor settings are now reachable for every account, including accounts without an organization and the instance superadmin; the instance-admin console is full width with cleaner navigation; and the Accounts list pagination advances correctly.",
+      },
     ],
   },
   {

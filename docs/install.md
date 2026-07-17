@@ -30,13 +30,26 @@ at boot, so the app accepts them on the first try — are:
 | `WPMGR_SESSION_SECRET` | random ≥32-byte string | hard-fails boot if empty/too short |
 | `WPMGR_AGENT_SIGNING_PRIVATE_KEY` | base64-std of the **raw** 64-byte Ed25519 key | signs CP→agent commands; rejected in prod if it's the committed dev key |
 | `WPMGR_AGENT_SIGNING_PUBLIC_KEY` | base64-std of the **raw** 32-byte Ed25519 key | the public half agents verify with |
-| `WPMGR_SITE_DEST_AGE_SECRET` | age X25519 secret (`AGE-SECRET-KEY-1…`) | secrets-at-rest key. **Optional**: if empty, a stable key is derived from `WPMGR_SESSION_SECRET` (secrets survive restarts). Set explicitly for an isolated, independently rotatable key |
+| `WPMGR_SITE_DEST_AGE_SECRET` | age X25519 secret (`AGE-SECRET-KEY-1…`) | secrets-at-rest key. **Optional**: if empty, the key is derived from `WPMGR_SESSION_SECRET` and is only as stable as that secret. Pin an explicit value on any platform that regenerates env values per deploy (see "Pin your secrets" below) |
 
 > The values must be base64 of the **raw key bytes**, not of a PEM file — the old
 > `base64 < key.pem` recipe produced keys the runtime rejected. The generator
 > (`wpmgr-cli gen-secrets`) self-verifies every value by decoding it back through
 > the server's own boot parsers before printing it, so a generated line is
 > guaranteed to load.
+
+### Pin your secrets
+
+Stored secrets (operator two-factor enrollments, SMTP passwords, backup-destination
+and object-cache credentials) are encrypted at rest, keyed by these values, so the
+key must be identical across restarts and redeploys. Pin an explicit
+`WPMGR_SITE_DEST_AGE_SECRET` (via `wpmgr-cli gen-secrets` or `age-keygen`) and keep
+`WPMGR_SESSION_SECRET` fixed; this is mandatory on any platform that regenerates
+env values per deploy (many PaaS do). The symptom of an unpinned key: two-factor
+works once, then every later login fails, and operators are logged out on each
+redeploy. The boot log prints a key fingerprint and a decrypt self-check WARN when
+the key has changed. To recover: pin both values, sign in with a recovery code,
+then re-enroll two-factor and re-enter the affected secrets.
 
 To print the four secret lines without touching `.env` (e.g. to paste into a
 secret manager), run the generator directly — it works with a Go toolchain or,
