@@ -3890,3 +3890,45 @@ ALTER TABLE audit_integrity_baseline FORCE ROW LEVEL SECURITY;
 CREATE POLICY audit_integrity_baseline_tenant_isolation ON audit_integrity_baseline
     USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- ---------------------------------------------------------------------------
+-- m100 — GH #230 "rich tags": tenant-level tag registry. sites.tags (text[],
+-- above) remains the assignment store; site_tags owns existence/color/
+-- canonical name. No join table — sites.tags is the sole source of truth for
+-- "which sites carry this tag". Tag names are CASE-SENSITIVE, matching the
+-- existing site.normalizeTags + `= ANY(tags)` semantics.
+-- ---------------------------------------------------------------------------
+CREATE TABLE site_tags (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    name       text        NOT NULL,
+    -- '' = auto (client derives a deterministic color from the name); else a
+    -- lowercase '#rrggbb' hex code (app-layer normalizes to lowercase).
+    color      text        NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+
+    -- Exact-case unique per tenant.
+    CONSTRAINT site_tags_tenant_name_key UNIQUE (tenant_id, name),
+    -- Backs a future composite FK the same way clients_id_tenant_key does; not
+    -- referenced by any FK today (sites.tags has no join table).
+    CONSTRAINT site_tags_id_tenant_key UNIQUE (id, tenant_id),
+    CONSTRAINT site_tags_name_nonempty CHECK (btrim(name) != '' AND char_length(name) <= 64),
+    CONSTRAINT site_tags_color_format CHECK (color = '' OR color ~* '^#[0-9a-f]{6}$')
+);
+
+CREATE INDEX site_tags_tenant_idx ON site_tags (tenant_id);
+
+-- RLS mirrors m63 clients exactly: tenant isolation + agent path. No
+-- site_scope RESTRICTIVE policy — this is a tenant-level registry, not a
+-- site-keyed table.
+ALTER TABLE site_tags ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_tags FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_tags_tenant_isolation ON site_tags
+    USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_tags_agent ON site_tags
+    USING      (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');

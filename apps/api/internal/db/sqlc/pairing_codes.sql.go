@@ -221,3 +221,53 @@ func (q *Queries) PeekPairingCodeSiteID(ctx context.Context, codeHash string) (p
 	err := row.Scan(&site_id)
 	return site_id, err
 }
+
+const removePairingCodeTagName = `-- name: RemovePairingCodeTagName :exec
+UPDATE pairing_codes
+SET tags = array_remove(tags, $1::text)
+WHERE tenant_id = $2::uuid
+  AND consumed_at IS NULL
+  AND expires_at > now()
+  AND $1::text = ANY (tags)
+`
+
+type RemovePairingCodeTagNameParams struct {
+	Name     string    `json:"name"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) RemovePairingCodeTagName(ctx context.Context, arg RemovePairingCodeTagNameParams) error {
+	_, err := q.db.Exec(ctx, removePairingCodeTagName, arg.Name, arg.TenantID)
+	return err
+}
+
+const rewritePairingCodeTagName = `-- name: RewritePairingCodeTagName :exec
+
+UPDATE pairing_codes
+SET tags = (
+        SELECT coalesce(array_agg(DISTINCT CASE WHEN x = $1::text THEN $2::text ELSE x END), '{}')
+        FROM unnest(tags) AS x
+    )
+WHERE tenant_id = $3::uuid
+  AND consumed_at IS NULL
+  AND expires_at > now()
+  AND $1::text = ANY (tags)
+`
+
+type RewritePairingCodeTagNameParams struct {
+	OldName  string    `json:"old_name"`
+	NewName  string    `json:"new_name"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// ---------------------------------------------------------------------------
+// M100 — GH #230 "rich tags": keep an unredeemed code's tags in sync with a
+// tag rename/delete so a code minted before the rename still enrolls its site
+// with the CURRENT tag name (never a name that no longer exists in the
+// registry). Scoped to unexpired + unredeemed codes only — a consumed or
+// expired code's tags are already inert (Enroll never re-reads them).
+// ---------------------------------------------------------------------------
+func (q *Queries) RewritePairingCodeTagName(ctx context.Context, arg RewritePairingCodeTagNameParams) error {
+	_, err := q.db.Exec(ctx, rewritePairingCodeTagName, arg.OldName, arg.NewName, arg.TenantID)
+	return err
+}

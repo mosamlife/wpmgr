@@ -248,6 +248,17 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/enrollment-codes
 	BeginReEnrollment(ctx context.Context, params BeginReEnrollmentParams) (BeginReEnrollmentRes, error)
+	// BulkApplyTags implements bulkApplyTags operation.
+	//
+	// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
+	// site id is checked against the caller's collaborator allowlist
+	// independently; sites the caller cannot access (or that don't exist in
+	// this tenant) are returned with `ok: false` rather than failing the
+	// whole call. `add` names are registered into the tag registry in the
+	// same transaction. Requires the `site.write` permission.
+	//
+	// POST /api/v1/tags/bulk-apply
+	BulkApplyTags(ctx context.Context, req *BulkTagApplyRequest) (BulkApplyTagsRes, error)
 	// BulkConfigCache implements bulkConfigCache operation.
 	//
 	// Spreads a preset's toggles (`safe`, `balanced`, or `aggressive`) onto
@@ -548,6 +559,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/shares
 	CreateSiteShare(ctx context.Context, req *CreateSiteShareRequest, params CreateSiteShareParams) (CreateSiteShareRes, error)
+	// CreateTag implements createTag operation.
+	//
+	// Create a new tag in the registry.
+	//
+	// POST /api/v1/tags
+	CreateTag(ctx context.Context, req *SiteTagCreate) (CreateTagRes, error)
 	// CreateTenant implements createTenant operation.
 	//
 	// Create a tenant.
@@ -684,6 +701,14 @@ type Handler interface {
 	//
 	// DELETE /api/v1/sites/{siteId}/shares/{userId}
 	DeleteSiteShare(ctx context.Context, params DeleteSiteShareParams) (DeleteSiteShareRes, error)
+	// DeleteTag implements deleteTag operation.
+	//
+	// Removes the tag from the registry AND from every site (and every
+	// unexpired, unredeemed pairing code) currently carrying it, in one
+	// transaction.
+	//
+	// DELETE /api/v1/tags/{tagId}
+	DeleteTag(ctx context.Context, params DeleteTagParams) (DeleteTagRes, error)
 	// DisableCache implements disableCache operation.
 	//
 	// Turns off agent-side page caching. Returns an `{ok, detail}` ack.
@@ -1613,6 +1638,15 @@ type Handler interface {
 	//
 	// GET /api/v1/sites
 	ListSites(ctx context.Context, params ListSitesParams) (*SiteList, error)
+	// ListTags implements listTags operation.
+	//
+	// Lists every tag in the tenant's registry (m100), sorted
+	// case-insensitively by name, with a live `usage_count` (the number of
+	// sites currently carrying it — unused tags with usage_count 0 are
+	// legitimate). No pagination: a tenant's tag vocabulary is small.
+	//
+	// GET /api/v1/tags
+	ListTags(ctx context.Context) (*SiteTagList, error)
 	// ListTenants implements listTenants operation.
 	//
 	// List tenants.
@@ -2354,6 +2388,19 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/files/settings
 	UpdateSiteFilesSettings(ctx context.Context, req *UpdateFileManagerSettingsRequest, params UpdateSiteFilesSettingsParams) (UpdateSiteFilesSettingsRes, error)
+	// UpdateTag implements updateTag operation.
+	//
+	// A color-only body just updates the color. A `name` change renames the
+	// tag and propagates the new name onto every site (and every unexpired,
+	// unredeemed pairing code) currently carrying the old name, in the same
+	// transaction. Renaming onto an existing name returns 409
+	// `tag_name_exists` unless `merge: true`, in which case the source tag
+	// is merged into the existing survivor (sites are rewritten to the
+	// survivor's name, deduplicated; the survivor's color is kept unless
+	// this request also sets `color`).
+	//
+	// PATCH /api/v1/tags/{tagId}
+	UpdateTag(ctx context.Context, req *SiteTagUpdate, params UpdateTagParams) (UpdateTagRes, error)
 	// VerifyAudit implements verifyAudit operation.
 	//
 	// Verify the integrity of the audit hash-chain (admin+).

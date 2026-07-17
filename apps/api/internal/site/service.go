@@ -260,7 +260,13 @@ type EnrollRequest struct {
 	Name           string `validate:"max=200"`
 	WPVersion      string `validate:"max=32"`
 	PHPVersion     string `validate:"max=32"`
-	Tags           []string
+	// m100 follow-up (GH #230 security review): same cap as
+	// CreatePairingCodeInput.Tags/MintEnrollmentInput.Tags — previously
+	// unbounded, letting an agent-supplied tag exceed site_tags'
+	// char_length<=64 CHECK once registered. Enroll's s.validator.Struct(req)
+	// call below is the FIRST statement in Enroll (before any write), so this
+	// rejects an over-length tag before the site is created/attached.
+	Tags []string `validate:"max=50,dive,min=1,max=64"`
 	// ConsumedFromIP is the agent's source IP (best-effort, from the request).
 	// Recorded on a site-bound consume for audit; ignored on the legacy path.
 	ConsumedFromIP string `validate:"-"`

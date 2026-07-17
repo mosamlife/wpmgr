@@ -82,7 +82,8 @@ func (r *pgRepo) MintSiteBoundCode(ctx context.Context, in CreatePairingCodeInpu
 	}
 	var out PairingCode
 	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).CreateSiteBoundPairingCode(ctx, sqlc.CreateSiteBoundPairingCodeParams{
+		q := sqlc.New(tx)
+		row, err := q.CreateSiteBoundPairingCode(ctx, sqlc.CreateSiteBoundPairingCodeParams{
 			TenantID:  in.TenantID,
 			CodeHash:  codeHash,
 			CreatedBy: createdBy,
@@ -93,6 +94,14 @@ func (r *pgRepo) MintSiteBoundCode(ctx context.Context, in CreatePairingCodeInpu
 		})
 		if err != nil {
 			return domain.Internal("pairing_code_create_failed", "failed to create pairing code").WithCause(err)
+		}
+		// M100 (GH #230 "rich tags") binding invariant: this is the operator-
+		// authenticated site-first mint path — upsert the code's tags into the
+		// registry in the same tx (mirrors CreatePairingCode's legacy path).
+		if len(tags) > 0 {
+			if err := q.UpsertTagNames(ctx, sqlc.UpsertTagNamesParams{TenantID: in.TenantID, Names: tags}); err != nil {
+				return domain.Internal("pairing_code_create_failed", "failed to register tag names").WithCause(err)
+			}
 		}
 		out = toPairingCode(row)
 		return nil

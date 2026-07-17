@@ -632,12 +632,13 @@ func (q *Queries) ListLatestBackupsForSites(ctx context.Context, arg ListLatestB
 const listSites = `-- name: ListSites :many
 SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, created_at, updated_at FROM sites
 WHERE tenant_id = $1
-  AND ($4::text IS NULL OR $4::text = ANY (tags))
+  AND ($4::text[] IS NULL OR tags && $4::text[])
+  AND ($5::text[] IS NULL OR tags @> $5::text[])
   AND (
-        ($5::text IS NULL AND connection_state <> 'archived')
-        OR $5::text = connection_state
+        ($6::text IS NULL AND connection_state <> 'archived')
+        OR $6::text = connection_state
       )
-  AND ($6::uuid IS NULL OR client_id = $6::uuid)
+  AND ($7::uuid IS NULL OR client_id = $7::uuid)
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
 `
@@ -646,7 +647,8 @@ type ListSitesParams struct {
 	TenantID uuid.UUID   `json:"tenant_id"`
 	Limit    int32       `json:"limit"`
 	Offset   int32       `json:"offset"`
-	Tag      *string     `json:"tag"`
+	AnyTags  []string    `json:"any_tags"`
+	AllTags  []string    `json:"all_tags"`
 	State    *string     `json:"state"`
 	ClientID pgtype.UUID `json:"client_id"`
 }
@@ -655,12 +657,17 @@ type ListSitesParams struct {
 // the list is filtered to exactly that connection_state (e.g. 'archived' for
 // the archived chip); when it is NULL every non-archived site is returned.
 // When sqlc.narg('client_id') is set only sites belonging to that client are returned (m63).
+// M100 (GH #230 "rich tags"): any_tags (tags && ...) and all_tags (tags @> ...)
+// replace the single-tag filter; both are served by the sites_tags_idx GIN
+// index. The service maps exactly ONE of them per request (legacy ?tag=
+// becomes any_tags=[tag]).
 func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error) {
 	rows, err := q.db.Query(ctx, listSites,
 		arg.TenantID,
 		arg.Limit,
 		arg.Offset,
-		arg.Tag,
+		arg.AnyTags,
+		arg.AllTags,
 		arg.State,
 		arg.ClientID,
 	)

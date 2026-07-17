@@ -32,6 +32,8 @@ export interface SegmentedControlProps<T extends string> {
   options: readonly SegmentedControlOption<T>[];
   "aria-label": string;
   className?: string;
+  /** When true, every option is inert and dimmed (e.g. "pick two first"). */
+  disabled?: boolean;
 }
 
 export function SegmentedControl<T extends string>({
@@ -39,6 +41,7 @@ export function SegmentedControl<T extends string>({
   onChange,
   options,
   className,
+  disabled = false,
   ...aria
 }: SegmentedControlProps<T>) {
   // Arrow-key roving over the options, Home/End to jump to the first/last —
@@ -46,6 +49,7 @@ export function SegmentedControl<T extends string>({
   // "pick one of a short row of options" control in the app behaves the same
   // way under the keyboard.
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (disabled) return;
     if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(e.key)) return;
     if (options.length === 0) return;
     const current = options.findIndex((o) => o.value === value);
@@ -72,9 +76,11 @@ export function SegmentedControl<T extends string>({
   return (
     <div
       role="radiogroup"
+      aria-disabled={disabled || undefined}
       onKeyDown={onKeyDown}
       className={cn(
         "inline-flex items-center rounded-md border border-[var(--color-border)] bg-[var(--color-background)] p-0.5",
+        disabled && "opacity-50",
         className,
       )}
       {...aria}
@@ -88,11 +94,13 @@ export function SegmentedControl<T extends string>({
             role="radio"
             aria-checked={active}
             tabIndex={active ? 0 : -1}
+            disabled={disabled}
             onClick={() => onChange(option.value)}
             className={cn(
               "inline-flex items-center justify-center rounded-sm px-3 py-1 text-sm font-medium text-[var(--color-muted-foreground)] transition-colors",
               "hover:text-[var(--color-foreground)]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+              "disabled:pointer-events-none disabled:cursor-not-allowed",
               active &&
                 "bg-[var(--color-accent)] text-[var(--color-accent-foreground)]",
             )}

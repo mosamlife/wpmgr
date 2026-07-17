@@ -476,6 +476,123 @@ export const SiteTagsSchema = {
   },
 } as const;
 
+export const SiteTagSchema = {
+  type: "object",
+  description:
+    'A tenant-level tag registry entry (GH #230 "rich tags", m100). Owns\nexistence/color/canonical name; sites.tags (the site\'s own text[])\nremains the assignment store.\n',
+  required: ["id", "name", "color", "usage_count", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+      maxLength: 64,
+    },
+    color: {
+      type: "string",
+      description:
+        'Lowercase "#rrggbb" hex code, or "" for auto (client derives a deterministic color from the name).',
+    },
+    usage_count: {
+      type: "integer",
+      format: "int64",
+      description:
+        "Number of sites in the tenant currently carrying this tag. 0 is a legitimate, unused tag.",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteTagListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SiteTag",
+      },
+    },
+  },
+} as const;
+
+export const SiteTagCreateSchema = {
+  type: "object",
+  required: ["name"],
+  properties: {
+    name: {
+      type: "string",
+      minLength: 1,
+      maxLength: 64,
+    },
+    color: {
+      type: "string",
+      description:
+        'Optional lowercase "#rrggbb" hex code. Omitted or "" = auto.',
+    },
+  },
+} as const;
+
+export const SiteTagUpdateSchema = {
+  type: "object",
+  properties: {
+    name: {
+      type: "string",
+      minLength: 1,
+      maxLength: 64,
+      description:
+        "When present, renames the tag (propagated to every site + unredeemed pairing code carrying the old name).",
+    },
+    color: {
+      type: "string",
+      description: 'When present, sets the tag\'s color ("" resets to auto).',
+    },
+    merge: {
+      type: "boolean",
+      default: false,
+      description:
+        "When the new `name` collides with an existing tag, merge the\nsource tag INTO that existing survivor instead of returning 409\ntag_name_exists.\n",
+    },
+  },
+} as const;
+
+export const BulkTagApplyRequestSchema = {
+  type: "object",
+  required: ["site_ids"],
+  properties: {
+    site_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 200,
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+    },
+    add: {
+      type: "array",
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+      },
+    },
+    remove: {
+      type: "array",
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+      },
+    },
+  },
+} as const;
+
 export const PairingCodeCreateSchema = {
   type: "object",
   properties: {

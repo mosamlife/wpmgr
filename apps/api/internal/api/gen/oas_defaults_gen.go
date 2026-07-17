@@ -247,6 +247,14 @@ func (s *SiteCreate) setDefaults() {
 }
 
 // setDefaults set default value of fields.
+func (s *SiteTagUpdate) setDefaults() {
+	{
+		val := bool(false)
+		s.Merge.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
 func (s *UpdateRunCreate) setDefaults() {
 	{
 		val := bool(false)

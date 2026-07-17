@@ -4,6 +4,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   ChevronDown,
   Download,
@@ -23,9 +24,11 @@ import {
   X,
 } from "lucide-react";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
+import type { SiteTag } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -35,11 +38,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { TagChip } from "@/features/sites/tag-chip";
+import { resolveTagDot } from "@/lib/tag-color";
 import { cn } from "@/lib/utils";
 import { dur, ease } from "@/lib/motion-presets";
 import type { SitesDensity } from "@/features/sites/use-sites-density";
 import type { SitesSelection } from "@/features/sites/use-sites-selection";
 import type { SitesView, CardSize } from "@/features/sites/use-sites-view";
+import type { TagMatchMode } from "@/features/sites/use-sites";
 
 // Surface 4.6 — the Sites toolbar.
 //
@@ -91,14 +97,19 @@ export interface SitesToolbarProps {
   appliedClientId?: string | null;
   /** Called when the client filter selection changes. */
   onClientFilterChange?: (clientId: string | null) => void;
-  /** Available tag values, used to populate the Tag dropdown. */
-  tagOptions?: readonly string[];
-  /** Currently selected tags (controlled multi-select). */
+  /** The tenant's tag registry (color + usage_count), used to populate the
+   *  Tags filter dropdown. */
+  tagRegistry?: readonly SiteTag[];
+  /** Currently selected tags (controlled multi-select, by name). */
   selectedTags?: readonly string[];
   /** Called when a tag is toggled. */
   onTagToggle?: (tag: string) => void;
   /** Called to clear all tag filters. */
   onTagsClear?: () => void;
+  /** "any" (OR) or "all" (AND) match semantics across the selected tags. */
+  tagMode?: TagMatchMode;
+  /** Called when the match-mode segmented control changes. */
+  onTagModeChange?: (mode: TagMatchMode) => void;
   /** Available status values for the Status dropdown. */
   statusOptions?: readonly string[];
   /** Currently selected statuses (controlled multi-select). */
@@ -184,10 +195,12 @@ function IdleMode({
   clientOptions = [],
   appliedClientId,
   onClientFilterChange,
-  tagOptions = [],
+  tagRegistry = [],
   selectedTags = [],
   onTagToggle,
   onTagsClear,
+  tagMode = "any",
+  onTagModeChange,
   statusOptions = [],
   selectedStatuses = [],
   onStatusToggle,
@@ -209,6 +222,18 @@ function IdleMode({
     appliedClientId && clientOptions.length > 0
       ? (clientOptions.find((c) => c.id === appliedClientId)?.name ?? "All clients")
       : "All clients";
+
+  // GH #230 adversarial-verify MEDIUM — the active-tag chips render from
+  // just a NAME (the URL's `tags` search param); look the registry color up
+  // by name so these chips match the operator's chosen color, not always
+  // "auto". `tagRegistry` is already threaded in as a prop (this component
+  // is presentational, not a hook consumer), so a plain name -> color map
+  // built from it is all that's needed.
+  const tagColorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const tag of tagRegistry) map.set(tag.name, tag.color);
+    return map;
+  }, [tagRegistry]);
 
   return (
     <motion.div
@@ -243,16 +268,40 @@ function IdleMode({
           ariaLabel="Filter by status"
         />
 
-        {/* Tags — controlled multi-select */}
-        <MultiSelectDropdown
-          label="Tags"
-          options={tagOptions}
+        {/* Tags — registry-backed multi-select with a match-mode segmented
+            control and a "Manage tags" footer link. */}
+        <TagsFilterDropdown
+          registry={tagRegistry}
           selected={selectedTags}
           onToggle={onTagToggle ?? (() => {})}
           onClear={onTagsClear ?? (() => {})}
-          ariaLabel="Filter by tag"
-          icon={Tag}
+          mode={tagMode}
+          onModeChange={onTagModeChange ?? (() => {})}
         />
+
+        {/* Active tag chips — removable, inline next to the Tags button so
+            the operator sees exactly which tags are filtering without
+            opening the menu. */}
+        {selectedTags.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1">
+            {selectedTags.map((name) => (
+              <TagChip
+                key={name}
+                tag={{ name, color: tagColorMap.get(name) }}
+                trailing={
+                  <button
+                    type="button"
+                    onClick={() => onTagToggle?.(name)}
+                    aria-label={`Remove tag filter ${name}`}
+                    className="ml-0.5 rounded-full p-0.5 hover:bg-accent"
+                  >
+                    <X aria-hidden="true" className="size-3" />
+                  </button>
+                }
+              />
+            ))}
+          </div>
+        ) : null}
 
         {/* Clear all filters pill — shown when any filter axis is active */}
         {activeFilterCount > 0 && onClearAllFilters ? (
@@ -468,6 +517,164 @@ function MultiSelectDropdown({
             No options yet
           </DropdownMenuLabel>
         ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TagsFilterDropdown — registry-backed multi-select (GH #230 "rich tags")
+// ---------------------------------------------------------------------------
+
+/**
+ * The Tags filter dropdown. Options come from the tenant's tag registry
+ * (color dot + name + usage count), not the sites currently loaded — an
+ * unused tag is still a valid filter target. A "Match any"/"Match all"
+ * segmented control at the top controls whether the selected tags OR or AND
+ * (disabled until 2+ tags are selected: a single tag's any/all reading is
+ * identical, so the control stays inert until the choice is meaningful). A
+ * "Manage tags" footer link routes to the tag registry settings page.
+ */
+function TagsFilterDropdown({
+  registry,
+  selected,
+  onToggle,
+  onClear,
+  mode,
+  onModeChange,
+}: {
+  registry: readonly SiteTag[];
+  selected: readonly string[];
+  onToggle: (name: string) => void;
+  onClear: () => void;
+  mode: TagMatchMode;
+  onModeChange: (mode: TagMatchMode) => void;
+}) {
+  const [menuFilter, setMenuFilter] = useState("");
+  const count = selected.length;
+  const isActive = count > 0;
+
+  const filtered = useMemo(() => {
+    const q = menuFilter.trim().toLowerCase();
+    if (!q) return registry;
+    return registry.filter((t) => t.name.toLowerCase().includes(q));
+  }, [registry, menuFilter]);
+
+  return (
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (!open) setMenuFilter("");
+      }}
+    >
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Filter by tag"
+          className={cn(
+            "h-9 gap-1.5",
+            isActive && "border-primary/50 bg-primary/5",
+          )}
+        >
+          <Tag aria-hidden="true" className="size-3.5" />
+          Tags
+          {isActive ? (
+            <span className="ml-0.5 rounded-sm bg-primary/10 px-1 text-xs font-medium tabular-nums text-primary">
+              {count}
+            </span>
+          ) : null}
+          <ChevronDown aria-hidden="true" className="size-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[16rem]" collisionPadding={8}>
+        <div className="px-1 pb-1.5 pt-0.5">
+          <SegmentedControl
+            aria-label="Tag match mode"
+            value={mode}
+            onChange={onModeChange}
+            disabled={count < 2}
+            options={[
+              { value: "any", label: "Match any" },
+              { value: "all", label: "Match all" },
+            ]}
+            className="w-full [&>button]:flex-1"
+          />
+        </div>
+        <DropdownMenuSeparator />
+
+        {registry.length > 6 ? (
+          <div className="px-2 pb-1 pt-0.5">
+            <input
+              type="text"
+              value={menuFilter}
+              onChange={(e) => setMenuFilter(e.target.value)}
+              placeholder="Filter..."
+              aria-label="Filter tag options"
+              className={cn(
+                "h-7 w-full rounded border border-border bg-background px-2 text-xs",
+                "text-foreground placeholder:text-muted-foreground",
+                "focus:outline-none focus:ring-1 focus:ring-ring",
+              )}
+            />
+          </div>
+        ) : null}
+
+        {isActive ? (
+          <>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                onClear();
+              }}
+              className="text-xs"
+            >
+              Show all
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+
+        <div className="max-h-[60vh] overflow-y-auto">
+          {filtered.length === 0 ? (
+            <div className="px-2 py-2 text-xs text-muted-foreground">
+              {registry.length === 0 ? "No tags yet" : "No matching tags"}
+            </div>
+          ) : (
+            filtered.map((t) => {
+              const dot = resolveTagDot(t);
+              return (
+                <DropdownMenuCheckboxItem
+                  key={t.id}
+                  checked={selected.includes(t.name)}
+                  onCheckedChange={() => onToggle(t.name)}
+                  onSelect={(e) => {
+                    // Keep the menu open so the user can toggle multiple tags.
+                    e.preventDefault();
+                  }}
+                  className="gap-2 text-xs"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn("size-2 shrink-0 rounded-full", dot.className)}
+                    style={dot.style}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{t.name}</span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                    {t.usage_count}
+                  </span>
+                </DropdownMenuCheckboxItem>
+              );
+            })
+          )}
+        </div>
+
+        <DropdownMenuSeparator />
+        <Link
+          to="/settings/tags"
+          className="block px-2 py-1.5 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Manage tags
+        </Link>
       </DropdownMenuContent>
     </DropdownMenu>
   );

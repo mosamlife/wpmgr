@@ -55,3 +55,30 @@ WHERE code_hash = $1
   AND consumed_at IS NULL
   AND expires_at > now()
 RETURNING id, tenant_id, site_id, site_name, tags;
+
+-- ---------------------------------------------------------------------------
+-- M100 — GH #230 "rich tags": keep an unredeemed code's tags in sync with a
+-- tag rename/delete so a code minted before the rename still enrolls its site
+-- with the CURRENT tag name (never a name that no longer exists in the
+-- registry). Scoped to unexpired + unredeemed codes only — a consumed or
+-- expired code's tags are already inert (Enroll never re-reads them).
+-- ---------------------------------------------------------------------------
+
+-- name: RewritePairingCodeTagName :exec
+UPDATE pairing_codes
+SET tags = (
+        SELECT coalesce(array_agg(DISTINCT CASE WHEN x = @old_name::text THEN @new_name::text ELSE x END), '{}')
+        FROM unnest(tags) AS x
+    )
+WHERE tenant_id = @tenant_id::uuid
+  AND consumed_at IS NULL
+  AND expires_at > now()
+  AND @old_name::text = ANY (tags);
+
+-- name: RemovePairingCodeTagName :exec
+UPDATE pairing_codes
+SET tags = array_remove(tags, @name::text)
+WHERE tenant_id = @tenant_id::uuid
+  AND consumed_at IS NULL
+  AND expires_at > now()
+  AND @name::text = ANY (tags);

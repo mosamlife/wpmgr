@@ -308,6 +308,20 @@ func encodeAssignSitesToClientRequest(
 	return nil
 }
 
+func encodeBulkApplyTagsRequest(
+	req *BulkTagApplyRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeBulkConfigCacheRequest(
 	req *BulkConfigRequest,
 	r *http.Request,
@@ -628,6 +642,20 @@ func encodeCreateSiteFileArchiveRequest(
 
 func encodeCreateSiteShareRequest(
 	req *CreateSiteShareRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeCreateTagRequest(
+	req *SiteTagCreate,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
@@ -1548,6 +1576,20 @@ func encodeUpdateSiteDestinationRequest(
 
 func encodeUpdateSiteFilesSettingsRequest(
 	req *UpdateFileManagerSettingsRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUpdateTagRequest(
+	req *SiteTagUpdate,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

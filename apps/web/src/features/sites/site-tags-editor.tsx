@@ -1,161 +1,67 @@
-import { useState } from "react";
-import { X, Plus } from "lucide-react";
-
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { FieldError } from "@/components/forms/field-error";
-import { StickySaveBar } from "@/components/forms/sticky-save-bar";
-import { useSetSiteTags } from "@/features/sites/use-sites";
+import { Plus, X } from "lucide-react";
 import type { Site } from "@wpmgr/api";
 
-// Inline editor for a site's tag set. Local draft state mirrors the site's
-// tags; the global StickySaveBar surfaces when the draft diverges from the
-// server set. Adds are de-duped and capped at 64 chars to match the API
-// contract.
+import { Button } from "@/components/ui/button";
+import { TagChip } from "@/features/sites/tag-chip";
+import { SiteTagPickerPopover } from "@/features/sites/tag-picker";
+import { useSiteTagToggle } from "@/features/sites/use-site-tag-toggle";
+import { useTagColorMap } from "@/features/tags/use-tag-color-map";
+
+// GH #230 "rich tags" — inline editor for a site's tag set.
 //
-// Sprint 4 (forms): removed the inline "Save tags" button. The shared
-// StickySaveBar handles save + discard at the viewport bottom for parity
-// with every other editable settings surface.
+// Rewritten around the shared <TagPicker>: a persistent chip row (each chip
+// carries an × remove) plus an always-visible "+ Add tag" trigger that opens
+// the picker. Every toggle applies OPTIMISTICALLY via `useSiteTagToggle`
+// (which serializes per-site toggles and always computes the replace-set
+// from the freshest cached tags, not a captured prop — see that hook's doc
+// for the lost-update race it fixes) — there is no local draft state and no
+// Save/Discard step; tags commit instantly, independent of the rest of the
+// settings form's StickySaveBar flow.
 export function SiteTagsEditor({ site }: { site: Site }) {
-  const mutation = useSetSiteTags();
-  const [draft, setDraft] = useState<string[]>(site.tags);
-  const [input, setInput] = useState("");
-  const [inputError, setInputError] = useState<string | null>(null);
+  const { toggleTag } = useSiteTagToggle(site);
+  const colorMap = useTagColorMap();
 
-  // React's "reset state from props during render" pattern: when the server's
-  // tag set changes (e.g. after a successful save reconciles, or another tab
-  // updates), re-seed the local draft. `serverKey` is a stable join of the
-  // tags so we only reset on actual changes.
-  const serverKey = site.tags.join(" ");
-  const [lastServerKey, setLastServerKey] = useState(serverKey);
-  if (serverKey !== lastServerKey) {
-    setLastServerKey(serverKey);
-    setDraft(site.tags);
-  }
-
-  const dirty =
-    draft.length !== site.tags.length ||
-    draft.some((t, i) => t !== site.tags[i]);
-
-  function addTag() {
-    const tag = input.trim();
-    if (!tag) {
-      setInputError(null);
-      return;
-    }
-    if (tag.length > 64) {
-      setInputError("Tag too long");
-      return;
-    }
-    if (draft.includes(tag)) {
-      setInputError("Duplicate tag");
-      return;
-    }
-    setDraft([...draft, tag]);
-    setInput("");
-    setInputError(null);
-  }
-
-  function removeTag(tag: string) {
-    setDraft(draft.filter((t) => t !== tag));
-  }
-
-  function save() {
-    mutation.mutate({ siteId: site.id, tags: draft });
-  }
-
-  function discard() {
-    setDraft(site.tags);
-    setInput("");
-    setInputError(null);
+  function removeTag(name: string) {
+    // Removing a chip is exactly "toggle that (present) tag off" — the same
+    // race-safe path a picker toggle uses.
+    toggleTag(name);
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1">
-        {draft.length === 0 ? (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {site.tags.length === 0 ? (
           <span className="text-sm text-muted-foreground">No tags</span>
         ) : (
-          draft.map((tag) => (
-            <Badge key={tag} variant="outline" className="pr-1">
-              {tag}
-              <button
-                type="button"
-                onClick={() => removeTag(tag)}
-                aria-label={`Remove tag ${tag}`}
-                className="ml-0.5 rounded-full p-0.5 hover:bg-[var(--color-accent)]"
-              >
-                <X aria-hidden="true" className="size-3" />
-              </button>
-            </Badge>
+          site.tags.map((name) => (
+            <TagChip
+              key={name}
+              tag={{ name, color: colorMap.get(name) }}
+              trailing={
+                <button
+                  type="button"
+                  onClick={() => removeTag(name)}
+                  aria-label={`Remove tag ${name}`}
+                  className="ml-0.5 rounded-full p-0.5 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                >
+                  <X aria-hidden="true" className="size-3" />
+                </button>
+              }
+            />
           ))
         )}
+
+        <SiteTagPickerPopover
+          site={site}
+          align="start"
+          trigger={
+            <Button type="button" variant="outline" size="sm" className="h-6 gap-1 px-2 text-xs">
+              <Plus aria-hidden="true" className="size-3" />
+              Add tag
+            </Button>
+          }
+        />
       </div>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          addTag();
-        }}
-        className="flex flex-wrap items-end gap-2"
-      >
-        <div className="space-y-1">
-          <Label htmlFor="new-tag">Add tag</Label>
-          <Input
-            id="new-tag"
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              if (inputError) setInputError(null);
-            }}
-            onBlur={() => {
-              const tag = input.trim();
-              if (tag && tag.length > 64) setInputError("Tag too long");
-            }}
-            maxLength={64}
-            placeholder="e.g. production"
-            className="w-48"
-            aria-invalid={inputError ? "true" : undefined}
-            aria-describedby="new-tag-help"
-          />
-          <p id="new-tag-help" className="text-sm text-muted-foreground">
-            Up to 64 characters. Tags are unique per site.
-          </p>
-          <FieldError
-            what={inputError ?? undefined}
-            why={
-              inputError === "Tag too long"
-                ? "Tags are capped at 64 characters."
-                : inputError === "Duplicate tag"
-                  ? "This tag is already on the site."
-                  : undefined
-            }
-            how={
-              inputError === "Tag too long"
-                ? "Shorten the tag above."
-                : inputError === "Duplicate tag"
-                  ? "Pick a different name."
-                  : undefined
-            }
-          />
-        </div>
-        <Button type="submit" variant="outline" size="sm" disabled={!input.trim()}>
-          <Plus aria-hidden="true" />
-          Add tag
-        </Button>
-      </form>
-
-      <StickySaveBar
-        isDirty={dirty}
-        isPending={mutation.isPending}
-        errorMessage={mutation.isError ? mutation.error.message : null}
-        onSave={save}
-        onDiscard={discard}
-        saveLabel="Save tags"
-        discardLabel="Discard changes"
-      />
     </div>
   );
 }

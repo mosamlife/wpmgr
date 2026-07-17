@@ -88,7 +88,7 @@ func (l *siteLookup) GetSiteInfo(ctx context.Context, tenantID, siteID uuid.UUID
 }
 
 func (l *siteLookup) ListSiteInfoByTag(ctx context.Context, tenantID uuid.UUID, tag string) ([]update.SiteInfo, error) {
-	sites, err := l.svc.List(ctx, site.ListInput{TenantID: tenantID, Tag: tag, Limit: 200, Offset: 0})
+	sites, err := l.svc.List(ctx, site.ListInput{TenantID: tenantID, AnyTags: []string{tag}, Limit: 200, Offset: 0})
 	if err != nil {
 		return nil, err
 	}

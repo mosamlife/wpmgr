@@ -5,6 +5,7 @@ import {
   KeyRound,
   Mail,
   ShieldCheck,
+  Tag,
   User,
   Users,
   type LucideIcon,
@@ -45,6 +46,7 @@ export const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   // meaningful on a hosted instance — self-hosted installs never see it.
   { label: "Billing",       to: "/settings/billing",      icon: CreditCard,   orgOnly: true, ownerOnly: true, hostedOnly: true },
   { label: "API keys",      to: "/settings/api-keys",     icon: KeyRound,     orgOnly: true },
+  { label: "Tags",          to: "/settings/tags",         icon: Tag,          orgOnly: true },
   { label: "Email / SMTP",  to: "/settings/smtp",         icon: Mail,         orgOnly: true },
   { label: "Members",       to: "/settings/members",      icon: Users,        orgOnly: true },
 ];

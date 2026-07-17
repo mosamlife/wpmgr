@@ -319,6 +319,20 @@ func (UnimplementedHandler) BeginReEnrollment(ctx context.Context, params BeginR
 	return r, ht.ErrNotImplemented
 }
 
+// BulkApplyTags implements bulkApplyTags operation.
+//
+// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
+// site id is checked against the caller's collaborator allowlist
+// independently; sites the caller cannot access (or that don't exist in
+// this tenant) are returned with `ok: false` rather than failing the
+// whole call. `add` names are registered into the tag registry in the
+// same transaction. Requires the `site.write` permission.
+//
+// POST /api/v1/tags/bulk-apply
+func (UnimplementedHandler) BulkApplyTags(ctx context.Context, req *BulkTagApplyRequest) (r BulkApplyTagsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // BulkConfigCache implements bulkConfigCache operation.
 //
 // Spreads a preset's toggles (`safe`, `balanced`, or `aggressive`) onto
@@ -703,6 +717,15 @@ func (UnimplementedHandler) CreateSiteShare(ctx context.Context, req *CreateSite
 	return r, ht.ErrNotImplemented
 }
 
+// CreateTag implements createTag operation.
+//
+// Create a new tag in the registry.
+//
+// POST /api/v1/tags
+func (UnimplementedHandler) CreateTag(ctx context.Context, req *SiteTagCreate) (r CreateTagRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // CreateTenant implements createTenant operation.
 //
 // Create a tenant.
@@ -884,6 +907,17 @@ func (UnimplementedHandler) DeleteSiteFile(ctx context.Context, req *FileDeleteR
 //
 // DELETE /api/v1/sites/{siteId}/shares/{userId}
 func (UnimplementedHandler) DeleteSiteShare(ctx context.Context, params DeleteSiteShareParams) (r DeleteSiteShareRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// DeleteTag implements deleteTag operation.
+//
+// Removes the tag from the registry AND from every site (and every
+// unexpired, unredeemed pairing code) currently carrying it, in one
+// transaction.
+//
+// DELETE /api/v1/tags/{tagId}
+func (UnimplementedHandler) DeleteTag(ctx context.Context, params DeleteTagParams) (r DeleteTagRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2137,6 +2171,18 @@ func (UnimplementedHandler) ListSites(ctx context.Context, params ListSitesParam
 	return r, ht.ErrNotImplemented
 }
 
+// ListTags implements listTags operation.
+//
+// Lists every tag in the tenant's registry (m100), sorted
+// case-insensitively by name, with a live `usage_count` (the number of
+// sites currently carrying it — unused tags with usage_count 0 are
+// legitimate). No pagination: a tenant's tag vocabulary is small.
+//
+// GET /api/v1/tags
+func (UnimplementedHandler) ListTags(ctx context.Context) (r *SiteTagList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListTenants implements listTenants operation.
 //
 // List tenants.
@@ -3088,6 +3134,22 @@ func (UnimplementedHandler) UpdateSiteDestination(ctx context.Context, req *Site
 //
 // PUT /api/v1/sites/{siteId}/files/settings
 func (UnimplementedHandler) UpdateSiteFilesSettings(ctx context.Context, req *UpdateFileManagerSettingsRequest, params UpdateSiteFilesSettingsParams) (r UpdateSiteFilesSettingsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// UpdateTag implements updateTag operation.
+//
+// A color-only body just updates the color. A `name` change renames the
+// tag and propagates the new name onto every site (and every unexpired,
+// unredeemed pairing code) currently carrying the old name, in the same
+// transaction. Renaming onto an existing name returns 409
+// `tag_name_exists` unless `merge: true`, in which case the source tag
+// is merged into the existing survivor (sites are rewritten to the
+// survivor's name, deduplicated; the survivor's color is kept unless
+// this request also sets `color`).
+//
+// PATCH /api/v1/tags/{tagId}
+func (UnimplementedHandler) UpdateTag(ctx context.Context, req *SiteTagUpdate, params UpdateTagParams) (r UpdateTagRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

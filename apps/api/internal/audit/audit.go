@@ -47,6 +47,13 @@ const (
 	ActionPairingCodeCreated = "pairing_code.created"
 	ActionSiteTagsSet        = "site.tags.set"
 
+	// GH #230 "rich tags" — tenant-level tag registry (internal/sitetag).
+	ActionTagCreate    = "tag.create"
+	ActionTagUpdate    = "tag.update"
+	ActionTagMerge     = "tag.merge"
+	ActionTagDelete    = "tag.delete"
+	ActionTagBulkApply = "tag.bulk_apply"
+
 	// Phase 5.7 connection lifecycle (ADR-041). Every connection-state
 	// transition records one of these hash-chained actions alongside the
 	// site_connection_history row. The system-driven transitions

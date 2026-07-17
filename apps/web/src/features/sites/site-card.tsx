@@ -26,20 +26,23 @@
  *   comfortable — all sections inline, caption in footer
  *   compact     — hero 16:9, footer hover-reveal
  */
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   CheckCircle2,
   Database,
   Globe,
   HardDrive,
   Lock,
+  Plus,
   RefreshCcw,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Site } from "@wpmgr/api";
 
-import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { TagChip, TagOverflowChip } from "@/features/sites/tag-chip";
+import { SiteTagPickerPopover } from "@/features/sites/tag-picker";
+import { useTagColorMap } from "@/features/tags/use-tag-color-map";
 import {
   BackupChip,
   ConnectionStateBadge,
@@ -147,6 +150,8 @@ export function SiteCard({
   onReconnect,
 }: SiteCardProps) {
   const selection = useSitesSelection();
+  const navigate = useNavigate();
+  const colorMap = useTagColorMap();
   const isSelected = selection.selected.has(site.id);
   const anySelected = selectionCount > 0;
 
@@ -191,23 +196,73 @@ export function SiteCard({
     ? relativeTime(site.screenshot_captured_at)
     : "never captured";
 
-  // Tags: max 2 shown + overflow badge, or en-dash when absent.
-  const tagsValue: ReactNode = site.tags && site.tags.length > 0
-    ? (
-      <span className="flex flex-wrap gap-1">
-        {site.tags.slice(0, 2).map((tag) => (
-          <Badge key={tag} variant="muted" className="rounded-sm text-xs">
-            {tag}
-          </Badge>
+  function filterByTag(name: string) {
+    void navigate({
+      to: "/sites",
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        tags: [name],
+        tagMode: undefined,
+      }),
+      replace: true,
+    });
+  }
+
+  // Tags: max 2 shown + overflow chip (opens the tag picker), or a ghost "+"
+  // affordance (hover/focus-within only, since an empty card has nothing to
+  // anchor an always-visible control to) when the site has no tags at all.
+  const tagVisible = site.tags.slice(0, 2);
+  const tagOverflow = site.tags.length - tagVisible.length;
+  const tagsValue: ReactNode =
+    site.tags.length > 0 ? (
+      <span className="flex flex-wrap items-center gap-1">
+        {tagVisible.map((name) => (
+          <TagChip
+            key={name}
+            tag={{ name, color: colorMap.get(name) }}
+            onClick={() => filterByTag(name)}
+          />
         ))}
-        {site.tags.length > 2 ? (
-          <Badge variant="muted" className="rounded-sm text-xs">
-            +{site.tags.length - 2}
-          </Badge>
+        {tagOverflow > 0 ? (
+          <SiteTagPickerPopover
+            site={site}
+            align="start"
+            trigger={<TagOverflowChip count={tagOverflow} />}
+          />
         ) : null}
+        <SiteTagPickerPopover
+          site={site}
+          align="start"
+          trigger={
+            <button
+              type="button"
+              aria-label={`Edit tags on ${site.name || hostname}`}
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-accent-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            >
+              <Plus aria-hidden="true" className="size-3.5" />
+            </button>
+          }
+        />
       </span>
-    )
-    : undefined; // DefinitionList renders en-dash for undefined
+    ) : (
+      // No always-visible "+" on empty cards — hover/focus-within only.
+      <SiteTagPickerPopover
+        site={site}
+        align="start"
+        trigger={
+          <button
+            type="button"
+            aria-label={`Add tags to ${site.name || hostname}`}
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1 rounded-sm text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          >
+            <Plus aria-hidden="true" className="size-3.5" />
+            Add tag
+          </button>
+        }
+      />
+    );
 
   // Client value: small dot indicator when present.
   const clientValue: ReactNode = site.client_name

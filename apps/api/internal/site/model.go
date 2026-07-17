@@ -125,9 +125,20 @@ type ScopedPrincipal interface {
 // transaction wrapper (InTenantTx for org-scoped, InScopedTenantTx for
 // site-scoped) so the RESTRICTIVE RLS policy filters the result to only
 // the sites the principal is allowed to see.
+//
+// M100 (GH #230 "rich tags"): AnyTags (tags && ...) and AllTags (tags @> ...)
+// replace the single Tag filter. The handler maps exactly one of them per
+// request — the legacy ?tag= query param becomes AnyTags=[tag].
 type ListInput struct {
 	TenantID uuid.UUID
-	Tag      string
+	// AnyTags, when non-empty, filters to sites carrying AT LEAST ONE of these
+	// tags (tags && any_tags). Mutually exclusive with AllTags in practice
+	// (the handler sends only one), but both may be set — both predicates are
+	// simply AND-combined.
+	AnyTags []string
+	// AllTags, when non-empty, filters to sites carrying EVERY one of these
+	// tags (tags @> all_tags).
+	AllTags []string
 	// State, when non-empty, filters to exactly that connection_state (e.g.
 	// "archived" for the archived chip). When empty the list hides archived
 	// sites (the ADR-041 default).

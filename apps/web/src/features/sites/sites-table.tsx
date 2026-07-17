@@ -15,7 +15,7 @@ import {
   type Row,
   type SortingState,
 } from "@tanstack/react-table";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   TableVirtuoso,
   type TableComponents,
@@ -24,12 +24,15 @@ import {
   ChevronDown,
   ChevronUp,
   ChevronsUpDown,
+  Plus,
 } from "lucide-react";
 import { motion } from "motion/react";
 import type { Site } from "@wpmgr/api";
 
-import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { TagChip, TagOverflowChip } from "@/features/sites/tag-chip";
+import { SiteTagPickerPopover } from "@/features/sites/tag-picker";
+import { useTagColorMap } from "@/features/tags/use-tag-color-map";
 import { fadeUp } from "@/lib/motion-presets";
 import {
   BackupChip,
@@ -165,6 +168,70 @@ function rowOf(site: Site): SiteRow {
     phpVersionEol: false,
     agentVersion: site.agent_version ?? "",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tags cell — GH #230 "rich tags"
+// ---------------------------------------------------------------------------
+
+const TAGS_CELL_VISIBLE = 3;
+
+function TagsCell({ site }: { site: Site }) {
+  const navigate = useNavigate();
+  const colorMap = useTagColorMap();
+  const tags = site.tags;
+  const visible = tags.slice(0, TAGS_CELL_VISIBLE);
+  const overflow = tags.length - visible.length;
+
+  function filterByTag(name: string) {
+    void navigate({
+      to: "/sites",
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        tags: [name],
+        tagMode: undefined,
+      }),
+      replace: true,
+    });
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {visible.map((name) => (
+        <TagChip
+          key={name}
+          tag={{ name, color: colorMap.get(name) }}
+          onClick={() => filterByTag(name)}
+        />
+      ))}
+      {overflow > 0 ? (
+        <SiteTagPickerPopover
+          site={site}
+          align="start"
+          trigger={<TagOverflowChip count={overflow} />}
+        />
+      ) : null}
+      <SiteTagPickerPopover
+        site={site}
+        align="start"
+        trigger={
+          <button
+            type="button"
+            aria-label={`Edit tags on ${site.name || site.url}`}
+            onClick={(e) => e.stopPropagation()}
+            className={cn(
+              "inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity",
+              "hover:bg-accent hover:text-accent-foreground",
+              "group-hover:opacity-100 focus-visible:opacity-100",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+            )}
+          >
+            <Plus aria-hidden="true" className="size-3.5" />
+          </button>
+        }
+      />
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -344,26 +411,7 @@ function buildColumns(
       header: "Tags",
       enableSorting: false,
       size: COL_TAGS_PX,
-      cell: ({ row }) => {
-        const tags = row.original.site.tags;
-        if (tags.length === 0) {
-          return <span aria-hidden="true" />;
-        }
-        return (
-          <div className="flex flex-wrap gap-1">
-            {tags.slice(0, 3).map((tag) => (
-              <Badge key={tag} variant="muted" className="rounded-sm">
-                {tag}
-              </Badge>
-            ))}
-            {tags.length > 3 ? (
-              <Badge variant="muted" className="rounded-sm">
-                +{tags.length - 3}
-              </Badge>
-            ) : null}
-          </div>
-        );
-      },
+      cell: ({ row }) => <TagsCell site={row.original.site} />,
     },
     {
       id: "wp_version",
@@ -664,7 +712,7 @@ export function SitesTable({
             style={{ ...style, height: rowHeight }}
             data-state={selected ? "selected" : undefined}
             className={cn(
-              "border-b border-border transition-colors duration-[80ms] hover:bg-muted",
+              "group border-b border-border transition-colors duration-[80ms] hover:bg-muted",
               // Selection is indicated by a background tint only. We deliberately
               // do NOT use `position: relative` + an absolute `before:` strip on
               // the row: a relatively-positioned table row with an abspos child
