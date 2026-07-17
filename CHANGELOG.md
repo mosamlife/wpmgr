@@ -8,7 +8,11 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.66] - 2026-07-17
+## [0.61.67] - 2026-07-17
+
+### Fixed
+
+- The Sites list no longer stalls for several seconds on the first load after a period of no traffic. The sites list enriches each row with uptime data via an aggregate over recent uptime probes; on a small database instance that aggregate was being re-read from disk (a cold cache) once the short-lived in-memory cache expired during idle, so the first request after ~15-30 minutes was slow while later requests were fast. A background refresher now keeps that query (and the database's cache for it) continuously warm, so the Sites list stays fast even after idle. Control plane only; a follow-up will roll the uptime data up so the query is inherently cheap regardless of cache state.
 
 ### Changed
 

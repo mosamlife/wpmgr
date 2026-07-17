@@ -64,6 +64,13 @@ func (s *Service) SetUptimeStore(store metrics.Store) {
 	s.uptimeStore = newCachedMetricsStore(store)
 }
 
+// UptimeStore returns the (cache-wrapped) store wired via SetUptimeStore, or
+// nil if it was never called. Exposed so the interim uptime keep-warm
+// refresher (uptime_keepwarm.go, WPMGR_UPTIME_KEEPWARM) can refresh THIS
+// service's exact cache entries — refreshing any other store instance would
+// warm a cache List() never reads from.
+func (s *Service) UptimeStore() metrics.Store { return s.uptimeStore }
+
 // SetConnectionService wires the M21 lifecycle service into the enroll branch.
 // Call once at boot (the lifecycle service depends on this Service's repo, so
 // it is constructed after and injected here).

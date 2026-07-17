@@ -69,6 +69,33 @@ var (
 	_ uptime.SiteLookup   = (*uptimeSiteAdapter)(nil)
 )
 
+// uptimeKeepWarmLister adapts uptime.Repo.ListEnrolledForProbe to the site
+// package's EnrolledSiteLister — the SAME cross-tenant enrolled-site list the
+// uptime probe worker already sweeps every ~60s (uptime.ProbeWorker), reused
+// here so the interim /sites keep-warm refresher (uptime_keepwarm.go) adds no
+// new query shape. INTERIM: remove alongside site.UptimeKeepWarmer.
+type uptimeKeepWarmLister struct {
+	repo uptime.Repo
+}
+
+func newUptimeKeepWarmLister(repo uptime.Repo) *uptimeKeepWarmLister {
+	return &uptimeKeepWarmLister{repo: repo}
+}
+
+func (a *uptimeKeepWarmLister) ListEnrolledSiteIDs(ctx context.Context) ([]site.TenantSiteID, error) {
+	enrolled, err := a.repo.ListEnrolledForProbe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]site.TenantSiteID, 0, len(enrolled))
+	for _, e := range enrolled {
+		out = append(out, site.TenantSiteID{TenantID: e.TenantID, SiteID: e.ID})
+	}
+	return out, nil
+}
+
+var _ site.EnrolledSiteLister = (*uptimeKeepWarmLister)(nil)
+
 // siteLookup adapts the site service to the update package's SiteLookup
 // interface, translating site.Site (with its JSONB component inventory) into the
 // update.SiteInfo the orchestrator/worker need. It keeps the update package free
