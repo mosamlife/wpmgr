@@ -228,7 +228,11 @@ func TestQueryFleetUptime_HybridExactlyMatchesRawRollingWindow(t *testing.T) {
 			if row.Up == nil || *row.Up != wantLatestUp {
 				t.Fatalf("Up = %v, want %v", row.Up, wantLatestUp)
 			}
-			if row.LastProbeAt == nil || !row.LastProbeAt.Equal(wantLatestAt) {
+			// Postgres timestamptz has microsecond precision, so the round-tripped
+			// LastProbeAt is truncated from the seeded nanosecond time.Time; compare
+			// at microsecond granularity (the production value is microsecond-exact).
+			if row.LastProbeAt == nil ||
+				!row.LastProbeAt.Truncate(time.Microsecond).Equal(wantLatestAt.Truncate(time.Microsecond)) {
 				t.Fatalf("LastProbeAt = %v, want %v", row.LastProbeAt, wantLatestAt)
 			}
 

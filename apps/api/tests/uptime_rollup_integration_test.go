@@ -157,7 +157,10 @@ func TestQueryFleetUptime_RollupMatchesRawAggregate(t *testing.T) {
 	if row.Up == nil || *row.Up != *wantUp {
 		t.Fatalf("Up mismatch: rollup=%v raw=%v", row.Up, wantUp)
 	}
-	if row.LastProbeAt == nil || wantAt == nil || !row.LastProbeAt.Equal(*wantAt) {
+	// Compare at microsecond granularity: Postgres timestamptz truncates the
+	// nanosecond time.Time, so a Go-native expected value would otherwise diverge.
+	if row.LastProbeAt == nil || wantAt == nil ||
+		!row.LastProbeAt.Truncate(time.Microsecond).Equal(wantAt.Truncate(time.Microsecond)) {
 		t.Fatalf("LastProbeAt mismatch: rollup=%v raw=%v", row.LastProbeAt, wantAt)
 	}
 	if (row.TLSExpiry == nil) != (wantTLS == nil) {
