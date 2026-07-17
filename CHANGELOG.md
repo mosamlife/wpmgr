@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.70] - 2026-07-17
+
+### Changed
+
+- Documentation catch-up release. The API reference at wpmgr.app/docs now documents the full control-plane surface: about 97 previously missing endpoints were added (dashboard two-factor, security suite, file-integrity scans, vulnerability scanner, organizations, admin console, database cleaner, public endpoints, and the agent protocol), stale paths were corrected, and a new full-engine contract test keeps the reference and the live routes in lockstep from now on (a new endpoint fails CI until it is documented). New user guides: file manager, security suite, monitoring and fleet dashboards, clients and the portal, object cache, and the audit log; the backups guide gained a destinations section and the sites guide an accurate tags section. `.env.example` now documents every accepted environment variable, with hosted-only settings clearly marked. No runtime behavior change (one test-only accessor added to the server).
+
 ## [0.61.69] - 2026-07-17
 
 ### Added

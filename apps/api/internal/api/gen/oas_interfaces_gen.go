@@ -21,6 +21,10 @@ type AddSiteEmailSuppressionRes interface {
 	addSiteEmailSuppressionRes()
 }
 
+type AgentAckPerfConfigRes interface {
+	agentAckPerfConfigRes()
+}
+
 type AgentAutologinConsumeRes interface {
 	agentAutologinConsumeRes()
 }
@@ -29,20 +33,36 @@ type AgentDisconnectRes interface {
 	agentDisconnectRes()
 }
 
+type AgentFetchSuppressionDeltasRes interface {
+	agentFetchSuppressionDeltasRes()
+}
+
 type AgentFontsResultsRes interface {
 	agentFontsResultsRes()
 }
 
-type AgentFontsTranscodeRes interface {
-	agentFontsTranscodeRes()
+type AgentGetHibpRangeRes interface {
+	agentGetHibpRangeRes()
+}
+
+type AgentGetUpdateManifestRes interface {
+	agentGetUpdateManifestRes()
 }
 
 type AgentHeartbeatRes interface {
 	agentHeartbeatRes()
 }
 
+type AgentIngestRucssRes interface {
+	agentIngestRucssRes()
+}
+
 type AgentMediaAssetDeletedRes interface {
 	agentMediaAssetDeletedRes()
+}
+
+type AgentMediaAutoOptimizeRes interface {
+	agentMediaAutoOptimizeRes()
 }
 
 type AgentMediaEncodeReadyRes interface {
@@ -73,6 +93,50 @@ type AgentMetadataRes interface {
 	agentMetadataRes()
 }
 
+type AgentPresignBackupChunksRes interface {
+	agentPresignBackupChunksRes()
+}
+
+type AgentPushActivityRes interface {
+	agentPushActivityRes()
+}
+
+type AgentPushDiagnosticsRes interface {
+	agentPushDiagnosticsRes()
+}
+
+type AgentPushEmailLogRes interface {
+	agentPushEmailLogRes()
+}
+
+type AgentPushErrorsRes interface {
+	agentPushErrorsRes()
+}
+
+type AgentPushLoginEventsRes interface {
+	agentPushLoginEventsRes()
+}
+
+type AgentReportBackupProgressRes interface {
+	agentReportBackupProgressRes()
+}
+
+type AgentReportCacheStatsRes interface {
+	agentReportCacheStatsRes()
+}
+
+type AgentReportDbCleanProgressRes interface {
+	agentReportDbCleanProgressRes()
+}
+
+type AgentReportDbOrphanDeleteProgressRes interface {
+	agentReportDbOrphanDeleteProgressRes()
+}
+
+type AgentSubmitBackupManifestRes interface {
+	agentSubmitBackupManifestRes()
+}
+
 type ApplySiteFileUploadRes interface {
 	applySiteFileUploadRes()
 }
@@ -87,6 +151,18 @@ type AssignSitesToClientRes interface {
 
 type BeginReEnrollmentRes interface {
 	beginReEnrollmentRes()
+}
+
+type BeginTotpEnrollmentRes interface {
+	beginTotpEnrollmentRes()
+}
+
+type BeginWebAuthnChallengeRes interface {
+	beginWebAuthnChallengeRes()
+}
+
+type BeginWebAuthnEnrollmentRes interface {
+	beginWebAuthnEnrollmentRes()
 }
 
 type BulkApplyTagsRes interface {
@@ -113,16 +189,40 @@ type CancelBackupRes interface {
 	cancelBackupRes()
 }
 
+type CancelBillingSubscriptionRes interface {
+	cancelBillingSubscriptionRes()
+}
+
 type CancelEnrollmentRes interface {
 	cancelEnrollmentRes()
+}
+
+type ChangeMyPasswordRes interface {
+	changeMyPasswordRes()
 }
 
 type ChmodSiteFileRes interface {
 	chmodSiteFileRes()
 }
 
+type ClearAdminVulnFeedKeyRes interface {
+	clearAdminVulnFeedKeyRes()
+}
+
 type CompAdminAccountRes interface {
 	compAdminAccountRes()
+}
+
+type CompleteRecoveryChallengeRes interface {
+	completeRecoveryChallengeRes()
+}
+
+type CompleteTotpChallengeRes interface {
+	completeTotpChallengeRes()
+}
+
+type ConfirmTotpEnrollmentRes interface {
+	confirmTotpEnrollmentRes()
 }
 
 type CreateApiKeyRes interface {
@@ -161,6 +261,10 @@ type CreateRestoreRes interface {
 	createRestoreRes()
 }
 
+type CreateSiteBanRes interface {
+	createSiteBanRes()
+}
+
 type CreateSiteDestinationRes interface {
 	createSiteDestinationRes()
 }
@@ -193,6 +297,10 @@ type CreateUpdateRunRes interface {
 	createUpdateRunRes()
 }
 
+type DeleteAdminUserRes interface {
+	deleteAdminUserRes()
+}
+
 type DeleteBackupRes interface {
 	deleteBackupRes()
 }
@@ -203,6 +311,10 @@ type DeleteClientReportRes interface {
 
 type DeleteClientRes interface {
 	deleteClientRes()
+}
+
+type DeleteDbOrphansRes interface {
+	deleteDbOrphansRes()
 }
 
 type DeleteEmailConnectionRes interface {
@@ -217,6 +329,14 @@ type DeleteMemberRes interface {
 	deleteMemberRes()
 }
 
+type DeleteOrgRes interface {
+	deleteOrgRes()
+}
+
+type DeleteSiteBanRes interface {
+	deleteSiteBanRes()
+}
+
 type DeleteSiteDestinationRes interface {
 	deleteSiteDestinationRes()
 }
@@ -229,6 +349,10 @@ type DeleteSiteFileRes interface {
 	deleteSiteFileRes()
 }
 
+type DeleteSitePolicyGroupRes interface {
+	deleteSitePolicyGroupRes()
+}
+
 type DeleteSiteRes interface {
 	deleteSiteRes()
 }
@@ -239,6 +363,18 @@ type DeleteSiteShareRes interface {
 
 type DeleteTagRes interface {
 	deleteTagRes()
+}
+
+type DeleteWebAuthnCredentialRes interface {
+	deleteWebAuthnCredentialRes()
+}
+
+type DisableTotpRes interface {
+	disableTotpRes()
+}
+
+type DismissSiteVulnerabilityRes interface {
+	dismissSiteVulnerabilityRes()
 }
 
 type DownloadPortalReportRes interface {
@@ -265,6 +401,18 @@ type ExtractSiteFileArchiveRes interface {
 	extractSiteFileArchiveRes()
 }
 
+type FetchScanFindingFileRes interface {
+	fetchScanFindingFileRes()
+}
+
+type FinishWebAuthnChallengeRes interface {
+	finishWebAuthnChallengeRes()
+}
+
+type FinishWebAuthnEnrollmentRes interface {
+	finishWebAuthnEnrollmentRes()
+}
+
 type ForceAdminAccountStateRes interface {
 	forceAdminAccountStateRes()
 }
@@ -277,8 +425,24 @@ type GetAdminAccountRes interface {
 	getAdminAccountRes()
 }
 
+type GetAdminAccountsTenancyRes interface {
+	getAdminAccountsTenancyRes()
+}
+
 type GetAdminRevenueRes interface {
 	getAdminRevenueRes()
+}
+
+type GetAdminSiteTenancyRes interface {
+	getAdminSiteTenancyRes()
+}
+
+type GetAdminStatsRes interface {
+	getAdminStatsRes()
+}
+
+type GetAdminVulnFeedStatusRes interface {
+	getAdminVulnFeedStatusRes()
 }
 
 type GetBackupEnvironmentRes interface {
@@ -309,6 +473,10 @@ type GetBillingRes interface {
 	getBillingRes()
 }
 
+type GetCacheHealthRes interface {
+	getCacheHealthRes()
+}
+
 type GetClientReportRes interface {
 	getClientReportRes()
 }
@@ -319,6 +487,18 @@ type GetClientReportScheduleRes interface {
 
 type GetClientRes interface {
 	getClientRes()
+}
+
+type GetDbCleanStatusRes interface {
+	getDbCleanStatusRes()
+}
+
+type GetDbHealthRes interface {
+	getDbHealthRes()
+}
+
+type GetDbOrphansReportRes interface {
+	getDbOrphansReportRes()
 }
 
 type GetEmailNotifySettingsRes interface {
@@ -333,8 +513,20 @@ type GetFleetEmailStatsRes interface {
 	getFleetEmailStatsRes()
 }
 
+type GetFleetIncidentDetailRes interface {
+	getFleetIncidentDetailRes()
+}
+
+type GetFleetVulnerabilitiesRes interface {
+	getFleetVulnerabilitiesRes()
+}
+
 type GetMeRes interface {
 	getMeRes()
+}
+
+type GetMediaSettingsRes interface {
+	getMediaSettingsRes()
 }
 
 type GetOrgEmailConfigRes interface {
@@ -357,12 +549,24 @@ type GetPortalSummaryRes interface {
 	getPortalSummaryRes()
 }
 
+type GetPublicPricingRes interface {
+	getPublicPricingRes()
+}
+
 type GetReadyzRes interface {
 	getReadyzRes()
 }
 
 type GetRestoreRunRes interface {
 	getRestoreRunRes()
+}
+
+type GetRumTrendRes interface {
+	getRumTrendRes()
+}
+
+type GetScanRunRes interface {
+	getScanRunRes()
 }
 
 type GetScheduleRunRes interface {
@@ -401,20 +605,52 @@ type GetSiteFilesSettingsRes interface {
 	getSiteFilesSettingsRes()
 }
 
+type GetSiteHardeningConfigRes interface {
+	getSiteHardeningConfigRes()
+}
+
 type GetSiteRes interface {
 	getSiteRes()
+}
+
+type GetSiteSecurityPolicyRes interface {
+	getSiteSecurityPolicyRes()
 }
 
 type GetSiteUptimeRes interface {
 	getSiteUptimeRes()
 }
 
+type GetSmtpSettingsRes interface {
+	getSmtpSettingsRes()
+}
+
 type GetTenantRes interface {
 	getTenantRes()
 }
 
+type GetTwoFactorStatusRes interface {
+	getTwoFactorStatusRes()
+}
+
 type GetUpdateRunRes interface {
 	getUpdateRunRes()
+}
+
+type GrantAdminSelfMembershipRes interface {
+	grantAdminSelfMembershipRes()
+}
+
+type HandleBillingProviderWebhookRes interface {
+	handleBillingProviderWebhookRes()
+}
+
+type HandleEmailProviderWebhookRes interface {
+	handleEmailProviderWebhookRes()
+}
+
+type IngestRumBeaconRes interface {
+	ingestRumBeaconRes()
 }
 
 type InviteMemberRes interface {
@@ -423,6 +659,14 @@ type InviteMemberRes interface {
 
 type ListAdminAccountsRes interface {
 	listAdminAccountsRes()
+}
+
+type ListAdminUserSitesRes interface {
+	listAdminUserSitesRes()
+}
+
+type ListAdminUsersRes interface {
+	listAdminUsersRes()
 }
 
 type ListApiKeysRes interface {
@@ -469,6 +713,10 @@ type ListMembersRes interface {
 	listMembersRes()
 }
 
+type ListOrgsRes interface {
+	listOrgsRes()
+}
+
 type ListPortalReportsRes interface {
 	listPortalReportsRes()
 }
@@ -493,12 +741,24 @@ type ListRestoreRunsRes interface {
 	listRestoreRunsRes()
 }
 
+type ListScanFindingsRes interface {
+	listScanFindingsRes()
+}
+
+type ListScanRunsRes interface {
+	listScanRunsRes()
+}
+
 type ListScheduleRunsRes interface {
 	listScheduleRunsRes()
 }
 
 type ListSharedWithMeRes interface {
 	listSharedWithMeRes()
+}
+
+type ListSiteBansRes interface {
+	listSiteBansRes()
 }
 
 type ListSiteDestinationsRes interface {
@@ -521,8 +781,28 @@ type ListSiteFilesRes interface {
 	listSiteFilesRes()
 }
 
+type ListSiteInvitationsRes interface {
+	listSiteInvitationsRes()
+}
+
+type ListSitePolicyGroupsRes interface {
+	listSitePolicyGroupsRes()
+}
+
 type ListSiteSharesRes interface {
 	listSiteSharesRes()
+}
+
+type ListSiteVulnerabilitiesRes interface {
+	listSiteVulnerabilitiesRes()
+}
+
+type ListTrustedDevicesRes interface {
+	listTrustedDevicesRes()
+}
+
+type ListWebAuthnCredentialsRes interface {
+	listWebAuthnCredentialsRes()
 }
 
 type LockBackupRes interface {
@@ -617,6 +897,10 @@ type PutSiteEmailWebhookConfigRes interface {
 	putSiteEmailWebhookConfigRes()
 }
 
+type PutSiteHardeningConfigRes interface {
+	putSiteHardeningConfigRes()
+}
+
 type PutSiteLoginBrandRes interface {
 	putSiteLoginBrandRes()
 }
@@ -625,12 +909,24 @@ type PutSiteLoginProtectionRes interface {
 	putSiteLoginProtectionRes()
 }
 
+type PutSitePolicyGroupRes interface {
+	putSitePolicyGroupRes()
+}
+
+type PutSiteSecurityPolicyRes interface {
+	putSiteSecurityPolicyRes()
+}
+
 type ReadSiteFileContentRes interface {
 	readSiteFileContentRes()
 }
 
 type RebaselineAuditIntegrityRes interface {
 	rebaselineAuditIntegrityRes()
+}
+
+type RecheckSiteRes interface {
+	recheckSiteRes()
 }
 
 type RefreshSiteDiagnosticsRes interface {
@@ -649,16 +945,40 @@ type RegenerateClientInvitationRes interface {
 	regenerateClientInvitationRes()
 }
 
+type RegenerateRecoveryCodesRes interface {
+	regenerateRecoveryCodesRes()
+}
+
+type RegenerateSiteInvitationRes interface {
+	regenerateSiteInvitationRes()
+}
+
 type RegisterRes interface {
 	registerRes()
+}
+
+type RemediateSiteVulnerabilityRes interface {
+	remediateSiteVulnerabilityRes()
 }
 
 type RemoveClientMemberRes interface {
 	removeClientMemberRes()
 }
 
+type RenameOrgRes interface {
+	renameOrgRes()
+}
+
 type RenameSiteFileRes interface {
 	renameSiteFileRes()
+}
+
+type RescanSiteVulnerabilitiesRes interface {
+	rescanSiteVulnerabilitiesRes()
+}
+
+type ResendAdminUserVerificationRes interface {
+	resendAdminUserVerificationRes()
 }
 
 type ResendEmailLogRes interface {
@@ -673,6 +993,10 @@ type RestoreAdminAccountRes interface {
 	restoreAdminAccountRes()
 }
 
+type RestoreOrgRes interface {
+	restoreOrgRes()
+}
+
 type RestoreSiteFileVersionRes interface {
 	restoreSiteFileVersionRes()
 }
@@ -681,8 +1005,16 @@ type RestoreSiteRes interface {
 	restoreSiteRes()
 }
 
+type RestoreSiteVulnerabilityRes interface {
+	restoreSiteVulnerabilityRes()
+}
+
 type RevokeAdminAccountCompRes interface {
 	revokeAdminAccountCompRes()
+}
+
+type RevokeAllTrustedDevicesRes interface {
+	revokeAllTrustedDevicesRes()
 }
 
 type RevokeApiKeyRes interface {
@@ -693,12 +1025,28 @@ type RevokeClientInvitationRes interface {
 	revokeClientInvitationRes()
 }
 
+type RevokeSiteInvitationRes interface {
+	revokeSiteInvitationRes()
+}
+
 type RevokeSiteRes interface {
 	revokeSiteRes()
 }
 
+type RevokeTrustedDeviceRes interface {
+	revokeTrustedDeviceRes()
+}
+
+type RunDbTableActionRes interface {
+	runDbTableActionRes()
+}
+
 type SearchSiteFilesRes interface {
 	searchSiteFilesRes()
+}
+
+type SendSmtpTestEmailRes interface {
+	sendSmtpTestEmailRes()
 }
 
 type SendTestEmailRes interface {
@@ -709,6 +1057,14 @@ type SetAdminAccountOverridesRes interface {
 	setAdminAccountOverridesRes()
 }
 
+type SetAdminUserStatusRes interface {
+	setAdminUserStatusRes()
+}
+
+type SetAdminVulnFeedKeyRes interface {
+	setAdminVulnFeedKeyRes()
+}
+
 type SetSiteTagsRes interface {
 	setSiteTagsRes()
 }
@@ -717,8 +1073,20 @@ type SilenceSitePHPErrorRes interface {
 	silenceSitePHPErrorRes()
 }
 
+type StartScanRunRes interface {
+	startScanRunRes()
+}
+
 type SuspendAdminAccountRes interface {
 	suspendAdminAccountRes()
+}
+
+type SwitchOrgRes interface {
+	switchOrgRes()
+}
+
+type SyncAdminVulnFeedRes interface {
+	syncAdminVulnFeedRes()
 }
 
 type SyncSiteEmailConfigRes interface {
@@ -727,6 +1095,10 @@ type SyncSiteEmailConfigRes interface {
 
 type TestSiteDestinationRes interface {
 	testSiteDestinationRes()
+}
+
+type ToggleScanFindingIgnoreRes interface {
+	toggleScanFindingIgnoreRes()
 }
 
 type UnblockSiteIPRes interface {
@@ -741,6 +1113,14 @@ type UpdateClientRes interface {
 	updateClientRes()
 }
 
+type UpdateMeRes interface {
+	updateMeRes()
+}
+
+type UpdateMediaSettingsRes interface {
+	updateMediaSettingsRes()
+}
+
 type UpdateSiteDestinationRes interface {
 	updateSiteDestinationRes()
 }
@@ -749,12 +1129,20 @@ type UpdateSiteFilesSettingsRes interface {
 	updateSiteFilesSettingsRes()
 }
 
+type UpdateSmtpSettingsRes interface {
+	updateSmtpSettingsRes()
+}
+
 type UpdateTagRes interface {
 	updateTagRes()
 }
 
 type VerifyAuditRes interface {
 	verifyAuditRes()
+}
+
+type VerifyBillingCheckoutCallbackRes interface {
+	verifyBillingCheckoutCallbackRes()
 }
 
 type VerifyEmailRes interface {

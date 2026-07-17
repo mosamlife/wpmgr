@@ -51,6 +51,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/email/suppression
 	AddSiteEmailSuppression(ctx context.Context, req *AddSuppressionRequest, params AddSiteEmailSuppressionParams) (AddSiteEmailSuppressionRes, error)
+	// AgentAckPerfConfig implements agentAckPerfConfig operation.
+	//
+	// Acknowledge the current install state for a site's perf config (agent-authenticated).
+	//
+	// POST /agent/v1/perf/config-ack
+	AgentAckPerfConfig(ctx context.Context, req *AgentPerfConfigAck) (AgentAckPerfConfigRes, error)
 	// AgentAutologinConsume implements agentAutologinConsume operation.
 	//
 	// Called by the WordPress agent after it has verified the operator's
@@ -80,6 +86,16 @@ type Handler interface {
 	//
 	// POST /agent/v1/disconnect
 	AgentDisconnect(ctx context.Context, req OptAgentDisconnect) (AgentDisconnectRes, error)
+	// AgentFetchSuppressionDeltas implements agentFetchSuppressionDeltas operation.
+	//
+	// Returns org-wide + this-site suppression deltas so the agent can
+	// cache them locally and check before sending. Ascending keyset cursor
+	// on `(created_at, id)`; the agent stores `next_cursor` and passes it
+	// back as `since` on the next call. Omit `since` to fetch every
+	// suppression entry for this tenant+site.
+	//
+	// GET /agent/v1/email/suppression
+	AgentFetchSuppressionDeltas(ctx context.Context, params AgentFetchSuppressionDeltasParams) (AgentFetchSuppressionDeltasRes, error)
 	// AgentFontsResults implements agentFontsResults operation.
 	//
 	// Font Results Catalog (M55 / Phase 2) — the agent POSTs after
@@ -96,37 +112,28 @@ type Handler interface {
 	//
 	// POST /agent/v1/fonts/results
 	AgentFontsResults(ctx context.Context, req *AgentFontResultsRequest) (AgentFontsResultsRes, error)
-	// AgentFontsTranscode implements agentFontsTranscode operation.
+	// AgentGetHibpRange implements agentGetHibpRange operation.
 	//
-	// Font Transcoder (M54 / Phase 1) — the agent POSTs when it discovers a
-	// self-hosted font (TTF/OTF/WOFF) that needs a WOFF2 encoding so it can
-	// serve the font with correct `format()` fallbacks.
-	// **Upload flow:**
-	// 1. Agent POSTs `FontTranscodeRequest` (no storage key — the agent MUST
-	// NOT supply or guess a key; the CP derives all keys from the verified
-	// tenant identity + `source_hash`).
-	// 2. If no job exists yet, the CP enqueues a `font_transcode` River job
-	// and returns `state="pending"` with a `source_put_url` (presigned
-	// S3 PUT, same TTL as the source-upload URL for media). The agent
-	// MUST PUT the raw font bytes to this URL before the encoder runs.
-	// 3. On subsequent POSTs for the same hash (`state="pending"` row
-	// already exists), `source_put_url` is absent — the source is already
-	// uploaded. The agent polls on every page build until state changes.
-	// 4. When `state="ready"`, `woff2_get_url` is a short-TTL presigned GET
-	// URL minted by the CP for the server-derived, GuardStorageKey-
-	// validated WOFF2 object. The agent fetches the WOFF2 bytes from this
-	// URL. The agent MUST NOT presign or construct a storage key itself.
-	// `woff2_key` is also present as an informational field.
-	// 5. When `state="negative"`, transcoding permanently failed; the agent
-	// serves the original font forever (no retry).
-	// **Security:** keys are SERVER-DERIVED from the verified tenant identity
-	// + the caller-validated `source_hash`; `GuardStorageKey` validates every
-	// key before it reaches the presigner. The agent identity (Ed25519
-	// signed-request middleware) drives the tenant scope — the body never
-	// influences which tenant's namespace is used.
+	// ADR-059 Phase 3. Only the 5-char SHA-1 prefix is transmitted; the
+	// agent performs the suffix match locally and never sends the full
+	// password or full hash to the CP. The response is the raw
+	// `SUFFIX:COUNT` text body from the HIBP range API (possibly with
+	// Add-Padding decoy lines). An empty body means either a clean prefix
+	// or a fail-open (HIBP unreachable) — the agent treats both identically
+	// (password not breached).
 	//
-	// POST /agent/v1/fonts/transcode
-	AgentFontsTranscode(ctx context.Context, req *FontTranscodeRequest) (AgentFontsTranscodeRes, error)
+	// GET /agent/v1/security/hibp/range/{prefix}
+	AgentGetHibpRange(ctx context.Context, params AgentGetHibpRangeParams) (AgentGetHibpRangeRes, error)
+	// AgentGetUpdateManifest implements agentGetUpdateManifest operation.
+	//
+	// Returns a detached-Ed25519-signed JSON blob (NOT a JWT) carrying a
+	// short-lived presigned package download URL plus its sha256 + size.
+	// `manifest` is the base64url-encoded EXACT signed bytes; the agent
+	// decodes it, verifies `signature` over those bytes, then JSON-decodes.
+	// `204` (no body) means no release has been published yet.
+	//
+	// GET /agent/v1/update/manifest
+	AgentGetUpdateManifest(ctx context.Context) (AgentGetUpdateManifestRes, error)
 	// AgentHeartbeat implements agentHeartbeat operation.
 	//
 	// The 60s agent heartbeat (ADR-039). Authenticated via the Ed25519
@@ -139,6 +146,20 @@ type Handler interface {
 	//
 	// POST /agent/v1/heartbeat
 	AgentHeartbeat(ctx context.Context, req OptAgentHeartbeat) (AgentHeartbeatRes, error)
+	// AgentIngestRucss implements agentIngestRucss operation.
+	//
+	// `multipart/form-data` with parts `meta` (JSON: `site_id`, `url`,
+	// `structure_hash` required, `safelist` optional), `html` (required,
+	// max 10 MiB), and one-or-more `css` parts (optional, max 5 MiB total).
+	// Hard overall request ceiling 16 MiB. On a cache HIT the response body
+	// IS the used-CSS content (not a key), `Content-Encoding: gzip`, with
+	// `X-Rucss-Reduction-Pct` and `X-Rucss-Used-Bytes` headers. On a cache
+	// MISS or degraded/unavailable state, `202` with `{"status":"processing",
+	// "job_id":...}` or `{"status":"unavailable"}` — the agent serves full
+	// CSS this render and never blocks.
+	//
+	// POST /agent/v1/rucss
+	AgentIngestRucss(ctx context.Context, req *AgentIngestRucssReq) (AgentIngestRucssRes, error)
 	// AgentMediaAssetDeleted implements agentMediaAssetDeleted operation.
 	//
 	// Media Optimizer (ADR-043) — the agent's `delete_attachment` hook fired on
@@ -149,6 +170,14 @@ type Handler interface {
 	//
 	// POST /agent/v1/media/asset-deleted
 	AgentMediaAssetDeleted(ctx context.Context, req *AgentMediaAssetDeleted) (AgentMediaAssetDeletedRes, error)
+	// AgentMediaAutoOptimize implements agentMediaAutoOptimize operation.
+	//
+	// The agent sends full attachment metadata so the CP can upsert rows
+	// before gating and optimizing (fixes the fresh-upload skip). An empty
+	// `attachments` array is a valid no-op.
+	//
+	// POST /agent/v1/media/auto-optimize
+	AgentMediaAutoOptimize(ctx context.Context, req *AgentAutoOptimizeRequest) (AgentMediaAutoOptimizeRes, error)
 	// AgentMediaEncodeReady implements agentMediaEncodeReady operation.
 	//
 	// Media Optimizer (ADR-043) — the agent calls this after presigned-PUTting
@@ -207,6 +236,97 @@ type Handler interface {
 	//
 	// POST /agent/v1/metadata
 	AgentMetadata(ctx context.Context, req *AgentMetadata) (AgentMetadataRes, error)
+	// AgentPresignBackupChunks implements agentPresignBackupChunks operation.
+	//
+	// Incremental dedup: hashes already stored for the tenant are omitted
+	// from `uploads` and the agent skips uploading them. Content-addressed,
+	// tenant-namespaced object keys mean a presign can never target another
+	// tenant's chunk prefix. The snapshot is re-verified to belong to the
+	// calling site before any presign is minted.
+	//
+	// POST /agent/v1/backups/{snapshotId}/presign
+	AgentPresignBackupChunks(ctx context.Context, req *AgentPresignChunksRequest, params AgentPresignBackupChunksParams) (AgentPresignBackupChunksRes, error)
+	// AgentPushActivity implements agentPushActivity operation.
+	//
+	// ADR-037 Sprint 3. The CP re-verifies the hash chain at ingest and
+	// flags any tamper as `chain_valid:false` on the affected row rather
+	// than rejecting the batch.
+	//
+	// POST /agent/v1/activity
+	AgentPushActivity(ctx context.Context, req *AgentActivityIngestRequest) (AgentPushActivityRes, error)
+	// AgentPushDiagnostics implements agentPushDiagnostics operation.
+	//
+	// ADR-037 Sprint 2. Body is the raw 14-category diagnostics payload
+	// (freeform per category). Also drives best-effort hosting-provider
+	// inference from the request's source IP.
+	//
+	// POST /agent/v1/diagnostics
+	AgentPushDiagnostics(ctx context.Context, req *AgentPushDiagnosticsReq) (AgentPushDiagnosticsRes, error)
+	// AgentPushEmailLog implements agentPushEmailLog operation.
+	//
+	// Tolerant ingest: a malformed `response`/`created_at`/`attachments`
+	// sub-field never fails the whole batch — each is coerced to a safe
+	// default independently. Emits a throttled SSE `email.log_ingested`
+	// notification (at most once per site per throttle window).
+	//
+	// POST /agent/v1/email/log
+	AgentPushEmailLog(ctx context.Context, req *AgentEmailLogIngestRequest) (AgentPushEmailLogRes, error)
+	// AgentPushErrors implements agentPushErrors operation.
+	//
+	// Push a heartbeat-driven batch of fingerprint-deduped PHP errors (agent-authenticated).
+	//
+	// POST /agent/v1/errors
+	AgentPushErrors(ctx context.Context, req *AgentErrorBatch) (AgentPushErrorsRes, error)
+	// AgentPushLoginEvents implements agentPushLoginEvents operation.
+	//
+	// Push a heartbeat-driven batch of login events (agent-authenticated).
+	//
+	// POST /agent/v1/security/login-events
+	AgentPushLoginEvents(ctx context.Context, req *AgentLoginEventBatch) (AgentPushLoginEventsRes, error)
+	// AgentReportBackupProgress implements agentReportBackupProgress operation.
+	//
+	// Fired on every stage transition, and per-chunk during the custom
+	// presigned-S3 sync. `snapshot_id` comes strictly from the URL path,
+	// never the body — a compromised agent cannot target another
+	// snapshot by spoofing it in the JSON body.
+	//
+	// POST /agent/v1/backups/{snapshotId}/progress
+	AgentReportBackupProgress(ctx context.Context, req *AgentReportBackupProgressReq, params AgentReportBackupProgressParams) (AgentReportBackupProgressRes, error)
+	// AgentReportCacheStats implements agentReportCacheStats operation.
+	//
+	// Report the latest page-cache gauges, and optionally an object-cache block (agent-authenticated).
+	//
+	// POST /agent/v1/cache/stats-report
+	AgentReportCacheStats(ctx context.Context, req *AgentCacheStatsReport) (AgentReportCacheStatsRes, error)
+	// AgentReportDbCleanProgress implements agentReportDbCleanProgress operation.
+	//
+	// The frozen contract: an unknown `job_id` (CP restarted mid-job) is
+	// still processed, never 404s; the agent must tolerate a non-2xx
+	// response without halting its cleanup loop. `done:true` on the final
+	// push for the job triggers `db.clean.completed` and advances the next
+	// scheduled run.
+	//
+	// POST /agent/v1/db-clean/progress
+	AgentReportDbCleanProgress(ctx context.Context, req *AgentDbCleanProgress) (AgentReportDbCleanProgressRes, error)
+	// AgentReportDbOrphanDeleteProgress implements agentReportDbOrphanDeleteProgress operation.
+	//
+	// Same frozen-contract tolerance as `/agent/v1/db-clean/progress`: an
+	// unknown `job_id` is still processed, and a non-2xx response must not
+	// halt the agent's delete loop.
+	//
+	// POST /agent/v1/db-orphan-delete/progress
+	AgentReportDbOrphanDeleteProgress(ctx context.Context, req *AgentDbOrphanDeleteProgress) (AgentReportDbOrphanDeleteProgressRes, error)
+	// AgentSubmitBackupManifest implements agentSubmitBackupManifest operation.
+	//
+	// ADR-051: an archive-delta increment submits the SAME request shape as
+	// a full backup (its zip parts, DB dump, files-list, and optional
+	// tombstones are all `ManifestEntry` rows); per-cycle telemetry
+	// counters ride as optional top-level fields. Upserts not-yet-stored
+	// chunks, increments refcounts for every reference, inserts manifest
+	// entries, and completes the snapshot.
+	//
+	// POST /agent/v1/backups/{snapshotId}/manifest
+	AgentSubmitBackupManifest(ctx context.Context, req *AgentSubmitManifestRequest, params AgentSubmitBackupManifestParams) (AgentSubmitBackupManifestRes, error)
 	// ApplySiteFileUpload implements applySiteFileUpload operation.
 	//
 	// Step 2 of 2 for browser file upload. After the browser has PUT all
@@ -248,6 +368,28 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/enrollment-codes
 	BeginReEnrollment(ctx context.Context, params BeginReEnrollmentParams) (BeginReEnrollmentRes, error)
+	// BeginTotpEnrollment implements beginTotpEnrollment operation.
+	//
+	// Returns the `otpauth://` URI and the base32 secret for the enrollment
+	// wizard (e.g. to render a QR code). This is the ONLY response that ever
+	// returns the raw secret.
+	//
+	// POST /auth/2fa/totp/begin
+	BeginTotpEnrollment(ctx context.Context) (BeginTotpEnrollmentRes, error)
+	// BeginWebAuthnChallenge implements beginWebAuthnChallenge operation.
+	//
+	// Returns the raw `CredentialAssertion` options JSON so the browser can
+	// pass them directly to `navigator.credentials.get()`.
+	//
+	// POST /auth/2fa/webauthn/begin
+	BeginWebAuthnChallenge(ctx context.Context, req *BeginWebAuthnChallengeReq) (BeginWebAuthnChallengeRes, error)
+	// BeginWebAuthnEnrollment implements beginWebAuthnEnrollment operation.
+	//
+	// Returns the raw `CredentialCreation` options JSON so the browser can
+	// pass them directly to `navigator.credentials.create()`.
+	//
+	// POST /auth/2fa/webauthn/begin-registration
+	BeginWebAuthnEnrollment(ctx context.Context) (BeginWebAuthnEnrollmentRes, error)
 	// BulkApplyTags implements bulkApplyTags operation.
 	//
 	// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
@@ -292,12 +434,14 @@ type Handler interface {
 	BulkDeleteBackups(ctx context.Context, req *BulkDeleteBackupsRequest, params BulkDeleteBackupsParams) (BulkDeleteBackupsRes, error)
 	// BulkDeleteEmailLog implements bulkDeleteEmailLog operation.
 	//
-	// Deletes a list of email log entries by id. RLS ensures only entries
-	// belonging to the operator's tenant are deleted regardless of the id list.
-	// Maximum 500 ids per request.
+	// Deletes a list of email log entries by id, carried in the request
+	// body (there is no `logId` path segment on this route — it operates on
+	// a caller-supplied id list, not a single entry). RLS ensures only
+	// entries belonging to the operator's tenant are deleted regardless of
+	// the id list. Maximum 500 ids per request.
 	// Requires `site.email.manage` permission.
 	//
-	// POST /api/v1/sites/{siteId}/email/log/bulk-delete
+	// DELETE /api/v1/sites/{siteId}/email/log
 	BulkDeleteEmailLog(ctx context.Context, req *BulkDeleteLogsRequest, params BulkDeleteEmailLogParams) (BulkDeleteEmailLogRes, error)
 	// BulkPurgeCache implements bulkPurgeCache operation.
 	//
@@ -313,10 +457,12 @@ type Handler interface {
 	//
 	// Dispatches `resend_email` for multiple log entries. Each entry is
 	// processed independently. Entries without body_stored are skipped with
-	// `ok=false` in the per-entry result array (no overall 4xx).
+	// `ok=false` in the per-entry result array (no overall 4xx). Registered
+	// before `/email/log/{logId}` so Gin does not parse the literal segment
+	// `resend` as a `logId` UUID.
 	// Requires `site.email.manage` permission.
 	//
-	// POST /api/v1/sites/{siteId}/email/log/bulk-resend
+	// POST /api/v1/sites/{siteId}/email/log/resend
 	BulkResendEmailLog(ctx context.Context, req *BulkResendRequest, params BulkResendEmailLogParams) (BulkResendEmailLogRes, error)
 	// CancelBackup implements cancelBackup operation.
 	//
@@ -328,6 +474,15 @@ type Handler interface {
 	//
 	// POST /api/v1/backups/{snapshotId}/cancel
 	CancelBackup(ctx context.Context, params CancelBackupParams) (CancelBackupRes, error)
+	// CancelBillingSubscription implements cancelBillingSubscription operation.
+	//
+	// The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
+	//  Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
+	// change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
+	// this response to carry the new plan state.
+	//
+	// POST /api/v1/billing/cancel
+	CancelBillingSubscription(ctx context.Context) (CancelBillingSubscriptionRes, error)
 	// CancelEnrollment implements cancelEnrollment operation.
 	//
 	// Hard-deletes a site that is in `pending_enrollment` AND has **never
@@ -352,6 +507,14 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/cancel
 	CancelMedia(ctx context.Context, params CancelMediaParams) (*CancelMediaOK, error)
+	// ChangeMyPassword implements changeMyPassword operation.
+	//
+	// Verifies `current_password`, then sets `new_password`. This session
+	// stays alive (its `auth_at` is refreshed so it does not predate the new
+	// `password_changed_at`); every other session for this user is invalidated.
+	//
+	// POST /auth/me/password
+	ChangeMyPassword(ctx context.Context, req *ChangeMyPasswordReq) (ChangeMyPasswordRes, error)
 	// ChmodSiteFile implements chmodSiteFile operation.
 	//
 	// Issues a `file_chmod` command to the site's agent. The agent validates
@@ -371,6 +534,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/clean
 	CleanDatabase(ctx context.Context, params CleanDatabaseParams) (*DbCleanResult, error)
+	// ClearAdminVulnFeedKey implements clearAdminVulnFeedKey operation.
+	//
+	// Falls back to the `WPMGR_VULN_FEED_API_KEY` environment variable, if set.
+	//
+	// DELETE /api/v1/admin/vuln-feed/key
+	ClearAdminVulnFeedKey(ctx context.Context) (ClearAdminVulnFeedKeyRes, error)
 	// ClearRucss implements clearRucss operation.
 	//
 	// Clears every cached RUCSS result for the site. Returns the number
@@ -384,8 +553,23 @@ type Handler interface {
 	// entirely. A comped tenant is immune to webhook-driven plan mutation.
 	// Requires is_superadmin=true.
 	//
-	// POST /api/v1/admin/accounts/{tenantId}/comp
+	// POST /api/v1/admin/accounts/{id}/comp
 	CompAdminAccount(ctx context.Context, req *AdminCompAccountRequest, params CompAdminAccountParams) (CompAdminAccountRes, error)
+	// CompleteRecoveryChallenge implements completeRecoveryChallenge operation.
+	//
+	// Complete a login 2FA challenge with a single-use recovery code (unauthenticated).
+	//
+	// POST /auth/2fa/recovery
+	CompleteRecoveryChallenge(ctx context.Context, req *TwoFactorChallengeCompleteRequest) (CompleteRecoveryChallengeRes, error)
+	// CompleteTotpChallenge implements completeTotpChallenge operation.
+	//
+	// Verifies `code` against the active challenge minted at login (the
+	// `challenge` nonce returned by `POST /auth/login`'s 202 response) and,
+	// on success, issues a full session. `remember_device` optionally issues
+	// a trusted-device cookie so future logins skip the challenge.
+	//
+	// POST /auth/2fa/totp
+	CompleteTotpChallenge(ctx context.Context, req *TwoFactorChallengeCompleteRequest) (CompleteTotpChallengeRes, error)
 	// ComputeRucss implements computeRucss operation.
 	//
 	// Triggers the agent to compute Used-CSS for the given URLs (or the home
@@ -397,6 +581,14 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/rucss/compute
 	ComputeRucss(ctx context.Context, req OptComputeRucssReq, params ComputeRucssParams) (*PerfActionResult, error)
+	// ConfirmTotpEnrollment implements confirmTotpEnrollment operation.
+	//
+	// Validates `code` against the provisional secret from
+	// `POST /auth/2fa/totp/begin`, persists the confirmed secret, and
+	// returns 10 recovery codes shown exactly once.
+	//
+	// POST /auth/2fa/totp/confirm
+	ConfirmTotpEnrollment(ctx context.Context, req *ConfirmTotpEnrollmentReq) (ConfirmTotpEnrollmentRes, error)
 	// CreateApiKey implements createApiKey operation.
 	//
 	// Create an API key (admin+); the secret is shown once.
@@ -513,6 +705,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites
 	CreateSite(ctx context.Context, req *SiteCreate) (CreateSiteRes, error)
+	// CreateSiteBan implements createSiteBan operation.
+	//
+	// Requires the `site.security.manage` permission.
+	//
+	// POST /api/v1/sites/{siteId}/security/bans
+	CreateSiteBan(ctx context.Context, req *CreateSiteBanReq, params CreateSiteBanParams) (CreateSiteBanRes, error)
 	// CreateSiteDestination implements createSiteDestination operation.
 	//
 	// Add a backup destination to a site.
@@ -582,6 +780,14 @@ type Handler interface {
 	//
 	// POST /api/v1/updates
 	CreateUpdateRun(ctx context.Context, req *UpdateRunCreate) (CreateUpdateRunRes, error)
+	// DeleteAdminUser implements deleteAdminUser operation.
+	//
+	// Hard-deletes the user. Any organisation the user solely owned with
+	// zero sites is deleted along with them; an organisation with sites (or
+	// other members) is kept, listed in `kept_orgs_with_sites`.
+	//
+	// DELETE /api/v1/admin/users/{userId}
+	DeleteAdminUser(ctx context.Context, params DeleteAdminUserParams) (DeleteAdminUserRes, error)
 	// DeleteBackup implements deleteBackup operation.
 	//
 	// Deletes a completed or failed snapshot and reclaims any now-unreferenced
@@ -608,6 +814,17 @@ type Handler interface {
 	//
 	// DELETE /api/v1/clients/{clientId}/reports/{reportId}
 	DeleteClientReport(ctx context.Context, params DeleteClientReportParams) (DeleteClientReportRes, error)
+	// DeleteDbOrphans implements deleteDbOrphans operation.
+	//
+	// Deletes only options / cron entries / tables from UNINSTALLED plugins
+	// that the P3.5 report classified as safely deletable. The CP
+	// re-classifies every item and drops anything no longer eligible before
+	// signing the agent command; the agent independently re-verifies each
+	// item live before deleting. Requires `site.cache.manage` at the route
+	// level AND `site.cache.delete-all` (admin+) in the handler body.
+	//
+	// POST /api/v1/sites/{siteId}/perf/db/orphan-delete
+	DeleteDbOrphans(ctx context.Context, req *DbOrphanDeleteRequest, params DeleteDbOrphansParams) (DeleteDbOrphansRes, error)
 	// DeleteDbSnapshot implements deleteDbSnapshot operation.
 	//
 	// Removes a snapshot from the WP server's local store. This is
@@ -657,12 +874,34 @@ type Handler interface {
 	//
 	// DELETE /api/v1/members/{userId}
 	DeleteMember(ctx context.Context, params DeleteMemberParams) (DeleteMemberRes, error)
+	// DeleteOrg implements deleteOrg operation.
+	//
+	// Two-lane deletion (GH #152). An EMPTY org (zero sites, zero other
+	// members) is hard-deleted immediately (`lane=hard`). A populated org is
+	// soft-deleted (`lane=soft`): it becomes invisible everywhere instantly
+	// and is recoverable via `POST /orgs/{orgId}/restore` until the
+	// grace-window purge worker runs. `confirm_name` must exactly match the
+	// organisation's current name. When this is the caller's active org,
+	// their session is reassigned to another live membership, or cleared
+	// entirely (dropping to onboarding) if it was their last org —
+	// `active_tenant_id` in the response reflects the post-delete state.
+	// On a hosted instance an active paid subscription must be
+	// cancelled/downgraded first (`billing_active` 409).
+	//
+	// DELETE /api/v1/orgs/{orgId}
+	DeleteOrg(ctx context.Context, req *DeleteOrgReq, params DeleteOrgParams) (DeleteOrgRes, error)
 	// DeleteSite implements deleteSite operation.
 	//
 	// Delete a site.
 	//
 	// DELETE /api/v1/sites/{siteId}
 	DeleteSite(ctx context.Context, params DeleteSiteParams) (DeleteSiteRes, error)
+	// DeleteSiteBan implements deleteSiteBan operation.
+	//
+	// Requires the `site.security.manage` permission.
+	//
+	// DELETE /api/v1/sites/{siteId}/security/bans/{banId}
+	DeleteSiteBan(ctx context.Context, params DeleteSiteBanParams) (DeleteSiteBanRes, error)
 	// DeleteSiteDestination implements deleteSiteDestination operation.
 	//
 	// Remove a configured destination.
@@ -695,6 +934,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/files/delete
 	DeleteSiteFile(ctx context.Context, req *FileDeleteRequest, params DeleteSiteFileParams) (DeleteSiteFileRes, error)
+	// DeleteSitePolicyGroup implements deleteSitePolicyGroup operation.
+	//
+	// Requires the `site.security.manage` permission.
+	//
+	// DELETE /api/v1/sites/{siteId}/security/policy/groups/{role}
+	DeleteSitePolicyGroup(ctx context.Context, params DeleteSitePolicyGroupParams) (DeleteSitePolicyGroupRes, error)
 	// DeleteSiteShare implements deleteSiteShare operation.
 	//
 	// Revoke a collaborator's site access (admin+; org-scope only).
@@ -709,6 +954,12 @@ type Handler interface {
 	//
 	// DELETE /api/v1/tags/{tagId}
 	DeleteTag(ctx context.Context, params DeleteTagParams) (DeleteTagRes, error)
+	// DeleteWebAuthnCredential implements deleteWebAuthnCredential operation.
+	//
+	// Requires `current_password` re-authentication.
+	//
+	// DELETE /auth/2fa/webauthn/credentials/{id}
+	DeleteWebAuthnCredential(ctx context.Context, req *DeleteWebAuthnCredentialReq, params DeleteWebAuthnCredentialParams) (DeleteWebAuthnCredentialRes, error)
 	// DisableCache implements disableCache operation.
 	//
 	// Turns off agent-side page caching. Returns an `{ok, detail}` ack.
@@ -724,6 +975,20 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/disable
 	DisableObjectCache(ctx context.Context, params DisableObjectCacheParams) (*PerfActionResult, error)
+	// DisableTotp implements disableTotp operation.
+	//
+	// Requires `current_password` re-authentication. On success: clears
+	// TOTP, recomputes `two_factor_enabled`, revokes every trusted device
+	// for this user, and clears the trusted-device cookie on this response.
+	//
+	// POST /auth/2fa/totp/disable
+	DisableTotp(ctx context.Context, req *DisableTotpReq) (DisableTotpRes, error)
+	// DismissSiteVulnerability implements dismissSiteVulnerability operation.
+	//
+	// Requires the `site.security.manage` permission.
+	//
+	// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/dismiss
+	DismissSiteVulnerability(ctx context.Context, params DismissSiteVulnerabilityParams) (DismissSiteVulnerabilityRes, error)
 	// DownloadPortalReport implements downloadPortalReport operation.
 	//
 	// Returns a presigned URL for the HTML or PDF version of a completed report. The report must belong
@@ -775,7 +1040,7 @@ type Handler interface {
 	// forward-only (a new grace_until must extend further out than the
 	// current one). Requires is_superadmin=true.
 	//
-	// POST /api/v1/admin/accounts/{tenantId}/grace
+	// POST /api/v1/admin/accounts/{id}/grace
 	ExtendAdminAccountGrace(ctx context.Context, req *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (ExtendAdminAccountGraceRes, error)
 	// ExtractSiteFileArchive implements extractSiteFileArchive operation.
 	//
@@ -802,6 +1067,26 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/files/extract
 	ExtractSiteFileArchive(ctx context.Context, req *FileExtractRequest, params ExtractSiteFileArchiveParams) (ExtractSiteFileArchiveRes, error)
+	// FetchScanFindingFile implements fetchScanFindingFile operation.
+	//
+	// Dispatches a synchronous read to the site's agent and returns the
+	// file content base64-encoded. Requires the `site.write` permission
+	// (this reaches out to the live site).
+	//
+	// POST /api/v1/sites/{siteId}/scans/{runId}/findings/{fid}/file
+	FetchScanFindingFile(ctx context.Context, params FetchScanFindingFileParams) (FetchScanFindingFileRes, error)
+	// FinishWebAuthnChallenge implements finishWebAuthnChallenge operation.
+	//
+	// Complete a login 2FA challenge with a WebAuthn assertion (unauthenticated).
+	//
+	// POST /auth/2fa/webauthn/finish
+	FinishWebAuthnChallenge(ctx context.Context, req *FinishWebAuthnChallengeReq) (FinishWebAuthnChallengeRes, error)
+	// FinishWebAuthnEnrollment implements finishWebAuthnEnrollment operation.
+	//
+	// Complete WebAuthn credential registration.
+	//
+	// POST /auth/2fa/webauthn/finish-registration
+	FinishWebAuthnEnrollment(ctx context.Context, req *FinishWebAuthnEnrollmentReq) (FinishWebAuthnEnrollmentRes, error)
 	// FlushObjectCache implements flushObjectCache operation.
 	//
 	// Flushes the Redis/cache store for this site. The `scope` field
@@ -819,7 +1104,7 @@ type Handler interface {
 	// to grant service for free — use the comp endpoint instead. Requires
 	// is_superadmin=true.
 	//
-	// POST /api/v1/admin/accounts/{tenantId}/state
+	// POST /api/v1/admin/accounts/{id}/state
 	ForceAdminAccountState(ctx context.Context, req *AdminForceStateRequest, params ForceAdminAccountStateParams) (ForceAdminAccountStateRes, error)
 	// ForgotPassword implements forgotPassword operation.
 	//
@@ -842,8 +1127,15 @@ type Handler interface {
 	// card, a merged billing_events+audit_log timeline (newest first), the
 	// member roster, and a compact site list. Requires is_superadmin=true.
 	//
-	// GET /api/v1/admin/accounts/{tenantId}
+	// GET /api/v1/admin/accounts/{id}
 	GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (GetAdminAccountRes, error)
+	// GetAdminAccountsTenancy implements getAdminAccountsTenancy operation.
+	//
+	// Diagnostic for account/org splits (e.g. a superadmin stranded in the
+	// wrong org while site data lives in a different org). No mutation.
+	//
+	// GET /api/v1/admin/accounts-tenancy
+	GetAdminAccountsTenancy(ctx context.Context, params GetAdminAccountsTenancyParams) (GetAdminAccountsTenancyRes, error)
 	// GetAdminRevenue implements getAdminRevenue operation.
 	//
 	// Local-state-only revenue view derived from tenants + billing_events —
@@ -851,6 +1143,26 @@ type Handler interface {
 	//
 	// GET /api/v1/admin/revenue
 	GetAdminRevenue(ctx context.Context) (GetAdminRevenueRes, error)
+	// GetAdminSiteTenancy implements getAdminSiteTenancy operation.
+	//
+	// Compares where a site and its perf data (rucss results / cache stats
+	// / config) live against the calling superadmin's own org memberships.
+	// No mutation.
+	//
+	// GET /api/v1/admin/sites/{siteId}/tenancy
+	GetAdminSiteTenancy(ctx context.Context, params GetAdminSiteTenancyParams) (GetAdminSiteTenancyRes, error)
+	// GetAdminStats implements getAdminStats operation.
+	//
+	// Instance-wide counts (superadmin).
+	//
+	// GET /api/v1/admin/stats
+	GetAdminStats(ctx context.Context) (GetAdminStatsRes, error)
+	// GetAdminVulnFeedStatus implements getAdminVulnFeedStatus operation.
+	//
+	// The key itself is never returned.
+	//
+	// GET /api/v1/admin/vuln-feed/status
+	GetAdminVulnFeedStatus(ctx context.Context) (GetAdminVulnFeedStatusRes, error)
 	// GetAlertConfig implements getAlertConfig operation.
 	//
 	// Returns the tenant's downtime/recovery alert channel: email recipients,
@@ -919,6 +1231,12 @@ type Handler interface {
 	//
 	// GET /api/v1/billing
 	GetBilling(ctx context.Context) (GetBillingRes, error)
+	// GetCacheHealth implements getCacheHealth operation.
+	//
+	// Cache hit-ratio trend and average for a site (M52 /.
+	//
+	// GET /api/v1/sites/{siteId}/perf/cache/health
+	GetCacheHealth(ctx context.Context, params GetCacheHealthParams) (GetCacheHealthRes, error)
 	// GetCacheStats implements getCacheStats operation.
 	//
 	// Returns the most recent cache gauges the agent reported (cached page
@@ -947,6 +1265,30 @@ type Handler interface {
 	//
 	// GET /api/v1/clients/{clientId}/report-schedule
 	GetClientReportSchedule(ctx context.Context, params GetClientReportScheduleParams) (GetClientReportScheduleRes, error)
+	// GetDbCleanStatus implements getDbCleanStatus operation.
+	//
+	// Pull-truth endpoint: mirrors `GET /perf/db/scan` — `clean_active` /
+	// `active_job_id` / `active_started_at` reflect the in-flight-job
+	// watchdog columns, letting the web show/hide the spinner on page load
+	// without relying on SSE delivery.
+	//
+	// GET /api/v1/sites/{siteId}/perf/db/clean
+	GetDbCleanStatus(ctx context.Context, params GetDbCleanStatusParams) (GetDbCleanStatusRes, error)
+	// GetDbHealth implements getDbHealth operation.
+	//
+	// Database-size trend and growth summary for a site (M42 Phase 3.4).
+	//
+	// GET /api/v1/sites/{siteId}/perf/db/health
+	GetDbHealth(ctx context.Context, params GetDbHealthParams) (GetDbHealthRes, error)
+	// GetDbOrphansReport implements getDbOrphansReport operation.
+	//
+	// Classifies the orphaned options/cron entries/tables stored in the
+	// latest `db_scan` result against the live corpus knowledge base. No
+	// destructive action is performed here — see
+	// `POST /perf/db/orphan-delete`.
+	//
+	// GET /api/v1/sites/{siteId}/perf/db/orphans
+	GetDbOrphansReport(ctx context.Context, params GetDbOrphansReportParams) (GetDbOrphansReportRes, error)
 	// GetDbScanResult implements getDbScanResult operation.
 	//
 	// Returns the most recently persisted db_scan result including the
@@ -1005,6 +1347,13 @@ type Handler interface {
 	//
 	// GET /api/v1/email/stats
 	GetFleetEmailStats(ctx context.Context, params GetFleetEmailStatsParams) (GetFleetEmailStatsRes, error)
+	// GetFleetIncidentDetail implements getFleetIncidentDetail operation.
+	//
+	// A site-scoped collaborator without access to the incident's own site
+	// gets `404 incident_not_found` (never a distinguishing signal).
+	//
+	// GET /api/v1/fleet/incidents/{incidentId}
+	GetFleetIncidentDetail(ctx context.Context, params GetFleetIncidentDetailParams) (GetFleetIncidentDetailRes, error)
 	// GetFleetIncidents implements getFleetIncidents operation.
 	//
 	// Returns open incidents (in_incident=true) and recently-alerted sites
@@ -1035,6 +1384,14 @@ type Handler interface {
 	//
 	// GET /api/v1/fleet/status
 	GetFleetUptimeStatus(ctx context.Context) (*FleetUptimeStatus, error)
+	// GetFleetVulnerabilities implements getFleetVulnerabilities operation.
+	//
+	// Cross-site counts by severity plus a prioritized finding list.
+	// Org-scoped only (`RequireOrgScope`); a site-scoped collaborator uses
+	// the per-site `GET /sites/{siteId}/vulnerabilities` endpoint instead.
+	//
+	// GET /api/v1/vulnerabilities
+	GetFleetVulnerabilities(ctx context.Context, params GetFleetVulnerabilitiesParams) (GetFleetVulnerabilitiesRes, error)
 	// GetHealthz implements getHealthz operation.
 	//
 	// Liveness probe.
@@ -1053,6 +1410,12 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/media/jobs/{jobId}
 	GetMediaJob(ctx context.Context, params GetMediaJobParams) (*MediaJobDetail, error)
+	// GetMediaSettings implements getMediaSettings operation.
+	//
+	// Get the auto-optimize settings for a site (ADR-044).
+	//
+	// GET /api/v1/sites/{siteId}/media/settings
+	GetMediaSettings(ctx context.Context, params GetMediaSettingsParams) (GetMediaSettingsRes, error)
 	// GetObjectCacheConfig implements getObjectCacheConfig operation.
 	//
 	// Returns the stored object cache configuration for the site. The password
@@ -1117,6 +1480,18 @@ type Handler interface {
 	//
 	// GET /api/v1/portal/summary
 	GetPortalSummary(ctx context.Context, params GetPortalSummaryParams) (GetPortalSummaryRes, error)
+	// GetPublicPricing implements getPublicPricing operation.
+	//
+	// Mounted directly on the root engine (no session, no tenant gate)
+	// despite sharing the `/api/v1` path prefix — the marketing site's
+	// price source. Registered only when hosted billing is enabled;
+	// self-host installs 404 here. Response is `Cache-Control:
+	// public, max-age=3600` and resolves from a warm cache when possible,
+	// falling back to a static in-Go price table when no payment provider
+	// is configured.
+	//
+	// GET /api/v1/pricing
+	GetPublicPricing(ctx context.Context) (GetPublicPricingRes, error)
 	// GetReadyz implements getReadyz operation.
 	//
 	// Returns 200 when the service can serve traffic (DB reachable).
@@ -1145,6 +1520,24 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/perf/rum/summary
 	GetRumSummary(ctx context.Context, params GetRumSummaryParams) (*RumSummary, error)
+	// GetRumTrend implements getRumTrend operation.
+	//
+	// Returns a per-metric daily p75 trend series over `window_days` days
+	// (default 28, clamped to [1,90]). Days with zero rollup rows are
+	// omitted; days below the configured `min_sample_count` floor appear
+	// with `suppressed:true` and `p75_ms:0` so the client can render a gap
+	// rather than a misleading zero. An optional `device` filter restricts
+	// the aggregation to one device class.
+	//
+	// GET /api/v1/sites/{siteId}/perf/rum/trend
+	GetRumTrend(ctx context.Context, params GetRumTrendParams) (GetRumTrendRes, error)
+	// GetScanRun implements getScanRun operation.
+	//
+	// The run is resolved by id (tenant-scoped); a site-scoped collaborator
+	// without access to the run's own site is rejected with 403.
+	//
+	// GET /api/v1/sites/{siteId}/scans/{runId}
+	GetScanRun(ctx context.Context, params GetScanRunParams) (GetScanRunRes, error)
 	// GetScheduleRun implements getScheduleRun operation.
 	//
 	// Returns the schedule run record by its UUID. Authorization is enforced
@@ -1231,6 +1624,12 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/files/settings
 	GetSiteFilesSettings(ctx context.Context, params GetSiteFilesSettingsParams) (GetSiteFilesSettingsRes, error)
+	// GetSiteHardeningConfig implements getSiteHardeningConfig operation.
+	//
+	// Get the hardening config for a site.
+	//
+	// GET /api/v1/sites/{siteId}/security/hardening
+	GetSiteHardeningConfig(ctx context.Context, params GetSiteHardeningConfigParams) (GetSiteHardeningConfigRes, error)
 	// GetSiteLoginBrand implements getSiteLoginBrand operation.
 	//
 	// Returns the current login brand config (logo URL, logo link, message)
@@ -1249,6 +1648,14 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/security/login-protection
 	GetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (*SiteLoginProtectionConfig, error)
+	// GetSiteSecurityPolicy implements getSiteSecurityPolicy operation.
+	//
+	// Site-user auth policy governs 2FA and password requirements for the
+	// WordPress users of this site (distinct from dashboard operator 2FA,
+	// which is per-CP-user — see the two-factor-auth tag).
+	//
+	// GET /api/v1/sites/{siteId}/security/policy
+	GetSiteSecurityPolicy(ctx context.Context, params GetSiteSecurityPolicyParams) (GetSiteSecurityPolicyRes, error)
 	// GetSiteUptime implements getSiteUptime operation.
 	//
 	// Returns the uptime % and average latency for a site over the requested
@@ -1260,12 +1667,25 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/uptime
 	GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (GetSiteUptimeRes, error)
+	// GetSmtpSettings implements getSmtpSettings operation.
+	//
+	// Org-scoped (blocks site-scoped collaborators). Reads require admin+;
+	// the stored password/secret is never returned in plaintext.
+	//
+	// GET /api/v1/settings/smtp
+	GetSmtpSettings(ctx context.Context) (GetSmtpSettingsRes, error)
 	// GetTenant implements getTenant operation.
 	//
 	// Get a tenant by ID.
 	//
 	// GET /api/v1/tenants/{tenantId}
 	GetTenant(ctx context.Context, params GetTenantParams) (GetTenantRes, error)
+	// GetTwoFactorStatus implements getTwoFactorStatus operation.
+	//
+	// Current 2FA configuration summary for the authenticated user.
+	//
+	// GET /auth/2fa/status
+	GetTwoFactorStatus(ctx context.Context) (GetTwoFactorStatusRes, error)
 	// GetUpdateRun implements getUpdateRun operation.
 	//
 	// Get an update run with its tasks.
@@ -1279,6 +1699,49 @@ type Handler interface {
 	//
 	// GET /api/v1/uptime/summary
 	GetUptimeSummary(ctx context.Context) (*UptimeSummary, error)
+	// GrantAdminSelfMembership implements grantAdminSelfMembership operation.
+	//
+	// Idempotent recovery primitive for a recovery-induced org split. Only
+	// ever adds the CALLER (never an arbitrary user) to the SITE's own org
+	// (never an arbitrary tenant).
+	//
+	// POST /api/v1/admin/sites/{siteId}/grant-self-membership
+	GrantAdminSelfMembership(ctx context.Context, params GrantAdminSelfMembershipParams) (GrantAdminSelfMembershipRes, error)
+	// HandleBillingProviderWebhook implements handleBillingProviderWebhook operation.
+	//
+	// Mounted on the root engine — no session, no tenant gate. The
+	// provider's own request signature (verified inside
+	// `Service.ProcessWebhook`) is the entire authentication boundary. An
+	// unrecognised `provider` value 404s.
+	//
+	// POST /webhooks/billing/{provider}
+	HandleBillingProviderWebhook(ctx context.Context, req *HandleBillingProviderWebhookReq, params HandleBillingProviderWebhookParams) (HandleBillingProviderWebhookRes, error)
+	// HandleEmailProviderWebhook implements handleEmailProviderWebhook operation.
+	//
+	// Mounted on the root engine — no session, no tenant gate. `routeToken`
+	// is a per-config-row opaque random value; its SHA-256 hash resolves
+	// the owning tenant + site, and the corresponding per-row signing key
+	// (not an instance-wide key) verifies the provider's signature.
+	// `provider` is one of `ses`, `sendgrid`, `mailgun`, `postmark`. An
+	// unknown `routeToken` or `provider` responds `404` with no body (no
+	// existence leak). The request body shape is entirely provider-defined
+	// (SNS notification envelope, SendGrid event array, Mailgun form POST,
+	// or Postmark JSON) so it is not modeled as a fixed schema here.
+	//
+	// POST /webhooks/email/{provider}/{routeToken}
+	HandleEmailProviderWebhook(ctx context.Context, req *HandleEmailProviderWebhookReq, params HandleEmailProviderWebhookParams) (HandleEmailProviderWebhookRes, error)
+	// IngestRumBeacon implements ingestRumBeacon operation.
+	//
+	// Mounted on the root engine — no session, no tenant gate. The
+	// `key` field (a per-site beacon key) is the sole access credential.
+	// Every failure mode (unknown key, RUM disabled, sampled out, rate
+	// limited, a storage write failure) responds `204 No Content` so a
+	// `navigator.sendBeacon()` call — which never reads the response — never
+	// surfaces a distinguishing status to the page. Only a malformed body
+	// yields `400`, and only an oversized body yields `413`.
+	//
+	// POST /rum/ingest
+	IngestRumBeacon(ctx context.Context, req *RumBeacon) (IngestRumBeaconRes, error)
 	// InviteMember implements inviteMember operation.
 	//
 	// Invite/create a member in the active tenant (admin+).
@@ -1309,6 +1772,18 @@ type Handler interface {
 	//
 	// GET /api/v1/admin/accounts
 	ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (ListAdminAccountsRes, error)
+	// ListAdminUserSites implements listAdminUserSites operation.
+	//
+	// Every site reachable by a user via their org memberships (superadmin).
+	//
+	// GET /api/v1/admin/users/{userId}/sites
+	ListAdminUserSites(ctx context.Context, params ListAdminUserSitesParams) (ListAdminUserSitesRes, error)
+	// ListAdminUsers implements listAdminUsers operation.
+	//
+	// Search/list every user on the instance (superadmin).
+	//
+	// GET /api/v1/admin/users
+	ListAdminUsers(ctx context.Context, params ListAdminUsersParams) (ListAdminUsersRes, error)
 	// ListApiKeys implements listApiKeys operation.
 	//
 	// List API keys for the active tenant (admin+).
@@ -1439,6 +1914,12 @@ type Handler interface {
 	//
 	// GET /api/v1/members
 	ListMembers(ctx context.Context, params ListMembersParams) (ListMembersRes, error)
+	// ListOrgs implements listOrgs operation.
+	//
+	// List the caller's organisations, with their role in each.
+	//
+	// GET /api/v1/orgs
+	ListOrgs(ctx context.Context) (ListOrgsRes, error)
 	// ListPortalReports implements listPortalReports operation.
 	//
 	// Returns completed white-label reports for all of the principal's clients. The client_id =
@@ -1515,6 +1996,18 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/perf/rum
 	ListRumResults(ctx context.Context, params ListRumResultsParams) (*RumResultList, error)
+	// ListScanFindings implements listScanFindings operation.
+	//
+	// List findings for a scan run.
+	//
+	// GET /api/v1/sites/{siteId}/scans/{runId}/findings
+	ListScanFindings(ctx context.Context, params ListScanFindingsParams) (ListScanFindingsRes, error)
+	// ListScanRuns implements listScanRuns operation.
+	//
+	// List scan runs for a site.
+	//
+	// GET /api/v1/sites/{siteId}/scans
+	ListScanRuns(ctx context.Context, params ListScanRunsParams) (ListScanRunsRes, error)
 	// ListScheduleRuns implements listScheduleRuns operation.
 	//
 	// Returns a split view of schedule runs for the site: `upcoming`
@@ -1542,6 +2035,12 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/activity
 	ListSiteActivity(ctx context.Context, params ListSiteActivityParams) (*SiteActivityList, error)
+	// ListSiteBans implements listSiteBans operation.
+	//
+	// List ban entries for a site.
+	//
+	// GET /api/v1/sites/{siteId}/security/bans
+	ListSiteBans(ctx context.Context, params ListSiteBansParams) (ListSiteBansRes, error)
 	// ListSiteDestinations implements listSiteDestinations operation.
 	//
 	// ADR-036 P1 storage adapter. Returns every destination configured on the
@@ -1607,6 +2106,13 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/files
 	ListSiteFiles(ctx context.Context, params ListSiteFilesParams) (ListSiteFilesRes, error)
+	// ListSiteInvitations implements listSiteInvitations operation.
+	//
+	// Requires the `member.manage` permission and full org membership — a
+	// site-scoped collaborator cannot manage shares.
+	//
+	// GET /api/v1/sites/{siteId}/invitations
+	ListSiteInvitations(ctx context.Context, params ListSiteInvitationsParams) (ListSiteInvitationsRes, error)
 	// ListSiteLoginEvents implements listSiteLoginEvents operation.
 	//
 	// Returns the agent-ingested login events for the site, ordered by
@@ -1623,12 +2129,24 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/errors
 	ListSitePHPErrors(ctx context.Context, params ListSitePHPErrorsParams) (*PHPErrorList, error)
+	// ListSitePolicyGroups implements listSitePolicyGroups operation.
+	//
+	// List per-role policy group overrides for a site.
+	//
+	// GET /api/v1/sites/{siteId}/security/policy/groups
+	ListSitePolicyGroups(ctx context.Context, params ListSitePolicyGroupsParams) (ListSitePolicyGroupsRes, error)
 	// ListSiteShares implements listSiteShares operation.
 	//
 	// List collaborators for a site (admin+).
 	//
 	// GET /api/v1/sites/{siteId}/shares
 	ListSiteShares(ctx context.Context, params ListSiteSharesParams) (ListSiteSharesRes, error)
+	// ListSiteVulnerabilities implements listSiteVulnerabilities operation.
+	//
+	// List open vulnerability findings for a site.
+	//
+	// GET /api/v1/sites/{siteId}/vulnerabilities
+	ListSiteVulnerabilities(ctx context.Context, params ListSiteVulnerabilitiesParams) (ListSiteVulnerabilitiesRes, error)
 	// ListSites implements listSites operation.
 	//
 	// Lists the tenant's sites. By default (ADR-041) archived sites are hidden.
@@ -1653,12 +2171,24 @@ type Handler interface {
 	//
 	// GET /api/v1/tenants
 	ListTenants(ctx context.Context, params ListTenantsParams) (*TenantList, error)
+	// ListTrustedDevices implements listTrustedDevices operation.
+	//
+	// List the authenticated user's trusted devices.
+	//
+	// GET /auth/2fa/trusted-devices
+	ListTrustedDevices(ctx context.Context) (ListTrustedDevicesRes, error)
 	// ListUpdateRuns implements listUpdateRuns operation.
 	//
 	// List update runs for the current tenant.
 	//
 	// GET /api/v1/updates
 	ListUpdateRuns(ctx context.Context, params ListUpdateRunsParams) (*UpdateRunList, error)
+	// ListWebAuthnCredentials implements listWebAuthnCredentials operation.
+	//
+	// List the authenticated user's WebAuthn credentials.
+	//
+	// GET /auth/2fa/webauthn/credentials
+	ListWebAuthnCredentials(ctx context.Context) (ListWebAuthnCredentialsRes, error)
 	// LockBackup implements lockBackup operation.
 	//
 	// Sets `locked=true` on a completed snapshot. Locked snapshots are never
@@ -1902,6 +2432,15 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/email/webhook-config
 	PutSiteEmailWebhookConfig(ctx context.Context, req *PutEmailWebhookConfigRequest, params PutSiteEmailWebhookConfigParams) (PutSiteEmailWebhookConfigRes, error)
+	// PutSiteHardeningConfig implements putSiteHardeningConfig operation.
+	//
+	// Requires the `site.security.manage` permission. On a successful store
+	// but failed agent push, returns `200` with the stored config and an
+	// `X-Agent-Push-Warning` header (never a 5xx — the config is durably
+	// saved and will be re-pushed on the next reconcile).
+	//
+	// PUT /api/v1/sites/{siteId}/security/hardening
+	PutSiteHardeningConfig(ctx context.Context, req *SiteHardeningConfig, params PutSiteHardeningConfigParams) (PutSiteHardeningConfigRes, error)
 	// PutSiteLoginBrand implements putSiteLoginBrand operation.
 	//
 	// Stores the new login brand config and pushes it to the agent via the
@@ -1932,6 +2471,20 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/security/login-protection
 	PutSiteLoginProtection(ctx context.Context, req *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (PutSiteLoginProtectionRes, error)
+	// PutSitePolicyGroup implements putSitePolicyGroup operation.
+	//
+	// Requires the `site.security.manage` permission.
+	//
+	// PUT /api/v1/sites/{siteId}/security/policy/groups/{role}
+	PutSitePolicyGroup(ctx context.Context, req *SitePolicyGroup, params PutSitePolicyGroupParams) (PutSitePolicyGroupRes, error)
+	// PutSiteSecurityPolicy implements putSiteSecurityPolicy operation.
+	//
+	// Requires the `site.security.manage` permission. On a successful store
+	// but failed agent push, returns `200` with the stored policy and an
+	// `X-Agent-Push-Warning` header.
+	//
+	// PUT /api/v1/sites/{siteId}/security/policy
+	PutSiteSecurityPolicy(ctx context.Context, req *SiteSecurityPolicy, params PutSiteSecurityPolicyParams) (PutSiteSecurityPolicyRes, error)
 	// ReadSiteFileContent implements readSiteFileContent operation.
 	//
 	// Issues a `file_read` command to the site's agent and returns the
@@ -1973,6 +2526,17 @@ type Handler interface {
 	//
 	// POST /api/v1/audit/integrity/rebaseline
 	RebaselineAuditIntegrity(ctx context.Context, req OptAuditRebaselineRequest) (RebaselineAuditIntegrityRes, error)
+	// RecheckSite implements recheckSite operation.
+	//
+	// Dispatches a synchronous `metadata` command to the site's agent,
+	// applies the returned metadata, and records a heartbeat (recovering
+	// the connection state to `connected` when it was `degraded` or
+	// `disconnected`). Rate-limited per (tenant, site). Requires
+	// `site.write` and site access; no org-scope requirement (a
+	// write-access collaborator may re-check).
+	//
+	// POST /api/v1/sites/{siteId}/recheck
+	RecheckSite(ctx context.Context, params RecheckSiteParams) (RecheckSiteRes, error)
 	// RefreshSiteDiagnostics implements refreshSiteDiagnostics operation.
 	//
 	// Enqueues a signed `diagnostics` command to the agent. The agent runs
@@ -2011,6 +2575,20 @@ type Handler interface {
 	//
 	// POST /api/v1/clients/{clientId}/invitations/{invitationId}/regenerate
 	RegenerateClientInvitation(ctx context.Context, params RegenerateClientInvitationParams) (RegenerateClientInvitationRes, error)
+	// RegenerateRecoveryCodes implements regenerateRecoveryCodes operation.
+	//
+	// Requires `current_password` re-authentication. Replaces the existing
+	// 10-code batch with 10 new ones, returned once.
+	//
+	// POST /auth/2fa/recovery-codes/regenerate
+	RegenerateRecoveryCodes(ctx context.Context, req *RegenerateRecoveryCodesReq) (RegenerateRecoveryCodesRes, error)
+	// RegenerateSiteInvitation implements regenerateSiteInvitation operation.
+	//
+	// Requires the `member.manage` permission and full org membership.
+	// Returns a fresh `accept_link` for the same pending invitation.
+	//
+	// POST /api/v1/sites/{siteId}/invitations/{invitationId}/regenerate
+	RegenerateSiteInvitation(ctx context.Context, params RegenerateSiteInvitationParams) (RegenerateSiteInvitationRes, error)
 	// Register implements register operation.
 	//
 	// On first run (zero users in the database) this bootstraps the instance:
@@ -2023,6 +2601,12 @@ type Handler interface {
 	//
 	// POST /auth/register
 	Register(ctx context.Context, req *RegisterRequest) (RegisterRes, error)
+	// RemediateSiteVulnerability implements remediateSiteVulnerability operation.
+	//
+	// Trigger an update run to remediate a vulnerability finding.
+	//
+	// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/remediate
+	RemediateSiteVulnerability(ctx context.Context, params RemediateSiteVulnerabilityParams) (RemediateSiteVulnerabilityRes, error)
 	// RemoveClientMember implements removeClientMember operation.
 	//
 	// Immediately removes the client_members row. The user's session remains valid but subsequent portal
@@ -2030,6 +2614,12 @@ type Handler interface {
 	//
 	// DELETE /api/v1/clients/{clientId}/members/{userId}
 	RemoveClientMember(ctx context.Context, params RemoveClientMemberParams) (RemoveClientMemberRes, error)
+	// RenameOrg implements renameOrg operation.
+	//
+	// Requires the caller to be an admin or owner of this org.
+	//
+	// PATCH /api/v1/orgs/{orgId}
+	RenameOrg(ctx context.Context, req *RenameOrgReq, params RenameOrgParams) (RenameOrgRes, error)
 	// RenameSiteFile implements renameSiteFile operation.
 	//
 	// Issues a `file_rename` command to the site's agent. Both `src` and `dst`
@@ -2043,6 +2633,18 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/files/rename
 	RenameSiteFile(ctx context.Context, req *FileRenameRequest, params RenameSiteFileParams) (RenameSiteFileRes, error)
+	// RescanSiteVulnerabilities implements rescanSiteVulnerabilities operation.
+	//
+	// Enqueue an immediate per-site vulnerability rescan.
+	//
+	// POST /api/v1/sites/{siteId}/vulnerabilities/rescan
+	RescanSiteVulnerabilities(ctx context.Context, params RescanSiteVulnerabilitiesParams) (RescanSiteVulnerabilitiesRes, error)
+	// ResendAdminUserVerification implements resendAdminUserVerification operation.
+	//
+	// Resend a pending user's verification email (superadmin).
+	//
+	// POST /api/v1/admin/users/{userId}/resend-verification
+	ResendAdminUserVerification(ctx context.Context, params ResendAdminUserVerificationParams) (ResendAdminUserVerificationRes, error)
 	// ResendEmailLog implements resendEmailLog operation.
 	//
 	// Dispatches the `resend_email` agent command for the given log entry.
@@ -2082,7 +2684,7 @@ type Handler interface {
 	// 400 — every other manual control on this page rejects a malformed
 	// body outright. Requires is_superadmin=true.
 	//
-	// POST /api/v1/admin/accounts/{tenantId}/restore
+	// POST /api/v1/admin/accounts/{id}/restore
 	RestoreAdminAccount(ctx context.Context, req OptAdminReasonRequest, params RestoreAdminAccountParams) (RestoreAdminAccountRes, error)
 	// RestoreIsolatedMedia implements restoreIsolatedMedia operation.
 	//
@@ -2098,6 +2700,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/restore
 	RestoreMedia(ctx context.Context, req OptMediaAssetSelection, params RestoreMediaParams) (*MediaBatchResult, error)
+	// RestoreOrg implements restoreOrg operation.
+	//
+	// Undelete a soft-deleted organisation within the grace window (owner-only).
+	//
+	// POST /api/v1/orgs/{orgId}/restore
+	RestoreOrg(ctx context.Context, params RestoreOrgParams) (RestoreOrgRes, error)
 	// RestoreSite implements restoreSite operation.
 	//
 	// M21 / ADR-041 — operator action. Un-archives a site back to
@@ -2127,6 +2735,12 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/files/versions/restore
 	RestoreSiteFileVersion(ctx context.Context, req *FileVersionRestoreRequest, params RestoreSiteFileVersionParams) (RestoreSiteFileVersionRes, error)
+	// RestoreSiteVulnerability implements restoreSiteVulnerability operation.
+	//
+	// Requires the `site.security.manage` permission.
+	//
+	// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/restore
+	RestoreSiteVulnerability(ctx context.Context, params RestoreSiteVulnerabilityParams) (RestoreSiteVulnerabilityRes, error)
 	// RevertDbSnapshot implements revertDbSnapshot operation.
 	//
 	// Replaces the entire live database with the SQL captured in a local
@@ -2146,8 +2760,14 @@ type Handler interface {
 	// else falls back to plan=free/plan_status=none. Requires
 	// is_superadmin=true.
 	//
-	// DELETE /api/v1/admin/accounts/{tenantId}/comp
+	// DELETE /api/v1/admin/accounts/{id}/comp
 	RevokeAdminAccountComp(ctx context.Context, req *AdminReasonRequest, params RevokeAdminAccountCompParams) (RevokeAdminAccountCompRes, error)
+	// RevokeAllTrustedDevices implements revokeAllTrustedDevices operation.
+	//
+	// Also clears the trusted-device cookie on this response.
+	//
+	// POST /auth/2fa/trusted-devices/revoke-all
+	RevokeAllTrustedDevices(ctx context.Context) (RevokeAllTrustedDevicesRes, error)
 	// RevokeApiKey implements revokeApiKey operation.
 	//
 	// Revoke an API key (admin+).
@@ -2173,6 +2793,18 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/revoke
 	RevokeSite(ctx context.Context, req OptSiteLifecycleReason, params RevokeSiteParams) (RevokeSiteRes, error)
+	// RevokeSiteInvitation implements revokeSiteInvitation operation.
+	//
+	// Requires the `member.manage` permission and full org membership.
+	//
+	// DELETE /api/v1/sites/{siteId}/invitations/{invitationId}
+	RevokeSiteInvitation(ctx context.Context, params RevokeSiteInvitationParams) (RevokeSiteInvitationRes, error)
+	// RevokeTrustedDevice implements revokeTrustedDevice operation.
+	//
+	// Revoke one trusted device.
+	//
+	// DELETE /auth/2fa/trusted-devices/{id}
+	RevokeTrustedDevice(ctx context.Context, params RevokeTrustedDeviceParams) (RevokeTrustedDeviceRes, error)
 	// RotateRumBeaconKey implements rotateRumBeaconKey operation.
 	//
 	// Unconditionally mints a fresh RUM beacon key, rotates the previous
@@ -2191,6 +2823,23 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/rum/rotate-key
 	RotateRumBeaconKey(ctx context.Context, params RotateRumBeaconKeyParams) (*RumBeaconRotateResult, error)
+	// RumIngestPreflight implements rumIngestPreflight operation.
+	//
+	// CORS preflight for the beacon endpoint.
+	//
+	// OPTIONS /rum/ingest
+	RumIngestPreflight(ctx context.Context) error
+	// RunDbTableAction implements runDbTableAction operation.
+	//
+	// Dispatches `optimize`, `repair`, `analyze`, `convert_innodb`
+	// (non-destructive; `site.cache.manage`), or `drop`/`empty`
+	// (destructive; additionally requires `site.cache.delete-all`, admin+,
+	// and a type-to-confirm `confirm` token) against a list of tables. An
+	// advisory `X-Backup-Warning` header is set when no recent backup is
+	// found.
+	//
+	// POST /api/v1/sites/{siteId}/perf/db/table-action
+	RunDbTableAction(ctx context.Context, req *DbTableActionRequest, params RunDbTableActionParams) (RunDbTableActionRes, error)
 	// RunSearchReplace implements runSearchReplace operation.
 	//
 	// Dispatches a serialization-safe search-replace command to the site's
@@ -2237,6 +2886,15 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}/files/search
 	SearchSiteFiles(ctx context.Context, params SearchSiteFilesParams) (SearchSiteFilesRes, error)
+	// SendSmtpTestEmail implements sendSmtpTestEmail operation.
+	//
+	// Requires the `smtp.manage` permission (owner-only). A send failure is
+	// returned as `200 {ok:false, message}` — the scrubbed reason string
+	// never contains internal IPs/hostnames — rather than a 4xx/5xx, so the
+	// UI can show it inline.
+	//
+	// POST /api/v1/settings/smtp/test
+	SendSmtpTestEmail(ctx context.Context, req *SendSmtpTestEmailReq) (SendSmtpTestEmailRes, error)
 	// SendTestEmail implements sendTestEmail operation.
 	//
 	// Dispatches the signed `send_test_email` command to the site's agent.
@@ -2258,8 +2916,21 @@ type Handler interface {
 	// limit untouched; sending it as `null` (or `0`) clears it back to the
 	// pure ladder base. Requires is_superadmin=true.
 	//
-	// PUT /api/v1/admin/accounts/{tenantId}/overrides
+	// PUT /api/v1/admin/accounts/{id}/overrides
 	SetAdminAccountOverrides(ctx context.Context, req *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (SetAdminAccountOverridesRes, error)
+	// SetAdminUserStatus implements setAdminUserStatus operation.
+	//
+	// Set a user's status (superadmin).
+	//
+	// PATCH /api/v1/admin/users/{userId}
+	SetAdminUserStatus(ctx context.Context, req *SetAdminUserStatusReq, params SetAdminUserStatusParams) (SetAdminUserStatusRes, error)
+	// SetAdminVulnFeedKey implements setAdminVulnFeedKey operation.
+	//
+	// Plaintext key in the body over TLS. On success an immediate sync is
+	// triggered so the operator sees it connect without waiting an hour.
+	//
+	// PUT /api/v1/admin/vuln-feed/key
+	SetAdminVulnFeedKey(ctx context.Context, req *SetAdminVulnFeedKeyReq) (SetAdminVulnFeedKeyRes, error)
 	// SetSiteTags implements setSiteTags operation.
 	//
 	// Replace the tag set on a site.
@@ -2274,6 +2945,14 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/errors/{md5}/silence
 	SilenceSitePHPError(ctx context.Context, req OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error)
+	// StartScanRun implements startScanRun operation.
+	//
+	// Enqueues a scan against the site's WordPress core/plugin/theme files
+	// (checksum comparison). `kind` defaults to `core` when the body is
+	// omitted. Requires the `site.write` permission.
+	//
+	// POST /api/v1/sites/{siteId}/scans
+	StartScanRun(ctx context.Context, req OptStartScanRunReq, params StartScanRunParams) (StartScanRunRes, error)
 	// StreamSiteEvents implements streamSiteEvents operation.
 	//
 	// M21 / ADR-038 — a single tenant-scoped Server-Sent Events stream of
@@ -2292,8 +2971,25 @@ type Handler interface {
 	// plan_status. Tenant data is never touched. Requires
 	// is_superadmin=true.
 	//
-	// POST /api/v1/admin/accounts/{tenantId}/suspend
+	// POST /api/v1/admin/accounts/{id}/suspend
 	SuspendAdminAccount(ctx context.Context, req *AdminReasonRequest, params SuspendAdminAccountParams) (SuspendAdminAccountRes, error)
+	// SwitchOrg implements switchOrg operation.
+	//
+	// Requires authentication but NOT an active tenant — this is how a user
+	// stranded without a valid active org (e.g. a former site-collaborator
+	// whose access was revoked) recovers. The membership gate runs under
+	// the caller's own row-level-security scope: a non-member of
+	// `tenant_id` gets 403, never a different signal that would confirm the
+	// tenant's existence.
+	//
+	// POST /api/v1/orgs/switch
+	SwitchOrg(ctx context.Context, req *SwitchOrgReq) (SwitchOrgRes, error)
+	// SyncAdminVulnFeed implements syncAdminVulnFeed operation.
+	//
+	// Enqueue an immediate vulnerability feed refresh (superadmin).
+	//
+	// POST /api/v1/admin/vuln-feed/sync
+	SyncAdminVulnFeed(ctx context.Context) (SyncAdminVulnFeedRes, error)
 	// SyncMedia implements syncMedia operation.
 	//
 	// Tell the agent to enumerate the media library.
@@ -2335,6 +3031,15 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/destinations/test
 	TestSiteDestination(ctx context.Context, req *SiteDestinationTest, params TestSiteDestinationParams) (TestSiteDestinationRes, error)
+	// ToggleScanFindingIgnore implements toggleScanFindingIgnore operation.
+	//
+	// Global route (no `:siteId` path segment — a finding id is unique per
+	// tenant). The finding's own site is resolved server-side and checked
+	// against the caller's site allowlist. `ignored` defaults to `true`
+	// when omitted from the body.
+	//
+	// POST /api/v1/findings/{id}/ignore
+	ToggleScanFindingIgnore(ctx context.Context, req OptToggleScanFindingIgnoreReq, params ToggleScanFindingIgnoreParams) (ToggleScanFindingIgnoreRes, error)
 	// TriggerDbScan implements triggerDbScan operation.
 	//
 	// Runs a synchronous read-only scan against the site's WordPress database
@@ -2367,6 +3072,20 @@ type Handler interface {
 	//
 	// PATCH /api/v1/clients/{clientId}
 	UpdateClient(ctx context.Context, req *UpdateAgencyClientRequest, params UpdateClientParams) (UpdateClientRes, error)
+	// UpdateMe implements updateMe operation.
+	//
+	// Updates the caller's display name. Email is intentionally not
+	// editable here.
+	//
+	// PATCH /auth/me
+	UpdateMe(ctx context.Context, req *UpdateMeReq) (UpdateMeRes, error)
+	// UpdateMediaSettings implements updateMediaSettings operation.
+	//
+	// On a successful store but failed agent push, returns `200` with the
+	// stored settings and an `X-Agent-Push-Warning` header.
+	//
+	// PUT /api/v1/sites/{siteId}/media/settings
+	UpdateMediaSettings(ctx context.Context, req *MediaSettings, params UpdateMediaSettingsParams) (UpdateMediaSettingsRes, error)
 	// UpdateSiteDestination implements updateSiteDestination operation.
 	//
 	// Update a configured destination (omit secret_key to keep it).
@@ -2388,6 +3107,12 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/files/settings
 	UpdateSiteFilesSettings(ctx context.Context, req *UpdateFileManagerSettingsRequest, params UpdateSiteFilesSettingsParams) (UpdateSiteFilesSettingsRes, error)
+	// UpdateSmtpSettings implements updateSmtpSettings operation.
+	//
+	// Requires the `smtp.manage` permission (owner-only).
+	//
+	// PUT /api/v1/settings/smtp
+	UpdateSmtpSettings(ctx context.Context, req *SmtpSettingsUpdate) (UpdateSmtpSettingsRes, error)
 	// UpdateTag implements updateTag operation.
 	//
 	// A color-only body just updates the color. A `name` change renames the
@@ -2407,6 +3132,14 @@ type Handler interface {
 	//
 	// GET /api/v1/audit/verify
 	VerifyAudit(ctx context.Context) (VerifyAuditRes, error)
+	// VerifyBillingCheckoutCallback implements verifyBillingCheckoutCallback operation.
+	//
+	// A UX confirmation ONLY — the payment provider's webhook remains the sole source of truth for
+	// actually granting a plan. Verified against the caller's own tenant's pinned provider; the request
+	// can never name a different tenant or provider.
+	//
+	// POST /api/v1/billing/checkout/verify
+	VerifyBillingCheckoutCallback(ctx context.Context, req *VerifyBillingCheckoutCallbackReq) (VerifyBillingCheckoutCallbackRes, error)
 	// VerifyEmail implements verifyEmail operation.
 	//
 	// Consumes the one-time verification token sent during self-serve

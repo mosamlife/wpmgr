@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.69
+  version: 0.61.70
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -80,6 +80,28 @@ tags:
       generated and a backend test can enforce conformance.
   - name: security
     description: Core file-integrity scans, brute-force protection, and the IP firewall.
+  - name: two-factor-auth
+    description: Dashboard operator two-factor authentication (TOTP, WebAuthn/passkeys, recovery codes, trusted devices).
+  - name: scans
+    description: Per-site malware and file-integrity scan runs and their findings.
+  - name: vulnerabilities
+    description: Known-vulnerability detection for installed core/plugins/themes, sourced from the Wordfence Intelligence feed.
+  - name: files
+    description: Per-site read/write File Manager (browse, edit, upload, archive, search, and version history), off by default per site.
+  - name: email
+    description: Per-site and org-level outgoing email logging, deliverability, suppression lists, and provider webhooks.
+  - name: clients
+    description: Agency client records, client members/invitations, and bulk site assignment.
+  - name: portal
+    description: Read-only client portal (site status, uptime, backups, updates, vitals, and report downloads).
+  - name: rum
+    description: Public Real User Monitoring beacon ingest.
+  - name: admin
+    description: >-
+      Superadmin instance-management console (instance stats, user
+      management, tenancy diagnostics, and the vulnerability feed API key).
+      Every route requires is_superadmin=true. Distinct from the admin-billing
+      tag, which covers the billing-specific superadmin console.
   - name: api-keys
     description: Role-scoped, hashed, revocable API keys.
   - name: shares
@@ -92,6 +114,8 @@ tags:
     description: Per-site Performance Suite (page cache, CSS/JS optimization, RUCSS, CDN, database cleanup) plus portfolio-wide bulk cache actions.
   - name: object-cache
     description: Per-site object (Redis/Memcached) cache management — config, test, enable/disable, flush, and stats history.
+  - name: settings
+    description: Instance-wide operator settings (currently outgoing SMTP configuration).
 paths:
   /healthz:
     get:
@@ -375,6 +399,472 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateMe
+      summary: Update the authenticated user's display name
+      description: |
+        Updates the caller's display name. Email is intentionally not
+        editable here.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Updated user, memberships, and active tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/me/password:
+    post:
+      operationId: changeMyPassword
+      summary: Change the authenticated user's password
+      description: |
+        Verifies `current_password`, then sets `new_password`. This session
+        stays alive (its `auth_at` is refreshed so it does not predate the new
+        `password_changed_at`); every other session for this user is invalidated.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                  format: password
+                new_password:
+                  type: string
+                  format: password
+      responses:
+        "204":
+          description: Password changed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  # ---------------------------------------------------------------------------
+  # ADR-056 Phase 3 — dashboard two-factor authentication
+  # ---------------------------------------------------------------------------
+
+  /auth/2fa/status:
+    get:
+      operationId: getTwoFactorStatus
+      summary: Current 2FA configuration summary for the authenticated user
+      tags: [two-factor-auth]
+      responses:
+        "200":
+          description: 2FA status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TwoFactorStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/2fa/totp/begin:
+    post:
+      operationId: beginTotpEnrollment
+      summary: Start TOTP enrollment
+      description: |
+        Returns the `otpauth://` URI and the base32 secret for the enrollment
+        wizard (e.g. to render a QR code). This is the ONLY response that ever
+        returns the raw secret.
+      tags: [two-factor-auth]
+      responses:
+        "200":
+          description: TOTP provisional secret
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [otpauth_uri, secret]
+                properties:
+                  otpauth_uri:
+                    type: string
+                  secret:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/2fa/totp/confirm:
+    post:
+      operationId: confirmTotpEnrollment
+      summary: Confirm TOTP enrollment with a live code
+      description: |
+        Validates `code` against the provisional secret from
+        `POST /auth/2fa/totp/begin`, persists the confirmed secret, and
+        returns 10 recovery codes shown exactly once.
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        "200":
+          description: TOTP confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCodesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/totp/disable:
+    post:
+      operationId: disableTotp
+      summary: Disable TOTP
+      description: |
+        Requires `current_password` re-authentication. On success: clears
+        TOTP, recomputes `two_factor_enabled`, revokes every trusted device
+        for this user, and clears the trusted-device cookie on this response.
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password]
+              properties:
+                current_password:
+                  type: string
+                  format: password
+      responses:
+        "204":
+          description: TOTP disabled
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/totp:
+    post:
+      operationId: completeTotpChallenge
+      summary: Complete a login 2FA challenge with a TOTP code (unauthenticated)
+      description: |
+        Verifies `code` against the active challenge minted at login (the
+        `challenge` nonce returned by `POST /auth/login`'s 202 response) and,
+        on success, issues a full session. `remember_device` optionally issues
+        a trusted-device cookie so future logins skip the challenge.
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TwoFactorChallengeCompleteRequest"
+      responses:
+        "200":
+          description: Authenticated; session cookie set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [me]
+                properties:
+                  me:
+                    $ref: "#/components/schemas/Me"
+                  recovery_codes_remaining:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/recovery:
+    post:
+      operationId: completeRecoveryChallenge
+      summary: Complete a login 2FA challenge with a single-use recovery code (unauthenticated)
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TwoFactorChallengeCompleteRequest"
+      responses:
+        "200":
+          description: Authenticated; session cookie set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [me]
+                properties:
+                  me:
+                    $ref: "#/components/schemas/Me"
+                  recovery_codes_remaining:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/recovery-codes/regenerate:
+    post:
+      operationId: regenerateRecoveryCodes
+      summary: Replace the recovery-code batch
+      description: |
+        Requires `current_password` re-authentication. Replaces the existing
+        10-code batch with 10 new ones, returned once.
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password]
+              properties:
+                current_password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: New recovery codes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCodesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/webauthn/begin:
+    post:
+      operationId: beginWebAuthnChallenge
+      summary: Start the WebAuthn assertion ceremony for a login challenge (unauthenticated)
+      description: |
+        Returns the raw `CredentialAssertion` options JSON so the browser can
+        pass them directly to `navigator.credentials.get()`.
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge]
+              properties:
+                challenge:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: WebAuthn CredentialAssertion options (raw, provider-defined shape)
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/webauthn/finish:
+    post:
+      operationId: finishWebAuthnChallenge
+      summary: Complete a login 2FA challenge with a WebAuthn assertion (unauthenticated)
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, assertion]
+              properties:
+                challenge:
+                  type: string
+                  format: uuid
+                assertion:
+                  type: string
+                  format: byte
+                  description: Base64-encoded WebAuthn assertion response.
+                remember_device:
+                  type: boolean
+                  default: false
+                device_label:
+                  type: string
+      responses:
+        "200":
+          description: Authenticated; session cookie set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/webauthn/begin-registration:
+    post:
+      operationId: beginWebAuthnEnrollment
+      summary: Start the WebAuthn registration ceremony for the authenticated user
+      description: |
+        Returns the raw `CredentialCreation` options JSON so the browser can
+        pass them directly to `navigator.credentials.create()`.
+      tags: [two-factor-auth]
+      responses:
+        "200":
+          description: WebAuthn CredentialCreation options (raw, provider-defined shape)
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/2fa/webauthn/finish-registration:
+    post:
+      operationId: finishWebAuthnEnrollment
+      summary: Complete WebAuthn credential registration
+      tags: [two-factor-auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, attestation]
+              properties:
+                name:
+                  type: string
+                  description: Operator-chosen label for this credential (e.g. "YubiKey").
+                attestation:
+                  type: string
+                  format: byte
+                  description: Base64-encoded WebAuthn attestation response.
+      responses:
+        "201":
+          description: Credential registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebAuthnCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/webauthn/credentials:
+    get:
+      operationId: listWebAuthnCredentials
+      summary: List the authenticated user's WebAuthn credentials
+      tags: [two-factor-auth]
+      responses:
+        "200":
+          description: Credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebAuthnCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/2fa/webauthn/credentials/{id}:
+    delete:
+      operationId: deleteWebAuthnCredential
+      summary: Delete a WebAuthn credential
+      description: Requires `current_password` re-authentication.
+      tags: [two-factor-auth]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password]
+              properties:
+                current_password:
+                  type: string
+                  format: password
+      responses:
+        "204":
+          description: Credential deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /auth/2fa/trusted-devices:
+    get:
+      operationId: listTrustedDevices
+      summary: List the authenticated user's trusted devices
+      tags: [two-factor-auth]
+      responses:
+        "200":
+          description: Trusted devices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrustedDevice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/2fa/trusted-devices/{id}:
+    delete:
+      operationId: revokeTrustedDevice
+      summary: Revoke one trusted device
+      tags: [two-factor-auth]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Device revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /auth/2fa/trusted-devices/revoke-all:
+    post:
+      operationId: revokeAllTrustedDevices
+      summary: Revoke every trusted device for the authenticated user
+      description: Also clears the trusted-device cookie on this response.
+      tags: [two-factor-auth]
+      responses:
+        "204":
+          description: All devices revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /auth/oidc/login:
     get:
       operationId: oidcLogin
@@ -565,6 +1055,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
   /api/v1/orgs:
+    get:
+      operationId: listOrgs
+      summary: List the caller's organisations, with their role in each
+      tags: [orgs]
+      responses:
+        "200":
+          description: Organisations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     post:
       operationId: createOrg
       summary: Create a new organisation; the caller becomes the owner
@@ -600,6 +1103,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/orgs/switch:
+    post:
+      operationId: switchOrg
+      summary: Switch the session's active organisation by tenant id (body form)
+      description: |
+        Requires authentication but NOT an active tenant — this is how a user
+        stranded without a valid active org (e.g. a former site-collaborator
+        whose access was revoked) recovers. The membership gate runs under
+        the caller's own row-level-security scope: a non-member of
+        `tenant_id` gets 403, never a different signal that would confirm the
+        tenant's existence.
+      tags: [orgs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Active organisation switched
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, tenant_id, tenant_name]
+                properties:
+                  ok:
+                    type: boolean
+                  tenant_id:
+                    type: string
+                    format: uuid
+                  tenant_name:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member of the requested organisation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v1/orgs/{orgId}/activate:
     post:
       operationId: activateOrg
@@ -628,6 +1180,137 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           description: Organisation not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/orgs/{orgId}:
+    patch:
+      operationId: renameOrg
+      summary: Rename an organisation
+      description: Requires the caller to be an admin or owner of this org.
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 200
+      responses:
+        "200":
+          description: Organisation renamed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Org"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member, or insufficient role (admin/owner required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      operationId: deleteOrg
+      summary: Delete an organisation (owner-only)
+      description: |
+        Two-lane deletion (GH #152). An EMPTY org (zero sites, zero other
+        members) is hard-deleted immediately (`lane=hard`). A populated org is
+        soft-deleted (`lane=soft`): it becomes invisible everywhere instantly
+        and is recoverable via `POST /orgs/{orgId}/restore` until the
+        grace-window purge worker runs. `confirm_name` must exactly match the
+        organisation's current name. When this is the caller's active org,
+        their session is reassigned to another live membership, or cleared
+        entirely (dropping to onboarding) if it was their last org —
+        `active_tenant_id` in the response reflects the post-delete state.
+        On a hosted instance an active paid subscription must be
+        cancelled/downgraded first (`billing_active` 409).
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_name]
+              properties:
+                confirm_name:
+                  type: string
+      responses:
+        "200":
+          description: Organisation deleted (hard or soft, see `lane`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteOrgResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member, or insufficient role (owner required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >-
+            org_already_deleted | billing_active | restore_in_progress —
+            see the error `code` for which precondition failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: confirm_name does not match the organisation's name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/orgs/{orgId}/restore:
+    post:
+      operationId: restoreOrg
+      summary: Undelete a soft-deleted organisation within the grace window (owner-only)
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Organisation restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Org"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member, or insufficient role (owner required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: org_already_purged — the organisation was already permanently deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            org_not_deleted | purge_in_progress — see the error `code` for
+            which precondition failed
           content:
             application/json:
               schema:
@@ -757,6 +1440,90 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/invitations:
+    get:
+      operationId: listSiteInvitations
+      summary: List share-invitation history for a site (org-scoped)
+      description: |
+        Requires the `member.manage` permission and full org membership — a
+        site-scoped collaborator cannot manage shares.
+      tags: [shares]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Invitation history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SiteInvitation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/invitations/{invitationId}:
+    delete:
+      operationId: revokeSiteInvitation
+      summary: Revoke a pending site-share invitation
+      description: |
+        Requires the `member.manage` permission and full org membership.
+      tags: [shares]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Invitation revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/sites/{siteId}/invitations/{invitationId}/regenerate:
+    post:
+      operationId: regenerateSiteInvitation
+      summary: Rotate a site-share invitation's accept token
+      description: |
+        Requires the `member.manage` permission and full org membership.
+        Returns a fresh `accept_link` for the same pending invitation.
+      tags: [shares]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Token rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accept_link]
+                properties:
+                  accept_link:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/invitations/accept:
     post:
       operationId: acceptInvitation
@@ -1072,6 +1839,88 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  # --- ADR-045 instance SMTP settings ------------------------------------------
+  /api/v1/settings/smtp:
+    get:
+      operationId: getSmtpSettings
+      summary: Get the instance-wide SMTP settings (masked)
+      description: |
+        Org-scoped (blocks site-scoped collaborators). Reads require admin+;
+        the stored password/secret is never returned in plaintext.
+      tags: [settings]
+      responses:
+        "200":
+          description: Current SMTP settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmtpSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      operationId: updateSmtpSettings
+      summary: Update the instance-wide SMTP settings
+      description: Requires the `smtp.manage` permission (owner-only).
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmtpSettingsUpdate"
+      responses:
+        "200":
+          description: Updated SMTP settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmtpSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/settings/smtp/test:
+    post:
+      operationId: sendSmtpTestEmail
+      summary: Send a test email through the stored SMTP config
+      description: |
+        Requires the `smtp.manage` permission (owner-only). A send failure is
+        returned as `200 {ok:false, message}` — the scrubbed reason string
+        never contains internal IPs/hostnames — rather than a 4xx/5xx, so the
+        UI can show it inline.
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_address]
+              properties:
+                to_address:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, message]
+                properties:
+                  ok:
+                    type: boolean
+                  message:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/audit:
     get:
       operationId: listAudit
@@ -1316,6 +2165,484 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/billing/checkout/verify:
+    post:
+      operationId: verifyBillingCheckoutCallback
+      summary: Verify a browser-returned Razorpay checkout completion callback (owner)
+      description: >
+        A UX confirmation ONLY — the payment provider's webhook remains the
+        sole source of truth for actually granting a plan. Verified against
+        the caller's own tenant's pinned provider; the request can never name
+        a different tenant or provider.
+      tags: [billing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                razorpay_payment_id:
+                  type: string
+                razorpay_subscription_id:
+                  type: string
+                razorpay_signature:
+                  type: string
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verified]
+                properties:
+                  verified:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/billing/cancel:
+    post:
+      operationId: cancelBillingSubscription
+      summary: Cancel the tenant's subscription (owner)
+      description: >
+        The provider-agnostic cancellation path — the only one for a provider
+        with no hosted portal (e.g. Razorpay). Cancellation is scheduled for
+        the end of the current billing period; the plan/status change lands
+        later via the provider's webhook. Poll `GET /billing` afterward
+        rather than expecting this response to carry the new plan state.
+      tags: [billing]
+      responses:
+        "200":
+          description: Cancellation scheduled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # --- m33 superadmin instance-management console ------------------------------
+  # Every route below requires is_superadmin=true (requireSuperadmin middleware).
+  # A non-superadmin gets 403 superadmin_required, indistinguishable from a
+  # route that genuinely does not exist for them.
+  /api/v1/admin/stats:
+    get:
+      operationId: getAdminStats
+      summary: Instance-wide counts (superadmin)
+      tags: [admin]
+      responses:
+        "200":
+          description: Instance stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/users:
+    get:
+      operationId: listAdminUsers
+      summary: Search/list every user on the instance (superadmin)
+      tags: [admin]
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminUser"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/users/{userId}:
+    patch:
+      operationId: setAdminUserStatus
+      summary: Set a user's status (superadmin)
+      tags: [admin]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUser"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteAdminUser
+      summary: Delete a user (superadmin)
+      description: |
+        Hard-deletes the user. Any organisation the user solely owned with
+        zero sites is deleted along with them; an organisation with sites (or
+        other members) is kept, listed in `kept_orgs_with_sites`.
+      tags: [admin]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminDeleteUserResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/admin/users/{userId}/resend-verification:
+    post:
+      operationId: resendAdminUserVerification
+      summary: Resend a pending user's verification email (superadmin)
+      tags: [admin]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Resent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/admin/users/{userId}/sites:
+    get:
+      operationId: listAdminUserSites
+      summary: Every site reachable by a user via their org memberships (superadmin)
+      tags: [admin]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Sites reachable by this user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserSites"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/sites/{siteId}/tenancy:
+    get:
+      operationId: getAdminSiteTenancy
+      summary: Diagnose a site/tenant ownership split (superadmin, read-only)
+      description: |
+        Compares where a site and its perf data (rucss results / cache stats
+        / config) live against the calling superadmin's own org memberships.
+        No mutation.
+      tags: [admin]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Tenancy diagnostic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSiteTenancy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/sites/{siteId}/grant-self-membership:
+    post:
+      operationId: grantAdminSelfMembership
+      summary: Re-attach the calling superadmin as owner of a site's org (superadmin)
+      description: |
+        Idempotent recovery primitive for a recovery-induced org split. Only
+        ever adds the CALLER (never an arbitrary user) to the SITE's own org
+        (never an arbitrary tenant).
+      tags: [admin]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Membership result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGrantSelfMembershipResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts-tenancy:
+    get:
+      operationId: getAdminAccountsTenancy
+      summary: Every user matching an email substring, with memberships, plus a full org census (superadmin, read-only)
+      description: |
+        Diagnostic for account/org splits (e.g. a superadmin stranded in the
+        wrong org while site data lives in a different org). No mutation.
+      tags: [admin]
+      parameters:
+        - name: email
+          in: query
+          required: false
+          description: ILIKE substring match against users.email. Omit or empty to match all users.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Accounts tenancy census
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAccountsTenancy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/vuln-feed/status:
+    get:
+      operationId: getAdminVulnFeedStatus
+      summary: Masked Wordfence Intelligence feed API key status (superadmin)
+      description: The key itself is never returned.
+      tags: [admin]
+      responses:
+        "200":
+          description: Feed status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminVulnFeedStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: vuln_feed_not_wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/vuln-feed/key:
+    put:
+      operationId: setAdminVulnFeedKey
+      summary: Set the vulnerability feed API key (superadmin)
+      description: |
+        Plaintext key in the body over TLS. On success an immediate sync is
+        triggered so the operator sees it connect without waiting an hour.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key:
+                  type: string
+      responses:
+        "200":
+          description: Key stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, syncing]
+                properties:
+                  ok:
+                    type: boolean
+                  syncing:
+                    type: boolean
+                  warning:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: vuln_feed_not_wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: clearAdminVulnFeedKey
+      summary: Clear the UI-stored vulnerability feed API key (superadmin)
+      description: Falls back to the `WPMGR_VULN_FEED_API_KEY` environment variable, if set.
+      tags: [admin]
+      responses:
+        "200":
+          description: Key cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, fallback_source]
+                properties:
+                  ok:
+                    type: boolean
+                  fallback_source:
+                    type: string
+                    enum: [ui, env, none]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: vuln_feed_not_wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/vuln-feed/sync:
+    post:
+      operationId: syncAdminVulnFeed
+      summary: Enqueue an immediate vulnerability feed refresh (superadmin)
+      tags: [admin]
+      responses:
+        "202":
+          description: Sync enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, syncing]
+                properties:
+                  ok:
+                    type: boolean
+                  syncing:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: vuln_feed_not_wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/admin/accounts:
     get:
       operationId: listAdminAccounts
@@ -1395,7 +2722,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /api/v1/admin/accounts/{tenantId}:
+  /api/v1/admin/accounts/{id}:
     get:
       operationId: getAdminAccount
       summary: Full account-detail page for one tenant (superadmin)
@@ -1405,7 +2732,7 @@ paths:
         member roster, and a compact site list. Requires is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -1440,7 +2767,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /api/v1/admin/accounts/{tenantId}/comp:
+  /api/v1/admin/accounts/{id}/comp:
     post:
       operationId: compAdminAccount
       summary: Grant a manual comp (superadmin)
@@ -1450,7 +2777,7 @@ paths:
         Requires is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -1506,7 +2833,7 @@ paths:
         is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -1553,7 +2880,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /api/v1/admin/accounts/{tenantId}/overrides:
+  /api/v1/admin/accounts/{id}/overrides:
     put:
       operationId: setAdminAccountOverrides
       summary: Set manual limit overrides (superadmin)
@@ -1565,7 +2892,7 @@ paths:
         pure ladder base. Requires is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -1612,7 +2939,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /api/v1/admin/accounts/{tenantId}/grace:
+  /api/v1/admin/accounts/{id}/grace:
     post:
       operationId: extendAdminAccountGrace
       summary: Extend a past_due tenant's grace period (superadmin)
@@ -1622,7 +2949,7 @@ paths:
         current one). Requires is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -1671,7 +2998,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /api/v1/admin/accounts/{tenantId}/suspend:
+  /api/v1/admin/accounts/{id}/suspend:
     post:
       operationId: suspendAdminAccount
       summary: Suspend a tenant (superadmin)
@@ -1681,7 +3008,7 @@ paths:
         is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -1728,7 +3055,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /api/v1/admin/accounts/{tenantId}/restore:
+  /api/v1/admin/accounts/{id}/restore:
     post:
       operationId: restoreAdminAccount
       summary: Un-suspend a tenant (superadmin)
@@ -1741,7 +3068,7 @@ paths:
         body outright. Requires is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -1788,7 +3115,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /api/v1/admin/accounts/{tenantId}/state:
+  /api/v1/admin/accounts/{id}/state:
     post:
       operationId: forceAdminAccountState
       summary: Force plan + plan_status directly (superadmin)
@@ -1799,7 +3126,7 @@ paths:
         is_superadmin=true.
       tags: [admin-billing]
       parameters:
-        - name: tenantId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -2412,6 +3739,49 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MediaJobDetail" }
+  /api/v1/sites/{siteId}/media/settings:
+    get:
+      operationId: getMediaSettings
+      summary: Get the auto-optimize settings for a site (ADR-044)
+      tags: [media]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Current auto-optimize settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaSettings" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      operationId: updateMediaSettings
+      summary: Update the auto-optimize settings for a site
+      description: |
+        On a successful store but failed agent push, returns `200` with the
+        stored settings and an `X-Agent-Push-Warning` header.
+      tags: [media]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaSettings" }
+      responses:
+        "200":
+          description: Updated settings (see `X-Agent-Push-Warning` header for a non-fatal push failure)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaSettings" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v1/sites/events:
     get:
       operationId: streamSiteEvents
@@ -2638,6 +4008,145 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  # --- Public, unauthenticated endpoints ---------------------------------------
+  /rum/ingest:
+    post:
+      operationId: ingestRumBeacon
+      summary: Ingest one Real User Monitoring (Core Web Vitals) beacon (public)
+      description: |
+        Mounted on the root engine — no session, no tenant gate. The
+        `key` field (a per-site beacon key) is the sole access credential.
+        Every failure mode (unknown key, RUM disabled, sampled out, rate
+        limited, a storage write failure) responds `204 No Content` so a
+        `navigator.sendBeacon()` call — which never reads the response — never
+        surfaces a distinguishing status to the page. Only a malformed body
+        yields `400`, and only an oversized body yields `413`.
+      tags: [rum]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RumBeacon"
+      responses:
+        "204":
+          description: Accepted, discarded, sampled out, or ingested (indistinguishable by design)
+        "400":
+          description: Malformed body or unrecognised metric
+        "401":
+          description: Missing or unparseable beacon key
+        "413":
+          description: Body exceeds the 8 KiB cap
+        "429":
+          description: Per-IP or per-site rate limit exceeded
+    options:
+      operationId: rumIngestPreflight
+      summary: CORS preflight for the beacon endpoint
+      tags: [rum]
+      responses:
+        "204":
+          description: No content
+  /webhooks/email/{provider}/{routeToken}:
+    post:
+      operationId: handleEmailProviderWebhook
+      summary: Inbound bounce/complaint/delivery webhook from an email provider (public)
+      description: |
+        Mounted on the root engine — no session, no tenant gate. `routeToken`
+        is a per-config-row opaque random value; its SHA-256 hash resolves
+        the owning tenant + site, and the corresponding per-row signing key
+        (not an instance-wide key) verifies the provider's signature.
+        `provider` is one of `ses`, `sendgrid`, `mailgun`, `postmark`. An
+        unknown `routeToken` or `provider` responds `404` with no body (no
+        existence leak). The request body shape is entirely provider-defined
+        (SNS notification envelope, SendGrid event array, Mailgun form POST,
+        or Postmark JSON) so it is not modeled as a fixed schema here.
+      tags: [email]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [ses, sendgrid, mailgun, postmark]
+        - name: routeToken
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >-
+                Provider-defined envelope (SNS notification, SendGrid event
+                array, or Postmark JSON). Mailgun's form-urlencoded POST is
+                accepted on the wire too but is not separately modeled here
+                (single-content-type schema keeps codegen well-formed).
+      responses:
+        "200":
+          description: Event processed
+        "401":
+          description: Provider signature verification failed
+        "404":
+          description: Unknown routeToken or provider
+        "500":
+          description: Internal processing error
+  /webhooks/billing/{provider}:
+    post:
+      operationId: handleBillingProviderWebhook
+      summary: Inbound payment-provider webhook (public)
+      description: |
+        Mounted on the root engine — no session, no tenant gate. The
+        provider's own request signature (verified inside
+        `Service.ProcessWebhook`) is the entire authentication boundary. An
+        unrecognised `provider` value 404s.
+      tags: [billing]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [stripe]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Event processed
+        "401":
+          description: Signature verification failed
+        "404":
+          description: Unknown provider
+  /api/v1/pricing:
+    get:
+      operationId: getPublicPricing
+      summary: Live hosted pricing (public, hosted-only)
+      description: |
+        Mounted directly on the root engine (no session, no tenant gate)
+        despite sharing the `/api/v1` path prefix — the marketing site's
+        price source. Registered only when hosted billing is enabled;
+        self-host installs 404 here. Response is `Cache-Control:
+        public, max-age=3600` and resolves from a warm cache when possible,
+        falling back to a static in-Go price table when no payment provider
+        is configured.
+      tags: [billing]
+      responses:
+        "200":
+          description: Current pricing table
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicPricing"
+        "404":
+          description: Hosted billing is not enabled on this instance
+
   /api/v1/sites/{siteId}/autologin:
     post:
       operationId: createAutologin
@@ -2889,6 +4398,259 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /agent/v1/activity:
+    post:
+      operationId: agentPushActivity
+      summary: Push a batch of hash-chained WordPress activity-log entries (agent-authenticated)
+      description: |
+        ADR-037 Sprint 3. The CP re-verifies the hash chain at ingest and
+        flags any tamper as `chain_valid:false` on the affected row rather
+        than rejecting the batch.
+      tags: [agent, activity]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentActivityIngestRequest"
+      responses:
+        "200":
+          description: Ingest result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ingested, chain_breaks]
+                properties:
+                  ingested:
+                    type: integer
+                  chain_breaks:
+                    type: integer
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "503":
+          description: activity_unwired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/diagnostics:
+    post:
+      operationId: agentPushDiagnostics
+      summary: Push the daily 14-category Site Health diagnostics blob (agent-authenticated)
+      description: |
+        ADR-037 Sprint 2. Body is the raw 14-category diagnostics payload
+        (freeform per category). Also drives best-effort hosting-provider
+        inference from the request's source IP.
+      tags: [agent, diagnostics]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The 14-category diagnostics payload, keyed by category name.
+      responses:
+        "200":
+          description: Ingest result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [categories_ingested]
+                properties:
+                  categories_ingested:
+                    type: integer
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "503":
+          description: diagnostics_unwired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/errors:
+    post:
+      operationId: agentPushErrors
+      summary: Push a heartbeat-driven batch of fingerprint-deduped PHP errors (agent-authenticated)
+      tags: [agent, diagnostics]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentErrorBatch"
+      responses:
+        "200":
+          description: Ingest result — `highest_id` lets the agent advance its local ship cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [consumed_count, highest_id]
+                properties:
+                  consumed_count:
+                    type: integer
+                  highest_id:
+                    type: integer
+                    format: int64
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "503":
+          description: diagnostics_unwired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/security/login-events:
+    post:
+      operationId: agentPushLoginEvents
+      summary: Push a heartbeat-driven batch of login events (agent-authenticated)
+      tags: [agent, security]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentLoginEventBatch"
+      responses:
+        "200":
+          description: Ingest result — `highest_id` lets the agent advance its local ship cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [consumed_count, highest_id]
+                properties:
+                  consumed_count:
+                    type: integer
+                  highest_id:
+                    type: integer
+                    format: int64
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "503":
+          description: security_unwired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/security/hibp/range/{prefix}:
+    get:
+      operationId: agentGetHibpRange
+      summary: Fetch the cached HIBP Pwned Passwords range body for a SHA-1 prefix (agent-authenticated)
+      description: |
+        ADR-059 Phase 3. Only the 5-char SHA-1 prefix is transmitted; the
+        agent performs the suffix match locally and never sends the full
+        password or full hash to the CP. The response is the raw
+        `SUFFIX:COUNT` text body from the HIBP range API (possibly with
+        Add-Padding decoy lines). An empty body means either a clean prefix
+        or a fail-open (HIBP unreachable) — the agent treats both identically
+        (password not breached).
+      tags: [agent, security]
+      security:
+        - AgentSignature: []
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-F0-9]{5}$"
+          description: Exactly 5 uppercase hex characters.
+      responses:
+        "200":
+          description: Raw SUFFIX:COUNT text body (possibly empty)
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: invalid_hibp_prefix
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/update/manifest:
+    get:
+      operationId: agentGetUpdateManifest
+      summary: Fetch the signed self-update release manifest (agent-authenticated, ADR-042)
+      description: |
+        Returns a detached-Ed25519-signed JSON blob (NOT a JWT) carrying a
+        short-lived presigned package download URL plus its sha256 + size.
+        `manifest` is the base64url-encoded EXACT signed bytes; the agent
+        decodes it, verifies `signature` over those bytes, then JSON-decodes.
+        `204` (no body) means no release has been published yet.
+      tags: [agent, updates]
+      security:
+        - AgentSignature: []
+      responses:
+        "200":
+          description: Signed manifest
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [manifest, signature]
+                properties:
+                  manifest:
+                    type: string
+                    description: Base64url-encoded signed JSON payload.
+                  signature:
+                    type: string
+                    description: Detached Ed25519 signature over the decoded manifest bytes.
+        "204":
+          description: No release has been published yet
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: update_unwired — the self-update channel is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /agent/v1/media/sync-batch:
     post:
       operationId: agentMediaSyncBatch
@@ -3118,40 +4880,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /agent/v1/fonts/transcode:
+  /agent/v1/media/auto-optimize:
     post:
-      operationId: agentFontsTranscode
-      summary: Enqueue or poll a font WOFF2 transcode job (agent-authenticated)
+      operationId: agentMediaAutoOptimize
+      summary: Push the debounced, deduped set of newly-uploaded attachments for auto-optimization (ADR-044, agent-authenticated)
       description: |
-        Font Transcoder (M54 / Phase 1) — the agent POSTs when it discovers a
-        self-hosted font (TTF/OTF/WOFF) that needs a WOFF2 encoding so it can
-        serve the font with correct `format()` fallbacks.
-
-        **Upload flow:**
-        1. Agent POSTs `FontTranscodeRequest` (no storage key — the agent MUST
-           NOT supply or guess a key; the CP derives all keys from the verified
-           tenant identity + `source_hash`).
-        2. If no job exists yet, the CP enqueues a `font_transcode` River job
-           and returns `state="pending"` with a `source_put_url` (presigned
-           S3 PUT, same TTL as the source-upload URL for media). The agent
-           MUST PUT the raw font bytes to this URL before the encoder runs.
-        3. On subsequent POSTs for the same hash (`state="pending"` row
-           already exists), `source_put_url` is absent — the source is already
-           uploaded. The agent polls on every page build until state changes.
-        4. When `state="ready"`, `woff2_get_url` is a short-TTL presigned GET
-           URL minted by the CP for the server-derived, GuardStorageKey-
-           validated WOFF2 object. The agent fetches the WOFF2 bytes from this
-           URL. The agent MUST NOT presign or construct a storage key itself.
-           `woff2_key` is also present as an informational field.
-        5. When `state="negative"`, transcoding permanently failed; the agent
-           serves the original font forever (no retry).
-
-        **Security:** keys are SERVER-DERIVED from the verified tenant identity
-        + the caller-validated `source_hash`; `GuardStorageKey` validates every
-        key before it reaches the presigner. The agent identity (Ed25519
-        signed-request middleware) drives the tenant scope — the body never
-        influences which tenant's namespace is used.
-      tags: [agent, perf]
+        The agent sends full attachment metadata so the CP can upsert rows
+        before gating and optimizing (fixes the fresh-upload skip). An empty
+        `attachments` array is a valid no-op.
+      tags: [agent, media]
       security:
         - AgentSignature: []
       requestBody:
@@ -3159,20 +4896,20 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/FontTranscodeRequest"
+              $ref: "#/components/schemas/AgentAutoOptimizeRequest"
       responses:
         "200":
-          description: Current transcode state for this hash
+          description: Batch result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FontTranscodeResponse"
-        "400":
-          description: Invalid request (source_size <= 0)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+                type: object
+                required: [accepted, skipped]
+                properties:
+                  accepted:
+                    type: integer
+                  skipped:
+                    type: integer
         "401":
           description: Agent authentication failed
           content:
@@ -3180,24 +4917,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "422":
-          description: source_hash is not a valid 64-char lowercase hex BLAKE3 digest
+          description: auto_optimize_batch_too_large or malformed body
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429":
-          description: Daily per-tenant font transcode enqueue cap exceeded
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "503":
-          description: Font transcode enqueuer not available (degraded deployment)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
+  # fonts/transcode intentionally absent: handler exists (internal/perf/font_handler.go)
+  # but is never mounted on the agent route group, so POST /agent/v1/fonts/transcode
+  # 404s in every build. Tracked as GH #240. Do not re-add this path until the
+  # handler is actually registered in internal/server/server.go.
   /agent/v1/fonts/results:
     post:
       operationId: agentFontsResults
@@ -3244,6 +4972,463 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  # --- m36 / ADR-046 Performance Suite agent callbacks --------------------------
+  /agent/v1/cache/stats-report:
+    post:
+      operationId: agentReportCacheStats
+      summary: Report the latest page-cache gauges, and optionally an object-cache block (agent-authenticated)
+      tags: [agent, performance]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentCacheStatsReport"
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /agent/v1/perf/config-ack:
+    post:
+      operationId: agentAckPerfConfig
+      summary: Acknowledge the current install state for a site's perf config (agent-authenticated)
+      tags: [agent, performance]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentPerfConfigAck"
+      responses:
+        "200":
+          description: Acknowledged (`detail` present when there is no config row yet)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  detail:
+                    type: string
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /agent/v1/rucss:
+    post:
+      operationId: agentIngestRucss
+      summary: Submit a page render for Remove Unused CSS computation (agent-authenticated)
+      description: |
+        `multipart/form-data` with parts `meta` (JSON: `site_id`, `url`,
+        `structure_hash` required, `safelist` optional), `html` (required,
+        max 10 MiB), and one-or-more `css` parts (optional, max 5 MiB total).
+        Hard overall request ceiling 16 MiB. On a cache HIT the response body
+        IS the used-CSS content (not a key), `Content-Encoding: gzip`, with
+        `X-Rucss-Reduction-Pct` and `X-Rucss-Used-Bytes` headers. On a cache
+        MISS or degraded/unavailable state, `202` with `{"status":"processing",
+        "job_id":...}` or `{"status":"unavailable"}` — the agent serves full
+        CSS this render and never blocks.
+      tags: [agent, performance]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [meta, html]
+              properties:
+                meta:
+                  type: string
+                  format: byte
+                  description: JSON part — see description for the expected shape.
+                html:
+                  type: string
+                  format: binary
+                css:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Cache hit — used-CSS content (gzip-encoded)
+          content:
+            text/css:
+              schema:
+                type: string
+                format: binary
+        "202":
+          description: Cache miss, or RUCSS degraded/unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [processing, unavailable]
+                  job_id:
+                    type: string
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: site_mismatch — meta.site_id does not match the authenticated site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: A part (or the whole request) exceeded its size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Missing/invalid meta (no structure_hash) or missing html part
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/db-clean/progress:
+    post:
+      operationId: agentReportDbCleanProgress
+      summary: Report per-category database cleanup progress (M38, agent-authenticated)
+      description: |
+        The frozen contract: an unknown `job_id` (CP restarted mid-job) is
+        still processed, never 404s; the agent must tolerate a non-2xx
+        response without halting its cleanup loop. `done:true` on the final
+        push for the job triggers `db.clean.completed` and advances the next
+        scheduled run.
+      tags: [agent, performance]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentDbCleanProgress"
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: missing_job_id or missing_category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/db-orphan-delete/progress:
+    post:
+      operationId: agentReportDbOrphanDeleteProgress
+      summary: Report batched orphan-deletion progress (P3.8, agent-authenticated)
+      description: |
+        Same frozen-contract tolerance as `/agent/v1/db-clean/progress`: an
+        unknown `job_id` is still processed, and a non-2xx response must not
+        halt the agent's delete loop.
+      tags: [agent, performance]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentDbOrphanDeleteProgress"
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: missing_job_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # --- m59 email log ingest + suppression fetch (agent-authenticated) ----------
+  /agent/v1/email/log:
+    post:
+      operationId: agentPushEmailLog
+      summary: Push a batch of outgoing email send records (agent-authenticated)
+      description: |
+        Tolerant ingest: a malformed `response`/`created_at`/`attachments`
+        sub-field never fails the whole batch — each is coerced to a safe
+        default independently. Emits a throttled SSE `email.log_ingested`
+        notification (at most once per site per throttle window).
+      tags: [agent, email]
+      security:
+        - AgentSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentEmailLogIngestRequest"
+      responses:
+        "200":
+          description: Ingest result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [acked_through]
+                properties:
+                  acked_through:
+                    type: integer
+                    format: int64
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /agent/v1/email/suppression:
+    get:
+      operationId: agentFetchSuppressionDeltas
+      summary: Fetch suppression-list deltas above a keyset cursor (Phase 4a, agent-authenticated)
+      description: |
+        Returns org-wide + this-site suppression deltas so the agent can
+        cache them locally and check before sending. Ascending keyset cursor
+        on `(created_at, id)`; the agent stores `next_cursor` and passes it
+        back as `since` on the next call. Omit `since` to fetch every
+        suppression entry for this tenant+site.
+      tags: [agent, email]
+      security:
+        - AgentSignature: []
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque keyset cursor from a previous call's `next_cursor`.
+      responses:
+        "200":
+          description: Suppression delta page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSuppressionDeltaPage"
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # --- M4 / M5.6 backup agent callbacks (agent-authenticated) -------------------
+  /agent/v1/backups/{snapshotId}/presign:
+    post:
+      operationId: agentPresignBackupChunks
+      summary: Request presigned PUT URLs for not-yet-stored ciphertext chunk hashes (agent-authenticated)
+      description: |
+        Incremental dedup: hashes already stored for the tenant are omitted
+        from `uploads` and the agent skips uploading them. Content-addressed,
+        tenant-namespaced object keys mean a presign can never target another
+        tenant's chunk prefix. The snapshot is re-verified to belong to the
+        calling site before any presign is minted.
+      tags: [agent, backups]
+      security:
+        - AgentSignature: []
+      parameters:
+        - name: snapshotId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentPresignChunksRequest"
+      responses:
+        "200":
+          description: Presigned upload URLs for not-yet-stored hashes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentPresignChunksResponse"
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: snapshot_site_mismatch — the snapshot does not belong to this site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /agent/v1/backups/{snapshotId}/manifest:
+    post:
+      operationId: agentSubmitBackupManifest
+      summary: Submit the completed backup manifest after chunk upload (agent-authenticated)
+      description: |
+        ADR-051: an archive-delta increment submits the SAME request shape as
+        a full backup (its zip parts, DB dump, files-list, and optional
+        tombstones are all `ManifestEntry` rows); per-cycle telemetry
+        counters ride as optional top-level fields. Upserts not-yet-stored
+        chunks, increments refcounts for every reference, inserts manifest
+        entries, and completes the snapshot.
+      tags: [agent, backups]
+      security:
+        - AgentSignature: []
+      parameters:
+        - name: snapshotId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentSubmitManifestRequest"
+      responses:
+        "200":
+          description: Manifest recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSubmitManifestResponse"
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: snapshot_site_mismatch — the snapshot does not belong to this site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /agent/v1/backups/{snapshotId}/progress:
+    post:
+      operationId: agentReportBackupProgress
+      summary: Report the backup runner's latest phase (M5.6 / ADR-032, agent-authenticated)
+      description: |
+        Fired on every stage transition, and per-chunk during the custom
+        presigned-S3 sync. `snapshot_id` comes strictly from the URL path,
+        never the body — a compromised agent cannot target another
+        snapshot by spoofing it in the JSON body.
+      tags: [agent, backups]
+      security:
+        - AgentSignature: []
+      parameters:
+        - name: snapshotId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phase]
+              properties:
+                phase:
+                  type: string
+                phase_detail:
+                  type: object
+      responses:
+        "200":
+          description: Progress recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          description: Agent authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: snapshot_site_mismatch — the snapshot does not belong to this site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          description: Body exceeds the progress payload size cap
 
   /api/v1/sites/{siteId}:
     get:
@@ -4169,6 +6354,49 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/recheck:
+    post:
+      operationId: recheckSite
+      summary: Operator-triggered synchronous connection re-check (M58)
+      description: |
+        Dispatches a synchronous `metadata` command to the site's agent,
+        applies the returned metadata, and records a heartbeat (recovering
+        the connection state to `connected` when it was `degraded` or
+        `disconnected`). Rate-limited per (tenant, site). Requires
+        `site.write` and site access; no org-scope requirement (a
+        write-access collaborator may re-check).
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Re-check completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecheckResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          description: recheck_rate_limited — see `Retry-After` header
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: agent_unreachable — could not reach the site agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: recheck_disabled or lifecycle_disabled — re-check is not available on this control plane
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/uptime:
     get:
       operationId: getSiteUptime
@@ -4322,6 +6550,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FleetIncidentList"
+  /api/v1/fleet/incidents/{incidentId}:
+    get:
+      operationId: getFleetIncidentDetail
+      summary: Incident detail — summary, probe timeline, and 30-day flapping count (M94, GH #148)
+      description: |
+        A site-scoped collaborator without access to the incident's own site
+        gets `404 incident_not_found` (never a distinguishing signal).
+      tags: [uptime]
+      parameters:
+        - name: incidentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Incident detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetIncidentDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/perf/rum/fleet:
     get:
       operationId: getFleetRumAggregate
@@ -4859,6 +7115,265 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SiteLoginEventList"
+  # ── ADR-057 Phase 1 — hardening config + ban list ──────────────────────────
+  /api/v1/sites/{siteId}/security/hardening:
+    get:
+      operationId: getSiteHardeningConfig
+      summary: Get the hardening config for a site
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Current hardening config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteHardeningConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      operationId: putSiteHardeningConfig
+      summary: Save the hardening config for a site and push it to the agent
+      description: |
+        Requires the `site.security.manage` permission. On a successful store
+        but failed agent push, returns `200` with the stored config and an
+        `X-Agent-Push-Warning` header (never a 5xx — the config is durably
+        saved and will be re-pushed on the next reconcile).
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteHardeningConfig"
+      responses:
+        "200":
+          description: Hardening config saved (see `X-Agent-Push-Warning` header for a non-fatal push failure)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteHardeningConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/sites/{siteId}/security/bans:
+    get:
+      operationId: listSiteBans
+      summary: List ban entries for a site
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Ban list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SiteBan"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createSiteBan
+      summary: Create a ban entry for a site
+      description: Requires the `site.security.manage` permission.
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, value]
+              properties:
+                type:
+                  type: string
+                  description: Ban entry kind (e.g. `ip`, `username`, `user_agent`).
+                value:
+                  type: string
+                comment:
+                  type: string
+      responses:
+        "201":
+          description: Ban created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteBan"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/sites/{siteId}/security/bans/{banId}:
+    delete:
+      operationId: deleteSiteBan
+      summary: Delete a ban entry
+      description: Requires the `site.security.manage` permission.
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: banId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Ban deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # ── ADR-059 Phase 3 — site-user auth policy ────────────────────────────────
+  /api/v1/sites/{siteId}/security/policy:
+    get:
+      operationId: getSiteSecurityPolicy
+      summary: Get the site-user auth policy for a site
+      description: |
+        Site-user auth policy governs 2FA and password requirements for the
+        WordPress users of this site (distinct from dashboard operator 2FA,
+        which is per-CP-user — see the two-factor-auth tag).
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Current policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteSecurityPolicy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      operationId: putSiteSecurityPolicy
+      summary: Save the site-user auth policy and push it to the agent
+      description: |
+        Requires the `site.security.manage` permission. On a successful store
+        but failed agent push, returns `200` with the stored policy and an
+        `X-Agent-Push-Warning` header.
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteSecurityPolicy"
+      responses:
+        "200":
+          description: Policy saved (see `X-Agent-Push-Warning` header for a non-fatal push failure)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteSecurityPolicy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/sites/{siteId}/security/policy/groups:
+    get:
+      operationId: listSitePolicyGroups
+      summary: List per-role policy group overrides for a site
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Per-role overrides
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SitePolicyGroup"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/security/policy/groups/{role}:
+    put:
+      operationId: putSitePolicyGroup
+      summary: Upsert a per-role policy group override
+      description: Requires the `site.security.manage` permission.
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: role
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The WordPress role slug this override applies to (e.g. `administrator`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SitePolicyGroup"
+      responses:
+        "200":
+          description: Override saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SitePolicyGroup"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      operationId: deleteSitePolicyGroup
+      summary: Delete a per-role policy group override
+      description: Requires the `site.security.manage` permission.
+      tags: [security]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: role
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Override deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   # ── M14 Login Whitelabel ────────────────────────────────────────────────────
   /api/v1/sites/{siteId}/login-brand:
     get:
@@ -4916,6 +7431,363 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  # --- S3 Malware / File-Integrity Scan ---------------------------------------
+  /api/v1/sites/{siteId}/scans:
+    post:
+      operationId: startScanRun
+      summary: Start a file-integrity scan run for a site
+      description: |
+        Enqueues a scan against the site's WordPress core/plugin/theme files
+        (checksum comparison). `kind` defaults to `core` when the body is
+        omitted. Requires the `site.write` permission.
+      tags: [scans]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind:
+                  type: string
+                  default: core
+      responses:
+        "202":
+          description: Scan run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    get:
+      operationId: listScanRuns
+      summary: List scan runs for a site
+      tags: [scans]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 50
+      responses:
+        "200":
+          description: Scan run list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScanRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/scans/{runId}:
+    get:
+      operationId: getScanRun
+      summary: Get a scan run
+      description: |
+        The run is resolved by id (tenant-scoped); a site-scoped collaborator
+        without access to the run's own site is rejected with 403.
+      tags: [scans]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Scan run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/sites/{siteId}/scans/{runId}/findings:
+    get:
+      operationId: listScanFindings
+      summary: List findings for a scan run
+      tags: [scans]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 100
+      responses:
+        "200":
+          description: Finding list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScanFinding"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/scans/{runId}/findings/{fid}/file:
+    post:
+      operationId: fetchScanFindingFile
+      summary: Fetch the live file content for a scan finding (base64)
+      description: |
+        Dispatches a synchronous read to the site's agent and returns the
+        file content base64-encoded. Requires the `site.write` permission
+        (this reaches out to the live site).
+      tags: [scans]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: fid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: File content (or a fetch failure surfaced as `ok:false`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanFindingFile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/findings/{id}/ignore:
+    post:
+      operationId: toggleScanFindingIgnore
+      summary: Toggle the ignored flag on a scan finding
+      description: |
+        Global route (no `:siteId` path segment — a finding id is unique per
+        tenant). The finding's own site is resolved server-side and checked
+        against the caller's site allowlist. `ignored` defaults to `true`
+        when omitted from the body.
+      tags: [scans]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ignored:
+                  type: boolean
+                  default: true
+      responses:
+        "200":
+          description: Updated finding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanFinding"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # --- m79 Vulnerability Scanner -----------------------------------------------
+  /api/v1/vulnerabilities:
+    get:
+      operationId: getFleetVulnerabilities
+      summary: Tenant-wide vulnerability rollup across all sites
+      description: |
+        Cross-site counts by severity plus a prioritized finding list.
+        Org-scoped only (`RequireOrgScope`); a site-scoped collaborator uses
+        the per-site `GET /sites/{siteId}/vulnerabilities` endpoint instead.
+      tags: [vulnerabilities]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 200
+      responses:
+        "200":
+          description: Fleet vulnerability summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetVulnerabilitiesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/vulnerabilities:
+    get:
+      operationId: listSiteVulnerabilities
+      summary: List open vulnerability findings for a site
+      tags: [vulnerabilities]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Open findings, severity-sorted, with feed attribution
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteVulnerabilitiesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/vulnerabilities/rescan:
+    post:
+      operationId: rescanSiteVulnerabilities
+      summary: Enqueue an immediate per-site vulnerability rescan
+      tags: [vulnerabilities]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Rescan enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Rescan enqueuer not wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/vulnerabilities/{id}/dismiss:
+    post:
+      operationId: dismissSiteVulnerability
+      summary: Dismiss a vulnerability finding
+      description: Requires the `site.security.manage` permission.
+      tags: [vulnerabilities]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Finding dismissed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/sites/{siteId}/vulnerabilities/{id}/restore:
+    post:
+      operationId: restoreSiteVulnerability
+      summary: Restore (un-dismiss) a vulnerability finding
+      description: Requires the `site.security.manage` permission.
+      tags: [vulnerabilities]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Finding restored
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/sites/{siteId}/vulnerabilities/{id}/remediate:
+    post:
+      operationId: remediateSiteVulnerability
+      summary: Trigger an update run to remediate a vulnerability finding
+      tags: [vulnerabilities]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Update run started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id]
+                properties:
+                  run_id:
+                    type: string
+                    format: uuid
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # --- Performance Suite (ADR-046 / m36) --------------------------------------
   # Operator-facing dashboard routes. Auth is the cookie session + per-site
@@ -4996,6 +7868,33 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CacheStats"
+  /api/v1/sites/{siteId}/perf/cache/health:
+    get:
+      operationId: getCacheHealth
+      summary: Cache hit-ratio trend and average for a site (M52 / #162)
+      tags: [performance]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 7
+            maximum: 365
+            default: 90
+      responses:
+        "200":
+          description: Cache hit-ratio health trend
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/sites/{siteId}/perf/cache/purge:
     post:
       operationId: purgeCache
@@ -5140,6 +8039,141 @@ paths:
                   result:
                     nullable: true
                     $ref: "#/components/schemas/DbScanResult"
+  /api/v1/sites/{siteId}/perf/db/health:
+    get:
+      operationId: getDbHealth
+      summary: Database-size trend and growth summary for a site (M42 Phase 3.4)
+      tags: [performance]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 7
+            maximum: 365
+            default: 90
+      responses:
+        "200":
+          description: Database health trend
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DbHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/perf/db/orphans:
+    get:
+      operationId: getDbOrphansReport
+      summary: On-demand orphan-artifact classification report (P3.5, read-only)
+      description: |
+        Classifies the orphaned options/cron entries/tables stored in the
+        latest `db_scan` result against the live corpus knowledge base. No
+        destructive action is performed here — see
+        `POST /perf/db/orphan-delete`.
+      tags: [performance]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Orphan classification report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DbOrphansReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: corpus_unwired — the orphan-classification corpus reader is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/perf/db/orphan-delete:
+    post:
+      operationId: deleteDbOrphans
+      summary: Delete classified orphan artifacts (P3.8, destructive)
+      description: |
+        Deletes only options / cron entries / tables from UNINSTALLED plugins
+        that the P3.5 report classified as safely deletable. The CP
+        re-classifies every item and drops anything no longer eligible before
+        signing the agent command; the agent independently re-verifies each
+        item live before deleting. Requires `site.cache.manage` at the route
+        level AND `site.cache.delete-all` (admin+) in the handler body.
+      tags: [performance]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DbOrphanDeleteRequest"
+      responses:
+        "200":
+          description: >-
+            Deletion accepted (or an agent-side rejection surfaced as
+            `ok:false`); an advisory `X-Backup-Warning` header is set when no
+            recent backup is found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DbOrphanDeleteResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Insufficient permission (admin+ required for orphan deletion)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: corpus_unwired — the orphan-classification corpus reader is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/perf/db/table-action:
+    post:
+      operationId: runDbTableAction
+      summary: Run a per-table DDL action (Phase 2.2/2.5)
+      description: |
+        Dispatches `optimize`, `repair`, `analyze`, `convert_innodb`
+        (non-destructive; `site.cache.manage`), or `drop`/`empty`
+        (destructive; additionally requires `site.cache.delete-all`, admin+,
+        and a type-to-confirm `confirm` token) against a list of tables. An
+        advisory `X-Backup-Warning` header is set when no recent backup is
+        found.
+      tags: [performance]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DbTableActionRequest"
+      responses:
+        "200":
+          description: Action accepted (or an agent-side rejection surfaced as `ok:false`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DbTableActionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Insufficient permission (admin+ required for drop/empty)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/db/search-replace:
     post:
       operationId: runSearchReplace
@@ -5305,6 +8339,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbCleanResult"
+    get:
+      operationId: getDbCleanStatus
+      summary: Get the watchdog state and latest stored database cleanup result (M71)
+      description: |
+        Pull-truth endpoint: mirrors `GET /perf/db/scan` — `clean_active` /
+        `active_job_id` / `active_started_at` reflect the in-flight-job
+        watchdog columns, letting the web show/hide the spinner on page load
+        without relying on SSE delivery.
+      tags: [performance]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Watchdog state and latest clean result (null when none)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DbCleanStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/sites/{siteId}/media/clean/scan:
     get:
       operationId: scanUnusedMedia
@@ -5971,6 +9027,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    delete:
+      operationId: bulkDeleteEmailLog
+      summary: Bulk delete email log entries (max 500)
+      description: |
+        Deletes a list of email log entries by id, carried in the request
+        body (there is no `logId` path segment on this route — it operates on
+        a caller-supplied id list, not a single entry). RLS ensures only
+        entries belonging to the operator's tenant are deleted regardless of
+        the id list. Maximum 500 ids per request.
+
+        Requires `site.email.manage` permission.
+      tags: [email]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkDeleteLogsRequest"
+      responses:
+        "200":
+          description: Number of rows deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkDeleteLogsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /api/v1/sites/{siteId}/email/log/export:
     get:
@@ -6513,14 +9602,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/sites/{siteId}/email/log/bulk-resend:
+  /api/v1/sites/{siteId}/email/log/resend:
     post:
       operationId: bulkResendEmailLog
       summary: Bulk resend email log entries (max 100)
       description: |
         Dispatches `resend_email` for multiple log entries. Each entry is
         processed independently. Entries without body_stored are skipped with
-        `ok=false` in the per-entry result array (no overall 4xx).
+        `ok=false` in the per-entry result array (no overall 4xx). Registered
+        before `/email/log/{logId}` so Gin does not parse the literal segment
+        `resend` as a `logId` UUID.
 
         Requires `site.email.manage` permission.
       tags: [email]
@@ -6539,39 +9630,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BulkResendResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-
-  /api/v1/sites/{siteId}/email/log/bulk-delete:
-    post:
-      operationId: bulkDeleteEmailLog
-      summary: Bulk delete email log entries (max 500)
-      description: |
-        Deletes a list of email log entries by id. RLS ensures only entries
-        belonging to the operator's tenant are deleted regardless of the id list.
-        Maximum 500 ids per request.
-
-        Requires `site.email.manage` permission.
-      tags: [email]
-      parameters:
-        - $ref: "#/components/parameters/SiteId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/BulkDeleteLogsRequest"
-      responses:
-        "200":
-          description: Number of rows deleted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BulkDeleteLogsResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -6814,6 +9872,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RumSummary"
+  /api/v1/sites/{siteId}/perf/rum/trend:
+    get:
+      operationId: getRumTrend
+      summary: Per-metric daily p75 trend series
+      description: |
+        Returns a per-metric daily p75 trend series over `window_days` days
+        (default 28, clamped to [1,90]). Days with zero rollup rows are
+        omitted; days below the configured `min_sample_count` floor appear
+        with `suppressed:true` and `p75_ms:0` so the client can render a gap
+        rather than a misleading zero. An optional `device` filter restricts
+        the aggregation to one device class.
+      tags: [performance]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: window_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 90
+            default: 28
+        - name: device
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: RUM trend series
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumTrend"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /api/v1/sites/{siteId}/perf/rum:
     get:
@@ -10508,7 +13605,7 @@ components:
         created_at: { type: string, format: date-time }
     AdminAccountDetail:
       type: object
-      description: The full GET /api/v1/admin/accounts/{tenantId} body.
+      description: The full GET /api/v1/admin/accounts/{id} body.
       required:
         - tenant_id
         - org_name
@@ -16764,3 +19861,1068 @@ components:
         version_id:
           type: string
           description: The version ID that was restored (echoed for audit correlation).
+
+    # ---------------------------------------------------------------------------
+    # ADR-056 Phase 3 — dashboard two-factor authentication
+    # ---------------------------------------------------------------------------
+    TwoFactorStatus:
+      type: object
+      description: Current 2FA configuration summary for the authenticated user.
+      required: [totp_enabled, webauthn_count, recovery_codes_remaining, two_factor_enabled, trusted_devices]
+      properties:
+        totp_enabled: { type: boolean }
+        webauthn_count: { type: integer }
+        recovery_codes_remaining: { type: integer }
+        two_factor_enabled: { type: boolean }
+        trusted_devices:
+          type: array
+          items: { $ref: "#/components/schemas/TrustedDevice" }
+    RecoveryCodesResponse:
+      type: object
+      description: A freshly (re)generated batch of 10 single-use recovery codes, shown exactly once.
+      required: [recovery_codes]
+      properties:
+        recovery_codes:
+          type: array
+          items: { type: string }
+    TwoFactorChallengeCompleteRequest:
+      type: object
+      description: >-
+        Completes the 2FA challenge minted at login. `challenge` is the nonce
+        from the login response; `code` is the TOTP code or recovery code
+        depending on the endpoint.
+      required: [challenge, code]
+      properties:
+        challenge: { type: string, format: uuid }
+        code: { type: string }
+        remember_device: { type: boolean, default: false }
+        device_label: { type: string }
+    WebAuthnCredential:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+    TrustedDevice:
+      type: object
+      required: [id, label, user_agent, created_at, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        user_agent: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+        ip: { type: string }
+
+    # ---------------------------------------------------------------------------
+    # Orgs lifecycle
+    # ---------------------------------------------------------------------------
+    OrgList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, name, slug, role]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              slug: { type: string }
+              role: { type: string, description: The caller's role in this org. }
+    DeleteOrgResponse:
+      type: object
+      required: [id, lane]
+      properties:
+        id: { type: string, format: uuid }
+        lane:
+          type: string
+          enum: [hard, soft]
+          description: >-
+            `hard` — an empty org was deleted immediately. `soft` — a
+            populated org was soft-deleted and is recoverable until the
+            grace-window purge worker runs.
+        active_tenant_id:
+          type: string
+          format: uuid
+          description: >-
+            The caller's session active tenant AFTER this delete. Absent when
+            it drops to no-org onboarding (this was their last live org).
+
+    # ---------------------------------------------------------------------------
+    # ADR-057 Phase 1 — hardening config + ban list; ADR-059 Phase 3 — policy
+    # ---------------------------------------------------------------------------
+    SiteHardeningConfig:
+      type: object
+      description: Per-site core-hardening toggles (ADR-057).
+      properties:
+        disable_file_editor: { type: boolean }
+        xmlrpc_mode: { type: string, description: "One of the agent-defined XML-RPC restriction modes." }
+        restrict_rest_api: { type: string, description: "One of the agent-defined REST API restriction modes." }
+        restrict_login_identifier: { type: string, description: "One of the agent-defined login-identifier restriction modes." }
+        force_unique_nickname: { type: boolean }
+        disable_author_archive_enum: { type: boolean }
+        force_ssl: { type: boolean }
+        disable_directory_browsing: { type: boolean }
+        disable_php_in_uploads: { type: boolean }
+        protect_system_files: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    SiteBan:
+      type: object
+      required: [id, type, value, comment, actor_type, actor_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, description: "Ban entry kind (e.g. ip, username, user_agent)." }
+        value: { type: string }
+        comment: { type: string }
+        actor_type: { type: string }
+        actor_id: { type: string }
+        created_at: { type: string, format: date-time }
+    SiteSecurityPolicy:
+      type: object
+      description: Site-user (WordPress user) auth policy — 2FA + password requirements (ADR-059).
+      properties:
+        two_factor_enabled: { type: boolean }
+        two_factor_methods:
+          type: array
+          items: { type: string }
+        two_factor_required_roles:
+          type: array
+          items: { type: string }
+        two_factor_grace_logins: { type: integer }
+        two_factor_remember_device_days: { type: integer }
+        block_xmlrpc_for_2fa_users: { type: boolean }
+        password_min_zxcvbn_score: { type: integer }
+        password_min_zxcvbn_roles:
+          type: array
+          items: { type: string }
+        password_block_compromised: { type: boolean }
+        password_reuse_block_count: { type: integer }
+        password_max_age_days: { type: integer }
+        password_expiry_roles:
+          type: array
+          items: { type: string }
+        hide_backend_enabled: { type: boolean }
+        hide_backend_slug: { type: string }
+        hide_backend_redirect: { type: string }
+        updated_at: { type: string, format: date-time }
+    SitePolicyGroup:
+      type: object
+      description: A per-role override of the site-user auth policy.
+      required: [role]
+      properties:
+        role:
+          type: string
+          description: The WordPress role slug this override applies to (e.g. administrator).
+        require_2fa: { type: boolean, nullable: true }
+        allowed_methods:
+          type: array
+          items: { type: string }
+        min_zxcvbn_score: { type: integer, nullable: true }
+        block_compromised: { type: boolean, nullable: true }
+        max_age_days: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    # ---------------------------------------------------------------------------
+    # S3 malware / file-integrity scans
+    # ---------------------------------------------------------------------------
+    ScanRun:
+      type: object
+      required: [id, site_id, kind, status, files_scanned, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        kind: { type: string, description: "core | plugins | themes | full" }
+        status: { type: string, description: "queued | running | completed | failed" }
+        files_scanned: { type: integer, format: int64 }
+        wp_version: { type: string }
+        locale: { type: string }
+        error: { type: string }
+        finding_counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: Count of findings by severity for this run.
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    ScanFinding:
+      type: object
+      required: [id, site_id, run_id, finding_type, path, severity, ignored, created_at, last_seen_run]
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        finding_type: { type: string, description: "modified | added | missing" }
+        path: { type: string }
+        severity: { type: string }
+        expected_md5: { type: string }
+        actual_md5: { type: string }
+        ignored: { type: boolean }
+        ignored_by: { type: string }
+        created_at: { type: string, format: date-time }
+        last_seen_run: { type: string, format: uuid }
+    ScanFindingFile:
+      type: object
+      required: [ok, path, size]
+      properties:
+        ok: { type: boolean }
+        path: { type: string }
+        size: { type: integer, format: int64 }
+        content_base64: { type: string }
+        error: { type: string }
+
+    # ---------------------------------------------------------------------------
+    # m79 vulnerability scanner
+    # ---------------------------------------------------------------------------
+    VulnAttribution:
+      type: object
+      description: Vulnerability-feed attribution notices, rendered in the UI footer and on any finding row that shows a CVE.
+      required: [defiant_notice, defiant_license, mitre_notice]
+      properties:
+        defiant_notice: { type: string }
+        defiant_license: { type: string }
+        mitre_notice: { type: string }
+    VulnFinding:
+      type: object
+      required: [id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status, first_seen, last_seen, references]
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        vuln_id: { type: string }
+        kind: { type: string, description: "core | plugin | theme" }
+        slug: { type: string }
+        name: { type: string }
+        installed_version: { type: string }
+        fixed_version: { type: string }
+        severity: { type: string }
+        cvss_score: { type: number, format: double }
+        cve: { type: string }
+        cve_link: { type: string }
+        title: { type: string }
+        status: { type: string, description: "open | dismissed | remediated" }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        references:
+          type: array
+          items: { type: string }
+    SiteVulnerabilitiesResponse:
+      type: object
+      required: [items, attribution, feed_ok]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/VulnFinding" }
+        attribution: { $ref: "#/components/schemas/VulnAttribution" }
+        feed_ok: { type: boolean }
+        feed_synced: { type: string, format: date-time }
+    FleetVulnerabilitiesResponse:
+      type: object
+      required: [total_open, critical, high, medium, low, items, attribution, feed_ok]
+      properties:
+        total_open: { type: integer }
+        critical: { type: integer }
+        high: { type: integer }
+        medium: { type: integer }
+        low: { type: integer }
+        items:
+          type: array
+          items:
+            type: object
+            required: [site_id, site_name, site_url, finding]
+            properties:
+              site_id: { type: string, format: uuid }
+              site_name: { type: string }
+              site_url: { type: string }
+              finding: { $ref: "#/components/schemas/VulnFinding" }
+        attribution: { $ref: "#/components/schemas/VulnAttribution" }
+        feed_ok: { type: boolean }
+        feed_synced: { type: string, format: date-time }
+
+    # ---------------------------------------------------------------------------
+    # ADR-045 instance SMTP settings
+    # ---------------------------------------------------------------------------
+    SmtpSettings:
+      type: object
+      required: [enabled, host, port, username, from_address, from_name, tls_mode, allow_insecure_tls, password_set, updated_at]
+      properties:
+        enabled: { type: boolean }
+        host: { type: string }
+        port: { type: integer }
+        username: { type: string }
+        from_address: { type: string }
+        from_name: { type: string }
+        tls_mode: { type: string, description: "none | starttls | tls" }
+        allow_insecure_tls: { type: boolean }
+        password_set:
+          type: boolean
+          description: True when a password/secret is stored. The value itself is never returned.
+        updated_at: { type: string, format: date-time }
+    SmtpSettingsUpdate:
+      type: object
+      required: [enabled, host, port, username, from_address, from_name, tls_mode, allow_insecure_tls]
+      properties:
+        enabled: { type: boolean }
+        host: { type: string }
+        port: { type: integer }
+        username: { type: string }
+        from_address: { type: string }
+        from_name: { type: string }
+        tls_mode: { type: string, description: "none | starttls | tls" }
+        allow_insecure_tls: { type: boolean }
+        password:
+          type: string
+          format: password
+          nullable: true
+          description: Write-only. Omit or null to leave the stored ciphertext unchanged.
+
+    # ---------------------------------------------------------------------------
+    # ADR-036 P1 storage adapter — sharing / invitations
+    # ---------------------------------------------------------------------------
+    SiteInvitation:
+      type: object
+      required: [id, email, role, status, expires_at, created_at, attempts]
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { type: string }
+        status:
+          type: string
+          enum: [pending, accepted, expired, revoked]
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        accepted_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        attempts: { type: integer }
+        invited_by: { type: string, format: uuid, nullable: true }
+
+    # ---------------------------------------------------------------------------
+    # M23 Media Optimizer — ADR-044 auto-optimize settings
+    # ---------------------------------------------------------------------------
+    MediaSettings:
+      type: object
+      required: [auto_optimize_enabled, auto_target_format, auto_target_quality]
+      properties:
+        auto_optimize_enabled: { type: boolean }
+        auto_target_format: { type: string, description: "e.g. avif | webp" }
+        auto_target_quality: { type: string, description: "e.g. balanced | high | max" }
+
+    # ---------------------------------------------------------------------------
+    # M58 re-check
+    # ---------------------------------------------------------------------------
+    RecheckResponse:
+      type: object
+      required: [connection_state, recovered]
+      properties:
+        connection_state: { type: string }
+        last_seen_at: { type: string, format: date-time }
+        recovered:
+          type: boolean
+          description: True when this re-check recovered the connection from degraded/disconnected to connected.
+
+    # ---------------------------------------------------------------------------
+    # M94 / GH #148 — fleet incident detail
+    # ---------------------------------------------------------------------------
+    FleetIncidentDetail:
+      type: object
+      required: [id, site_id, name, url, started_at, ongoing, peak_status, last_http_status, reason, incident_count_30d, probes, probes_truncated]
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        name: { type: string }
+        url: { type: string }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time, nullable: true }
+        duration_seconds: { type: integer, format: int64, nullable: true }
+        ongoing: { type: boolean }
+        peak_status: { type: string }
+        last_http_status: { type: integer }
+        reason: { type: string }
+        incident_count_30d: { type: integer }
+        probes:
+          type: array
+          items:
+            type: object
+            required: [probed_at, up, http_status, total_ms]
+            properties:
+              probed_at: { type: string, format: date-time }
+              up: { type: boolean }
+              http_status: { type: integer }
+              total_ms: { type: number, format: double }
+              error: { type: string }
+        probes_truncated: { type: boolean }
+
+    # ---------------------------------------------------------------------------
+    # Public endpoints — RUM beacon ingest + live pricing
+    # ---------------------------------------------------------------------------
+    RumBeacon:
+      type: object
+      required: [key, url, metric, value]
+      properties:
+        key:
+          type: string
+          description: Per-site beacon key (base64url). The sole access credential for this endpoint.
+        url:
+          type: string
+          description: The full page URL (window.location.href); normalised server-side to a path pattern.
+        metric:
+          type: string
+          enum: [lcp, inp, cls, ttfb, fcp]
+        value:
+          type: integer
+          format: int32
+          description: Raw metric value. Milliseconds for timing metrics; milli-units (value*1000) for CLS.
+        device:
+          type: string
+          enum: [desktop, mobile, tablet]
+        country:
+          type: string
+          description: ISO-3166-1 alpha-2 code. Falls back to "__other__" when absent/invalid.
+        conn:
+          type: string
+          enum: ["4g", "3g", "2g", "slow-2g", "offline", "unknown"]
+    PriceQuote:
+      type: object
+      required: [amount, currency, interval]
+      properties:
+        amount: { type: integer, format: int64, description: Minor currency units (e.g. cents). }
+        currency: { type: string }
+        interval: { type: string, description: "e.g. month" }
+    PublicPricing:
+      type: object
+      required: [currency_default, tiers]
+      properties:
+        currency_default: { type: string }
+        tiers:
+          type: array
+          items:
+            type: object
+            description: >-
+              A free tier renders flat `{id,amount,currency,interval}`
+              fields; a paid tier renders `{id,usd?,inr?}` — only the
+              provider/currency pairs this instance actually resolved a
+              price for.
+            required: [id]
+            properties:
+              id: { type: string }
+              amount: { type: integer, format: int64 }
+              currency: { type: string }
+              interval: { type: string }
+              usd: { $ref: "#/components/schemas/PriceQuote" }
+              inr: { $ref: "#/components/schemas/PriceQuote" }
+
+    # ---------------------------------------------------------------------------
+    # Performance Suite — DB cleaner / cache health / RUM trend
+    # ---------------------------------------------------------------------------
+    DbHealth:
+      type: object
+      description: Database-size trend and growth summary (M42 Phase 3.4).
+      required: [points, growth_bytes, growth_pct]
+      properties:
+        points:
+          type: array
+          items:
+            type: object
+            properties:
+              recorded_at: { type: string, format: date-time }
+              db_size_bytes: { type: integer, format: int64 }
+        growth_bytes: { type: integer, format: int64 }
+        growth_pct: { type: number, format: double }
+    CacheHealth:
+      type: object
+      description: Cache hit-ratio trend and average (M52 / #162).
+      required: [points, avg_ratio_pct]
+      properties:
+        points:
+          type: array
+          items:
+            type: object
+            properties:
+              hit_count: { type: integer, format: int64 }
+              miss_count: { type: integer, format: int64 }
+              ratio_pct: { type: number, format: double }
+        avg_ratio_pct: { type: number, format: double }
+    DbOrphanItem:
+      type: object
+      description: One classified candidate-orphan artifact (P3.5).
+      required: [name, confidence, installed, deletable_eligible]
+      properties:
+        name: { type: string }
+        owner_slug: { type: string }
+        confidence:
+          type: string
+          enum: [exact, prefix, heuristic, unknown]
+        known_plugins:
+          type: array
+          items: { type: string }
+        installed: { type: boolean }
+        deletable_eligible: { type: boolean }
+        size_bytes: { type: integer, format: int64 }
+        autoload: { type: boolean, nullable: true }
+        next_run_at: { type: integer, format: int64, nullable: true }
+        recurrence: { type: string }
+        rows: { type: integer, format: int64, nullable: true }
+    DbOrphansReport:
+      type: object
+      required: [options, cron, tables, corpus_version, snapshot_available, hidden_installed, counts]
+      properties:
+        options:
+          type: array
+          items: { $ref: "#/components/schemas/DbOrphanItem" }
+        cron:
+          type: array
+          items: { $ref: "#/components/schemas/DbOrphanItem" }
+        tables:
+          type: array
+          items: { $ref: "#/components/schemas/DbOrphanItem" }
+        corpus_version: { type: integer }
+        snapshot_available: { type: boolean }
+        hidden_installed: { type: integer }
+        counts:
+          type: object
+          required: [options, cron, tables, deletable]
+          properties:
+            options: { type: integer }
+            cron: { type: integer }
+            tables: { type: integer }
+            deletable: { type: integer }
+    DbOrphanDeleteRequest:
+      type: object
+      required: [items, confirm]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [kind, name, owner_slug]
+            properties:
+              kind: { type: string, enum: [option, cron, table] }
+              name: { type: string }
+              owner_slug: { type: string }
+        confirm:
+          type: string
+          description: Type-to-confirm token; the agent enforces it independently.
+    DbOrphanDeleteResponse:
+      type: object
+      required: [ok, job_id, accepted_count, dropped_count]
+      properties:
+        ok: { type: boolean }
+        job_id: { type: string }
+        accepted_count: { type: integer }
+        dropped_count:
+          type: integer
+          description: Items dropped by the CP re-classify (no longer eligible or owner_slug drifted).
+        backup_warning: { type: string }
+    DbTableActionRequest:
+      type: object
+      required: [action, tables]
+      properties:
+        action:
+          type: string
+          enum: [optimize, repair, drop, empty, analyze, convert_innodb]
+        tables:
+          type: array
+          items: { type: string }
+        confirm:
+          type: string
+          description: Required type-to-confirm token for drop/empty.
+    DbTableActionResponse:
+      type: object
+      required: [ok, job_id, action]
+      properties:
+        ok: { type: boolean }
+        job_id: { type: string }
+        action: { type: string }
+        results:
+          type: object
+          description: Per-table result, keyed by table name (agent-defined shape).
+        backup_warning: { type: string }
+    DbCleanStatus:
+      type: object
+      required: [clean_active, active_job_id, active_started_at, last_result]
+      properties:
+        clean_active: { type: boolean }
+        active_job_id: { type: string, nullable: true }
+        active_started_at: { type: string, format: date-time, nullable: true }
+        last_result:
+          type: object
+          nullable: true
+          required: [job_id, rows_deleted, bytes_freed, result, cleaned_at]
+          properties:
+            job_id: { type: string }
+            rows_deleted: { type: integer, format: int64 }
+            bytes_freed: { type: integer, format: int64 }
+            result:
+              type: object
+              description: Per-category {rows_deleted,bytes_freed,state} map.
+            cleaned_at: { type: string, format: date-time }
+    RumTrendDayPoint:
+      type: object
+      required: [day, p75_ms, sample_count, rating, suppressed]
+      properties:
+        day: { type: string, description: "YYYY-MM-DD" }
+        p75_ms: { type: number, format: double, description: "0 when suppressed" }
+        sample_count: { type: integer, format: int64 }
+        rating: { type: string, enum: ["good", "needs-improvement", "poor", ""] }
+        suppressed: { type: boolean }
+    RumTrend:
+      type: object
+      required: [window_days, min_sample_count, metrics]
+      properties:
+        window_days: { type: integer }
+        min_sample_count: { type: integer }
+        metrics:
+          type: object
+          description: Keyed by metric name (lcp, inp, cls, fcp, ttfb); each value is an ascending-by-day series.
+          additionalProperties:
+            type: array
+            items: { $ref: "#/components/schemas/RumTrendDayPoint" }
+
+    # ---------------------------------------------------------------------------
+    # m33 superadmin instance-management console
+    # ---------------------------------------------------------------------------
+    AdminStats:
+      type: object
+      required: [users, organizations, sites]
+      properties:
+        users: { type: integer, format: int64 }
+        organizations: { type: integer, format: int64 }
+        sites: { type: integer, format: int64 }
+    AdminUser:
+      type: object
+      required: [id, email, name, status, email_verified, created_at, is_superadmin, org_count]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        status: { type: string }
+        email_verified: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: string, format: date-time }
+        is_superadmin: { type: boolean }
+        org_count: { type: integer, format: int64 }
+    AdminDeleteUserResult:
+      type: object
+      required: [deleted_orgs, kept_orgs_with_sites]
+      properties:
+        deleted_orgs: { type: integer }
+        kept_orgs_with_sites:
+          type: array
+          items:
+            type: object
+            required: [id, name, site_count]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              site_count: { type: integer }
+    AdminUserSites:
+      type: object
+      required: [user_id, sites]
+      properties:
+        user_id: { type: string, format: uuid }
+        sites:
+          type: array
+          items:
+            type: object
+            required: [site_id, url, name, connection_state, site_created_at, tenant_id, tenant_name, member_role]
+            properties:
+              site_id: { type: string, format: uuid }
+              url: { type: string }
+              name: { type: string }
+              connection_state: { type: string }
+              enrolled_at: { type: string, format: date-time, nullable: true }
+              site_created_at: { type: string, format: date-time }
+              tenant_id: { type: string, format: uuid }
+              tenant_name: { type: string }
+              member_role: { type: string }
+    AdminTenancyRef:
+      type: object
+      required: [tenant_id, tenant_name]
+      properties:
+        tenant_id: { type: string, format: uuid }
+        tenant_name: { type: string }
+        role: { type: string }
+        count: { type: integer, format: int64 }
+    AdminSiteTenancy:
+      type: object
+      required: [site_id, site_found, site_tenant_id, site_tenant_name, site_url, data_tenants, your_memberships, site_shares, verdict]
+      properties:
+        site_id: { type: string, format: uuid }
+        site_found: { type: boolean }
+        site_tenant_id: { type: string, format: uuid }
+        site_tenant_name: { type: string }
+        site_url: { type: string }
+        data_tenants:
+          type: array
+          items: { $ref: "#/components/schemas/AdminTenancyRef" }
+        your_memberships:
+          type: array
+          items: { $ref: "#/components/schemas/AdminTenancyRef" }
+        site_shares:
+          type: array
+          items: { $ref: "#/components/schemas/AdminTenancyRef" }
+        verdict:
+          type: object
+          required: [site_matches_data, you_can_see_perf_data]
+          properties:
+            site_matches_data: { type: boolean }
+            you_can_see_perf_data: { type: boolean }
+    AdminGrantSelfMembershipResult:
+      type: object
+      required: [ok, tenant_id, tenant_name, added, detail]
+      properties:
+        ok: { type: boolean }
+        tenant_id: { type: string, format: uuid }
+        tenant_name: { type: string }
+        added: { type: boolean }
+        detail: { type: string }
+    AdminAccountsTenancy:
+      type: object
+      required: [users, orgs]
+      properties:
+        users:
+          type: array
+          items:
+            type: object
+            required: [id, email, is_superadmin, memberships]
+            properties:
+              id: { type: string, format: uuid }
+              email: { type: string, format: email }
+              is_superadmin: { type: boolean }
+              memberships:
+                type: array
+                items:
+                  type: object
+                  required: [tenant_id, tenant_name, role]
+                  properties:
+                    tenant_id: { type: string, format: uuid }
+                    tenant_name: { type: string }
+                    role: { type: string }
+        orgs:
+          type: array
+          items:
+            type: object
+            required: [tenant_id, tenant_name, site_count, member_count]
+            properties:
+              tenant_id: { type: string, format: uuid }
+              tenant_name: { type: string }
+              site_count: { type: integer, format: int64 }
+              member_count: { type: integer, format: int64 }
+    AdminVulnFeedStatus:
+      type: object
+      required: [configured, source, feed_ok, record_count]
+      properties:
+        configured: { type: boolean }
+        source: { type: string, enum: [ui, env, none] }
+        feed_ok: { type: boolean }
+        record_count: { type: integer }
+        last_synced: { type: string, format: date-time }
+        last_error: { type: string }
+
+    # ---------------------------------------------------------------------------
+    # Agent protocol — activity / diagnostics / errors / security ingest
+    # ---------------------------------------------------------------------------
+    AgentActivityIngestRequest:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            required: [seq, event_type, object_type, object_id, this_hash, prev_hash, occurred_at]
+            properties:
+              seq: { type: integer, format: int64 }
+              event_type: { type: string }
+              object_type: { type: string }
+              object_id: { type: string }
+              object_label: { type: string }
+              actor_user_id: { type: integer, format: int64 }
+              actor_login: { type: string }
+              actor_ip: { type: string }
+              summary: { type: string }
+              meta:
+                type: object
+                description: >-
+                  Verbatim wire bytes as emitted by the agent's wp_json_encode
+                  — hashed exactly as sent, never re-serialized.
+              prev_hash: { type: string }
+              this_hash: { type: string }
+              occurred_at: { type: string, format: date-time }
+        chain_start_seq: { type: integer, format: int64 }
+        agent_version: { type: string }
+    AgentErrorBatch:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            description: >-
+              Numeric fields may arrive as a JSON number or a numeric string
+              (the agent's wpdb ARRAY_A encodes numeric columns as strings).
+            required: [md5, severity, message]
+            properties:
+              id: { type: string }
+              md5: { type: string }
+              code: { type: string }
+              severity: { type: string }
+              message: { type: string }
+              file: { type: string }
+              line: { type: string }
+              request_path: { type: string }
+              first_seen: { type: string }
+              last_seen: { type: string }
+              occurrence_count: { type: string }
+              backtrace:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    file: { type: string }
+                    line: { type: string }
+                    function: { type: string }
+    AgentLoginEventBatch:
+      type: object
+      required: [login_events]
+      properties:
+        login_events:
+          type: array
+          items:
+            type: object
+            description: >-
+              Numeric fields may arrive as a JSON number or a numeric string
+              (the agent's wpdb ARRAY_A encodes numeric columns as strings).
+            required: [ip, status, category]
+            properties:
+              id: { type: string }
+              ip: { type: string }
+              status: { type: string }
+              category: { type: string }
+              username: { type: string }
+              request_id: { type: string }
+              occurred_at: { type: string }
+
+    # ---------------------------------------------------------------------------
+    # Agent protocol — Performance Suite callbacks
+    # ---------------------------------------------------------------------------
+    AgentCacheStatsReport:
+      type: object
+      properties:
+        cached_pages_count: { type: integer }
+        cache_size_bytes: { type: integer, format: int64 }
+        last_purged_at: { type: integer, format: int64, description: Unix seconds. }
+        last_purge_kind: { type: string }
+        last_preload_at: { type: integer, format: int64, description: Unix seconds. }
+        preload_pending: { type: integer }
+        preload_total: { type: integer }
+        cache_hit_count: { type: integer, format: int64 }
+        cache_miss_count: { type: integer, format: int64 }
+        woo_theme_fragments_supported: { type: boolean, nullable: true }
+        object_cache:
+          type: object
+          description: >-
+            Optional M68 object-cache heartbeat + stats-delta block; silently
+            dropped when malformed or when the Object Cache feature is not
+            wired.
+          properties:
+            state: { type: string, enum: ["", disabled, connected, degraded, down] }
+            latency_ms: { type: number, format: double }
+            last_error_class: { type: string }
+            hit_ratio_window_pct: { type: number, format: double }
+            used_memory_bytes: { type: integer, format: int64 }
+            engine_version: { type: string }
+            config_hash: { type: string }
+            hit_count: { type: integer, format: int64 }
+            miss_count: { type: integer, format: int64 }
+            avg_wait_ms: { type: number, format: double }
+            ops_per_sec: { type: number, format: double }
+            evicted_keys_delta: { type: integer, format: int64 }
+            connected_clients: { type: integer }
+    AgentPerfConfigAck:
+      type: object
+      required: [config_version, server_software, dropin_installed, wp_cache_constant_set, htaccess_managed]
+      properties:
+        config_version: { type: integer }
+        server_software: { type: string }
+        dropin_installed: { type: boolean }
+        wp_cache_constant_set: { type: boolean }
+        htaccess_managed: { type: boolean }
+        rum_beacon_present:
+          type: boolean
+          nullable: true
+          description: >-
+            GH #174 — whether the agent currently holds a non-empty
+            rum_beacon_key. Absent (not false) when a pre-#174 agent does not
+            report it.
+    AgentDbCleanProgress:
+      type: object
+      required: [job_id, category, state, done]
+      properties:
+        job_id: { type: string }
+        category: { type: string }
+        rows_deleted: { type: integer }
+        bytes_freed: { type: integer }
+        state: { type: string }
+        detail: { type: string }
+        done: { type: boolean }
+    AgentDbOrphanDeleteProgress:
+      type: object
+      required: [job_id, done]
+      properties:
+        job_id: { type: string }
+        results:
+          type: array
+          items:
+            type: object
+          description: Agent-defined per-item result rows.
+        deleted_options: { type: integer }
+        deleted_cron: { type: integer }
+        deleted_tables: { type: integer }
+        skipped: { type: integer }
+        done: { type: boolean }
+    AgentAutoOptimizeRequest:
+      type: object
+      required: [attachments]
+      properties:
+        attachments:
+          type: array
+          items:
+            type: object
+            required: [wp_attachment_id]
+            properties:
+              wp_attachment_id: { type: integer, format: int64 }
+              title: { type: string }
+              original_path: { type: string }
+              original_url: { type: string }
+              original_mime: { type: string }
+              original_width: { type: integer, nullable: true }
+              original_height: { type: integer, nullable: true }
+              original_size_bytes: { type: integer, format: int64 }
+              variant_count: { type: integer }
+              saved_bytes: { type: integer, format: int64 }
+
+    # ---------------------------------------------------------------------------
+    # Agent protocol — m59 email log ingest + suppression fetch
+    # ---------------------------------------------------------------------------
+    AgentEmailLogIngestRequest:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            required: [agent_seq, status]
+            properties:
+              agent_seq: { type: integer, format: int64 }
+              message_id: { type: string }
+              to_addresses:
+                type: array
+                items: { type: string }
+              from_address: { type: string }
+              subject: { type: string }
+              provider: { type: string }
+              status: { type: string, enum: [sent, failed] }
+              response:
+                description: Provider response — any JSON shape (string, object, or absent).
+              error: { type: string }
+              retries: { type: integer }
+              resent_count: { type: integer }
+              body_stored: { type: boolean }
+              body: { type: string, nullable: true }
+              created_at:
+                description: Any parseable timestamp (RFC3339 or a MySQL-style string); unparseable values default to now.
+              connection_key: { type: string }
+              attachments:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    size_bytes: { type: integer, format: int64 }
+    AgentSuppressionDeltaPage:
+      type: object
+      required: [entries, next_cursor]
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            required: [id, tenant_id, reason, provider, created_at]
+            properties:
+              id: { type: string }
+              tenant_id: { type: string, format: uuid }
+              site_id: { type: string, nullable: true }
+              email: { type: string, nullable: true }
+              reason: { type: string }
+              provider: { type: string }
+              event_at: { type: string, format: date-time, nullable: true }
+              source_message_id: { type: string, nullable: true }
+              created_at: { type: string, format: date-time }
+        next_cursor: { type: string }
+
+    # ---------------------------------------------------------------------------
+    # Agent protocol — M4 / M5.6 backup callbacks
+    # ---------------------------------------------------------------------------
+    AgentChunkRef:
+      type: object
+      required: [blake3, size]
+      properties:
+        blake3: { type: string }
+        size: { type: integer, format: int64 }
+    AgentPresignChunksRequest:
+      type: object
+      required: [snapshot_id, hashes]
+      properties:
+        snapshot_id: { type: string, format: uuid }
+        hashes:
+          type: array
+          items: { type: string }
+          description: Candidate ciphertext chunk hashes (blake3, hex) the agent produced.
+    AgentPresignChunksResponse:
+      type: object
+      required: [uploads, ttl_seconds]
+      properties:
+        uploads:
+          type: object
+          description: blake3 hash -> presigned PUT URL, for hashes NOT already stored for the tenant.
+          additionalProperties: { type: string }
+        ttl_seconds: { type: integer }
+    AgentManifestEntry:
+      type: object
+      required: [path, entry_kind, mode, size, chunks]
+      properties:
+        path: { type: string }
+        entry_kind: { type: string }
+        table_name: { type: string }
+        mode: { type: integer }
+        size: { type: integer, format: int64 }
+        chunks:
+          type: array
+          items: { $ref: "#/components/schemas/AgentChunkRef" }
+    AgentSubmitManifestRequest:
+      type: object
+      required: [snapshot_id, age_recipient, entries]
+      properties:
+        snapshot_id: { type: string, format: uuid }
+        age_recipient: { type: string }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AgentManifestEntry" }
+        cycle_files_scanned: { type: integer, format: int64 }
+        cycle_files_changed: { type: integer, format: int64 }
+        cycle_files_deleted: { type: integer, format: int64 }
+        cycle_bytes_uploaded: { type: integer, format: int64 }
+    AgentSubmitManifestResponse:
+      type: object
+      required: [ok, chunk_count, stored_count]
+      properties:
+        ok: { type: boolean }
+        chunk_count: { type: integer, format: int64 }
+        stored_count: { type: integer, format: int64 }

@@ -10,6 +10,7 @@ import (
 	"github.com/go-faster/errors"
 	"github.com/go-faster/jx"
 	"github.com/google/uuid"
+	ht "github.com/ogen-go/ogen/http"
 )
 
 type AcceptInvitationBadRequest Error
@@ -316,7 +317,7 @@ func (s *AddSuppressionRequest) SetReason(val OptString) {
 	s.Reason = val
 }
 
-// The full GET /api/v1/admin/accounts/{tenantId} body.
+// The full GET /api/v1/admin/accounts/{id} body.
 // Ref: #/components/schemas/AdminAccountDetail
 type AdminAccountDetail struct {
 	TenantID        uuid.UUID                    `json:"tenant_id"`
@@ -1570,6 +1571,164 @@ func (s *AdminAccountsResponse) SetOffset(val int) {
 
 func (*AdminAccountsResponse) listAdminAccountsRes() {}
 
+// Ref: #/components/schemas/AdminAccountsTenancy
+type AdminAccountsTenancy struct {
+	Users []AdminAccountsTenancyUsersItem `json:"users"`
+	Orgs  []AdminAccountsTenancyOrgsItem  `json:"orgs"`
+}
+
+// GetUsers returns the value of Users.
+func (s *AdminAccountsTenancy) GetUsers() []AdminAccountsTenancyUsersItem {
+	return s.Users
+}
+
+// GetOrgs returns the value of Orgs.
+func (s *AdminAccountsTenancy) GetOrgs() []AdminAccountsTenancyOrgsItem {
+	return s.Orgs
+}
+
+// SetUsers sets the value of Users.
+func (s *AdminAccountsTenancy) SetUsers(val []AdminAccountsTenancyUsersItem) {
+	s.Users = val
+}
+
+// SetOrgs sets the value of Orgs.
+func (s *AdminAccountsTenancy) SetOrgs(val []AdminAccountsTenancyOrgsItem) {
+	s.Orgs = val
+}
+
+func (*AdminAccountsTenancy) getAdminAccountsTenancyRes() {}
+
+type AdminAccountsTenancyOrgsItem struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	TenantName  string    `json:"tenant_name"`
+	SiteCount   int64     `json:"site_count"`
+	MemberCount int64     `json:"member_count"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminAccountsTenancyOrgsItem) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *AdminAccountsTenancyOrgsItem) GetTenantName() string {
+	return s.TenantName
+}
+
+// GetSiteCount returns the value of SiteCount.
+func (s *AdminAccountsTenancyOrgsItem) GetSiteCount() int64 {
+	return s.SiteCount
+}
+
+// GetMemberCount returns the value of MemberCount.
+func (s *AdminAccountsTenancyOrgsItem) GetMemberCount() int64 {
+	return s.MemberCount
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminAccountsTenancyOrgsItem) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *AdminAccountsTenancyOrgsItem) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+// SetSiteCount sets the value of SiteCount.
+func (s *AdminAccountsTenancyOrgsItem) SetSiteCount(val int64) {
+	s.SiteCount = val
+}
+
+// SetMemberCount sets the value of MemberCount.
+func (s *AdminAccountsTenancyOrgsItem) SetMemberCount(val int64) {
+	s.MemberCount = val
+}
+
+type AdminAccountsTenancyUsersItem struct {
+	ID           uuid.UUID                                      `json:"id"`
+	Email        string                                         `json:"email"`
+	IsSuperadmin bool                                           `json:"is_superadmin"`
+	Memberships  []AdminAccountsTenancyUsersItemMembershipsItem `json:"memberships"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminAccountsTenancyUsersItem) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetEmail returns the value of Email.
+func (s *AdminAccountsTenancyUsersItem) GetEmail() string {
+	return s.Email
+}
+
+// GetIsSuperadmin returns the value of IsSuperadmin.
+func (s *AdminAccountsTenancyUsersItem) GetIsSuperadmin() bool {
+	return s.IsSuperadmin
+}
+
+// GetMemberships returns the value of Memberships.
+func (s *AdminAccountsTenancyUsersItem) GetMemberships() []AdminAccountsTenancyUsersItemMembershipsItem {
+	return s.Memberships
+}
+
+// SetID sets the value of ID.
+func (s *AdminAccountsTenancyUsersItem) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetEmail sets the value of Email.
+func (s *AdminAccountsTenancyUsersItem) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetIsSuperadmin sets the value of IsSuperadmin.
+func (s *AdminAccountsTenancyUsersItem) SetIsSuperadmin(val bool) {
+	s.IsSuperadmin = val
+}
+
+// SetMemberships sets the value of Memberships.
+func (s *AdminAccountsTenancyUsersItem) SetMemberships(val []AdminAccountsTenancyUsersItemMembershipsItem) {
+	s.Memberships = val
+}
+
+type AdminAccountsTenancyUsersItemMembershipsItem struct {
+	TenantID   uuid.UUID `json:"tenant_id"`
+	TenantName string    `json:"tenant_name"`
+	Role       string    `json:"role"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminAccountsTenancyUsersItemMembershipsItem) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *AdminAccountsTenancyUsersItemMembershipsItem) GetTenantName() string {
+	return s.TenantName
+}
+
+// GetRole returns the value of Role.
+func (s *AdminAccountsTenancyUsersItemMembershipsItem) GetRole() string {
+	return s.Role
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminAccountsTenancyUsersItemMembershipsItem) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *AdminAccountsTenancyUsersItemMembershipsItem) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+// SetRole sets the value of Role.
+func (s *AdminAccountsTenancyUsersItemMembershipsItem) SetRole(val string) {
+	s.Role = val
+}
+
 // Shared success acknowledgement for the admin-billing manual controls.
 // Ref: #/components/schemas/AdminBillingAck
 type AdminBillingAck struct {
@@ -1701,6 +1860,70 @@ func (s *AdminCompedRow) SetCount(val int64) {
 // SetHypotheticalValueCents sets the value of HypotheticalValueCents.
 func (s *AdminCompedRow) SetHypotheticalValueCents(val int64) {
 	s.HypotheticalValueCents = val
+}
+
+// Ref: #/components/schemas/AdminDeleteUserResult
+type AdminDeleteUserResult struct {
+	DeletedOrgs       int                                          `json:"deleted_orgs"`
+	KeptOrgsWithSites []AdminDeleteUserResultKeptOrgsWithSitesItem `json:"kept_orgs_with_sites"`
+}
+
+// GetDeletedOrgs returns the value of DeletedOrgs.
+func (s *AdminDeleteUserResult) GetDeletedOrgs() int {
+	return s.DeletedOrgs
+}
+
+// GetKeptOrgsWithSites returns the value of KeptOrgsWithSites.
+func (s *AdminDeleteUserResult) GetKeptOrgsWithSites() []AdminDeleteUserResultKeptOrgsWithSitesItem {
+	return s.KeptOrgsWithSites
+}
+
+// SetDeletedOrgs sets the value of DeletedOrgs.
+func (s *AdminDeleteUserResult) SetDeletedOrgs(val int) {
+	s.DeletedOrgs = val
+}
+
+// SetKeptOrgsWithSites sets the value of KeptOrgsWithSites.
+func (s *AdminDeleteUserResult) SetKeptOrgsWithSites(val []AdminDeleteUserResultKeptOrgsWithSitesItem) {
+	s.KeptOrgsWithSites = val
+}
+
+func (*AdminDeleteUserResult) deleteAdminUserRes() {}
+
+type AdminDeleteUserResultKeptOrgsWithSitesItem struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	SiteCount int       `json:"site_count"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminDeleteUserResultKeptOrgsWithSitesItem) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetName returns the value of Name.
+func (s *AdminDeleteUserResultKeptOrgsWithSitesItem) GetName() string {
+	return s.Name
+}
+
+// GetSiteCount returns the value of SiteCount.
+func (s *AdminDeleteUserResultKeptOrgsWithSitesItem) GetSiteCount() int {
+	return s.SiteCount
+}
+
+// SetID sets the value of ID.
+func (s *AdminDeleteUserResultKeptOrgsWithSitesItem) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetName sets the value of Name.
+func (s *AdminDeleteUserResultKeptOrgsWithSitesItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetSiteCount sets the value of SiteCount.
+func (s *AdminDeleteUserResultKeptOrgsWithSitesItem) SetSiteCount(val int) {
+	s.SiteCount = val
 }
 
 // Ref: #/components/schemas/AdminExtendGraceRequest
@@ -1896,6 +2119,67 @@ func (s *AdminForceStateRequestPlanStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// Ref: #/components/schemas/AdminGrantSelfMembershipResult
+type AdminGrantSelfMembershipResult struct {
+	Ok         bool      `json:"ok"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	TenantName string    `json:"tenant_name"`
+	Added      bool      `json:"added"`
+	Detail     string    `json:"detail"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AdminGrantSelfMembershipResult) GetOk() bool {
+	return s.Ok
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminGrantSelfMembershipResult) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *AdminGrantSelfMembershipResult) GetTenantName() string {
+	return s.TenantName
+}
+
+// GetAdded returns the value of Added.
+func (s *AdminGrantSelfMembershipResult) GetAdded() bool {
+	return s.Added
+}
+
+// GetDetail returns the value of Detail.
+func (s *AdminGrantSelfMembershipResult) GetDetail() string {
+	return s.Detail
+}
+
+// SetOk sets the value of Ok.
+func (s *AdminGrantSelfMembershipResult) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminGrantSelfMembershipResult) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *AdminGrantSelfMembershipResult) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+// SetAdded sets the value of Added.
+func (s *AdminGrantSelfMembershipResult) SetAdded(val bool) {
+	s.Added = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *AdminGrantSelfMembershipResult) SetDetail(val string) {
+	s.Detail = val
+}
+
+func (*AdminGrantSelfMembershipResult) grantAdminSelfMembershipRes() {}
 
 // One row of the revenue page's past-due list.
 // Ref: #/components/schemas/AdminPastDueRow
@@ -2343,6 +2627,578 @@ func (s *AdminSetOverridesRequest) SetReason(val string) {
 	s.Reason = val
 }
 
+// Ref: #/components/schemas/AdminSiteTenancy
+type AdminSiteTenancy struct {
+	SiteID          uuid.UUID               `json:"site_id"`
+	SiteFound       bool                    `json:"site_found"`
+	SiteTenantID    uuid.UUID               `json:"site_tenant_id"`
+	SiteTenantName  string                  `json:"site_tenant_name"`
+	SiteURL         string                  `json:"site_url"`
+	DataTenants     []AdminTenancyRef       `json:"data_tenants"`
+	YourMemberships []AdminTenancyRef       `json:"your_memberships"`
+	SiteShares      []AdminTenancyRef       `json:"site_shares"`
+	Verdict         AdminSiteTenancyVerdict `json:"verdict"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AdminSiteTenancy) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetSiteFound returns the value of SiteFound.
+func (s *AdminSiteTenancy) GetSiteFound() bool {
+	return s.SiteFound
+}
+
+// GetSiteTenantID returns the value of SiteTenantID.
+func (s *AdminSiteTenancy) GetSiteTenantID() uuid.UUID {
+	return s.SiteTenantID
+}
+
+// GetSiteTenantName returns the value of SiteTenantName.
+func (s *AdminSiteTenancy) GetSiteTenantName() string {
+	return s.SiteTenantName
+}
+
+// GetSiteURL returns the value of SiteURL.
+func (s *AdminSiteTenancy) GetSiteURL() string {
+	return s.SiteURL
+}
+
+// GetDataTenants returns the value of DataTenants.
+func (s *AdminSiteTenancy) GetDataTenants() []AdminTenancyRef {
+	return s.DataTenants
+}
+
+// GetYourMemberships returns the value of YourMemberships.
+func (s *AdminSiteTenancy) GetYourMemberships() []AdminTenancyRef {
+	return s.YourMemberships
+}
+
+// GetSiteShares returns the value of SiteShares.
+func (s *AdminSiteTenancy) GetSiteShares() []AdminTenancyRef {
+	return s.SiteShares
+}
+
+// GetVerdict returns the value of Verdict.
+func (s *AdminSiteTenancy) GetVerdict() AdminSiteTenancyVerdict {
+	return s.Verdict
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AdminSiteTenancy) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetSiteFound sets the value of SiteFound.
+func (s *AdminSiteTenancy) SetSiteFound(val bool) {
+	s.SiteFound = val
+}
+
+// SetSiteTenantID sets the value of SiteTenantID.
+func (s *AdminSiteTenancy) SetSiteTenantID(val uuid.UUID) {
+	s.SiteTenantID = val
+}
+
+// SetSiteTenantName sets the value of SiteTenantName.
+func (s *AdminSiteTenancy) SetSiteTenantName(val string) {
+	s.SiteTenantName = val
+}
+
+// SetSiteURL sets the value of SiteURL.
+func (s *AdminSiteTenancy) SetSiteURL(val string) {
+	s.SiteURL = val
+}
+
+// SetDataTenants sets the value of DataTenants.
+func (s *AdminSiteTenancy) SetDataTenants(val []AdminTenancyRef) {
+	s.DataTenants = val
+}
+
+// SetYourMemberships sets the value of YourMemberships.
+func (s *AdminSiteTenancy) SetYourMemberships(val []AdminTenancyRef) {
+	s.YourMemberships = val
+}
+
+// SetSiteShares sets the value of SiteShares.
+func (s *AdminSiteTenancy) SetSiteShares(val []AdminTenancyRef) {
+	s.SiteShares = val
+}
+
+// SetVerdict sets the value of Verdict.
+func (s *AdminSiteTenancy) SetVerdict(val AdminSiteTenancyVerdict) {
+	s.Verdict = val
+}
+
+func (*AdminSiteTenancy) getAdminSiteTenancyRes() {}
+
+type AdminSiteTenancyVerdict struct {
+	SiteMatchesData   bool `json:"site_matches_data"`
+	YouCanSeePerfData bool `json:"you_can_see_perf_data"`
+}
+
+// GetSiteMatchesData returns the value of SiteMatchesData.
+func (s *AdminSiteTenancyVerdict) GetSiteMatchesData() bool {
+	return s.SiteMatchesData
+}
+
+// GetYouCanSeePerfData returns the value of YouCanSeePerfData.
+func (s *AdminSiteTenancyVerdict) GetYouCanSeePerfData() bool {
+	return s.YouCanSeePerfData
+}
+
+// SetSiteMatchesData sets the value of SiteMatchesData.
+func (s *AdminSiteTenancyVerdict) SetSiteMatchesData(val bool) {
+	s.SiteMatchesData = val
+}
+
+// SetYouCanSeePerfData sets the value of YouCanSeePerfData.
+func (s *AdminSiteTenancyVerdict) SetYouCanSeePerfData(val bool) {
+	s.YouCanSeePerfData = val
+}
+
+// Ref: #/components/schemas/AdminStats
+type AdminStats struct {
+	Users         int64 `json:"users"`
+	Organizations int64 `json:"organizations"`
+	Sites         int64 `json:"sites"`
+}
+
+// GetUsers returns the value of Users.
+func (s *AdminStats) GetUsers() int64 {
+	return s.Users
+}
+
+// GetOrganizations returns the value of Organizations.
+func (s *AdminStats) GetOrganizations() int64 {
+	return s.Organizations
+}
+
+// GetSites returns the value of Sites.
+func (s *AdminStats) GetSites() int64 {
+	return s.Sites
+}
+
+// SetUsers sets the value of Users.
+func (s *AdminStats) SetUsers(val int64) {
+	s.Users = val
+}
+
+// SetOrganizations sets the value of Organizations.
+func (s *AdminStats) SetOrganizations(val int64) {
+	s.Organizations = val
+}
+
+// SetSites sets the value of Sites.
+func (s *AdminStats) SetSites(val int64) {
+	s.Sites = val
+}
+
+func (*AdminStats) getAdminStatsRes() {}
+
+// Ref: #/components/schemas/AdminTenancyRef
+type AdminTenancyRef struct {
+	TenantID   uuid.UUID `json:"tenant_id"`
+	TenantName string    `json:"tenant_name"`
+	Role       OptString `json:"role"`
+	Count      OptInt64  `json:"count"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminTenancyRef) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *AdminTenancyRef) GetTenantName() string {
+	return s.TenantName
+}
+
+// GetRole returns the value of Role.
+func (s *AdminTenancyRef) GetRole() OptString {
+	return s.Role
+}
+
+// GetCount returns the value of Count.
+func (s *AdminTenancyRef) GetCount() OptInt64 {
+	return s.Count
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminTenancyRef) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *AdminTenancyRef) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+// SetRole sets the value of Role.
+func (s *AdminTenancyRef) SetRole(val OptString) {
+	s.Role = val
+}
+
+// SetCount sets the value of Count.
+func (s *AdminTenancyRef) SetCount(val OptInt64) {
+	s.Count = val
+}
+
+// Ref: #/components/schemas/AdminUser
+type AdminUser struct {
+	ID            uuid.UUID   `json:"id"`
+	Email         string      `json:"email"`
+	Name          string      `json:"name"`
+	Status        string      `json:"status"`
+	EmailVerified bool        `json:"email_verified"`
+	CreatedAt     time.Time   `json:"created_at"`
+	LastLoginAt   OptDateTime `json:"last_login_at"`
+	IsSuperadmin  bool        `json:"is_superadmin"`
+	OrgCount      int64       `json:"org_count"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminUser) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetEmail returns the value of Email.
+func (s *AdminUser) GetEmail() string {
+	return s.Email
+}
+
+// GetName returns the value of Name.
+func (s *AdminUser) GetName() string {
+	return s.Name
+}
+
+// GetStatus returns the value of Status.
+func (s *AdminUser) GetStatus() string {
+	return s.Status
+}
+
+// GetEmailVerified returns the value of EmailVerified.
+func (s *AdminUser) GetEmailVerified() bool {
+	return s.EmailVerified
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AdminUser) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetLastLoginAt returns the value of LastLoginAt.
+func (s *AdminUser) GetLastLoginAt() OptDateTime {
+	return s.LastLoginAt
+}
+
+// GetIsSuperadmin returns the value of IsSuperadmin.
+func (s *AdminUser) GetIsSuperadmin() bool {
+	return s.IsSuperadmin
+}
+
+// GetOrgCount returns the value of OrgCount.
+func (s *AdminUser) GetOrgCount() int64 {
+	return s.OrgCount
+}
+
+// SetID sets the value of ID.
+func (s *AdminUser) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetEmail sets the value of Email.
+func (s *AdminUser) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetName sets the value of Name.
+func (s *AdminUser) SetName(val string) {
+	s.Name = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AdminUser) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetEmailVerified sets the value of EmailVerified.
+func (s *AdminUser) SetEmailVerified(val bool) {
+	s.EmailVerified = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AdminUser) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetLastLoginAt sets the value of LastLoginAt.
+func (s *AdminUser) SetLastLoginAt(val OptDateTime) {
+	s.LastLoginAt = val
+}
+
+// SetIsSuperadmin sets the value of IsSuperadmin.
+func (s *AdminUser) SetIsSuperadmin(val bool) {
+	s.IsSuperadmin = val
+}
+
+// SetOrgCount sets the value of OrgCount.
+func (s *AdminUser) SetOrgCount(val int64) {
+	s.OrgCount = val
+}
+
+func (*AdminUser) setAdminUserStatusRes() {}
+
+// Ref: #/components/schemas/AdminUserSites
+type AdminUserSites struct {
+	UserID uuid.UUID                 `json:"user_id"`
+	Sites  []AdminUserSitesSitesItem `json:"sites"`
+}
+
+// GetUserID returns the value of UserID.
+func (s *AdminUserSites) GetUserID() uuid.UUID {
+	return s.UserID
+}
+
+// GetSites returns the value of Sites.
+func (s *AdminUserSites) GetSites() []AdminUserSitesSitesItem {
+	return s.Sites
+}
+
+// SetUserID sets the value of UserID.
+func (s *AdminUserSites) SetUserID(val uuid.UUID) {
+	s.UserID = val
+}
+
+// SetSites sets the value of Sites.
+func (s *AdminUserSites) SetSites(val []AdminUserSitesSitesItem) {
+	s.Sites = val
+}
+
+func (*AdminUserSites) listAdminUserSitesRes() {}
+
+type AdminUserSitesSitesItem struct {
+	SiteID          uuid.UUID      `json:"site_id"`
+	URL             string         `json:"url"`
+	Name            string         `json:"name"`
+	ConnectionState string         `json:"connection_state"`
+	EnrolledAt      OptNilDateTime `json:"enrolled_at"`
+	SiteCreatedAt   time.Time      `json:"site_created_at"`
+	TenantID        uuid.UUID      `json:"tenant_id"`
+	TenantName      string         `json:"tenant_name"`
+	MemberRole      string         `json:"member_role"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AdminUserSitesSitesItem) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetURL returns the value of URL.
+func (s *AdminUserSitesSitesItem) GetURL() string {
+	return s.URL
+}
+
+// GetName returns the value of Name.
+func (s *AdminUserSitesSitesItem) GetName() string {
+	return s.Name
+}
+
+// GetConnectionState returns the value of ConnectionState.
+func (s *AdminUserSitesSitesItem) GetConnectionState() string {
+	return s.ConnectionState
+}
+
+// GetEnrolledAt returns the value of EnrolledAt.
+func (s *AdminUserSitesSitesItem) GetEnrolledAt() OptNilDateTime {
+	return s.EnrolledAt
+}
+
+// GetSiteCreatedAt returns the value of SiteCreatedAt.
+func (s *AdminUserSitesSitesItem) GetSiteCreatedAt() time.Time {
+	return s.SiteCreatedAt
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminUserSitesSitesItem) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *AdminUserSitesSitesItem) GetTenantName() string {
+	return s.TenantName
+}
+
+// GetMemberRole returns the value of MemberRole.
+func (s *AdminUserSitesSitesItem) GetMemberRole() string {
+	return s.MemberRole
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AdminUserSitesSitesItem) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetURL sets the value of URL.
+func (s *AdminUserSitesSitesItem) SetURL(val string) {
+	s.URL = val
+}
+
+// SetName sets the value of Name.
+func (s *AdminUserSitesSitesItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetConnectionState sets the value of ConnectionState.
+func (s *AdminUserSitesSitesItem) SetConnectionState(val string) {
+	s.ConnectionState = val
+}
+
+// SetEnrolledAt sets the value of EnrolledAt.
+func (s *AdminUserSitesSitesItem) SetEnrolledAt(val OptNilDateTime) {
+	s.EnrolledAt = val
+}
+
+// SetSiteCreatedAt sets the value of SiteCreatedAt.
+func (s *AdminUserSitesSitesItem) SetSiteCreatedAt(val time.Time) {
+	s.SiteCreatedAt = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminUserSitesSitesItem) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *AdminUserSitesSitesItem) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+// SetMemberRole sets the value of MemberRole.
+func (s *AdminUserSitesSitesItem) SetMemberRole(val string) {
+	s.MemberRole = val
+}
+
+// Ref: #/components/schemas/AdminVulnFeedStatus
+type AdminVulnFeedStatus struct {
+	Configured  bool                      `json:"configured"`
+	Source      AdminVulnFeedStatusSource `json:"source"`
+	FeedOk      bool                      `json:"feed_ok"`
+	RecordCount int                       `json:"record_count"`
+	LastSynced  OptDateTime               `json:"last_synced"`
+	LastError   OptString                 `json:"last_error"`
+}
+
+// GetConfigured returns the value of Configured.
+func (s *AdminVulnFeedStatus) GetConfigured() bool {
+	return s.Configured
+}
+
+// GetSource returns the value of Source.
+func (s *AdminVulnFeedStatus) GetSource() AdminVulnFeedStatusSource {
+	return s.Source
+}
+
+// GetFeedOk returns the value of FeedOk.
+func (s *AdminVulnFeedStatus) GetFeedOk() bool {
+	return s.FeedOk
+}
+
+// GetRecordCount returns the value of RecordCount.
+func (s *AdminVulnFeedStatus) GetRecordCount() int {
+	return s.RecordCount
+}
+
+// GetLastSynced returns the value of LastSynced.
+func (s *AdminVulnFeedStatus) GetLastSynced() OptDateTime {
+	return s.LastSynced
+}
+
+// GetLastError returns the value of LastError.
+func (s *AdminVulnFeedStatus) GetLastError() OptString {
+	return s.LastError
+}
+
+// SetConfigured sets the value of Configured.
+func (s *AdminVulnFeedStatus) SetConfigured(val bool) {
+	s.Configured = val
+}
+
+// SetSource sets the value of Source.
+func (s *AdminVulnFeedStatus) SetSource(val AdminVulnFeedStatusSource) {
+	s.Source = val
+}
+
+// SetFeedOk sets the value of FeedOk.
+func (s *AdminVulnFeedStatus) SetFeedOk(val bool) {
+	s.FeedOk = val
+}
+
+// SetRecordCount sets the value of RecordCount.
+func (s *AdminVulnFeedStatus) SetRecordCount(val int) {
+	s.RecordCount = val
+}
+
+// SetLastSynced sets the value of LastSynced.
+func (s *AdminVulnFeedStatus) SetLastSynced(val OptDateTime) {
+	s.LastSynced = val
+}
+
+// SetLastError sets the value of LastError.
+func (s *AdminVulnFeedStatus) SetLastError(val OptString) {
+	s.LastError = val
+}
+
+func (*AdminVulnFeedStatus) getAdminVulnFeedStatusRes() {}
+
+type AdminVulnFeedStatusSource string
+
+const (
+	AdminVulnFeedStatusSourceUI   AdminVulnFeedStatusSource = "ui"
+	AdminVulnFeedStatusSourceEnv  AdminVulnFeedStatusSource = "env"
+	AdminVulnFeedStatusSourceNone AdminVulnFeedStatusSource = "none"
+)
+
+// AllValues returns all AdminVulnFeedStatusSource values.
+func (AdminVulnFeedStatusSource) AllValues() []AdminVulnFeedStatusSource {
+	return []AdminVulnFeedStatusSource{
+		AdminVulnFeedStatusSourceUI,
+		AdminVulnFeedStatusSourceEnv,
+		AdminVulnFeedStatusSourceNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AdminVulnFeedStatusSource) MarshalText() ([]byte, error) {
+	switch s {
+	case AdminVulnFeedStatusSourceUI:
+		return []byte(s), nil
+	case AdminVulnFeedStatusSourceEnv:
+		return []byte(s), nil
+	case AdminVulnFeedStatusSourceNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AdminVulnFeedStatusSource) UnmarshalText(data []byte) error {
+	switch AdminVulnFeedStatusSource(data) {
+	case AdminVulnFeedStatusSourceUI:
+		*s = AdminVulnFeedStatusSourceUI
+		return nil
+	case AdminVulnFeedStatusSourceEnv:
+		*s = AdminVulnFeedStatusSourceEnv
+		return nil
+	case AdminVulnFeedStatusSourceNone:
+		*s = AdminVulnFeedStatusSourceNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // An agency client record that groups sites under a customer entity.
 // Ref: #/components/schemas/AgencyClient
 type AgencyClient struct {
@@ -2533,6 +3389,358 @@ func (s *AgencyClientList) SetItems(val []AgencyClient) {
 
 func (*AgencyClientList) listClientsRes() {}
 
+type AgentAckPerfConfigOK struct {
+	Ok     bool      `json:"ok"`
+	Detail OptString `json:"detail"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentAckPerfConfigOK) GetOk() bool {
+	return s.Ok
+}
+
+// GetDetail returns the value of Detail.
+func (s *AgentAckPerfConfigOK) GetDetail() OptString {
+	return s.Detail
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentAckPerfConfigOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *AgentAckPerfConfigOK) SetDetail(val OptString) {
+	s.Detail = val
+}
+
+func (*AgentAckPerfConfigOK) agentAckPerfConfigRes() {}
+
+type AgentAckPerfConfigUnauthorized Error
+
+func (*AgentAckPerfConfigUnauthorized) agentAckPerfConfigRes() {}
+
+type AgentAckPerfConfigUnprocessableEntity Error
+
+func (*AgentAckPerfConfigUnprocessableEntity) agentAckPerfConfigRes() {}
+
+// Ref: #/components/schemas/AgentActivityIngestRequest
+type AgentActivityIngestRequest struct {
+	Events        []AgentActivityIngestRequestEventsItem `json:"events"`
+	ChainStartSeq OptInt64                               `json:"chain_start_seq"`
+	AgentVersion  OptString                              `json:"agent_version"`
+}
+
+// GetEvents returns the value of Events.
+func (s *AgentActivityIngestRequest) GetEvents() []AgentActivityIngestRequestEventsItem {
+	return s.Events
+}
+
+// GetChainStartSeq returns the value of ChainStartSeq.
+func (s *AgentActivityIngestRequest) GetChainStartSeq() OptInt64 {
+	return s.ChainStartSeq
+}
+
+// GetAgentVersion returns the value of AgentVersion.
+func (s *AgentActivityIngestRequest) GetAgentVersion() OptString {
+	return s.AgentVersion
+}
+
+// SetEvents sets the value of Events.
+func (s *AgentActivityIngestRequest) SetEvents(val []AgentActivityIngestRequestEventsItem) {
+	s.Events = val
+}
+
+// SetChainStartSeq sets the value of ChainStartSeq.
+func (s *AgentActivityIngestRequest) SetChainStartSeq(val OptInt64) {
+	s.ChainStartSeq = val
+}
+
+// SetAgentVersion sets the value of AgentVersion.
+func (s *AgentActivityIngestRequest) SetAgentVersion(val OptString) {
+	s.AgentVersion = val
+}
+
+type AgentActivityIngestRequestEventsItem struct {
+	Seq         int64     `json:"seq"`
+	EventType   string    `json:"event_type"`
+	ObjectType  string    `json:"object_type"`
+	ObjectID    string    `json:"object_id"`
+	ObjectLabel OptString `json:"object_label"`
+	ActorUserID OptInt64  `json:"actor_user_id"`
+	ActorLogin  OptString `json:"actor_login"`
+	ActorIP     OptString `json:"actor_ip"`
+	Summary     OptString `json:"summary"`
+	// Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never
+	// re-serialized.
+	Meta       *AgentActivityIngestRequestEventsItemMeta `json:"meta"`
+	PrevHash   string                                    `json:"prev_hash"`
+	ThisHash   string                                    `json:"this_hash"`
+	OccurredAt time.Time                                 `json:"occurred_at"`
+}
+
+// GetSeq returns the value of Seq.
+func (s *AgentActivityIngestRequestEventsItem) GetSeq() int64 {
+	return s.Seq
+}
+
+// GetEventType returns the value of EventType.
+func (s *AgentActivityIngestRequestEventsItem) GetEventType() string {
+	return s.EventType
+}
+
+// GetObjectType returns the value of ObjectType.
+func (s *AgentActivityIngestRequestEventsItem) GetObjectType() string {
+	return s.ObjectType
+}
+
+// GetObjectID returns the value of ObjectID.
+func (s *AgentActivityIngestRequestEventsItem) GetObjectID() string {
+	return s.ObjectID
+}
+
+// GetObjectLabel returns the value of ObjectLabel.
+func (s *AgentActivityIngestRequestEventsItem) GetObjectLabel() OptString {
+	return s.ObjectLabel
+}
+
+// GetActorUserID returns the value of ActorUserID.
+func (s *AgentActivityIngestRequestEventsItem) GetActorUserID() OptInt64 {
+	return s.ActorUserID
+}
+
+// GetActorLogin returns the value of ActorLogin.
+func (s *AgentActivityIngestRequestEventsItem) GetActorLogin() OptString {
+	return s.ActorLogin
+}
+
+// GetActorIP returns the value of ActorIP.
+func (s *AgentActivityIngestRequestEventsItem) GetActorIP() OptString {
+	return s.ActorIP
+}
+
+// GetSummary returns the value of Summary.
+func (s *AgentActivityIngestRequestEventsItem) GetSummary() OptString {
+	return s.Summary
+}
+
+// GetMeta returns the value of Meta.
+func (s *AgentActivityIngestRequestEventsItem) GetMeta() *AgentActivityIngestRequestEventsItemMeta {
+	return s.Meta
+}
+
+// GetPrevHash returns the value of PrevHash.
+func (s *AgentActivityIngestRequestEventsItem) GetPrevHash() string {
+	return s.PrevHash
+}
+
+// GetThisHash returns the value of ThisHash.
+func (s *AgentActivityIngestRequestEventsItem) GetThisHash() string {
+	return s.ThisHash
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *AgentActivityIngestRequestEventsItem) GetOccurredAt() time.Time {
+	return s.OccurredAt
+}
+
+// SetSeq sets the value of Seq.
+func (s *AgentActivityIngestRequestEventsItem) SetSeq(val int64) {
+	s.Seq = val
+}
+
+// SetEventType sets the value of EventType.
+func (s *AgentActivityIngestRequestEventsItem) SetEventType(val string) {
+	s.EventType = val
+}
+
+// SetObjectType sets the value of ObjectType.
+func (s *AgentActivityIngestRequestEventsItem) SetObjectType(val string) {
+	s.ObjectType = val
+}
+
+// SetObjectID sets the value of ObjectID.
+func (s *AgentActivityIngestRequestEventsItem) SetObjectID(val string) {
+	s.ObjectID = val
+}
+
+// SetObjectLabel sets the value of ObjectLabel.
+func (s *AgentActivityIngestRequestEventsItem) SetObjectLabel(val OptString) {
+	s.ObjectLabel = val
+}
+
+// SetActorUserID sets the value of ActorUserID.
+func (s *AgentActivityIngestRequestEventsItem) SetActorUserID(val OptInt64) {
+	s.ActorUserID = val
+}
+
+// SetActorLogin sets the value of ActorLogin.
+func (s *AgentActivityIngestRequestEventsItem) SetActorLogin(val OptString) {
+	s.ActorLogin = val
+}
+
+// SetActorIP sets the value of ActorIP.
+func (s *AgentActivityIngestRequestEventsItem) SetActorIP(val OptString) {
+	s.ActorIP = val
+}
+
+// SetSummary sets the value of Summary.
+func (s *AgentActivityIngestRequestEventsItem) SetSummary(val OptString) {
+	s.Summary = val
+}
+
+// SetMeta sets the value of Meta.
+func (s *AgentActivityIngestRequestEventsItem) SetMeta(val *AgentActivityIngestRequestEventsItemMeta) {
+	s.Meta = val
+}
+
+// SetPrevHash sets the value of PrevHash.
+func (s *AgentActivityIngestRequestEventsItem) SetPrevHash(val string) {
+	s.PrevHash = val
+}
+
+// SetThisHash sets the value of ThisHash.
+func (s *AgentActivityIngestRequestEventsItem) SetThisHash(val string) {
+	s.ThisHash = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *AgentActivityIngestRequestEventsItem) SetOccurredAt(val time.Time) {
+	s.OccurredAt = val
+}
+
+// Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never
+// re-serialized.
+type AgentActivityIngestRequestEventsItemMeta struct{}
+
+// Ref: #/components/schemas/AgentAutoOptimizeRequest
+type AgentAutoOptimizeRequest struct {
+	Attachments []AgentAutoOptimizeRequestAttachmentsItem `json:"attachments"`
+}
+
+// GetAttachments returns the value of Attachments.
+func (s *AgentAutoOptimizeRequest) GetAttachments() []AgentAutoOptimizeRequestAttachmentsItem {
+	return s.Attachments
+}
+
+// SetAttachments sets the value of Attachments.
+func (s *AgentAutoOptimizeRequest) SetAttachments(val []AgentAutoOptimizeRequestAttachmentsItem) {
+	s.Attachments = val
+}
+
+type AgentAutoOptimizeRequestAttachmentsItem struct {
+	WpAttachmentID    int64     `json:"wp_attachment_id"`
+	Title             OptString `json:"title"`
+	OriginalPath      OptString `json:"original_path"`
+	OriginalURL       OptString `json:"original_url"`
+	OriginalMime      OptString `json:"original_mime"`
+	OriginalWidth     OptNilInt `json:"original_width"`
+	OriginalHeight    OptNilInt `json:"original_height"`
+	OriginalSizeBytes OptInt64  `json:"original_size_bytes"`
+	VariantCount      OptInt    `json:"variant_count"`
+	SavedBytes        OptInt64  `json:"saved_bytes"`
+}
+
+// GetWpAttachmentID returns the value of WpAttachmentID.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetWpAttachmentID() int64 {
+	return s.WpAttachmentID
+}
+
+// GetTitle returns the value of Title.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetTitle() OptString {
+	return s.Title
+}
+
+// GetOriginalPath returns the value of OriginalPath.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetOriginalPath() OptString {
+	return s.OriginalPath
+}
+
+// GetOriginalURL returns the value of OriginalURL.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetOriginalURL() OptString {
+	return s.OriginalURL
+}
+
+// GetOriginalMime returns the value of OriginalMime.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetOriginalMime() OptString {
+	return s.OriginalMime
+}
+
+// GetOriginalWidth returns the value of OriginalWidth.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetOriginalWidth() OptNilInt {
+	return s.OriginalWidth
+}
+
+// GetOriginalHeight returns the value of OriginalHeight.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetOriginalHeight() OptNilInt {
+	return s.OriginalHeight
+}
+
+// GetOriginalSizeBytes returns the value of OriginalSizeBytes.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetOriginalSizeBytes() OptInt64 {
+	return s.OriginalSizeBytes
+}
+
+// GetVariantCount returns the value of VariantCount.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetVariantCount() OptInt {
+	return s.VariantCount
+}
+
+// GetSavedBytes returns the value of SavedBytes.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) GetSavedBytes() OptInt64 {
+	return s.SavedBytes
+}
+
+// SetWpAttachmentID sets the value of WpAttachmentID.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetWpAttachmentID(val int64) {
+	s.WpAttachmentID = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetTitle(val OptString) {
+	s.Title = val
+}
+
+// SetOriginalPath sets the value of OriginalPath.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetOriginalPath(val OptString) {
+	s.OriginalPath = val
+}
+
+// SetOriginalURL sets the value of OriginalURL.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetOriginalURL(val OptString) {
+	s.OriginalURL = val
+}
+
+// SetOriginalMime sets the value of OriginalMime.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetOriginalMime(val OptString) {
+	s.OriginalMime = val
+}
+
+// SetOriginalWidth sets the value of OriginalWidth.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetOriginalWidth(val OptNilInt) {
+	s.OriginalWidth = val
+}
+
+// SetOriginalHeight sets the value of OriginalHeight.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetOriginalHeight(val OptNilInt) {
+	s.OriginalHeight = val
+}
+
+// SetOriginalSizeBytes sets the value of OriginalSizeBytes.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetOriginalSizeBytes(val OptInt64) {
+	s.OriginalSizeBytes = val
+}
+
+// SetVariantCount sets the value of VariantCount.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetVariantCount(val OptInt) {
+	s.VariantCount = val
+}
+
+// SetSavedBytes sets the value of SavedBytes.
+func (s *AgentAutoOptimizeRequestAttachmentsItem) SetSavedBytes(val OptInt64) {
+	s.SavedBytes = val
+}
+
 type AgentAutologinConsumeForbidden Error
 
 func (*AgentAutologinConsumeForbidden) agentAutologinConsumeRes() {}
@@ -2548,6 +3756,536 @@ func (*AgentAutologinConsumeUnauthorized) agentAutologinConsumeRes() {}
 type AgentAutologinConsumeUnprocessableEntity Error
 
 func (*AgentAutologinConsumeUnprocessableEntity) agentAutologinConsumeRes() {}
+
+// Ref: #/components/schemas/AgentCacheStatsReport
+type AgentCacheStatsReport struct {
+	CachedPagesCount OptInt   `json:"cached_pages_count"`
+	CacheSizeBytes   OptInt64 `json:"cache_size_bytes"`
+	// Unix seconds.
+	LastPurgedAt  OptInt64  `json:"last_purged_at"`
+	LastPurgeKind OptString `json:"last_purge_kind"`
+	// Unix seconds.
+	LastPreloadAt              OptInt64   `json:"last_preload_at"`
+	PreloadPending             OptInt     `json:"preload_pending"`
+	PreloadTotal               OptInt     `json:"preload_total"`
+	CacheHitCount              OptInt64   `json:"cache_hit_count"`
+	CacheMissCount             OptInt64   `json:"cache_miss_count"`
+	WooThemeFragmentsSupported OptNilBool `json:"woo_theme_fragments_supported"`
+	// Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when
+	// the Object Cache feature is not wired.
+	ObjectCache OptAgentCacheStatsReportObjectCache `json:"object_cache"`
+}
+
+// GetCachedPagesCount returns the value of CachedPagesCount.
+func (s *AgentCacheStatsReport) GetCachedPagesCount() OptInt {
+	return s.CachedPagesCount
+}
+
+// GetCacheSizeBytes returns the value of CacheSizeBytes.
+func (s *AgentCacheStatsReport) GetCacheSizeBytes() OptInt64 {
+	return s.CacheSizeBytes
+}
+
+// GetLastPurgedAt returns the value of LastPurgedAt.
+func (s *AgentCacheStatsReport) GetLastPurgedAt() OptInt64 {
+	return s.LastPurgedAt
+}
+
+// GetLastPurgeKind returns the value of LastPurgeKind.
+func (s *AgentCacheStatsReport) GetLastPurgeKind() OptString {
+	return s.LastPurgeKind
+}
+
+// GetLastPreloadAt returns the value of LastPreloadAt.
+func (s *AgentCacheStatsReport) GetLastPreloadAt() OptInt64 {
+	return s.LastPreloadAt
+}
+
+// GetPreloadPending returns the value of PreloadPending.
+func (s *AgentCacheStatsReport) GetPreloadPending() OptInt {
+	return s.PreloadPending
+}
+
+// GetPreloadTotal returns the value of PreloadTotal.
+func (s *AgentCacheStatsReport) GetPreloadTotal() OptInt {
+	return s.PreloadTotal
+}
+
+// GetCacheHitCount returns the value of CacheHitCount.
+func (s *AgentCacheStatsReport) GetCacheHitCount() OptInt64 {
+	return s.CacheHitCount
+}
+
+// GetCacheMissCount returns the value of CacheMissCount.
+func (s *AgentCacheStatsReport) GetCacheMissCount() OptInt64 {
+	return s.CacheMissCount
+}
+
+// GetWooThemeFragmentsSupported returns the value of WooThemeFragmentsSupported.
+func (s *AgentCacheStatsReport) GetWooThemeFragmentsSupported() OptNilBool {
+	return s.WooThemeFragmentsSupported
+}
+
+// GetObjectCache returns the value of ObjectCache.
+func (s *AgentCacheStatsReport) GetObjectCache() OptAgentCacheStatsReportObjectCache {
+	return s.ObjectCache
+}
+
+// SetCachedPagesCount sets the value of CachedPagesCount.
+func (s *AgentCacheStatsReport) SetCachedPagesCount(val OptInt) {
+	s.CachedPagesCount = val
+}
+
+// SetCacheSizeBytes sets the value of CacheSizeBytes.
+func (s *AgentCacheStatsReport) SetCacheSizeBytes(val OptInt64) {
+	s.CacheSizeBytes = val
+}
+
+// SetLastPurgedAt sets the value of LastPurgedAt.
+func (s *AgentCacheStatsReport) SetLastPurgedAt(val OptInt64) {
+	s.LastPurgedAt = val
+}
+
+// SetLastPurgeKind sets the value of LastPurgeKind.
+func (s *AgentCacheStatsReport) SetLastPurgeKind(val OptString) {
+	s.LastPurgeKind = val
+}
+
+// SetLastPreloadAt sets the value of LastPreloadAt.
+func (s *AgentCacheStatsReport) SetLastPreloadAt(val OptInt64) {
+	s.LastPreloadAt = val
+}
+
+// SetPreloadPending sets the value of PreloadPending.
+func (s *AgentCacheStatsReport) SetPreloadPending(val OptInt) {
+	s.PreloadPending = val
+}
+
+// SetPreloadTotal sets the value of PreloadTotal.
+func (s *AgentCacheStatsReport) SetPreloadTotal(val OptInt) {
+	s.PreloadTotal = val
+}
+
+// SetCacheHitCount sets the value of CacheHitCount.
+func (s *AgentCacheStatsReport) SetCacheHitCount(val OptInt64) {
+	s.CacheHitCount = val
+}
+
+// SetCacheMissCount sets the value of CacheMissCount.
+func (s *AgentCacheStatsReport) SetCacheMissCount(val OptInt64) {
+	s.CacheMissCount = val
+}
+
+// SetWooThemeFragmentsSupported sets the value of WooThemeFragmentsSupported.
+func (s *AgentCacheStatsReport) SetWooThemeFragmentsSupported(val OptNilBool) {
+	s.WooThemeFragmentsSupported = val
+}
+
+// SetObjectCache sets the value of ObjectCache.
+func (s *AgentCacheStatsReport) SetObjectCache(val OptAgentCacheStatsReportObjectCache) {
+	s.ObjectCache = val
+}
+
+// Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when
+// the Object Cache feature is not wired.
+type AgentCacheStatsReportObjectCache struct {
+	State             OptAgentCacheStatsReportObjectCacheState `json:"state"`
+	LatencyMs         OptFloat64                               `json:"latency_ms"`
+	LastErrorClass    OptString                                `json:"last_error_class"`
+	HitRatioWindowPct OptFloat64                               `json:"hit_ratio_window_pct"`
+	UsedMemoryBytes   OptInt64                                 `json:"used_memory_bytes"`
+	EngineVersion     OptString                                `json:"engine_version"`
+	ConfigHash        OptString                                `json:"config_hash"`
+	HitCount          OptInt64                                 `json:"hit_count"`
+	MissCount         OptInt64                                 `json:"miss_count"`
+	AvgWaitMs         OptFloat64                               `json:"avg_wait_ms"`
+	OpsPerSec         OptFloat64                               `json:"ops_per_sec"`
+	EvictedKeysDelta  OptInt64                                 `json:"evicted_keys_delta"`
+	ConnectedClients  OptInt                                   `json:"connected_clients"`
+}
+
+// GetState returns the value of State.
+func (s *AgentCacheStatsReportObjectCache) GetState() OptAgentCacheStatsReportObjectCacheState {
+	return s.State
+}
+
+// GetLatencyMs returns the value of LatencyMs.
+func (s *AgentCacheStatsReportObjectCache) GetLatencyMs() OptFloat64 {
+	return s.LatencyMs
+}
+
+// GetLastErrorClass returns the value of LastErrorClass.
+func (s *AgentCacheStatsReportObjectCache) GetLastErrorClass() OptString {
+	return s.LastErrorClass
+}
+
+// GetHitRatioWindowPct returns the value of HitRatioWindowPct.
+func (s *AgentCacheStatsReportObjectCache) GetHitRatioWindowPct() OptFloat64 {
+	return s.HitRatioWindowPct
+}
+
+// GetUsedMemoryBytes returns the value of UsedMemoryBytes.
+func (s *AgentCacheStatsReportObjectCache) GetUsedMemoryBytes() OptInt64 {
+	return s.UsedMemoryBytes
+}
+
+// GetEngineVersion returns the value of EngineVersion.
+func (s *AgentCacheStatsReportObjectCache) GetEngineVersion() OptString {
+	return s.EngineVersion
+}
+
+// GetConfigHash returns the value of ConfigHash.
+func (s *AgentCacheStatsReportObjectCache) GetConfigHash() OptString {
+	return s.ConfigHash
+}
+
+// GetHitCount returns the value of HitCount.
+func (s *AgentCacheStatsReportObjectCache) GetHitCount() OptInt64 {
+	return s.HitCount
+}
+
+// GetMissCount returns the value of MissCount.
+func (s *AgentCacheStatsReportObjectCache) GetMissCount() OptInt64 {
+	return s.MissCount
+}
+
+// GetAvgWaitMs returns the value of AvgWaitMs.
+func (s *AgentCacheStatsReportObjectCache) GetAvgWaitMs() OptFloat64 {
+	return s.AvgWaitMs
+}
+
+// GetOpsPerSec returns the value of OpsPerSec.
+func (s *AgentCacheStatsReportObjectCache) GetOpsPerSec() OptFloat64 {
+	return s.OpsPerSec
+}
+
+// GetEvictedKeysDelta returns the value of EvictedKeysDelta.
+func (s *AgentCacheStatsReportObjectCache) GetEvictedKeysDelta() OptInt64 {
+	return s.EvictedKeysDelta
+}
+
+// GetConnectedClients returns the value of ConnectedClients.
+func (s *AgentCacheStatsReportObjectCache) GetConnectedClients() OptInt {
+	return s.ConnectedClients
+}
+
+// SetState sets the value of State.
+func (s *AgentCacheStatsReportObjectCache) SetState(val OptAgentCacheStatsReportObjectCacheState) {
+	s.State = val
+}
+
+// SetLatencyMs sets the value of LatencyMs.
+func (s *AgentCacheStatsReportObjectCache) SetLatencyMs(val OptFloat64) {
+	s.LatencyMs = val
+}
+
+// SetLastErrorClass sets the value of LastErrorClass.
+func (s *AgentCacheStatsReportObjectCache) SetLastErrorClass(val OptString) {
+	s.LastErrorClass = val
+}
+
+// SetHitRatioWindowPct sets the value of HitRatioWindowPct.
+func (s *AgentCacheStatsReportObjectCache) SetHitRatioWindowPct(val OptFloat64) {
+	s.HitRatioWindowPct = val
+}
+
+// SetUsedMemoryBytes sets the value of UsedMemoryBytes.
+func (s *AgentCacheStatsReportObjectCache) SetUsedMemoryBytes(val OptInt64) {
+	s.UsedMemoryBytes = val
+}
+
+// SetEngineVersion sets the value of EngineVersion.
+func (s *AgentCacheStatsReportObjectCache) SetEngineVersion(val OptString) {
+	s.EngineVersion = val
+}
+
+// SetConfigHash sets the value of ConfigHash.
+func (s *AgentCacheStatsReportObjectCache) SetConfigHash(val OptString) {
+	s.ConfigHash = val
+}
+
+// SetHitCount sets the value of HitCount.
+func (s *AgentCacheStatsReportObjectCache) SetHitCount(val OptInt64) {
+	s.HitCount = val
+}
+
+// SetMissCount sets the value of MissCount.
+func (s *AgentCacheStatsReportObjectCache) SetMissCount(val OptInt64) {
+	s.MissCount = val
+}
+
+// SetAvgWaitMs sets the value of AvgWaitMs.
+func (s *AgentCacheStatsReportObjectCache) SetAvgWaitMs(val OptFloat64) {
+	s.AvgWaitMs = val
+}
+
+// SetOpsPerSec sets the value of OpsPerSec.
+func (s *AgentCacheStatsReportObjectCache) SetOpsPerSec(val OptFloat64) {
+	s.OpsPerSec = val
+}
+
+// SetEvictedKeysDelta sets the value of EvictedKeysDelta.
+func (s *AgentCacheStatsReportObjectCache) SetEvictedKeysDelta(val OptInt64) {
+	s.EvictedKeysDelta = val
+}
+
+// SetConnectedClients sets the value of ConnectedClients.
+func (s *AgentCacheStatsReportObjectCache) SetConnectedClients(val OptInt) {
+	s.ConnectedClients = val
+}
+
+type AgentCacheStatsReportObjectCacheState string
+
+const (
+	AgentCacheStatsReportObjectCacheStateEmpty     AgentCacheStatsReportObjectCacheState = ""
+	AgentCacheStatsReportObjectCacheStateDisabled  AgentCacheStatsReportObjectCacheState = "disabled"
+	AgentCacheStatsReportObjectCacheStateConnected AgentCacheStatsReportObjectCacheState = "connected"
+	AgentCacheStatsReportObjectCacheStateDegraded  AgentCacheStatsReportObjectCacheState = "degraded"
+	AgentCacheStatsReportObjectCacheStateDown      AgentCacheStatsReportObjectCacheState = "down"
+)
+
+// AllValues returns all AgentCacheStatsReportObjectCacheState values.
+func (AgentCacheStatsReportObjectCacheState) AllValues() []AgentCacheStatsReportObjectCacheState {
+	return []AgentCacheStatsReportObjectCacheState{
+		AgentCacheStatsReportObjectCacheStateEmpty,
+		AgentCacheStatsReportObjectCacheStateDisabled,
+		AgentCacheStatsReportObjectCacheStateConnected,
+		AgentCacheStatsReportObjectCacheStateDegraded,
+		AgentCacheStatsReportObjectCacheStateDown,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentCacheStatsReportObjectCacheState) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentCacheStatsReportObjectCacheStateEmpty:
+		return []byte(s), nil
+	case AgentCacheStatsReportObjectCacheStateDisabled:
+		return []byte(s), nil
+	case AgentCacheStatsReportObjectCacheStateConnected:
+		return []byte(s), nil
+	case AgentCacheStatsReportObjectCacheStateDegraded:
+		return []byte(s), nil
+	case AgentCacheStatsReportObjectCacheStateDown:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentCacheStatsReportObjectCacheState) UnmarshalText(data []byte) error {
+	switch AgentCacheStatsReportObjectCacheState(data) {
+	case AgentCacheStatsReportObjectCacheStateEmpty:
+		*s = AgentCacheStatsReportObjectCacheStateEmpty
+		return nil
+	case AgentCacheStatsReportObjectCacheStateDisabled:
+		*s = AgentCacheStatsReportObjectCacheStateDisabled
+		return nil
+	case AgentCacheStatsReportObjectCacheStateConnected:
+		*s = AgentCacheStatsReportObjectCacheStateConnected
+		return nil
+	case AgentCacheStatsReportObjectCacheStateDegraded:
+		*s = AgentCacheStatsReportObjectCacheStateDegraded
+		return nil
+	case AgentCacheStatsReportObjectCacheStateDown:
+		*s = AgentCacheStatsReportObjectCacheStateDown
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AgentChunkRef
+type AgentChunkRef struct {
+	Blake3 string `json:"blake3"`
+	Size   int64  `json:"size"`
+}
+
+// GetBlake3 returns the value of Blake3.
+func (s *AgentChunkRef) GetBlake3() string {
+	return s.Blake3
+}
+
+// GetSize returns the value of Size.
+func (s *AgentChunkRef) GetSize() int64 {
+	return s.Size
+}
+
+// SetBlake3 sets the value of Blake3.
+func (s *AgentChunkRef) SetBlake3(val string) {
+	s.Blake3 = val
+}
+
+// SetSize sets the value of Size.
+func (s *AgentChunkRef) SetSize(val int64) {
+	s.Size = val
+}
+
+// Ref: #/components/schemas/AgentDbCleanProgress
+type AgentDbCleanProgress struct {
+	JobID       string    `json:"job_id"`
+	Category    string    `json:"category"`
+	RowsDeleted OptInt    `json:"rows_deleted"`
+	BytesFreed  OptInt    `json:"bytes_freed"`
+	State       string    `json:"state"`
+	Detail      OptString `json:"detail"`
+	Done        bool      `json:"done"`
+}
+
+// GetJobID returns the value of JobID.
+func (s *AgentDbCleanProgress) GetJobID() string {
+	return s.JobID
+}
+
+// GetCategory returns the value of Category.
+func (s *AgentDbCleanProgress) GetCategory() string {
+	return s.Category
+}
+
+// GetRowsDeleted returns the value of RowsDeleted.
+func (s *AgentDbCleanProgress) GetRowsDeleted() OptInt {
+	return s.RowsDeleted
+}
+
+// GetBytesFreed returns the value of BytesFreed.
+func (s *AgentDbCleanProgress) GetBytesFreed() OptInt {
+	return s.BytesFreed
+}
+
+// GetState returns the value of State.
+func (s *AgentDbCleanProgress) GetState() string {
+	return s.State
+}
+
+// GetDetail returns the value of Detail.
+func (s *AgentDbCleanProgress) GetDetail() OptString {
+	return s.Detail
+}
+
+// GetDone returns the value of Done.
+func (s *AgentDbCleanProgress) GetDone() bool {
+	return s.Done
+}
+
+// SetJobID sets the value of JobID.
+func (s *AgentDbCleanProgress) SetJobID(val string) {
+	s.JobID = val
+}
+
+// SetCategory sets the value of Category.
+func (s *AgentDbCleanProgress) SetCategory(val string) {
+	s.Category = val
+}
+
+// SetRowsDeleted sets the value of RowsDeleted.
+func (s *AgentDbCleanProgress) SetRowsDeleted(val OptInt) {
+	s.RowsDeleted = val
+}
+
+// SetBytesFreed sets the value of BytesFreed.
+func (s *AgentDbCleanProgress) SetBytesFreed(val OptInt) {
+	s.BytesFreed = val
+}
+
+// SetState sets the value of State.
+func (s *AgentDbCleanProgress) SetState(val string) {
+	s.State = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *AgentDbCleanProgress) SetDetail(val OptString) {
+	s.Detail = val
+}
+
+// SetDone sets the value of Done.
+func (s *AgentDbCleanProgress) SetDone(val bool) {
+	s.Done = val
+}
+
+// Ref: #/components/schemas/AgentDbOrphanDeleteProgress
+type AgentDbOrphanDeleteProgress struct {
+	JobID string `json:"job_id"`
+	// Agent-defined per-item result rows.
+	Results        []AgentDbOrphanDeleteProgressResultsItem `json:"results"`
+	DeletedOptions OptInt                                   `json:"deleted_options"`
+	DeletedCron    OptInt                                   `json:"deleted_cron"`
+	DeletedTables  OptInt                                   `json:"deleted_tables"`
+	Skipped        OptInt                                   `json:"skipped"`
+	Done           bool                                     `json:"done"`
+}
+
+// GetJobID returns the value of JobID.
+func (s *AgentDbOrphanDeleteProgress) GetJobID() string {
+	return s.JobID
+}
+
+// GetResults returns the value of Results.
+func (s *AgentDbOrphanDeleteProgress) GetResults() []AgentDbOrphanDeleteProgressResultsItem {
+	return s.Results
+}
+
+// GetDeletedOptions returns the value of DeletedOptions.
+func (s *AgentDbOrphanDeleteProgress) GetDeletedOptions() OptInt {
+	return s.DeletedOptions
+}
+
+// GetDeletedCron returns the value of DeletedCron.
+func (s *AgentDbOrphanDeleteProgress) GetDeletedCron() OptInt {
+	return s.DeletedCron
+}
+
+// GetDeletedTables returns the value of DeletedTables.
+func (s *AgentDbOrphanDeleteProgress) GetDeletedTables() OptInt {
+	return s.DeletedTables
+}
+
+// GetSkipped returns the value of Skipped.
+func (s *AgentDbOrphanDeleteProgress) GetSkipped() OptInt {
+	return s.Skipped
+}
+
+// GetDone returns the value of Done.
+func (s *AgentDbOrphanDeleteProgress) GetDone() bool {
+	return s.Done
+}
+
+// SetJobID sets the value of JobID.
+func (s *AgentDbOrphanDeleteProgress) SetJobID(val string) {
+	s.JobID = val
+}
+
+// SetResults sets the value of Results.
+func (s *AgentDbOrphanDeleteProgress) SetResults(val []AgentDbOrphanDeleteProgressResultsItem) {
+	s.Results = val
+}
+
+// SetDeletedOptions sets the value of DeletedOptions.
+func (s *AgentDbOrphanDeleteProgress) SetDeletedOptions(val OptInt) {
+	s.DeletedOptions = val
+}
+
+// SetDeletedCron sets the value of DeletedCron.
+func (s *AgentDbOrphanDeleteProgress) SetDeletedCron(val OptInt) {
+	s.DeletedCron = val
+}
+
+// SetDeletedTables sets the value of DeletedTables.
+func (s *AgentDbOrphanDeleteProgress) SetDeletedTables(val OptInt) {
+	s.DeletedTables = val
+}
+
+// SetSkipped sets the value of Skipped.
+func (s *AgentDbOrphanDeleteProgress) SetSkipped(val OptInt) {
+	s.Skipped = val
+}
+
+// SetDone sets the value of Done.
+func (s *AgentDbOrphanDeleteProgress) SetDone(val bool) {
+	s.Done = val
+}
+
+type AgentDbOrphanDeleteProgressResultsItem struct{}
 
 // M21 — the signed last-will body.
 // Ref: #/components/schemas/AgentDisconnect
@@ -2593,6 +4331,456 @@ func (s *AgentDisconnectOK) SetOk(val OptBool) {
 }
 
 func (*AgentDisconnectOK) agentDisconnectRes() {}
+
+// Ref: #/components/schemas/AgentEmailLogIngestRequest
+type AgentEmailLogIngestRequest struct {
+	Entries []AgentEmailLogIngestRequestEntriesItem `json:"entries"`
+}
+
+// GetEntries returns the value of Entries.
+func (s *AgentEmailLogIngestRequest) GetEntries() []AgentEmailLogIngestRequestEntriesItem {
+	return s.Entries
+}
+
+// SetEntries sets the value of Entries.
+func (s *AgentEmailLogIngestRequest) SetEntries(val []AgentEmailLogIngestRequestEntriesItem) {
+	s.Entries = val
+}
+
+type AgentEmailLogIngestRequestEntriesItem struct {
+	AgentSeq    int64                                       `json:"agent_seq"`
+	MessageID   OptString                                   `json:"message_id"`
+	ToAddresses []string                                    `json:"to_addresses"`
+	FromAddress OptString                                   `json:"from_address"`
+	Subject     OptString                                   `json:"subject"`
+	Provider    OptString                                   `json:"provider"`
+	Status      AgentEmailLogIngestRequestEntriesItemStatus `json:"status"`
+	// Provider response — any JSON shape (string, object, or absent).
+	Response    jx.Raw       `json:"response"`
+	Error       OptString    `json:"error"`
+	Retries     OptInt       `json:"retries"`
+	ResentCount OptInt       `json:"resent_count"`
+	BodyStored  OptBool      `json:"body_stored"`
+	Body        OptNilString `json:"body"`
+	// Any parseable timestamp (RFC3339 or a MySQL-style string); unparseable values default to now.
+	CreatedAt     jx.Raw                                                 `json:"created_at"`
+	ConnectionKey OptString                                              `json:"connection_key"`
+	Attachments   []AgentEmailLogIngestRequestEntriesItemAttachmentsItem `json:"attachments"`
+}
+
+// GetAgentSeq returns the value of AgentSeq.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetAgentSeq() int64 {
+	return s.AgentSeq
+}
+
+// GetMessageID returns the value of MessageID.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetMessageID() OptString {
+	return s.MessageID
+}
+
+// GetToAddresses returns the value of ToAddresses.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetToAddresses() []string {
+	return s.ToAddresses
+}
+
+// GetFromAddress returns the value of FromAddress.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetFromAddress() OptString {
+	return s.FromAddress
+}
+
+// GetSubject returns the value of Subject.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetSubject() OptString {
+	return s.Subject
+}
+
+// GetProvider returns the value of Provider.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetProvider() OptString {
+	return s.Provider
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetStatus() AgentEmailLogIngestRequestEntriesItemStatus {
+	return s.Status
+}
+
+// GetResponse returns the value of Response.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetResponse() jx.Raw {
+	return s.Response
+}
+
+// GetError returns the value of Error.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetError() OptString {
+	return s.Error
+}
+
+// GetRetries returns the value of Retries.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetRetries() OptInt {
+	return s.Retries
+}
+
+// GetResentCount returns the value of ResentCount.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetResentCount() OptInt {
+	return s.ResentCount
+}
+
+// GetBodyStored returns the value of BodyStored.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetBodyStored() OptBool {
+	return s.BodyStored
+}
+
+// GetBody returns the value of Body.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetBody() OptNilString {
+	return s.Body
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetCreatedAt() jx.Raw {
+	return s.CreatedAt
+}
+
+// GetConnectionKey returns the value of ConnectionKey.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetConnectionKey() OptString {
+	return s.ConnectionKey
+}
+
+// GetAttachments returns the value of Attachments.
+func (s *AgentEmailLogIngestRequestEntriesItem) GetAttachments() []AgentEmailLogIngestRequestEntriesItemAttachmentsItem {
+	return s.Attachments
+}
+
+// SetAgentSeq sets the value of AgentSeq.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetAgentSeq(val int64) {
+	s.AgentSeq = val
+}
+
+// SetMessageID sets the value of MessageID.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetMessageID(val OptString) {
+	s.MessageID = val
+}
+
+// SetToAddresses sets the value of ToAddresses.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetToAddresses(val []string) {
+	s.ToAddresses = val
+}
+
+// SetFromAddress sets the value of FromAddress.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetFromAddress(val OptString) {
+	s.FromAddress = val
+}
+
+// SetSubject sets the value of Subject.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetSubject(val OptString) {
+	s.Subject = val
+}
+
+// SetProvider sets the value of Provider.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetProvider(val OptString) {
+	s.Provider = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetStatus(val AgentEmailLogIngestRequestEntriesItemStatus) {
+	s.Status = val
+}
+
+// SetResponse sets the value of Response.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetResponse(val jx.Raw) {
+	s.Response = val
+}
+
+// SetError sets the value of Error.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetError(val OptString) {
+	s.Error = val
+}
+
+// SetRetries sets the value of Retries.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetRetries(val OptInt) {
+	s.Retries = val
+}
+
+// SetResentCount sets the value of ResentCount.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetResentCount(val OptInt) {
+	s.ResentCount = val
+}
+
+// SetBodyStored sets the value of BodyStored.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetBodyStored(val OptBool) {
+	s.BodyStored = val
+}
+
+// SetBody sets the value of Body.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetBody(val OptNilString) {
+	s.Body = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetCreatedAt(val jx.Raw) {
+	s.CreatedAt = val
+}
+
+// SetConnectionKey sets the value of ConnectionKey.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetConnectionKey(val OptString) {
+	s.ConnectionKey = val
+}
+
+// SetAttachments sets the value of Attachments.
+func (s *AgentEmailLogIngestRequestEntriesItem) SetAttachments(val []AgentEmailLogIngestRequestEntriesItemAttachmentsItem) {
+	s.Attachments = val
+}
+
+type AgentEmailLogIngestRequestEntriesItemAttachmentsItem struct {
+	Name      OptString `json:"name"`
+	SizeBytes OptInt64  `json:"size_bytes"`
+}
+
+// GetName returns the value of Name.
+func (s *AgentEmailLogIngestRequestEntriesItemAttachmentsItem) GetName() OptString {
+	return s.Name
+}
+
+// GetSizeBytes returns the value of SizeBytes.
+func (s *AgentEmailLogIngestRequestEntriesItemAttachmentsItem) GetSizeBytes() OptInt64 {
+	return s.SizeBytes
+}
+
+// SetName sets the value of Name.
+func (s *AgentEmailLogIngestRequestEntriesItemAttachmentsItem) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetSizeBytes sets the value of SizeBytes.
+func (s *AgentEmailLogIngestRequestEntriesItemAttachmentsItem) SetSizeBytes(val OptInt64) {
+	s.SizeBytes = val
+}
+
+type AgentEmailLogIngestRequestEntriesItemStatus string
+
+const (
+	AgentEmailLogIngestRequestEntriesItemStatusSent   AgentEmailLogIngestRequestEntriesItemStatus = "sent"
+	AgentEmailLogIngestRequestEntriesItemStatusFailed AgentEmailLogIngestRequestEntriesItemStatus = "failed"
+)
+
+// AllValues returns all AgentEmailLogIngestRequestEntriesItemStatus values.
+func (AgentEmailLogIngestRequestEntriesItemStatus) AllValues() []AgentEmailLogIngestRequestEntriesItemStatus {
+	return []AgentEmailLogIngestRequestEntriesItemStatus{
+		AgentEmailLogIngestRequestEntriesItemStatusSent,
+		AgentEmailLogIngestRequestEntriesItemStatusFailed,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentEmailLogIngestRequestEntriesItemStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentEmailLogIngestRequestEntriesItemStatusSent:
+		return []byte(s), nil
+	case AgentEmailLogIngestRequestEntriesItemStatusFailed:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentEmailLogIngestRequestEntriesItemStatus) UnmarshalText(data []byte) error {
+	switch AgentEmailLogIngestRequestEntriesItemStatus(data) {
+	case AgentEmailLogIngestRequestEntriesItemStatusSent:
+		*s = AgentEmailLogIngestRequestEntriesItemStatusSent
+		return nil
+	case AgentEmailLogIngestRequestEntriesItemStatusFailed:
+		*s = AgentEmailLogIngestRequestEntriesItemStatusFailed
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AgentErrorBatch
+type AgentErrorBatch struct {
+	Errors []AgentErrorBatchErrorsItem `json:"errors"`
+}
+
+// GetErrors returns the value of Errors.
+func (s *AgentErrorBatch) GetErrors() []AgentErrorBatchErrorsItem {
+	return s.Errors
+}
+
+// SetErrors sets the value of Errors.
+func (s *AgentErrorBatch) SetErrors(val []AgentErrorBatchErrorsItem) {
+	s.Errors = val
+}
+
+// Numeric fields may arrive as a JSON number or a numeric string (the agent's wpdb ARRAY_A encodes
+// numeric columns as strings).
+type AgentErrorBatchErrorsItem struct {
+	ID              OptString                                `json:"id"`
+	MD5             string                                   `json:"md5"`
+	Code            OptString                                `json:"code"`
+	Severity        string                                   `json:"severity"`
+	Message         string                                   `json:"message"`
+	File            OptString                                `json:"file"`
+	Line            OptString                                `json:"line"`
+	RequestPath     OptString                                `json:"request_path"`
+	FirstSeen       OptString                                `json:"first_seen"`
+	LastSeen        OptString                                `json:"last_seen"`
+	OccurrenceCount OptString                                `json:"occurrence_count"`
+	Backtrace       []AgentErrorBatchErrorsItemBacktraceItem `json:"backtrace"`
+}
+
+// GetID returns the value of ID.
+func (s *AgentErrorBatchErrorsItem) GetID() OptString {
+	return s.ID
+}
+
+// GetMD5 returns the value of MD5.
+func (s *AgentErrorBatchErrorsItem) GetMD5() string {
+	return s.MD5
+}
+
+// GetCode returns the value of Code.
+func (s *AgentErrorBatchErrorsItem) GetCode() OptString {
+	return s.Code
+}
+
+// GetSeverity returns the value of Severity.
+func (s *AgentErrorBatchErrorsItem) GetSeverity() string {
+	return s.Severity
+}
+
+// GetMessage returns the value of Message.
+func (s *AgentErrorBatchErrorsItem) GetMessage() string {
+	return s.Message
+}
+
+// GetFile returns the value of File.
+func (s *AgentErrorBatchErrorsItem) GetFile() OptString {
+	return s.File
+}
+
+// GetLine returns the value of Line.
+func (s *AgentErrorBatchErrorsItem) GetLine() OptString {
+	return s.Line
+}
+
+// GetRequestPath returns the value of RequestPath.
+func (s *AgentErrorBatchErrorsItem) GetRequestPath() OptString {
+	return s.RequestPath
+}
+
+// GetFirstSeen returns the value of FirstSeen.
+func (s *AgentErrorBatchErrorsItem) GetFirstSeen() OptString {
+	return s.FirstSeen
+}
+
+// GetLastSeen returns the value of LastSeen.
+func (s *AgentErrorBatchErrorsItem) GetLastSeen() OptString {
+	return s.LastSeen
+}
+
+// GetOccurrenceCount returns the value of OccurrenceCount.
+func (s *AgentErrorBatchErrorsItem) GetOccurrenceCount() OptString {
+	return s.OccurrenceCount
+}
+
+// GetBacktrace returns the value of Backtrace.
+func (s *AgentErrorBatchErrorsItem) GetBacktrace() []AgentErrorBatchErrorsItemBacktraceItem {
+	return s.Backtrace
+}
+
+// SetID sets the value of ID.
+func (s *AgentErrorBatchErrorsItem) SetID(val OptString) {
+	s.ID = val
+}
+
+// SetMD5 sets the value of MD5.
+func (s *AgentErrorBatchErrorsItem) SetMD5(val string) {
+	s.MD5 = val
+}
+
+// SetCode sets the value of Code.
+func (s *AgentErrorBatchErrorsItem) SetCode(val OptString) {
+	s.Code = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *AgentErrorBatchErrorsItem) SetSeverity(val string) {
+	s.Severity = val
+}
+
+// SetMessage sets the value of Message.
+func (s *AgentErrorBatchErrorsItem) SetMessage(val string) {
+	s.Message = val
+}
+
+// SetFile sets the value of File.
+func (s *AgentErrorBatchErrorsItem) SetFile(val OptString) {
+	s.File = val
+}
+
+// SetLine sets the value of Line.
+func (s *AgentErrorBatchErrorsItem) SetLine(val OptString) {
+	s.Line = val
+}
+
+// SetRequestPath sets the value of RequestPath.
+func (s *AgentErrorBatchErrorsItem) SetRequestPath(val OptString) {
+	s.RequestPath = val
+}
+
+// SetFirstSeen sets the value of FirstSeen.
+func (s *AgentErrorBatchErrorsItem) SetFirstSeen(val OptString) {
+	s.FirstSeen = val
+}
+
+// SetLastSeen sets the value of LastSeen.
+func (s *AgentErrorBatchErrorsItem) SetLastSeen(val OptString) {
+	s.LastSeen = val
+}
+
+// SetOccurrenceCount sets the value of OccurrenceCount.
+func (s *AgentErrorBatchErrorsItem) SetOccurrenceCount(val OptString) {
+	s.OccurrenceCount = val
+}
+
+// SetBacktrace sets the value of Backtrace.
+func (s *AgentErrorBatchErrorsItem) SetBacktrace(val []AgentErrorBatchErrorsItemBacktraceItem) {
+	s.Backtrace = val
+}
+
+type AgentErrorBatchErrorsItemBacktraceItem struct {
+	File     OptString `json:"file"`
+	Line     OptString `json:"line"`
+	Function OptString `json:"function"`
+}
+
+// GetFile returns the value of File.
+func (s *AgentErrorBatchErrorsItemBacktraceItem) GetFile() OptString {
+	return s.File
+}
+
+// GetLine returns the value of Line.
+func (s *AgentErrorBatchErrorsItemBacktraceItem) GetLine() OptString {
+	return s.Line
+}
+
+// GetFunction returns the value of Function.
+func (s *AgentErrorBatchErrorsItemBacktraceItem) GetFunction() OptString {
+	return s.Function
+}
+
+// SetFile sets the value of File.
+func (s *AgentErrorBatchErrorsItemBacktraceItem) SetFile(val OptString) {
+	s.File = val
+}
+
+// SetLine sets the value of Line.
+func (s *AgentErrorBatchErrorsItemBacktraceItem) SetLine(val OptString) {
+	s.Line = val
+}
+
+// SetFunction sets the value of Function.
+func (s *AgentErrorBatchErrorsItemBacktraceItem) SetFunction(val OptString) {
+	s.Function = val
+}
 
 // Batch of font result updates pushed by the agent.
 // Ref: #/components/schemas/AgentFontResultsRequest
@@ -2659,25 +4847,71 @@ type AgentFontsResultsUnauthorized Error
 
 func (*AgentFontsResultsUnauthorized) agentFontsResultsRes() {}
 
-type AgentFontsTranscodeBadRequest Error
+type AgentGetHibpRangeOK struct {
+	Data io.Reader
+}
 
-func (*AgentFontsTranscodeBadRequest) agentFontsTranscodeRes() {}
+// Read reads data from the Data reader.
+//
+// Kept to satisfy the io.Reader interface.
+func (s AgentGetHibpRangeOK) Read(p []byte) (n int, err error) {
+	if s.Data == nil {
+		return 0, io.EOF
+	}
+	return s.Data.Read(p)
+}
 
-type AgentFontsTranscodeServiceUnavailable Error
+func (*AgentGetHibpRangeOK) agentGetHibpRangeRes() {}
 
-func (*AgentFontsTranscodeServiceUnavailable) agentFontsTranscodeRes() {}
+type AgentGetHibpRangeUnauthorized Error
 
-type AgentFontsTranscodeTooManyRequests Error
+func (*AgentGetHibpRangeUnauthorized) agentGetHibpRangeRes() {}
 
-func (*AgentFontsTranscodeTooManyRequests) agentFontsTranscodeRes() {}
+type AgentGetHibpRangeUnprocessableEntity Error
 
-type AgentFontsTranscodeUnauthorized Error
+func (*AgentGetHibpRangeUnprocessableEntity) agentGetHibpRangeRes() {}
 
-func (*AgentFontsTranscodeUnauthorized) agentFontsTranscodeRes() {}
+// AgentGetUpdateManifestNoContent is response for AgentGetUpdateManifest operation.
+type AgentGetUpdateManifestNoContent struct{}
 
-type AgentFontsTranscodeUnprocessableEntity Error
+func (*AgentGetUpdateManifestNoContent) agentGetUpdateManifestRes() {}
 
-func (*AgentFontsTranscodeUnprocessableEntity) agentFontsTranscodeRes() {}
+type AgentGetUpdateManifestOK struct {
+	// Base64url-encoded signed JSON payload.
+	Manifest string `json:"manifest"`
+	// Detached Ed25519 signature over the decoded manifest bytes.
+	Signature string `json:"signature"`
+}
+
+// GetManifest returns the value of Manifest.
+func (s *AgentGetUpdateManifestOK) GetManifest() string {
+	return s.Manifest
+}
+
+// GetSignature returns the value of Signature.
+func (s *AgentGetUpdateManifestOK) GetSignature() string {
+	return s.Signature
+}
+
+// SetManifest sets the value of Manifest.
+func (s *AgentGetUpdateManifestOK) SetManifest(val string) {
+	s.Manifest = val
+}
+
+// SetSignature sets the value of Signature.
+func (s *AgentGetUpdateManifestOK) SetSignature(val string) {
+	s.Signature = val
+}
+
+func (*AgentGetUpdateManifestOK) agentGetUpdateManifestRes() {}
+
+type AgentGetUpdateManifestServiceUnavailable Error
+
+func (*AgentGetUpdateManifestServiceUnavailable) agentGetUpdateManifestRes() {}
+
+type AgentGetUpdateManifestUnauthorized Error
+
+func (*AgentGetUpdateManifestUnauthorized) agentGetUpdateManifestRes() {}
 
 // M21 / ADR-039 — the light 60s heartbeat body the WordPress agent sends.
 // All fields are optional and accepted best-effort: the beat is about
@@ -2843,6 +5077,310 @@ func (s *AgentHeartbeatResult) SetRevokeToken(val OptString) {
 
 func (*AgentHeartbeatResult) agentHeartbeatRes() {}
 
+type AgentIngestRucssAccepted struct {
+	Status OptAgentIngestRucssAcceptedStatus `json:"status"`
+	JobID  OptString                         `json:"job_id"`
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentIngestRucssAccepted) GetStatus() OptAgentIngestRucssAcceptedStatus {
+	return s.Status
+}
+
+// GetJobID returns the value of JobID.
+func (s *AgentIngestRucssAccepted) GetJobID() OptString {
+	return s.JobID
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentIngestRucssAccepted) SetStatus(val OptAgentIngestRucssAcceptedStatus) {
+	s.Status = val
+}
+
+// SetJobID sets the value of JobID.
+func (s *AgentIngestRucssAccepted) SetJobID(val OptString) {
+	s.JobID = val
+}
+
+func (*AgentIngestRucssAccepted) agentIngestRucssRes() {}
+
+type AgentIngestRucssAcceptedStatus string
+
+const (
+	AgentIngestRucssAcceptedStatusProcessing  AgentIngestRucssAcceptedStatus = "processing"
+	AgentIngestRucssAcceptedStatusUnavailable AgentIngestRucssAcceptedStatus = "unavailable"
+)
+
+// AllValues returns all AgentIngestRucssAcceptedStatus values.
+func (AgentIngestRucssAcceptedStatus) AllValues() []AgentIngestRucssAcceptedStatus {
+	return []AgentIngestRucssAcceptedStatus{
+		AgentIngestRucssAcceptedStatusProcessing,
+		AgentIngestRucssAcceptedStatusUnavailable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentIngestRucssAcceptedStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentIngestRucssAcceptedStatusProcessing:
+		return []byte(s), nil
+	case AgentIngestRucssAcceptedStatusUnavailable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentIngestRucssAcceptedStatus) UnmarshalText(data []byte) error {
+	switch AgentIngestRucssAcceptedStatus(data) {
+	case AgentIngestRucssAcceptedStatusProcessing:
+		*s = AgentIngestRucssAcceptedStatusProcessing
+		return nil
+	case AgentIngestRucssAcceptedStatusUnavailable:
+		*s = AgentIngestRucssAcceptedStatusUnavailable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AgentIngestRucssForbidden Error
+
+func (*AgentIngestRucssForbidden) agentIngestRucssRes() {}
+
+type AgentIngestRucssOK struct {
+	Data io.Reader
+}
+
+// Read reads data from the Data reader.
+//
+// Kept to satisfy the io.Reader interface.
+func (s AgentIngestRucssOK) Read(p []byte) (n int, err error) {
+	if s.Data == nil {
+		return 0, io.EOF
+	}
+	return s.Data.Read(p)
+}
+
+func (*AgentIngestRucssOK) agentIngestRucssRes() {}
+
+type AgentIngestRucssReq struct {
+	// JSON part — see description for the expected shape.
+	Meta []byte           `json:"meta"`
+	HTML ht.MultipartFile `json:"html"`
+	CSS  OptMultipartFile `json:"css"`
+}
+
+// GetMeta returns the value of Meta.
+func (s *AgentIngestRucssReq) GetMeta() []byte {
+	return s.Meta
+}
+
+// GetHTML returns the value of HTML.
+func (s *AgentIngestRucssReq) GetHTML() ht.MultipartFile {
+	return s.HTML
+}
+
+// GetCSS returns the value of CSS.
+func (s *AgentIngestRucssReq) GetCSS() OptMultipartFile {
+	return s.CSS
+}
+
+// SetMeta sets the value of Meta.
+func (s *AgentIngestRucssReq) SetMeta(val []byte) {
+	s.Meta = val
+}
+
+// SetHTML sets the value of HTML.
+func (s *AgentIngestRucssReq) SetHTML(val ht.MultipartFile) {
+	s.HTML = val
+}
+
+// SetCSS sets the value of CSS.
+func (s *AgentIngestRucssReq) SetCSS(val OptMultipartFile) {
+	s.CSS = val
+}
+
+type AgentIngestRucssRequestEntityTooLarge Error
+
+func (*AgentIngestRucssRequestEntityTooLarge) agentIngestRucssRes() {}
+
+type AgentIngestRucssUnauthorized Error
+
+func (*AgentIngestRucssUnauthorized) agentIngestRucssRes() {}
+
+type AgentIngestRucssUnprocessableEntity Error
+
+func (*AgentIngestRucssUnprocessableEntity) agentIngestRucssRes() {}
+
+// Ref: #/components/schemas/AgentLoginEventBatch
+type AgentLoginEventBatch struct {
+	LoginEvents []AgentLoginEventBatchLoginEventsItem `json:"login_events"`
+}
+
+// GetLoginEvents returns the value of LoginEvents.
+func (s *AgentLoginEventBatch) GetLoginEvents() []AgentLoginEventBatchLoginEventsItem {
+	return s.LoginEvents
+}
+
+// SetLoginEvents sets the value of LoginEvents.
+func (s *AgentLoginEventBatch) SetLoginEvents(val []AgentLoginEventBatchLoginEventsItem) {
+	s.LoginEvents = val
+}
+
+// Numeric fields may arrive as a JSON number or a numeric string (the agent's wpdb ARRAY_A encodes
+// numeric columns as strings).
+type AgentLoginEventBatchLoginEventsItem struct {
+	ID         OptString `json:"id"`
+	IP         string    `json:"ip"`
+	Status     string    `json:"status"`
+	Category   string    `json:"category"`
+	Username   OptString `json:"username"`
+	RequestID  OptString `json:"request_id"`
+	OccurredAt OptString `json:"occurred_at"`
+}
+
+// GetID returns the value of ID.
+func (s *AgentLoginEventBatchLoginEventsItem) GetID() OptString {
+	return s.ID
+}
+
+// GetIP returns the value of IP.
+func (s *AgentLoginEventBatchLoginEventsItem) GetIP() string {
+	return s.IP
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentLoginEventBatchLoginEventsItem) GetStatus() string {
+	return s.Status
+}
+
+// GetCategory returns the value of Category.
+func (s *AgentLoginEventBatchLoginEventsItem) GetCategory() string {
+	return s.Category
+}
+
+// GetUsername returns the value of Username.
+func (s *AgentLoginEventBatchLoginEventsItem) GetUsername() OptString {
+	return s.Username
+}
+
+// GetRequestID returns the value of RequestID.
+func (s *AgentLoginEventBatchLoginEventsItem) GetRequestID() OptString {
+	return s.RequestID
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *AgentLoginEventBatchLoginEventsItem) GetOccurredAt() OptString {
+	return s.OccurredAt
+}
+
+// SetID sets the value of ID.
+func (s *AgentLoginEventBatchLoginEventsItem) SetID(val OptString) {
+	s.ID = val
+}
+
+// SetIP sets the value of IP.
+func (s *AgentLoginEventBatchLoginEventsItem) SetIP(val string) {
+	s.IP = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentLoginEventBatchLoginEventsItem) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetCategory sets the value of Category.
+func (s *AgentLoginEventBatchLoginEventsItem) SetCategory(val string) {
+	s.Category = val
+}
+
+// SetUsername sets the value of Username.
+func (s *AgentLoginEventBatchLoginEventsItem) SetUsername(val OptString) {
+	s.Username = val
+}
+
+// SetRequestID sets the value of RequestID.
+func (s *AgentLoginEventBatchLoginEventsItem) SetRequestID(val OptString) {
+	s.RequestID = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *AgentLoginEventBatchLoginEventsItem) SetOccurredAt(val OptString) {
+	s.OccurredAt = val
+}
+
+// Ref: #/components/schemas/AgentManifestEntry
+type AgentManifestEntry struct {
+	Path      string          `json:"path"`
+	EntryKind string          `json:"entry_kind"`
+	TableName OptString       `json:"table_name"`
+	Mode      int             `json:"mode"`
+	Size      int64           `json:"size"`
+	Chunks    []AgentChunkRef `json:"chunks"`
+}
+
+// GetPath returns the value of Path.
+func (s *AgentManifestEntry) GetPath() string {
+	return s.Path
+}
+
+// GetEntryKind returns the value of EntryKind.
+func (s *AgentManifestEntry) GetEntryKind() string {
+	return s.EntryKind
+}
+
+// GetTableName returns the value of TableName.
+func (s *AgentManifestEntry) GetTableName() OptString {
+	return s.TableName
+}
+
+// GetMode returns the value of Mode.
+func (s *AgentManifestEntry) GetMode() int {
+	return s.Mode
+}
+
+// GetSize returns the value of Size.
+func (s *AgentManifestEntry) GetSize() int64 {
+	return s.Size
+}
+
+// GetChunks returns the value of Chunks.
+func (s *AgentManifestEntry) GetChunks() []AgentChunkRef {
+	return s.Chunks
+}
+
+// SetPath sets the value of Path.
+func (s *AgentManifestEntry) SetPath(val string) {
+	s.Path = val
+}
+
+// SetEntryKind sets the value of EntryKind.
+func (s *AgentManifestEntry) SetEntryKind(val string) {
+	s.EntryKind = val
+}
+
+// SetTableName sets the value of TableName.
+func (s *AgentManifestEntry) SetTableName(val OptString) {
+	s.TableName = val
+}
+
+// SetMode sets the value of Mode.
+func (s *AgentManifestEntry) SetMode(val int) {
+	s.Mode = val
+}
+
+// SetSize sets the value of Size.
+func (s *AgentManifestEntry) SetSize(val int64) {
+	s.Size = val
+}
+
+// SetChunks sets the value of Chunks.
+func (s *AgentManifestEntry) SetChunks(val []AgentChunkRef) {
+	s.Chunks = val
+}
+
 // ADR-043 — the agent's `delete_attachment` hook fired: a WP attachment was
 // deleted (wp-admin, programmatic, WP-CLI, or REST). The agent has already
 // removed its own untracked originals from disk (the *.wpmgr-original.<ext>
@@ -2879,6 +5417,41 @@ func (s *AgentMediaAssetDeletedOK) SetOk(val OptBool) {
 }
 
 func (*AgentMediaAssetDeletedOK) agentMediaAssetDeletedRes() {}
+
+type AgentMediaAutoOptimizeOK struct {
+	Accepted int `json:"accepted"`
+	Skipped  int `json:"skipped"`
+}
+
+// GetAccepted returns the value of Accepted.
+func (s *AgentMediaAutoOptimizeOK) GetAccepted() int {
+	return s.Accepted
+}
+
+// GetSkipped returns the value of Skipped.
+func (s *AgentMediaAutoOptimizeOK) GetSkipped() int {
+	return s.Skipped
+}
+
+// SetAccepted sets the value of Accepted.
+func (s *AgentMediaAutoOptimizeOK) SetAccepted(val int) {
+	s.Accepted = val
+}
+
+// SetSkipped sets the value of Skipped.
+func (s *AgentMediaAutoOptimizeOK) SetSkipped(val int) {
+	s.Skipped = val
+}
+
+func (*AgentMediaAutoOptimizeOK) agentMediaAutoOptimizeRes() {}
+
+type AgentMediaAutoOptimizeUnauthorized Error
+
+func (*AgentMediaAutoOptimizeUnauthorized) agentMediaAutoOptimizeRes() {}
+
+type AgentMediaAutoOptimizeUnprocessableEntity Error
+
+func (*AgentMediaAutoOptimizeUnprocessableEntity) agentMediaAutoOptimizeRes() {}
 
 type AgentMediaEncodeReadyOK struct {
 	Ok OptBool `json:"ok"`
@@ -3466,6 +6039,462 @@ type AgentMetadataUnprocessableEntity Error
 
 func (*AgentMetadataUnprocessableEntity) agentMetadataRes() {}
 
+// Ref: #/components/schemas/AgentPerfConfigAck
+type AgentPerfConfigAck struct {
+	ConfigVersion      int    `json:"config_version"`
+	ServerSoftware     string `json:"server_software"`
+	DropinInstalled    bool   `json:"dropin_installed"`
+	WpCacheConstantSet bool   `json:"wp_cache_constant_set"`
+	HtaccessManaged    bool   `json:"htaccess_managed"`
+	// GH #174 — whether the agent currently holds a non-empty rum_beacon_key. Absent (not false) when
+	// a pre-#174 agent does not report it.
+	RumBeaconPresent OptNilBool `json:"rum_beacon_present"`
+}
+
+// GetConfigVersion returns the value of ConfigVersion.
+func (s *AgentPerfConfigAck) GetConfigVersion() int {
+	return s.ConfigVersion
+}
+
+// GetServerSoftware returns the value of ServerSoftware.
+func (s *AgentPerfConfigAck) GetServerSoftware() string {
+	return s.ServerSoftware
+}
+
+// GetDropinInstalled returns the value of DropinInstalled.
+func (s *AgentPerfConfigAck) GetDropinInstalled() bool {
+	return s.DropinInstalled
+}
+
+// GetWpCacheConstantSet returns the value of WpCacheConstantSet.
+func (s *AgentPerfConfigAck) GetWpCacheConstantSet() bool {
+	return s.WpCacheConstantSet
+}
+
+// GetHtaccessManaged returns the value of HtaccessManaged.
+func (s *AgentPerfConfigAck) GetHtaccessManaged() bool {
+	return s.HtaccessManaged
+}
+
+// GetRumBeaconPresent returns the value of RumBeaconPresent.
+func (s *AgentPerfConfigAck) GetRumBeaconPresent() OptNilBool {
+	return s.RumBeaconPresent
+}
+
+// SetConfigVersion sets the value of ConfigVersion.
+func (s *AgentPerfConfigAck) SetConfigVersion(val int) {
+	s.ConfigVersion = val
+}
+
+// SetServerSoftware sets the value of ServerSoftware.
+func (s *AgentPerfConfigAck) SetServerSoftware(val string) {
+	s.ServerSoftware = val
+}
+
+// SetDropinInstalled sets the value of DropinInstalled.
+func (s *AgentPerfConfigAck) SetDropinInstalled(val bool) {
+	s.DropinInstalled = val
+}
+
+// SetWpCacheConstantSet sets the value of WpCacheConstantSet.
+func (s *AgentPerfConfigAck) SetWpCacheConstantSet(val bool) {
+	s.WpCacheConstantSet = val
+}
+
+// SetHtaccessManaged sets the value of HtaccessManaged.
+func (s *AgentPerfConfigAck) SetHtaccessManaged(val bool) {
+	s.HtaccessManaged = val
+}
+
+// SetRumBeaconPresent sets the value of RumBeaconPresent.
+func (s *AgentPerfConfigAck) SetRumBeaconPresent(val OptNilBool) {
+	s.RumBeaconPresent = val
+}
+
+type AgentPresignBackupChunksForbidden Error
+
+func (*AgentPresignBackupChunksForbidden) agentPresignBackupChunksRes() {}
+
+type AgentPresignBackupChunksNotFound Error
+
+func (*AgentPresignBackupChunksNotFound) agentPresignBackupChunksRes() {}
+
+type AgentPresignBackupChunksUnauthorized Error
+
+func (*AgentPresignBackupChunksUnauthorized) agentPresignBackupChunksRes() {}
+
+// Ref: #/components/schemas/AgentPresignChunksRequest
+type AgentPresignChunksRequest struct {
+	SnapshotID uuid.UUID `json:"snapshot_id"`
+	// Candidate ciphertext chunk hashes (blake3, hex) the agent produced.
+	Hashes []string `json:"hashes"`
+}
+
+// GetSnapshotID returns the value of SnapshotID.
+func (s *AgentPresignChunksRequest) GetSnapshotID() uuid.UUID {
+	return s.SnapshotID
+}
+
+// GetHashes returns the value of Hashes.
+func (s *AgentPresignChunksRequest) GetHashes() []string {
+	return s.Hashes
+}
+
+// SetSnapshotID sets the value of SnapshotID.
+func (s *AgentPresignChunksRequest) SetSnapshotID(val uuid.UUID) {
+	s.SnapshotID = val
+}
+
+// SetHashes sets the value of Hashes.
+func (s *AgentPresignChunksRequest) SetHashes(val []string) {
+	s.Hashes = val
+}
+
+// Ref: #/components/schemas/AgentPresignChunksResponse
+type AgentPresignChunksResponse struct {
+	// Blake3 hash -> presigned PUT URL, for hashes NOT already stored for the tenant.
+	Uploads    AgentPresignChunksResponseUploads `json:"uploads"`
+	TTLSeconds int                               `json:"ttl_seconds"`
+}
+
+// GetUploads returns the value of Uploads.
+func (s *AgentPresignChunksResponse) GetUploads() AgentPresignChunksResponseUploads {
+	return s.Uploads
+}
+
+// GetTTLSeconds returns the value of TTLSeconds.
+func (s *AgentPresignChunksResponse) GetTTLSeconds() int {
+	return s.TTLSeconds
+}
+
+// SetUploads sets the value of Uploads.
+func (s *AgentPresignChunksResponse) SetUploads(val AgentPresignChunksResponseUploads) {
+	s.Uploads = val
+}
+
+// SetTTLSeconds sets the value of TTLSeconds.
+func (s *AgentPresignChunksResponse) SetTTLSeconds(val int) {
+	s.TTLSeconds = val
+}
+
+func (*AgentPresignChunksResponse) agentPresignBackupChunksRes() {}
+
+// Blake3 hash -> presigned PUT URL, for hashes NOT already stored for the tenant.
+type AgentPresignChunksResponseUploads map[string]string
+
+func (s *AgentPresignChunksResponseUploads) init() AgentPresignChunksResponseUploads {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
+}
+
+type AgentPushActivityOK struct {
+	Ingested    int `json:"ingested"`
+	ChainBreaks int `json:"chain_breaks"`
+}
+
+// GetIngested returns the value of Ingested.
+func (s *AgentPushActivityOK) GetIngested() int {
+	return s.Ingested
+}
+
+// GetChainBreaks returns the value of ChainBreaks.
+func (s *AgentPushActivityOK) GetChainBreaks() int {
+	return s.ChainBreaks
+}
+
+// SetIngested sets the value of Ingested.
+func (s *AgentPushActivityOK) SetIngested(val int) {
+	s.Ingested = val
+}
+
+// SetChainBreaks sets the value of ChainBreaks.
+func (s *AgentPushActivityOK) SetChainBreaks(val int) {
+	s.ChainBreaks = val
+}
+
+func (*AgentPushActivityOK) agentPushActivityRes() {}
+
+type AgentPushActivityServiceUnavailable Error
+
+func (*AgentPushActivityServiceUnavailable) agentPushActivityRes() {}
+
+type AgentPushActivityUnauthorized Error
+
+func (*AgentPushActivityUnauthorized) agentPushActivityRes() {}
+
+type AgentPushActivityUnprocessableEntity Error
+
+func (*AgentPushActivityUnprocessableEntity) agentPushActivityRes() {}
+
+type AgentPushDiagnosticsOK struct {
+	CategoriesIngested int `json:"categories_ingested"`
+}
+
+// GetCategoriesIngested returns the value of CategoriesIngested.
+func (s *AgentPushDiagnosticsOK) GetCategoriesIngested() int {
+	return s.CategoriesIngested
+}
+
+// SetCategoriesIngested sets the value of CategoriesIngested.
+func (s *AgentPushDiagnosticsOK) SetCategoriesIngested(val int) {
+	s.CategoriesIngested = val
+}
+
+func (*AgentPushDiagnosticsOK) agentPushDiagnosticsRes() {}
+
+// The 14-category diagnostics payload, keyed by category name.
+type AgentPushDiagnosticsReq struct{}
+
+type AgentPushDiagnosticsServiceUnavailable Error
+
+func (*AgentPushDiagnosticsServiceUnavailable) agentPushDiagnosticsRes() {}
+
+type AgentPushDiagnosticsUnauthorized Error
+
+func (*AgentPushDiagnosticsUnauthorized) agentPushDiagnosticsRes() {}
+
+type AgentPushDiagnosticsUnprocessableEntity Error
+
+func (*AgentPushDiagnosticsUnprocessableEntity) agentPushDiagnosticsRes() {}
+
+type AgentPushEmailLogOK struct {
+	AckedThrough int64 `json:"acked_through"`
+}
+
+// GetAckedThrough returns the value of AckedThrough.
+func (s *AgentPushEmailLogOK) GetAckedThrough() int64 {
+	return s.AckedThrough
+}
+
+// SetAckedThrough sets the value of AckedThrough.
+func (s *AgentPushEmailLogOK) SetAckedThrough(val int64) {
+	s.AckedThrough = val
+}
+
+func (*AgentPushEmailLogOK) agentPushEmailLogRes() {}
+
+type AgentPushEmailLogUnauthorized Error
+
+func (*AgentPushEmailLogUnauthorized) agentPushEmailLogRes() {}
+
+type AgentPushEmailLogUnprocessableEntity Error
+
+func (*AgentPushEmailLogUnprocessableEntity) agentPushEmailLogRes() {}
+
+type AgentPushErrorsOK struct {
+	ConsumedCount int   `json:"consumed_count"`
+	HighestID     int64 `json:"highest_id"`
+}
+
+// GetConsumedCount returns the value of ConsumedCount.
+func (s *AgentPushErrorsOK) GetConsumedCount() int {
+	return s.ConsumedCount
+}
+
+// GetHighestID returns the value of HighestID.
+func (s *AgentPushErrorsOK) GetHighestID() int64 {
+	return s.HighestID
+}
+
+// SetConsumedCount sets the value of ConsumedCount.
+func (s *AgentPushErrorsOK) SetConsumedCount(val int) {
+	s.ConsumedCount = val
+}
+
+// SetHighestID sets the value of HighestID.
+func (s *AgentPushErrorsOK) SetHighestID(val int64) {
+	s.HighestID = val
+}
+
+func (*AgentPushErrorsOK) agentPushErrorsRes() {}
+
+type AgentPushErrorsServiceUnavailable Error
+
+func (*AgentPushErrorsServiceUnavailable) agentPushErrorsRes() {}
+
+type AgentPushErrorsUnauthorized Error
+
+func (*AgentPushErrorsUnauthorized) agentPushErrorsRes() {}
+
+type AgentPushErrorsUnprocessableEntity Error
+
+func (*AgentPushErrorsUnprocessableEntity) agentPushErrorsRes() {}
+
+type AgentPushLoginEventsOK struct {
+	ConsumedCount int   `json:"consumed_count"`
+	HighestID     int64 `json:"highest_id"`
+}
+
+// GetConsumedCount returns the value of ConsumedCount.
+func (s *AgentPushLoginEventsOK) GetConsumedCount() int {
+	return s.ConsumedCount
+}
+
+// GetHighestID returns the value of HighestID.
+func (s *AgentPushLoginEventsOK) GetHighestID() int64 {
+	return s.HighestID
+}
+
+// SetConsumedCount sets the value of ConsumedCount.
+func (s *AgentPushLoginEventsOK) SetConsumedCount(val int) {
+	s.ConsumedCount = val
+}
+
+// SetHighestID sets the value of HighestID.
+func (s *AgentPushLoginEventsOK) SetHighestID(val int64) {
+	s.HighestID = val
+}
+
+func (*AgentPushLoginEventsOK) agentPushLoginEventsRes() {}
+
+type AgentPushLoginEventsServiceUnavailable Error
+
+func (*AgentPushLoginEventsServiceUnavailable) agentPushLoginEventsRes() {}
+
+type AgentPushLoginEventsUnauthorized Error
+
+func (*AgentPushLoginEventsUnauthorized) agentPushLoginEventsRes() {}
+
+type AgentPushLoginEventsUnprocessableEntity Error
+
+func (*AgentPushLoginEventsUnprocessableEntity) agentPushLoginEventsRes() {}
+
+type AgentReportBackupProgressForbidden Error
+
+func (*AgentReportBackupProgressForbidden) agentReportBackupProgressRes() {}
+
+type AgentReportBackupProgressNotFound Error
+
+func (*AgentReportBackupProgressNotFound) agentReportBackupProgressRes() {}
+
+type AgentReportBackupProgressOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentReportBackupProgressOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentReportBackupProgressOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*AgentReportBackupProgressOK) agentReportBackupProgressRes() {}
+
+type AgentReportBackupProgressReq struct {
+	Phase       string                                   `json:"phase"`
+	PhaseDetail *AgentReportBackupProgressReqPhaseDetail `json:"phase_detail"`
+}
+
+// GetPhase returns the value of Phase.
+func (s *AgentReportBackupProgressReq) GetPhase() string {
+	return s.Phase
+}
+
+// GetPhaseDetail returns the value of PhaseDetail.
+func (s *AgentReportBackupProgressReq) GetPhaseDetail() *AgentReportBackupProgressReqPhaseDetail {
+	return s.PhaseDetail
+}
+
+// SetPhase sets the value of Phase.
+func (s *AgentReportBackupProgressReq) SetPhase(val string) {
+	s.Phase = val
+}
+
+// SetPhaseDetail sets the value of PhaseDetail.
+func (s *AgentReportBackupProgressReq) SetPhaseDetail(val *AgentReportBackupProgressReqPhaseDetail) {
+	s.PhaseDetail = val
+}
+
+type AgentReportBackupProgressReqPhaseDetail struct{}
+
+// AgentReportBackupProgressRequestEntityTooLarge is response for AgentReportBackupProgress operation.
+type AgentReportBackupProgressRequestEntityTooLarge struct{}
+
+func (*AgentReportBackupProgressRequestEntityTooLarge) agentReportBackupProgressRes() {}
+
+type AgentReportBackupProgressUnauthorized Error
+
+func (*AgentReportBackupProgressUnauthorized) agentReportBackupProgressRes() {}
+
+type AgentReportCacheStatsOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentReportCacheStatsOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentReportCacheStatsOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*AgentReportCacheStatsOK) agentReportCacheStatsRes() {}
+
+type AgentReportCacheStatsUnauthorized Error
+
+func (*AgentReportCacheStatsUnauthorized) agentReportCacheStatsRes() {}
+
+type AgentReportCacheStatsUnprocessableEntity Error
+
+func (*AgentReportCacheStatsUnprocessableEntity) agentReportCacheStatsRes() {}
+
+type AgentReportDbCleanProgressOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentReportDbCleanProgressOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentReportDbCleanProgressOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*AgentReportDbCleanProgressOK) agentReportDbCleanProgressRes() {}
+
+type AgentReportDbCleanProgressUnauthorized Error
+
+func (*AgentReportDbCleanProgressUnauthorized) agentReportDbCleanProgressRes() {}
+
+type AgentReportDbCleanProgressUnprocessableEntity Error
+
+func (*AgentReportDbCleanProgressUnprocessableEntity) agentReportDbCleanProgressRes() {}
+
+type AgentReportDbOrphanDeleteProgressOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentReportDbOrphanDeleteProgressOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentReportDbOrphanDeleteProgressOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*AgentReportDbOrphanDeleteProgressOK) agentReportDbOrphanDeleteProgressRes() {}
+
+type AgentReportDbOrphanDeleteProgressUnauthorized Error
+
+func (*AgentReportDbOrphanDeleteProgressUnauthorized) agentReportDbOrphanDeleteProgressRes() {}
+
+type AgentReportDbOrphanDeleteProgressUnprocessableEntity Error
+
+func (*AgentReportDbOrphanDeleteProgressUnprocessableEntity) agentReportDbOrphanDeleteProgressRes() {}
+
 type AgentSignature struct {
 	APIKey string
 	Roles  []string
@@ -3489,6 +6518,268 @@ func (s *AgentSignature) SetAPIKey(val string) {
 // SetRoles sets the value of Roles.
 func (s *AgentSignature) SetRoles(val []string) {
 	s.Roles = val
+}
+
+type AgentSubmitBackupManifestForbidden Error
+
+func (*AgentSubmitBackupManifestForbidden) agentSubmitBackupManifestRes() {}
+
+type AgentSubmitBackupManifestNotFound Error
+
+func (*AgentSubmitBackupManifestNotFound) agentSubmitBackupManifestRes() {}
+
+type AgentSubmitBackupManifestUnauthorized Error
+
+func (*AgentSubmitBackupManifestUnauthorized) agentSubmitBackupManifestRes() {}
+
+// Ref: #/components/schemas/AgentSubmitManifestRequest
+type AgentSubmitManifestRequest struct {
+	SnapshotID         uuid.UUID            `json:"snapshot_id"`
+	AgeRecipient       string               `json:"age_recipient"`
+	Entries            []AgentManifestEntry `json:"entries"`
+	CycleFilesScanned  OptInt64             `json:"cycle_files_scanned"`
+	CycleFilesChanged  OptInt64             `json:"cycle_files_changed"`
+	CycleFilesDeleted  OptInt64             `json:"cycle_files_deleted"`
+	CycleBytesUploaded OptInt64             `json:"cycle_bytes_uploaded"`
+}
+
+// GetSnapshotID returns the value of SnapshotID.
+func (s *AgentSubmitManifestRequest) GetSnapshotID() uuid.UUID {
+	return s.SnapshotID
+}
+
+// GetAgeRecipient returns the value of AgeRecipient.
+func (s *AgentSubmitManifestRequest) GetAgeRecipient() string {
+	return s.AgeRecipient
+}
+
+// GetEntries returns the value of Entries.
+func (s *AgentSubmitManifestRequest) GetEntries() []AgentManifestEntry {
+	return s.Entries
+}
+
+// GetCycleFilesScanned returns the value of CycleFilesScanned.
+func (s *AgentSubmitManifestRequest) GetCycleFilesScanned() OptInt64 {
+	return s.CycleFilesScanned
+}
+
+// GetCycleFilesChanged returns the value of CycleFilesChanged.
+func (s *AgentSubmitManifestRequest) GetCycleFilesChanged() OptInt64 {
+	return s.CycleFilesChanged
+}
+
+// GetCycleFilesDeleted returns the value of CycleFilesDeleted.
+func (s *AgentSubmitManifestRequest) GetCycleFilesDeleted() OptInt64 {
+	return s.CycleFilesDeleted
+}
+
+// GetCycleBytesUploaded returns the value of CycleBytesUploaded.
+func (s *AgentSubmitManifestRequest) GetCycleBytesUploaded() OptInt64 {
+	return s.CycleBytesUploaded
+}
+
+// SetSnapshotID sets the value of SnapshotID.
+func (s *AgentSubmitManifestRequest) SetSnapshotID(val uuid.UUID) {
+	s.SnapshotID = val
+}
+
+// SetAgeRecipient sets the value of AgeRecipient.
+func (s *AgentSubmitManifestRequest) SetAgeRecipient(val string) {
+	s.AgeRecipient = val
+}
+
+// SetEntries sets the value of Entries.
+func (s *AgentSubmitManifestRequest) SetEntries(val []AgentManifestEntry) {
+	s.Entries = val
+}
+
+// SetCycleFilesScanned sets the value of CycleFilesScanned.
+func (s *AgentSubmitManifestRequest) SetCycleFilesScanned(val OptInt64) {
+	s.CycleFilesScanned = val
+}
+
+// SetCycleFilesChanged sets the value of CycleFilesChanged.
+func (s *AgentSubmitManifestRequest) SetCycleFilesChanged(val OptInt64) {
+	s.CycleFilesChanged = val
+}
+
+// SetCycleFilesDeleted sets the value of CycleFilesDeleted.
+func (s *AgentSubmitManifestRequest) SetCycleFilesDeleted(val OptInt64) {
+	s.CycleFilesDeleted = val
+}
+
+// SetCycleBytesUploaded sets the value of CycleBytesUploaded.
+func (s *AgentSubmitManifestRequest) SetCycleBytesUploaded(val OptInt64) {
+	s.CycleBytesUploaded = val
+}
+
+// Ref: #/components/schemas/AgentSubmitManifestResponse
+type AgentSubmitManifestResponse struct {
+	Ok          bool  `json:"ok"`
+	ChunkCount  int64 `json:"chunk_count"`
+	StoredCount int64 `json:"stored_count"`
+}
+
+// GetOk returns the value of Ok.
+func (s *AgentSubmitManifestResponse) GetOk() bool {
+	return s.Ok
+}
+
+// GetChunkCount returns the value of ChunkCount.
+func (s *AgentSubmitManifestResponse) GetChunkCount() int64 {
+	return s.ChunkCount
+}
+
+// GetStoredCount returns the value of StoredCount.
+func (s *AgentSubmitManifestResponse) GetStoredCount() int64 {
+	return s.StoredCount
+}
+
+// SetOk sets the value of Ok.
+func (s *AgentSubmitManifestResponse) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetChunkCount sets the value of ChunkCount.
+func (s *AgentSubmitManifestResponse) SetChunkCount(val int64) {
+	s.ChunkCount = val
+}
+
+// SetStoredCount sets the value of StoredCount.
+func (s *AgentSubmitManifestResponse) SetStoredCount(val int64) {
+	s.StoredCount = val
+}
+
+func (*AgentSubmitManifestResponse) agentSubmitBackupManifestRes() {}
+
+// Ref: #/components/schemas/AgentSuppressionDeltaPage
+type AgentSuppressionDeltaPage struct {
+	Entries    []AgentSuppressionDeltaPageEntriesItem `json:"entries"`
+	NextCursor string                                 `json:"next_cursor"`
+}
+
+// GetEntries returns the value of Entries.
+func (s *AgentSuppressionDeltaPage) GetEntries() []AgentSuppressionDeltaPageEntriesItem {
+	return s.Entries
+}
+
+// GetNextCursor returns the value of NextCursor.
+func (s *AgentSuppressionDeltaPage) GetNextCursor() string {
+	return s.NextCursor
+}
+
+// SetEntries sets the value of Entries.
+func (s *AgentSuppressionDeltaPage) SetEntries(val []AgentSuppressionDeltaPageEntriesItem) {
+	s.Entries = val
+}
+
+// SetNextCursor sets the value of NextCursor.
+func (s *AgentSuppressionDeltaPage) SetNextCursor(val string) {
+	s.NextCursor = val
+}
+
+func (*AgentSuppressionDeltaPage) agentFetchSuppressionDeltasRes() {}
+
+type AgentSuppressionDeltaPageEntriesItem struct {
+	ID              string         `json:"id"`
+	TenantID        uuid.UUID      `json:"tenant_id"`
+	SiteID          OptNilString   `json:"site_id"`
+	Email           OptNilString   `json:"email"`
+	Reason          string         `json:"reason"`
+	Provider        string         `json:"provider"`
+	EventAt         OptNilDateTime `json:"event_at"`
+	SourceMessageID OptNilString   `json:"source_message_id"`
+	CreatedAt       time.Time      `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetID() string {
+	return s.ID
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetSiteID() OptNilString {
+	return s.SiteID
+}
+
+// GetEmail returns the value of Email.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetEmail() OptNilString {
+	return s.Email
+}
+
+// GetReason returns the value of Reason.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetReason() string {
+	return s.Reason
+}
+
+// GetProvider returns the value of Provider.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetProvider() string {
+	return s.Provider
+}
+
+// GetEventAt returns the value of EventAt.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetEventAt() OptNilDateTime {
+	return s.EventAt
+}
+
+// GetSourceMessageID returns the value of SourceMessageID.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetSourceMessageID() OptNilString {
+	return s.SourceMessageID
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AgentSuppressionDeltaPageEntriesItem) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetID(val string) {
+	s.ID = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetSiteID(val OptNilString) {
+	s.SiteID = val
+}
+
+// SetEmail sets the value of Email.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetEmail(val OptNilString) {
+	s.Email = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetReason(val string) {
+	s.Reason = val
+}
+
+// SetProvider sets the value of Provider.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetProvider(val string) {
+	s.Provider = val
+}
+
+// SetEventAt sets the value of EventAt.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetEventAt(val OptNilDateTime) {
+	s.EventAt = val
+}
+
+// SetSourceMessageID sets the value of SourceMessageID.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetSourceMessageID(val OptNilString) {
+	s.SourceMessageID = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AgentSuppressionDeltaPageEntriesItem) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
 }
 
 // A tenant's uptime alert channel. The webhook secret is write-only and is
@@ -5979,6 +9270,63 @@ func (s *BackupSnapshotStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+type BeginTotpEnrollmentOK struct {
+	OtpauthURI string `json:"otpauth_uri"`
+	Secret     string `json:"secret"`
+}
+
+// GetOtpauthURI returns the value of OtpauthURI.
+func (s *BeginTotpEnrollmentOK) GetOtpauthURI() string {
+	return s.OtpauthURI
+}
+
+// GetSecret returns the value of Secret.
+func (s *BeginTotpEnrollmentOK) GetSecret() string {
+	return s.Secret
+}
+
+// SetOtpauthURI sets the value of OtpauthURI.
+func (s *BeginTotpEnrollmentOK) SetOtpauthURI(val string) {
+	s.OtpauthURI = val
+}
+
+// SetSecret sets the value of Secret.
+func (s *BeginTotpEnrollmentOK) SetSecret(val string) {
+	s.Secret = val
+}
+
+func (*BeginTotpEnrollmentOK) beginTotpEnrollmentRes() {}
+
+type BeginWebAuthnChallengeOK struct{}
+
+func (*BeginWebAuthnChallengeOK) beginWebAuthnChallengeRes() {}
+
+type BeginWebAuthnChallengeReq struct {
+	Challenge uuid.UUID `json:"challenge"`
+}
+
+// GetChallenge returns the value of Challenge.
+func (s *BeginWebAuthnChallengeReq) GetChallenge() uuid.UUID {
+	return s.Challenge
+}
+
+// SetChallenge sets the value of Challenge.
+func (s *BeginWebAuthnChallengeReq) SetChallenge(val uuid.UUID) {
+	s.Challenge = val
+}
+
+type BeginWebAuthnChallengeUnauthorized Error
+
+func (*BeginWebAuthnChallengeUnauthorized) beginWebAuthnChallengeRes() {}
+
+type BeginWebAuthnChallengeUnprocessableEntity Error
+
+func (*BeginWebAuthnChallengeUnprocessableEntity) beginWebAuthnChallengeRes() {}
+
+type BeginWebAuthnEnrollmentOK struct{}
+
+func (*BeginWebAuthnEnrollmentOK) beginWebAuthnEnrollmentRes() {}
+
 // Ref: #/components/schemas/BillingCheckoutRequest
 type BillingCheckoutRequest struct {
 	// The ONLY caller-supplied selector. The server resolves this to a payment-provider price
@@ -6951,6 +10299,71 @@ func (s *BulkTagApplyRequest) SetRemove(val []string) {
 	s.Remove = val
 }
 
+// Cache hit-ratio trend and average (M52 /.
+// Ref: #/components/schemas/CacheHealth
+type CacheHealth struct {
+	Points      []CacheHealthPointsItem `json:"points"`
+	AvgRatioPct float64                 `json:"avg_ratio_pct"`
+}
+
+// GetPoints returns the value of Points.
+func (s *CacheHealth) GetPoints() []CacheHealthPointsItem {
+	return s.Points
+}
+
+// GetAvgRatioPct returns the value of AvgRatioPct.
+func (s *CacheHealth) GetAvgRatioPct() float64 {
+	return s.AvgRatioPct
+}
+
+// SetPoints sets the value of Points.
+func (s *CacheHealth) SetPoints(val []CacheHealthPointsItem) {
+	s.Points = val
+}
+
+// SetAvgRatioPct sets the value of AvgRatioPct.
+func (s *CacheHealth) SetAvgRatioPct(val float64) {
+	s.AvgRatioPct = val
+}
+
+func (*CacheHealth) getCacheHealthRes() {}
+
+type CacheHealthPointsItem struct {
+	HitCount  OptInt64   `json:"hit_count"`
+	MissCount OptInt64   `json:"miss_count"`
+	RatioPct  OptFloat64 `json:"ratio_pct"`
+}
+
+// GetHitCount returns the value of HitCount.
+func (s *CacheHealthPointsItem) GetHitCount() OptInt64 {
+	return s.HitCount
+}
+
+// GetMissCount returns the value of MissCount.
+func (s *CacheHealthPointsItem) GetMissCount() OptInt64 {
+	return s.MissCount
+}
+
+// GetRatioPct returns the value of RatioPct.
+func (s *CacheHealthPointsItem) GetRatioPct() OptFloat64 {
+	return s.RatioPct
+}
+
+// SetHitCount sets the value of HitCount.
+func (s *CacheHealthPointsItem) SetHitCount(val OptInt64) {
+	s.HitCount = val
+}
+
+// SetMissCount sets the value of MissCount.
+func (s *CacheHealthPointsItem) SetMissCount(val OptInt64) {
+	s.MissCount = val
+}
+
+// SetRatioPct sets the value of RatioPct.
+func (s *CacheHealthPointsItem) SetRatioPct(val OptFloat64) {
+	s.RatioPct = val
+}
+
 // The latest cache gauges the agent reported for a site.
 // Ref: #/components/schemas/CacheStats
 type CacheStats struct {
@@ -7051,6 +10464,30 @@ func (*CancelBackupConflict) cancelBackupRes() {}
 type CancelBackupNotFound Error
 
 func (*CancelBackupNotFound) cancelBackupRes() {}
+
+type CancelBillingSubscriptionForbidden Error
+
+func (*CancelBillingSubscriptionForbidden) cancelBillingSubscriptionRes() {}
+
+type CancelBillingSubscriptionOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *CancelBillingSubscriptionOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *CancelBillingSubscriptionOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*CancelBillingSubscriptionOK) cancelBillingSubscriptionRes() {}
+
+type CancelBillingSubscriptionUnauthorized Error
+
+func (*CancelBillingSubscriptionUnauthorized) cancelBillingSubscriptionRes() {}
 
 type CancelEnrollmentConflict Error
 
@@ -7362,6 +10799,44 @@ func (s *ChainBreakKind) UnmarshalText(data []byte) error {
 	}
 }
 
+// ChangeMyPasswordNoContent is response for ChangeMyPassword operation.
+type ChangeMyPasswordNoContent struct{}
+
+func (*ChangeMyPasswordNoContent) changeMyPasswordRes() {}
+
+type ChangeMyPasswordReq struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// GetCurrentPassword returns the value of CurrentPassword.
+func (s *ChangeMyPasswordReq) GetCurrentPassword() string {
+	return s.CurrentPassword
+}
+
+// GetNewPassword returns the value of NewPassword.
+func (s *ChangeMyPasswordReq) GetNewPassword() string {
+	return s.NewPassword
+}
+
+// SetCurrentPassword sets the value of CurrentPassword.
+func (s *ChangeMyPasswordReq) SetCurrentPassword(val string) {
+	s.CurrentPassword = val
+}
+
+// SetNewPassword sets the value of NewPassword.
+func (s *ChangeMyPasswordReq) SetNewPassword(val string) {
+	s.NewPassword = val
+}
+
+type ChangeMyPasswordUnauthorized Error
+
+func (*ChangeMyPasswordUnauthorized) changeMyPasswordRes() {}
+
+type ChangeMyPasswordUnprocessableEntity Error
+
+func (*ChangeMyPasswordUnprocessableEntity) changeMyPasswordRes() {}
+
 type ChmodSiteFileBadRequest Error
 
 func (*ChmodSiteFileBadRequest) chmodSiteFileRes() {}
@@ -7377,6 +10852,93 @@ func (*ChmodSiteFileNotFound) chmodSiteFileRes() {}
 type ChmodSiteFileUnauthorized Error
 
 func (*ChmodSiteFileUnauthorized) chmodSiteFileRes() {}
+
+type ClearAdminVulnFeedKeyForbidden Error
+
+func (*ClearAdminVulnFeedKeyForbidden) clearAdminVulnFeedKeyRes() {}
+
+type ClearAdminVulnFeedKeyOK struct {
+	Ok             bool                                  `json:"ok"`
+	FallbackSource ClearAdminVulnFeedKeyOKFallbackSource `json:"fallback_source"`
+}
+
+// GetOk returns the value of Ok.
+func (s *ClearAdminVulnFeedKeyOK) GetOk() bool {
+	return s.Ok
+}
+
+// GetFallbackSource returns the value of FallbackSource.
+func (s *ClearAdminVulnFeedKeyOK) GetFallbackSource() ClearAdminVulnFeedKeyOKFallbackSource {
+	return s.FallbackSource
+}
+
+// SetOk sets the value of Ok.
+func (s *ClearAdminVulnFeedKeyOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetFallbackSource sets the value of FallbackSource.
+func (s *ClearAdminVulnFeedKeyOK) SetFallbackSource(val ClearAdminVulnFeedKeyOKFallbackSource) {
+	s.FallbackSource = val
+}
+
+func (*ClearAdminVulnFeedKeyOK) clearAdminVulnFeedKeyRes() {}
+
+type ClearAdminVulnFeedKeyOKFallbackSource string
+
+const (
+	ClearAdminVulnFeedKeyOKFallbackSourceUI   ClearAdminVulnFeedKeyOKFallbackSource = "ui"
+	ClearAdminVulnFeedKeyOKFallbackSourceEnv  ClearAdminVulnFeedKeyOKFallbackSource = "env"
+	ClearAdminVulnFeedKeyOKFallbackSourceNone ClearAdminVulnFeedKeyOKFallbackSource = "none"
+)
+
+// AllValues returns all ClearAdminVulnFeedKeyOKFallbackSource values.
+func (ClearAdminVulnFeedKeyOKFallbackSource) AllValues() []ClearAdminVulnFeedKeyOKFallbackSource {
+	return []ClearAdminVulnFeedKeyOKFallbackSource{
+		ClearAdminVulnFeedKeyOKFallbackSourceUI,
+		ClearAdminVulnFeedKeyOKFallbackSourceEnv,
+		ClearAdminVulnFeedKeyOKFallbackSourceNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ClearAdminVulnFeedKeyOKFallbackSource) MarshalText() ([]byte, error) {
+	switch s {
+	case ClearAdminVulnFeedKeyOKFallbackSourceUI:
+		return []byte(s), nil
+	case ClearAdminVulnFeedKeyOKFallbackSourceEnv:
+		return []byte(s), nil
+	case ClearAdminVulnFeedKeyOKFallbackSourceNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ClearAdminVulnFeedKeyOKFallbackSource) UnmarshalText(data []byte) error {
+	switch ClearAdminVulnFeedKeyOKFallbackSource(data) {
+	case ClearAdminVulnFeedKeyOKFallbackSourceUI:
+		*s = ClearAdminVulnFeedKeyOKFallbackSourceUI
+		return nil
+	case ClearAdminVulnFeedKeyOKFallbackSourceEnv:
+		*s = ClearAdminVulnFeedKeyOKFallbackSourceEnv
+		return nil
+	case ClearAdminVulnFeedKeyOKFallbackSourceNone:
+		*s = ClearAdminVulnFeedKeyOKFallbackSourceNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ClearAdminVulnFeedKeyServiceUnavailable Error
+
+func (*ClearAdminVulnFeedKeyServiceUnavailable) clearAdminVulnFeedKeyRes() {}
+
+type ClearAdminVulnFeedKeyUnauthorized Error
+
+func (*ClearAdminVulnFeedKeyUnauthorized) clearAdminVulnFeedKeyRes() {}
 
 // Ref: #/components/schemas/ClientInvitation
 type ClientInvitation struct {
@@ -8361,6 +11923,76 @@ type CompAdminAccountUnprocessableEntity Error
 
 func (*CompAdminAccountUnprocessableEntity) compAdminAccountRes() {}
 
+type CompleteRecoveryChallengeOK struct {
+	Me                     Me     `json:"me"`
+	RecoveryCodesRemaining OptInt `json:"recovery_codes_remaining"`
+}
+
+// GetMe returns the value of Me.
+func (s *CompleteRecoveryChallengeOK) GetMe() Me {
+	return s.Me
+}
+
+// GetRecoveryCodesRemaining returns the value of RecoveryCodesRemaining.
+func (s *CompleteRecoveryChallengeOK) GetRecoveryCodesRemaining() OptInt {
+	return s.RecoveryCodesRemaining
+}
+
+// SetMe sets the value of Me.
+func (s *CompleteRecoveryChallengeOK) SetMe(val Me) {
+	s.Me = val
+}
+
+// SetRecoveryCodesRemaining sets the value of RecoveryCodesRemaining.
+func (s *CompleteRecoveryChallengeOK) SetRecoveryCodesRemaining(val OptInt) {
+	s.RecoveryCodesRemaining = val
+}
+
+func (*CompleteRecoveryChallengeOK) completeRecoveryChallengeRes() {}
+
+type CompleteRecoveryChallengeUnauthorized Error
+
+func (*CompleteRecoveryChallengeUnauthorized) completeRecoveryChallengeRes() {}
+
+type CompleteRecoveryChallengeUnprocessableEntity Error
+
+func (*CompleteRecoveryChallengeUnprocessableEntity) completeRecoveryChallengeRes() {}
+
+type CompleteTotpChallengeOK struct {
+	Me                     Me     `json:"me"`
+	RecoveryCodesRemaining OptInt `json:"recovery_codes_remaining"`
+}
+
+// GetMe returns the value of Me.
+func (s *CompleteTotpChallengeOK) GetMe() Me {
+	return s.Me
+}
+
+// GetRecoveryCodesRemaining returns the value of RecoveryCodesRemaining.
+func (s *CompleteTotpChallengeOK) GetRecoveryCodesRemaining() OptInt {
+	return s.RecoveryCodesRemaining
+}
+
+// SetMe sets the value of Me.
+func (s *CompleteTotpChallengeOK) SetMe(val Me) {
+	s.Me = val
+}
+
+// SetRecoveryCodesRemaining sets the value of RecoveryCodesRemaining.
+func (s *CompleteTotpChallengeOK) SetRecoveryCodesRemaining(val OptInt) {
+	s.RecoveryCodesRemaining = val
+}
+
+func (*CompleteTotpChallengeOK) completeTotpChallengeRes() {}
+
+type CompleteTotpChallengeUnauthorized Error
+
+func (*CompleteTotpChallengeUnauthorized) completeTotpChallengeRes() {}
+
+type CompleteTotpChallengeUnprocessableEntity Error
+
+func (*CompleteTotpChallengeUnprocessableEntity) completeTotpChallengeRes() {}
+
 type ComputeRucssReq struct {
 	// Same-host URLs to compute; empty computes the home page.
 	Urls []string `json:"urls"`
@@ -8375,6 +12007,28 @@ func (s *ComputeRucssReq) GetUrls() []string {
 func (s *ComputeRucssReq) SetUrls(val []string) {
 	s.Urls = val
 }
+
+type ConfirmTotpEnrollmentReq struct {
+	Code string `json:"code"`
+}
+
+// GetCode returns the value of Code.
+func (s *ConfirmTotpEnrollmentReq) GetCode() string {
+	return s.Code
+}
+
+// SetCode sets the value of Code.
+func (s *ConfirmTotpEnrollmentReq) SetCode(val string) {
+	s.Code = val
+}
+
+type ConfirmTotpEnrollmentUnauthorized Error
+
+func (*ConfirmTotpEnrollmentUnauthorized) confirmTotpEnrollmentRes() {}
+
+type ConfirmTotpEnrollmentUnprocessableEntity Error
+
+func (*ConfirmTotpEnrollmentUnprocessableEntity) confirmTotpEnrollmentRes() {}
 
 // Ref: #/components/schemas/CreateAgencyClientRequest
 type CreateAgencyClientRequest struct {
@@ -8989,6 +12643,55 @@ func (s *CreateRestoreAcceptedStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+type CreateSiteBanForbidden Error
+
+func (*CreateSiteBanForbidden) createSiteBanRes() {}
+
+type CreateSiteBanReq struct {
+	// Ban entry kind (e.g. `ip`, `username`, `user_agent`).
+	Type    string    `json:"type"`
+	Value   string    `json:"value"`
+	Comment OptString `json:"comment"`
+}
+
+// GetType returns the value of Type.
+func (s *CreateSiteBanReq) GetType() string {
+	return s.Type
+}
+
+// GetValue returns the value of Value.
+func (s *CreateSiteBanReq) GetValue() string {
+	return s.Value
+}
+
+// GetComment returns the value of Comment.
+func (s *CreateSiteBanReq) GetComment() OptString {
+	return s.Comment
+}
+
+// SetType sets the value of Type.
+func (s *CreateSiteBanReq) SetType(val string) {
+	s.Type = val
+}
+
+// SetValue sets the value of Value.
+func (s *CreateSiteBanReq) SetValue(val string) {
+	s.Value = val
+}
+
+// SetComment sets the value of Comment.
+func (s *CreateSiteBanReq) SetComment(val OptString) {
+	s.Comment = val
+}
+
+type CreateSiteBanUnauthorized Error
+
+func (*CreateSiteBanUnauthorized) createSiteBanRes() {}
+
+type CreateSiteBanUnprocessableEntity Error
+
+func (*CreateSiteBanUnprocessableEntity) createSiteBanRes() {}
+
 // Merged schema.
 type CreateSiteConflict struct {
 	// Stable machine-readable error code.
@@ -9316,6 +13019,667 @@ func (s *DbCleanResult) SetDetail(val OptString) {
 // SetRowsCleaned sets the value of RowsCleaned.
 func (s *DbCleanResult) SetRowsCleaned(val OptInt) {
 	s.RowsCleaned = val
+}
+
+// Ref: #/components/schemas/DbCleanStatus
+type DbCleanStatus struct {
+	CleanActive     bool                       `json:"clean_active"`
+	ActiveJobID     NilString                  `json:"active_job_id"`
+	ActiveStartedAt NilDateTime                `json:"active_started_at"`
+	LastResult      NilDbCleanStatusLastResult `json:"last_result"`
+}
+
+// GetCleanActive returns the value of CleanActive.
+func (s *DbCleanStatus) GetCleanActive() bool {
+	return s.CleanActive
+}
+
+// GetActiveJobID returns the value of ActiveJobID.
+func (s *DbCleanStatus) GetActiveJobID() NilString {
+	return s.ActiveJobID
+}
+
+// GetActiveStartedAt returns the value of ActiveStartedAt.
+func (s *DbCleanStatus) GetActiveStartedAt() NilDateTime {
+	return s.ActiveStartedAt
+}
+
+// GetLastResult returns the value of LastResult.
+func (s *DbCleanStatus) GetLastResult() NilDbCleanStatusLastResult {
+	return s.LastResult
+}
+
+// SetCleanActive sets the value of CleanActive.
+func (s *DbCleanStatus) SetCleanActive(val bool) {
+	s.CleanActive = val
+}
+
+// SetActiveJobID sets the value of ActiveJobID.
+func (s *DbCleanStatus) SetActiveJobID(val NilString) {
+	s.ActiveJobID = val
+}
+
+// SetActiveStartedAt sets the value of ActiveStartedAt.
+func (s *DbCleanStatus) SetActiveStartedAt(val NilDateTime) {
+	s.ActiveStartedAt = val
+}
+
+// SetLastResult sets the value of LastResult.
+func (s *DbCleanStatus) SetLastResult(val NilDbCleanStatusLastResult) {
+	s.LastResult = val
+}
+
+func (*DbCleanStatus) getDbCleanStatusRes() {}
+
+type DbCleanStatusLastResult struct {
+	JobID       string `json:"job_id"`
+	RowsDeleted int64  `json:"rows_deleted"`
+	BytesFreed  int64  `json:"bytes_freed"`
+	// Per-category {rows_deleted,bytes_freed,state} map.
+	Result    DbCleanStatusLastResultResult `json:"result"`
+	CleanedAt time.Time                     `json:"cleaned_at"`
+}
+
+// GetJobID returns the value of JobID.
+func (s *DbCleanStatusLastResult) GetJobID() string {
+	return s.JobID
+}
+
+// GetRowsDeleted returns the value of RowsDeleted.
+func (s *DbCleanStatusLastResult) GetRowsDeleted() int64 {
+	return s.RowsDeleted
+}
+
+// GetBytesFreed returns the value of BytesFreed.
+func (s *DbCleanStatusLastResult) GetBytesFreed() int64 {
+	return s.BytesFreed
+}
+
+// GetResult returns the value of Result.
+func (s *DbCleanStatusLastResult) GetResult() DbCleanStatusLastResultResult {
+	return s.Result
+}
+
+// GetCleanedAt returns the value of CleanedAt.
+func (s *DbCleanStatusLastResult) GetCleanedAt() time.Time {
+	return s.CleanedAt
+}
+
+// SetJobID sets the value of JobID.
+func (s *DbCleanStatusLastResult) SetJobID(val string) {
+	s.JobID = val
+}
+
+// SetRowsDeleted sets the value of RowsDeleted.
+func (s *DbCleanStatusLastResult) SetRowsDeleted(val int64) {
+	s.RowsDeleted = val
+}
+
+// SetBytesFreed sets the value of BytesFreed.
+func (s *DbCleanStatusLastResult) SetBytesFreed(val int64) {
+	s.BytesFreed = val
+}
+
+// SetResult sets the value of Result.
+func (s *DbCleanStatusLastResult) SetResult(val DbCleanStatusLastResultResult) {
+	s.Result = val
+}
+
+// SetCleanedAt sets the value of CleanedAt.
+func (s *DbCleanStatusLastResult) SetCleanedAt(val time.Time) {
+	s.CleanedAt = val
+}
+
+// Per-category {rows_deleted,bytes_freed,state} map.
+type DbCleanStatusLastResultResult struct{}
+
+// Database-size trend and growth summary (M42 Phase 3.4).
+// Ref: #/components/schemas/DbHealth
+type DbHealth struct {
+	Points      []DbHealthPointsItem `json:"points"`
+	GrowthBytes int64                `json:"growth_bytes"`
+	GrowthPct   float64              `json:"growth_pct"`
+}
+
+// GetPoints returns the value of Points.
+func (s *DbHealth) GetPoints() []DbHealthPointsItem {
+	return s.Points
+}
+
+// GetGrowthBytes returns the value of GrowthBytes.
+func (s *DbHealth) GetGrowthBytes() int64 {
+	return s.GrowthBytes
+}
+
+// GetGrowthPct returns the value of GrowthPct.
+func (s *DbHealth) GetGrowthPct() float64 {
+	return s.GrowthPct
+}
+
+// SetPoints sets the value of Points.
+func (s *DbHealth) SetPoints(val []DbHealthPointsItem) {
+	s.Points = val
+}
+
+// SetGrowthBytes sets the value of GrowthBytes.
+func (s *DbHealth) SetGrowthBytes(val int64) {
+	s.GrowthBytes = val
+}
+
+// SetGrowthPct sets the value of GrowthPct.
+func (s *DbHealth) SetGrowthPct(val float64) {
+	s.GrowthPct = val
+}
+
+func (*DbHealth) getDbHealthRes() {}
+
+type DbHealthPointsItem struct {
+	RecordedAt  OptDateTime `json:"recorded_at"`
+	DbSizeBytes OptInt64    `json:"db_size_bytes"`
+}
+
+// GetRecordedAt returns the value of RecordedAt.
+func (s *DbHealthPointsItem) GetRecordedAt() OptDateTime {
+	return s.RecordedAt
+}
+
+// GetDbSizeBytes returns the value of DbSizeBytes.
+func (s *DbHealthPointsItem) GetDbSizeBytes() OptInt64 {
+	return s.DbSizeBytes
+}
+
+// SetRecordedAt sets the value of RecordedAt.
+func (s *DbHealthPointsItem) SetRecordedAt(val OptDateTime) {
+	s.RecordedAt = val
+}
+
+// SetDbSizeBytes sets the value of DbSizeBytes.
+func (s *DbHealthPointsItem) SetDbSizeBytes(val OptInt64) {
+	s.DbSizeBytes = val
+}
+
+// Ref: #/components/schemas/DbOrphanDeleteRequest
+type DbOrphanDeleteRequest struct {
+	Items []DbOrphanDeleteRequestItemsItem `json:"items"`
+	// Type-to-confirm token; the agent enforces it independently.
+	Confirm string `json:"confirm"`
+}
+
+// GetItems returns the value of Items.
+func (s *DbOrphanDeleteRequest) GetItems() []DbOrphanDeleteRequestItemsItem {
+	return s.Items
+}
+
+// GetConfirm returns the value of Confirm.
+func (s *DbOrphanDeleteRequest) GetConfirm() string {
+	return s.Confirm
+}
+
+// SetItems sets the value of Items.
+func (s *DbOrphanDeleteRequest) SetItems(val []DbOrphanDeleteRequestItemsItem) {
+	s.Items = val
+}
+
+// SetConfirm sets the value of Confirm.
+func (s *DbOrphanDeleteRequest) SetConfirm(val string) {
+	s.Confirm = val
+}
+
+type DbOrphanDeleteRequestItemsItem struct {
+	Kind      DbOrphanDeleteRequestItemsItemKind `json:"kind"`
+	Name      string                             `json:"name"`
+	OwnerSlug string                             `json:"owner_slug"`
+}
+
+// GetKind returns the value of Kind.
+func (s *DbOrphanDeleteRequestItemsItem) GetKind() DbOrphanDeleteRequestItemsItemKind {
+	return s.Kind
+}
+
+// GetName returns the value of Name.
+func (s *DbOrphanDeleteRequestItemsItem) GetName() string {
+	return s.Name
+}
+
+// GetOwnerSlug returns the value of OwnerSlug.
+func (s *DbOrphanDeleteRequestItemsItem) GetOwnerSlug() string {
+	return s.OwnerSlug
+}
+
+// SetKind sets the value of Kind.
+func (s *DbOrphanDeleteRequestItemsItem) SetKind(val DbOrphanDeleteRequestItemsItemKind) {
+	s.Kind = val
+}
+
+// SetName sets the value of Name.
+func (s *DbOrphanDeleteRequestItemsItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetOwnerSlug sets the value of OwnerSlug.
+func (s *DbOrphanDeleteRequestItemsItem) SetOwnerSlug(val string) {
+	s.OwnerSlug = val
+}
+
+type DbOrphanDeleteRequestItemsItemKind string
+
+const (
+	DbOrphanDeleteRequestItemsItemKindOption DbOrphanDeleteRequestItemsItemKind = "option"
+	DbOrphanDeleteRequestItemsItemKindCron   DbOrphanDeleteRequestItemsItemKind = "cron"
+	DbOrphanDeleteRequestItemsItemKindTable  DbOrphanDeleteRequestItemsItemKind = "table"
+)
+
+// AllValues returns all DbOrphanDeleteRequestItemsItemKind values.
+func (DbOrphanDeleteRequestItemsItemKind) AllValues() []DbOrphanDeleteRequestItemsItemKind {
+	return []DbOrphanDeleteRequestItemsItemKind{
+		DbOrphanDeleteRequestItemsItemKindOption,
+		DbOrphanDeleteRequestItemsItemKindCron,
+		DbOrphanDeleteRequestItemsItemKindTable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s DbOrphanDeleteRequestItemsItemKind) MarshalText() ([]byte, error) {
+	switch s {
+	case DbOrphanDeleteRequestItemsItemKindOption:
+		return []byte(s), nil
+	case DbOrphanDeleteRequestItemsItemKindCron:
+		return []byte(s), nil
+	case DbOrphanDeleteRequestItemsItemKindTable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *DbOrphanDeleteRequestItemsItemKind) UnmarshalText(data []byte) error {
+	switch DbOrphanDeleteRequestItemsItemKind(data) {
+	case DbOrphanDeleteRequestItemsItemKindOption:
+		*s = DbOrphanDeleteRequestItemsItemKindOption
+		return nil
+	case DbOrphanDeleteRequestItemsItemKindCron:
+		*s = DbOrphanDeleteRequestItemsItemKindCron
+		return nil
+	case DbOrphanDeleteRequestItemsItemKindTable:
+		*s = DbOrphanDeleteRequestItemsItemKindTable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/DbOrphanDeleteResponse
+type DbOrphanDeleteResponse struct {
+	Ok            bool   `json:"ok"`
+	JobID         string `json:"job_id"`
+	AcceptedCount int    `json:"accepted_count"`
+	// Items dropped by the CP re-classify (no longer eligible or owner_slug drifted).
+	DroppedCount  int       `json:"dropped_count"`
+	BackupWarning OptString `json:"backup_warning"`
+}
+
+// GetOk returns the value of Ok.
+func (s *DbOrphanDeleteResponse) GetOk() bool {
+	return s.Ok
+}
+
+// GetJobID returns the value of JobID.
+func (s *DbOrphanDeleteResponse) GetJobID() string {
+	return s.JobID
+}
+
+// GetAcceptedCount returns the value of AcceptedCount.
+func (s *DbOrphanDeleteResponse) GetAcceptedCount() int {
+	return s.AcceptedCount
+}
+
+// GetDroppedCount returns the value of DroppedCount.
+func (s *DbOrphanDeleteResponse) GetDroppedCount() int {
+	return s.DroppedCount
+}
+
+// GetBackupWarning returns the value of BackupWarning.
+func (s *DbOrphanDeleteResponse) GetBackupWarning() OptString {
+	return s.BackupWarning
+}
+
+// SetOk sets the value of Ok.
+func (s *DbOrphanDeleteResponse) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetJobID sets the value of JobID.
+func (s *DbOrphanDeleteResponse) SetJobID(val string) {
+	s.JobID = val
+}
+
+// SetAcceptedCount sets the value of AcceptedCount.
+func (s *DbOrphanDeleteResponse) SetAcceptedCount(val int) {
+	s.AcceptedCount = val
+}
+
+// SetDroppedCount sets the value of DroppedCount.
+func (s *DbOrphanDeleteResponse) SetDroppedCount(val int) {
+	s.DroppedCount = val
+}
+
+// SetBackupWarning sets the value of BackupWarning.
+func (s *DbOrphanDeleteResponse) SetBackupWarning(val OptString) {
+	s.BackupWarning = val
+}
+
+func (*DbOrphanDeleteResponse) deleteDbOrphansRes() {}
+
+// One classified candidate-orphan artifact (P3.5).
+// Ref: #/components/schemas/DbOrphanItem
+type DbOrphanItem struct {
+	Name              string                 `json:"name"`
+	OwnerSlug         OptString              `json:"owner_slug"`
+	Confidence        DbOrphanItemConfidence `json:"confidence"`
+	KnownPlugins      []string               `json:"known_plugins"`
+	Installed         bool                   `json:"installed"`
+	DeletableEligible bool                   `json:"deletable_eligible"`
+	SizeBytes         OptInt64               `json:"size_bytes"`
+	Autoload          OptNilBool             `json:"autoload"`
+	NextRunAt         OptNilInt64            `json:"next_run_at"`
+	Recurrence        OptString              `json:"recurrence"`
+	Rows              OptNilInt64            `json:"rows"`
+}
+
+// GetName returns the value of Name.
+func (s *DbOrphanItem) GetName() string {
+	return s.Name
+}
+
+// GetOwnerSlug returns the value of OwnerSlug.
+func (s *DbOrphanItem) GetOwnerSlug() OptString {
+	return s.OwnerSlug
+}
+
+// GetConfidence returns the value of Confidence.
+func (s *DbOrphanItem) GetConfidence() DbOrphanItemConfidence {
+	return s.Confidence
+}
+
+// GetKnownPlugins returns the value of KnownPlugins.
+func (s *DbOrphanItem) GetKnownPlugins() []string {
+	return s.KnownPlugins
+}
+
+// GetInstalled returns the value of Installed.
+func (s *DbOrphanItem) GetInstalled() bool {
+	return s.Installed
+}
+
+// GetDeletableEligible returns the value of DeletableEligible.
+func (s *DbOrphanItem) GetDeletableEligible() bool {
+	return s.DeletableEligible
+}
+
+// GetSizeBytes returns the value of SizeBytes.
+func (s *DbOrphanItem) GetSizeBytes() OptInt64 {
+	return s.SizeBytes
+}
+
+// GetAutoload returns the value of Autoload.
+func (s *DbOrphanItem) GetAutoload() OptNilBool {
+	return s.Autoload
+}
+
+// GetNextRunAt returns the value of NextRunAt.
+func (s *DbOrphanItem) GetNextRunAt() OptNilInt64 {
+	return s.NextRunAt
+}
+
+// GetRecurrence returns the value of Recurrence.
+func (s *DbOrphanItem) GetRecurrence() OptString {
+	return s.Recurrence
+}
+
+// GetRows returns the value of Rows.
+func (s *DbOrphanItem) GetRows() OptNilInt64 {
+	return s.Rows
+}
+
+// SetName sets the value of Name.
+func (s *DbOrphanItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetOwnerSlug sets the value of OwnerSlug.
+func (s *DbOrphanItem) SetOwnerSlug(val OptString) {
+	s.OwnerSlug = val
+}
+
+// SetConfidence sets the value of Confidence.
+func (s *DbOrphanItem) SetConfidence(val DbOrphanItemConfidence) {
+	s.Confidence = val
+}
+
+// SetKnownPlugins sets the value of KnownPlugins.
+func (s *DbOrphanItem) SetKnownPlugins(val []string) {
+	s.KnownPlugins = val
+}
+
+// SetInstalled sets the value of Installed.
+func (s *DbOrphanItem) SetInstalled(val bool) {
+	s.Installed = val
+}
+
+// SetDeletableEligible sets the value of DeletableEligible.
+func (s *DbOrphanItem) SetDeletableEligible(val bool) {
+	s.DeletableEligible = val
+}
+
+// SetSizeBytes sets the value of SizeBytes.
+func (s *DbOrphanItem) SetSizeBytes(val OptInt64) {
+	s.SizeBytes = val
+}
+
+// SetAutoload sets the value of Autoload.
+func (s *DbOrphanItem) SetAutoload(val OptNilBool) {
+	s.Autoload = val
+}
+
+// SetNextRunAt sets the value of NextRunAt.
+func (s *DbOrphanItem) SetNextRunAt(val OptNilInt64) {
+	s.NextRunAt = val
+}
+
+// SetRecurrence sets the value of Recurrence.
+func (s *DbOrphanItem) SetRecurrence(val OptString) {
+	s.Recurrence = val
+}
+
+// SetRows sets the value of Rows.
+func (s *DbOrphanItem) SetRows(val OptNilInt64) {
+	s.Rows = val
+}
+
+type DbOrphanItemConfidence string
+
+const (
+	DbOrphanItemConfidenceExact     DbOrphanItemConfidence = "exact"
+	DbOrphanItemConfidencePrefix    DbOrphanItemConfidence = "prefix"
+	DbOrphanItemConfidenceHeuristic DbOrphanItemConfidence = "heuristic"
+	DbOrphanItemConfidenceUnknown   DbOrphanItemConfidence = "unknown"
+)
+
+// AllValues returns all DbOrphanItemConfidence values.
+func (DbOrphanItemConfidence) AllValues() []DbOrphanItemConfidence {
+	return []DbOrphanItemConfidence{
+		DbOrphanItemConfidenceExact,
+		DbOrphanItemConfidencePrefix,
+		DbOrphanItemConfidenceHeuristic,
+		DbOrphanItemConfidenceUnknown,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s DbOrphanItemConfidence) MarshalText() ([]byte, error) {
+	switch s {
+	case DbOrphanItemConfidenceExact:
+		return []byte(s), nil
+	case DbOrphanItemConfidencePrefix:
+		return []byte(s), nil
+	case DbOrphanItemConfidenceHeuristic:
+		return []byte(s), nil
+	case DbOrphanItemConfidenceUnknown:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *DbOrphanItemConfidence) UnmarshalText(data []byte) error {
+	switch DbOrphanItemConfidence(data) {
+	case DbOrphanItemConfidenceExact:
+		*s = DbOrphanItemConfidenceExact
+		return nil
+	case DbOrphanItemConfidencePrefix:
+		*s = DbOrphanItemConfidencePrefix
+		return nil
+	case DbOrphanItemConfidenceHeuristic:
+		*s = DbOrphanItemConfidenceHeuristic
+		return nil
+	case DbOrphanItemConfidenceUnknown:
+		*s = DbOrphanItemConfidenceUnknown
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/DbOrphansReport
+type DbOrphansReport struct {
+	Options           []DbOrphanItem        `json:"options"`
+	Cron              []DbOrphanItem        `json:"cron"`
+	Tables            []DbOrphanItem        `json:"tables"`
+	CorpusVersion     int                   `json:"corpus_version"`
+	SnapshotAvailable bool                  `json:"snapshot_available"`
+	HiddenInstalled   int                   `json:"hidden_installed"`
+	Counts            DbOrphansReportCounts `json:"counts"`
+}
+
+// GetOptions returns the value of Options.
+func (s *DbOrphansReport) GetOptions() []DbOrphanItem {
+	return s.Options
+}
+
+// GetCron returns the value of Cron.
+func (s *DbOrphansReport) GetCron() []DbOrphanItem {
+	return s.Cron
+}
+
+// GetTables returns the value of Tables.
+func (s *DbOrphansReport) GetTables() []DbOrphanItem {
+	return s.Tables
+}
+
+// GetCorpusVersion returns the value of CorpusVersion.
+func (s *DbOrphansReport) GetCorpusVersion() int {
+	return s.CorpusVersion
+}
+
+// GetSnapshotAvailable returns the value of SnapshotAvailable.
+func (s *DbOrphansReport) GetSnapshotAvailable() bool {
+	return s.SnapshotAvailable
+}
+
+// GetHiddenInstalled returns the value of HiddenInstalled.
+func (s *DbOrphansReport) GetHiddenInstalled() int {
+	return s.HiddenInstalled
+}
+
+// GetCounts returns the value of Counts.
+func (s *DbOrphansReport) GetCounts() DbOrphansReportCounts {
+	return s.Counts
+}
+
+// SetOptions sets the value of Options.
+func (s *DbOrphansReport) SetOptions(val []DbOrphanItem) {
+	s.Options = val
+}
+
+// SetCron sets the value of Cron.
+func (s *DbOrphansReport) SetCron(val []DbOrphanItem) {
+	s.Cron = val
+}
+
+// SetTables sets the value of Tables.
+func (s *DbOrphansReport) SetTables(val []DbOrphanItem) {
+	s.Tables = val
+}
+
+// SetCorpusVersion sets the value of CorpusVersion.
+func (s *DbOrphansReport) SetCorpusVersion(val int) {
+	s.CorpusVersion = val
+}
+
+// SetSnapshotAvailable sets the value of SnapshotAvailable.
+func (s *DbOrphansReport) SetSnapshotAvailable(val bool) {
+	s.SnapshotAvailable = val
+}
+
+// SetHiddenInstalled sets the value of HiddenInstalled.
+func (s *DbOrphansReport) SetHiddenInstalled(val int) {
+	s.HiddenInstalled = val
+}
+
+// SetCounts sets the value of Counts.
+func (s *DbOrphansReport) SetCounts(val DbOrphansReportCounts) {
+	s.Counts = val
+}
+
+func (*DbOrphansReport) getDbOrphansReportRes() {}
+
+type DbOrphansReportCounts struct {
+	Options   int `json:"options"`
+	Cron      int `json:"cron"`
+	Tables    int `json:"tables"`
+	Deletable int `json:"deletable"`
+}
+
+// GetOptions returns the value of Options.
+func (s *DbOrphansReportCounts) GetOptions() int {
+	return s.Options
+}
+
+// GetCron returns the value of Cron.
+func (s *DbOrphansReportCounts) GetCron() int {
+	return s.Cron
+}
+
+// GetTables returns the value of Tables.
+func (s *DbOrphansReportCounts) GetTables() int {
+	return s.Tables
+}
+
+// GetDeletable returns the value of Deletable.
+func (s *DbOrphansReportCounts) GetDeletable() int {
+	return s.Deletable
+}
+
+// SetOptions sets the value of Options.
+func (s *DbOrphansReportCounts) SetOptions(val int) {
+	s.Options = val
+}
+
+// SetCron sets the value of Cron.
+func (s *DbOrphansReportCounts) SetCron(val int) {
+	s.Cron = val
+}
+
+// SetTables sets the value of Tables.
+func (s *DbOrphansReportCounts) SetTables(val int) {
+	s.Tables = val
+}
+
+// SetDeletable sets the value of Deletable.
+func (s *DbOrphansReportCounts) SetDeletable(val int) {
+	s.Deletable = val
 }
 
 // The latest db_scan result for a site, as stored by the control plane
@@ -9826,6 +14190,190 @@ func (s *DbSnapshotRevertResult) SetSafetyID(val OptString) {
 	s.SafetyID = val
 }
 
+// Ref: #/components/schemas/DbTableActionRequest
+type DbTableActionRequest struct {
+	Action DbTableActionRequestAction `json:"action"`
+	Tables []string                   `json:"tables"`
+	// Required type-to-confirm token for drop/empty.
+	Confirm OptString `json:"confirm"`
+}
+
+// GetAction returns the value of Action.
+func (s *DbTableActionRequest) GetAction() DbTableActionRequestAction {
+	return s.Action
+}
+
+// GetTables returns the value of Tables.
+func (s *DbTableActionRequest) GetTables() []string {
+	return s.Tables
+}
+
+// GetConfirm returns the value of Confirm.
+func (s *DbTableActionRequest) GetConfirm() OptString {
+	return s.Confirm
+}
+
+// SetAction sets the value of Action.
+func (s *DbTableActionRequest) SetAction(val DbTableActionRequestAction) {
+	s.Action = val
+}
+
+// SetTables sets the value of Tables.
+func (s *DbTableActionRequest) SetTables(val []string) {
+	s.Tables = val
+}
+
+// SetConfirm sets the value of Confirm.
+func (s *DbTableActionRequest) SetConfirm(val OptString) {
+	s.Confirm = val
+}
+
+type DbTableActionRequestAction string
+
+const (
+	DbTableActionRequestActionOptimize      DbTableActionRequestAction = "optimize"
+	DbTableActionRequestActionRepair        DbTableActionRequestAction = "repair"
+	DbTableActionRequestActionDrop          DbTableActionRequestAction = "drop"
+	DbTableActionRequestActionEmpty         DbTableActionRequestAction = "empty"
+	DbTableActionRequestActionAnalyze       DbTableActionRequestAction = "analyze"
+	DbTableActionRequestActionConvertInnodb DbTableActionRequestAction = "convert_innodb"
+)
+
+// AllValues returns all DbTableActionRequestAction values.
+func (DbTableActionRequestAction) AllValues() []DbTableActionRequestAction {
+	return []DbTableActionRequestAction{
+		DbTableActionRequestActionOptimize,
+		DbTableActionRequestActionRepair,
+		DbTableActionRequestActionDrop,
+		DbTableActionRequestActionEmpty,
+		DbTableActionRequestActionAnalyze,
+		DbTableActionRequestActionConvertInnodb,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s DbTableActionRequestAction) MarshalText() ([]byte, error) {
+	switch s {
+	case DbTableActionRequestActionOptimize:
+		return []byte(s), nil
+	case DbTableActionRequestActionRepair:
+		return []byte(s), nil
+	case DbTableActionRequestActionDrop:
+		return []byte(s), nil
+	case DbTableActionRequestActionEmpty:
+		return []byte(s), nil
+	case DbTableActionRequestActionAnalyze:
+		return []byte(s), nil
+	case DbTableActionRequestActionConvertInnodb:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *DbTableActionRequestAction) UnmarshalText(data []byte) error {
+	switch DbTableActionRequestAction(data) {
+	case DbTableActionRequestActionOptimize:
+		*s = DbTableActionRequestActionOptimize
+		return nil
+	case DbTableActionRequestActionRepair:
+		*s = DbTableActionRequestActionRepair
+		return nil
+	case DbTableActionRequestActionDrop:
+		*s = DbTableActionRequestActionDrop
+		return nil
+	case DbTableActionRequestActionEmpty:
+		*s = DbTableActionRequestActionEmpty
+		return nil
+	case DbTableActionRequestActionAnalyze:
+		*s = DbTableActionRequestActionAnalyze
+		return nil
+	case DbTableActionRequestActionConvertInnodb:
+		*s = DbTableActionRequestActionConvertInnodb
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/DbTableActionResponse
+type DbTableActionResponse struct {
+	Ok     bool   `json:"ok"`
+	JobID  string `json:"job_id"`
+	Action string `json:"action"`
+	// Per-table result, keyed by table name (agent-defined shape).
+	Results       *DbTableActionResponseResults `json:"results"`
+	BackupWarning OptString                     `json:"backup_warning"`
+}
+
+// GetOk returns the value of Ok.
+func (s *DbTableActionResponse) GetOk() bool {
+	return s.Ok
+}
+
+// GetJobID returns the value of JobID.
+func (s *DbTableActionResponse) GetJobID() string {
+	return s.JobID
+}
+
+// GetAction returns the value of Action.
+func (s *DbTableActionResponse) GetAction() string {
+	return s.Action
+}
+
+// GetResults returns the value of Results.
+func (s *DbTableActionResponse) GetResults() *DbTableActionResponseResults {
+	return s.Results
+}
+
+// GetBackupWarning returns the value of BackupWarning.
+func (s *DbTableActionResponse) GetBackupWarning() OptString {
+	return s.BackupWarning
+}
+
+// SetOk sets the value of Ok.
+func (s *DbTableActionResponse) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetJobID sets the value of JobID.
+func (s *DbTableActionResponse) SetJobID(val string) {
+	s.JobID = val
+}
+
+// SetAction sets the value of Action.
+func (s *DbTableActionResponse) SetAction(val string) {
+	s.Action = val
+}
+
+// SetResults sets the value of Results.
+func (s *DbTableActionResponse) SetResults(val *DbTableActionResponseResults) {
+	s.Results = val
+}
+
+// SetBackupWarning sets the value of BackupWarning.
+func (s *DbTableActionResponse) SetBackupWarning(val OptString) {
+	s.BackupWarning = val
+}
+
+func (*DbTableActionResponse) runDbTableActionRes() {}
+
+// Per-table result, keyed by table name (agent-defined shape).
+type DbTableActionResponseResults struct{}
+
+type DeleteAdminUserForbidden Error
+
+func (*DeleteAdminUserForbidden) deleteAdminUserRes() {}
+
+type DeleteAdminUserNotFound Error
+
+func (*DeleteAdminUserNotFound) deleteAdminUserRes() {}
+
+type DeleteAdminUserUnauthorized Error
+
+func (*DeleteAdminUserUnauthorized) deleteAdminUserRes() {}
+
 // DeleteBackupNoContent is response for DeleteBackup operation.
 type DeleteBackupNoContent struct{}
 
@@ -9872,6 +14420,18 @@ func (*DeleteClientReportUnauthorized) deleteClientReportRes() {}
 type DeleteClientUnauthorized Error
 
 func (*DeleteClientUnauthorized) deleteClientRes() {}
+
+type DeleteDbOrphansForbidden Error
+
+func (*DeleteDbOrphansForbidden) deleteDbOrphansRes() {}
+
+type DeleteDbOrphansServiceUnavailable Error
+
+func (*DeleteDbOrphansServiceUnavailable) deleteDbOrphansRes() {}
+
+type DeleteDbOrphansUnauthorized Error
+
+func (*DeleteDbOrphansUnauthorized) deleteDbOrphansRes() {}
 
 type DeleteDbSnapshotOK struct {
 	Ok     OptBool   `json:"ok"`
@@ -9990,6 +14550,143 @@ type DeleteMemberUnauthorized Error
 
 func (*DeleteMemberUnauthorized) deleteMemberRes() {}
 
+type DeleteOrgConflict Error
+
+func (*DeleteOrgConflict) deleteOrgRes() {}
+
+type DeleteOrgForbidden Error
+
+func (*DeleteOrgForbidden) deleteOrgRes() {}
+
+type DeleteOrgNotFound Error
+
+func (*DeleteOrgNotFound) deleteOrgRes() {}
+
+type DeleteOrgReq struct {
+	ConfirmName string `json:"confirm_name"`
+}
+
+// GetConfirmName returns the value of ConfirmName.
+func (s *DeleteOrgReq) GetConfirmName() string {
+	return s.ConfirmName
+}
+
+// SetConfirmName sets the value of ConfirmName.
+func (s *DeleteOrgReq) SetConfirmName(val string) {
+	s.ConfirmName = val
+}
+
+// Ref: #/components/schemas/DeleteOrgResponse
+type DeleteOrgResponse struct {
+	ID uuid.UUID `json:"id"`
+	// `hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and
+	// is recoverable until the grace-window purge worker runs.
+	Lane DeleteOrgResponseLane `json:"lane"`
+	// The caller's session active tenant AFTER this delete. Absent when it drops to no-org onboarding
+	// (this was their last live org).
+	ActiveTenantID OptUUID `json:"active_tenant_id"`
+}
+
+// GetID returns the value of ID.
+func (s *DeleteOrgResponse) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetLane returns the value of Lane.
+func (s *DeleteOrgResponse) GetLane() DeleteOrgResponseLane {
+	return s.Lane
+}
+
+// GetActiveTenantID returns the value of ActiveTenantID.
+func (s *DeleteOrgResponse) GetActiveTenantID() OptUUID {
+	return s.ActiveTenantID
+}
+
+// SetID sets the value of ID.
+func (s *DeleteOrgResponse) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetLane sets the value of Lane.
+func (s *DeleteOrgResponse) SetLane(val DeleteOrgResponseLane) {
+	s.Lane = val
+}
+
+// SetActiveTenantID sets the value of ActiveTenantID.
+func (s *DeleteOrgResponse) SetActiveTenantID(val OptUUID) {
+	s.ActiveTenantID = val
+}
+
+func (*DeleteOrgResponse) deleteOrgRes() {}
+
+// `hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and
+// is recoverable until the grace-window purge worker runs.
+type DeleteOrgResponseLane string
+
+const (
+	DeleteOrgResponseLaneHard DeleteOrgResponseLane = "hard"
+	DeleteOrgResponseLaneSoft DeleteOrgResponseLane = "soft"
+)
+
+// AllValues returns all DeleteOrgResponseLane values.
+func (DeleteOrgResponseLane) AllValues() []DeleteOrgResponseLane {
+	return []DeleteOrgResponseLane{
+		DeleteOrgResponseLaneHard,
+		DeleteOrgResponseLaneSoft,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s DeleteOrgResponseLane) MarshalText() ([]byte, error) {
+	switch s {
+	case DeleteOrgResponseLaneHard:
+		return []byte(s), nil
+	case DeleteOrgResponseLaneSoft:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *DeleteOrgResponseLane) UnmarshalText(data []byte) error {
+	switch DeleteOrgResponseLane(data) {
+	case DeleteOrgResponseLaneHard:
+		*s = DeleteOrgResponseLaneHard
+		return nil
+	case DeleteOrgResponseLaneSoft:
+		*s = DeleteOrgResponseLaneSoft
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type DeleteOrgUnauthorized Error
+
+func (*DeleteOrgUnauthorized) deleteOrgRes() {}
+
+type DeleteOrgUnprocessableEntity Error
+
+func (*DeleteOrgUnprocessableEntity) deleteOrgRes() {}
+
+type DeleteSiteBanForbidden Error
+
+func (*DeleteSiteBanForbidden) deleteSiteBanRes() {}
+
+// DeleteSiteBanNoContent is response for DeleteSiteBan operation.
+type DeleteSiteBanNoContent struct{}
+
+func (*DeleteSiteBanNoContent) deleteSiteBanRes() {}
+
+type DeleteSiteBanNotFound Error
+
+func (*DeleteSiteBanNotFound) deleteSiteBanRes() {}
+
+type DeleteSiteBanUnauthorized Error
+
+func (*DeleteSiteBanUnauthorized) deleteSiteBanRes() {}
+
 // DeleteSiteDestinationNoContent is response for DeleteSiteDestination operation.
 type DeleteSiteDestinationNoContent struct{}
 
@@ -10041,6 +14738,19 @@ type DeleteSiteNoContent struct{}
 
 func (*DeleteSiteNoContent) deleteSiteRes() {}
 
+type DeleteSitePolicyGroupForbidden Error
+
+func (*DeleteSitePolicyGroupForbidden) deleteSitePolicyGroupRes() {}
+
+// DeleteSitePolicyGroupNoContent is response for DeleteSitePolicyGroup operation.
+type DeleteSitePolicyGroupNoContent struct{}
+
+func (*DeleteSitePolicyGroupNoContent) deleteSitePolicyGroupRes() {}
+
+type DeleteSitePolicyGroupUnauthorized Error
+
+func (*DeleteSitePolicyGroupUnauthorized) deleteSitePolicyGroupRes() {}
+
 type DeleteSiteShareForbidden Error
 
 func (*DeleteSiteShareForbidden) deleteSiteShareRes() {}
@@ -10062,6 +14772,37 @@ func (*DeleteSiteShareUnauthorized) deleteSiteShareRes() {}
 type DeleteTagNoContent struct{}
 
 func (*DeleteTagNoContent) deleteTagRes() {}
+
+// DeleteWebAuthnCredentialNoContent is response for DeleteWebAuthnCredential operation.
+type DeleteWebAuthnCredentialNoContent struct{}
+
+func (*DeleteWebAuthnCredentialNoContent) deleteWebAuthnCredentialRes() {}
+
+type DeleteWebAuthnCredentialNotFound Error
+
+func (*DeleteWebAuthnCredentialNotFound) deleteWebAuthnCredentialRes() {}
+
+type DeleteWebAuthnCredentialReq struct {
+	CurrentPassword string `json:"current_password"`
+}
+
+// GetCurrentPassword returns the value of CurrentPassword.
+func (s *DeleteWebAuthnCredentialReq) GetCurrentPassword() string {
+	return s.CurrentPassword
+}
+
+// SetCurrentPassword sets the value of CurrentPassword.
+func (s *DeleteWebAuthnCredentialReq) SetCurrentPassword(val string) {
+	s.CurrentPassword = val
+}
+
+type DeleteWebAuthnCredentialUnauthorized Error
+
+func (*DeleteWebAuthnCredentialUnauthorized) deleteWebAuthnCredentialRes() {}
+
+type DeleteWebAuthnCredentialUnprocessableEntity Error
+
+func (*DeleteWebAuthnCredentialUnprocessableEntity) deleteWebAuthnCredentialRes() {}
 
 // Response for GET /email/deliverability. Contains per-site deliverability aggregates sorted by
 // bounce_rate DESC then total DESC (riskiest first).
@@ -10094,6 +14835,50 @@ func (s *DeliverabilityReport) SetItems(val []SiteDeliveryItem) {
 }
 
 func (*DeliverabilityReport) getFleetEmailDeliverabilityRes() {}
+
+// DisableTotpNoContent is response for DisableTotp operation.
+type DisableTotpNoContent struct{}
+
+func (*DisableTotpNoContent) disableTotpRes() {}
+
+type DisableTotpReq struct {
+	CurrentPassword string `json:"current_password"`
+}
+
+// GetCurrentPassword returns the value of CurrentPassword.
+func (s *DisableTotpReq) GetCurrentPassword() string {
+	return s.CurrentPassword
+}
+
+// SetCurrentPassword sets the value of CurrentPassword.
+func (s *DisableTotpReq) SetCurrentPassword(val string) {
+	s.CurrentPassword = val
+}
+
+type DisableTotpUnauthorized Error
+
+func (*DisableTotpUnauthorized) disableTotpRes() {}
+
+type DisableTotpUnprocessableEntity Error
+
+func (*DisableTotpUnprocessableEntity) disableTotpRes() {}
+
+type DismissSiteVulnerabilityForbidden Error
+
+func (*DismissSiteVulnerabilityForbidden) dismissSiteVulnerabilityRes() {}
+
+// DismissSiteVulnerabilityNoContent is response for DismissSiteVulnerability operation.
+type DismissSiteVulnerabilityNoContent struct{}
+
+func (*DismissSiteVulnerabilityNoContent) dismissSiteVulnerabilityRes() {}
+
+type DismissSiteVulnerabilityNotFound Error
+
+func (*DismissSiteVulnerabilityNotFound) dismissSiteVulnerabilityRes() {}
+
+type DismissSiteVulnerabilityUnauthorized Error
+
+func (*DismissSiteVulnerabilityUnauthorized) dismissSiteVulnerabilityRes() {}
 
 type DownloadPortalReportForbidden Error
 
@@ -11523,6 +16308,7 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 }
 
 func (*Error) agentDisconnectRes()                {}
+func (*Error) agentFetchSuppressionDeltasRes()    {}
 func (*Error) agentHeartbeatRes()                 {}
 func (*Error) agentMediaAssetDeletedRes()         {}
 func (*Error) agentMediaEncodeReadyRes()          {}
@@ -11533,6 +16319,8 @@ func (*Error) agentMediaSyncBatchRes()            {}
 func (*Error) agentMediaSyncFinalizeRes()         {}
 func (*Error) archiveSiteRes()                    {}
 func (*Error) beginReEnrollmentRes()              {}
+func (*Error) beginTotpEnrollmentRes()            {}
+func (*Error) beginWebAuthnEnrollmentRes()        {}
 func (*Error) bulkApplyTagsRes()                  {}
 func (*Error) bulkConfigCacheRes()                {}
 func (*Error) bulkDeleteBackupsRes()              {}
@@ -11556,10 +16344,14 @@ func (*Error) getSiteErrorConfigRes()             {}
 func (*Error) getSiteRes()                        {}
 func (*Error) getSiteUptimeRes()                  {}
 func (*Error) getTenantRes()                      {}
+func (*Error) getTwoFactorStatusRes()             {}
 func (*Error) getUpdateRunRes()                   {}
+func (*Error) listOrgsRes()                       {}
 func (*Error) listRestoreRunsRes()                {}
 func (*Error) listScheduleRunsRes()               {}
 func (*Error) listSharedWithMeRes()               {}
+func (*Error) listTrustedDevicesRes()             {}
+func (*Error) listWebAuthnCredentialsRes()        {}
 func (*Error) logoutRes()                         {}
 func (*Error) oidcLoginRes()                      {}
 func (*Error) purgeCacheRes()                     {}
@@ -11573,6 +16365,7 @@ func (*Error) putSiteLoginBrandRes()              {}
 func (*Error) putSiteLoginProtectionRes()         {}
 func (*Error) refreshSiteDiagnosticsRes()         {}
 func (*Error) restoreSiteRes()                    {}
+func (*Error) revokeAllTrustedDevicesRes()        {}
 func (*Error) revokeSiteRes()                     {}
 func (*Error) setSiteTagsRes()                    {}
 func (*Error) silenceSitePHPErrorRes()            {}
@@ -11694,6 +16487,14 @@ func (*ExtractSiteFileArchiveUnauthorized) extractSiteFileArchiveRes() {}
 type ExtractSiteFileArchiveUnprocessableEntity Error
 
 func (*ExtractSiteFileArchiveUnprocessableEntity) extractSiteFileArchiveRes() {}
+
+type FetchScanFindingFileForbidden Error
+
+func (*FetchScanFindingFileForbidden) fetchScanFindingFileRes() {}
+
+type FetchScanFindingFileUnauthorized Error
+
+func (*FetchScanFindingFileUnauthorized) fetchScanFindingFileRes() {}
 
 // Request body for `POST /sites/{siteId}/files/archive`.
 // Ref: #/components/schemas/FileArchiveCreateRequest
@@ -12884,6 +17685,315 @@ func (s *FileVersionsResult) SetVersions(val []FileVersion) {
 
 func (*FileVersionsResult) listSiteFileVersionsRes() {}
 
+type FinishWebAuthnChallengeReq struct {
+	Challenge uuid.UUID `json:"challenge"`
+	// Base64-encoded WebAuthn assertion response.
+	Assertion      []byte    `json:"assertion"`
+	RememberDevice OptBool   `json:"remember_device"`
+	DeviceLabel    OptString `json:"device_label"`
+}
+
+// GetChallenge returns the value of Challenge.
+func (s *FinishWebAuthnChallengeReq) GetChallenge() uuid.UUID {
+	return s.Challenge
+}
+
+// GetAssertion returns the value of Assertion.
+func (s *FinishWebAuthnChallengeReq) GetAssertion() []byte {
+	return s.Assertion
+}
+
+// GetRememberDevice returns the value of RememberDevice.
+func (s *FinishWebAuthnChallengeReq) GetRememberDevice() OptBool {
+	return s.RememberDevice
+}
+
+// GetDeviceLabel returns the value of DeviceLabel.
+func (s *FinishWebAuthnChallengeReq) GetDeviceLabel() OptString {
+	return s.DeviceLabel
+}
+
+// SetChallenge sets the value of Challenge.
+func (s *FinishWebAuthnChallengeReq) SetChallenge(val uuid.UUID) {
+	s.Challenge = val
+}
+
+// SetAssertion sets the value of Assertion.
+func (s *FinishWebAuthnChallengeReq) SetAssertion(val []byte) {
+	s.Assertion = val
+}
+
+// SetRememberDevice sets the value of RememberDevice.
+func (s *FinishWebAuthnChallengeReq) SetRememberDevice(val OptBool) {
+	s.RememberDevice = val
+}
+
+// SetDeviceLabel sets the value of DeviceLabel.
+func (s *FinishWebAuthnChallengeReq) SetDeviceLabel(val OptString) {
+	s.DeviceLabel = val
+}
+
+type FinishWebAuthnChallengeUnauthorized Error
+
+func (*FinishWebAuthnChallengeUnauthorized) finishWebAuthnChallengeRes() {}
+
+type FinishWebAuthnChallengeUnprocessableEntity Error
+
+func (*FinishWebAuthnChallengeUnprocessableEntity) finishWebAuthnChallengeRes() {}
+
+type FinishWebAuthnEnrollmentReq struct {
+	// Operator-chosen label for this credential (e.g. "YubiKey").
+	Name string `json:"name"`
+	// Base64-encoded WebAuthn attestation response.
+	Attestation []byte `json:"attestation"`
+}
+
+// GetName returns the value of Name.
+func (s *FinishWebAuthnEnrollmentReq) GetName() string {
+	return s.Name
+}
+
+// GetAttestation returns the value of Attestation.
+func (s *FinishWebAuthnEnrollmentReq) GetAttestation() []byte {
+	return s.Attestation
+}
+
+// SetName sets the value of Name.
+func (s *FinishWebAuthnEnrollmentReq) SetName(val string) {
+	s.Name = val
+}
+
+// SetAttestation sets the value of Attestation.
+func (s *FinishWebAuthnEnrollmentReq) SetAttestation(val []byte) {
+	s.Attestation = val
+}
+
+type FinishWebAuthnEnrollmentUnauthorized Error
+
+func (*FinishWebAuthnEnrollmentUnauthorized) finishWebAuthnEnrollmentRes() {}
+
+type FinishWebAuthnEnrollmentUnprocessableEntity Error
+
+func (*FinishWebAuthnEnrollmentUnprocessableEntity) finishWebAuthnEnrollmentRes() {}
+
+// Ref: #/components/schemas/FleetIncidentDetail
+type FleetIncidentDetail struct {
+	ID               uuid.UUID                       `json:"id"`
+	SiteID           uuid.UUID                       `json:"site_id"`
+	Name             string                          `json:"name"`
+	URL              string                          `json:"url"`
+	StartedAt        time.Time                       `json:"started_at"`
+	EndedAt          OptNilDateTime                  `json:"ended_at"`
+	DurationSeconds  OptNilInt64                     `json:"duration_seconds"`
+	Ongoing          bool                            `json:"ongoing"`
+	PeakStatus       string                          `json:"peak_status"`
+	LastHTTPStatus   int                             `json:"last_http_status"`
+	Reason           string                          `json:"reason"`
+	IncidentCount30d int                             `json:"incident_count_30d"`
+	Probes           []FleetIncidentDetailProbesItem `json:"probes"`
+	ProbesTruncated  bool                            `json:"probes_truncated"`
+}
+
+// GetID returns the value of ID.
+func (s *FleetIncidentDetail) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *FleetIncidentDetail) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetName returns the value of Name.
+func (s *FleetIncidentDetail) GetName() string {
+	return s.Name
+}
+
+// GetURL returns the value of URL.
+func (s *FleetIncidentDetail) GetURL() string {
+	return s.URL
+}
+
+// GetStartedAt returns the value of StartedAt.
+func (s *FleetIncidentDetail) GetStartedAt() time.Time {
+	return s.StartedAt
+}
+
+// GetEndedAt returns the value of EndedAt.
+func (s *FleetIncidentDetail) GetEndedAt() OptNilDateTime {
+	return s.EndedAt
+}
+
+// GetDurationSeconds returns the value of DurationSeconds.
+func (s *FleetIncidentDetail) GetDurationSeconds() OptNilInt64 {
+	return s.DurationSeconds
+}
+
+// GetOngoing returns the value of Ongoing.
+func (s *FleetIncidentDetail) GetOngoing() bool {
+	return s.Ongoing
+}
+
+// GetPeakStatus returns the value of PeakStatus.
+func (s *FleetIncidentDetail) GetPeakStatus() string {
+	return s.PeakStatus
+}
+
+// GetLastHTTPStatus returns the value of LastHTTPStatus.
+func (s *FleetIncidentDetail) GetLastHTTPStatus() int {
+	return s.LastHTTPStatus
+}
+
+// GetReason returns the value of Reason.
+func (s *FleetIncidentDetail) GetReason() string {
+	return s.Reason
+}
+
+// GetIncidentCount30d returns the value of IncidentCount30d.
+func (s *FleetIncidentDetail) GetIncidentCount30d() int {
+	return s.IncidentCount30d
+}
+
+// GetProbes returns the value of Probes.
+func (s *FleetIncidentDetail) GetProbes() []FleetIncidentDetailProbesItem {
+	return s.Probes
+}
+
+// GetProbesTruncated returns the value of ProbesTruncated.
+func (s *FleetIncidentDetail) GetProbesTruncated() bool {
+	return s.ProbesTruncated
+}
+
+// SetID sets the value of ID.
+func (s *FleetIncidentDetail) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *FleetIncidentDetail) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetName sets the value of Name.
+func (s *FleetIncidentDetail) SetName(val string) {
+	s.Name = val
+}
+
+// SetURL sets the value of URL.
+func (s *FleetIncidentDetail) SetURL(val string) {
+	s.URL = val
+}
+
+// SetStartedAt sets the value of StartedAt.
+func (s *FleetIncidentDetail) SetStartedAt(val time.Time) {
+	s.StartedAt = val
+}
+
+// SetEndedAt sets the value of EndedAt.
+func (s *FleetIncidentDetail) SetEndedAt(val OptNilDateTime) {
+	s.EndedAt = val
+}
+
+// SetDurationSeconds sets the value of DurationSeconds.
+func (s *FleetIncidentDetail) SetDurationSeconds(val OptNilInt64) {
+	s.DurationSeconds = val
+}
+
+// SetOngoing sets the value of Ongoing.
+func (s *FleetIncidentDetail) SetOngoing(val bool) {
+	s.Ongoing = val
+}
+
+// SetPeakStatus sets the value of PeakStatus.
+func (s *FleetIncidentDetail) SetPeakStatus(val string) {
+	s.PeakStatus = val
+}
+
+// SetLastHTTPStatus sets the value of LastHTTPStatus.
+func (s *FleetIncidentDetail) SetLastHTTPStatus(val int) {
+	s.LastHTTPStatus = val
+}
+
+// SetReason sets the value of Reason.
+func (s *FleetIncidentDetail) SetReason(val string) {
+	s.Reason = val
+}
+
+// SetIncidentCount30d sets the value of IncidentCount30d.
+func (s *FleetIncidentDetail) SetIncidentCount30d(val int) {
+	s.IncidentCount30d = val
+}
+
+// SetProbes sets the value of Probes.
+func (s *FleetIncidentDetail) SetProbes(val []FleetIncidentDetailProbesItem) {
+	s.Probes = val
+}
+
+// SetProbesTruncated sets the value of ProbesTruncated.
+func (s *FleetIncidentDetail) SetProbesTruncated(val bool) {
+	s.ProbesTruncated = val
+}
+
+func (*FleetIncidentDetail) getFleetIncidentDetailRes() {}
+
+type FleetIncidentDetailProbesItem struct {
+	ProbedAt   time.Time `json:"probed_at"`
+	Up         bool      `json:"up"`
+	HTTPStatus int       `json:"http_status"`
+	TotalMs    float64   `json:"total_ms"`
+	Error      OptString `json:"error"`
+}
+
+// GetProbedAt returns the value of ProbedAt.
+func (s *FleetIncidentDetailProbesItem) GetProbedAt() time.Time {
+	return s.ProbedAt
+}
+
+// GetUp returns the value of Up.
+func (s *FleetIncidentDetailProbesItem) GetUp() bool {
+	return s.Up
+}
+
+// GetHTTPStatus returns the value of HTTPStatus.
+func (s *FleetIncidentDetailProbesItem) GetHTTPStatus() int {
+	return s.HTTPStatus
+}
+
+// GetTotalMs returns the value of TotalMs.
+func (s *FleetIncidentDetailProbesItem) GetTotalMs() float64 {
+	return s.TotalMs
+}
+
+// GetError returns the value of Error.
+func (s *FleetIncidentDetailProbesItem) GetError() OptString {
+	return s.Error
+}
+
+// SetProbedAt sets the value of ProbedAt.
+func (s *FleetIncidentDetailProbesItem) SetProbedAt(val time.Time) {
+	s.ProbedAt = val
+}
+
+// SetUp sets the value of Up.
+func (s *FleetIncidentDetailProbesItem) SetUp(val bool) {
+	s.Up = val
+}
+
+// SetHTTPStatus sets the value of HTTPStatus.
+func (s *FleetIncidentDetailProbesItem) SetHTTPStatus(val int) {
+	s.HTTPStatus = val
+}
+
+// SetTotalMs sets the value of TotalMs.
+func (s *FleetIncidentDetailProbesItem) SetTotalMs(val float64) {
+	s.TotalMs = val
+}
+
+// SetError sets the value of Error.
+func (s *FleetIncidentDetailProbesItem) SetError(val OptString) {
+	s.Error = val
+}
+
 // An open or recently-closed incident. NOTE: site_alert_state stores only
 // current transition memory; full historical incident logs are not persisted.
 // ended_at / duration_seconds are estimated from updated_at for closed
@@ -13521,6 +18631,158 @@ func (s *FleetUptimeStatusItemStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/FleetVulnerabilitiesResponse
+type FleetVulnerabilitiesResponse struct {
+	TotalOpen   int                                     `json:"total_open"`
+	Critical    int                                     `json:"critical"`
+	High        int                                     `json:"high"`
+	Medium      int                                     `json:"medium"`
+	Low         int                                     `json:"low"`
+	Items       []FleetVulnerabilitiesResponseItemsItem `json:"items"`
+	Attribution VulnAttribution                         `json:"attribution"`
+	FeedOk      bool                                    `json:"feed_ok"`
+	FeedSynced  OptDateTime                             `json:"feed_synced"`
+}
+
+// GetTotalOpen returns the value of TotalOpen.
+func (s *FleetVulnerabilitiesResponse) GetTotalOpen() int {
+	return s.TotalOpen
+}
+
+// GetCritical returns the value of Critical.
+func (s *FleetVulnerabilitiesResponse) GetCritical() int {
+	return s.Critical
+}
+
+// GetHigh returns the value of High.
+func (s *FleetVulnerabilitiesResponse) GetHigh() int {
+	return s.High
+}
+
+// GetMedium returns the value of Medium.
+func (s *FleetVulnerabilitiesResponse) GetMedium() int {
+	return s.Medium
+}
+
+// GetLow returns the value of Low.
+func (s *FleetVulnerabilitiesResponse) GetLow() int {
+	return s.Low
+}
+
+// GetItems returns the value of Items.
+func (s *FleetVulnerabilitiesResponse) GetItems() []FleetVulnerabilitiesResponseItemsItem {
+	return s.Items
+}
+
+// GetAttribution returns the value of Attribution.
+func (s *FleetVulnerabilitiesResponse) GetAttribution() VulnAttribution {
+	return s.Attribution
+}
+
+// GetFeedOk returns the value of FeedOk.
+func (s *FleetVulnerabilitiesResponse) GetFeedOk() bool {
+	return s.FeedOk
+}
+
+// GetFeedSynced returns the value of FeedSynced.
+func (s *FleetVulnerabilitiesResponse) GetFeedSynced() OptDateTime {
+	return s.FeedSynced
+}
+
+// SetTotalOpen sets the value of TotalOpen.
+func (s *FleetVulnerabilitiesResponse) SetTotalOpen(val int) {
+	s.TotalOpen = val
+}
+
+// SetCritical sets the value of Critical.
+func (s *FleetVulnerabilitiesResponse) SetCritical(val int) {
+	s.Critical = val
+}
+
+// SetHigh sets the value of High.
+func (s *FleetVulnerabilitiesResponse) SetHigh(val int) {
+	s.High = val
+}
+
+// SetMedium sets the value of Medium.
+func (s *FleetVulnerabilitiesResponse) SetMedium(val int) {
+	s.Medium = val
+}
+
+// SetLow sets the value of Low.
+func (s *FleetVulnerabilitiesResponse) SetLow(val int) {
+	s.Low = val
+}
+
+// SetItems sets the value of Items.
+func (s *FleetVulnerabilitiesResponse) SetItems(val []FleetVulnerabilitiesResponseItemsItem) {
+	s.Items = val
+}
+
+// SetAttribution sets the value of Attribution.
+func (s *FleetVulnerabilitiesResponse) SetAttribution(val VulnAttribution) {
+	s.Attribution = val
+}
+
+// SetFeedOk sets the value of FeedOk.
+func (s *FleetVulnerabilitiesResponse) SetFeedOk(val bool) {
+	s.FeedOk = val
+}
+
+// SetFeedSynced sets the value of FeedSynced.
+func (s *FleetVulnerabilitiesResponse) SetFeedSynced(val OptDateTime) {
+	s.FeedSynced = val
+}
+
+func (*FleetVulnerabilitiesResponse) getFleetVulnerabilitiesRes() {}
+
+type FleetVulnerabilitiesResponseItemsItem struct {
+	SiteID   uuid.UUID   `json:"site_id"`
+	SiteName string      `json:"site_name"`
+	SiteURL  string      `json:"site_url"`
+	Finding  VulnFinding `json:"finding"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *FleetVulnerabilitiesResponseItemsItem) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetSiteName returns the value of SiteName.
+func (s *FleetVulnerabilitiesResponseItemsItem) GetSiteName() string {
+	return s.SiteName
+}
+
+// GetSiteURL returns the value of SiteURL.
+func (s *FleetVulnerabilitiesResponseItemsItem) GetSiteURL() string {
+	return s.SiteURL
+}
+
+// GetFinding returns the value of Finding.
+func (s *FleetVulnerabilitiesResponseItemsItem) GetFinding() VulnFinding {
+	return s.Finding
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *FleetVulnerabilitiesResponseItemsItem) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetSiteName sets the value of SiteName.
+func (s *FleetVulnerabilitiesResponseItemsItem) SetSiteName(val string) {
+	s.SiteName = val
+}
+
+// SetSiteURL sets the value of SiteURL.
+func (s *FleetVulnerabilitiesResponseItemsItem) SetSiteURL(val string) {
+	s.SiteURL = val
+}
+
+// SetFinding sets the value of Finding.
+func (s *FleetVulnerabilitiesResponseItemsItem) SetFinding(val VulnFinding) {
+	s.Finding = val
+}
+
 type FlushObjectCacheReq struct {
 	Scope OptFlushObjectCacheReqScope `json:"scope"`
 	// Required when scope is "group".
@@ -13998,239 +19260,6 @@ func (s *FontResultState) UnmarshalText(data []byte) error {
 	}
 }
 
-// M54 Phase 1 — body the agent POSTs to /agent/v1/fonts/transcode when
-// it encounters a self-hosted font that needs WOFF2 encoding.
-// The agent MUST NOT supply a storage key; the CP derives all keys
-// server-side from the verified tenant identity + source_hash.
-// Ref: #/components/schemas/FontTranscodeRequest
-type FontTranscodeRequest struct {
-	// Hex-encoded BLAKE3 content hash of the raw source font bytes.
-	// Must be exactly 64 lowercase hex characters. The CP validates this
-	// strictly before deriving any storage keys — malformed values are
-	// rejected with 422.
-	SourceHash string `json:"source_hash"`
-	// Byte length of the source font. Must be > 0. Capped at 10 MiB.
-	SourceSize int64 `json:"source_size"`
-	// File extension hint: "ttf", "otf", or "woff". Informational only; the CP detects the real format
-	// from the magic bytes on the uploaded object. Omit for WOFF2 (transcoding is a no-op for WOFF2).
-	SourceExt OptFontTranscodeRequestSourceExt `json:"source_ext"`
-}
-
-// GetSourceHash returns the value of SourceHash.
-func (s *FontTranscodeRequest) GetSourceHash() string {
-	return s.SourceHash
-}
-
-// GetSourceSize returns the value of SourceSize.
-func (s *FontTranscodeRequest) GetSourceSize() int64 {
-	return s.SourceSize
-}
-
-// GetSourceExt returns the value of SourceExt.
-func (s *FontTranscodeRequest) GetSourceExt() OptFontTranscodeRequestSourceExt {
-	return s.SourceExt
-}
-
-// SetSourceHash sets the value of SourceHash.
-func (s *FontTranscodeRequest) SetSourceHash(val string) {
-	s.SourceHash = val
-}
-
-// SetSourceSize sets the value of SourceSize.
-func (s *FontTranscodeRequest) SetSourceSize(val int64) {
-	s.SourceSize = val
-}
-
-// SetSourceExt sets the value of SourceExt.
-func (s *FontTranscodeRequest) SetSourceExt(val OptFontTranscodeRequestSourceExt) {
-	s.SourceExt = val
-}
-
-// File extension hint: "ttf", "otf", or "woff". Informational only; the CP detects the real format
-// from the magic bytes on the uploaded object. Omit for WOFF2 (transcoding is a no-op for WOFF2).
-type FontTranscodeRequestSourceExt string
-
-const (
-	FontTranscodeRequestSourceExtTtf  FontTranscodeRequestSourceExt = "ttf"
-	FontTranscodeRequestSourceExtOtf  FontTranscodeRequestSourceExt = "otf"
-	FontTranscodeRequestSourceExtWoff FontTranscodeRequestSourceExt = "woff"
-)
-
-// AllValues returns all FontTranscodeRequestSourceExt values.
-func (FontTranscodeRequestSourceExt) AllValues() []FontTranscodeRequestSourceExt {
-	return []FontTranscodeRequestSourceExt{
-		FontTranscodeRequestSourceExtTtf,
-		FontTranscodeRequestSourceExtOtf,
-		FontTranscodeRequestSourceExtWoff,
-	}
-}
-
-// MarshalText implements encoding.TextMarshaler.
-func (s FontTranscodeRequestSourceExt) MarshalText() ([]byte, error) {
-	switch s {
-	case FontTranscodeRequestSourceExtTtf:
-		return []byte(s), nil
-	case FontTranscodeRequestSourceExtOtf:
-		return []byte(s), nil
-	case FontTranscodeRequestSourceExtWoff:
-		return []byte(s), nil
-	default:
-		return nil, errors.Errorf("invalid value: %q", s)
-	}
-}
-
-// UnmarshalText implements encoding.TextUnmarshaler.
-func (s *FontTranscodeRequestSourceExt) UnmarshalText(data []byte) error {
-	switch FontTranscodeRequestSourceExt(data) {
-	case FontTranscodeRequestSourceExtTtf:
-		*s = FontTranscodeRequestSourceExtTtf
-		return nil
-	case FontTranscodeRequestSourceExtOtf:
-		*s = FontTranscodeRequestSourceExtOtf
-		return nil
-	case FontTranscodeRequestSourceExtWoff:
-		*s = FontTranscodeRequestSourceExtWoff
-		return nil
-	default:
-		return errors.Errorf("invalid value: %q", data)
-	}
-}
-
-// M54 Phase 1 — CP's reply to a FontTranscodeRequest.
-// Ref: #/components/schemas/FontTranscodeResponse
-type FontTranscodeResponse struct {
-	// "pending"  — a job is enqueued or in flight. `source_put_url` is
-	// present on the first-enqueue response; absent on polls.
-	// "ready"    — WOFF2 is available. `woff2_get_url` and `woff2_key`
-	// are present.
-	// "negative" — permanent failure; serve the original font forever.
-	State FontTranscodeResponseState `json:"state"`
-	// Presigned S3 PUT URL (15-min TTL) for the raw source font bytes.
-	// Present ONLY when state=="pending" AND the job was just freshly
-	// enqueued. The agent MUST PUT the source bytes here (Content-Type:
-	// application/octet-stream) before the encoder can run.
-	// Absent on subsequent polls (source already uploaded).
-	SourcePutURL OptString `json:"source_put_url"`
-	// Server-derived object-storage key for the WOFF2 output.
-	// Present only when state=="ready". Informational — the agent MUST
-	// NOT presign this key itself; use woff2_get_url instead.
-	Woff2Key OptString `json:"woff2_key"`
-	// Short-TTL presigned GET URL for the WOFF2 object, minted by the
-	// CP using the server-derived, GuardStorageKey-validated,
-	// tenant-scoped key. Present ONLY when state=="ready". The agent
-	// fetches the WOFF2 bytes from this URL. The agent MUST NOT
-	// presign or construct any storage key itself — that would
-	// reintroduce the path-traversal risk this design prevents.
-	Woff2GetURL OptString `json:"woff2_get_url"`
-	// Short diagnostic string. Present only when state=="negative".
-	ErrorDetail OptString `json:"error_detail"`
-}
-
-// GetState returns the value of State.
-func (s *FontTranscodeResponse) GetState() FontTranscodeResponseState {
-	return s.State
-}
-
-// GetSourcePutURL returns the value of SourcePutURL.
-func (s *FontTranscodeResponse) GetSourcePutURL() OptString {
-	return s.SourcePutURL
-}
-
-// GetWoff2Key returns the value of Woff2Key.
-func (s *FontTranscodeResponse) GetWoff2Key() OptString {
-	return s.Woff2Key
-}
-
-// GetWoff2GetURL returns the value of Woff2GetURL.
-func (s *FontTranscodeResponse) GetWoff2GetURL() OptString {
-	return s.Woff2GetURL
-}
-
-// GetErrorDetail returns the value of ErrorDetail.
-func (s *FontTranscodeResponse) GetErrorDetail() OptString {
-	return s.ErrorDetail
-}
-
-// SetState sets the value of State.
-func (s *FontTranscodeResponse) SetState(val FontTranscodeResponseState) {
-	s.State = val
-}
-
-// SetSourcePutURL sets the value of SourcePutURL.
-func (s *FontTranscodeResponse) SetSourcePutURL(val OptString) {
-	s.SourcePutURL = val
-}
-
-// SetWoff2Key sets the value of Woff2Key.
-func (s *FontTranscodeResponse) SetWoff2Key(val OptString) {
-	s.Woff2Key = val
-}
-
-// SetWoff2GetURL sets the value of Woff2GetURL.
-func (s *FontTranscodeResponse) SetWoff2GetURL(val OptString) {
-	s.Woff2GetURL = val
-}
-
-// SetErrorDetail sets the value of ErrorDetail.
-func (s *FontTranscodeResponse) SetErrorDetail(val OptString) {
-	s.ErrorDetail = val
-}
-
-func (*FontTranscodeResponse) agentFontsTranscodeRes() {}
-
-// "pending"  — a job is enqueued or in flight. `source_put_url` is
-// present on the first-enqueue response; absent on polls.
-// "ready"    — WOFF2 is available. `woff2_get_url` and `woff2_key`
-// are present.
-// "negative" — permanent failure; serve the original font forever.
-type FontTranscodeResponseState string
-
-const (
-	FontTranscodeResponseStatePending  FontTranscodeResponseState = "pending"
-	FontTranscodeResponseStateReady    FontTranscodeResponseState = "ready"
-	FontTranscodeResponseStateNegative FontTranscodeResponseState = "negative"
-)
-
-// AllValues returns all FontTranscodeResponseState values.
-func (FontTranscodeResponseState) AllValues() []FontTranscodeResponseState {
-	return []FontTranscodeResponseState{
-		FontTranscodeResponseStatePending,
-		FontTranscodeResponseStateReady,
-		FontTranscodeResponseStateNegative,
-	}
-}
-
-// MarshalText implements encoding.TextMarshaler.
-func (s FontTranscodeResponseState) MarshalText() ([]byte, error) {
-	switch s {
-	case FontTranscodeResponseStatePending:
-		return []byte(s), nil
-	case FontTranscodeResponseStateReady:
-		return []byte(s), nil
-	case FontTranscodeResponseStateNegative:
-		return []byte(s), nil
-	default:
-		return nil, errors.Errorf("invalid value: %q", s)
-	}
-}
-
-// UnmarshalText implements encoding.TextUnmarshaler.
-func (s *FontTranscodeResponseState) UnmarshalText(data []byte) error {
-	switch FontTranscodeResponseState(data) {
-	case FontTranscodeResponseStatePending:
-		*s = FontTranscodeResponseStatePending
-		return nil
-	case FontTranscodeResponseStateReady:
-		*s = FontTranscodeResponseStateReady
-		return nil
-	case FontTranscodeResponseStateNegative:
-		*s = FontTranscodeResponseStateNegative
-		return nil
-	default:
-		return errors.Errorf("invalid value: %q", data)
-	}
-}
-
 type ForceAdminAccountStateForbidden Error
 
 func (*ForceAdminAccountStateForbidden) forceAdminAccountStateRes() {}
@@ -14363,6 +19392,14 @@ type GetAdminAccountUnauthorized Error
 
 func (*GetAdminAccountUnauthorized) getAdminAccountRes() {}
 
+type GetAdminAccountsTenancyForbidden Error
+
+func (*GetAdminAccountsTenancyForbidden) getAdminAccountsTenancyRes() {}
+
+type GetAdminAccountsTenancyUnauthorized Error
+
+func (*GetAdminAccountsTenancyUnauthorized) getAdminAccountsTenancyRes() {}
+
 type GetAdminRevenueForbidden Error
 
 func (*GetAdminRevenueForbidden) getAdminRevenueRes() {}
@@ -14374,6 +19411,34 @@ func (*GetAdminRevenueServiceUnavailable) getAdminRevenueRes() {}
 type GetAdminRevenueUnauthorized Error
 
 func (*GetAdminRevenueUnauthorized) getAdminRevenueRes() {}
+
+type GetAdminSiteTenancyForbidden Error
+
+func (*GetAdminSiteTenancyForbidden) getAdminSiteTenancyRes() {}
+
+type GetAdminSiteTenancyUnauthorized Error
+
+func (*GetAdminSiteTenancyUnauthorized) getAdminSiteTenancyRes() {}
+
+type GetAdminStatsForbidden Error
+
+func (*GetAdminStatsForbidden) getAdminStatsRes() {}
+
+type GetAdminStatsUnauthorized Error
+
+func (*GetAdminStatsUnauthorized) getAdminStatsRes() {}
+
+type GetAdminVulnFeedStatusForbidden Error
+
+func (*GetAdminVulnFeedStatusForbidden) getAdminVulnFeedStatusRes() {}
+
+type GetAdminVulnFeedStatusServiceUnavailable Error
+
+func (*GetAdminVulnFeedStatusServiceUnavailable) getAdminVulnFeedStatusRes() {}
+
+type GetAdminVulnFeedStatusUnauthorized Error
+
+func (*GetAdminVulnFeedStatusUnauthorized) getAdminVulnFeedStatusRes() {}
 
 type GetBackupEnvironmentNotFound Error
 
@@ -14421,6 +19486,14 @@ type GetBillingUnauthorized Error
 
 func (*GetBillingUnauthorized) getBillingRes() {}
 
+type GetCacheHealthForbidden Error
+
+func (*GetCacheHealthForbidden) getCacheHealthRes() {}
+
+type GetCacheHealthUnauthorized Error
+
+func (*GetCacheHealthUnauthorized) getCacheHealthRes() {}
+
 type GetClientForbidden Error
 
 func (*GetClientForbidden) getClientRes() {}
@@ -14456,6 +19529,34 @@ func (*GetClientReportUnauthorized) getClientReportRes() {}
 type GetClientUnauthorized Error
 
 func (*GetClientUnauthorized) getClientRes() {}
+
+type GetDbCleanStatusForbidden Error
+
+func (*GetDbCleanStatusForbidden) getDbCleanStatusRes() {}
+
+type GetDbCleanStatusUnauthorized Error
+
+func (*GetDbCleanStatusUnauthorized) getDbCleanStatusRes() {}
+
+type GetDbHealthForbidden Error
+
+func (*GetDbHealthForbidden) getDbHealthRes() {}
+
+type GetDbHealthUnauthorized Error
+
+func (*GetDbHealthUnauthorized) getDbHealthRes() {}
+
+type GetDbOrphansReportForbidden Error
+
+func (*GetDbOrphansReportForbidden) getDbOrphansReportRes() {}
+
+type GetDbOrphansReportServiceUnavailable Error
+
+func (*GetDbOrphansReportServiceUnavailable) getDbOrphansReportRes() {}
+
+type GetDbOrphansReportUnauthorized Error
+
+func (*GetDbOrphansReportUnauthorized) getDbOrphansReportRes() {}
 
 type GetDbScanResultOK struct {
 	Result OptDbScanResult `json:"result"`
@@ -14563,6 +19664,18 @@ type GetFleetEmailStatsUnauthorized Error
 
 func (*GetFleetEmailStatsUnauthorized) getFleetEmailStatsRes() {}
 
+type GetFleetIncidentDetailForbidden Error
+
+func (*GetFleetIncidentDetailForbidden) getFleetIncidentDetailRes() {}
+
+type GetFleetIncidentDetailNotFound Error
+
+func (*GetFleetIncidentDetailNotFound) getFleetIncidentDetailRes() {}
+
+type GetFleetIncidentDetailUnauthorized Error
+
+func (*GetFleetIncidentDetailUnauthorized) getFleetIncidentDetailRes() {}
+
 type GetFleetRumAggregateDevice string
 
 const (
@@ -14617,6 +19730,22 @@ func (s *GetFleetRumAggregateDevice) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type GetFleetVulnerabilitiesForbidden Error
+
+func (*GetFleetVulnerabilitiesForbidden) getFleetVulnerabilitiesRes() {}
+
+type GetFleetVulnerabilitiesUnauthorized Error
+
+func (*GetFleetVulnerabilitiesUnauthorized) getFleetVulnerabilitiesRes() {}
+
+type GetMediaSettingsForbidden Error
+
+func (*GetMediaSettingsForbidden) getMediaSettingsRes() {}
+
+type GetMediaSettingsUnauthorized Error
+
+func (*GetMediaSettingsUnauthorized) getMediaSettingsRes() {}
 
 type GetOrgEmailConfigForbidden Error
 
@@ -14807,6 +19936,11 @@ type GetPortalSummaryUnauthorized Error
 
 func (*GetPortalSummaryUnauthorized) getPortalSummaryRes() {}
 
+// GetPublicPricingNotFound is response for GetPublicPricing operation.
+type GetPublicPricingNotFound struct{}
+
+func (*GetPublicPricingNotFound) getPublicPricingRes() {}
+
 type GetReadyzOK Readiness
 
 func (*GetReadyzOK) getReadyzRes() {}
@@ -14822,6 +19956,26 @@ func (*GetRestoreRunForbidden) getRestoreRunRes() {}
 type GetRestoreRunNotFound Error
 
 func (*GetRestoreRunNotFound) getRestoreRunRes() {}
+
+type GetRumTrendForbidden Error
+
+func (*GetRumTrendForbidden) getRumTrendRes() {}
+
+type GetRumTrendUnauthorized Error
+
+func (*GetRumTrendUnauthorized) getRumTrendRes() {}
+
+type GetScanRunForbidden Error
+
+func (*GetScanRunForbidden) getScanRunRes() {}
+
+type GetScanRunNotFound Error
+
+func (*GetScanRunNotFound) getScanRunRes() {}
+
+type GetScanRunUnauthorized Error
+
+func (*GetScanRunUnauthorized) getScanRunRes() {}
 
 type GetScheduleRunForbidden Error
 
@@ -14883,6 +20037,22 @@ type GetSiteFilesSettingsUnauthorized Error
 
 func (*GetSiteFilesSettingsUnauthorized) getSiteFilesSettingsRes() {}
 
+type GetSiteHardeningConfigForbidden Error
+
+func (*GetSiteHardeningConfigForbidden) getSiteHardeningConfigRes() {}
+
+type GetSiteHardeningConfigUnauthorized Error
+
+func (*GetSiteHardeningConfigUnauthorized) getSiteHardeningConfigRes() {}
+
+type GetSiteSecurityPolicyForbidden Error
+
+func (*GetSiteSecurityPolicyForbidden) getSiteSecurityPolicyRes() {}
+
+type GetSiteSecurityPolicyUnauthorized Error
+
+func (*GetSiteSecurityPolicyUnauthorized) getSiteSecurityPolicyRes() {}
+
 type GetSiteUptimeWindow string
 
 const (
@@ -14930,6 +20100,153 @@ func (s *GetSiteUptimeWindow) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type GetSmtpSettingsForbidden Error
+
+func (*GetSmtpSettingsForbidden) getSmtpSettingsRes() {}
+
+type GetSmtpSettingsUnauthorized Error
+
+func (*GetSmtpSettingsUnauthorized) getSmtpSettingsRes() {}
+
+type GrantAdminSelfMembershipForbidden Error
+
+func (*GrantAdminSelfMembershipForbidden) grantAdminSelfMembershipRes() {}
+
+type GrantAdminSelfMembershipUnauthorized Error
+
+func (*GrantAdminSelfMembershipUnauthorized) grantAdminSelfMembershipRes() {}
+
+// HandleBillingProviderWebhookNotFound is response for HandleBillingProviderWebhook operation.
+type HandleBillingProviderWebhookNotFound struct{}
+
+func (*HandleBillingProviderWebhookNotFound) handleBillingProviderWebhookRes() {}
+
+// HandleBillingProviderWebhookOK is response for HandleBillingProviderWebhook operation.
+type HandleBillingProviderWebhookOK struct{}
+
+func (*HandleBillingProviderWebhookOK) handleBillingProviderWebhookRes() {}
+
+type HandleBillingProviderWebhookProvider string
+
+const (
+	HandleBillingProviderWebhookProviderStripe HandleBillingProviderWebhookProvider = "stripe"
+)
+
+// AllValues returns all HandleBillingProviderWebhookProvider values.
+func (HandleBillingProviderWebhookProvider) AllValues() []HandleBillingProviderWebhookProvider {
+	return []HandleBillingProviderWebhookProvider{
+		HandleBillingProviderWebhookProviderStripe,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s HandleBillingProviderWebhookProvider) MarshalText() ([]byte, error) {
+	switch s {
+	case HandleBillingProviderWebhookProviderStripe:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *HandleBillingProviderWebhookProvider) UnmarshalText(data []byte) error {
+	switch HandleBillingProviderWebhookProvider(data) {
+	case HandleBillingProviderWebhookProviderStripe:
+		*s = HandleBillingProviderWebhookProviderStripe
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type HandleBillingProviderWebhookReq struct{}
+
+// HandleBillingProviderWebhookUnauthorized is response for HandleBillingProviderWebhook operation.
+type HandleBillingProviderWebhookUnauthorized struct{}
+
+func (*HandleBillingProviderWebhookUnauthorized) handleBillingProviderWebhookRes() {}
+
+// HandleEmailProviderWebhookInternalServerError is response for HandleEmailProviderWebhook operation.
+type HandleEmailProviderWebhookInternalServerError struct{}
+
+func (*HandleEmailProviderWebhookInternalServerError) handleEmailProviderWebhookRes() {}
+
+// HandleEmailProviderWebhookNotFound is response for HandleEmailProviderWebhook operation.
+type HandleEmailProviderWebhookNotFound struct{}
+
+func (*HandleEmailProviderWebhookNotFound) handleEmailProviderWebhookRes() {}
+
+// HandleEmailProviderWebhookOK is response for HandleEmailProviderWebhook operation.
+type HandleEmailProviderWebhookOK struct{}
+
+func (*HandleEmailProviderWebhookOK) handleEmailProviderWebhookRes() {}
+
+type HandleEmailProviderWebhookProvider string
+
+const (
+	HandleEmailProviderWebhookProviderSes      HandleEmailProviderWebhookProvider = "ses"
+	HandleEmailProviderWebhookProviderSendgrid HandleEmailProviderWebhookProvider = "sendgrid"
+	HandleEmailProviderWebhookProviderMailgun  HandleEmailProviderWebhookProvider = "mailgun"
+	HandleEmailProviderWebhookProviderPostmark HandleEmailProviderWebhookProvider = "postmark"
+)
+
+// AllValues returns all HandleEmailProviderWebhookProvider values.
+func (HandleEmailProviderWebhookProvider) AllValues() []HandleEmailProviderWebhookProvider {
+	return []HandleEmailProviderWebhookProvider{
+		HandleEmailProviderWebhookProviderSes,
+		HandleEmailProviderWebhookProviderSendgrid,
+		HandleEmailProviderWebhookProviderMailgun,
+		HandleEmailProviderWebhookProviderPostmark,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s HandleEmailProviderWebhookProvider) MarshalText() ([]byte, error) {
+	switch s {
+	case HandleEmailProviderWebhookProviderSes:
+		return []byte(s), nil
+	case HandleEmailProviderWebhookProviderSendgrid:
+		return []byte(s), nil
+	case HandleEmailProviderWebhookProviderMailgun:
+		return []byte(s), nil
+	case HandleEmailProviderWebhookProviderPostmark:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *HandleEmailProviderWebhookProvider) UnmarshalText(data []byte) error {
+	switch HandleEmailProviderWebhookProvider(data) {
+	case HandleEmailProviderWebhookProviderSes:
+		*s = HandleEmailProviderWebhookProviderSes
+		return nil
+	case HandleEmailProviderWebhookProviderSendgrid:
+		*s = HandleEmailProviderWebhookProviderSendgrid
+		return nil
+	case HandleEmailProviderWebhookProviderMailgun:
+		*s = HandleEmailProviderWebhookProviderMailgun
+		return nil
+	case HandleEmailProviderWebhookProviderPostmark:
+		*s = HandleEmailProviderWebhookProviderPostmark
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Provider-defined envelope (SNS notification, SendGrid event array, or Postmark JSON). Mailgun's
+// form-urlencoded POST is accepted on the wire too but is not separately modeled here
+// (single-content-type schema keeps codegen well-formed).
+type HandleEmailProviderWebhookReq struct{}
+
+// HandleEmailProviderWebhookUnauthorized is response for HandleEmailProviderWebhook operation.
+type HandleEmailProviderWebhookUnauthorized struct{}
+
+func (*HandleEmailProviderWebhookUnauthorized) handleEmailProviderWebhookRes() {}
 
 // Ref: #/components/schemas/Health
 type Health struct {
@@ -14990,6 +20307,31 @@ func (s *HealthStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// IngestRumBeaconBadRequest is response for IngestRumBeacon operation.
+type IngestRumBeaconBadRequest struct{}
+
+func (*IngestRumBeaconBadRequest) ingestRumBeaconRes() {}
+
+// IngestRumBeaconNoContent is response for IngestRumBeacon operation.
+type IngestRumBeaconNoContent struct{}
+
+func (*IngestRumBeaconNoContent) ingestRumBeaconRes() {}
+
+// IngestRumBeaconRequestEntityTooLarge is response for IngestRumBeacon operation.
+type IngestRumBeaconRequestEntityTooLarge struct{}
+
+func (*IngestRumBeaconRequestEntityTooLarge) ingestRumBeaconRes() {}
+
+// IngestRumBeaconTooManyRequests is response for IngestRumBeacon operation.
+type IngestRumBeaconTooManyRequests struct{}
+
+func (*IngestRumBeaconTooManyRequests) ingestRumBeaconRes() {}
+
+// IngestRumBeaconUnauthorized is response for IngestRumBeacon operation.
+type IngestRumBeaconUnauthorized struct{}
+
+func (*IngestRumBeaconUnauthorized) ingestRumBeaconRes() {}
 
 type InviteMemberConflict Error
 
@@ -15066,6 +20408,38 @@ func (*ListAdminAccountsServiceUnavailable) listAdminAccountsRes() {}
 type ListAdminAccountsUnauthorized Error
 
 func (*ListAdminAccountsUnauthorized) listAdminAccountsRes() {}
+
+type ListAdminUserSitesForbidden Error
+
+func (*ListAdminUserSitesForbidden) listAdminUserSitesRes() {}
+
+type ListAdminUserSitesUnauthorized Error
+
+func (*ListAdminUserSitesUnauthorized) listAdminUserSitesRes() {}
+
+type ListAdminUsersForbidden Error
+
+func (*ListAdminUsersForbidden) listAdminUsersRes() {}
+
+type ListAdminUsersOK struct {
+	Items []AdminUser `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListAdminUsersOK) GetItems() []AdminUser {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListAdminUsersOK) SetItems(val []AdminUser) {
+	s.Items = val
+}
+
+func (*ListAdminUsersOK) listAdminUsersRes() {}
+
+type ListAdminUsersUnauthorized Error
+
+func (*ListAdminUsersUnauthorized) listAdminUsersRes() {}
 
 type ListApiKeysForbidden Error
 
@@ -15290,6 +20664,54 @@ type ListRestoreRunEventsNotFound Error
 
 func (*ListRestoreRunEventsNotFound) listRestoreRunEventsRes() {}
 
+type ListScanFindingsForbidden Error
+
+func (*ListScanFindingsForbidden) listScanFindingsRes() {}
+
+type ListScanFindingsOK struct {
+	Items []ScanFinding `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListScanFindingsOK) GetItems() []ScanFinding {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListScanFindingsOK) SetItems(val []ScanFinding) {
+	s.Items = val
+}
+
+func (*ListScanFindingsOK) listScanFindingsRes() {}
+
+type ListScanFindingsUnauthorized Error
+
+func (*ListScanFindingsUnauthorized) listScanFindingsRes() {}
+
+type ListScanRunsForbidden Error
+
+func (*ListScanRunsForbidden) listScanRunsRes() {}
+
+type ListScanRunsOK struct {
+	Items []ScanRun `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListScanRunsOK) GetItems() []ScanRun {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListScanRunsOK) SetItems(val []ScanRun) {
+	s.Items = val
+}
+
+func (*ListScanRunsOK) listScanRunsRes() {}
+
+type ListScanRunsUnauthorized Error
+
+func (*ListScanRunsUnauthorized) listScanRunsRes() {}
+
 type ListScheduleRunsStatus string
 
 const (
@@ -15379,6 +20801,30 @@ func (s *ListSiteActivitySeverity) UnmarshalText(data []byte) error {
 	}
 }
 
+type ListSiteBansForbidden Error
+
+func (*ListSiteBansForbidden) listSiteBansRes() {}
+
+type ListSiteBansOK struct {
+	Items []SiteBan `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListSiteBansOK) GetItems() []SiteBan {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListSiteBansOK) SetItems(val []SiteBan) {
+	s.Items = val
+}
+
+func (*ListSiteBansOK) listSiteBansRes() {}
+
+type ListSiteBansUnauthorized Error
+
+func (*ListSiteBansUnauthorized) listSiteBansRes() {}
+
 type ListSiteDestinationsForbidden Error
 
 func (*ListSiteDestinationsForbidden) listSiteDestinationsRes() {}
@@ -15439,6 +20885,30 @@ type ListSiteFilesUnauthorized Error
 
 func (*ListSiteFilesUnauthorized) listSiteFilesRes() {}
 
+type ListSiteInvitationsForbidden Error
+
+func (*ListSiteInvitationsForbidden) listSiteInvitationsRes() {}
+
+type ListSiteInvitationsOK struct {
+	Items []SiteInvitation `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListSiteInvitationsOK) GetItems() []SiteInvitation {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListSiteInvitationsOK) SetItems(val []SiteInvitation) {
+	s.Items = val
+}
+
+func (*ListSiteInvitationsOK) listSiteInvitationsRes() {}
+
+type ListSiteInvitationsUnauthorized Error
+
+func (*ListSiteInvitationsUnauthorized) listSiteInvitationsRes() {}
+
 type ListSiteLoginEventsStatus int32
 
 const (
@@ -15497,6 +20967,30 @@ func (s *ListSitePHPErrorsSilenced) UnmarshalText(data []byte) error {
 	}
 }
 
+type ListSitePolicyGroupsForbidden Error
+
+func (*ListSitePolicyGroupsForbidden) listSitePolicyGroupsRes() {}
+
+type ListSitePolicyGroupsOK struct {
+	Items []SitePolicyGroup `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListSitePolicyGroupsOK) GetItems() []SitePolicyGroup {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListSitePolicyGroupsOK) SetItems(val []SitePolicyGroup) {
+	s.Items = val
+}
+
+func (*ListSitePolicyGroupsOK) listSitePolicyGroupsRes() {}
+
+type ListSitePolicyGroupsUnauthorized Error
+
+func (*ListSitePolicyGroupsUnauthorized) listSitePolicyGroupsRes() {}
+
 type ListSiteSharesForbidden Error
 
 func (*ListSiteSharesForbidden) listSiteSharesRes() {}
@@ -15508,6 +21002,14 @@ func (*ListSiteSharesNotFound) listSiteSharesRes() {}
 type ListSiteSharesUnauthorized Error
 
 func (*ListSiteSharesUnauthorized) listSiteSharesRes() {}
+
+type ListSiteVulnerabilitiesForbidden Error
+
+func (*ListSiteVulnerabilitiesForbidden) listSiteVulnerabilitiesRes() {}
+
+type ListSiteVulnerabilitiesUnauthorized Error
+
+func (*ListSiteVulnerabilitiesUnauthorized) listSiteVulnerabilitiesRes() {}
 
 type ListSitesState string
 
@@ -15618,6 +21120,38 @@ func (s *ListSitesTagsMatch) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type ListTrustedDevicesOK struct {
+	Items []TrustedDevice `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListTrustedDevicesOK) GetItems() []TrustedDevice {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListTrustedDevicesOK) SetItems(val []TrustedDevice) {
+	s.Items = val
+}
+
+func (*ListTrustedDevicesOK) listTrustedDevicesRes() {}
+
+type ListWebAuthnCredentialsOK struct {
+	Items []WebAuthnCredential `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *ListWebAuthnCredentialsOK) GetItems() []WebAuthnCredential {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *ListWebAuthnCredentialsOK) SetItems(val []WebAuthnCredential) {
+	s.Items = val
+}
+
+func (*ListWebAuthnCredentialsOK) listWebAuthnCredentialsRes() {}
 
 type LockBackupConflict Error
 
@@ -15787,11 +21321,13 @@ func (s *Me) SetDesiredPlan(val OptMeDesiredPlan) {
 	s.DesiredPlan = val
 }
 
-func (*Me) getMeRes()        {}
-func (*Me) loginRes()        {}
-func (*Me) oidcCallbackRes() {}
-func (*Me) registerRes()     {}
-func (*Me) verifyEmailRes()  {}
+func (*Me) finishWebAuthnChallengeRes() {}
+func (*Me) getMeRes()                   {}
+func (*Me) loginRes()                   {}
+func (*Me) oidcCallbackRes()            {}
+func (*Me) registerRes()                {}
+func (*Me) updateMeRes()                {}
+func (*Me) verifyEmailRes()             {}
 
 // The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 // single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
@@ -17691,6 +23227,48 @@ func (s *MediaOptimizeRequestTargetQuality) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/MediaSettings
+type MediaSettings struct {
+	AutoOptimizeEnabled bool `json:"auto_optimize_enabled"`
+	// E.g. avif | webp.
+	AutoTargetFormat string `json:"auto_target_format"`
+	// E.g. balanced | high | max.
+	AutoTargetQuality string `json:"auto_target_quality"`
+}
+
+// GetAutoOptimizeEnabled returns the value of AutoOptimizeEnabled.
+func (s *MediaSettings) GetAutoOptimizeEnabled() bool {
+	return s.AutoOptimizeEnabled
+}
+
+// GetAutoTargetFormat returns the value of AutoTargetFormat.
+func (s *MediaSettings) GetAutoTargetFormat() string {
+	return s.AutoTargetFormat
+}
+
+// GetAutoTargetQuality returns the value of AutoTargetQuality.
+func (s *MediaSettings) GetAutoTargetQuality() string {
+	return s.AutoTargetQuality
+}
+
+// SetAutoOptimizeEnabled sets the value of AutoOptimizeEnabled.
+func (s *MediaSettings) SetAutoOptimizeEnabled(val bool) {
+	s.AutoOptimizeEnabled = val
+}
+
+// SetAutoTargetFormat sets the value of AutoTargetFormat.
+func (s *MediaSettings) SetAutoTargetFormat(val string) {
+	s.AutoTargetFormat = val
+}
+
+// SetAutoTargetQuality sets the value of AutoTargetQuality.
+func (s *MediaSettings) SetAutoTargetQuality(val string) {
+	s.AutoTargetQuality = val
+}
+
+func (*MediaSettings) getMediaSettingsRes()    {}
+func (*MediaSettings) updateMediaSettingsRes() {}
+
 // Ref: #/components/schemas/MediaSummary
 type MediaSummary struct {
 	Total      OptInt64 `json:"total"`
@@ -17946,6 +23524,141 @@ func (s *MembershipList) SetItems(val []Membership) {
 }
 
 func (*MembershipList) listMembersRes() {}
+
+// NewNilDateTime returns new NilDateTime with value set to v.
+func NewNilDateTime(v time.Time) NilDateTime {
+	return NilDateTime{
+		Value: v,
+	}
+}
+
+// NilDateTime is nullable time.Time.
+type NilDateTime struct {
+	Value time.Time
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilDateTime) SetTo(v time.Time) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilDateTime) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilDateTime) SetToNull() {
+	o.Null = true
+	var v time.Time
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilDateTime) Get() (v time.Time, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilDateTime) Or(d time.Time) time.Time {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilDbCleanStatusLastResult returns new NilDbCleanStatusLastResult with value set to v.
+func NewNilDbCleanStatusLastResult(v DbCleanStatusLastResult) NilDbCleanStatusLastResult {
+	return NilDbCleanStatusLastResult{
+		Value: v,
+	}
+}
+
+// NilDbCleanStatusLastResult is nullable DbCleanStatusLastResult.
+type NilDbCleanStatusLastResult struct {
+	Value DbCleanStatusLastResult
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilDbCleanStatusLastResult) SetTo(v DbCleanStatusLastResult) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilDbCleanStatusLastResult) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilDbCleanStatusLastResult) SetToNull() {
+	o.Null = true
+	var v DbCleanStatusLastResult
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilDbCleanStatusLastResult) Get() (v DbCleanStatusLastResult, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilDbCleanStatusLastResult) Or(d DbCleanStatusLastResult) DbCleanStatusLastResult {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilString returns new NilString with value set to v.
+func NewNilString(v string) NilString {
+	return NilString{
+		Value: v,
+	}
+}
+
+// NilString is nullable string.
+type NilString struct {
+	Value string
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilString) SetTo(v string) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilString) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilString) SetToNull() {
+	o.Null = true
+	var v string
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilString) Get() (v string, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilString) Or(d string) string {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
 
 // Server and PHP extension capabilities detected by the agent during a connection test.
 // phpredis_version empty or absent means the phpredis extension is not installed on the server.
@@ -19465,6 +25178,98 @@ func (o OptAdminReasonRequest) Or(d AdminReasonRequest) AdminReasonRequest {
 	return d
 }
 
+// NewOptAgentCacheStatsReportObjectCache returns new OptAgentCacheStatsReportObjectCache with value set to v.
+func NewOptAgentCacheStatsReportObjectCache(v AgentCacheStatsReportObjectCache) OptAgentCacheStatsReportObjectCache {
+	return OptAgentCacheStatsReportObjectCache{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentCacheStatsReportObjectCache is optional AgentCacheStatsReportObjectCache.
+type OptAgentCacheStatsReportObjectCache struct {
+	Value AgentCacheStatsReportObjectCache
+	Set   bool
+}
+
+// IsSet returns true if OptAgentCacheStatsReportObjectCache was set.
+func (o OptAgentCacheStatsReportObjectCache) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentCacheStatsReportObjectCache) Reset() {
+	var v AgentCacheStatsReportObjectCache
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentCacheStatsReportObjectCache) SetTo(v AgentCacheStatsReportObjectCache) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentCacheStatsReportObjectCache) Get() (v AgentCacheStatsReportObjectCache, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentCacheStatsReportObjectCache) Or(d AgentCacheStatsReportObjectCache) AgentCacheStatsReportObjectCache {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAgentCacheStatsReportObjectCacheState returns new OptAgentCacheStatsReportObjectCacheState with value set to v.
+func NewOptAgentCacheStatsReportObjectCacheState(v AgentCacheStatsReportObjectCacheState) OptAgentCacheStatsReportObjectCacheState {
+	return OptAgentCacheStatsReportObjectCacheState{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentCacheStatsReportObjectCacheState is optional AgentCacheStatsReportObjectCacheState.
+type OptAgentCacheStatsReportObjectCacheState struct {
+	Value AgentCacheStatsReportObjectCacheState
+	Set   bool
+}
+
+// IsSet returns true if OptAgentCacheStatsReportObjectCacheState was set.
+func (o OptAgentCacheStatsReportObjectCacheState) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentCacheStatsReportObjectCacheState) Reset() {
+	var v AgentCacheStatsReportObjectCacheState
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentCacheStatsReportObjectCacheState) SetTo(v AgentCacheStatsReportObjectCacheState) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentCacheStatsReportObjectCacheState) Get() (v AgentCacheStatsReportObjectCacheState, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentCacheStatsReportObjectCacheState) Or(d AgentCacheStatsReportObjectCacheState) AgentCacheStatsReportObjectCacheState {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAgentDisconnect returns new OptAgentDisconnect with value set to v.
 func NewOptAgentDisconnect(v AgentDisconnect) OptAgentDisconnect {
 	return OptAgentDisconnect{
@@ -19597,6 +25402,52 @@ func (o OptAgentHeartbeatPluginVersions) Get() (v AgentHeartbeatPluginVersions, 
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAgentHeartbeatPluginVersions) Or(d AgentHeartbeatPluginVersions) AgentHeartbeatPluginVersions {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAgentIngestRucssAcceptedStatus returns new OptAgentIngestRucssAcceptedStatus with value set to v.
+func NewOptAgentIngestRucssAcceptedStatus(v AgentIngestRucssAcceptedStatus) OptAgentIngestRucssAcceptedStatus {
+	return OptAgentIngestRucssAcceptedStatus{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentIngestRucssAcceptedStatus is optional AgentIngestRucssAcceptedStatus.
+type OptAgentIngestRucssAcceptedStatus struct {
+	Value AgentIngestRucssAcceptedStatus
+	Set   bool
+}
+
+// IsSet returns true if OptAgentIngestRucssAcceptedStatus was set.
+func (o OptAgentIngestRucssAcceptedStatus) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentIngestRucssAcceptedStatus) Reset() {
+	var v AgentIngestRucssAcceptedStatus
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentIngestRucssAcceptedStatus) SetTo(v AgentIngestRucssAcceptedStatus) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentIngestRucssAcceptedStatus) Get() (v AgentIngestRucssAcceptedStatus, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentIngestRucssAcceptedStatus) Or(d AgentIngestRucssAcceptedStatus) AgentIngestRucssAcceptedStatus {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -20977,52 +26828,6 @@ func (o OptFontResultState) Get() (v FontResultState, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptFontResultState) Or(d FontResultState) FontResultState {
-	if v, ok := o.Get(); ok {
-		return v
-	}
-	return d
-}
-
-// NewOptFontTranscodeRequestSourceExt returns new OptFontTranscodeRequestSourceExt with value set to v.
-func NewOptFontTranscodeRequestSourceExt(v FontTranscodeRequestSourceExt) OptFontTranscodeRequestSourceExt {
-	return OptFontTranscodeRequestSourceExt{
-		Value: v,
-		Set:   true,
-	}
-}
-
-// OptFontTranscodeRequestSourceExt is optional FontTranscodeRequestSourceExt.
-type OptFontTranscodeRequestSourceExt struct {
-	Value FontTranscodeRequestSourceExt
-	Set   bool
-}
-
-// IsSet returns true if OptFontTranscodeRequestSourceExt was set.
-func (o OptFontTranscodeRequestSourceExt) IsSet() bool { return o.Set }
-
-// Reset unsets value.
-func (o *OptFontTranscodeRequestSourceExt) Reset() {
-	var v FontTranscodeRequestSourceExt
-	o.Value = v
-	o.Set = false
-}
-
-// SetTo sets value to v.
-func (o *OptFontTranscodeRequestSourceExt) SetTo(v FontTranscodeRequestSourceExt) {
-	o.Set = true
-	o.Value = v
-}
-
-// Get returns value and boolean that denotes whether value was set.
-func (o OptFontTranscodeRequestSourceExt) Get() (v FontTranscodeRequestSourceExt, ok bool) {
-	if !o.Set {
-		return v, false
-	}
-	return o.Value, true
-}
-
-// Or returns value if set, or given parameter if does not.
-func (o OptFontTranscodeRequestSourceExt) Or(d FontTranscodeRequestSourceExt) FontTranscodeRequestSourceExt {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -22495,6 +28300,52 @@ func (o OptMediaVariantResultState) Get() (v MediaVariantResultState, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptMediaVariantResultState) Or(d MediaVariantResultState) MediaVariantResultState {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptMultipartFile returns new OptMultipartFile with value set to v.
+func NewOptMultipartFile(v ht.MultipartFile) OptMultipartFile {
+	return OptMultipartFile{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptMultipartFile is optional ht.MultipartFile.
+type OptMultipartFile struct {
+	Value ht.MultipartFile
+	Set   bool
+}
+
+// IsSet returns true if OptMultipartFile was set.
+func (o OptMultipartFile) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptMultipartFile) Reset() {
+	var v ht.MultipartFile
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptMultipartFile) SetTo(v ht.MultipartFile) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptMultipartFile) Get() (v ht.MultipartFile, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptMultipartFile) Or(d ht.MultipartFile) ht.MultipartFile {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -24238,6 +30089,52 @@ func (o OptPortalVitalsDistribution) Or(d PortalVitalsDistribution) PortalVitals
 	return d
 }
 
+// NewOptPriceQuote returns new OptPriceQuote with value set to v.
+func NewOptPriceQuote(v PriceQuote) OptPriceQuote {
+	return OptPriceQuote{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptPriceQuote is optional PriceQuote.
+type OptPriceQuote struct {
+	Value PriceQuote
+	Set   bool
+}
+
+// IsSet returns true if OptPriceQuote was set.
+func (o OptPriceQuote) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptPriceQuote) Reset() {
+	var v PriceQuote
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptPriceQuote) SetTo(v PriceQuote) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptPriceQuote) Get() (v PriceQuote, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptPriceQuote) Or(d PriceQuote) PriceQuote {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptPrincipalRole returns new OptPrincipalRole with value set to v.
 func NewOptPrincipalRole(v PrincipalRole) OptPrincipalRole {
 	return OptPrincipalRole{
@@ -24514,6 +30411,98 @@ func (o OptRole) Or(d Role) Role {
 	return d
 }
 
+// NewOptRumBeaconConn returns new OptRumBeaconConn with value set to v.
+func NewOptRumBeaconConn(v RumBeaconConn) OptRumBeaconConn {
+	return OptRumBeaconConn{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRumBeaconConn is optional RumBeaconConn.
+type OptRumBeaconConn struct {
+	Value RumBeaconConn
+	Set   bool
+}
+
+// IsSet returns true if OptRumBeaconConn was set.
+func (o OptRumBeaconConn) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRumBeaconConn) Reset() {
+	var v RumBeaconConn
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRumBeaconConn) SetTo(v RumBeaconConn) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRumBeaconConn) Get() (v RumBeaconConn, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRumBeaconConn) Or(d RumBeaconConn) RumBeaconConn {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRumBeaconDevice returns new OptRumBeaconDevice with value set to v.
+func NewOptRumBeaconDevice(v RumBeaconDevice) OptRumBeaconDevice {
+	return OptRumBeaconDevice{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRumBeaconDevice is optional RumBeaconDevice.
+type OptRumBeaconDevice struct {
+	Value RumBeaconDevice
+	Set   bool
+}
+
+// IsSet returns true if OptRumBeaconDevice was set.
+func (o OptRumBeaconDevice) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRumBeaconDevice) Reset() {
+	var v RumBeaconDevice
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRumBeaconDevice) SetTo(v RumBeaconDevice) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRumBeaconDevice) Get() (v RumBeaconDevice, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRumBeaconDevice) Or(d RumBeaconDevice) RumBeaconDevice {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptRumMetricSummaryDevice returns new OptRumMetricSummaryDevice with value set to v.
 func NewOptRumMetricSummaryDevice(v RumMetricSummaryDevice) OptRumMetricSummaryDevice {
 	return OptRumMetricSummaryDevice{
@@ -24784,6 +30773,52 @@ func (o OptRumResultRating) Get() (v RumResultRating, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptRumResultRating) Or(d RumResultRating) RumResultRating {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptScanRunFindingCounts returns new OptScanRunFindingCounts with value set to v.
+func NewOptScanRunFindingCounts(v ScanRunFindingCounts) OptScanRunFindingCounts {
+	return OptScanRunFindingCounts{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptScanRunFindingCounts is optional ScanRunFindingCounts.
+type OptScanRunFindingCounts struct {
+	Value ScanRunFindingCounts
+	Set   bool
+}
+
+// IsSet returns true if OptScanRunFindingCounts was set.
+func (o OptScanRunFindingCounts) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptScanRunFindingCounts) Reset() {
+	var v ScanRunFindingCounts
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptScanRunFindingCounts) SetTo(v ScanRunFindingCounts) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptScanRunFindingCounts) Get() (v ScanRunFindingCounts, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptScanRunFindingCounts) Or(d ScanRunFindingCounts) ScanRunFindingCounts {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -25204,6 +31239,52 @@ func (o OptSiteShare) Or(d SiteShare) SiteShare {
 	return d
 }
 
+// NewOptStartScanRunReq returns new OptStartScanRunReq with value set to v.
+func NewOptStartScanRunReq(v StartScanRunReq) OptStartScanRunReq {
+	return OptStartScanRunReq{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptStartScanRunReq is optional StartScanRunReq.
+type OptStartScanRunReq struct {
+	Value StartScanRunReq
+	Set   bool
+}
+
+// IsSet returns true if OptStartScanRunReq was set.
+func (o OptStartScanRunReq) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptStartScanRunReq) Reset() {
+	var v StartScanRunReq
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptStartScanRunReq) SetTo(v StartScanRunReq) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptStartScanRunReq) Get() (v StartScanRunReq, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptStartScanRunReq) Or(d StartScanRunReq) StartScanRunReq {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptString returns new OptString with value set to v.
 func NewOptString(v string) OptString {
 	return OptString{
@@ -25290,6 +31371,52 @@ func (o OptTestObjectCacheReq) Get() (v TestObjectCacheReq, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptTestObjectCacheReq) Or(d TestObjectCacheReq) TestObjectCacheReq {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptToggleScanFindingIgnoreReq returns new OptToggleScanFindingIgnoreReq with value set to v.
+func NewOptToggleScanFindingIgnoreReq(v ToggleScanFindingIgnoreReq) OptToggleScanFindingIgnoreReq {
+	return OptToggleScanFindingIgnoreReq{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptToggleScanFindingIgnoreReq is optional ToggleScanFindingIgnoreReq.
+type OptToggleScanFindingIgnoreReq struct {
+	Value ToggleScanFindingIgnoreReq
+	Set   bool
+}
+
+// IsSet returns true if OptToggleScanFindingIgnoreReq was set.
+func (o OptToggleScanFindingIgnoreReq) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptToggleScanFindingIgnoreReq) Reset() {
+	var v ToggleScanFindingIgnoreReq
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptToggleScanFindingIgnoreReq) SetTo(v ToggleScanFindingIgnoreReq) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptToggleScanFindingIgnoreReq) Get() (v ToggleScanFindingIgnoreReq, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptToggleScanFindingIgnoreReq) Or(d ToggleScanFindingIgnoreReq) ToggleScanFindingIgnoreReq {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -25471,7 +31598,74 @@ func (s *Org) SetSlug(val string) {
 	s.Slug = val
 }
 
-func (*Org) createOrgRes() {}
+func (*Org) createOrgRes()  {}
+func (*Org) renameOrgRes()  {}
+func (*Org) restoreOrgRes() {}
+
+// Ref: #/components/schemas/OrgList
+type OrgList struct {
+	Items []OrgListItemsItem `json:"items"`
+}
+
+// GetItems returns the value of Items.
+func (s *OrgList) GetItems() []OrgListItemsItem {
+	return s.Items
+}
+
+// SetItems sets the value of Items.
+func (s *OrgList) SetItems(val []OrgListItemsItem) {
+	s.Items = val
+}
+
+func (*OrgList) listOrgsRes() {}
+
+type OrgListItemsItem struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	Slug string    `json:"slug"`
+	// The caller's role in this org.
+	Role string `json:"role"`
+}
+
+// GetID returns the value of ID.
+func (s *OrgListItemsItem) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetName returns the value of Name.
+func (s *OrgListItemsItem) GetName() string {
+	return s.Name
+}
+
+// GetSlug returns the value of Slug.
+func (s *OrgListItemsItem) GetSlug() string {
+	return s.Slug
+}
+
+// GetRole returns the value of Role.
+func (s *OrgListItemsItem) GetRole() string {
+	return s.Role
+}
+
+// SetID sets the value of ID.
+func (s *OrgListItemsItem) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetName sets the value of Name.
+func (s *OrgListItemsItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetSlug sets the value of Slug.
+func (s *OrgListItemsItem) SetSlug(val string) {
+	s.Slug = val
+}
+
+// SetRole sets the value of Role.
+func (s *OrgListItemsItem) SetRole(val string) {
+	s.Role = val
+}
 
 // Ref: #/components/schemas/PHPError
 type PHPError struct {
@@ -28326,6 +34520,45 @@ func (s *PrepareUploadResult) SetExpiresAt(val int64) {
 
 func (*PrepareUploadResult) prepareSiteFileUploadRes() {}
 
+// Ref: #/components/schemas/PriceQuote
+type PriceQuote struct {
+	// Minor currency units (e.g. cents).
+	Amount   int64  `json:"amount"`
+	Currency string `json:"currency"`
+	// E.g. month.
+	Interval string `json:"interval"`
+}
+
+// GetAmount returns the value of Amount.
+func (s *PriceQuote) GetAmount() int64 {
+	return s.Amount
+}
+
+// GetCurrency returns the value of Currency.
+func (s *PriceQuote) GetCurrency() string {
+	return s.Currency
+}
+
+// GetInterval returns the value of Interval.
+func (s *PriceQuote) GetInterval() string {
+	return s.Interval
+}
+
+// SetAmount sets the value of Amount.
+func (s *PriceQuote) SetAmount(val int64) {
+	s.Amount = val
+}
+
+// SetCurrency sets the value of Currency.
+func (s *PriceQuote) SetCurrency(val string) {
+	s.Currency = val
+}
+
+// SetInterval sets the value of Interval.
+func (s *PriceQuote) SetInterval(val string) {
+	s.Interval = val
+}
+
 // Effective role of the authenticated principal. Extends the member Role enum with "client" for
 // portal principals. The existing Role enum (owner/admin/operator/viewer) is unchanged; this
 // standalone enum is used only in Me responses.
@@ -28397,6 +34630,105 @@ func (s *PrincipalRole) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// Ref: #/components/schemas/PublicPricing
+type PublicPricing struct {
+	CurrencyDefault string                   `json:"currency_default"`
+	Tiers           []PublicPricingTiersItem `json:"tiers"`
+}
+
+// GetCurrencyDefault returns the value of CurrencyDefault.
+func (s *PublicPricing) GetCurrencyDefault() string {
+	return s.CurrencyDefault
+}
+
+// GetTiers returns the value of Tiers.
+func (s *PublicPricing) GetTiers() []PublicPricingTiersItem {
+	return s.Tiers
+}
+
+// SetCurrencyDefault sets the value of CurrencyDefault.
+func (s *PublicPricing) SetCurrencyDefault(val string) {
+	s.CurrencyDefault = val
+}
+
+// SetTiers sets the value of Tiers.
+func (s *PublicPricing) SetTiers(val []PublicPricingTiersItem) {
+	s.Tiers = val
+}
+
+func (*PublicPricing) getPublicPricingRes() {}
+
+// A free tier renders flat `{id,amount,currency,interval}` fields; a paid tier renders `{id,usd?,
+// inr?}` — only the provider/currency pairs this instance actually resolved a price for.
+type PublicPricingTiersItem struct {
+	ID       string        `json:"id"`
+	Amount   OptInt64      `json:"amount"`
+	Currency OptString     `json:"currency"`
+	Interval OptString     `json:"interval"`
+	Usd      OptPriceQuote `json:"usd"`
+	Inr      OptPriceQuote `json:"inr"`
+}
+
+// GetID returns the value of ID.
+func (s *PublicPricingTiersItem) GetID() string {
+	return s.ID
+}
+
+// GetAmount returns the value of Amount.
+func (s *PublicPricingTiersItem) GetAmount() OptInt64 {
+	return s.Amount
+}
+
+// GetCurrency returns the value of Currency.
+func (s *PublicPricingTiersItem) GetCurrency() OptString {
+	return s.Currency
+}
+
+// GetInterval returns the value of Interval.
+func (s *PublicPricingTiersItem) GetInterval() OptString {
+	return s.Interval
+}
+
+// GetUsd returns the value of Usd.
+func (s *PublicPricingTiersItem) GetUsd() OptPriceQuote {
+	return s.Usd
+}
+
+// GetInr returns the value of Inr.
+func (s *PublicPricingTiersItem) GetInr() OptPriceQuote {
+	return s.Inr
+}
+
+// SetID sets the value of ID.
+func (s *PublicPricingTiersItem) SetID(val string) {
+	s.ID = val
+}
+
+// SetAmount sets the value of Amount.
+func (s *PublicPricingTiersItem) SetAmount(val OptInt64) {
+	s.Amount = val
+}
+
+// SetCurrency sets the value of Currency.
+func (s *PublicPricingTiersItem) SetCurrency(val OptString) {
+	s.Currency = val
+}
+
+// SetInterval sets the value of Interval.
+func (s *PublicPricingTiersItem) SetInterval(val OptString) {
+	s.Interval = val
+}
+
+// SetUsd sets the value of Usd.
+func (s *PublicPricingTiersItem) SetUsd(val OptPriceQuote) {
+	s.Usd = val
+}
+
+// SetInr sets the value of Inr.
+func (s *PublicPricingTiersItem) SetInr(val OptPriceQuote) {
+	s.Inr = val
 }
 
 // A page-cache purge request.
@@ -29111,6 +35443,42 @@ type PutSiteEmailWebhookConfigUnauthorized Error
 
 func (*PutSiteEmailWebhookConfigUnauthorized) putSiteEmailWebhookConfigRes() {}
 
+type PutSiteHardeningConfigForbidden Error
+
+func (*PutSiteHardeningConfigForbidden) putSiteHardeningConfigRes() {}
+
+type PutSiteHardeningConfigUnauthorized Error
+
+func (*PutSiteHardeningConfigUnauthorized) putSiteHardeningConfigRes() {}
+
+type PutSiteHardeningConfigUnprocessableEntity Error
+
+func (*PutSiteHardeningConfigUnprocessableEntity) putSiteHardeningConfigRes() {}
+
+type PutSitePolicyGroupForbidden Error
+
+func (*PutSitePolicyGroupForbidden) putSitePolicyGroupRes() {}
+
+type PutSitePolicyGroupUnauthorized Error
+
+func (*PutSitePolicyGroupUnauthorized) putSitePolicyGroupRes() {}
+
+type PutSitePolicyGroupUnprocessableEntity Error
+
+func (*PutSitePolicyGroupUnprocessableEntity) putSitePolicyGroupRes() {}
+
+type PutSiteSecurityPolicyForbidden Error
+
+func (*PutSiteSecurityPolicyForbidden) putSiteSecurityPolicyRes() {}
+
+type PutSiteSecurityPolicyUnauthorized Error
+
+func (*PutSiteSecurityPolicyUnauthorized) putSiteSecurityPolicyRes() {}
+
+type PutSiteSecurityPolicyUnprocessableEntity Error
+
+func (*PutSiteSecurityPolicyUnprocessableEntity) putSiteSecurityPolicyRes() {}
+
 type ReadSiteFileContentBadRequest Error
 
 func (*ReadSiteFileContentBadRequest) readSiteFileContentRes() {}
@@ -29221,6 +35589,85 @@ type RebaselineAuditIntegrityUnauthorized Error
 
 func (*RebaselineAuditIntegrityUnauthorized) rebaselineAuditIntegrityRes() {}
 
+// Ref: #/components/schemas/RecheckResponse
+type RecheckResponse struct {
+	ConnectionState string      `json:"connection_state"`
+	LastSeenAt      OptDateTime `json:"last_seen_at"`
+	// True when this re-check recovered the connection from degraded/disconnected to connected.
+	Recovered bool `json:"recovered"`
+}
+
+// GetConnectionState returns the value of ConnectionState.
+func (s *RecheckResponse) GetConnectionState() string {
+	return s.ConnectionState
+}
+
+// GetLastSeenAt returns the value of LastSeenAt.
+func (s *RecheckResponse) GetLastSeenAt() OptDateTime {
+	return s.LastSeenAt
+}
+
+// GetRecovered returns the value of Recovered.
+func (s *RecheckResponse) GetRecovered() bool {
+	return s.Recovered
+}
+
+// SetConnectionState sets the value of ConnectionState.
+func (s *RecheckResponse) SetConnectionState(val string) {
+	s.ConnectionState = val
+}
+
+// SetLastSeenAt sets the value of LastSeenAt.
+func (s *RecheckResponse) SetLastSeenAt(val OptDateTime) {
+	s.LastSeenAt = val
+}
+
+// SetRecovered sets the value of Recovered.
+func (s *RecheckResponse) SetRecovered(val bool) {
+	s.Recovered = val
+}
+
+func (*RecheckResponse) recheckSiteRes() {}
+
+type RecheckSiteBadGateway Error
+
+func (*RecheckSiteBadGateway) recheckSiteRes() {}
+
+type RecheckSiteForbidden Error
+
+func (*RecheckSiteForbidden) recheckSiteRes() {}
+
+type RecheckSiteServiceUnavailable Error
+
+func (*RecheckSiteServiceUnavailable) recheckSiteRes() {}
+
+type RecheckSiteTooManyRequests Error
+
+func (*RecheckSiteTooManyRequests) recheckSiteRes() {}
+
+type RecheckSiteUnauthorized Error
+
+func (*RecheckSiteUnauthorized) recheckSiteRes() {}
+
+// A freshly (re)generated batch of 10 single-use recovery codes, shown exactly once.
+// Ref: #/components/schemas/RecoveryCodesResponse
+type RecoveryCodesResponse struct {
+	RecoveryCodes []string `json:"recovery_codes"`
+}
+
+// GetRecoveryCodes returns the value of RecoveryCodes.
+func (s *RecoveryCodesResponse) GetRecoveryCodes() []string {
+	return s.RecoveryCodes
+}
+
+// SetRecoveryCodes sets the value of RecoveryCodes.
+func (s *RecoveryCodesResponse) SetRecoveryCodes(val []string) {
+	s.RecoveryCodes = val
+}
+
+func (*RecoveryCodesResponse) confirmTotpEnrollmentRes()   {}
+func (*RecoveryCodesResponse) regenerateRecoveryCodesRes() {}
+
 // RefreshSiteDiagnosticsAccepted is response for RefreshSiteDiagnostics operation.
 type RefreshSiteDiagnosticsAccepted struct{}
 
@@ -29323,6 +35770,56 @@ func (*RegenerateClientInvitationNotFound) regenerateClientInvitationRes() {}
 type RegenerateClientInvitationUnauthorized Error
 
 func (*RegenerateClientInvitationUnauthorized) regenerateClientInvitationRes() {}
+
+type RegenerateRecoveryCodesReq struct {
+	CurrentPassword string `json:"current_password"`
+}
+
+// GetCurrentPassword returns the value of CurrentPassword.
+func (s *RegenerateRecoveryCodesReq) GetCurrentPassword() string {
+	return s.CurrentPassword
+}
+
+// SetCurrentPassword sets the value of CurrentPassword.
+func (s *RegenerateRecoveryCodesReq) SetCurrentPassword(val string) {
+	s.CurrentPassword = val
+}
+
+type RegenerateRecoveryCodesUnauthorized Error
+
+func (*RegenerateRecoveryCodesUnauthorized) regenerateRecoveryCodesRes() {}
+
+type RegenerateRecoveryCodesUnprocessableEntity Error
+
+func (*RegenerateRecoveryCodesUnprocessableEntity) regenerateRecoveryCodesRes() {}
+
+type RegenerateSiteInvitationForbidden Error
+
+func (*RegenerateSiteInvitationForbidden) regenerateSiteInvitationRes() {}
+
+type RegenerateSiteInvitationNotFound Error
+
+func (*RegenerateSiteInvitationNotFound) regenerateSiteInvitationRes() {}
+
+type RegenerateSiteInvitationOK struct {
+	AcceptLink string `json:"accept_link"`
+}
+
+// GetAcceptLink returns the value of AcceptLink.
+func (s *RegenerateSiteInvitationOK) GetAcceptLink() string {
+	return s.AcceptLink
+}
+
+// SetAcceptLink sets the value of AcceptLink.
+func (s *RegenerateSiteInvitationOK) SetAcceptLink(val string) {
+	s.AcceptLink = val
+}
+
+func (*RegenerateSiteInvitationOK) regenerateSiteInvitationRes() {}
+
+type RegenerateSiteInvitationUnauthorized Error
+
+func (*RegenerateSiteInvitationUnauthorized) regenerateSiteInvitationRes() {}
 
 type RegisterConflict Error
 
@@ -29489,6 +35986,34 @@ type RegisterUnprocessableEntity Error
 
 func (*RegisterUnprocessableEntity) registerRes() {}
 
+type RemediateSiteVulnerabilityForbidden Error
+
+func (*RemediateSiteVulnerabilityForbidden) remediateSiteVulnerabilityRes() {}
+
+type RemediateSiteVulnerabilityNotFound Error
+
+func (*RemediateSiteVulnerabilityNotFound) remediateSiteVulnerabilityRes() {}
+
+type RemediateSiteVulnerabilityOK struct {
+	RunID uuid.UUID `json:"run_id"`
+}
+
+// GetRunID returns the value of RunID.
+func (s *RemediateSiteVulnerabilityOK) GetRunID() uuid.UUID {
+	return s.RunID
+}
+
+// SetRunID sets the value of RunID.
+func (s *RemediateSiteVulnerabilityOK) SetRunID(val uuid.UUID) {
+	s.RunID = val
+}
+
+func (*RemediateSiteVulnerabilityOK) remediateSiteVulnerabilityRes() {}
+
+type RemediateSiteVulnerabilityUnauthorized Error
+
+func (*RemediateSiteVulnerabilityUnauthorized) remediateSiteVulnerabilityRes() {}
+
 type RemoveClientMemberForbidden Error
 
 func (*RemoveClientMemberForbidden) removeClientMemberRes() {}
@@ -29505,6 +36030,32 @@ func (*RemoveClientMemberNotFound) removeClientMemberRes() {}
 type RemoveClientMemberUnauthorized Error
 
 func (*RemoveClientMemberUnauthorized) removeClientMemberRes() {}
+
+type RenameOrgForbidden Error
+
+func (*RenameOrgForbidden) renameOrgRes() {}
+
+type RenameOrgReq struct {
+	Name string `json:"name"`
+}
+
+// GetName returns the value of Name.
+func (s *RenameOrgReq) GetName() string {
+	return s.Name
+}
+
+// SetName sets the value of Name.
+func (s *RenameOrgReq) SetName(val string) {
+	s.Name = val
+}
+
+type RenameOrgUnauthorized Error
+
+func (*RenameOrgUnauthorized) renameOrgRes() {}
+
+type RenameOrgUnprocessableEntity Error
+
+func (*RenameOrgUnprocessableEntity) renameOrgRes() {}
 
 type RenameSiteFileBadRequest Error
 
@@ -29525,6 +36076,62 @@ func (*RenameSiteFileNotFound) renameSiteFileRes() {}
 type RenameSiteFileUnauthorized Error
 
 func (*RenameSiteFileUnauthorized) renameSiteFileRes() {}
+
+type RescanSiteVulnerabilitiesForbidden Error
+
+func (*RescanSiteVulnerabilitiesForbidden) rescanSiteVulnerabilitiesRes() {}
+
+type RescanSiteVulnerabilitiesOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *RescanSiteVulnerabilitiesOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *RescanSiteVulnerabilitiesOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*RescanSiteVulnerabilitiesOK) rescanSiteVulnerabilitiesRes() {}
+
+type RescanSiteVulnerabilitiesServiceUnavailable Error
+
+func (*RescanSiteVulnerabilitiesServiceUnavailable) rescanSiteVulnerabilitiesRes() {}
+
+type RescanSiteVulnerabilitiesUnauthorized Error
+
+func (*RescanSiteVulnerabilitiesUnauthorized) rescanSiteVulnerabilitiesRes() {}
+
+type ResendAdminUserVerificationForbidden Error
+
+func (*ResendAdminUserVerificationForbidden) resendAdminUserVerificationRes() {}
+
+type ResendAdminUserVerificationNotFound Error
+
+func (*ResendAdminUserVerificationNotFound) resendAdminUserVerificationRes() {}
+
+type ResendAdminUserVerificationOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *ResendAdminUserVerificationOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *ResendAdminUserVerificationOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*ResendAdminUserVerificationOK) resendAdminUserVerificationRes() {}
+
+type ResendAdminUserVerificationUnauthorized Error
+
+func (*ResendAdminUserVerificationUnauthorized) resendAdminUserVerificationRes() {}
 
 type ResendEmailLogConflict Error
 
@@ -29851,6 +36458,22 @@ func (s *RestoreCreateComponentsItem) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type RestoreOrgConflict Error
+
+func (*RestoreOrgConflict) restoreOrgRes() {}
+
+type RestoreOrgForbidden Error
+
+func (*RestoreOrgForbidden) restoreOrgRes() {}
+
+type RestoreOrgNotFound Error
+
+func (*RestoreOrgNotFound) restoreOrgRes() {}
+
+type RestoreOrgUnauthorized Error
+
+func (*RestoreOrgUnauthorized) restoreOrgRes() {}
 
 // A single restore attempt, created when the operator calls
 // `POST /backups/{snapshotId}/restore`. The run advances through
@@ -30345,6 +36968,23 @@ type RestoreSiteFileVersionUnauthorized Error
 
 func (*RestoreSiteFileVersionUnauthorized) restoreSiteFileVersionRes() {}
 
+type RestoreSiteVulnerabilityForbidden Error
+
+func (*RestoreSiteVulnerabilityForbidden) restoreSiteVulnerabilityRes() {}
+
+// RestoreSiteVulnerabilityNoContent is response for RestoreSiteVulnerability operation.
+type RestoreSiteVulnerabilityNoContent struct{}
+
+func (*RestoreSiteVulnerabilityNoContent) restoreSiteVulnerabilityRes() {}
+
+type RestoreSiteVulnerabilityNotFound Error
+
+func (*RestoreSiteVulnerabilityNotFound) restoreSiteVulnerabilityRes() {}
+
+type RestoreSiteVulnerabilityUnauthorized Error
+
+func (*RestoreSiteVulnerabilityUnauthorized) restoreSiteVulnerabilityRes() {}
+
 type RevokeAdminAccountCompForbidden Error
 
 func (*RevokeAdminAccountCompForbidden) revokeAdminAccountCompRes() {}
@@ -30364,6 +37004,11 @@ func (*RevokeAdminAccountCompUnauthorized) revokeAdminAccountCompRes() {}
 type RevokeAdminAccountCompUnprocessableEntity Error
 
 func (*RevokeAdminAccountCompUnprocessableEntity) revokeAdminAccountCompRes() {}
+
+// RevokeAllTrustedDevicesNoContent is response for RevokeAllTrustedDevices operation.
+type RevokeAllTrustedDevicesNoContent struct{}
+
+func (*RevokeAllTrustedDevicesNoContent) revokeAllTrustedDevicesRes() {}
 
 type RevokeApiKeyForbidden Error
 
@@ -30398,6 +37043,36 @@ func (*RevokeClientInvitationNotFound) revokeClientInvitationRes() {}
 type RevokeClientInvitationUnauthorized Error
 
 func (*RevokeClientInvitationUnauthorized) revokeClientInvitationRes() {}
+
+type RevokeSiteInvitationForbidden Error
+
+func (*RevokeSiteInvitationForbidden) revokeSiteInvitationRes() {}
+
+// RevokeSiteInvitationNoContent is response for RevokeSiteInvitation operation.
+type RevokeSiteInvitationNoContent struct{}
+
+func (*RevokeSiteInvitationNoContent) revokeSiteInvitationRes() {}
+
+type RevokeSiteInvitationNotFound Error
+
+func (*RevokeSiteInvitationNotFound) revokeSiteInvitationRes() {}
+
+type RevokeSiteInvitationUnauthorized Error
+
+func (*RevokeSiteInvitationUnauthorized) revokeSiteInvitationRes() {}
+
+// RevokeTrustedDeviceNoContent is response for RevokeTrustedDevice operation.
+type RevokeTrustedDeviceNoContent struct{}
+
+func (*RevokeTrustedDeviceNoContent) revokeTrustedDeviceRes() {}
+
+type RevokeTrustedDeviceNotFound Error
+
+func (*RevokeTrustedDeviceNotFound) revokeTrustedDeviceRes() {}
+
+type RevokeTrustedDeviceUnauthorized Error
+
+func (*RevokeTrustedDeviceUnauthorized) revokeTrustedDeviceRes() {}
 
 // Ref: #/components/schemas/Role
 type Role string
@@ -30589,6 +37264,270 @@ func (s *RucssResultList) SetItems(val []RucssResult) {
 	s.Items = val
 }
 
+// Ref: #/components/schemas/RumBeacon
+type RumBeacon struct {
+	// Per-site beacon key (base64url). The sole access credential for this endpoint.
+	Key string `json:"key"`
+	// The full page URL (window.location.href); normalised server-side to a path pattern.
+	URL    string          `json:"url"`
+	Metric RumBeaconMetric `json:"metric"`
+	// Raw metric value. Milliseconds for timing metrics; milli-units (value*1000) for CLS.
+	Value  int32              `json:"value"`
+	Device OptRumBeaconDevice `json:"device"`
+	// ISO-3166-1 alpha-2 code. Falls back to "__other__" when absent/invalid.
+	Country OptString        `json:"country"`
+	Conn    OptRumBeaconConn `json:"conn"`
+}
+
+// GetKey returns the value of Key.
+func (s *RumBeacon) GetKey() string {
+	return s.Key
+}
+
+// GetURL returns the value of URL.
+func (s *RumBeacon) GetURL() string {
+	return s.URL
+}
+
+// GetMetric returns the value of Metric.
+func (s *RumBeacon) GetMetric() RumBeaconMetric {
+	return s.Metric
+}
+
+// GetValue returns the value of Value.
+func (s *RumBeacon) GetValue() int32 {
+	return s.Value
+}
+
+// GetDevice returns the value of Device.
+func (s *RumBeacon) GetDevice() OptRumBeaconDevice {
+	return s.Device
+}
+
+// GetCountry returns the value of Country.
+func (s *RumBeacon) GetCountry() OptString {
+	return s.Country
+}
+
+// GetConn returns the value of Conn.
+func (s *RumBeacon) GetConn() OptRumBeaconConn {
+	return s.Conn
+}
+
+// SetKey sets the value of Key.
+func (s *RumBeacon) SetKey(val string) {
+	s.Key = val
+}
+
+// SetURL sets the value of URL.
+func (s *RumBeacon) SetURL(val string) {
+	s.URL = val
+}
+
+// SetMetric sets the value of Metric.
+func (s *RumBeacon) SetMetric(val RumBeaconMetric) {
+	s.Metric = val
+}
+
+// SetValue sets the value of Value.
+func (s *RumBeacon) SetValue(val int32) {
+	s.Value = val
+}
+
+// SetDevice sets the value of Device.
+func (s *RumBeacon) SetDevice(val OptRumBeaconDevice) {
+	s.Device = val
+}
+
+// SetCountry sets the value of Country.
+func (s *RumBeacon) SetCountry(val OptString) {
+	s.Country = val
+}
+
+// SetConn sets the value of Conn.
+func (s *RumBeacon) SetConn(val OptRumBeaconConn) {
+	s.Conn = val
+}
+
+type RumBeaconConn string
+
+const (
+	RumBeaconConn4g      RumBeaconConn = "4g"
+	RumBeaconConn3g      RumBeaconConn = "3g"
+	RumBeaconConn2g      RumBeaconConn = "2g"
+	RumBeaconConnSlow2g  RumBeaconConn = "slow-2g"
+	RumBeaconConnOffline RumBeaconConn = "offline"
+	RumBeaconConnUnknown RumBeaconConn = "unknown"
+)
+
+// AllValues returns all RumBeaconConn values.
+func (RumBeaconConn) AllValues() []RumBeaconConn {
+	return []RumBeaconConn{
+		RumBeaconConn4g,
+		RumBeaconConn3g,
+		RumBeaconConn2g,
+		RumBeaconConnSlow2g,
+		RumBeaconConnOffline,
+		RumBeaconConnUnknown,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RumBeaconConn) MarshalText() ([]byte, error) {
+	switch s {
+	case RumBeaconConn4g:
+		return []byte(s), nil
+	case RumBeaconConn3g:
+		return []byte(s), nil
+	case RumBeaconConn2g:
+		return []byte(s), nil
+	case RumBeaconConnSlow2g:
+		return []byte(s), nil
+	case RumBeaconConnOffline:
+		return []byte(s), nil
+	case RumBeaconConnUnknown:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RumBeaconConn) UnmarshalText(data []byte) error {
+	switch RumBeaconConn(data) {
+	case RumBeaconConn4g:
+		*s = RumBeaconConn4g
+		return nil
+	case RumBeaconConn3g:
+		*s = RumBeaconConn3g
+		return nil
+	case RumBeaconConn2g:
+		*s = RumBeaconConn2g
+		return nil
+	case RumBeaconConnSlow2g:
+		*s = RumBeaconConnSlow2g
+		return nil
+	case RumBeaconConnOffline:
+		*s = RumBeaconConnOffline
+		return nil
+	case RumBeaconConnUnknown:
+		*s = RumBeaconConnUnknown
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RumBeaconDevice string
+
+const (
+	RumBeaconDeviceDesktop RumBeaconDevice = "desktop"
+	RumBeaconDeviceMobile  RumBeaconDevice = "mobile"
+	RumBeaconDeviceTablet  RumBeaconDevice = "tablet"
+)
+
+// AllValues returns all RumBeaconDevice values.
+func (RumBeaconDevice) AllValues() []RumBeaconDevice {
+	return []RumBeaconDevice{
+		RumBeaconDeviceDesktop,
+		RumBeaconDeviceMobile,
+		RumBeaconDeviceTablet,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RumBeaconDevice) MarshalText() ([]byte, error) {
+	switch s {
+	case RumBeaconDeviceDesktop:
+		return []byte(s), nil
+	case RumBeaconDeviceMobile:
+		return []byte(s), nil
+	case RumBeaconDeviceTablet:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RumBeaconDevice) UnmarshalText(data []byte) error {
+	switch RumBeaconDevice(data) {
+	case RumBeaconDeviceDesktop:
+		*s = RumBeaconDeviceDesktop
+		return nil
+	case RumBeaconDeviceMobile:
+		*s = RumBeaconDeviceMobile
+		return nil
+	case RumBeaconDeviceTablet:
+		*s = RumBeaconDeviceTablet
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RumBeaconMetric string
+
+const (
+	RumBeaconMetricLcp  RumBeaconMetric = "lcp"
+	RumBeaconMetricInp  RumBeaconMetric = "inp"
+	RumBeaconMetricCls  RumBeaconMetric = "cls"
+	RumBeaconMetricTtfb RumBeaconMetric = "ttfb"
+	RumBeaconMetricFcp  RumBeaconMetric = "fcp"
+)
+
+// AllValues returns all RumBeaconMetric values.
+func (RumBeaconMetric) AllValues() []RumBeaconMetric {
+	return []RumBeaconMetric{
+		RumBeaconMetricLcp,
+		RumBeaconMetricInp,
+		RumBeaconMetricCls,
+		RumBeaconMetricTtfb,
+		RumBeaconMetricFcp,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RumBeaconMetric) MarshalText() ([]byte, error) {
+	switch s {
+	case RumBeaconMetricLcp:
+		return []byte(s), nil
+	case RumBeaconMetricInp:
+		return []byte(s), nil
+	case RumBeaconMetricCls:
+		return []byte(s), nil
+	case RumBeaconMetricTtfb:
+		return []byte(s), nil
+	case RumBeaconMetricFcp:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RumBeaconMetric) UnmarshalText(data []byte) error {
+	switch RumBeaconMetric(data) {
+	case RumBeaconMetricLcp:
+		*s = RumBeaconMetricLcp
+		return nil
+	case RumBeaconMetricInp:
+		*s = RumBeaconMetricInp
+		return nil
+	case RumBeaconMetricCls:
+		*s = RumBeaconMetricCls
+		return nil
+	case RumBeaconMetricTtfb:
+		*s = RumBeaconMetricTtfb
+		return nil
+	case RumBeaconMetricFcp:
+		*s = RumBeaconMetricFcp
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // The response to POST .../perf/rum/rotate-key (GH #174). Confirms the
 // beacon key was rotated and pushed to the agent. The plaintext key is
 // NEVER returned here, logged, or exposed by any other endpoint — only
@@ -30618,6 +37557,9 @@ func (s *RumBeaconRotateResult) SetOk(val bool) {
 func (s *RumBeaconRotateResult) SetBeaconKeySet(val bool) {
 	s.BeaconKeySet = val
 }
+
+// RumIngestPreflightNoContent is response for RumIngestPreflight operation.
+type RumIngestPreflightNoContent struct{}
 
 // P75 summary for one (metric, device, country) slice over the requested window. suppressed=true
 // when the sample count is below the site's min_sample_count floor; p75_ms is 0 in that case and the
@@ -31184,6 +38126,536 @@ func (s *RumSummary) SetMinSampleCount(val OptInt) {
 // SetMetrics sets the value of Metrics.
 func (s *RumSummary) SetMetrics(val []RumMetricSummary) {
 	s.Metrics = val
+}
+
+// Ref: #/components/schemas/RumTrend
+type RumTrend struct {
+	WindowDays     int `json:"window_days"`
+	MinSampleCount int `json:"min_sample_count"`
+	// Keyed by metric name (lcp, inp, cls, fcp, ttfb); each value is an ascending-by-day series.
+	Metrics RumTrendMetrics `json:"metrics"`
+}
+
+// GetWindowDays returns the value of WindowDays.
+func (s *RumTrend) GetWindowDays() int {
+	return s.WindowDays
+}
+
+// GetMinSampleCount returns the value of MinSampleCount.
+func (s *RumTrend) GetMinSampleCount() int {
+	return s.MinSampleCount
+}
+
+// GetMetrics returns the value of Metrics.
+func (s *RumTrend) GetMetrics() RumTrendMetrics {
+	return s.Metrics
+}
+
+// SetWindowDays sets the value of WindowDays.
+func (s *RumTrend) SetWindowDays(val int) {
+	s.WindowDays = val
+}
+
+// SetMinSampleCount sets the value of MinSampleCount.
+func (s *RumTrend) SetMinSampleCount(val int) {
+	s.MinSampleCount = val
+}
+
+// SetMetrics sets the value of Metrics.
+func (s *RumTrend) SetMetrics(val RumTrendMetrics) {
+	s.Metrics = val
+}
+
+func (*RumTrend) getRumTrendRes() {}
+
+// Ref: #/components/schemas/RumTrendDayPoint
+type RumTrendDayPoint struct {
+	// YYYY-MM-DD.
+	Day string `json:"day"`
+	// 0 when suppressed.
+	P75Ms       float64                `json:"p75_ms"`
+	SampleCount int64                  `json:"sample_count"`
+	Rating      RumTrendDayPointRating `json:"rating"`
+	Suppressed  bool                   `json:"suppressed"`
+}
+
+// GetDay returns the value of Day.
+func (s *RumTrendDayPoint) GetDay() string {
+	return s.Day
+}
+
+// GetP75Ms returns the value of P75Ms.
+func (s *RumTrendDayPoint) GetP75Ms() float64 {
+	return s.P75Ms
+}
+
+// GetSampleCount returns the value of SampleCount.
+func (s *RumTrendDayPoint) GetSampleCount() int64 {
+	return s.SampleCount
+}
+
+// GetRating returns the value of Rating.
+func (s *RumTrendDayPoint) GetRating() RumTrendDayPointRating {
+	return s.Rating
+}
+
+// GetSuppressed returns the value of Suppressed.
+func (s *RumTrendDayPoint) GetSuppressed() bool {
+	return s.Suppressed
+}
+
+// SetDay sets the value of Day.
+func (s *RumTrendDayPoint) SetDay(val string) {
+	s.Day = val
+}
+
+// SetP75Ms sets the value of P75Ms.
+func (s *RumTrendDayPoint) SetP75Ms(val float64) {
+	s.P75Ms = val
+}
+
+// SetSampleCount sets the value of SampleCount.
+func (s *RumTrendDayPoint) SetSampleCount(val int64) {
+	s.SampleCount = val
+}
+
+// SetRating sets the value of Rating.
+func (s *RumTrendDayPoint) SetRating(val RumTrendDayPointRating) {
+	s.Rating = val
+}
+
+// SetSuppressed sets the value of Suppressed.
+func (s *RumTrendDayPoint) SetSuppressed(val bool) {
+	s.Suppressed = val
+}
+
+type RumTrendDayPointRating string
+
+const (
+	RumTrendDayPointRatingGood             RumTrendDayPointRating = "good"
+	RumTrendDayPointRatingNeedsImprovement RumTrendDayPointRating = "needs-improvement"
+	RumTrendDayPointRatingPoor             RumTrendDayPointRating = "poor"
+	RumTrendDayPointRatingEmpty            RumTrendDayPointRating = ""
+)
+
+// AllValues returns all RumTrendDayPointRating values.
+func (RumTrendDayPointRating) AllValues() []RumTrendDayPointRating {
+	return []RumTrendDayPointRating{
+		RumTrendDayPointRatingGood,
+		RumTrendDayPointRatingNeedsImprovement,
+		RumTrendDayPointRatingPoor,
+		RumTrendDayPointRatingEmpty,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RumTrendDayPointRating) MarshalText() ([]byte, error) {
+	switch s {
+	case RumTrendDayPointRatingGood:
+		return []byte(s), nil
+	case RumTrendDayPointRatingNeedsImprovement:
+		return []byte(s), nil
+	case RumTrendDayPointRatingPoor:
+		return []byte(s), nil
+	case RumTrendDayPointRatingEmpty:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RumTrendDayPointRating) UnmarshalText(data []byte) error {
+	switch RumTrendDayPointRating(data) {
+	case RumTrendDayPointRatingGood:
+		*s = RumTrendDayPointRatingGood
+		return nil
+	case RumTrendDayPointRatingNeedsImprovement:
+		*s = RumTrendDayPointRatingNeedsImprovement
+		return nil
+	case RumTrendDayPointRatingPoor:
+		*s = RumTrendDayPointRatingPoor
+		return nil
+	case RumTrendDayPointRatingEmpty:
+		*s = RumTrendDayPointRatingEmpty
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Keyed by metric name (lcp, inp, cls, fcp, ttfb); each value is an ascending-by-day series.
+type RumTrendMetrics map[string][]RumTrendDayPoint
+
+func (s *RumTrendMetrics) init() RumTrendMetrics {
+	m := *s
+	if m == nil {
+		m = map[string][]RumTrendDayPoint{}
+		*s = m
+	}
+	return m
+}
+
+type RunDbTableActionForbidden Error
+
+func (*RunDbTableActionForbidden) runDbTableActionRes() {}
+
+type RunDbTableActionUnauthorized Error
+
+func (*RunDbTableActionUnauthorized) runDbTableActionRes() {}
+
+// Ref: #/components/schemas/ScanFinding
+type ScanFinding struct {
+	ID     uuid.UUID `json:"id"`
+	SiteID uuid.UUID `json:"site_id"`
+	RunID  uuid.UUID `json:"run_id"`
+	// Modified | added | missing.
+	FindingType string    `json:"finding_type"`
+	Path        string    `json:"path"`
+	Severity    string    `json:"severity"`
+	ExpectedMD5 OptString `json:"expected_md5"`
+	ActualMD5   OptString `json:"actual_md5"`
+	Ignored     bool      `json:"ignored"`
+	IgnoredBy   OptString `json:"ignored_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	LastSeenRun uuid.UUID `json:"last_seen_run"`
+}
+
+// GetID returns the value of ID.
+func (s *ScanFinding) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *ScanFinding) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetRunID returns the value of RunID.
+func (s *ScanFinding) GetRunID() uuid.UUID {
+	return s.RunID
+}
+
+// GetFindingType returns the value of FindingType.
+func (s *ScanFinding) GetFindingType() string {
+	return s.FindingType
+}
+
+// GetPath returns the value of Path.
+func (s *ScanFinding) GetPath() string {
+	return s.Path
+}
+
+// GetSeverity returns the value of Severity.
+func (s *ScanFinding) GetSeverity() string {
+	return s.Severity
+}
+
+// GetExpectedMD5 returns the value of ExpectedMD5.
+func (s *ScanFinding) GetExpectedMD5() OptString {
+	return s.ExpectedMD5
+}
+
+// GetActualMD5 returns the value of ActualMD5.
+func (s *ScanFinding) GetActualMD5() OptString {
+	return s.ActualMD5
+}
+
+// GetIgnored returns the value of Ignored.
+func (s *ScanFinding) GetIgnored() bool {
+	return s.Ignored
+}
+
+// GetIgnoredBy returns the value of IgnoredBy.
+func (s *ScanFinding) GetIgnoredBy() OptString {
+	return s.IgnoredBy
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *ScanFinding) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetLastSeenRun returns the value of LastSeenRun.
+func (s *ScanFinding) GetLastSeenRun() uuid.UUID {
+	return s.LastSeenRun
+}
+
+// SetID sets the value of ID.
+func (s *ScanFinding) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *ScanFinding) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetRunID sets the value of RunID.
+func (s *ScanFinding) SetRunID(val uuid.UUID) {
+	s.RunID = val
+}
+
+// SetFindingType sets the value of FindingType.
+func (s *ScanFinding) SetFindingType(val string) {
+	s.FindingType = val
+}
+
+// SetPath sets the value of Path.
+func (s *ScanFinding) SetPath(val string) {
+	s.Path = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *ScanFinding) SetSeverity(val string) {
+	s.Severity = val
+}
+
+// SetExpectedMD5 sets the value of ExpectedMD5.
+func (s *ScanFinding) SetExpectedMD5(val OptString) {
+	s.ExpectedMD5 = val
+}
+
+// SetActualMD5 sets the value of ActualMD5.
+func (s *ScanFinding) SetActualMD5(val OptString) {
+	s.ActualMD5 = val
+}
+
+// SetIgnored sets the value of Ignored.
+func (s *ScanFinding) SetIgnored(val bool) {
+	s.Ignored = val
+}
+
+// SetIgnoredBy sets the value of IgnoredBy.
+func (s *ScanFinding) SetIgnoredBy(val OptString) {
+	s.IgnoredBy = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *ScanFinding) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetLastSeenRun sets the value of LastSeenRun.
+func (s *ScanFinding) SetLastSeenRun(val uuid.UUID) {
+	s.LastSeenRun = val
+}
+
+func (*ScanFinding) toggleScanFindingIgnoreRes() {}
+
+// Ref: #/components/schemas/ScanFindingFile
+type ScanFindingFile struct {
+	Ok            bool      `json:"ok"`
+	Path          string    `json:"path"`
+	Size          int64     `json:"size"`
+	ContentBase64 OptString `json:"content_base64"`
+	Error         OptString `json:"error"`
+}
+
+// GetOk returns the value of Ok.
+func (s *ScanFindingFile) GetOk() bool {
+	return s.Ok
+}
+
+// GetPath returns the value of Path.
+func (s *ScanFindingFile) GetPath() string {
+	return s.Path
+}
+
+// GetSize returns the value of Size.
+func (s *ScanFindingFile) GetSize() int64 {
+	return s.Size
+}
+
+// GetContentBase64 returns the value of ContentBase64.
+func (s *ScanFindingFile) GetContentBase64() OptString {
+	return s.ContentBase64
+}
+
+// GetError returns the value of Error.
+func (s *ScanFindingFile) GetError() OptString {
+	return s.Error
+}
+
+// SetOk sets the value of Ok.
+func (s *ScanFindingFile) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetPath sets the value of Path.
+func (s *ScanFindingFile) SetPath(val string) {
+	s.Path = val
+}
+
+// SetSize sets the value of Size.
+func (s *ScanFindingFile) SetSize(val int64) {
+	s.Size = val
+}
+
+// SetContentBase64 sets the value of ContentBase64.
+func (s *ScanFindingFile) SetContentBase64(val OptString) {
+	s.ContentBase64 = val
+}
+
+// SetError sets the value of Error.
+func (s *ScanFindingFile) SetError(val OptString) {
+	s.Error = val
+}
+
+func (*ScanFindingFile) fetchScanFindingFileRes() {}
+
+// Ref: #/components/schemas/ScanRun
+type ScanRun struct {
+	ID     uuid.UUID `json:"id"`
+	SiteID uuid.UUID `json:"site_id"`
+	// Core | plugins | themes | full.
+	Kind string `json:"kind"`
+	// Queued | running | completed | failed.
+	Status       string    `json:"status"`
+	FilesScanned int64     `json:"files_scanned"`
+	WpVersion    OptString `json:"wp_version"`
+	Locale       OptString `json:"locale"`
+	Error        OptString `json:"error"`
+	// Count of findings by severity for this run.
+	FindingCounts OptScanRunFindingCounts `json:"finding_counts"`
+	CreatedAt     time.Time               `json:"created_at"`
+	StartedAt     OptDateTime             `json:"started_at"`
+	FinishedAt    OptDateTime             `json:"finished_at"`
+}
+
+// GetID returns the value of ID.
+func (s *ScanRun) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *ScanRun) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetKind returns the value of Kind.
+func (s *ScanRun) GetKind() string {
+	return s.Kind
+}
+
+// GetStatus returns the value of Status.
+func (s *ScanRun) GetStatus() string {
+	return s.Status
+}
+
+// GetFilesScanned returns the value of FilesScanned.
+func (s *ScanRun) GetFilesScanned() int64 {
+	return s.FilesScanned
+}
+
+// GetWpVersion returns the value of WpVersion.
+func (s *ScanRun) GetWpVersion() OptString {
+	return s.WpVersion
+}
+
+// GetLocale returns the value of Locale.
+func (s *ScanRun) GetLocale() OptString {
+	return s.Locale
+}
+
+// GetError returns the value of Error.
+func (s *ScanRun) GetError() OptString {
+	return s.Error
+}
+
+// GetFindingCounts returns the value of FindingCounts.
+func (s *ScanRun) GetFindingCounts() OptScanRunFindingCounts {
+	return s.FindingCounts
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *ScanRun) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetStartedAt returns the value of StartedAt.
+func (s *ScanRun) GetStartedAt() OptDateTime {
+	return s.StartedAt
+}
+
+// GetFinishedAt returns the value of FinishedAt.
+func (s *ScanRun) GetFinishedAt() OptDateTime {
+	return s.FinishedAt
+}
+
+// SetID sets the value of ID.
+func (s *ScanRun) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *ScanRun) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetKind sets the value of Kind.
+func (s *ScanRun) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetStatus sets the value of Status.
+func (s *ScanRun) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetFilesScanned sets the value of FilesScanned.
+func (s *ScanRun) SetFilesScanned(val int64) {
+	s.FilesScanned = val
+}
+
+// SetWpVersion sets the value of WpVersion.
+func (s *ScanRun) SetWpVersion(val OptString) {
+	s.WpVersion = val
+}
+
+// SetLocale sets the value of Locale.
+func (s *ScanRun) SetLocale(val OptString) {
+	s.Locale = val
+}
+
+// SetError sets the value of Error.
+func (s *ScanRun) SetError(val OptString) {
+	s.Error = val
+}
+
+// SetFindingCounts sets the value of FindingCounts.
+func (s *ScanRun) SetFindingCounts(val OptScanRunFindingCounts) {
+	s.FindingCounts = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *ScanRun) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetStartedAt sets the value of StartedAt.
+func (s *ScanRun) SetStartedAt(val OptDateTime) {
+	s.StartedAt = val
+}
+
+// SetFinishedAt sets the value of FinishedAt.
+func (s *ScanRun) SetFinishedAt(val OptDateTime) {
+	s.FinishedAt = val
+}
+
+func (*ScanRun) getScanRunRes()   {}
+func (*ScanRun) startScanRunRes() {}
+
+// Count of findings by severity for this run.
+type ScanRunFindingCounts map[string]int
+
+func (s *ScanRunFindingCounts) init() ScanRunFindingCounts {
+	m := *s
+	if m == nil {
+		m = map[string]int{}
+		*s = m
+	}
+	return m
 }
 
 // A single scheduled-backup fire. Pre-inserted as `scheduled` before
@@ -31837,6 +39309,55 @@ func (s *SecurityThresholds) SetAllBlockedGap(val int32) {
 	s.AllBlockedGap = val
 }
 
+type SendSmtpTestEmailForbidden Error
+
+func (*SendSmtpTestEmailForbidden) sendSmtpTestEmailRes() {}
+
+type SendSmtpTestEmailOK struct {
+	Ok      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// GetOk returns the value of Ok.
+func (s *SendSmtpTestEmailOK) GetOk() bool {
+	return s.Ok
+}
+
+// GetMessage returns the value of Message.
+func (s *SendSmtpTestEmailOK) GetMessage() string {
+	return s.Message
+}
+
+// SetOk sets the value of Ok.
+func (s *SendSmtpTestEmailOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SendSmtpTestEmailOK) SetMessage(val string) {
+	s.Message = val
+}
+
+func (*SendSmtpTestEmailOK) sendSmtpTestEmailRes() {}
+
+type SendSmtpTestEmailReq struct {
+	ToAddress string `json:"to_address"`
+}
+
+// GetToAddress returns the value of ToAddress.
+func (s *SendSmtpTestEmailReq) GetToAddress() string {
+	return s.ToAddress
+}
+
+// SetToAddress sets the value of ToAddress.
+func (s *SendSmtpTestEmailReq) SetToAddress(val string) {
+	s.ToAddress = val
+}
+
+type SendSmtpTestEmailUnauthorized Error
+
+func (*SendSmtpTestEmailUnauthorized) sendSmtpTestEmailRes() {}
+
 type SendTestEmailBadRequest Error
 
 func (*SendTestEmailBadRequest) sendTestEmailRes() {}
@@ -31872,6 +39393,96 @@ func (*SetAdminAccountOverridesUnauthorized) setAdminAccountOverridesRes() {}
 type SetAdminAccountOverridesUnprocessableEntity Error
 
 func (*SetAdminAccountOverridesUnprocessableEntity) setAdminAccountOverridesRes() {}
+
+type SetAdminUserStatusForbidden Error
+
+func (*SetAdminUserStatusForbidden) setAdminUserStatusRes() {}
+
+type SetAdminUserStatusNotFound Error
+
+func (*SetAdminUserStatusNotFound) setAdminUserStatusRes() {}
+
+type SetAdminUserStatusReq struct {
+	Status string `json:"status"`
+}
+
+// GetStatus returns the value of Status.
+func (s *SetAdminUserStatusReq) GetStatus() string {
+	return s.Status
+}
+
+// SetStatus sets the value of Status.
+func (s *SetAdminUserStatusReq) SetStatus(val string) {
+	s.Status = val
+}
+
+type SetAdminUserStatusUnauthorized Error
+
+func (*SetAdminUserStatusUnauthorized) setAdminUserStatusRes() {}
+
+type SetAdminVulnFeedKeyForbidden Error
+
+func (*SetAdminVulnFeedKeyForbidden) setAdminVulnFeedKeyRes() {}
+
+type SetAdminVulnFeedKeyOK struct {
+	Ok      bool      `json:"ok"`
+	Syncing bool      `json:"syncing"`
+	Warning OptString `json:"warning"`
+}
+
+// GetOk returns the value of Ok.
+func (s *SetAdminVulnFeedKeyOK) GetOk() bool {
+	return s.Ok
+}
+
+// GetSyncing returns the value of Syncing.
+func (s *SetAdminVulnFeedKeyOK) GetSyncing() bool {
+	return s.Syncing
+}
+
+// GetWarning returns the value of Warning.
+func (s *SetAdminVulnFeedKeyOK) GetWarning() OptString {
+	return s.Warning
+}
+
+// SetOk sets the value of Ok.
+func (s *SetAdminVulnFeedKeyOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetSyncing sets the value of Syncing.
+func (s *SetAdminVulnFeedKeyOK) SetSyncing(val bool) {
+	s.Syncing = val
+}
+
+// SetWarning sets the value of Warning.
+func (s *SetAdminVulnFeedKeyOK) SetWarning(val OptString) {
+	s.Warning = val
+}
+
+func (*SetAdminVulnFeedKeyOK) setAdminVulnFeedKeyRes() {}
+
+type SetAdminVulnFeedKeyReq struct {
+	Key string `json:"key"`
+}
+
+// GetKey returns the value of Key.
+func (s *SetAdminVulnFeedKeyReq) GetKey() string {
+	return s.Key
+}
+
+// SetKey sets the value of Key.
+func (s *SetAdminVulnFeedKeyReq) SetKey(val string) {
+	s.Key = val
+}
+
+type SetAdminVulnFeedKeyServiceUnavailable Error
+
+func (*SetAdminVulnFeedKeyServiceUnavailable) setAdminVulnFeedKeyRes() {}
+
+type SetAdminVulnFeedKeyUnauthorized Error
+
+func (*SetAdminVulnFeedKeyUnauthorized) setAdminVulnFeedKeyRes() {}
 
 // SilenceSitePHPErrorNoContent is response for SilenceSitePHPError operation.
 type SilenceSitePHPErrorNoContent struct{}
@@ -33370,6 +40981,90 @@ func (s *SiteBackupSettingsNotificationsUpdateNotifyOnCompletion) UnmarshalText(
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// Ref: #/components/schemas/SiteBan
+type SiteBan struct {
+	ID uuid.UUID `json:"id"`
+	// Ban entry kind (e.g. ip, username, user_agent).
+	Type      string    `json:"type"`
+	Value     string    `json:"value"`
+	Comment   string    `json:"comment"`
+	ActorType string    `json:"actor_type"`
+	ActorID   string    `json:"actor_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *SiteBan) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetType returns the value of Type.
+func (s *SiteBan) GetType() string {
+	return s.Type
+}
+
+// GetValue returns the value of Value.
+func (s *SiteBan) GetValue() string {
+	return s.Value
+}
+
+// GetComment returns the value of Comment.
+func (s *SiteBan) GetComment() string {
+	return s.Comment
+}
+
+// GetActorType returns the value of ActorType.
+func (s *SiteBan) GetActorType() string {
+	return s.ActorType
+}
+
+// GetActorID returns the value of ActorID.
+func (s *SiteBan) GetActorID() string {
+	return s.ActorID
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *SiteBan) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *SiteBan) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetType sets the value of Type.
+func (s *SiteBan) SetType(val string) {
+	s.Type = val
+}
+
+// SetValue sets the value of Value.
+func (s *SiteBan) SetValue(val string) {
+	s.Value = val
+}
+
+// SetComment sets the value of Comment.
+func (s *SiteBan) SetComment(val string) {
+	s.Comment = val
+}
+
+// SetActorType sets the value of ActorType.
+func (s *SiteBan) SetActorType(val string) {
+	s.ActorType = val
+}
+
+// SetActorID sets the value of ActorID.
+func (s *SiteBan) SetActorID(val string) {
+	s.ActorID = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *SiteBan) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+func (*SiteBan) createSiteBanRes() {}
 
 // Ref: #/components/schemas/SiteComponent
 type SiteComponent struct {
@@ -35270,6 +42965,138 @@ func (s *SiteErrorConfigUpdate) SetIgnoreMd5s(val []string) {
 	s.IgnoreMd5s = val
 }
 
+// Per-site core-hardening toggles (ADR-057).
+// Ref: #/components/schemas/SiteHardeningConfig
+type SiteHardeningConfig struct {
+	DisableFileEditor OptBool `json:"disable_file_editor"`
+	// One of the agent-defined XML-RPC restriction modes.
+	XmlrpcMode OptString `json:"xmlrpc_mode"`
+	// One of the agent-defined REST API restriction modes.
+	RestrictRestAPI OptString `json:"restrict_rest_api"`
+	// One of the agent-defined login-identifier restriction modes.
+	RestrictLoginIdentifier  OptString   `json:"restrict_login_identifier"`
+	ForceUniqueNickname      OptBool     `json:"force_unique_nickname"`
+	DisableAuthorArchiveEnum OptBool     `json:"disable_author_archive_enum"`
+	ForceSsl                 OptBool     `json:"force_ssl"`
+	DisableDirectoryBrowsing OptBool     `json:"disable_directory_browsing"`
+	DisablePhpInUploads      OptBool     `json:"disable_php_in_uploads"`
+	ProtectSystemFiles       OptBool     `json:"protect_system_files"`
+	UpdatedAt                OptDateTime `json:"updated_at"`
+}
+
+// GetDisableFileEditor returns the value of DisableFileEditor.
+func (s *SiteHardeningConfig) GetDisableFileEditor() OptBool {
+	return s.DisableFileEditor
+}
+
+// GetXmlrpcMode returns the value of XmlrpcMode.
+func (s *SiteHardeningConfig) GetXmlrpcMode() OptString {
+	return s.XmlrpcMode
+}
+
+// GetRestrictRestAPI returns the value of RestrictRestAPI.
+func (s *SiteHardeningConfig) GetRestrictRestAPI() OptString {
+	return s.RestrictRestAPI
+}
+
+// GetRestrictLoginIdentifier returns the value of RestrictLoginIdentifier.
+func (s *SiteHardeningConfig) GetRestrictLoginIdentifier() OptString {
+	return s.RestrictLoginIdentifier
+}
+
+// GetForceUniqueNickname returns the value of ForceUniqueNickname.
+func (s *SiteHardeningConfig) GetForceUniqueNickname() OptBool {
+	return s.ForceUniqueNickname
+}
+
+// GetDisableAuthorArchiveEnum returns the value of DisableAuthorArchiveEnum.
+func (s *SiteHardeningConfig) GetDisableAuthorArchiveEnum() OptBool {
+	return s.DisableAuthorArchiveEnum
+}
+
+// GetForceSsl returns the value of ForceSsl.
+func (s *SiteHardeningConfig) GetForceSsl() OptBool {
+	return s.ForceSsl
+}
+
+// GetDisableDirectoryBrowsing returns the value of DisableDirectoryBrowsing.
+func (s *SiteHardeningConfig) GetDisableDirectoryBrowsing() OptBool {
+	return s.DisableDirectoryBrowsing
+}
+
+// GetDisablePhpInUploads returns the value of DisablePhpInUploads.
+func (s *SiteHardeningConfig) GetDisablePhpInUploads() OptBool {
+	return s.DisablePhpInUploads
+}
+
+// GetProtectSystemFiles returns the value of ProtectSystemFiles.
+func (s *SiteHardeningConfig) GetProtectSystemFiles() OptBool {
+	return s.ProtectSystemFiles
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SiteHardeningConfig) GetUpdatedAt() OptDateTime {
+	return s.UpdatedAt
+}
+
+// SetDisableFileEditor sets the value of DisableFileEditor.
+func (s *SiteHardeningConfig) SetDisableFileEditor(val OptBool) {
+	s.DisableFileEditor = val
+}
+
+// SetXmlrpcMode sets the value of XmlrpcMode.
+func (s *SiteHardeningConfig) SetXmlrpcMode(val OptString) {
+	s.XmlrpcMode = val
+}
+
+// SetRestrictRestAPI sets the value of RestrictRestAPI.
+func (s *SiteHardeningConfig) SetRestrictRestAPI(val OptString) {
+	s.RestrictRestAPI = val
+}
+
+// SetRestrictLoginIdentifier sets the value of RestrictLoginIdentifier.
+func (s *SiteHardeningConfig) SetRestrictLoginIdentifier(val OptString) {
+	s.RestrictLoginIdentifier = val
+}
+
+// SetForceUniqueNickname sets the value of ForceUniqueNickname.
+func (s *SiteHardeningConfig) SetForceUniqueNickname(val OptBool) {
+	s.ForceUniqueNickname = val
+}
+
+// SetDisableAuthorArchiveEnum sets the value of DisableAuthorArchiveEnum.
+func (s *SiteHardeningConfig) SetDisableAuthorArchiveEnum(val OptBool) {
+	s.DisableAuthorArchiveEnum = val
+}
+
+// SetForceSsl sets the value of ForceSsl.
+func (s *SiteHardeningConfig) SetForceSsl(val OptBool) {
+	s.ForceSsl = val
+}
+
+// SetDisableDirectoryBrowsing sets the value of DisableDirectoryBrowsing.
+func (s *SiteHardeningConfig) SetDisableDirectoryBrowsing(val OptBool) {
+	s.DisableDirectoryBrowsing = val
+}
+
+// SetDisablePhpInUploads sets the value of DisablePhpInUploads.
+func (s *SiteHardeningConfig) SetDisablePhpInUploads(val OptBool) {
+	s.DisablePhpInUploads = val
+}
+
+// SetProtectSystemFiles sets the value of ProtectSystemFiles.
+func (s *SiteHardeningConfig) SetProtectSystemFiles(val OptBool) {
+	s.ProtectSystemFiles = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SiteHardeningConfig) SetUpdatedAt(val OptDateTime) {
+	s.UpdatedAt = val
+}
+
+func (*SiteHardeningConfig) getSiteHardeningConfigRes() {}
+func (*SiteHardeningConfig) putSiteHardeningConfigRes() {}
+
 type SiteHealthStatus string
 
 const (
@@ -35312,6 +43139,186 @@ func (s *SiteHealthStatus) UnmarshalText(data []byte) error {
 		return nil
 	case SiteHealthStatusUnreachable:
 		*s = SiteHealthStatusUnreachable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/SiteInvitation
+type SiteInvitation struct {
+	ID         uuid.UUID            `json:"id"`
+	SiteID     OptUUID              `json:"site_id"`
+	Email      string               `json:"email"`
+	Role       string               `json:"role"`
+	Status     SiteInvitationStatus `json:"status"`
+	ExpiresAt  time.Time            `json:"expires_at"`
+	CreatedAt  time.Time            `json:"created_at"`
+	AcceptedAt OptNilDateTime       `json:"accepted_at"`
+	RevokedAt  OptNilDateTime       `json:"revoked_at"`
+	Attempts   int                  `json:"attempts"`
+	InvitedBy  OptNilUUID           `json:"invited_by"`
+}
+
+// GetID returns the value of ID.
+func (s *SiteInvitation) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteInvitation) GetSiteID() OptUUID {
+	return s.SiteID
+}
+
+// GetEmail returns the value of Email.
+func (s *SiteInvitation) GetEmail() string {
+	return s.Email
+}
+
+// GetRole returns the value of Role.
+func (s *SiteInvitation) GetRole() string {
+	return s.Role
+}
+
+// GetStatus returns the value of Status.
+func (s *SiteInvitation) GetStatus() SiteInvitationStatus {
+	return s.Status
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *SiteInvitation) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *SiteInvitation) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetAcceptedAt returns the value of AcceptedAt.
+func (s *SiteInvitation) GetAcceptedAt() OptNilDateTime {
+	return s.AcceptedAt
+}
+
+// GetRevokedAt returns the value of RevokedAt.
+func (s *SiteInvitation) GetRevokedAt() OptNilDateTime {
+	return s.RevokedAt
+}
+
+// GetAttempts returns the value of Attempts.
+func (s *SiteInvitation) GetAttempts() int {
+	return s.Attempts
+}
+
+// GetInvitedBy returns the value of InvitedBy.
+func (s *SiteInvitation) GetInvitedBy() OptNilUUID {
+	return s.InvitedBy
+}
+
+// SetID sets the value of ID.
+func (s *SiteInvitation) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteInvitation) SetSiteID(val OptUUID) {
+	s.SiteID = val
+}
+
+// SetEmail sets the value of Email.
+func (s *SiteInvitation) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetRole sets the value of Role.
+func (s *SiteInvitation) SetRole(val string) {
+	s.Role = val
+}
+
+// SetStatus sets the value of Status.
+func (s *SiteInvitation) SetStatus(val SiteInvitationStatus) {
+	s.Status = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *SiteInvitation) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *SiteInvitation) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetAcceptedAt sets the value of AcceptedAt.
+func (s *SiteInvitation) SetAcceptedAt(val OptNilDateTime) {
+	s.AcceptedAt = val
+}
+
+// SetRevokedAt sets the value of RevokedAt.
+func (s *SiteInvitation) SetRevokedAt(val OptNilDateTime) {
+	s.RevokedAt = val
+}
+
+// SetAttempts sets the value of Attempts.
+func (s *SiteInvitation) SetAttempts(val int) {
+	s.Attempts = val
+}
+
+// SetInvitedBy sets the value of InvitedBy.
+func (s *SiteInvitation) SetInvitedBy(val OptNilUUID) {
+	s.InvitedBy = val
+}
+
+type SiteInvitationStatus string
+
+const (
+	SiteInvitationStatusPending  SiteInvitationStatus = "pending"
+	SiteInvitationStatusAccepted SiteInvitationStatus = "accepted"
+	SiteInvitationStatusExpired  SiteInvitationStatus = "expired"
+	SiteInvitationStatusRevoked  SiteInvitationStatus = "revoked"
+)
+
+// AllValues returns all SiteInvitationStatus values.
+func (SiteInvitationStatus) AllValues() []SiteInvitationStatus {
+	return []SiteInvitationStatus{
+		SiteInvitationStatusPending,
+		SiteInvitationStatusAccepted,
+		SiteInvitationStatusExpired,
+		SiteInvitationStatusRevoked,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteInvitationStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteInvitationStatusPending:
+		return []byte(s), nil
+	case SiteInvitationStatusAccepted:
+		return []byte(s), nil
+	case SiteInvitationStatusExpired:
+		return []byte(s), nil
+	case SiteInvitationStatusRevoked:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteInvitationStatus) UnmarshalText(data []byte) error {
+	switch SiteInvitationStatus(data) {
+	case SiteInvitationStatusPending:
+		*s = SiteInvitationStatusPending
+		return nil
+	case SiteInvitationStatusAccepted:
+		*s = SiteInvitationStatusAccepted
+		return nil
+	case SiteInvitationStatusExpired:
+		*s = SiteInvitationStatusExpired
+		return nil
+	case SiteInvitationStatusRevoked:
+		*s = SiteInvitationStatusRevoked
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -35885,6 +43892,91 @@ func (s *SiteLoginProtectionConfigUpdateMode) UnmarshalText(data []byte) error {
 	}
 }
 
+// A per-role override of the site-user auth policy.
+// Ref: #/components/schemas/SitePolicyGroup
+type SitePolicyGroup struct {
+	// The WordPress role slug this override applies to (e.g. administrator).
+	Role             string      `json:"role"`
+	Require2FA       OptNilBool  `json:"require_2fa"`
+	AllowedMethods   []string    `json:"allowed_methods"`
+	MinZxcvbnScore   OptNilInt   `json:"min_zxcvbn_score"`
+	BlockCompromised OptNilBool  `json:"block_compromised"`
+	MaxAgeDays       OptNilInt   `json:"max_age_days"`
+	CreatedAt        OptDateTime `json:"created_at"`
+}
+
+// GetRole returns the value of Role.
+func (s *SitePolicyGroup) GetRole() string {
+	return s.Role
+}
+
+// GetRequire2FA returns the value of Require2FA.
+func (s *SitePolicyGroup) GetRequire2FA() OptNilBool {
+	return s.Require2FA
+}
+
+// GetAllowedMethods returns the value of AllowedMethods.
+func (s *SitePolicyGroup) GetAllowedMethods() []string {
+	return s.AllowedMethods
+}
+
+// GetMinZxcvbnScore returns the value of MinZxcvbnScore.
+func (s *SitePolicyGroup) GetMinZxcvbnScore() OptNilInt {
+	return s.MinZxcvbnScore
+}
+
+// GetBlockCompromised returns the value of BlockCompromised.
+func (s *SitePolicyGroup) GetBlockCompromised() OptNilBool {
+	return s.BlockCompromised
+}
+
+// GetMaxAgeDays returns the value of MaxAgeDays.
+func (s *SitePolicyGroup) GetMaxAgeDays() OptNilInt {
+	return s.MaxAgeDays
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *SitePolicyGroup) GetCreatedAt() OptDateTime {
+	return s.CreatedAt
+}
+
+// SetRole sets the value of Role.
+func (s *SitePolicyGroup) SetRole(val string) {
+	s.Role = val
+}
+
+// SetRequire2FA sets the value of Require2FA.
+func (s *SitePolicyGroup) SetRequire2FA(val OptNilBool) {
+	s.Require2FA = val
+}
+
+// SetAllowedMethods sets the value of AllowedMethods.
+func (s *SitePolicyGroup) SetAllowedMethods(val []string) {
+	s.AllowedMethods = val
+}
+
+// SetMinZxcvbnScore sets the value of MinZxcvbnScore.
+func (s *SitePolicyGroup) SetMinZxcvbnScore(val OptNilInt) {
+	s.MinZxcvbnScore = val
+}
+
+// SetBlockCompromised sets the value of BlockCompromised.
+func (s *SitePolicyGroup) SetBlockCompromised(val OptNilBool) {
+	s.BlockCompromised = val
+}
+
+// SetMaxAgeDays sets the value of MaxAgeDays.
+func (s *SitePolicyGroup) SetMaxAgeDays(val OptNilInt) {
+	s.MaxAgeDays = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *SitePolicyGroup) SetCreatedAt(val OptDateTime) {
+	s.CreatedAt = val
+}
+
+func (*SitePolicyGroup) putSitePolicyGroupRes() {}
+
 // M72 — Current screenshot capture status. Absent/null means "never captured" (treat as no
 // screenshot).
 // pending = capture job is enqueued or running.
@@ -35937,6 +44029,190 @@ func (s *SiteScreenshotStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// Site-user (WordPress user) auth policy — 2FA + password requirements (ADR-059).
+// Ref: #/components/schemas/SiteSecurityPolicy
+type SiteSecurityPolicy struct {
+	TwoFactorEnabled            OptBool     `json:"two_factor_enabled"`
+	TwoFactorMethods            []string    `json:"two_factor_methods"`
+	TwoFactorRequiredRoles      []string    `json:"two_factor_required_roles"`
+	TwoFactorGraceLogins        OptInt      `json:"two_factor_grace_logins"`
+	TwoFactorRememberDeviceDays OptInt      `json:"two_factor_remember_device_days"`
+	BlockXmlrpcFor2FAUsers      OptBool     `json:"block_xmlrpc_for_2fa_users"`
+	PasswordMinZxcvbnScore      OptInt      `json:"password_min_zxcvbn_score"`
+	PasswordMinZxcvbnRoles      []string    `json:"password_min_zxcvbn_roles"`
+	PasswordBlockCompromised    OptBool     `json:"password_block_compromised"`
+	PasswordReuseBlockCount     OptInt      `json:"password_reuse_block_count"`
+	PasswordMaxAgeDays          OptInt      `json:"password_max_age_days"`
+	PasswordExpiryRoles         []string    `json:"password_expiry_roles"`
+	HideBackendEnabled          OptBool     `json:"hide_backend_enabled"`
+	HideBackendSlug             OptString   `json:"hide_backend_slug"`
+	HideBackendRedirect         OptString   `json:"hide_backend_redirect"`
+	UpdatedAt                   OptDateTime `json:"updated_at"`
+}
+
+// GetTwoFactorEnabled returns the value of TwoFactorEnabled.
+func (s *SiteSecurityPolicy) GetTwoFactorEnabled() OptBool {
+	return s.TwoFactorEnabled
+}
+
+// GetTwoFactorMethods returns the value of TwoFactorMethods.
+func (s *SiteSecurityPolicy) GetTwoFactorMethods() []string {
+	return s.TwoFactorMethods
+}
+
+// GetTwoFactorRequiredRoles returns the value of TwoFactorRequiredRoles.
+func (s *SiteSecurityPolicy) GetTwoFactorRequiredRoles() []string {
+	return s.TwoFactorRequiredRoles
+}
+
+// GetTwoFactorGraceLogins returns the value of TwoFactorGraceLogins.
+func (s *SiteSecurityPolicy) GetTwoFactorGraceLogins() OptInt {
+	return s.TwoFactorGraceLogins
+}
+
+// GetTwoFactorRememberDeviceDays returns the value of TwoFactorRememberDeviceDays.
+func (s *SiteSecurityPolicy) GetTwoFactorRememberDeviceDays() OptInt {
+	return s.TwoFactorRememberDeviceDays
+}
+
+// GetBlockXmlrpcFor2FAUsers returns the value of BlockXmlrpcFor2FAUsers.
+func (s *SiteSecurityPolicy) GetBlockXmlrpcFor2FAUsers() OptBool {
+	return s.BlockXmlrpcFor2FAUsers
+}
+
+// GetPasswordMinZxcvbnScore returns the value of PasswordMinZxcvbnScore.
+func (s *SiteSecurityPolicy) GetPasswordMinZxcvbnScore() OptInt {
+	return s.PasswordMinZxcvbnScore
+}
+
+// GetPasswordMinZxcvbnRoles returns the value of PasswordMinZxcvbnRoles.
+func (s *SiteSecurityPolicy) GetPasswordMinZxcvbnRoles() []string {
+	return s.PasswordMinZxcvbnRoles
+}
+
+// GetPasswordBlockCompromised returns the value of PasswordBlockCompromised.
+func (s *SiteSecurityPolicy) GetPasswordBlockCompromised() OptBool {
+	return s.PasswordBlockCompromised
+}
+
+// GetPasswordReuseBlockCount returns the value of PasswordReuseBlockCount.
+func (s *SiteSecurityPolicy) GetPasswordReuseBlockCount() OptInt {
+	return s.PasswordReuseBlockCount
+}
+
+// GetPasswordMaxAgeDays returns the value of PasswordMaxAgeDays.
+func (s *SiteSecurityPolicy) GetPasswordMaxAgeDays() OptInt {
+	return s.PasswordMaxAgeDays
+}
+
+// GetPasswordExpiryRoles returns the value of PasswordExpiryRoles.
+func (s *SiteSecurityPolicy) GetPasswordExpiryRoles() []string {
+	return s.PasswordExpiryRoles
+}
+
+// GetHideBackendEnabled returns the value of HideBackendEnabled.
+func (s *SiteSecurityPolicy) GetHideBackendEnabled() OptBool {
+	return s.HideBackendEnabled
+}
+
+// GetHideBackendSlug returns the value of HideBackendSlug.
+func (s *SiteSecurityPolicy) GetHideBackendSlug() OptString {
+	return s.HideBackendSlug
+}
+
+// GetHideBackendRedirect returns the value of HideBackendRedirect.
+func (s *SiteSecurityPolicy) GetHideBackendRedirect() OptString {
+	return s.HideBackendRedirect
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SiteSecurityPolicy) GetUpdatedAt() OptDateTime {
+	return s.UpdatedAt
+}
+
+// SetTwoFactorEnabled sets the value of TwoFactorEnabled.
+func (s *SiteSecurityPolicy) SetTwoFactorEnabled(val OptBool) {
+	s.TwoFactorEnabled = val
+}
+
+// SetTwoFactorMethods sets the value of TwoFactorMethods.
+func (s *SiteSecurityPolicy) SetTwoFactorMethods(val []string) {
+	s.TwoFactorMethods = val
+}
+
+// SetTwoFactorRequiredRoles sets the value of TwoFactorRequiredRoles.
+func (s *SiteSecurityPolicy) SetTwoFactorRequiredRoles(val []string) {
+	s.TwoFactorRequiredRoles = val
+}
+
+// SetTwoFactorGraceLogins sets the value of TwoFactorGraceLogins.
+func (s *SiteSecurityPolicy) SetTwoFactorGraceLogins(val OptInt) {
+	s.TwoFactorGraceLogins = val
+}
+
+// SetTwoFactorRememberDeviceDays sets the value of TwoFactorRememberDeviceDays.
+func (s *SiteSecurityPolicy) SetTwoFactorRememberDeviceDays(val OptInt) {
+	s.TwoFactorRememberDeviceDays = val
+}
+
+// SetBlockXmlrpcFor2FAUsers sets the value of BlockXmlrpcFor2FAUsers.
+func (s *SiteSecurityPolicy) SetBlockXmlrpcFor2FAUsers(val OptBool) {
+	s.BlockXmlrpcFor2FAUsers = val
+}
+
+// SetPasswordMinZxcvbnScore sets the value of PasswordMinZxcvbnScore.
+func (s *SiteSecurityPolicy) SetPasswordMinZxcvbnScore(val OptInt) {
+	s.PasswordMinZxcvbnScore = val
+}
+
+// SetPasswordMinZxcvbnRoles sets the value of PasswordMinZxcvbnRoles.
+func (s *SiteSecurityPolicy) SetPasswordMinZxcvbnRoles(val []string) {
+	s.PasswordMinZxcvbnRoles = val
+}
+
+// SetPasswordBlockCompromised sets the value of PasswordBlockCompromised.
+func (s *SiteSecurityPolicy) SetPasswordBlockCompromised(val OptBool) {
+	s.PasswordBlockCompromised = val
+}
+
+// SetPasswordReuseBlockCount sets the value of PasswordReuseBlockCount.
+func (s *SiteSecurityPolicy) SetPasswordReuseBlockCount(val OptInt) {
+	s.PasswordReuseBlockCount = val
+}
+
+// SetPasswordMaxAgeDays sets the value of PasswordMaxAgeDays.
+func (s *SiteSecurityPolicy) SetPasswordMaxAgeDays(val OptInt) {
+	s.PasswordMaxAgeDays = val
+}
+
+// SetPasswordExpiryRoles sets the value of PasswordExpiryRoles.
+func (s *SiteSecurityPolicy) SetPasswordExpiryRoles(val []string) {
+	s.PasswordExpiryRoles = val
+}
+
+// SetHideBackendEnabled sets the value of HideBackendEnabled.
+func (s *SiteSecurityPolicy) SetHideBackendEnabled(val OptBool) {
+	s.HideBackendEnabled = val
+}
+
+// SetHideBackendSlug sets the value of HideBackendSlug.
+func (s *SiteSecurityPolicy) SetHideBackendSlug(val OptString) {
+	s.HideBackendSlug = val
+}
+
+// SetHideBackendRedirect sets the value of HideBackendRedirect.
+func (s *SiteSecurityPolicy) SetHideBackendRedirect(val OptString) {
+	s.HideBackendRedirect = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SiteSecurityPolicy) SetUpdatedAt(val OptDateTime) {
+	s.UpdatedAt = val
+}
+
+func (*SiteSecurityPolicy) getSiteSecurityPolicyRes() {}
+func (*SiteSecurityPolicy) putSiteSecurityPolicyRes() {}
 
 // Ref: #/components/schemas/SiteShare
 type SiteShare struct {
@@ -36356,6 +44632,280 @@ func (s *SiteTags) SetTags(val []string) {
 	s.Tags = val
 }
 
+// Ref: #/components/schemas/SiteVulnerabilitiesResponse
+type SiteVulnerabilitiesResponse struct {
+	Items       []VulnFinding   `json:"items"`
+	Attribution VulnAttribution `json:"attribution"`
+	FeedOk      bool            `json:"feed_ok"`
+	FeedSynced  OptDateTime     `json:"feed_synced"`
+}
+
+// GetItems returns the value of Items.
+func (s *SiteVulnerabilitiesResponse) GetItems() []VulnFinding {
+	return s.Items
+}
+
+// GetAttribution returns the value of Attribution.
+func (s *SiteVulnerabilitiesResponse) GetAttribution() VulnAttribution {
+	return s.Attribution
+}
+
+// GetFeedOk returns the value of FeedOk.
+func (s *SiteVulnerabilitiesResponse) GetFeedOk() bool {
+	return s.FeedOk
+}
+
+// GetFeedSynced returns the value of FeedSynced.
+func (s *SiteVulnerabilitiesResponse) GetFeedSynced() OptDateTime {
+	return s.FeedSynced
+}
+
+// SetItems sets the value of Items.
+func (s *SiteVulnerabilitiesResponse) SetItems(val []VulnFinding) {
+	s.Items = val
+}
+
+// SetAttribution sets the value of Attribution.
+func (s *SiteVulnerabilitiesResponse) SetAttribution(val VulnAttribution) {
+	s.Attribution = val
+}
+
+// SetFeedOk sets the value of FeedOk.
+func (s *SiteVulnerabilitiesResponse) SetFeedOk(val bool) {
+	s.FeedOk = val
+}
+
+// SetFeedSynced sets the value of FeedSynced.
+func (s *SiteVulnerabilitiesResponse) SetFeedSynced(val OptDateTime) {
+	s.FeedSynced = val
+}
+
+func (*SiteVulnerabilitiesResponse) listSiteVulnerabilitiesRes() {}
+
+// Ref: #/components/schemas/SmtpSettings
+type SmtpSettings struct {
+	Enabled     bool   `json:"enabled"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Username    string `json:"username"`
+	FromAddress string `json:"from_address"`
+	FromName    string `json:"from_name"`
+	// None | starttls | tls.
+	TLSMode          string `json:"tls_mode"`
+	AllowInsecureTLS bool   `json:"allow_insecure_tls"`
+	// True when a password/secret is stored. The value itself is never returned.
+	PasswordSet bool      `json:"password_set"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *SmtpSettings) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetHost returns the value of Host.
+func (s *SmtpSettings) GetHost() string {
+	return s.Host
+}
+
+// GetPort returns the value of Port.
+func (s *SmtpSettings) GetPort() int {
+	return s.Port
+}
+
+// GetUsername returns the value of Username.
+func (s *SmtpSettings) GetUsername() string {
+	return s.Username
+}
+
+// GetFromAddress returns the value of FromAddress.
+func (s *SmtpSettings) GetFromAddress() string {
+	return s.FromAddress
+}
+
+// GetFromName returns the value of FromName.
+func (s *SmtpSettings) GetFromName() string {
+	return s.FromName
+}
+
+// GetTLSMode returns the value of TLSMode.
+func (s *SmtpSettings) GetTLSMode() string {
+	return s.TLSMode
+}
+
+// GetAllowInsecureTLS returns the value of AllowInsecureTLS.
+func (s *SmtpSettings) GetAllowInsecureTLS() bool {
+	return s.AllowInsecureTLS
+}
+
+// GetPasswordSet returns the value of PasswordSet.
+func (s *SmtpSettings) GetPasswordSet() bool {
+	return s.PasswordSet
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SmtpSettings) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *SmtpSettings) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetHost sets the value of Host.
+func (s *SmtpSettings) SetHost(val string) {
+	s.Host = val
+}
+
+// SetPort sets the value of Port.
+func (s *SmtpSettings) SetPort(val int) {
+	s.Port = val
+}
+
+// SetUsername sets the value of Username.
+func (s *SmtpSettings) SetUsername(val string) {
+	s.Username = val
+}
+
+// SetFromAddress sets the value of FromAddress.
+func (s *SmtpSettings) SetFromAddress(val string) {
+	s.FromAddress = val
+}
+
+// SetFromName sets the value of FromName.
+func (s *SmtpSettings) SetFromName(val string) {
+	s.FromName = val
+}
+
+// SetTLSMode sets the value of TLSMode.
+func (s *SmtpSettings) SetTLSMode(val string) {
+	s.TLSMode = val
+}
+
+// SetAllowInsecureTLS sets the value of AllowInsecureTLS.
+func (s *SmtpSettings) SetAllowInsecureTLS(val bool) {
+	s.AllowInsecureTLS = val
+}
+
+// SetPasswordSet sets the value of PasswordSet.
+func (s *SmtpSettings) SetPasswordSet(val bool) {
+	s.PasswordSet = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SmtpSettings) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*SmtpSettings) getSmtpSettingsRes()    {}
+func (*SmtpSettings) updateSmtpSettingsRes() {}
+
+// Ref: #/components/schemas/SmtpSettingsUpdate
+type SmtpSettingsUpdate struct {
+	Enabled     bool   `json:"enabled"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Username    string `json:"username"`
+	FromAddress string `json:"from_address"`
+	FromName    string `json:"from_name"`
+	// None | starttls | tls.
+	TLSMode          string `json:"tls_mode"`
+	AllowInsecureTLS bool   `json:"allow_insecure_tls"`
+	// Write-only. Omit or null to leave the stored ciphertext unchanged.
+	Password OptNilString `json:"password"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *SmtpSettingsUpdate) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetHost returns the value of Host.
+func (s *SmtpSettingsUpdate) GetHost() string {
+	return s.Host
+}
+
+// GetPort returns the value of Port.
+func (s *SmtpSettingsUpdate) GetPort() int {
+	return s.Port
+}
+
+// GetUsername returns the value of Username.
+func (s *SmtpSettingsUpdate) GetUsername() string {
+	return s.Username
+}
+
+// GetFromAddress returns the value of FromAddress.
+func (s *SmtpSettingsUpdate) GetFromAddress() string {
+	return s.FromAddress
+}
+
+// GetFromName returns the value of FromName.
+func (s *SmtpSettingsUpdate) GetFromName() string {
+	return s.FromName
+}
+
+// GetTLSMode returns the value of TLSMode.
+func (s *SmtpSettingsUpdate) GetTLSMode() string {
+	return s.TLSMode
+}
+
+// GetAllowInsecureTLS returns the value of AllowInsecureTLS.
+func (s *SmtpSettingsUpdate) GetAllowInsecureTLS() bool {
+	return s.AllowInsecureTLS
+}
+
+// GetPassword returns the value of Password.
+func (s *SmtpSettingsUpdate) GetPassword() OptNilString {
+	return s.Password
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *SmtpSettingsUpdate) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetHost sets the value of Host.
+func (s *SmtpSettingsUpdate) SetHost(val string) {
+	s.Host = val
+}
+
+// SetPort sets the value of Port.
+func (s *SmtpSettingsUpdate) SetPort(val int) {
+	s.Port = val
+}
+
+// SetUsername sets the value of Username.
+func (s *SmtpSettingsUpdate) SetUsername(val string) {
+	s.Username = val
+}
+
+// SetFromAddress sets the value of FromAddress.
+func (s *SmtpSettingsUpdate) SetFromAddress(val string) {
+	s.FromAddress = val
+}
+
+// SetFromName sets the value of FromName.
+func (s *SmtpSettingsUpdate) SetFromName(val string) {
+	s.FromName = val
+}
+
+// SetTLSMode sets the value of TLSMode.
+func (s *SmtpSettingsUpdate) SetTLSMode(val string) {
+	s.TLSMode = val
+}
+
+// SetAllowInsecureTLS sets the value of AllowInsecureTLS.
+func (s *SmtpSettingsUpdate) SetAllowInsecureTLS(val bool) {
+	s.AllowInsecureTLS = val
+}
+
+// SetPassword sets the value of Password.
+func (s *SmtpSettingsUpdate) SetPassword(val OptNilString) {
+	s.Password = val
+}
+
 // Structured projection of a backup snapshot's SQL dump. Produced either
 // by the agent at backup time (preferred; "source": "agent") or by the
 // control plane's legacy streaming parser (fallback; "source":
@@ -36651,6 +45201,28 @@ func (s *SqlInspectionTablesItem) SetHasFk(val OptBool) {
 	s.HasFk = val
 }
 
+type StartScanRunForbidden Error
+
+func (*StartScanRunForbidden) startScanRunRes() {}
+
+type StartScanRunReq struct {
+	Kind OptString `json:"kind"`
+}
+
+// GetKind returns the value of Kind.
+func (s *StartScanRunReq) GetKind() OptString {
+	return s.Kind
+}
+
+// SetKind sets the value of Kind.
+func (s *StartScanRunReq) SetKind(val OptString) {
+	s.Kind = val
+}
+
+type StartScanRunUnauthorized Error
+
+func (*StartScanRunUnauthorized) startScanRunRes() {}
+
 type StreamSiteEventsOK struct {
 	Data io.Reader
 }
@@ -36684,6 +45256,109 @@ func (*SuspendAdminAccountUnauthorized) suspendAdminAccountRes() {}
 type SuspendAdminAccountUnprocessableEntity Error
 
 func (*SuspendAdminAccountUnprocessableEntity) suspendAdminAccountRes() {}
+
+type SwitchOrgForbidden Error
+
+func (*SwitchOrgForbidden) switchOrgRes() {}
+
+type SwitchOrgOK struct {
+	Ok         bool      `json:"ok"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	TenantName string    `json:"tenant_name"`
+}
+
+// GetOk returns the value of Ok.
+func (s *SwitchOrgOK) GetOk() bool {
+	return s.Ok
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *SwitchOrgOK) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *SwitchOrgOK) GetTenantName() string {
+	return s.TenantName
+}
+
+// SetOk sets the value of Ok.
+func (s *SwitchOrgOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *SwitchOrgOK) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *SwitchOrgOK) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+func (*SwitchOrgOK) switchOrgRes() {}
+
+type SwitchOrgReq struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *SwitchOrgReq) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *SwitchOrgReq) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+type SwitchOrgUnauthorized Error
+
+func (*SwitchOrgUnauthorized) switchOrgRes() {}
+
+type SwitchOrgUnprocessableEntity Error
+
+func (*SwitchOrgUnprocessableEntity) switchOrgRes() {}
+
+type SyncAdminVulnFeedAccepted struct {
+	Ok      bool `json:"ok"`
+	Syncing bool `json:"syncing"`
+}
+
+// GetOk returns the value of Ok.
+func (s *SyncAdminVulnFeedAccepted) GetOk() bool {
+	return s.Ok
+}
+
+// GetSyncing returns the value of Syncing.
+func (s *SyncAdminVulnFeedAccepted) GetSyncing() bool {
+	return s.Syncing
+}
+
+// SetOk sets the value of Ok.
+func (s *SyncAdminVulnFeedAccepted) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetSyncing sets the value of Syncing.
+func (s *SyncAdminVulnFeedAccepted) SetSyncing(val bool) {
+	s.Syncing = val
+}
+
+func (*SyncAdminVulnFeedAccepted) syncAdminVulnFeedRes() {}
+
+type SyncAdminVulnFeedForbidden Error
+
+func (*SyncAdminVulnFeedForbidden) syncAdminVulnFeedRes() {}
+
+type SyncAdminVulnFeedServiceUnavailable Error
+
+func (*SyncAdminVulnFeedServiceUnavailable) syncAdminVulnFeedRes() {}
+
+type SyncAdminVulnFeedUnauthorized Error
+
+func (*SyncAdminVulnFeedUnauthorized) syncAdminVulnFeedRes() {}
 
 type SyncMediaAccepted struct {
 	JobID     OptString   `json:"job_id"`
@@ -36848,6 +45523,32 @@ type TestSiteDestinationUnauthorized Error
 
 func (*TestSiteDestinationUnauthorized) testSiteDestinationRes() {}
 
+type ToggleScanFindingIgnoreForbidden Error
+
+func (*ToggleScanFindingIgnoreForbidden) toggleScanFindingIgnoreRes() {}
+
+type ToggleScanFindingIgnoreNotFound Error
+
+func (*ToggleScanFindingIgnoreNotFound) toggleScanFindingIgnoreRes() {}
+
+type ToggleScanFindingIgnoreReq struct {
+	Ignored OptBool `json:"ignored"`
+}
+
+// GetIgnored returns the value of Ignored.
+func (s *ToggleScanFindingIgnoreReq) GetIgnored() OptBool {
+	return s.Ignored
+}
+
+// SetIgnored sets the value of Ignored.
+func (s *ToggleScanFindingIgnoreReq) SetIgnored(val OptBool) {
+	s.Ignored = val
+}
+
+type ToggleScanFindingIgnoreUnauthorized Error
+
+func (*ToggleScanFindingIgnoreUnauthorized) toggleScanFindingIgnoreRes() {}
+
 type TriggerDbScanOK struct {
 	Ok     bool      `json:"ok"`
 	JobID  string    `json:"job_id"`
@@ -36898,6 +45599,199 @@ func (s *TriggerDbScanReq) GetCategories() []string {
 func (s *TriggerDbScanReq) SetCategories(val []string) {
 	s.Categories = val
 }
+
+// Ref: #/components/schemas/TrustedDevice
+type TrustedDevice struct {
+	ID         uuid.UUID   `json:"id"`
+	Label      string      `json:"label"`
+	UserAgent  string      `json:"user_agent"`
+	CreatedAt  time.Time   `json:"created_at"`
+	ExpiresAt  time.Time   `json:"expires_at"`
+	LastUsedAt OptDateTime `json:"last_used_at"`
+	IP         OptString   `json:"ip"`
+}
+
+// GetID returns the value of ID.
+func (s *TrustedDevice) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetLabel returns the value of Label.
+func (s *TrustedDevice) GetLabel() string {
+	return s.Label
+}
+
+// GetUserAgent returns the value of UserAgent.
+func (s *TrustedDevice) GetUserAgent() string {
+	return s.UserAgent
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *TrustedDevice) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *TrustedDevice) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// GetLastUsedAt returns the value of LastUsedAt.
+func (s *TrustedDevice) GetLastUsedAt() OptDateTime {
+	return s.LastUsedAt
+}
+
+// GetIP returns the value of IP.
+func (s *TrustedDevice) GetIP() OptString {
+	return s.IP
+}
+
+// SetID sets the value of ID.
+func (s *TrustedDevice) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetLabel sets the value of Label.
+func (s *TrustedDevice) SetLabel(val string) {
+	s.Label = val
+}
+
+// SetUserAgent sets the value of UserAgent.
+func (s *TrustedDevice) SetUserAgent(val string) {
+	s.UserAgent = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *TrustedDevice) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *TrustedDevice) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+// SetLastUsedAt sets the value of LastUsedAt.
+func (s *TrustedDevice) SetLastUsedAt(val OptDateTime) {
+	s.LastUsedAt = val
+}
+
+// SetIP sets the value of IP.
+func (s *TrustedDevice) SetIP(val OptString) {
+	s.IP = val
+}
+
+// Completes the 2FA challenge minted at login. `challenge` is the nonce from the login response;
+// `code` is the TOTP code or recovery code depending on the endpoint.
+// Ref: #/components/schemas/TwoFactorChallengeCompleteRequest
+type TwoFactorChallengeCompleteRequest struct {
+	Challenge      uuid.UUID `json:"challenge"`
+	Code           string    `json:"code"`
+	RememberDevice OptBool   `json:"remember_device"`
+	DeviceLabel    OptString `json:"device_label"`
+}
+
+// GetChallenge returns the value of Challenge.
+func (s *TwoFactorChallengeCompleteRequest) GetChallenge() uuid.UUID {
+	return s.Challenge
+}
+
+// GetCode returns the value of Code.
+func (s *TwoFactorChallengeCompleteRequest) GetCode() string {
+	return s.Code
+}
+
+// GetRememberDevice returns the value of RememberDevice.
+func (s *TwoFactorChallengeCompleteRequest) GetRememberDevice() OptBool {
+	return s.RememberDevice
+}
+
+// GetDeviceLabel returns the value of DeviceLabel.
+func (s *TwoFactorChallengeCompleteRequest) GetDeviceLabel() OptString {
+	return s.DeviceLabel
+}
+
+// SetChallenge sets the value of Challenge.
+func (s *TwoFactorChallengeCompleteRequest) SetChallenge(val uuid.UUID) {
+	s.Challenge = val
+}
+
+// SetCode sets the value of Code.
+func (s *TwoFactorChallengeCompleteRequest) SetCode(val string) {
+	s.Code = val
+}
+
+// SetRememberDevice sets the value of RememberDevice.
+func (s *TwoFactorChallengeCompleteRequest) SetRememberDevice(val OptBool) {
+	s.RememberDevice = val
+}
+
+// SetDeviceLabel sets the value of DeviceLabel.
+func (s *TwoFactorChallengeCompleteRequest) SetDeviceLabel(val OptString) {
+	s.DeviceLabel = val
+}
+
+// Current 2FA configuration summary for the authenticated user.
+// Ref: #/components/schemas/TwoFactorStatus
+type TwoFactorStatus struct {
+	TotpEnabled            bool            `json:"totp_enabled"`
+	WebauthnCount          int             `json:"webauthn_count"`
+	RecoveryCodesRemaining int             `json:"recovery_codes_remaining"`
+	TwoFactorEnabled       bool            `json:"two_factor_enabled"`
+	TrustedDevices         []TrustedDevice `json:"trusted_devices"`
+}
+
+// GetTotpEnabled returns the value of TotpEnabled.
+func (s *TwoFactorStatus) GetTotpEnabled() bool {
+	return s.TotpEnabled
+}
+
+// GetWebauthnCount returns the value of WebauthnCount.
+func (s *TwoFactorStatus) GetWebauthnCount() int {
+	return s.WebauthnCount
+}
+
+// GetRecoveryCodesRemaining returns the value of RecoveryCodesRemaining.
+func (s *TwoFactorStatus) GetRecoveryCodesRemaining() int {
+	return s.RecoveryCodesRemaining
+}
+
+// GetTwoFactorEnabled returns the value of TwoFactorEnabled.
+func (s *TwoFactorStatus) GetTwoFactorEnabled() bool {
+	return s.TwoFactorEnabled
+}
+
+// GetTrustedDevices returns the value of TrustedDevices.
+func (s *TwoFactorStatus) GetTrustedDevices() []TrustedDevice {
+	return s.TrustedDevices
+}
+
+// SetTotpEnabled sets the value of TotpEnabled.
+func (s *TwoFactorStatus) SetTotpEnabled(val bool) {
+	s.TotpEnabled = val
+}
+
+// SetWebauthnCount sets the value of WebauthnCount.
+func (s *TwoFactorStatus) SetWebauthnCount(val int) {
+	s.WebauthnCount = val
+}
+
+// SetRecoveryCodesRemaining sets the value of RecoveryCodesRemaining.
+func (s *TwoFactorStatus) SetRecoveryCodesRemaining(val int) {
+	s.RecoveryCodesRemaining = val
+}
+
+// SetTwoFactorEnabled sets the value of TwoFactorEnabled.
+func (s *TwoFactorStatus) SetTwoFactorEnabled(val bool) {
+	s.TwoFactorEnabled = val
+}
+
+// SetTrustedDevices sets the value of TrustedDevices.
+func (s *TwoFactorStatus) SetTrustedDevices(val []TrustedDevice) {
+	s.TrustedDevices = val
+}
+
+func (*TwoFactorStatus) getTwoFactorStatusRes() {}
 
 // Ref: #/components/schemas/UnblockIPRequest
 type UnblockIPRequest struct {
@@ -37181,6 +46075,40 @@ func (s *UpdateItemType) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type UpdateMeReq struct {
+	Name string `json:"name"`
+}
+
+// GetName returns the value of Name.
+func (s *UpdateMeReq) GetName() string {
+	return s.Name
+}
+
+// SetName sets the value of Name.
+func (s *UpdateMeReq) SetName(val string) {
+	s.Name = val
+}
+
+type UpdateMeUnauthorized Error
+
+func (*UpdateMeUnauthorized) updateMeRes() {}
+
+type UpdateMeUnprocessableEntity Error
+
+func (*UpdateMeUnprocessableEntity) updateMeRes() {}
+
+type UpdateMediaSettingsForbidden Error
+
+func (*UpdateMediaSettingsForbidden) updateMediaSettingsRes() {}
+
+type UpdateMediaSettingsUnauthorized Error
+
+func (*UpdateMediaSettingsUnauthorized) updateMediaSettingsRes() {}
+
+type UpdateMediaSettingsUnprocessableEntity Error
+
+func (*UpdateMediaSettingsUnprocessableEntity) updateMediaSettingsRes() {}
 
 // Ref: #/components/schemas/UpdateRun
 type UpdateRun struct {
@@ -37488,6 +46416,18 @@ func (*UpdateSiteFilesSettingsNotFound) updateSiteFilesSettingsRes() {}
 type UpdateSiteFilesSettingsUnauthorized Error
 
 func (*UpdateSiteFilesSettingsUnauthorized) updateSiteFilesSettingsRes() {}
+
+type UpdateSmtpSettingsForbidden Error
+
+func (*UpdateSmtpSettingsForbidden) updateSmtpSettingsRes() {}
+
+type UpdateSmtpSettingsUnauthorized Error
+
+func (*UpdateSmtpSettingsUnauthorized) updateSmtpSettingsRes() {}
+
+type UpdateSmtpSettingsUnprocessableEntity Error
+
+func (*UpdateSmtpSettingsUnprocessableEntity) updateSmtpSettingsRes() {}
 
 type UpdateTagConflict Error
 
@@ -38183,6 +47123,70 @@ type VerifyAuditUnauthorized Error
 
 func (*VerifyAuditUnauthorized) verifyAuditRes() {}
 
+type VerifyBillingCheckoutCallbackForbidden Error
+
+func (*VerifyBillingCheckoutCallbackForbidden) verifyBillingCheckoutCallbackRes() {}
+
+type VerifyBillingCheckoutCallbackOK struct {
+	Verified bool `json:"verified"`
+}
+
+// GetVerified returns the value of Verified.
+func (s *VerifyBillingCheckoutCallbackOK) GetVerified() bool {
+	return s.Verified
+}
+
+// SetVerified sets the value of Verified.
+func (s *VerifyBillingCheckoutCallbackOK) SetVerified(val bool) {
+	s.Verified = val
+}
+
+func (*VerifyBillingCheckoutCallbackOK) verifyBillingCheckoutCallbackRes() {}
+
+type VerifyBillingCheckoutCallbackReq struct {
+	RazorpayPaymentID      OptString `json:"razorpay_payment_id"`
+	RazorpaySubscriptionID OptString `json:"razorpay_subscription_id"`
+	RazorpaySignature      OptString `json:"razorpay_signature"`
+}
+
+// GetRazorpayPaymentID returns the value of RazorpayPaymentID.
+func (s *VerifyBillingCheckoutCallbackReq) GetRazorpayPaymentID() OptString {
+	return s.RazorpayPaymentID
+}
+
+// GetRazorpaySubscriptionID returns the value of RazorpaySubscriptionID.
+func (s *VerifyBillingCheckoutCallbackReq) GetRazorpaySubscriptionID() OptString {
+	return s.RazorpaySubscriptionID
+}
+
+// GetRazorpaySignature returns the value of RazorpaySignature.
+func (s *VerifyBillingCheckoutCallbackReq) GetRazorpaySignature() OptString {
+	return s.RazorpaySignature
+}
+
+// SetRazorpayPaymentID sets the value of RazorpayPaymentID.
+func (s *VerifyBillingCheckoutCallbackReq) SetRazorpayPaymentID(val OptString) {
+	s.RazorpayPaymentID = val
+}
+
+// SetRazorpaySubscriptionID sets the value of RazorpaySubscriptionID.
+func (s *VerifyBillingCheckoutCallbackReq) SetRazorpaySubscriptionID(val OptString) {
+	s.RazorpaySubscriptionID = val
+}
+
+// SetRazorpaySignature sets the value of RazorpaySignature.
+func (s *VerifyBillingCheckoutCallbackReq) SetRazorpaySignature(val OptString) {
+	s.RazorpaySignature = val
+}
+
+type VerifyBillingCheckoutCallbackUnauthorized Error
+
+func (*VerifyBillingCheckoutCallbackUnauthorized) verifyBillingCheckoutCallbackRes() {}
+
+type VerifyBillingCheckoutCallbackUnprocessableEntity Error
+
+func (*VerifyBillingCheckoutCallbackUnprocessableEntity) verifyBillingCheckoutCallbackRes() {}
+
 type VerifyEmailReq struct {
 	Token string `json:"token"`
 }
@@ -38196,6 +47200,288 @@ func (s *VerifyEmailReq) GetToken() string {
 func (s *VerifyEmailReq) SetToken(val string) {
 	s.Token = val
 }
+
+// Vulnerability-feed attribution notices, rendered in the UI footer and on any finding row that
+// shows a CVE.
+// Ref: #/components/schemas/VulnAttribution
+type VulnAttribution struct {
+	DefiantNotice  string `json:"defiant_notice"`
+	DefiantLicense string `json:"defiant_license"`
+	MitreNotice    string `json:"mitre_notice"`
+}
+
+// GetDefiantNotice returns the value of DefiantNotice.
+func (s *VulnAttribution) GetDefiantNotice() string {
+	return s.DefiantNotice
+}
+
+// GetDefiantLicense returns the value of DefiantLicense.
+func (s *VulnAttribution) GetDefiantLicense() string {
+	return s.DefiantLicense
+}
+
+// GetMitreNotice returns the value of MitreNotice.
+func (s *VulnAttribution) GetMitreNotice() string {
+	return s.MitreNotice
+}
+
+// SetDefiantNotice sets the value of DefiantNotice.
+func (s *VulnAttribution) SetDefiantNotice(val string) {
+	s.DefiantNotice = val
+}
+
+// SetDefiantLicense sets the value of DefiantLicense.
+func (s *VulnAttribution) SetDefiantLicense(val string) {
+	s.DefiantLicense = val
+}
+
+// SetMitreNotice sets the value of MitreNotice.
+func (s *VulnAttribution) SetMitreNotice(val string) {
+	s.MitreNotice = val
+}
+
+// Ref: #/components/schemas/VulnFinding
+type VulnFinding struct {
+	ID     uuid.UUID `json:"id"`
+	SiteID uuid.UUID `json:"site_id"`
+	VulnID string    `json:"vuln_id"`
+	// Core | plugin | theme.
+	Kind             string     `json:"kind"`
+	Slug             string     `json:"slug"`
+	Name             string     `json:"name"`
+	InstalledVersion string     `json:"installed_version"`
+	FixedVersion     OptString  `json:"fixed_version"`
+	Severity         string     `json:"severity"`
+	CvssScore        OptFloat64 `json:"cvss_score"`
+	Cve              OptString  `json:"cve"`
+	CveLink          OptString  `json:"cve_link"`
+	Title            string     `json:"title"`
+	// Open | dismissed | remediated.
+	Status     string    `json:"status"`
+	FirstSeen  time.Time `json:"first_seen"`
+	LastSeen   time.Time `json:"last_seen"`
+	References []string  `json:"references"`
+}
+
+// GetID returns the value of ID.
+func (s *VulnFinding) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *VulnFinding) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetVulnID returns the value of VulnID.
+func (s *VulnFinding) GetVulnID() string {
+	return s.VulnID
+}
+
+// GetKind returns the value of Kind.
+func (s *VulnFinding) GetKind() string {
+	return s.Kind
+}
+
+// GetSlug returns the value of Slug.
+func (s *VulnFinding) GetSlug() string {
+	return s.Slug
+}
+
+// GetName returns the value of Name.
+func (s *VulnFinding) GetName() string {
+	return s.Name
+}
+
+// GetInstalledVersion returns the value of InstalledVersion.
+func (s *VulnFinding) GetInstalledVersion() string {
+	return s.InstalledVersion
+}
+
+// GetFixedVersion returns the value of FixedVersion.
+func (s *VulnFinding) GetFixedVersion() OptString {
+	return s.FixedVersion
+}
+
+// GetSeverity returns the value of Severity.
+func (s *VulnFinding) GetSeverity() string {
+	return s.Severity
+}
+
+// GetCvssScore returns the value of CvssScore.
+func (s *VulnFinding) GetCvssScore() OptFloat64 {
+	return s.CvssScore
+}
+
+// GetCve returns the value of Cve.
+func (s *VulnFinding) GetCve() OptString {
+	return s.Cve
+}
+
+// GetCveLink returns the value of CveLink.
+func (s *VulnFinding) GetCveLink() OptString {
+	return s.CveLink
+}
+
+// GetTitle returns the value of Title.
+func (s *VulnFinding) GetTitle() string {
+	return s.Title
+}
+
+// GetStatus returns the value of Status.
+func (s *VulnFinding) GetStatus() string {
+	return s.Status
+}
+
+// GetFirstSeen returns the value of FirstSeen.
+func (s *VulnFinding) GetFirstSeen() time.Time {
+	return s.FirstSeen
+}
+
+// GetLastSeen returns the value of LastSeen.
+func (s *VulnFinding) GetLastSeen() time.Time {
+	return s.LastSeen
+}
+
+// GetReferences returns the value of References.
+func (s *VulnFinding) GetReferences() []string {
+	return s.References
+}
+
+// SetID sets the value of ID.
+func (s *VulnFinding) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *VulnFinding) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetVulnID sets the value of VulnID.
+func (s *VulnFinding) SetVulnID(val string) {
+	s.VulnID = val
+}
+
+// SetKind sets the value of Kind.
+func (s *VulnFinding) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetSlug sets the value of Slug.
+func (s *VulnFinding) SetSlug(val string) {
+	s.Slug = val
+}
+
+// SetName sets the value of Name.
+func (s *VulnFinding) SetName(val string) {
+	s.Name = val
+}
+
+// SetInstalledVersion sets the value of InstalledVersion.
+func (s *VulnFinding) SetInstalledVersion(val string) {
+	s.InstalledVersion = val
+}
+
+// SetFixedVersion sets the value of FixedVersion.
+func (s *VulnFinding) SetFixedVersion(val OptString) {
+	s.FixedVersion = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *VulnFinding) SetSeverity(val string) {
+	s.Severity = val
+}
+
+// SetCvssScore sets the value of CvssScore.
+func (s *VulnFinding) SetCvssScore(val OptFloat64) {
+	s.CvssScore = val
+}
+
+// SetCve sets the value of Cve.
+func (s *VulnFinding) SetCve(val OptString) {
+	s.Cve = val
+}
+
+// SetCveLink sets the value of CveLink.
+func (s *VulnFinding) SetCveLink(val OptString) {
+	s.CveLink = val
+}
+
+// SetTitle sets the value of Title.
+func (s *VulnFinding) SetTitle(val string) {
+	s.Title = val
+}
+
+// SetStatus sets the value of Status.
+func (s *VulnFinding) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetFirstSeen sets the value of FirstSeen.
+func (s *VulnFinding) SetFirstSeen(val time.Time) {
+	s.FirstSeen = val
+}
+
+// SetLastSeen sets the value of LastSeen.
+func (s *VulnFinding) SetLastSeen(val time.Time) {
+	s.LastSeen = val
+}
+
+// SetReferences sets the value of References.
+func (s *VulnFinding) SetReferences(val []string) {
+	s.References = val
+}
+
+// Ref: #/components/schemas/WebAuthnCredential
+type WebAuthnCredential struct {
+	ID         uuid.UUID   `json:"id"`
+	Name       string      `json:"name"`
+	CreatedAt  time.Time   `json:"created_at"`
+	LastUsedAt OptDateTime `json:"last_used_at"`
+}
+
+// GetID returns the value of ID.
+func (s *WebAuthnCredential) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetName returns the value of Name.
+func (s *WebAuthnCredential) GetName() string {
+	return s.Name
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *WebAuthnCredential) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetLastUsedAt returns the value of LastUsedAt.
+func (s *WebAuthnCredential) GetLastUsedAt() OptDateTime {
+	return s.LastUsedAt
+}
+
+// SetID sets the value of ID.
+func (s *WebAuthnCredential) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetName sets the value of Name.
+func (s *WebAuthnCredential) SetName(val string) {
+	s.Name = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *WebAuthnCredential) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetLastUsedAt sets the value of LastUsedAt.
+func (s *WebAuthnCredential) SetLastUsedAt(val OptDateTime) {
+	s.LastUsedAt = val
+}
+
+func (*WebAuthnCredential) finishWebAuthnEnrollmentRes() {}
 
 // Request body for `PUT /sites/{siteId}/files/content`.
 // Ref: #/components/schemas/WriteFileContentRequest

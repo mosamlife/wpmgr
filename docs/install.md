@@ -96,6 +96,10 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | `WPMGR_S3_FORCE_PATH_STYLE` | required for SeaweedFS | `true` |
 | `WPMGR_CLICKHOUSE_ADDR` | ClickHouse | `localhost:9000` |
 | `WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector | `http://localhost:4318` |
+| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` at boot (unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`) | (empty) |
+| `WPMGR_WORDFENCE_API_KEY` | vulnerability-feed API key fallback (the key saved in the superadmin UI takes precedence) | (empty) |
+| `WPMGR_SCREENSHOT_READY_WAIT` | screenshot capture wait budget in whole seconds (media-encoder; raise on slow hosting) | `8` |
+| `WPMGR_HOSTED` | managed-SaaS entitlements switch; hosted only, leave unset on self-host | `false` |
 | `VITE_API_BASE_URL` | API base for the SPA | `http://localhost:8080` |
 
 ### Postgres: two-DSN model and the `wpmgr_app` role

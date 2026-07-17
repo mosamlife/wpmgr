@@ -241,6 +241,16 @@ type Server struct {
 	log  *slog.Logger
 }
 
+// Handler returns the underlying http.Handler (the *gin.Engine built by New).
+// Exists so tests can drive the full production route tree directly through
+// httptest / engine.Routes() without duplicating New's mounting logic —
+// notably the OpenAPI route-coverage contract test (tests/openapi_route_
+// coverage_test.go). Not used by production code (Run calls ListenAndServe
+// directly on the wrapped http.Server).
+func (s *Server) Handler() http.Handler {
+	return s.http.Handler
+}
+
 // New builds the Gin engine and HTTP server.
 func New(deps Deps) *Server {
 	if deps.Config.IsProduction() {

@@ -71,6 +71,15 @@ func (UnimplementedHandler) AddSiteEmailSuppression(ctx context.Context, req *Ad
 	return r, ht.ErrNotImplemented
 }
 
+// AgentAckPerfConfig implements agentAckPerfConfig operation.
+//
+// Acknowledge the current install state for a site's perf config (agent-authenticated).
+//
+// POST /agent/v1/perf/config-ack
+func (UnimplementedHandler) AgentAckPerfConfig(ctx context.Context, req *AgentPerfConfigAck) (r AgentAckPerfConfigRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // AgentAutologinConsume implements agentAutologinConsume operation.
 //
 // Called by the WordPress agent after it has verified the operator's
@@ -106,6 +115,19 @@ func (UnimplementedHandler) AgentDisconnect(ctx context.Context, req OptAgentDis
 	return r, ht.ErrNotImplemented
 }
 
+// AgentFetchSuppressionDeltas implements agentFetchSuppressionDeltas operation.
+//
+// Returns org-wide + this-site suppression deltas so the agent can
+// cache them locally and check before sending. Ascending keyset cursor
+// on `(created_at, id)`; the agent stores `next_cursor` and passes it
+// back as `since` on the next call. Omit `since` to fetch every
+// suppression entry for this tenant+site.
+//
+// GET /agent/v1/email/suppression
+func (UnimplementedHandler) AgentFetchSuppressionDeltas(ctx context.Context, params AgentFetchSuppressionDeltasParams) (r AgentFetchSuppressionDeltasRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // AgentFontsResults implements agentFontsResults operation.
 //
 // Font Results Catalog (M55 / Phase 2) — the agent POSTs after
@@ -125,37 +147,31 @@ func (UnimplementedHandler) AgentFontsResults(ctx context.Context, req *AgentFon
 	return r, ht.ErrNotImplemented
 }
 
-// AgentFontsTranscode implements agentFontsTranscode operation.
+// AgentGetHibpRange implements agentGetHibpRange operation.
 //
-// Font Transcoder (M54 / Phase 1) — the agent POSTs when it discovers a
-// self-hosted font (TTF/OTF/WOFF) that needs a WOFF2 encoding so it can
-// serve the font with correct `format()` fallbacks.
-// **Upload flow:**
-// 1. Agent POSTs `FontTranscodeRequest` (no storage key — the agent MUST
-// NOT supply or guess a key; the CP derives all keys from the verified
-// tenant identity + `source_hash`).
-// 2. If no job exists yet, the CP enqueues a `font_transcode` River job
-// and returns `state="pending"` with a `source_put_url` (presigned
-// S3 PUT, same TTL as the source-upload URL for media). The agent
-// MUST PUT the raw font bytes to this URL before the encoder runs.
-// 3. On subsequent POSTs for the same hash (`state="pending"` row
-// already exists), `source_put_url` is absent — the source is already
-// uploaded. The agent polls on every page build until state changes.
-// 4. When `state="ready"`, `woff2_get_url` is a short-TTL presigned GET
-// URL minted by the CP for the server-derived, GuardStorageKey-
-// validated WOFF2 object. The agent fetches the WOFF2 bytes from this
-// URL. The agent MUST NOT presign or construct a storage key itself.
-// `woff2_key` is also present as an informational field.
-// 5. When `state="negative"`, transcoding permanently failed; the agent
-// serves the original font forever (no retry).
-// **Security:** keys are SERVER-DERIVED from the verified tenant identity
-// + the caller-validated `source_hash`; `GuardStorageKey` validates every
-// key before it reaches the presigner. The agent identity (Ed25519
-// signed-request middleware) drives the tenant scope — the body never
-// influences which tenant's namespace is used.
+// ADR-059 Phase 3. Only the 5-char SHA-1 prefix is transmitted; the
+// agent performs the suffix match locally and never sends the full
+// password or full hash to the CP. The response is the raw
+// `SUFFIX:COUNT` text body from the HIBP range API (possibly with
+// Add-Padding decoy lines). An empty body means either a clean prefix
+// or a fail-open (HIBP unreachable) — the agent treats both identically
+// (password not breached).
 //
-// POST /agent/v1/fonts/transcode
-func (UnimplementedHandler) AgentFontsTranscode(ctx context.Context, req *FontTranscodeRequest) (r AgentFontsTranscodeRes, _ error) {
+// GET /agent/v1/security/hibp/range/{prefix}
+func (UnimplementedHandler) AgentGetHibpRange(ctx context.Context, params AgentGetHibpRangeParams) (r AgentGetHibpRangeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentGetUpdateManifest implements agentGetUpdateManifest operation.
+//
+// Returns a detached-Ed25519-signed JSON blob (NOT a JWT) carrying a
+// short-lived presigned package download URL plus its sha256 + size.
+// `manifest` is the base64url-encoded EXACT signed bytes; the agent
+// decodes it, verifies `signature` over those bytes, then JSON-decodes.
+// `204` (no body) means no release has been published yet.
+//
+// GET /agent/v1/update/manifest
+func (UnimplementedHandler) AgentGetUpdateManifest(ctx context.Context) (r AgentGetUpdateManifestRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -174,6 +190,23 @@ func (UnimplementedHandler) AgentHeartbeat(ctx context.Context, req OptAgentHear
 	return r, ht.ErrNotImplemented
 }
 
+// AgentIngestRucss implements agentIngestRucss operation.
+//
+// `multipart/form-data` with parts `meta` (JSON: `site_id`, `url`,
+// `structure_hash` required, `safelist` optional), `html` (required,
+// max 10 MiB), and one-or-more `css` parts (optional, max 5 MiB total).
+// Hard overall request ceiling 16 MiB. On a cache HIT the response body
+// IS the used-CSS content (not a key), `Content-Encoding: gzip`, with
+// `X-Rucss-Reduction-Pct` and `X-Rucss-Used-Bytes` headers. On a cache
+// MISS or degraded/unavailable state, `202` with `{"status":"processing",
+// "job_id":...}` or `{"status":"unavailable"}` — the agent serves full
+// CSS this render and never blocks.
+//
+// POST /agent/v1/rucss
+func (UnimplementedHandler) AgentIngestRucss(ctx context.Context, req *AgentIngestRucssReq) (r AgentIngestRucssRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // AgentMediaAssetDeleted implements agentMediaAssetDeleted operation.
 //
 // Media Optimizer (ADR-043) — the agent's `delete_attachment` hook fired on
@@ -184,6 +217,17 @@ func (UnimplementedHandler) AgentHeartbeat(ctx context.Context, req OptAgentHear
 //
 // POST /agent/v1/media/asset-deleted
 func (UnimplementedHandler) AgentMediaAssetDeleted(ctx context.Context, req *AgentMediaAssetDeleted) (r AgentMediaAssetDeletedRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentMediaAutoOptimize implements agentMediaAutoOptimize operation.
+//
+// The agent sends full attachment metadata so the CP can upsert rows
+// before gating and optimizing (fixes the fresh-upload skip). An empty
+// `attachments` array is a valid no-op.
+//
+// POST /agent/v1/media/auto-optimize
+func (UnimplementedHandler) AgentMediaAutoOptimize(ctx context.Context, req *AgentAutoOptimizeRequest) (r AgentMediaAutoOptimizeRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -266,6 +310,130 @@ func (UnimplementedHandler) AgentMetadata(ctx context.Context, req *AgentMetadat
 	return r, ht.ErrNotImplemented
 }
 
+// AgentPresignBackupChunks implements agentPresignBackupChunks operation.
+//
+// Incremental dedup: hashes already stored for the tenant are omitted
+// from `uploads` and the agent skips uploading them. Content-addressed,
+// tenant-namespaced object keys mean a presign can never target another
+// tenant's chunk prefix. The snapshot is re-verified to belong to the
+// calling site before any presign is minted.
+//
+// POST /agent/v1/backups/{snapshotId}/presign
+func (UnimplementedHandler) AgentPresignBackupChunks(ctx context.Context, req *AgentPresignChunksRequest, params AgentPresignBackupChunksParams) (r AgentPresignBackupChunksRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentPushActivity implements agentPushActivity operation.
+//
+// ADR-037 Sprint 3. The CP re-verifies the hash chain at ingest and
+// flags any tamper as `chain_valid:false` on the affected row rather
+// than rejecting the batch.
+//
+// POST /agent/v1/activity
+func (UnimplementedHandler) AgentPushActivity(ctx context.Context, req *AgentActivityIngestRequest) (r AgentPushActivityRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentPushDiagnostics implements agentPushDiagnostics operation.
+//
+// ADR-037 Sprint 2. Body is the raw 14-category diagnostics payload
+// (freeform per category). Also drives best-effort hosting-provider
+// inference from the request's source IP.
+//
+// POST /agent/v1/diagnostics
+func (UnimplementedHandler) AgentPushDiagnostics(ctx context.Context, req *AgentPushDiagnosticsReq) (r AgentPushDiagnosticsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentPushEmailLog implements agentPushEmailLog operation.
+//
+// Tolerant ingest: a malformed `response`/`created_at`/`attachments`
+// sub-field never fails the whole batch — each is coerced to a safe
+// default independently. Emits a throttled SSE `email.log_ingested`
+// notification (at most once per site per throttle window).
+//
+// POST /agent/v1/email/log
+func (UnimplementedHandler) AgentPushEmailLog(ctx context.Context, req *AgentEmailLogIngestRequest) (r AgentPushEmailLogRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentPushErrors implements agentPushErrors operation.
+//
+// Push a heartbeat-driven batch of fingerprint-deduped PHP errors (agent-authenticated).
+//
+// POST /agent/v1/errors
+func (UnimplementedHandler) AgentPushErrors(ctx context.Context, req *AgentErrorBatch) (r AgentPushErrorsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentPushLoginEvents implements agentPushLoginEvents operation.
+//
+// Push a heartbeat-driven batch of login events (agent-authenticated).
+//
+// POST /agent/v1/security/login-events
+func (UnimplementedHandler) AgentPushLoginEvents(ctx context.Context, req *AgentLoginEventBatch) (r AgentPushLoginEventsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentReportBackupProgress implements agentReportBackupProgress operation.
+//
+// Fired on every stage transition, and per-chunk during the custom
+// presigned-S3 sync. `snapshot_id` comes strictly from the URL path,
+// never the body — a compromised agent cannot target another
+// snapshot by spoofing it in the JSON body.
+//
+// POST /agent/v1/backups/{snapshotId}/progress
+func (UnimplementedHandler) AgentReportBackupProgress(ctx context.Context, req *AgentReportBackupProgressReq, params AgentReportBackupProgressParams) (r AgentReportBackupProgressRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentReportCacheStats implements agentReportCacheStats operation.
+//
+// Report the latest page-cache gauges, and optionally an object-cache block (agent-authenticated).
+//
+// POST /agent/v1/cache/stats-report
+func (UnimplementedHandler) AgentReportCacheStats(ctx context.Context, req *AgentCacheStatsReport) (r AgentReportCacheStatsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentReportDbCleanProgress implements agentReportDbCleanProgress operation.
+//
+// The frozen contract: an unknown `job_id` (CP restarted mid-job) is
+// still processed, never 404s; the agent must tolerate a non-2xx
+// response without halting its cleanup loop. `done:true` on the final
+// push for the job triggers `db.clean.completed` and advances the next
+// scheduled run.
+//
+// POST /agent/v1/db-clean/progress
+func (UnimplementedHandler) AgentReportDbCleanProgress(ctx context.Context, req *AgentDbCleanProgress) (r AgentReportDbCleanProgressRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentReportDbOrphanDeleteProgress implements agentReportDbOrphanDeleteProgress operation.
+//
+// Same frozen-contract tolerance as `/agent/v1/db-clean/progress`: an
+// unknown `job_id` is still processed, and a non-2xx response must not
+// halt the agent's delete loop.
+//
+// POST /agent/v1/db-orphan-delete/progress
+func (UnimplementedHandler) AgentReportDbOrphanDeleteProgress(ctx context.Context, req *AgentDbOrphanDeleteProgress) (r AgentReportDbOrphanDeleteProgressRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// AgentSubmitBackupManifest implements agentSubmitBackupManifest operation.
+//
+// ADR-051: an archive-delta increment submits the SAME request shape as
+// a full backup (its zip parts, DB dump, files-list, and optional
+// tombstones are all `ManifestEntry` rows); per-cycle telemetry
+// counters ride as optional top-level fields. Upserts not-yet-stored
+// chunks, increments refcounts for every reference, inserts manifest
+// entries, and completes the snapshot.
+//
+// POST /agent/v1/backups/{snapshotId}/manifest
+func (UnimplementedHandler) AgentSubmitBackupManifest(ctx context.Context, req *AgentSubmitManifestRequest, params AgentSubmitBackupManifestParams) (r AgentSubmitBackupManifestRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ApplySiteFileUpload implements applySiteFileUpload operation.
 //
 // Step 2 of 2 for browser file upload. After the browser has PUT all
@@ -316,6 +484,37 @@ func (UnimplementedHandler) AssignSitesToClient(ctx context.Context, req *Assign
 //
 // POST /api/v1/sites/{siteId}/enrollment-codes
 func (UnimplementedHandler) BeginReEnrollment(ctx context.Context, params BeginReEnrollmentParams) (r BeginReEnrollmentRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// BeginTotpEnrollment implements beginTotpEnrollment operation.
+//
+// Returns the `otpauth://` URI and the base32 secret for the enrollment
+// wizard (e.g. to render a QR code). This is the ONLY response that ever
+// returns the raw secret.
+//
+// POST /auth/2fa/totp/begin
+func (UnimplementedHandler) BeginTotpEnrollment(ctx context.Context) (r BeginTotpEnrollmentRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// BeginWebAuthnChallenge implements beginWebAuthnChallenge operation.
+//
+// Returns the raw `CredentialAssertion` options JSON so the browser can
+// pass them directly to `navigator.credentials.get()`.
+//
+// POST /auth/2fa/webauthn/begin
+func (UnimplementedHandler) BeginWebAuthnChallenge(ctx context.Context, req *BeginWebAuthnChallengeReq) (r BeginWebAuthnChallengeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// BeginWebAuthnEnrollment implements beginWebAuthnEnrollment operation.
+//
+// Returns the raw `CredentialCreation` options JSON so the browser can
+// pass them directly to `navigator.credentials.create()`.
+//
+// POST /auth/2fa/webauthn/begin-registration
+func (UnimplementedHandler) BeginWebAuthnEnrollment(ctx context.Context) (r BeginWebAuthnEnrollmentRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -372,12 +571,14 @@ func (UnimplementedHandler) BulkDeleteBackups(ctx context.Context, req *BulkDele
 
 // BulkDeleteEmailLog implements bulkDeleteEmailLog operation.
 //
-// Deletes a list of email log entries by id. RLS ensures only entries
-// belonging to the operator's tenant are deleted regardless of the id list.
-// Maximum 500 ids per request.
+// Deletes a list of email log entries by id, carried in the request
+// body (there is no `logId` path segment on this route — it operates on
+// a caller-supplied id list, not a single entry). RLS ensures only
+// entries belonging to the operator's tenant are deleted regardless of
+// the id list. Maximum 500 ids per request.
 // Requires `site.email.manage` permission.
 //
-// POST /api/v1/sites/{siteId}/email/log/bulk-delete
+// DELETE /api/v1/sites/{siteId}/email/log
 func (UnimplementedHandler) BulkDeleteEmailLog(ctx context.Context, req *BulkDeleteLogsRequest, params BulkDeleteEmailLogParams) (r BulkDeleteEmailLogRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
@@ -399,10 +600,12 @@ func (UnimplementedHandler) BulkPurgeCache(ctx context.Context, req *BulkPurgeRe
 //
 // Dispatches `resend_email` for multiple log entries. Each entry is
 // processed independently. Entries without body_stored are skipped with
-// `ok=false` in the per-entry result array (no overall 4xx).
+// `ok=false` in the per-entry result array (no overall 4xx). Registered
+// before `/email/log/{logId}` so Gin does not parse the literal segment
+// `resend` as a `logId` UUID.
 // Requires `site.email.manage` permission.
 //
-// POST /api/v1/sites/{siteId}/email/log/bulk-resend
+// POST /api/v1/sites/{siteId}/email/log/resend
 func (UnimplementedHandler) BulkResendEmailLog(ctx context.Context, req *BulkResendRequest, params BulkResendEmailLogParams) (r BulkResendEmailLogRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
@@ -417,6 +620,20 @@ func (UnimplementedHandler) BulkResendEmailLog(ctx context.Context, req *BulkRes
 //
 // POST /api/v1/backups/{snapshotId}/cancel
 func (UnimplementedHandler) CancelBackup(ctx context.Context, params CancelBackupParams) (r CancelBackupRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// CancelBillingSubscription implements cancelBillingSubscription operation.
+//
+// The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
+//
+//	Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
+//
+// change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
+// this response to carry the new plan state.
+//
+// POST /api/v1/billing/cancel
+func (UnimplementedHandler) CancelBillingSubscription(ctx context.Context) (r CancelBillingSubscriptionRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -450,6 +667,17 @@ func (UnimplementedHandler) CancelMedia(ctx context.Context, params CancelMediaP
 	return r, ht.ErrNotImplemented
 }
 
+// ChangeMyPassword implements changeMyPassword operation.
+//
+// Verifies `current_password`, then sets `new_password`. This session
+// stays alive (its `auth_at` is refreshed so it does not predate the new
+// `password_changed_at`); every other session for this user is invalidated.
+//
+// POST /auth/me/password
+func (UnimplementedHandler) ChangeMyPassword(ctx context.Context, req *ChangeMyPasswordReq) (r ChangeMyPasswordRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ChmodSiteFile implements chmodSiteFile operation.
 //
 // Issues a `file_chmod` command to the site's agent. The agent validates
@@ -475,6 +703,15 @@ func (UnimplementedHandler) CleanDatabase(ctx context.Context, params CleanDatab
 	return r, ht.ErrNotImplemented
 }
 
+// ClearAdminVulnFeedKey implements clearAdminVulnFeedKey operation.
+//
+// Falls back to the `WPMGR_VULN_FEED_API_KEY` environment variable, if set.
+//
+// DELETE /api/v1/admin/vuln-feed/key
+func (UnimplementedHandler) ClearAdminVulnFeedKey(ctx context.Context) (r ClearAdminVulnFeedKeyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ClearRucss implements clearRucss operation.
 //
 // Clears every cached RUCSS result for the site. Returns the number
@@ -491,8 +728,29 @@ func (UnimplementedHandler) ClearRucss(ctx context.Context, params ClearRucssPar
 // entirely. A comped tenant is immune to webhook-driven plan mutation.
 // Requires is_superadmin=true.
 //
-// POST /api/v1/admin/accounts/{tenantId}/comp
+// POST /api/v1/admin/accounts/{id}/comp
 func (UnimplementedHandler) CompAdminAccount(ctx context.Context, req *AdminCompAccountRequest, params CompAdminAccountParams) (r CompAdminAccountRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// CompleteRecoveryChallenge implements completeRecoveryChallenge operation.
+//
+// Complete a login 2FA challenge with a single-use recovery code (unauthenticated).
+//
+// POST /auth/2fa/recovery
+func (UnimplementedHandler) CompleteRecoveryChallenge(ctx context.Context, req *TwoFactorChallengeCompleteRequest) (r CompleteRecoveryChallengeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// CompleteTotpChallenge implements completeTotpChallenge operation.
+//
+// Verifies `code` against the active challenge minted at login (the
+// `challenge` nonce returned by `POST /auth/login`'s 202 response) and,
+// on success, issues a full session. `remember_device` optionally issues
+// a trusted-device cookie so future logins skip the challenge.
+//
+// POST /auth/2fa/totp
+func (UnimplementedHandler) CompleteTotpChallenge(ctx context.Context, req *TwoFactorChallengeCompleteRequest) (r CompleteTotpChallengeRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -507,6 +765,17 @@ func (UnimplementedHandler) CompAdminAccount(ctx context.Context, req *AdminComp
 //
 // POST /api/v1/sites/{siteId}/perf/rucss/compute
 func (UnimplementedHandler) ComputeRucss(ctx context.Context, req OptComputeRucssReq, params ComputeRucssParams) (r *PerfActionResult, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ConfirmTotpEnrollment implements confirmTotpEnrollment operation.
+//
+// Validates `code` against the provisional secret from
+// `POST /auth/2fa/totp/begin`, persists the confirmed secret, and
+// returns 10 recovery codes shown exactly once.
+//
+// POST /auth/2fa/totp/confirm
+func (UnimplementedHandler) ConfirmTotpEnrollment(ctx context.Context, req *ConfirmTotpEnrollmentReq) (r ConfirmTotpEnrollmentRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -659,6 +928,15 @@ func (UnimplementedHandler) CreateSite(ctx context.Context, req *SiteCreate) (r 
 	return r, ht.ErrNotImplemented
 }
 
+// CreateSiteBan implements createSiteBan operation.
+//
+// Requires the `site.security.manage` permission.
+//
+// POST /api/v1/sites/{siteId}/security/bans
+func (UnimplementedHandler) CreateSiteBan(ctx context.Context, req *CreateSiteBanReq, params CreateSiteBanParams) (r CreateSiteBanRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // CreateSiteDestination implements createSiteDestination operation.
 //
 // Add a backup destination to a site.
@@ -749,6 +1027,17 @@ func (UnimplementedHandler) CreateUpdateRun(ctx context.Context, req *UpdateRunC
 	return r, ht.ErrNotImplemented
 }
 
+// DeleteAdminUser implements deleteAdminUser operation.
+//
+// Hard-deletes the user. Any organisation the user solely owned with
+// zero sites is deleted along with them; an organisation with sites (or
+// other members) is kept, listed in `kept_orgs_with_sites`.
+//
+// DELETE /api/v1/admin/users/{userId}
+func (UnimplementedHandler) DeleteAdminUser(ctx context.Context, params DeleteAdminUserParams) (r DeleteAdminUserRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // DeleteBackup implements deleteBackup operation.
 //
 // Deletes a completed or failed snapshot and reclaims any now-unreferenced
@@ -781,6 +1070,20 @@ func (UnimplementedHandler) DeleteClient(ctx context.Context, params DeleteClien
 //
 // DELETE /api/v1/clients/{clientId}/reports/{reportId}
 func (UnimplementedHandler) DeleteClientReport(ctx context.Context, params DeleteClientReportParams) (r DeleteClientReportRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// DeleteDbOrphans implements deleteDbOrphans operation.
+//
+// Deletes only options / cron entries / tables from UNINSTALLED plugins
+// that the P3.5 report classified as safely deletable. The CP
+// re-classifies every item and drops anything no longer eligible before
+// signing the agent command; the agent independently re-verifies each
+// item live before deleting. Requires `site.cache.manage` at the route
+// level AND `site.cache.delete-all` (admin+) in the handler body.
+//
+// POST /api/v1/sites/{siteId}/perf/db/orphan-delete
+func (UnimplementedHandler) DeleteDbOrphans(ctx context.Context, req *DbOrphanDeleteRequest, params DeleteDbOrphansParams) (r DeleteDbOrphansRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -851,12 +1154,40 @@ func (UnimplementedHandler) DeleteMember(ctx context.Context, params DeleteMembe
 	return r, ht.ErrNotImplemented
 }
 
+// DeleteOrg implements deleteOrg operation.
+//
+// Two-lane deletion (GH #152). An EMPTY org (zero sites, zero other
+// members) is hard-deleted immediately (`lane=hard`). A populated org is
+// soft-deleted (`lane=soft`): it becomes invisible everywhere instantly
+// and is recoverable via `POST /orgs/{orgId}/restore` until the
+// grace-window purge worker runs. `confirm_name` must exactly match the
+// organisation's current name. When this is the caller's active org,
+// their session is reassigned to another live membership, or cleared
+// entirely (dropping to onboarding) if it was their last org —
+// `active_tenant_id` in the response reflects the post-delete state.
+// On a hosted instance an active paid subscription must be
+// cancelled/downgraded first (`billing_active` 409).
+//
+// DELETE /api/v1/orgs/{orgId}
+func (UnimplementedHandler) DeleteOrg(ctx context.Context, req *DeleteOrgReq, params DeleteOrgParams) (r DeleteOrgRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // DeleteSite implements deleteSite operation.
 //
 // Delete a site.
 //
 // DELETE /api/v1/sites/{siteId}
 func (UnimplementedHandler) DeleteSite(ctx context.Context, params DeleteSiteParams) (r DeleteSiteRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// DeleteSiteBan implements deleteSiteBan operation.
+//
+// Requires the `site.security.manage` permission.
+//
+// DELETE /api/v1/sites/{siteId}/security/bans/{banId}
+func (UnimplementedHandler) DeleteSiteBan(ctx context.Context, params DeleteSiteBanParams) (r DeleteSiteBanRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -901,6 +1232,15 @@ func (UnimplementedHandler) DeleteSiteFile(ctx context.Context, req *FileDeleteR
 	return r, ht.ErrNotImplemented
 }
 
+// DeleteSitePolicyGroup implements deleteSitePolicyGroup operation.
+//
+// Requires the `site.security.manage` permission.
+//
+// DELETE /api/v1/sites/{siteId}/security/policy/groups/{role}
+func (UnimplementedHandler) DeleteSitePolicyGroup(ctx context.Context, params DeleteSitePolicyGroupParams) (r DeleteSitePolicyGroupRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // DeleteSiteShare implements deleteSiteShare operation.
 //
 // Revoke a collaborator's site access (admin+; org-scope only).
@@ -918,6 +1258,15 @@ func (UnimplementedHandler) DeleteSiteShare(ctx context.Context, params DeleteSi
 //
 // DELETE /api/v1/tags/{tagId}
 func (UnimplementedHandler) DeleteTag(ctx context.Context, params DeleteTagParams) (r DeleteTagRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// DeleteWebAuthnCredential implements deleteWebAuthnCredential operation.
+//
+// Requires `current_password` re-authentication.
+//
+// DELETE /auth/2fa/webauthn/credentials/{id}
+func (UnimplementedHandler) DeleteWebAuthnCredential(ctx context.Context, req *DeleteWebAuthnCredentialReq, params DeleteWebAuthnCredentialParams) (r DeleteWebAuthnCredentialRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -939,6 +1288,26 @@ func (UnimplementedHandler) DisableCache(ctx context.Context, params DisableCach
 //
 // POST /api/v1/sites/{siteId}/perf/object-cache/disable
 func (UnimplementedHandler) DisableObjectCache(ctx context.Context, params DisableObjectCacheParams) (r *PerfActionResult, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// DisableTotp implements disableTotp operation.
+//
+// Requires `current_password` re-authentication. On success: clears
+// TOTP, recomputes `two_factor_enabled`, revokes every trusted device
+// for this user, and clears the trusted-device cookie on this response.
+//
+// POST /auth/2fa/totp/disable
+func (UnimplementedHandler) DisableTotp(ctx context.Context, req *DisableTotpReq) (r DisableTotpRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// DismissSiteVulnerability implements dismissSiteVulnerability operation.
+//
+// Requires the `site.security.manage` permission.
+//
+// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/dismiss
+func (UnimplementedHandler) DismissSiteVulnerability(ctx context.Context, params DismissSiteVulnerabilityParams) (r DismissSiteVulnerabilityRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1008,7 +1377,7 @@ func (UnimplementedHandler) ExportSiteEmailLog(ctx context.Context, params Expor
 // forward-only (a new grace_until must extend further out than the
 // current one). Requires is_superadmin=true.
 //
-// POST /api/v1/admin/accounts/{tenantId}/grace
+// POST /api/v1/admin/accounts/{id}/grace
 func (UnimplementedHandler) ExtendAdminAccountGrace(ctx context.Context, req *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (r ExtendAdminAccountGraceRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
@@ -1041,6 +1410,35 @@ func (UnimplementedHandler) ExtractSiteFileArchive(ctx context.Context, req *Fil
 	return r, ht.ErrNotImplemented
 }
 
+// FetchScanFindingFile implements fetchScanFindingFile operation.
+//
+// Dispatches a synchronous read to the site's agent and returns the
+// file content base64-encoded. Requires the `site.write` permission
+// (this reaches out to the live site).
+//
+// POST /api/v1/sites/{siteId}/scans/{runId}/findings/{fid}/file
+func (UnimplementedHandler) FetchScanFindingFile(ctx context.Context, params FetchScanFindingFileParams) (r FetchScanFindingFileRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// FinishWebAuthnChallenge implements finishWebAuthnChallenge operation.
+//
+// Complete a login 2FA challenge with a WebAuthn assertion (unauthenticated).
+//
+// POST /auth/2fa/webauthn/finish
+func (UnimplementedHandler) FinishWebAuthnChallenge(ctx context.Context, req *FinishWebAuthnChallengeReq) (r FinishWebAuthnChallengeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// FinishWebAuthnEnrollment implements finishWebAuthnEnrollment operation.
+//
+// Complete WebAuthn credential registration.
+//
+// POST /auth/2fa/webauthn/finish-registration
+func (UnimplementedHandler) FinishWebAuthnEnrollment(ctx context.Context, req *FinishWebAuthnEnrollmentReq) (r FinishWebAuthnEnrollmentRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // FlushObjectCache implements flushObjectCache operation.
 //
 // Flushes the Redis/cache store for this site. The `scope` field
@@ -1061,7 +1459,7 @@ func (UnimplementedHandler) FlushObjectCache(ctx context.Context, req OptFlushOb
 // to grant service for free — use the comp endpoint instead. Requires
 // is_superadmin=true.
 //
-// POST /api/v1/admin/accounts/{tenantId}/state
+// POST /api/v1/admin/accounts/{id}/state
 func (UnimplementedHandler) ForceAdminAccountState(ctx context.Context, req *AdminForceStateRequest, params ForceAdminAccountStateParams) (r ForceAdminAccountStateRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
@@ -1093,8 +1491,18 @@ func (UnimplementedHandler) GenerateClientReport(ctx context.Context, req OptGen
 // card, a merged billing_events+audit_log timeline (newest first), the
 // member roster, and a compact site list. Requires is_superadmin=true.
 //
-// GET /api/v1/admin/accounts/{tenantId}
+// GET /api/v1/admin/accounts/{id}
 func (UnimplementedHandler) GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (r GetAdminAccountRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetAdminAccountsTenancy implements getAdminAccountsTenancy operation.
+//
+// Diagnostic for account/org splits (e.g. a superadmin stranded in the
+// wrong org while site data lives in a different org). No mutation.
+//
+// GET /api/v1/admin/accounts-tenancy
+func (UnimplementedHandler) GetAdminAccountsTenancy(ctx context.Context, params GetAdminAccountsTenancyParams) (r GetAdminAccountsTenancyRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1105,6 +1513,35 @@ func (UnimplementedHandler) GetAdminAccount(ctx context.Context, params GetAdmin
 //
 // GET /api/v1/admin/revenue
 func (UnimplementedHandler) GetAdminRevenue(ctx context.Context) (r GetAdminRevenueRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetAdminSiteTenancy implements getAdminSiteTenancy operation.
+//
+// Compares where a site and its perf data (rucss results / cache stats
+// / config) live against the calling superadmin's own org memberships.
+// No mutation.
+//
+// GET /api/v1/admin/sites/{siteId}/tenancy
+func (UnimplementedHandler) GetAdminSiteTenancy(ctx context.Context, params GetAdminSiteTenancyParams) (r GetAdminSiteTenancyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetAdminStats implements getAdminStats operation.
+//
+// Instance-wide counts (superadmin).
+//
+// GET /api/v1/admin/stats
+func (UnimplementedHandler) GetAdminStats(ctx context.Context) (r GetAdminStatsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetAdminVulnFeedStatus implements getAdminVulnFeedStatus operation.
+//
+// The key itself is never returned.
+//
+// GET /api/v1/admin/vuln-feed/status
+func (UnimplementedHandler) GetAdminVulnFeedStatus(ctx context.Context) (r GetAdminVulnFeedStatusRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1200,6 +1637,15 @@ func (UnimplementedHandler) GetBilling(ctx context.Context) (r GetBillingRes, _ 
 	return r, ht.ErrNotImplemented
 }
 
+// GetCacheHealth implements getCacheHealth operation.
+//
+// Cache hit-ratio trend and average for a site (M52 /.
+//
+// GET /api/v1/sites/{siteId}/perf/cache/health
+func (UnimplementedHandler) GetCacheHealth(ctx context.Context, params GetCacheHealthParams) (r GetCacheHealthRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetCacheStats implements getCacheStats operation.
 //
 // Returns the most recent cache gauges the agent reported (cached page
@@ -1237,6 +1683,39 @@ func (UnimplementedHandler) GetClientReport(ctx context.Context, params GetClien
 //
 // GET /api/v1/clients/{clientId}/report-schedule
 func (UnimplementedHandler) GetClientReportSchedule(ctx context.Context, params GetClientReportScheduleParams) (r GetClientReportScheduleRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetDbCleanStatus implements getDbCleanStatus operation.
+//
+// Pull-truth endpoint: mirrors `GET /perf/db/scan` — `clean_active` /
+// `active_job_id` / `active_started_at` reflect the in-flight-job
+// watchdog columns, letting the web show/hide the spinner on page load
+// without relying on SSE delivery.
+//
+// GET /api/v1/sites/{siteId}/perf/db/clean
+func (UnimplementedHandler) GetDbCleanStatus(ctx context.Context, params GetDbCleanStatusParams) (r GetDbCleanStatusRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetDbHealth implements getDbHealth operation.
+//
+// Database-size trend and growth summary for a site (M42 Phase 3.4).
+//
+// GET /api/v1/sites/{siteId}/perf/db/health
+func (UnimplementedHandler) GetDbHealth(ctx context.Context, params GetDbHealthParams) (r GetDbHealthRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetDbOrphansReport implements getDbOrphansReport operation.
+//
+// Classifies the orphaned options/cron entries/tables stored in the
+// latest `db_scan` result against the live corpus knowledge base. No
+// destructive action is performed here — see
+// `POST /perf/db/orphan-delete`.
+//
+// GET /api/v1/sites/{siteId}/perf/db/orphans
+func (UnimplementedHandler) GetDbOrphansReport(ctx context.Context, params GetDbOrphansReportParams) (r GetDbOrphansReportRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1316,6 +1795,16 @@ func (UnimplementedHandler) GetFleetEmailStats(ctx context.Context, params GetFl
 	return r, ht.ErrNotImplemented
 }
 
+// GetFleetIncidentDetail implements getFleetIncidentDetail operation.
+//
+// A site-scoped collaborator without access to the incident's own site
+// gets `404 incident_not_found` (never a distinguishing signal).
+//
+// GET /api/v1/fleet/incidents/{incidentId}
+func (UnimplementedHandler) GetFleetIncidentDetail(ctx context.Context, params GetFleetIncidentDetailParams) (r GetFleetIncidentDetailRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetFleetIncidents implements getFleetIncidents operation.
 //
 // Returns open incidents (in_incident=true) and recently-alerted sites
@@ -1355,6 +1844,17 @@ func (UnimplementedHandler) GetFleetUptimeStatus(ctx context.Context) (r *FleetU
 	return r, ht.ErrNotImplemented
 }
 
+// GetFleetVulnerabilities implements getFleetVulnerabilities operation.
+//
+// Cross-site counts by severity plus a prioritized finding list.
+// Org-scoped only (`RequireOrgScope`); a site-scoped collaborator uses
+// the per-site `GET /sites/{siteId}/vulnerabilities` endpoint instead.
+//
+// GET /api/v1/vulnerabilities
+func (UnimplementedHandler) GetFleetVulnerabilities(ctx context.Context, params GetFleetVulnerabilitiesParams) (r GetFleetVulnerabilitiesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetHealthz implements getHealthz operation.
 //
 // Liveness probe.
@@ -1379,6 +1879,15 @@ func (UnimplementedHandler) GetMe(ctx context.Context) (r GetMeRes, _ error) {
 //
 // GET /api/v1/sites/{siteId}/media/jobs/{jobId}
 func (UnimplementedHandler) GetMediaJob(ctx context.Context, params GetMediaJobParams) (r *MediaJobDetail, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetMediaSettings implements getMediaSettings operation.
+//
+// Get the auto-optimize settings for a site (ADR-044).
+//
+// GET /api/v1/sites/{siteId}/media/settings
+func (UnimplementedHandler) GetMediaSettings(ctx context.Context, params GetMediaSettingsParams) (r GetMediaSettingsRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1470,6 +1979,21 @@ func (UnimplementedHandler) GetPortalSummary(ctx context.Context, params GetPort
 	return r, ht.ErrNotImplemented
 }
 
+// GetPublicPricing implements getPublicPricing operation.
+//
+// Mounted directly on the root engine (no session, no tenant gate)
+// despite sharing the `/api/v1` path prefix — the marketing site's
+// price source. Registered only when hosted billing is enabled;
+// self-host installs 404 here. Response is `Cache-Control:
+// public, max-age=3600` and resolves from a warm cache when possible,
+// falling back to a static in-Go price table when no payment provider
+// is configured.
+//
+// GET /api/v1/pricing
+func (UnimplementedHandler) GetPublicPricing(ctx context.Context) (r GetPublicPricingRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetReadyz implements getReadyz operation.
 //
 // Returns 200 when the service can serve traffic (DB reachable).
@@ -1504,6 +2028,30 @@ func (UnimplementedHandler) GetRestoreRun(ctx context.Context, params GetRestore
 //
 // GET /api/v1/sites/{siteId}/perf/rum/summary
 func (UnimplementedHandler) GetRumSummary(ctx context.Context, params GetRumSummaryParams) (r *RumSummary, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetRumTrend implements getRumTrend operation.
+//
+// Returns a per-metric daily p75 trend series over `window_days` days
+// (default 28, clamped to [1,90]). Days with zero rollup rows are
+// omitted; days below the configured `min_sample_count` floor appear
+// with `suppressed:true` and `p75_ms:0` so the client can render a gap
+// rather than a misleading zero. An optional `device` filter restricts
+// the aggregation to one device class.
+//
+// GET /api/v1/sites/{siteId}/perf/rum/trend
+func (UnimplementedHandler) GetRumTrend(ctx context.Context, params GetRumTrendParams) (r GetRumTrendRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetScanRun implements getScanRun operation.
+//
+// The run is resolved by id (tenant-scoped); a site-scoped collaborator
+// without access to the run's own site is rejected with 403.
+//
+// GET /api/v1/sites/{siteId}/scans/{runId}
+func (UnimplementedHandler) GetScanRun(ctx context.Context, params GetScanRunParams) (r GetScanRunRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1623,6 +2171,15 @@ func (UnimplementedHandler) GetSiteFilesSettings(ctx context.Context, params Get
 	return r, ht.ErrNotImplemented
 }
 
+// GetSiteHardeningConfig implements getSiteHardeningConfig operation.
+//
+// Get the hardening config for a site.
+//
+// GET /api/v1/sites/{siteId}/security/hardening
+func (UnimplementedHandler) GetSiteHardeningConfig(ctx context.Context, params GetSiteHardeningConfigParams) (r GetSiteHardeningConfigRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetSiteLoginBrand implements getSiteLoginBrand operation.
 //
 // Returns the current login brand config (logo URL, logo link, message)
@@ -1647,6 +2204,17 @@ func (UnimplementedHandler) GetSiteLoginProtection(ctx context.Context, params G
 	return r, ht.ErrNotImplemented
 }
 
+// GetSiteSecurityPolicy implements getSiteSecurityPolicy operation.
+//
+// Site-user auth policy governs 2FA and password requirements for the
+// WordPress users of this site (distinct from dashboard operator 2FA,
+// which is per-CP-user — see the two-factor-auth tag).
+//
+// GET /api/v1/sites/{siteId}/security/policy
+func (UnimplementedHandler) GetSiteSecurityPolicy(ctx context.Context, params GetSiteSecurityPolicyParams) (r GetSiteSecurityPolicyRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetSiteUptime implements getSiteUptime operation.
 //
 // Returns the uptime % and average latency for a site over the requested
@@ -1661,12 +2229,31 @@ func (UnimplementedHandler) GetSiteUptime(ctx context.Context, params GetSiteUpt
 	return r, ht.ErrNotImplemented
 }
 
+// GetSmtpSettings implements getSmtpSettings operation.
+//
+// Org-scoped (blocks site-scoped collaborators). Reads require admin+;
+// the stored password/secret is never returned in plaintext.
+//
+// GET /api/v1/settings/smtp
+func (UnimplementedHandler) GetSmtpSettings(ctx context.Context) (r GetSmtpSettingsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetTenant implements getTenant operation.
 //
 // Get a tenant by ID.
 //
 // GET /api/v1/tenants/{tenantId}
 func (UnimplementedHandler) GetTenant(ctx context.Context, params GetTenantParams) (r GetTenantRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GetTwoFactorStatus implements getTwoFactorStatus operation.
+//
+// Current 2FA configuration summary for the authenticated user.
+//
+// GET /auth/2fa/status
+func (UnimplementedHandler) GetTwoFactorStatus(ctx context.Context) (r GetTwoFactorStatusRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1686,6 +2273,61 @@ func (UnimplementedHandler) GetUpdateRun(ctx context.Context, params GetUpdateRu
 //
 // GET /api/v1/uptime/summary
 func (UnimplementedHandler) GetUptimeSummary(ctx context.Context) (r *UptimeSummary, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// GrantAdminSelfMembership implements grantAdminSelfMembership operation.
+//
+// Idempotent recovery primitive for a recovery-induced org split. Only
+// ever adds the CALLER (never an arbitrary user) to the SITE's own org
+// (never an arbitrary tenant).
+//
+// POST /api/v1/admin/sites/{siteId}/grant-self-membership
+func (UnimplementedHandler) GrantAdminSelfMembership(ctx context.Context, params GrantAdminSelfMembershipParams) (r GrantAdminSelfMembershipRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// HandleBillingProviderWebhook implements handleBillingProviderWebhook operation.
+//
+// Mounted on the root engine — no session, no tenant gate. The
+// provider's own request signature (verified inside
+// `Service.ProcessWebhook`) is the entire authentication boundary. An
+// unrecognised `provider` value 404s.
+//
+// POST /webhooks/billing/{provider}
+func (UnimplementedHandler) HandleBillingProviderWebhook(ctx context.Context, req *HandleBillingProviderWebhookReq, params HandleBillingProviderWebhookParams) (r HandleBillingProviderWebhookRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// HandleEmailProviderWebhook implements handleEmailProviderWebhook operation.
+//
+// Mounted on the root engine — no session, no tenant gate. `routeToken`
+// is a per-config-row opaque random value; its SHA-256 hash resolves
+// the owning tenant + site, and the corresponding per-row signing key
+// (not an instance-wide key) verifies the provider's signature.
+// `provider` is one of `ses`, `sendgrid`, `mailgun`, `postmark`. An
+// unknown `routeToken` or `provider` responds `404` with no body (no
+// existence leak). The request body shape is entirely provider-defined
+// (SNS notification envelope, SendGrid event array, Mailgun form POST,
+// or Postmark JSON) so it is not modeled as a fixed schema here.
+//
+// POST /webhooks/email/{provider}/{routeToken}
+func (UnimplementedHandler) HandleEmailProviderWebhook(ctx context.Context, req *HandleEmailProviderWebhookReq, params HandleEmailProviderWebhookParams) (r HandleEmailProviderWebhookRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// IngestRumBeacon implements ingestRumBeacon operation.
+//
+// Mounted on the root engine — no session, no tenant gate. The
+// `key` field (a per-site beacon key) is the sole access credential.
+// Every failure mode (unknown key, RUM disabled, sampled out, rate
+// limited, a storage write failure) responds `204 No Content` so a
+// `navigator.sendBeacon()` call — which never reads the response — never
+// surfaces a distinguishing status to the page. Only a malformed body
+// yields `400`, and only an oversized body yields `413`.
+//
+// POST /rum/ingest
+func (UnimplementedHandler) IngestRumBeacon(ctx context.Context, req *RumBeacon) (r IngestRumBeaconRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1725,6 +2367,24 @@ func (UnimplementedHandler) IsolateUnusedMedia(ctx context.Context, req *MediaCl
 //
 // GET /api/v1/admin/accounts
 func (UnimplementedHandler) ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (r ListAdminAccountsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListAdminUserSites implements listAdminUserSites operation.
+//
+// Every site reachable by a user via their org memberships (superadmin).
+//
+// GET /api/v1/admin/users/{userId}/sites
+func (UnimplementedHandler) ListAdminUserSites(ctx context.Context, params ListAdminUserSitesParams) (r ListAdminUserSitesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListAdminUsers implements listAdminUsers operation.
+//
+// Search/list every user on the instance (superadmin).
+//
+// GET /api/v1/admin/users
+func (UnimplementedHandler) ListAdminUsers(ctx context.Context, params ListAdminUsersParams) (r ListAdminUsersRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1909,6 +2569,15 @@ func (UnimplementedHandler) ListMembers(ctx context.Context, params ListMembersP
 	return r, ht.ErrNotImplemented
 }
 
+// ListOrgs implements listOrgs operation.
+//
+// List the caller's organisations, with their role in each.
+//
+// GET /api/v1/orgs
+func (UnimplementedHandler) ListOrgs(ctx context.Context) (r ListOrgsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListPortalReports implements listPortalReports operation.
 //
 // Returns completed white-label reports for all of the principal's clients. The client_id =
@@ -2012,6 +2681,24 @@ func (UnimplementedHandler) ListRumResults(ctx context.Context, params ListRumRe
 	return r, ht.ErrNotImplemented
 }
 
+// ListScanFindings implements listScanFindings operation.
+//
+// List findings for a scan run.
+//
+// GET /api/v1/sites/{siteId}/scans/{runId}/findings
+func (UnimplementedHandler) ListScanFindings(ctx context.Context, params ListScanFindingsParams) (r ListScanFindingsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListScanRuns implements listScanRuns operation.
+//
+// List scan runs for a site.
+//
+// GET /api/v1/sites/{siteId}/scans
+func (UnimplementedHandler) ListScanRuns(ctx context.Context, params ListScanRunsParams) (r ListScanRunsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListScheduleRuns implements listScheduleRuns operation.
 //
 // Returns a split view of schedule runs for the site: `upcoming`
@@ -2045,6 +2732,15 @@ func (UnimplementedHandler) ListSharedWithMe(ctx context.Context) (r ListSharedW
 //
 // GET /api/v1/sites/{siteId}/activity
 func (UnimplementedHandler) ListSiteActivity(ctx context.Context, params ListSiteActivityParams) (r *SiteActivityList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListSiteBans implements listSiteBans operation.
+//
+// List ban entries for a site.
+//
+// GET /api/v1/sites/{siteId}/security/bans
+func (UnimplementedHandler) ListSiteBans(ctx context.Context, params ListSiteBansParams) (r ListSiteBansRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2128,6 +2824,16 @@ func (UnimplementedHandler) ListSiteFiles(ctx context.Context, params ListSiteFi
 	return r, ht.ErrNotImplemented
 }
 
+// ListSiteInvitations implements listSiteInvitations operation.
+//
+// Requires the `member.manage` permission and full org membership — a
+// site-scoped collaborator cannot manage shares.
+//
+// GET /api/v1/sites/{siteId}/invitations
+func (UnimplementedHandler) ListSiteInvitations(ctx context.Context, params ListSiteInvitationsParams) (r ListSiteInvitationsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListSiteLoginEvents implements listSiteLoginEvents operation.
 //
 // Returns the agent-ingested login events for the site, ordered by
@@ -2150,12 +2856,30 @@ func (UnimplementedHandler) ListSitePHPErrors(ctx context.Context, params ListSi
 	return r, ht.ErrNotImplemented
 }
 
+// ListSitePolicyGroups implements listSitePolicyGroups operation.
+//
+// List per-role policy group overrides for a site.
+//
+// GET /api/v1/sites/{siteId}/security/policy/groups
+func (UnimplementedHandler) ListSitePolicyGroups(ctx context.Context, params ListSitePolicyGroupsParams) (r ListSitePolicyGroupsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListSiteShares implements listSiteShares operation.
 //
 // List collaborators for a site (admin+).
 //
 // GET /api/v1/sites/{siteId}/shares
 func (UnimplementedHandler) ListSiteShares(ctx context.Context, params ListSiteSharesParams) (r ListSiteSharesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListSiteVulnerabilities implements listSiteVulnerabilities operation.
+//
+// List open vulnerability findings for a site.
+//
+// GET /api/v1/sites/{siteId}/vulnerabilities
+func (UnimplementedHandler) ListSiteVulnerabilities(ctx context.Context, params ListSiteVulnerabilitiesParams) (r ListSiteVulnerabilitiesRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2192,12 +2916,30 @@ func (UnimplementedHandler) ListTenants(ctx context.Context, params ListTenantsP
 	return r, ht.ErrNotImplemented
 }
 
+// ListTrustedDevices implements listTrustedDevices operation.
+//
+// List the authenticated user's trusted devices.
+//
+// GET /auth/2fa/trusted-devices
+func (UnimplementedHandler) ListTrustedDevices(ctx context.Context) (r ListTrustedDevicesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListUpdateRuns implements listUpdateRuns operation.
 //
 // List update runs for the current tenant.
 //
 // GET /api/v1/updates
 func (UnimplementedHandler) ListUpdateRuns(ctx context.Context, params ListUpdateRunsParams) (r *UpdateRunList, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ListWebAuthnCredentials implements listWebAuthnCredentials operation.
+//
+// List the authenticated user's WebAuthn credentials.
+//
+// GET /auth/2fa/webauthn/credentials
+func (UnimplementedHandler) ListWebAuthnCredentials(ctx context.Context) (r ListWebAuthnCredentialsRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2519,6 +3261,18 @@ func (UnimplementedHandler) PutSiteEmailWebhookConfig(ctx context.Context, req *
 	return r, ht.ErrNotImplemented
 }
 
+// PutSiteHardeningConfig implements putSiteHardeningConfig operation.
+//
+// Requires the `site.security.manage` permission. On a successful store
+// but failed agent push, returns `200` with the stored config and an
+// `X-Agent-Push-Warning` header (never a 5xx — the config is durably
+// saved and will be re-pushed on the next reconcile).
+//
+// PUT /api/v1/sites/{siteId}/security/hardening
+func (UnimplementedHandler) PutSiteHardeningConfig(ctx context.Context, req *SiteHardeningConfig, params PutSiteHardeningConfigParams) (r PutSiteHardeningConfigRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // PutSiteLoginBrand implements putSiteLoginBrand operation.
 //
 // Stores the new login brand config and pushes it to the agent via the
@@ -2552,6 +3306,26 @@ func (UnimplementedHandler) PutSiteLoginBrand(ctx context.Context, req *SiteLogi
 //
 // PUT /api/v1/sites/{siteId}/security/login-protection
 func (UnimplementedHandler) PutSiteLoginProtection(ctx context.Context, req *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (r PutSiteLoginProtectionRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// PutSitePolicyGroup implements putSitePolicyGroup operation.
+//
+// Requires the `site.security.manage` permission.
+//
+// PUT /api/v1/sites/{siteId}/security/policy/groups/{role}
+func (UnimplementedHandler) PutSitePolicyGroup(ctx context.Context, req *SitePolicyGroup, params PutSitePolicyGroupParams) (r PutSitePolicyGroupRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// PutSiteSecurityPolicy implements putSiteSecurityPolicy operation.
+//
+// Requires the `site.security.manage` permission. On a successful store
+// but failed agent push, returns `200` with the stored policy and an
+// `X-Agent-Push-Warning` header.
+//
+// PUT /api/v1/sites/{siteId}/security/policy
+func (UnimplementedHandler) PutSiteSecurityPolicy(ctx context.Context, req *SiteSecurityPolicy, params PutSiteSecurityPolicyParams) (r PutSiteSecurityPolicyRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2599,6 +3373,20 @@ func (UnimplementedHandler) ReadSiteFileContent(ctx context.Context, params Read
 //
 // POST /api/v1/audit/integrity/rebaseline
 func (UnimplementedHandler) RebaselineAuditIntegrity(ctx context.Context, req OptAuditRebaselineRequest) (r RebaselineAuditIntegrityRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RecheckSite implements recheckSite operation.
+//
+// Dispatches a synchronous `metadata` command to the site's agent,
+// applies the returned metadata, and records a heartbeat (recovering
+// the connection state to `connected` when it was `degraded` or
+// `disconnected`). Rate-limited per (tenant, site). Requires
+// `site.write` and site access; no org-scope requirement (a
+// write-access collaborator may re-check).
+//
+// POST /api/v1/sites/{siteId}/recheck
+func (UnimplementedHandler) RecheckSite(ctx context.Context, params RecheckSiteParams) (r RecheckSiteRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2652,6 +3440,26 @@ func (UnimplementedHandler) RegenerateClientInvitation(ctx context.Context, para
 	return r, ht.ErrNotImplemented
 }
 
+// RegenerateRecoveryCodes implements regenerateRecoveryCodes operation.
+//
+// Requires `current_password` re-authentication. Replaces the existing
+// 10-code batch with 10 new ones, returned once.
+//
+// POST /auth/2fa/recovery-codes/regenerate
+func (UnimplementedHandler) RegenerateRecoveryCodes(ctx context.Context, req *RegenerateRecoveryCodesReq) (r RegenerateRecoveryCodesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RegenerateSiteInvitation implements regenerateSiteInvitation operation.
+//
+// Requires the `member.manage` permission and full org membership.
+// Returns a fresh `accept_link` for the same pending invitation.
+//
+// POST /api/v1/sites/{siteId}/invitations/{invitationId}/regenerate
+func (UnimplementedHandler) RegenerateSiteInvitation(ctx context.Context, params RegenerateSiteInvitationParams) (r RegenerateSiteInvitationRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // Register implements register operation.
 //
 // On first run (zero users in the database) this bootstraps the instance:
@@ -2667,6 +3475,15 @@ func (UnimplementedHandler) Register(ctx context.Context, req *RegisterRequest) 
 	return r, ht.ErrNotImplemented
 }
 
+// RemediateSiteVulnerability implements remediateSiteVulnerability operation.
+//
+// Trigger an update run to remediate a vulnerability finding.
+//
+// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/remediate
+func (UnimplementedHandler) RemediateSiteVulnerability(ctx context.Context, params RemediateSiteVulnerabilityParams) (r RemediateSiteVulnerabilityRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // RemoveClientMember implements removeClientMember operation.
 //
 // Immediately removes the client_members row. The user's session remains valid but subsequent portal
@@ -2674,6 +3491,15 @@ func (UnimplementedHandler) Register(ctx context.Context, req *RegisterRequest) 
 //
 // DELETE /api/v1/clients/{clientId}/members/{userId}
 func (UnimplementedHandler) RemoveClientMember(ctx context.Context, params RemoveClientMemberParams) (r RemoveClientMemberRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RenameOrg implements renameOrg operation.
+//
+// Requires the caller to be an admin or owner of this org.
+//
+// PATCH /api/v1/orgs/{orgId}
+func (UnimplementedHandler) RenameOrg(ctx context.Context, req *RenameOrgReq, params RenameOrgParams) (r RenameOrgRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2690,6 +3516,24 @@ func (UnimplementedHandler) RemoveClientMember(ctx context.Context, params Remov
 //
 // POST /api/v1/sites/{siteId}/files/rename
 func (UnimplementedHandler) RenameSiteFile(ctx context.Context, req *FileRenameRequest, params RenameSiteFileParams) (r RenameSiteFileRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RescanSiteVulnerabilities implements rescanSiteVulnerabilities operation.
+//
+// Enqueue an immediate per-site vulnerability rescan.
+//
+// POST /api/v1/sites/{siteId}/vulnerabilities/rescan
+func (UnimplementedHandler) RescanSiteVulnerabilities(ctx context.Context, params RescanSiteVulnerabilitiesParams) (r RescanSiteVulnerabilitiesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ResendAdminUserVerification implements resendAdminUserVerification operation.
+//
+// Resend a pending user's verification email (superadmin).
+//
+// POST /api/v1/admin/users/{userId}/resend-verification
+func (UnimplementedHandler) ResendAdminUserVerification(ctx context.Context, params ResendAdminUserVerificationParams) (r ResendAdminUserVerificationRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2741,7 +3585,7 @@ func (UnimplementedHandler) ResetPassword(ctx context.Context, req *ResetPasswor
 // 400 — every other manual control on this page rejects a malformed
 // body outright. Requires is_superadmin=true.
 //
-// POST /api/v1/admin/accounts/{tenantId}/restore
+// POST /api/v1/admin/accounts/{id}/restore
 func (UnimplementedHandler) RestoreAdminAccount(ctx context.Context, req OptAdminReasonRequest, params RestoreAdminAccountParams) (r RestoreAdminAccountRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
@@ -2763,6 +3607,15 @@ func (UnimplementedHandler) RestoreIsolatedMedia(ctx context.Context, req *Media
 //
 // POST /api/v1/sites/{siteId}/media/restore
 func (UnimplementedHandler) RestoreMedia(ctx context.Context, req OptMediaAssetSelection, params RestoreMediaParams) (r *MediaBatchResult, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RestoreOrg implements restoreOrg operation.
+//
+// Undelete a soft-deleted organisation within the grace window (owner-only).
+//
+// POST /api/v1/orgs/{orgId}/restore
+func (UnimplementedHandler) RestoreOrg(ctx context.Context, params RestoreOrgParams) (r RestoreOrgRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2801,6 +3654,15 @@ func (UnimplementedHandler) RestoreSiteFileVersion(ctx context.Context, req *Fil
 	return r, ht.ErrNotImplemented
 }
 
+// RestoreSiteVulnerability implements restoreSiteVulnerability operation.
+//
+// Requires the `site.security.manage` permission.
+//
+// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/restore
+func (UnimplementedHandler) RestoreSiteVulnerability(ctx context.Context, params RestoreSiteVulnerabilityParams) (r RestoreSiteVulnerabilityRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // RevertDbSnapshot implements revertDbSnapshot operation.
 //
 // Replaces the entire live database with the SQL captured in a local
@@ -2823,8 +3685,17 @@ func (UnimplementedHandler) RevertDbSnapshot(ctx context.Context, req *DbSnapsho
 // else falls back to plan=free/plan_status=none. Requires
 // is_superadmin=true.
 //
-// DELETE /api/v1/admin/accounts/{tenantId}/comp
+// DELETE /api/v1/admin/accounts/{id}/comp
 func (UnimplementedHandler) RevokeAdminAccountComp(ctx context.Context, req *AdminReasonRequest, params RevokeAdminAccountCompParams) (r RevokeAdminAccountCompRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RevokeAllTrustedDevices implements revokeAllTrustedDevices operation.
+//
+// Also clears the trusted-device cookie on this response.
+//
+// POST /auth/2fa/trusted-devices/revoke-all
+func (UnimplementedHandler) RevokeAllTrustedDevices(ctx context.Context) (r RevokeAllTrustedDevicesRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2862,6 +3733,24 @@ func (UnimplementedHandler) RevokeSite(ctx context.Context, req OptSiteLifecycle
 	return r, ht.ErrNotImplemented
 }
 
+// RevokeSiteInvitation implements revokeSiteInvitation operation.
+//
+// Requires the `member.manage` permission and full org membership.
+//
+// DELETE /api/v1/sites/{siteId}/invitations/{invitationId}
+func (UnimplementedHandler) RevokeSiteInvitation(ctx context.Context, params RevokeSiteInvitationParams) (r RevokeSiteInvitationRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RevokeTrustedDevice implements revokeTrustedDevice operation.
+//
+// Revoke one trusted device.
+//
+// DELETE /auth/2fa/trusted-devices/{id}
+func (UnimplementedHandler) RevokeTrustedDevice(ctx context.Context, params RevokeTrustedDeviceParams) (r RevokeTrustedDeviceRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // RotateRumBeaconKey implements rotateRumBeaconKey operation.
 //
 // Unconditionally mints a fresh RUM beacon key, rotates the previous
@@ -2880,6 +3769,29 @@ func (UnimplementedHandler) RevokeSite(ctx context.Context, req OptSiteLifecycle
 //
 // POST /api/v1/sites/{siteId}/perf/rum/rotate-key
 func (UnimplementedHandler) RotateRumBeaconKey(ctx context.Context, params RotateRumBeaconKeyParams) (r *RumBeaconRotateResult, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// RumIngestPreflight implements rumIngestPreflight operation.
+//
+// CORS preflight for the beacon endpoint.
+//
+// OPTIONS /rum/ingest
+func (UnimplementedHandler) RumIngestPreflight(ctx context.Context) error {
+	return ht.ErrNotImplemented
+}
+
+// RunDbTableAction implements runDbTableAction operation.
+//
+// Dispatches `optimize`, `repair`, `analyze`, `convert_innodb`
+// (non-destructive; `site.cache.manage`), or `drop`/`empty`
+// (destructive; additionally requires `site.cache.delete-all`, admin+,
+// and a type-to-confirm `confirm` token) against a list of tables. An
+// advisory `X-Backup-Warning` header is set when no recent backup is
+// found.
+//
+// POST /api/v1/sites/{siteId}/perf/db/table-action
+func (UnimplementedHandler) RunDbTableAction(ctx context.Context, req *DbTableActionRequest, params RunDbTableActionParams) (r RunDbTableActionRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2938,6 +3850,18 @@ func (UnimplementedHandler) SearchSiteFiles(ctx context.Context, params SearchSi
 	return r, ht.ErrNotImplemented
 }
 
+// SendSmtpTestEmail implements sendSmtpTestEmail operation.
+//
+// Requires the `smtp.manage` permission (owner-only). A send failure is
+// returned as `200 {ok:false, message}` — the scrubbed reason string
+// never contains internal IPs/hostnames — rather than a 4xx/5xx, so the
+// UI can show it inline.
+//
+// POST /api/v1/settings/smtp/test
+func (UnimplementedHandler) SendSmtpTestEmail(ctx context.Context, req *SendSmtpTestEmailReq) (r SendSmtpTestEmailRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // SendTestEmail implements sendTestEmail operation.
 //
 // Dispatches the signed `send_test_email` command to the site's agent.
@@ -2962,8 +3886,27 @@ func (UnimplementedHandler) SendTestEmail(ctx context.Context, req *EmailTestReq
 // limit untouched; sending it as `null` (or `0`) clears it back to the
 // pure ladder base. Requires is_superadmin=true.
 //
-// PUT /api/v1/admin/accounts/{tenantId}/overrides
+// PUT /api/v1/admin/accounts/{id}/overrides
 func (UnimplementedHandler) SetAdminAccountOverrides(ctx context.Context, req *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (r SetAdminAccountOverridesRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// SetAdminUserStatus implements setAdminUserStatus operation.
+//
+// Set a user's status (superadmin).
+//
+// PATCH /api/v1/admin/users/{userId}
+func (UnimplementedHandler) SetAdminUserStatus(ctx context.Context, req *SetAdminUserStatusReq, params SetAdminUserStatusParams) (r SetAdminUserStatusRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// SetAdminVulnFeedKey implements setAdminVulnFeedKey operation.
+//
+// Plaintext key in the body over TLS. On success an immediate sync is
+// triggered so the operator sees it connect without waiting an hour.
+//
+// PUT /api/v1/admin/vuln-feed/key
+func (UnimplementedHandler) SetAdminVulnFeedKey(ctx context.Context, req *SetAdminVulnFeedKeyReq) (r SetAdminVulnFeedKeyRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -2984,6 +3927,17 @@ func (UnimplementedHandler) SetSiteTags(ctx context.Context, req *SiteTags, para
 //
 // POST /api/v1/sites/{siteId}/errors/{md5}/silence
 func (UnimplementedHandler) SilenceSitePHPError(ctx context.Context, req OptPHPErrorSilence, params SilenceSitePHPErrorParams) (r SilenceSitePHPErrorRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// StartScanRun implements startScanRun operation.
+//
+// Enqueues a scan against the site's WordPress core/plugin/theme files
+// (checksum comparison). `kind` defaults to `core` when the body is
+// omitted. Requires the `site.write` permission.
+//
+// POST /api/v1/sites/{siteId}/scans
+func (UnimplementedHandler) StartScanRun(ctx context.Context, req OptStartScanRunReq, params StartScanRunParams) (r StartScanRunRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -3008,8 +3962,31 @@ func (UnimplementedHandler) StreamSiteEvents(ctx context.Context, params StreamS
 // plan_status. Tenant data is never touched. Requires
 // is_superadmin=true.
 //
-// POST /api/v1/admin/accounts/{tenantId}/suspend
+// POST /api/v1/admin/accounts/{id}/suspend
 func (UnimplementedHandler) SuspendAdminAccount(ctx context.Context, req *AdminReasonRequest, params SuspendAdminAccountParams) (r SuspendAdminAccountRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// SwitchOrg implements switchOrg operation.
+//
+// Requires authentication but NOT an active tenant — this is how a user
+// stranded without a valid active org (e.g. a former site-collaborator
+// whose access was revoked) recovers. The membership gate runs under
+// the caller's own row-level-security scope: a non-member of
+// `tenant_id` gets 403, never a different signal that would confirm the
+// tenant's existence.
+//
+// POST /api/v1/orgs/switch
+func (UnimplementedHandler) SwitchOrg(ctx context.Context, req *SwitchOrgReq) (r SwitchOrgRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// SyncAdminVulnFeed implements syncAdminVulnFeed operation.
+//
+// Enqueue an immediate vulnerability feed refresh (superadmin).
+//
+// POST /api/v1/admin/vuln-feed/sync
+func (UnimplementedHandler) SyncAdminVulnFeed(ctx context.Context) (r SyncAdminVulnFeedRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -3066,6 +4043,18 @@ func (UnimplementedHandler) TestSiteDestination(ctx context.Context, req *SiteDe
 	return r, ht.ErrNotImplemented
 }
 
+// ToggleScanFindingIgnore implements toggleScanFindingIgnore operation.
+//
+// Global route (no `:siteId` path segment — a finding id is unique per
+// tenant). The finding's own site is resolved server-side and checked
+// against the caller's site allowlist. `ignored` defaults to `true`
+// when omitted from the body.
+//
+// POST /api/v1/findings/{id}/ignore
+func (UnimplementedHandler) ToggleScanFindingIgnore(ctx context.Context, req OptToggleScanFindingIgnoreReq, params ToggleScanFindingIgnoreParams) (r ToggleScanFindingIgnoreRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // TriggerDbScan implements triggerDbScan operation.
 //
 // Runs a synchronous read-only scan against the site's WordPress database
@@ -3110,6 +4099,26 @@ func (UnimplementedHandler) UpdateClient(ctx context.Context, req *UpdateAgencyC
 	return r, ht.ErrNotImplemented
 }
 
+// UpdateMe implements updateMe operation.
+//
+// Updates the caller's display name. Email is intentionally not
+// editable here.
+//
+// PATCH /auth/me
+func (UnimplementedHandler) UpdateMe(ctx context.Context, req *UpdateMeReq) (r UpdateMeRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// UpdateMediaSettings implements updateMediaSettings operation.
+//
+// On a successful store but failed agent push, returns `200` with the
+// stored settings and an `X-Agent-Push-Warning` header.
+//
+// PUT /api/v1/sites/{siteId}/media/settings
+func (UnimplementedHandler) UpdateMediaSettings(ctx context.Context, req *MediaSettings, params UpdateMediaSettingsParams) (r UpdateMediaSettingsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // UpdateSiteDestination implements updateSiteDestination operation.
 //
 // Update a configured destination (omit secret_key to keep it).
@@ -3137,6 +4146,15 @@ func (UnimplementedHandler) UpdateSiteFilesSettings(ctx context.Context, req *Up
 	return r, ht.ErrNotImplemented
 }
 
+// UpdateSmtpSettings implements updateSmtpSettings operation.
+//
+// Requires the `smtp.manage` permission (owner-only).
+//
+// PUT /api/v1/settings/smtp
+func (UnimplementedHandler) UpdateSmtpSettings(ctx context.Context, req *SmtpSettingsUpdate) (r UpdateSmtpSettingsRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // UpdateTag implements updateTag operation.
 //
 // A color-only body just updates the color. A `name` change renames the
@@ -3159,6 +4177,17 @@ func (UnimplementedHandler) UpdateTag(ctx context.Context, req *SiteTagUpdate, p
 //
 // GET /api/v1/audit/verify
 func (UnimplementedHandler) VerifyAudit(ctx context.Context) (r VerifyAuditRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// VerifyBillingCheckoutCallback implements verifyBillingCheckoutCallback operation.
+//
+// A UX confirmation ONLY — the payment provider's webhook remains the sole source of truth for
+// actually granting a plan. Verified against the caller's own tenant's pinned provider; the request
+// can never name a different tenant or provider.
+//
+// POST /api/v1/billing/checkout/verify
+func (UnimplementedHandler) VerifyBillingCheckoutCallback(ctx context.Context, req *VerifyBillingCheckoutCallbackReq) (r VerifyBillingCheckoutCallbackRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
