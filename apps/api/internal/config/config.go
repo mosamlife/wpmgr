@@ -233,6 +233,15 @@ type UptimeConfig struct {
 	// CronKickConcurrency caps how many concurrent kicks fire per pass.
 	// Default 10. Env: WPMGR_CRON_KICK_CONCURRENCY.
 	CronKickConcurrency int `koanf:"cron_kick_concurrency"`
+
+	// KeepWarmEnabled gates the INTERIM /sites uptime keep-warm refresher
+	// (site.UptimeKeepWarmer) — a stopgap for the recurring 7-8s GET
+	// /api/v1/sites latency after ~15-30 min idle (cold Postgres buffer cache
+	// + expired 60s result cache backing QueryFleetUptime). Defaults to true;
+	// set WPMGR_UPTIME_KEEPWARM=false to disable. REMOVE this flag together
+	// with internal/site/uptime_keepwarm.go once the site_uptime_daily rollup
+	// lands and becomes the authoritative source for /sites uptime enrichment.
+	KeepWarmEnabled bool `koanf:"keepwarm"`
 }
 
 // S3Config holds the S3-compatible object-storage configuration (ADR-010).
@@ -550,6 +559,7 @@ func defaults() map[string]any {
 		"uptime.cron_kick_interval":         "5m",
 		"uptime.cron_kick_timeout":          "5s",
 		"uptime.cron_kick_concurrency":      10,
+		"uptime.keepwarm":                   true,
 		"river.media_schema":                "media_encoder",
 		"autologin.require_2fa_step_up":     false,
 		"conn.degrade_after":                "300s",

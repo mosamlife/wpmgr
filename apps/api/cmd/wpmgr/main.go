@@ -1077,6 +1077,17 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// a direct read of site_uptime_probes (which is empty on ClickHouse installs).
 	siteSvc.SetUptimeStore(metricsStore)
 
+	// INTERIM stopgap (WPMGR_UPTIME_KEEPWARM, default true): periodically
+	// re-run the fleet-uptime query for every tenant with enrolled sites so
+	// the 60s result cache above never expires unpopulated AND the Postgres
+	// buffer cache backing site_uptime_probes stays resident — this is what
+	// fixes the recurring ~7-8s post-idle GET /api/v1/sites stall. Reuses
+	// siteSvc.UptimeStore() (the SAME cache-wrapped instance List() reads) and
+	// the SAME cross-tenant enrolled-site list the probe worker already
+	// sweeps every ~60s. REMOVE once the site_uptime_daily rollup lands — see
+	// internal/site/uptime_keepwarm.go's file doc comment.
+	site.StartUptimeKeepWarm(ctx, cfg.Uptime.KeepWarmEnabled, siteSvc.UptimeStore(), newUptimeKeepWarmLister(uptimeRepo), logger)
+
 	// P4b — cron kick: periodically fire a GET to wp-cron.php for all enrolled
 	// sites so fully page-cached sites boot PHP and drain WP-Cron even with zero
 	// PHP-booting organic traffic. Reuses the SSRF-hardened ssrfClient (ADR-009).
