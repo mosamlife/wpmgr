@@ -88,7 +88,7 @@ The WebAuthn RP ID and origin must be configurable for self-hosted instances. Tw
 
 ```
 WPMGR_AUTH_WEBAUTHN_RPID      (default: "manage.wpmgr.app")
-WPMGR_AUTH_WEBAUTHN_RPORIGINS (comma-separated; default: "https://manage.wpmgr.app")
+WPMGR_AUTH_WEBAUTHN_RP_ORIGINS (comma-separated; default: "https://manage.wpmgr.app")
 ```
 
 Self-hosted operators set these to match their `WPMGR_PUBLIC_BASE_URL`.
@@ -159,7 +159,7 @@ NIST SP 800-63B Section 5.1.5 (out-of-band authenticators) and Section 5.1.4 (si
 - The `users` table grows three columns (two nullable bytea/timestamptz). No existing query changes shape.
 - Five new tables are added; all are pre-tenant (auth-flow scope), using `app.agent='on'` RLS.
 - The `go-webauthn/webauthn` library is v0.x and pinned to v0.17.4. API changes require a coordinated update.
-- `WPMGR_AUTH_WEBAUTHN_RPID` and `WPMGR_AUTH_WEBAUTHN_RPORIGINS` must be set by self-hosted operators when they deploy Phase 6. Defaults cover the hosted instance.
+- `WPMGR_AUTH_WEBAUTHN_RPID` and `WPMGR_AUTH_WEBAUTHN_RP_ORIGINS` must be set by self-hosted operators when they deploy Phase 6. Defaults cover the hosted instance.
 
 ---
 

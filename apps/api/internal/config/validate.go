@@ -7,7 +7,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/riverutil"
 )
 
-// validateWebAuthnOrigins checks that every WPMGR_AUTH_WEBAUTHN_RPORIGINS entry
+// validateWebAuthnOrigins checks that every WPMGR_AUTH_WEBAUTHN_RP_ORIGINS entry
 // uses HTTPS and is not a loopback/localhost origin. Called by Validate in
 // production only. Self-hosted operators who deploy HTTP or use localhost must
 // set WPMGR_ENV != "production".
@@ -25,7 +25,7 @@ func validateWebAuthnOrigins(origins string) *Issue {
 		lower := strings.ToLower(o)
 		if strings.HasPrefix(lower, "http://") {
 			return &Issue{
-				Name:   "WPMGR_AUTH_WEBAUTHN_RPORIGINS",
+				Name:   "WPMGR_AUTH_WEBAUTHN_RP_ORIGINS",
 				Reason: "contains an http:// origin (" + o + ") — WebAuthn requires HTTPS in production; use https://",
 			}
 		}
@@ -44,7 +44,7 @@ func validateWebAuthnOrigins(origins string) *Issue {
 		}
 		if host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost") {
 			return &Issue{
-				Name:   "WPMGR_AUTH_WEBAUTHN_RPORIGINS",
+				Name:   "WPMGR_AUTH_WEBAUTHN_RP_ORIGINS",
 				Reason: "contains a loopback/localhost origin (" + o + ") — not permitted in production; use your public domain",
 			}
 		}
