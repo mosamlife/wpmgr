@@ -139,6 +139,14 @@ func (s *FileVersionRestoreRequest) setDefaults() {
 }
 
 // setDefaults set default value of fields.
+func (s *FinishWebAuthnChallengeReq) setDefaults() {
+	{
+		val := bool(false)
+		s.RememberDevice.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
 func (s *FlushObjectCacheReq) setDefaults() {
 	{
 		val := FlushObjectCacheReqScope("all")
@@ -251,6 +259,30 @@ func (s *SiteTagUpdate) setDefaults() {
 	{
 		val := bool(false)
 		s.Merge.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
+func (s *StartScanRunReq) setDefaults() {
+	{
+		val := string("core")
+		s.Kind.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
+func (s *ToggleScanFindingIgnoreReq) setDefaults() {
+	{
+		val := bool(true)
+		s.Ignored.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
+func (s *TwoFactorChallengeCompleteRequest) setDefaults() {
+	{
+		val := bool(false)
+		s.RememberDevice.SetTo(val)
 	}
 }
 

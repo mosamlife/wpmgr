@@ -212,6 +212,352 @@ func decodeAddSiteEmailSuppressionParams(args [1]string, argsEscaped bool, r *ht
 	return params, nil
 }
 
+// AgentFetchSuppressionDeltasParams is parameters of agentFetchSuppressionDeltas operation.
+type AgentFetchSuppressionDeltasParams struct {
+	// Opaque keyset cursor from a previous call's `next_cursor`.
+	Since OptString `json:",omitempty,omitzero"`
+}
+
+func unpackAgentFetchSuppressionDeltasParams(packed middleware.Parameters) (params AgentFetchSuppressionDeltasParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "since",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Since = v.(OptString)
+		}
+	}
+	return params
+}
+
+func decodeAgentFetchSuppressionDeltasParams(args [0]string, argsEscaped bool, r *http.Request) (params AgentFetchSuppressionDeltasParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode query: since.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "since",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotSinceVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotSinceVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Since.SetTo(paramsDotSinceVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "since",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// AgentGetHibpRangeParams is parameters of agentGetHibpRange operation.
+type AgentGetHibpRangeParams struct {
+	// Exactly 5 uppercase hex characters.
+	Prefix string
+}
+
+func unpackAgentGetHibpRangeParams(packed middleware.Parameters) (params AgentGetHibpRangeParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "prefix",
+			In:   "path",
+		}
+		params.Prefix = packed[key].(string)
+	}
+	return params
+}
+
+func decodeAgentGetHibpRangeParams(args [1]string, argsEscaped bool, r *http.Request) (params AgentGetHibpRangeParams, _ error) {
+	// Decode path: prefix.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "prefix",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Prefix = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+			if err := func() error {
+				if err := (validate.String{
+					MinLength:     0,
+					MinLengthSet:  false,
+					MaxLength:     0,
+					MaxLengthSet:  false,
+					Email:         false,
+					Hostname:      false,
+					Regex:         regexMap["^[A-F0-9]{5}$"],
+					MinNumeric:    0,
+					MinNumericSet: false,
+					MaxNumeric:    0,
+					MaxNumericSet: false,
+				}).Validate(string(params.Prefix)); err != nil {
+					return errors.Wrap(err, "string")
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "prefix",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// AgentPresignBackupChunksParams is parameters of agentPresignBackupChunks operation.
+type AgentPresignBackupChunksParams struct {
+	SnapshotId uuid.UUID
+}
+
+func unpackAgentPresignBackupChunksParams(packed middleware.Parameters) (params AgentPresignBackupChunksParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "snapshotId",
+			In:   "path",
+		}
+		params.SnapshotId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeAgentPresignBackupChunksParams(args [1]string, argsEscaped bool, r *http.Request) (params AgentPresignBackupChunksParams, _ error) {
+	// Decode path: snapshotId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "snapshotId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SnapshotId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "snapshotId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// AgentReportBackupProgressParams is parameters of agentReportBackupProgress operation.
+type AgentReportBackupProgressParams struct {
+	SnapshotId uuid.UUID
+}
+
+func unpackAgentReportBackupProgressParams(packed middleware.Parameters) (params AgentReportBackupProgressParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "snapshotId",
+			In:   "path",
+		}
+		params.SnapshotId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeAgentReportBackupProgressParams(args [1]string, argsEscaped bool, r *http.Request) (params AgentReportBackupProgressParams, _ error) {
+	// Decode path: snapshotId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "snapshotId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SnapshotId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "snapshotId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// AgentSubmitBackupManifestParams is parameters of agentSubmitBackupManifest operation.
+type AgentSubmitBackupManifestParams struct {
+	SnapshotId uuid.UUID
+}
+
+func unpackAgentSubmitBackupManifestParams(packed middleware.Parameters) (params AgentSubmitBackupManifestParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "snapshotId",
+			In:   "path",
+		}
+		params.SnapshotId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeAgentSubmitBackupManifestParams(args [1]string, argsEscaped bool, r *http.Request) (params AgentSubmitBackupManifestParams, _ error) {
+	// Decode path: snapshotId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "snapshotId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SnapshotId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "snapshotId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // ApplySiteFileUploadParams is parameters of applySiteFileUpload operation.
 type ApplySiteFileUploadParams struct {
 	SiteId uuid.UUID
@@ -994,22 +1340,22 @@ func decodeClearRucssParams(args [1]string, argsEscaped bool, r *http.Request) (
 
 // CompAdminAccountParams is parameters of compAdminAccount operation.
 type CompAdminAccountParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackCompAdminAccountParams(packed middleware.Parameters) (params CompAdminAccountParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeCompAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params CompAdminAccountParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -1021,7 +1367,7 @@ func decodeCompAdminAccountParams(args [1]string, argsEscaped bool, r *http.Requ
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -1038,7 +1384,7 @@ func decodeCompAdminAccountParams(args [1]string, argsEscaped bool, r *http.Requ
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -1049,7 +1395,7 @@ func decodeCompAdminAccountParams(args [1]string, argsEscaped bool, r *http.Requ
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 			Err:  err,
 		}
@@ -1382,6 +1728,71 @@ func decodeCreateRestoreParams(args [1]string, argsEscaped bool, r *http.Request
 	return params, nil
 }
 
+// CreateSiteBanParams is parameters of createSiteBan operation.
+type CreateSiteBanParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackCreateSiteBanParams(packed middleware.Parameters) (params CreateSiteBanParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeCreateSiteBanParams(args [1]string, argsEscaped bool, r *http.Request) (params CreateSiteBanParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // CreateSiteDestinationParams is parameters of createSiteDestination operation.
 type CreateSiteDestinationParams struct {
 	SiteId uuid.UUID
@@ -1642,6 +2053,71 @@ func decodeCreateSiteShareParams(args [1]string, argsEscaped bool, r *http.Reque
 	return params, nil
 }
 
+// DeleteAdminUserParams is parameters of deleteAdminUser operation.
+type DeleteAdminUserParams struct {
+	UserId uuid.UUID
+}
+
+func unpackDeleteAdminUserParams(packed middleware.Parameters) (params DeleteAdminUserParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "userId",
+			In:   "path",
+		}
+		params.UserId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeDeleteAdminUserParams(args [1]string, argsEscaped bool, r *http.Request) (params DeleteAdminUserParams, _ error) {
+	// Decode path: userId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "userId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.UserId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "userId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // DeleteBackupParams is parameters of deleteBackup operation.
 type DeleteBackupParams struct {
 	SnapshotId uuid.UUID
@@ -1883,6 +2359,71 @@ func decodeDeleteClientReportParams(args [2]string, argsEscaped bool, r *http.Re
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "reportId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// DeleteDbOrphansParams is parameters of deleteDbOrphans operation.
+type DeleteDbOrphansParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackDeleteDbOrphansParams(packed middleware.Parameters) (params DeleteDbOrphansParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeDeleteDbOrphansParams(args [1]string, argsEscaped bool, r *http.Request) (params DeleteDbOrphansParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
 			In:   "path",
 			Err:  err,
 		}
@@ -2387,6 +2928,71 @@ func decodeDeleteMemberParams(args [1]string, argsEscaped bool, r *http.Request)
 	return params, nil
 }
 
+// DeleteOrgParams is parameters of deleteOrg operation.
+type DeleteOrgParams struct {
+	OrgId uuid.UUID
+}
+
+func unpackDeleteOrgParams(packed middleware.Parameters) (params DeleteOrgParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "orgId",
+			In:   "path",
+		}
+		params.OrgId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeDeleteOrgParams(args [1]string, argsEscaped bool, r *http.Request) (params DeleteOrgParams, _ error) {
+	// Decode path: orgId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "orgId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.OrgId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "orgId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // DeleteSiteParams is parameters of deleteSite operation.
 type DeleteSiteParams struct {
 	SiteId uuid.UUID
@@ -2445,6 +3051,124 @@ func decodeDeleteSiteParams(args [1]string, argsEscaped bool, r *http.Request) (
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// DeleteSiteBanParams is parameters of deleteSiteBan operation.
+type DeleteSiteBanParams struct {
+	SiteId uuid.UUID
+	BanId  uuid.UUID
+}
+
+func unpackDeleteSiteBanParams(packed middleware.Parameters) (params DeleteSiteBanParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "banId",
+			In:   "path",
+		}
+		params.BanId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeDeleteSiteBanParams(args [2]string, argsEscaped bool, r *http.Request) (params DeleteSiteBanParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: banId.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "banId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.BanId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "banId",
 			In:   "path",
 			Err:  err,
 		}
@@ -2753,6 +3477,124 @@ func decodeDeleteSiteFileParams(args [1]string, argsEscaped bool, r *http.Reques
 	return params, nil
 }
 
+// DeleteSitePolicyGroupParams is parameters of deleteSitePolicyGroup operation.
+type DeleteSitePolicyGroupParams struct {
+	SiteId uuid.UUID
+	Role   string
+}
+
+func unpackDeleteSitePolicyGroupParams(packed middleware.Parameters) (params DeleteSitePolicyGroupParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "role",
+			In:   "path",
+		}
+		params.Role = packed[key].(string)
+	}
+	return params
+}
+
+func decodeDeleteSitePolicyGroupParams(args [2]string, argsEscaped bool, r *http.Request) (params DeleteSitePolicyGroupParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: role.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "role",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Role = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "role",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // DeleteSiteShareParams is parameters of deleteSiteShare operation.
 type DeleteSiteShareParams struct {
 	SiteId uuid.UUID
@@ -2936,6 +3778,71 @@ func decodeDeleteTagParams(args [1]string, argsEscaped bool, r *http.Request) (p
 	return params, nil
 }
 
+// DeleteWebAuthnCredentialParams is parameters of deleteWebAuthnCredential operation.
+type DeleteWebAuthnCredentialParams struct {
+	ID uuid.UUID
+}
+
+func unpackDeleteWebAuthnCredentialParams(packed middleware.Parameters) (params DeleteWebAuthnCredentialParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "id",
+			In:   "path",
+		}
+		params.ID = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeDeleteWebAuthnCredentialParams(args [1]string, argsEscaped bool, r *http.Request) (params DeleteWebAuthnCredentialParams, _ error) {
+	// Decode path: id.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "id",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.ID = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // DisableCacheParams is parameters of disableCache operation.
 type DisableCacheParams struct {
 	SiteId uuid.UUID
@@ -3059,6 +3966,124 @@ func decodeDisableObjectCacheParams(args [1]string, argsEscaped bool, r *http.Re
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// DismissSiteVulnerabilityParams is parameters of dismissSiteVulnerability operation.
+type DismissSiteVulnerabilityParams struct {
+	SiteId uuid.UUID
+	ID     uuid.UUID
+}
+
+func unpackDismissSiteVulnerabilityParams(packed middleware.Parameters) (params DismissSiteVulnerabilityParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "id",
+			In:   "path",
+		}
+		params.ID = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeDismissSiteVulnerabilityParams(args [2]string, argsEscaped bool, r *http.Request) (params DismissSiteVulnerabilityParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: id.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "id",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.ID = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "id",
 			In:   "path",
 			Err:  err,
 		}
@@ -3658,22 +4683,22 @@ func decodeExportSiteEmailLogParams(args [1]string, argsEscaped bool, r *http.Re
 
 // ExtendAdminAccountGraceParams is parameters of extendAdminAccountGrace operation.
 type ExtendAdminAccountGraceParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackExtendAdminAccountGraceParams(packed middleware.Parameters) (params ExtendAdminAccountGraceParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeExtendAdminAccountGraceParams(args [1]string, argsEscaped bool, r *http.Request) (params ExtendAdminAccountGraceParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -3685,7 +4710,7 @@ func decodeExtendAdminAccountGraceParams(args [1]string, argsEscaped bool, r *ht
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -3702,7 +4727,7 @@ func decodeExtendAdminAccountGraceParams(args [1]string, argsEscaped bool, r *ht
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -3713,7 +4738,7 @@ func decodeExtendAdminAccountGraceParams(args [1]string, argsEscaped bool, r *ht
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 			Err:  err,
 		}
@@ -3779,6 +4804,177 @@ func decodeExtractSiteFileArchiveParams(args [1]string, argsEscaped bool, r *htt
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// FetchScanFindingFileParams is parameters of fetchScanFindingFile operation.
+type FetchScanFindingFileParams struct {
+	SiteId uuid.UUID
+	RunId  uuid.UUID
+	Fid    uuid.UUID
+}
+
+func unpackFetchScanFindingFileParams(packed middleware.Parameters) (params FetchScanFindingFileParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "runId",
+			In:   "path",
+		}
+		params.RunId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "fid",
+			In:   "path",
+		}
+		params.Fid = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeFetchScanFindingFileParams(args [3]string, argsEscaped bool, r *http.Request) (params FetchScanFindingFileParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: runId.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "runId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.RunId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "runId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: fid.
+	if err := func() error {
+		param := args[2]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[2])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "fid",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.Fid = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "fid",
 			In:   "path",
 			Err:  err,
 		}
@@ -3853,22 +5049,22 @@ func decodeFlushObjectCacheParams(args [1]string, argsEscaped bool, r *http.Requ
 
 // ForceAdminAccountStateParams is parameters of forceAdminAccountState operation.
 type ForceAdminAccountStateParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackForceAdminAccountStateParams(packed middleware.Parameters) (params ForceAdminAccountStateParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeForceAdminAccountStateParams(args [1]string, argsEscaped bool, r *http.Request) (params ForceAdminAccountStateParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -3880,7 +5076,7 @@ func decodeForceAdminAccountStateParams(args [1]string, argsEscaped bool, r *htt
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -3897,7 +5093,7 @@ func decodeForceAdminAccountStateParams(args [1]string, argsEscaped bool, r *htt
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -3908,7 +5104,7 @@ func decodeForceAdminAccountStateParams(args [1]string, argsEscaped bool, r *htt
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 			Err:  err,
 		}
@@ -3983,22 +5179,22 @@ func decodeGenerateClientReportParams(args [1]string, argsEscaped bool, r *http.
 
 // GetAdminAccountParams is parameters of getAdminAccount operation.
 type GetAdminAccountParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackGetAdminAccountParams(packed middleware.Parameters) (params GetAdminAccountParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeGetAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params GetAdminAccountParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -4010,7 +5206,7 @@ func decodeGetAdminAccountParams(args [1]string, argsEscaped bool, r *http.Reque
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -4027,7 +5223,7 @@ func decodeGetAdminAccountParams(args [1]string, argsEscaped bool, r *http.Reque
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -4038,7 +5234,137 @@ func decodeGetAdminAccountParams(args [1]string, argsEscaped bool, r *http.Reque
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetAdminAccountsTenancyParams is parameters of getAdminAccountsTenancy operation.
+type GetAdminAccountsTenancyParams struct {
+	// ILIKE substring match against users.email. Omit or empty to match all users.
+	Email OptString `json:",omitempty,omitzero"`
+}
+
+func unpackGetAdminAccountsTenancyParams(packed middleware.Parameters) (params GetAdminAccountsTenancyParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "email",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Email = v.(OptString)
+		}
+	}
+	return params
+}
+
+func decodeGetAdminAccountsTenancyParams(args [0]string, argsEscaped bool, r *http.Request) (params GetAdminAccountsTenancyParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode query: email.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "email",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotEmailVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotEmailVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Email.SetTo(paramsDotEmailVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "email",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetAdminSiteTenancyParams is parameters of getAdminSiteTenancy operation.
+type GetAdminSiteTenancyParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetAdminSiteTenancyParams(packed middleware.Parameters) (params GetAdminSiteTenancyParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetAdminSiteTenancyParams(args [1]string, argsEscaped bool, r *http.Request) (params GetAdminSiteTenancyParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
 			In:   "path",
 			Err:  err,
 		}
@@ -4436,6 +5762,153 @@ func decodeGetBackupSqlInspectionParams(args [1]string, argsEscaped bool, r *htt
 	return params, nil
 }
 
+// GetCacheHealthParams is parameters of getCacheHealth operation.
+type GetCacheHealthParams struct {
+	SiteId uuid.UUID
+	Days   OptInt32 `json:",omitempty,omitzero"`
+}
+
+func unpackGetCacheHealthParams(packed middleware.Parameters) (params GetCacheHealthParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "days",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Days = v.(OptInt32)
+		}
+	}
+	return params
+}
+
+func decodeGetCacheHealthParams(args [1]string, argsEscaped bool, r *http.Request) (params GetCacheHealthParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Set default value for query: days.
+	{
+		val := int32(90)
+		params.Days.SetTo(val)
+	}
+	// Decode query: days.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "days",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotDaysVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotDaysVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Days.SetTo(paramsDotDaysVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Days.Get(); ok {
+					if err := func() error {
+						if err := (validate.Int{
+							MinSet:        true,
+							Min:           7,
+							MaxSet:        true,
+							Max:           365,
+							MinExclusive:  false,
+							MaxExclusive:  false,
+							MultipleOfSet: false,
+							MultipleOf:    0,
+							Pattern:       nil,
+						}).Validate(int64(value)); err != nil {
+							return errors.Wrap(err, "int")
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "days",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetCacheStatsParams is parameters of getCacheStats operation.
 type GetCacheStatsParams struct {
 	SiteId uuid.UUID
@@ -4742,6 +6215,283 @@ func decodeGetClientReportScheduleParams(args [1]string, argsEscaped bool, r *ht
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "clientId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetDbCleanStatusParams is parameters of getDbCleanStatus operation.
+type GetDbCleanStatusParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetDbCleanStatusParams(packed middleware.Parameters) (params GetDbCleanStatusParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetDbCleanStatusParams(args [1]string, argsEscaped bool, r *http.Request) (params GetDbCleanStatusParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetDbHealthParams is parameters of getDbHealth operation.
+type GetDbHealthParams struct {
+	SiteId uuid.UUID
+	Days   OptInt32 `json:",omitempty,omitzero"`
+}
+
+func unpackGetDbHealthParams(packed middleware.Parameters) (params GetDbHealthParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "days",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Days = v.(OptInt32)
+		}
+	}
+	return params
+}
+
+func decodeGetDbHealthParams(args [1]string, argsEscaped bool, r *http.Request) (params GetDbHealthParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Set default value for query: days.
+	{
+		val := int32(90)
+		params.Days.SetTo(val)
+	}
+	// Decode query: days.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "days",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotDaysVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotDaysVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Days.SetTo(paramsDotDaysVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Days.Get(); ok {
+					if err := func() error {
+						if err := (validate.Int{
+							MinSet:        true,
+							Min:           7,
+							MaxSet:        true,
+							Max:           365,
+							MinExclusive:  false,
+							MaxExclusive:  false,
+							MultipleOfSet: false,
+							MultipleOf:    0,
+							Pattern:       nil,
+						}).Validate(int64(value)); err != nil {
+							return errors.Wrap(err, "int")
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "days",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetDbOrphansReportParams is parameters of getDbOrphansReport operation.
+type GetDbOrphansReportParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetDbOrphansReportParams(packed middleware.Parameters) (params GetDbOrphansReportParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetDbOrphansReportParams(args [1]string, argsEscaped bool, r *http.Request) (params GetDbOrphansReportParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
 			In:   "path",
 			Err:  err,
 		}
@@ -5184,6 +6934,71 @@ func decodeGetFleetEmailStatsParams(args [0]string, argsEscaped bool, r *http.Re
 	return params, nil
 }
 
+// GetFleetIncidentDetailParams is parameters of getFleetIncidentDetail operation.
+type GetFleetIncidentDetailParams struct {
+	IncidentId uuid.UUID
+}
+
+func unpackGetFleetIncidentDetailParams(packed middleware.Parameters) (params GetFleetIncidentDetailParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "incidentId",
+			In:   "path",
+		}
+		params.IncidentId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetFleetIncidentDetailParams(args [1]string, argsEscaped bool, r *http.Request) (params GetFleetIncidentDetailParams, _ error) {
+	// Decode path: incidentId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "incidentId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.IncidentId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "incidentId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetFleetIncidentsParams is parameters of getFleetIncidents operation.
 type GetFleetIncidentsParams struct {
 	// Lower bound on last_alert_at. Defaults to 7 days ago.
@@ -5491,6 +7306,75 @@ func decodeGetFleetRumAggregateParams(args [0]string, argsEscaped bool, r *http.
 	return params, nil
 }
 
+// GetFleetVulnerabilitiesParams is parameters of getFleetVulnerabilities operation.
+type GetFleetVulnerabilitiesParams struct {
+	Limit OptInt32 `json:",omitempty,omitzero"`
+}
+
+func unpackGetFleetVulnerabilitiesParams(packed middleware.Parameters) (params GetFleetVulnerabilitiesParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "limit",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Limit = v.(OptInt32)
+		}
+	}
+	return params
+}
+
+func decodeGetFleetVulnerabilitiesParams(args [0]string, argsEscaped bool, r *http.Request) (params GetFleetVulnerabilitiesParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Set default value for query: limit.
+	{
+		val := int32(200)
+		params.Limit.SetTo(val)
+	}
+	// Decode query: limit.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotLimitVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotLimitVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Limit.SetTo(paramsDotLimitVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "limit",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetMediaJobParams is parameters of getMediaJob operation.
 type GetMediaJobParams struct {
 	SiteId uuid.UUID
@@ -5602,6 +7486,71 @@ func decodeGetMediaJobParams(args [2]string, argsEscaped bool, r *http.Request) 
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "jobId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetMediaSettingsParams is parameters of getMediaSettings operation.
+type GetMediaSettingsParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetMediaSettingsParams(packed middleware.Parameters) (params GetMediaSettingsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetMediaSettingsParams(args [1]string, argsEscaped bool, r *http.Request) (params GetMediaSettingsParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
 			In:   "path",
 			Err:  err,
 		}
@@ -6452,6 +8401,322 @@ func decodeGetRumSummaryParams(args [1]string, argsEscaped bool, r *http.Request
 		return params, &ogenerrors.DecodeParamError{
 			Name: "window_days",
 			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetRumTrendParams is parameters of getRumTrend operation.
+type GetRumTrendParams struct {
+	SiteId     uuid.UUID
+	WindowDays OptInt32  `json:",omitempty,omitzero"`
+	Device     OptString `json:",omitempty,omitzero"`
+}
+
+func unpackGetRumTrendParams(packed middleware.Parameters) (params GetRumTrendParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "window_days",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.WindowDays = v.(OptInt32)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "device",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Device = v.(OptString)
+		}
+	}
+	return params
+}
+
+func decodeGetRumTrendParams(args [1]string, argsEscaped bool, r *http.Request) (params GetRumTrendParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Set default value for query: window_days.
+	{
+		val := int32(28)
+		params.WindowDays.SetTo(val)
+	}
+	// Decode query: window_days.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "window_days",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotWindowDaysVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotWindowDaysVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.WindowDays.SetTo(paramsDotWindowDaysVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.WindowDays.Get(); ok {
+					if err := func() error {
+						if err := (validate.Int{
+							MinSet:        true,
+							Min:           1,
+							MaxSet:        true,
+							Max:           90,
+							MinExclusive:  false,
+							MaxExclusive:  false,
+							MultipleOfSet: false,
+							MultipleOf:    0,
+							Pattern:       nil,
+						}).Validate(int64(value)); err != nil {
+							return errors.Wrap(err, "int")
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "window_days",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Decode query: device.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "device",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotDeviceVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotDeviceVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Device.SetTo(paramsDotDeviceVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "device",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetScanRunParams is parameters of getScanRun operation.
+type GetScanRunParams struct {
+	SiteId uuid.UUID
+	RunId  uuid.UUID
+}
+
+func unpackGetScanRunParams(packed middleware.Parameters) (params GetScanRunParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "runId",
+			In:   "path",
+		}
+		params.RunId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetScanRunParams(args [2]string, argsEscaped bool, r *http.Request) (params GetScanRunParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: runId.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "runId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.RunId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "runId",
+			In:   "path",
 			Err:  err,
 		}
 	}
@@ -7320,6 +9585,71 @@ func decodeGetSiteFilesSettingsParams(args [1]string, argsEscaped bool, r *http.
 	return params, nil
 }
 
+// GetSiteHardeningConfigParams is parameters of getSiteHardeningConfig operation.
+type GetSiteHardeningConfigParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetSiteHardeningConfigParams(packed middleware.Parameters) (params GetSiteHardeningConfigParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetSiteHardeningConfigParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteHardeningConfigParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetSiteLoginBrandParams is parameters of getSiteLoginBrand operation.
 type GetSiteLoginBrandParams struct {
 	SiteId uuid.UUID
@@ -7402,6 +9732,71 @@ func unpackGetSiteLoginProtectionParams(packed middleware.Parameters) (params Ge
 }
 
 func decodeGetSiteLoginProtectionParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteLoginProtectionParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GetSiteSecurityPolicyParams is parameters of getSiteSecurityPolicy operation.
+type GetSiteSecurityPolicyParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetSiteSecurityPolicyParams(packed middleware.Parameters) (params GetSiteSecurityPolicyParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetSiteSecurityPolicyParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteSecurityPolicyParams, _ error) {
 	// Decode path: siteId.
 	if err := func() error {
 		param := args[0]
@@ -7710,6 +10105,270 @@ func decodeGetUpdateRunParams(args [1]string, argsEscaped bool, r *http.Request)
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "runId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// GrantAdminSelfMembershipParams is parameters of grantAdminSelfMembership operation.
+type GrantAdminSelfMembershipParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGrantAdminSelfMembershipParams(packed middleware.Parameters) (params GrantAdminSelfMembershipParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGrantAdminSelfMembershipParams(args [1]string, argsEscaped bool, r *http.Request) (params GrantAdminSelfMembershipParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// HandleBillingProviderWebhookParams is parameters of handleBillingProviderWebhook operation.
+type HandleBillingProviderWebhookParams struct {
+	Provider HandleBillingProviderWebhookProvider
+}
+
+func unpackHandleBillingProviderWebhookParams(packed middleware.Parameters) (params HandleBillingProviderWebhookParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "provider",
+			In:   "path",
+		}
+		params.Provider = packed[key].(HandleBillingProviderWebhookProvider)
+	}
+	return params
+}
+
+func decodeHandleBillingProviderWebhookParams(args [1]string, argsEscaped bool, r *http.Request) (params HandleBillingProviderWebhookParams, _ error) {
+	// Decode path: provider.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "provider",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Provider = HandleBillingProviderWebhookProvider(c)
+				return nil
+			}(); err != nil {
+				return err
+			}
+			if err := func() error {
+				if err := params.Provider.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "provider",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// HandleEmailProviderWebhookParams is parameters of handleEmailProviderWebhook operation.
+type HandleEmailProviderWebhookParams struct {
+	Provider   HandleEmailProviderWebhookProvider
+	RouteToken string
+}
+
+func unpackHandleEmailProviderWebhookParams(packed middleware.Parameters) (params HandleEmailProviderWebhookParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "provider",
+			In:   "path",
+		}
+		params.Provider = packed[key].(HandleEmailProviderWebhookProvider)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "routeToken",
+			In:   "path",
+		}
+		params.RouteToken = packed[key].(string)
+	}
+	return params
+}
+
+func decodeHandleEmailProviderWebhookParams(args [2]string, argsEscaped bool, r *http.Request) (params HandleEmailProviderWebhookParams, _ error) {
+	// Decode path: provider.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "provider",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Provider = HandleEmailProviderWebhookProvider(c)
+				return nil
+			}(); err != nil {
+				return err
+			}
+			if err := func() error {
+				if err := params.Provider.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "provider",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: routeToken.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "routeToken",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.RouteToken = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "routeToken",
 			In:   "path",
 			Err:  err,
 		}
@@ -8359,6 +11018,297 @@ func decodeListAdminAccountsParams(args [0]string, argsEscaped bool, r *http.Req
 				params.Offset.SetTo(paramsDotOffsetVal)
 				return nil
 			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "offset",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ListAdminUserSitesParams is parameters of listAdminUserSites operation.
+type ListAdminUserSitesParams struct {
+	UserId uuid.UUID
+}
+
+func unpackListAdminUserSitesParams(packed middleware.Parameters) (params ListAdminUserSitesParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "userId",
+			In:   "path",
+		}
+		params.UserId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeListAdminUserSitesParams(args [1]string, argsEscaped bool, r *http.Request) (params ListAdminUserSitesParams, _ error) {
+	// Decode path: userId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "userId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.UserId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "userId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ListAdminUsersParams is parameters of listAdminUsers operation.
+type ListAdminUsersParams struct {
+	Search OptString `json:",omitempty,omitzero"`
+	Limit  OptInt32  `json:",omitempty,omitzero"`
+	Offset OptInt32  `json:",omitempty,omitzero"`
+}
+
+func unpackListAdminUsersParams(packed middleware.Parameters) (params ListAdminUsersParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "search",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Search = v.(OptString)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "limit",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Limit = v.(OptInt32)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "offset",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Offset = v.(OptInt32)
+		}
+	}
+	return params
+}
+
+func decodeListAdminUsersParams(args [0]string, argsEscaped bool, r *http.Request) (params ListAdminUsersParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode query: search.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "search",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotSearchVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotSearchVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Search.SetTo(paramsDotSearchVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "search",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: limit.
+	{
+		val := int32(50)
+		params.Limit.SetTo(val)
+	}
+	// Decode query: limit.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotLimitVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotLimitVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Limit.SetTo(paramsDotLimitVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Limit.Get(); ok {
+					if err := func() error {
+						if err := (validate.Int{
+							MinSet:        true,
+							Min:           1,
+							MaxSet:        true,
+							Max:           200,
+							MinExclusive:  false,
+							MaxExclusive:  false,
+							MultipleOfSet: false,
+							MultipleOf:    0,
+							Pattern:       nil,
+						}).Validate(int64(value)); err != nil {
+							return errors.Wrap(err, "int")
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "limit",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: offset.
+	{
+		val := int32(0)
+		params.Offset.SetTo(val)
+	}
+	// Decode query: offset.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotOffsetVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotOffsetVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Offset.SetTo(paramsDotOffsetVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Offset.Get(); ok {
+					if err := func() error {
+						if err := (validate.Int{
+							MinSet:        true,
+							Min:           0,
+							MaxSet:        false,
+							Max:           0,
+							MinExclusive:  false,
+							MaxExclusive:  false,
+							MultipleOfSet: false,
+							MultipleOf:    0,
+							Pattern:       nil,
+						}).Validate(int64(value)); err != nil {
+							return errors.Wrap(err, "int")
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
 				return err
 			}
 		}
@@ -12567,6 +15517,303 @@ func decodeListRumResultsParams(args [1]string, argsEscaped bool, r *http.Reques
 	return params, nil
 }
 
+// ListScanFindingsParams is parameters of listScanFindings operation.
+type ListScanFindingsParams struct {
+	SiteId uuid.UUID
+	RunId  uuid.UUID
+	Limit  OptInt32 `json:",omitempty,omitzero"`
+}
+
+func unpackListScanFindingsParams(packed middleware.Parameters) (params ListScanFindingsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "runId",
+			In:   "path",
+		}
+		params.RunId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "limit",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Limit = v.(OptInt32)
+		}
+	}
+	return params
+}
+
+func decodeListScanFindingsParams(args [2]string, argsEscaped bool, r *http.Request) (params ListScanFindingsParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: runId.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "runId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.RunId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "runId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Set default value for query: limit.
+	{
+		val := int32(100)
+		params.Limit.SetTo(val)
+	}
+	// Decode query: limit.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotLimitVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotLimitVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Limit.SetTo(paramsDotLimitVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "limit",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ListScanRunsParams is parameters of listScanRuns operation.
+type ListScanRunsParams struct {
+	SiteId uuid.UUID
+	Limit  OptInt32 `json:",omitempty,omitzero"`
+}
+
+func unpackListScanRunsParams(packed middleware.Parameters) (params ListScanRunsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "limit",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Limit = v.(OptInt32)
+		}
+	}
+	return params
+}
+
+func decodeListScanRunsParams(args [1]string, argsEscaped bool, r *http.Request) (params ListScanRunsParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Set default value for query: limit.
+	{
+		val := int32(50)
+		params.Limit.SetTo(val)
+	}
+	// Decode query: limit.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotLimitVal int32
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToInt32(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotLimitVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Limit.SetTo(paramsDotLimitVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "limit",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // ListScheduleRunsParams is parameters of listScheduleRuns operation.
 type ListScheduleRunsParams struct {
 	SiteId uuid.UUID
@@ -13464,6 +16711,71 @@ func decodeListSiteActivityParams(args [1]string, argsEscaped bool, r *http.Requ
 		return params, &ogenerrors.DecodeParamError{
 			Name: "cursor",
 			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ListSiteBansParams is parameters of listSiteBans operation.
+type ListSiteBansParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackListSiteBansParams(packed middleware.Parameters) (params ListSiteBansParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeListSiteBansParams(args [1]string, argsEscaped bool, r *http.Request) (params ListSiteBansParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
 			Err:  err,
 		}
 	}
@@ -14480,6 +17792,71 @@ func decodeListSiteFilesParams(args [1]string, argsEscaped bool, r *http.Request
 	return params, nil
 }
 
+// ListSiteInvitationsParams is parameters of listSiteInvitations operation.
+type ListSiteInvitationsParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackListSiteInvitationsParams(packed middleware.Parameters) (params ListSiteInvitationsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeListSiteInvitationsParams(args [1]string, argsEscaped bool, r *http.Request) (params ListSiteInvitationsParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // ListSiteLoginEventsParams is parameters of listSiteLoginEvents operation.
 type ListSiteLoginEventsParams struct {
 	SiteId uuid.UUID
@@ -15013,6 +18390,71 @@ func decodeListSitePHPErrorsParams(args [1]string, argsEscaped bool, r *http.Req
 	return params, nil
 }
 
+// ListSitePolicyGroupsParams is parameters of listSitePolicyGroups operation.
+type ListSitePolicyGroupsParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackListSitePolicyGroupsParams(packed middleware.Parameters) (params ListSitePolicyGroupsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeListSitePolicyGroupsParams(args [1]string, argsEscaped bool, r *http.Request) (params ListSitePolicyGroupsParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // ListSiteSharesParams is parameters of listSiteShares operation.
 type ListSiteSharesParams struct {
 	SiteId uuid.UUID
@@ -15030,6 +18472,71 @@ func unpackListSiteSharesParams(packed middleware.Parameters) (params ListSiteSh
 }
 
 func decodeListSiteSharesParams(args [1]string, argsEscaped bool, r *http.Request) (params ListSiteSharesParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ListSiteVulnerabilitiesParams is parameters of listSiteVulnerabilities operation.
+type ListSiteVulnerabilitiesParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackListSiteVulnerabilitiesParams(packed middleware.Parameters) (params ListSiteVulnerabilitiesParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeListSiteVulnerabilitiesParams(args [1]string, argsEscaped bool, r *http.Request) (params ListSiteVulnerabilitiesParams, _ error) {
 	// Decode path: siteId.
 	if err := func() error {
 		param := args[0]
@@ -17240,6 +20747,71 @@ func decodePutSiteEmailWebhookConfigParams(args [1]string, argsEscaped bool, r *
 	return params, nil
 }
 
+// PutSiteHardeningConfigParams is parameters of putSiteHardeningConfig operation.
+type PutSiteHardeningConfigParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackPutSiteHardeningConfigParams(packed middleware.Parameters) (params PutSiteHardeningConfigParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodePutSiteHardeningConfigParams(args [1]string, argsEscaped bool, r *http.Request) (params PutSiteHardeningConfigParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // PutSiteLoginBrandParams is parameters of putSiteLoginBrand operation.
 type PutSiteLoginBrandParams struct {
 	SiteId uuid.UUID
@@ -17322,6 +20894,190 @@ func unpackPutSiteLoginProtectionParams(packed middleware.Parameters) (params Pu
 }
 
 func decodePutSiteLoginProtectionParams(args [1]string, argsEscaped bool, r *http.Request) (params PutSiteLoginProtectionParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// PutSitePolicyGroupParams is parameters of putSitePolicyGroup operation.
+type PutSitePolicyGroupParams struct {
+	SiteId uuid.UUID
+	// The WordPress role slug this override applies to (e.g. `administrator`).
+	Role string
+}
+
+func unpackPutSitePolicyGroupParams(packed middleware.Parameters) (params PutSitePolicyGroupParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "role",
+			In:   "path",
+		}
+		params.Role = packed[key].(string)
+	}
+	return params
+}
+
+func decodePutSitePolicyGroupParams(args [2]string, argsEscaped bool, r *http.Request) (params PutSitePolicyGroupParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: role.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "role",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Role = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "role",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// PutSiteSecurityPolicyParams is parameters of putSiteSecurityPolicy operation.
+type PutSiteSecurityPolicyParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackPutSiteSecurityPolicyParams(packed middleware.Parameters) (params PutSiteSecurityPolicyParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodePutSiteSecurityPolicyParams(args [1]string, argsEscaped bool, r *http.Request) (params PutSiteSecurityPolicyParams, _ error) {
 	// Decode path: siteId.
 	if err := func() error {
 		param := args[0]
@@ -17533,6 +21289,71 @@ func decodeReadSiteFileContentParams(args [1]string, argsEscaped bool, r *http.R
 		return params, &ogenerrors.DecodeParamError{
 			Name: "confirm_sensitive",
 			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// RecheckSiteParams is parameters of recheckSite operation.
+type RecheckSiteParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackRecheckSiteParams(packed middleware.Parameters) (params RecheckSiteParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRecheckSiteParams(args [1]string, argsEscaped bool, r *http.Request) (params RecheckSiteParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
 			Err:  err,
 		}
 	}
@@ -17852,6 +21673,242 @@ func decodeRegenerateClientInvitationParams(args [2]string, argsEscaped bool, r 
 	return params, nil
 }
 
+// RegenerateSiteInvitationParams is parameters of regenerateSiteInvitation operation.
+type RegenerateSiteInvitationParams struct {
+	SiteId       uuid.UUID
+	InvitationId uuid.UUID
+}
+
+func unpackRegenerateSiteInvitationParams(packed middleware.Parameters) (params RegenerateSiteInvitationParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "invitationId",
+			In:   "path",
+		}
+		params.InvitationId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRegenerateSiteInvitationParams(args [2]string, argsEscaped bool, r *http.Request) (params RegenerateSiteInvitationParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: invitationId.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "invitationId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.InvitationId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "invitationId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// RemediateSiteVulnerabilityParams is parameters of remediateSiteVulnerability operation.
+type RemediateSiteVulnerabilityParams struct {
+	SiteId uuid.UUID
+	ID     uuid.UUID
+}
+
+func unpackRemediateSiteVulnerabilityParams(packed middleware.Parameters) (params RemediateSiteVulnerabilityParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "id",
+			In:   "path",
+		}
+		params.ID = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRemediateSiteVulnerabilityParams(args [2]string, argsEscaped bool, r *http.Request) (params RemediateSiteVulnerabilityParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: id.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "id",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.ID = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // RemoveClientMemberParams is parameters of removeClientMember operation.
 type RemoveClientMemberParams struct {
 	ClientId uuid.UUID
@@ -17970,6 +22027,71 @@ func decodeRemoveClientMemberParams(args [2]string, argsEscaped bool, r *http.Re
 	return params, nil
 }
 
+// RenameOrgParams is parameters of renameOrg operation.
+type RenameOrgParams struct {
+	OrgId uuid.UUID
+}
+
+func unpackRenameOrgParams(packed middleware.Parameters) (params RenameOrgParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "orgId",
+			In:   "path",
+		}
+		params.OrgId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRenameOrgParams(args [1]string, argsEscaped bool, r *http.Request) (params RenameOrgParams, _ error) {
+	// Decode path: orgId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "orgId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.OrgId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "orgId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // RenameSiteFileParams is parameters of renameSiteFile operation.
 type RenameSiteFileParams struct {
 	SiteId uuid.UUID
@@ -18028,6 +22150,136 @@ func decodeRenameSiteFileParams(args [1]string, argsEscaped bool, r *http.Reques
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// RescanSiteVulnerabilitiesParams is parameters of rescanSiteVulnerabilities operation.
+type RescanSiteVulnerabilitiesParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackRescanSiteVulnerabilitiesParams(packed middleware.Parameters) (params RescanSiteVulnerabilitiesParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRescanSiteVulnerabilitiesParams(args [1]string, argsEscaped bool, r *http.Request) (params RescanSiteVulnerabilitiesParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// ResendAdminUserVerificationParams is parameters of resendAdminUserVerification operation.
+type ResendAdminUserVerificationParams struct {
+	UserId uuid.UUID
+}
+
+func unpackResendAdminUserVerificationParams(packed middleware.Parameters) (params ResendAdminUserVerificationParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "userId",
+			In:   "path",
+		}
+		params.UserId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeResendAdminUserVerificationParams(args [1]string, argsEscaped bool, r *http.Request) (params ResendAdminUserVerificationParams, _ error) {
+	// Decode path: userId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "userId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.UserId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "userId",
 			In:   "path",
 			Err:  err,
 		}
@@ -18155,22 +22407,22 @@ func decodeResendEmailLogParams(args [2]string, argsEscaped bool, r *http.Reques
 
 // RestoreAdminAccountParams is parameters of restoreAdminAccount operation.
 type RestoreAdminAccountParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackRestoreAdminAccountParams(packed middleware.Parameters) (params RestoreAdminAccountParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeRestoreAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params RestoreAdminAccountParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -18182,7 +22434,7 @@ func decodeRestoreAdminAccountParams(args [1]string, argsEscaped bool, r *http.R
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -18199,7 +22451,7 @@ func decodeRestoreAdminAccountParams(args [1]string, argsEscaped bool, r *http.R
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -18210,7 +22462,7 @@ func decodeRestoreAdminAccountParams(args [1]string, argsEscaped bool, r *http.R
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 			Err:  err,
 		}
@@ -18348,6 +22600,71 @@ func decodeRestoreMediaParams(args [1]string, argsEscaped bool, r *http.Request)
 	return params, nil
 }
 
+// RestoreOrgParams is parameters of restoreOrg operation.
+type RestoreOrgParams struct {
+	OrgId uuid.UUID
+}
+
+func unpackRestoreOrgParams(packed middleware.Parameters) (params RestoreOrgParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "orgId",
+			In:   "path",
+		}
+		params.OrgId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRestoreOrgParams(args [1]string, argsEscaped bool, r *http.Request) (params RestoreOrgParams, _ error) {
+	// Decode path: orgId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "orgId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.OrgId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "orgId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // RestoreSiteParams is parameters of restoreSite operation.
 type RestoreSiteParams struct {
 	SiteId uuid.UUID
@@ -18478,6 +22795,124 @@ func decodeRestoreSiteFileVersionParams(args [1]string, argsEscaped bool, r *htt
 	return params, nil
 }
 
+// RestoreSiteVulnerabilityParams is parameters of restoreSiteVulnerability operation.
+type RestoreSiteVulnerabilityParams struct {
+	SiteId uuid.UUID
+	ID     uuid.UUID
+}
+
+func unpackRestoreSiteVulnerabilityParams(packed middleware.Parameters) (params RestoreSiteVulnerabilityParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "id",
+			In:   "path",
+		}
+		params.ID = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRestoreSiteVulnerabilityParams(args [2]string, argsEscaped bool, r *http.Request) (params RestoreSiteVulnerabilityParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: id.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "id",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.ID = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // RevertDbSnapshotParams is parameters of revertDbSnapshot operation.
 type RevertDbSnapshotParams struct {
 	SiteId     uuid.UUID
@@ -18598,22 +23033,22 @@ func decodeRevertDbSnapshotParams(args [2]string, argsEscaped bool, r *http.Requ
 
 // RevokeAdminAccountCompParams is parameters of revokeAdminAccountComp operation.
 type RevokeAdminAccountCompParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackRevokeAdminAccountCompParams(packed middleware.Parameters) (params RevokeAdminAccountCompParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeRevokeAdminAccountCompParams(args [1]string, argsEscaped bool, r *http.Request) (params RevokeAdminAccountCompParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -18625,7 +23060,7 @@ func decodeRevokeAdminAccountCompParams(args [1]string, argsEscaped bool, r *htt
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -18642,7 +23077,7 @@ func decodeRevokeAdminAccountCompParams(args [1]string, argsEscaped bool, r *htt
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -18653,7 +23088,7 @@ func decodeRevokeAdminAccountCompParams(args [1]string, argsEscaped bool, r *htt
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 			Err:  err,
 		}
@@ -18909,6 +23344,189 @@ func decodeRevokeSiteParams(args [1]string, argsEscaped bool, r *http.Request) (
 	return params, nil
 }
 
+// RevokeSiteInvitationParams is parameters of revokeSiteInvitation operation.
+type RevokeSiteInvitationParams struct {
+	SiteId       uuid.UUID
+	InvitationId uuid.UUID
+}
+
+func unpackRevokeSiteInvitationParams(packed middleware.Parameters) (params RevokeSiteInvitationParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "invitationId",
+			In:   "path",
+		}
+		params.InvitationId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRevokeSiteInvitationParams(args [2]string, argsEscaped bool, r *http.Request) (params RevokeSiteInvitationParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode path: invitationId.
+	if err := func() error {
+		param := args[1]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[1])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "invitationId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.InvitationId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "invitationId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// RevokeTrustedDeviceParams is parameters of revokeTrustedDevice operation.
+type RevokeTrustedDeviceParams struct {
+	ID uuid.UUID
+}
+
+func unpackRevokeTrustedDeviceParams(packed middleware.Parameters) (params RevokeTrustedDeviceParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "id",
+			In:   "path",
+		}
+		params.ID = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRevokeTrustedDeviceParams(args [1]string, argsEscaped bool, r *http.Request) (params RevokeTrustedDeviceParams, _ error) {
+	// Decode path: id.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "id",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.ID = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // RotateRumBeaconKeyParams is parameters of rotateRumBeaconKey operation.
 type RotateRumBeaconKeyParams struct {
 	SiteId uuid.UUID
@@ -18926,6 +23544,71 @@ func unpackRotateRumBeaconKeyParams(packed middleware.Parameters) (params Rotate
 }
 
 func decodeRotateRumBeaconKeyParams(args [1]string, argsEscaped bool, r *http.Request) (params RotateRumBeaconKeyParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// RunDbTableActionParams is parameters of runDbTableAction operation.
+type RunDbTableActionParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackRunDbTableActionParams(packed middleware.Parameters) (params RunDbTableActionParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRunDbTableActionParams(args [1]string, argsEscaped bool, r *http.Request) (params RunDbTableActionParams, _ error) {
 	// Decode path: siteId.
 	if err := func() error {
 		param := args[0]
@@ -19629,22 +24312,22 @@ func decodeSendTestEmailParams(args [1]string, argsEscaped bool, r *http.Request
 
 // SetAdminAccountOverridesParams is parameters of setAdminAccountOverrides operation.
 type SetAdminAccountOverridesParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackSetAdminAccountOverridesParams(packed middleware.Parameters) (params SetAdminAccountOverridesParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeSetAdminAccountOverridesParams(args [1]string, argsEscaped bool, r *http.Request) (params SetAdminAccountOverridesParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -19656,7 +24339,7 @@ func decodeSetAdminAccountOverridesParams(args [1]string, argsEscaped bool, r *h
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -19673,7 +24356,7 @@ func decodeSetAdminAccountOverridesParams(args [1]string, argsEscaped bool, r *h
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -19684,7 +24367,72 @@ func decodeSetAdminAccountOverridesParams(args [1]string, argsEscaped bool, r *h
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// SetAdminUserStatusParams is parameters of setAdminUserStatus operation.
+type SetAdminUserStatusParams struct {
+	UserId uuid.UUID
+}
+
+func unpackSetAdminUserStatusParams(packed middleware.Parameters) (params SetAdminUserStatusParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "userId",
+			In:   "path",
+		}
+		params.UserId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeSetAdminUserStatusParams(args [1]string, argsEscaped bool, r *http.Request) (params SetAdminUserStatusParams, _ error) {
+	// Decode path: userId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "userId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.UserId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "userId",
 			In:   "path",
 			Err:  err,
 		}
@@ -19876,6 +24624,71 @@ func decodeSilenceSitePHPErrorParams(args [2]string, argsEscaped bool, r *http.R
 	return params, nil
 }
 
+// StartScanRunParams is parameters of startScanRun operation.
+type StartScanRunParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackStartScanRunParams(packed middleware.Parameters) (params StartScanRunParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeStartScanRunParams(args [1]string, argsEscaped bool, r *http.Request) (params StartScanRunParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // StreamSiteEventsParams is parameters of streamSiteEvents operation.
 type StreamSiteEventsParams struct {
 	// Replay events strictly after this event_id (ULID cursor).
@@ -19943,22 +24756,22 @@ func decodeStreamSiteEventsParams(args [0]string, argsEscaped bool, r *http.Requ
 
 // SuspendAdminAccountParams is parameters of suspendAdminAccount operation.
 type SuspendAdminAccountParams struct {
-	TenantId uuid.UUID
+	ID uuid.UUID
 }
 
 func unpackSuspendAdminAccountParams(packed middleware.Parameters) (params SuspendAdminAccountParams) {
 	{
 		key := middleware.ParameterKey{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 		}
-		params.TenantId = packed[key].(uuid.UUID)
+		params.ID = packed[key].(uuid.UUID)
 	}
 	return params
 }
 
 func decodeSuspendAdminAccountParams(args [1]string, argsEscaped bool, r *http.Request) (params SuspendAdminAccountParams, _ error) {
-	// Decode path: tenantId.
+	// Decode path: id.
 	if err := func() error {
 		param := args[0]
 		if argsEscaped {
@@ -19970,7 +24783,7 @@ func decodeSuspendAdminAccountParams(args [1]string, argsEscaped bool, r *http.R
 		}
 		if len(param) > 0 {
 			d := uri.NewPathDecoder(uri.PathDecoderConfig{
-				Param:   "tenantId",
+				Param:   "id",
 				Value:   param,
 				Style:   uri.PathStyleSimple,
 				Explode: false,
@@ -19987,7 +24800,7 @@ func decodeSuspendAdminAccountParams(args [1]string, argsEscaped bool, r *http.R
 					return err
 				}
 
-				params.TenantId = c
+				params.ID = c
 				return nil
 			}(); err != nil {
 				return err
@@ -19998,7 +24811,7 @@ func decodeSuspendAdminAccountParams(args [1]string, argsEscaped bool, r *http.R
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "tenantId",
+			Name: "id",
 			In:   "path",
 			Err:  err,
 		}
@@ -20266,6 +25079,71 @@ func decodeTestSiteDestinationParams(args [1]string, argsEscaped bool, r *http.R
 	return params, nil
 }
 
+// ToggleScanFindingIgnoreParams is parameters of toggleScanFindingIgnore operation.
+type ToggleScanFindingIgnoreParams struct {
+	ID uuid.UUID
+}
+
+func unpackToggleScanFindingIgnoreParams(packed middleware.Parameters) (params ToggleScanFindingIgnoreParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "id",
+			In:   "path",
+		}
+		params.ID = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeToggleScanFindingIgnoreParams(args [1]string, argsEscaped bool, r *http.Request) (params ToggleScanFindingIgnoreParams, _ error) {
+	// Decode path: id.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "id",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.ID = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // TriggerDbScanParams is parameters of triggerDbScan operation.
 type TriggerDbScanParams struct {
 	SiteId uuid.UUID
@@ -20519,6 +25397,71 @@ func decodeUpdateClientParams(args [1]string, argsEscaped bool, r *http.Request)
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "clientId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// UpdateMediaSettingsParams is parameters of updateMediaSettings operation.
+type UpdateMediaSettingsParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackUpdateMediaSettingsParams(packed middleware.Parameters) (params UpdateMediaSettingsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeUpdateMediaSettingsParams(args [1]string, argsEscaped bool, r *http.Request) (params UpdateMediaSettingsParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
 			In:   "path",
 			Err:  err,
 		}

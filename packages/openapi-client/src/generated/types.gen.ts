@@ -1129,7 +1129,7 @@ export type AdminAccountSite = {
 };
 
 /**
- * The full GET /api/v1/admin/accounts/{tenantId} body.
+ * The full GET /api/v1/admin/accounts/{id} body.
  */
 export type AdminAccountDetail = {
   tenant_id: string;
@@ -6112,6 +6112,894 @@ export type FileVersionRestoreResult = {
 };
 
 /**
+ * Current 2FA configuration summary for the authenticated user.
+ */
+export type TwoFactorStatus = {
+  totp_enabled: boolean;
+  webauthn_count: number;
+  recovery_codes_remaining: number;
+  two_factor_enabled: boolean;
+  trusted_devices: Array<TrustedDevice>;
+};
+
+/**
+ * A freshly (re)generated batch of 10 single-use recovery codes, shown exactly once.
+ */
+export type RecoveryCodesResponse = {
+  recovery_codes: Array<string>;
+};
+
+/**
+ * Completes the 2FA challenge minted at login. `challenge` is the nonce from the login response; `code` is the TOTP code or recovery code depending on the endpoint.
+ */
+export type TwoFactorChallengeCompleteRequest = {
+  challenge: string;
+  code: string;
+  remember_device?: boolean;
+  device_label?: string;
+};
+
+export type WebAuthnCredential = {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at?: string;
+};
+
+export type TrustedDevice = {
+  id: string;
+  label: string;
+  user_agent: string;
+  created_at: string;
+  expires_at: string;
+  last_used_at?: string;
+  ip?: string;
+};
+
+export type OrgList = {
+  items: Array<{
+    id: string;
+    name: string;
+    slug: string;
+    /**
+     * The caller's role in this org.
+     */
+    role: string;
+  }>;
+};
+
+export type DeleteOrgResponse = {
+  id: string;
+  /**
+   * `hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and is recoverable until the grace-window purge worker runs.
+   */
+  lane: "hard" | "soft";
+  /**
+   * The caller's session active tenant AFTER this delete. Absent when it drops to no-org onboarding (this was their last live org).
+   */
+  active_tenant_id?: string;
+};
+
+/**
+ * Per-site core-hardening toggles (ADR-057).
+ */
+export type SiteHardeningConfig = {
+  disable_file_editor?: boolean;
+  /**
+   * One of the agent-defined XML-RPC restriction modes.
+   */
+  xmlrpc_mode?: string;
+  /**
+   * One of the agent-defined REST API restriction modes.
+   */
+  restrict_rest_api?: string;
+  /**
+   * One of the agent-defined login-identifier restriction modes.
+   */
+  restrict_login_identifier?: string;
+  force_unique_nickname?: boolean;
+  disable_author_archive_enum?: boolean;
+  force_ssl?: boolean;
+  disable_directory_browsing?: boolean;
+  disable_php_in_uploads?: boolean;
+  protect_system_files?: boolean;
+  updated_at?: string;
+};
+
+export type SiteBan = {
+  id: string;
+  /**
+   * Ban entry kind (e.g. ip, username, user_agent).
+   */
+  type: string;
+  value: string;
+  comment: string;
+  actor_type: string;
+  actor_id: string;
+  created_at: string;
+};
+
+/**
+ * Site-user (WordPress user) auth policy — 2FA + password requirements (ADR-059).
+ */
+export type SiteSecurityPolicy = {
+  two_factor_enabled?: boolean;
+  two_factor_methods?: Array<string>;
+  two_factor_required_roles?: Array<string>;
+  two_factor_grace_logins?: number;
+  two_factor_remember_device_days?: number;
+  block_xmlrpc_for_2fa_users?: boolean;
+  password_min_zxcvbn_score?: number;
+  password_min_zxcvbn_roles?: Array<string>;
+  password_block_compromised?: boolean;
+  password_reuse_block_count?: number;
+  password_max_age_days?: number;
+  password_expiry_roles?: Array<string>;
+  hide_backend_enabled?: boolean;
+  hide_backend_slug?: string;
+  hide_backend_redirect?: string;
+  updated_at?: string;
+};
+
+/**
+ * A per-role override of the site-user auth policy.
+ */
+export type SitePolicyGroup = {
+  /**
+   * The WordPress role slug this override applies to (e.g. administrator).
+   */
+  role: string;
+  require_2fa?: boolean;
+  allowed_methods?: Array<string>;
+  min_zxcvbn_score?: number;
+  block_compromised?: boolean;
+  max_age_days?: number;
+  created_at?: string;
+};
+
+export type ScanRun = {
+  id: string;
+  site_id: string;
+  /**
+   * core | plugins | themes | full
+   */
+  kind: string;
+  /**
+   * queued | running | completed | failed
+   */
+  status: string;
+  files_scanned: number;
+  wp_version?: string;
+  locale?: string;
+  error?: string;
+  /**
+   * Count of findings by severity for this run.
+   */
+  finding_counts?: {
+    [key: string]: number;
+  };
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+};
+
+export type ScanFinding = {
+  id: string;
+  site_id: string;
+  run_id: string;
+  /**
+   * modified | added | missing
+   */
+  finding_type: string;
+  path: string;
+  severity: string;
+  expected_md5?: string;
+  actual_md5?: string;
+  ignored: boolean;
+  ignored_by?: string;
+  created_at: string;
+  last_seen_run: string;
+};
+
+export type ScanFindingFile = {
+  ok: boolean;
+  path: string;
+  size: number;
+  content_base64?: string;
+  error?: string;
+};
+
+/**
+ * Vulnerability-feed attribution notices, rendered in the UI footer and on any finding row that shows a CVE.
+ */
+export type VulnAttribution = {
+  defiant_notice: string;
+  defiant_license: string;
+  mitre_notice: string;
+};
+
+export type VulnFinding = {
+  id: string;
+  site_id: string;
+  vuln_id: string;
+  /**
+   * core | plugin | theme
+   */
+  kind: string;
+  slug: string;
+  name: string;
+  installed_version: string;
+  fixed_version?: string;
+  severity: string;
+  cvss_score?: number;
+  cve?: string;
+  cve_link?: string;
+  title: string;
+  /**
+   * open | dismissed | remediated
+   */
+  status: string;
+  first_seen: string;
+  last_seen: string;
+  references: Array<string>;
+};
+
+export type SiteVulnerabilitiesResponse = {
+  items: Array<VulnFinding>;
+  attribution: VulnAttribution;
+  feed_ok: boolean;
+  feed_synced?: string;
+};
+
+export type FleetVulnerabilitiesResponse = {
+  total_open: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  items: Array<{
+    site_id: string;
+    site_name: string;
+    site_url: string;
+    finding: VulnFinding;
+  }>;
+  attribution: VulnAttribution;
+  feed_ok: boolean;
+  feed_synced?: string;
+};
+
+export type SmtpSettings = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  username: string;
+  from_address: string;
+  from_name: string;
+  /**
+   * none | starttls | tls
+   */
+  tls_mode: string;
+  allow_insecure_tls: boolean;
+  /**
+   * True when a password/secret is stored. The value itself is never returned.
+   */
+  password_set: boolean;
+  updated_at: string;
+};
+
+export type SmtpSettingsUpdate = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  username: string;
+  from_address: string;
+  from_name: string;
+  /**
+   * none | starttls | tls
+   */
+  tls_mode: string;
+  allow_insecure_tls: boolean;
+  /**
+   * Write-only. Omit or null to leave the stored ciphertext unchanged.
+   */
+  password?: string;
+};
+
+export type SiteInvitation = {
+  id: string;
+  site_id?: string;
+  email: string;
+  role: string;
+  status: "pending" | "accepted" | "expired" | "revoked";
+  expires_at: string;
+  created_at: string;
+  accepted_at?: string;
+  revoked_at?: string;
+  attempts: number;
+  invited_by?: string;
+};
+
+export type MediaSettings = {
+  auto_optimize_enabled: boolean;
+  /**
+   * e.g. avif | webp
+   */
+  auto_target_format: string;
+  /**
+   * e.g. balanced | high | max
+   */
+  auto_target_quality: string;
+};
+
+export type RecheckResponse = {
+  connection_state: string;
+  last_seen_at?: string;
+  /**
+   * True when this re-check recovered the connection from degraded/disconnected to connected.
+   */
+  recovered: boolean;
+};
+
+export type FleetIncidentDetail = {
+  id: string;
+  site_id: string;
+  name: string;
+  url: string;
+  started_at: string;
+  ended_at?: string;
+  duration_seconds?: number;
+  ongoing: boolean;
+  peak_status: string;
+  last_http_status: number;
+  reason: string;
+  incident_count_30d: number;
+  probes: Array<{
+    probed_at: string;
+    up: boolean;
+    http_status: number;
+    total_ms: number;
+    error?: string;
+  }>;
+  probes_truncated: boolean;
+};
+
+export type RumBeacon = {
+  /**
+   * Per-site beacon key (base64url). The sole access credential for this endpoint.
+   */
+  key: string;
+  /**
+   * The full page URL (window.location.href); normalised server-side to a path pattern.
+   */
+  url: string;
+  metric: "lcp" | "inp" | "cls" | "ttfb" | "fcp";
+  /**
+   * Raw metric value. Milliseconds for timing metrics; milli-units (value*1000) for CLS.
+   */
+  value: number;
+  device?: "desktop" | "mobile" | "tablet";
+  /**
+   * ISO-3166-1 alpha-2 code. Falls back to "__other__" when absent/invalid.
+   */
+  country?: string;
+  conn?: "4g" | "3g" | "2g" | "slow-2g" | "offline" | "unknown";
+};
+
+export type PriceQuote = {
+  /**
+   * Minor currency units (e.g. cents).
+   */
+  amount: number;
+  currency: string;
+  /**
+   * e.g. month
+   */
+  interval: string;
+};
+
+export type PublicPricing = {
+  currency_default: string;
+  tiers: Array<{
+    id: string;
+    amount?: number;
+    currency?: string;
+    interval?: string;
+    usd?: PriceQuote;
+    inr?: PriceQuote;
+  }>;
+};
+
+/**
+ * Database-size trend and growth summary (M42 Phase 3.4).
+ */
+export type DbHealth = {
+  points: Array<{
+    recorded_at?: string;
+    db_size_bytes?: number;
+  }>;
+  growth_bytes: number;
+  growth_pct: number;
+};
+
+/**
+ * Cache hit-ratio trend and average (M52 /
+ */
+export type CacheHealth = {
+  points: Array<{
+    hit_count?: number;
+    miss_count?: number;
+    ratio_pct?: number;
+  }>;
+  avg_ratio_pct: number;
+};
+
+/**
+ * One classified candidate-orphan artifact (P3.5).
+ */
+export type DbOrphanItem = {
+  name: string;
+  owner_slug?: string;
+  confidence: "exact" | "prefix" | "heuristic" | "unknown";
+  known_plugins?: Array<string>;
+  installed: boolean;
+  deletable_eligible: boolean;
+  size_bytes?: number;
+  autoload?: boolean;
+  next_run_at?: number;
+  recurrence?: string;
+  rows?: number;
+};
+
+export type DbOrphansReport = {
+  options: Array<DbOrphanItem>;
+  cron: Array<DbOrphanItem>;
+  tables: Array<DbOrphanItem>;
+  corpus_version: number;
+  snapshot_available: boolean;
+  hidden_installed: number;
+  counts: {
+    options: number;
+    cron: number;
+    tables: number;
+    deletable: number;
+  };
+};
+
+export type DbOrphanDeleteRequest = {
+  items: Array<{
+    kind: "option" | "cron" | "table";
+    name: string;
+    owner_slug: string;
+  }>;
+  /**
+   * Type-to-confirm token; the agent enforces it independently.
+   */
+  confirm: string;
+};
+
+export type DbOrphanDeleteResponse = {
+  ok: boolean;
+  job_id: string;
+  accepted_count: number;
+  /**
+   * Items dropped by the CP re-classify (no longer eligible or owner_slug drifted).
+   */
+  dropped_count: number;
+  backup_warning?: string;
+};
+
+export type DbTableActionRequest = {
+  action:
+    | "optimize"
+    | "repair"
+    | "drop"
+    | "empty"
+    | "analyze"
+    | "convert_innodb";
+  tables: Array<string>;
+  /**
+   * Required type-to-confirm token for drop/empty.
+   */
+  confirm?: string;
+};
+
+export type DbTableActionResponse = {
+  ok: boolean;
+  job_id: string;
+  action: string;
+  /**
+   * Per-table result, keyed by table name (agent-defined shape).
+   */
+  results?: {
+    [key: string]: unknown;
+  };
+  backup_warning?: string;
+};
+
+export type DbCleanStatus = {
+  clean_active: boolean;
+  active_job_id: string;
+  active_started_at: string;
+  last_result: {
+    job_id: string;
+    rows_deleted: number;
+    bytes_freed: number;
+    /**
+     * Per-category {rows_deleted,bytes_freed,state} map.
+     */
+    result: {
+      [key: string]: unknown;
+    };
+    cleaned_at: string;
+  };
+};
+
+export type RumTrendDayPoint = {
+  /**
+   * YYYY-MM-DD
+   */
+  day: string;
+  /**
+   * 0 when suppressed
+   */
+  p75_ms: number;
+  sample_count: number;
+  rating: "good" | "needs-improvement" | "poor" | "";
+  suppressed: boolean;
+};
+
+export type RumTrend = {
+  window_days: number;
+  min_sample_count: number;
+  /**
+   * Keyed by metric name (lcp, inp, cls, fcp, ttfb); each value is an ascending-by-day series.
+   */
+  metrics: {
+    [key: string]: Array<RumTrendDayPoint>;
+  };
+};
+
+export type AdminStats = {
+  users: number;
+  organizations: number;
+  sites: number;
+};
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  name: string;
+  status: string;
+  email_verified: boolean;
+  created_at: string;
+  last_login_at?: string;
+  is_superadmin: boolean;
+  org_count: number;
+};
+
+export type AdminDeleteUserResult = {
+  deleted_orgs: number;
+  kept_orgs_with_sites: Array<{
+    id: string;
+    name: string;
+    site_count: number;
+  }>;
+};
+
+export type AdminUserSites = {
+  user_id: string;
+  sites: Array<{
+    site_id: string;
+    url: string;
+    name: string;
+    connection_state: string;
+    enrolled_at?: string;
+    site_created_at: string;
+    tenant_id: string;
+    tenant_name: string;
+    member_role: string;
+  }>;
+};
+
+export type AdminTenancyRef = {
+  tenant_id: string;
+  tenant_name: string;
+  role?: string;
+  count?: number;
+};
+
+export type AdminSiteTenancy = {
+  site_id: string;
+  site_found: boolean;
+  site_tenant_id: string;
+  site_tenant_name: string;
+  site_url: string;
+  data_tenants: Array<AdminTenancyRef>;
+  your_memberships: Array<AdminTenancyRef>;
+  site_shares: Array<AdminTenancyRef>;
+  verdict: {
+    site_matches_data: boolean;
+    you_can_see_perf_data: boolean;
+  };
+};
+
+export type AdminGrantSelfMembershipResult = {
+  ok: boolean;
+  tenant_id: string;
+  tenant_name: string;
+  added: boolean;
+  detail: string;
+};
+
+export type AdminAccountsTenancy = {
+  users: Array<{
+    id: string;
+    email: string;
+    is_superadmin: boolean;
+    memberships: Array<{
+      tenant_id: string;
+      tenant_name: string;
+      role: string;
+    }>;
+  }>;
+  orgs: Array<{
+    tenant_id: string;
+    tenant_name: string;
+    site_count: number;
+    member_count: number;
+  }>;
+};
+
+export type AdminVulnFeedStatus = {
+  configured: boolean;
+  source: "ui" | "env" | "none";
+  feed_ok: boolean;
+  record_count: number;
+  last_synced?: string;
+  last_error?: string;
+};
+
+export type AgentActivityIngestRequest = {
+  events: Array<{
+    seq: number;
+    event_type: string;
+    object_type: string;
+    object_id: string;
+    object_label?: string;
+    actor_user_id?: number;
+    actor_login?: string;
+    actor_ip?: string;
+    summary?: string;
+    /**
+     * Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never re-serialized.
+     */
+    meta?: {
+      [key: string]: unknown;
+    };
+    prev_hash: string;
+    this_hash: string;
+    occurred_at: string;
+  }>;
+  chain_start_seq?: number;
+  agent_version?: string;
+};
+
+export type AgentErrorBatch = {
+  errors: Array<{
+    id?: string;
+    md5: string;
+    code?: string;
+    severity: string;
+    message: string;
+    file?: string;
+    line?: string;
+    request_path?: string;
+    first_seen?: string;
+    last_seen?: string;
+    occurrence_count?: string;
+    backtrace?: Array<{
+      file?: string;
+      line?: string;
+      function?: string;
+    }>;
+  }>;
+};
+
+export type AgentLoginEventBatch = {
+  login_events: Array<{
+    id?: string;
+    ip: string;
+    status: string;
+    category: string;
+    username?: string;
+    request_id?: string;
+    occurred_at?: string;
+  }>;
+};
+
+export type AgentCacheStatsReport = {
+  cached_pages_count?: number;
+  cache_size_bytes?: number;
+  /**
+   * Unix seconds.
+   */
+  last_purged_at?: number;
+  last_purge_kind?: string;
+  /**
+   * Unix seconds.
+   */
+  last_preload_at?: number;
+  preload_pending?: number;
+  preload_total?: number;
+  cache_hit_count?: number;
+  cache_miss_count?: number;
+  woo_theme_fragments_supported?: boolean;
+  /**
+   * Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when the Object Cache feature is not wired.
+   */
+  object_cache?: {
+    state?: "" | "disabled" | "connected" | "degraded" | "down";
+    latency_ms?: number;
+    last_error_class?: string;
+    hit_ratio_window_pct?: number;
+    used_memory_bytes?: number;
+    engine_version?: string;
+    config_hash?: string;
+    hit_count?: number;
+    miss_count?: number;
+    avg_wait_ms?: number;
+    ops_per_sec?: number;
+    evicted_keys_delta?: number;
+    connected_clients?: number;
+  };
+};
+
+export type AgentPerfConfigAck = {
+  config_version: number;
+  server_software: string;
+  dropin_installed: boolean;
+  wp_cache_constant_set: boolean;
+  htaccess_managed: boolean;
+  /**
+   * GH #174 — whether the agent currently holds a non-empty rum_beacon_key. Absent (not false) when a pre-#174 agent does not report it.
+   */
+  rum_beacon_present?: boolean;
+};
+
+export type AgentDbCleanProgress = {
+  job_id: string;
+  category: string;
+  rows_deleted?: number;
+  bytes_freed?: number;
+  state: string;
+  detail?: string;
+  done: boolean;
+};
+
+export type AgentDbOrphanDeleteProgress = {
+  job_id: string;
+  /**
+   * Agent-defined per-item result rows.
+   */
+  results?: Array<{
+    [key: string]: unknown;
+  }>;
+  deleted_options?: number;
+  deleted_cron?: number;
+  deleted_tables?: number;
+  skipped?: number;
+  done: boolean;
+};
+
+export type AgentAutoOptimizeRequest = {
+  attachments: Array<{
+    wp_attachment_id: number;
+    title?: string;
+    original_path?: string;
+    original_url?: string;
+    original_mime?: string;
+    original_width?: number;
+    original_height?: number;
+    original_size_bytes?: number;
+    variant_count?: number;
+    saved_bytes?: number;
+  }>;
+};
+
+export type AgentEmailLogIngestRequest = {
+  entries: Array<{
+    agent_seq: number;
+    message_id?: string;
+    to_addresses?: Array<string>;
+    from_address?: string;
+    subject?: string;
+    provider?: string;
+    status: "sent" | "failed";
+    /**
+     * Provider response — any JSON shape (string, object, or absent).
+     */
+    response?: unknown;
+    error?: string;
+    retries?: number;
+    resent_count?: number;
+    body_stored?: boolean;
+    body?: string;
+    /**
+     * Any parseable timestamp (RFC3339 or a MySQL-style string); unparseable values default to now.
+     */
+    created_at?: unknown;
+    connection_key?: string;
+    attachments?: Array<{
+      name?: string;
+      size_bytes?: number;
+    }>;
+  }>;
+};
+
+export type AgentSuppressionDeltaPage = {
+  entries: Array<{
+    id: string;
+    tenant_id: string;
+    site_id?: string;
+    email?: string;
+    reason: string;
+    provider: string;
+    event_at?: string;
+    source_message_id?: string;
+    created_at: string;
+  }>;
+  next_cursor: string;
+};
+
+export type AgentChunkRef = {
+  blake3: string;
+  size: number;
+};
+
+export type AgentPresignChunksRequest = {
+  snapshot_id: string;
+  /**
+   * Candidate ciphertext chunk hashes (blake3, hex) the agent produced.
+   */
+  hashes: Array<string>;
+};
+
+export type AgentPresignChunksResponse = {
+  /**
+   * blake3 hash -> presigned PUT URL, for hashes NOT already stored for the tenant.
+   */
+  uploads: {
+    [key: string]: string;
+  };
+  ttl_seconds: number;
+};
+
+export type AgentManifestEntry = {
+  path: string;
+  entry_kind: string;
+  table_name?: string;
+  mode: number;
+  size: number;
+  chunks: Array<AgentChunkRef>;
+};
+
+export type AgentSubmitManifestRequest = {
+  snapshot_id: string;
+  age_recipient: string;
+  entries: Array<AgentManifestEntry>;
+  cycle_files_scanned?: number;
+  cycle_files_changed?: number;
+  cycle_files_deleted?: number;
+  cycle_bytes_uploaded?: number;
+};
+
+export type AgentSubmitManifestResponse = {
+  ok: boolean;
+  chunk_count: number;
+  stored_count: number;
+};
+
+/**
  * The full per-site performance configuration. `cdn_credentials` is
  * write-only (see CdnCredentials); `cdn_has_credentials` and the
  * install-state fields (`server_software`, `dropin_installed`,
@@ -6492,6 +7380,594 @@ export type GetMeResponses = {
 
 export type GetMeResponse = GetMeResponses[keyof GetMeResponses];
 
+export type UpdateMeData = {
+  body: {
+    name: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/me";
+};
+
+export type UpdateMeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type UpdateMeError = UpdateMeErrors[keyof UpdateMeErrors];
+
+export type UpdateMeResponses = {
+  /**
+   * Updated user, memberships, and active tenant
+   */
+  200: Me;
+};
+
+export type UpdateMeResponse = UpdateMeResponses[keyof UpdateMeResponses];
+
+export type ChangeMyPasswordData = {
+  body: {
+    current_password: string;
+    new_password: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/me/password";
+};
+
+export type ChangeMyPasswordErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type ChangeMyPasswordError =
+  ChangeMyPasswordErrors[keyof ChangeMyPasswordErrors];
+
+export type ChangeMyPasswordResponses = {
+  /**
+   * Password changed
+   */
+  204: void;
+};
+
+export type ChangeMyPasswordResponse =
+  ChangeMyPasswordResponses[keyof ChangeMyPasswordResponses];
+
+export type GetTwoFactorStatusData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/status";
+};
+
+export type GetTwoFactorStatusErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type GetTwoFactorStatusError =
+  GetTwoFactorStatusErrors[keyof GetTwoFactorStatusErrors];
+
+export type GetTwoFactorStatusResponses = {
+  /**
+   * 2FA status
+   */
+  200: TwoFactorStatus;
+};
+
+export type GetTwoFactorStatusResponse =
+  GetTwoFactorStatusResponses[keyof GetTwoFactorStatusResponses];
+
+export type BeginTotpEnrollmentData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/totp/begin";
+};
+
+export type BeginTotpEnrollmentErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type BeginTotpEnrollmentError =
+  BeginTotpEnrollmentErrors[keyof BeginTotpEnrollmentErrors];
+
+export type BeginTotpEnrollmentResponses = {
+  /**
+   * TOTP provisional secret
+   */
+  200: {
+    otpauth_uri: string;
+    secret: string;
+  };
+};
+
+export type BeginTotpEnrollmentResponse =
+  BeginTotpEnrollmentResponses[keyof BeginTotpEnrollmentResponses];
+
+export type ConfirmTotpEnrollmentData = {
+  body: {
+    code: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/totp/confirm";
+};
+
+export type ConfirmTotpEnrollmentErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type ConfirmTotpEnrollmentError =
+  ConfirmTotpEnrollmentErrors[keyof ConfirmTotpEnrollmentErrors];
+
+export type ConfirmTotpEnrollmentResponses = {
+  /**
+   * TOTP confirmed
+   */
+  200: RecoveryCodesResponse;
+};
+
+export type ConfirmTotpEnrollmentResponse =
+  ConfirmTotpEnrollmentResponses[keyof ConfirmTotpEnrollmentResponses];
+
+export type DisableTotpData = {
+  body: {
+    current_password: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/totp/disable";
+};
+
+export type DisableTotpErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type DisableTotpError = DisableTotpErrors[keyof DisableTotpErrors];
+
+export type DisableTotpResponses = {
+  /**
+   * TOTP disabled
+   */
+  204: void;
+};
+
+export type DisableTotpResponse =
+  DisableTotpResponses[keyof DisableTotpResponses];
+
+export type CompleteTotpChallengeData = {
+  body: TwoFactorChallengeCompleteRequest;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/totp";
+};
+
+export type CompleteTotpChallengeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CompleteTotpChallengeError =
+  CompleteTotpChallengeErrors[keyof CompleteTotpChallengeErrors];
+
+export type CompleteTotpChallengeResponses = {
+  /**
+   * Authenticated; session cookie set
+   */
+  200: {
+    me: Me;
+    recovery_codes_remaining?: number;
+  };
+};
+
+export type CompleteTotpChallengeResponse =
+  CompleteTotpChallengeResponses[keyof CompleteTotpChallengeResponses];
+
+export type CompleteRecoveryChallengeData = {
+  body: TwoFactorChallengeCompleteRequest;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/recovery";
+};
+
+export type CompleteRecoveryChallengeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CompleteRecoveryChallengeError =
+  CompleteRecoveryChallengeErrors[keyof CompleteRecoveryChallengeErrors];
+
+export type CompleteRecoveryChallengeResponses = {
+  /**
+   * Authenticated; session cookie set
+   */
+  200: {
+    me: Me;
+    recovery_codes_remaining?: number;
+  };
+};
+
+export type CompleteRecoveryChallengeResponse =
+  CompleteRecoveryChallengeResponses[keyof CompleteRecoveryChallengeResponses];
+
+export type RegenerateRecoveryCodesData = {
+  body: {
+    current_password: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/recovery-codes/regenerate";
+};
+
+export type RegenerateRecoveryCodesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type RegenerateRecoveryCodesError =
+  RegenerateRecoveryCodesErrors[keyof RegenerateRecoveryCodesErrors];
+
+export type RegenerateRecoveryCodesResponses = {
+  /**
+   * New recovery codes
+   */
+  200: RecoveryCodesResponse;
+};
+
+export type RegenerateRecoveryCodesResponse =
+  RegenerateRecoveryCodesResponses[keyof RegenerateRecoveryCodesResponses];
+
+export type BeginWebAuthnChallengeData = {
+  body: {
+    challenge: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/webauthn/begin";
+};
+
+export type BeginWebAuthnChallengeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type BeginWebAuthnChallengeError =
+  BeginWebAuthnChallengeErrors[keyof BeginWebAuthnChallengeErrors];
+
+export type BeginWebAuthnChallengeResponses = {
+  /**
+   * WebAuthn CredentialAssertion options (raw, provider-defined shape)
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type BeginWebAuthnChallengeResponse =
+  BeginWebAuthnChallengeResponses[keyof BeginWebAuthnChallengeResponses];
+
+export type FinishWebAuthnChallengeData = {
+  body: {
+    challenge: string;
+    /**
+     * Base64-encoded WebAuthn assertion response.
+     */
+    assertion: string;
+    remember_device?: boolean;
+    device_label?: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/webauthn/finish";
+};
+
+export type FinishWebAuthnChallengeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type FinishWebAuthnChallengeError =
+  FinishWebAuthnChallengeErrors[keyof FinishWebAuthnChallengeErrors];
+
+export type FinishWebAuthnChallengeResponses = {
+  /**
+   * Authenticated; session cookie set
+   */
+  200: Me;
+};
+
+export type FinishWebAuthnChallengeResponse =
+  FinishWebAuthnChallengeResponses[keyof FinishWebAuthnChallengeResponses];
+
+export type BeginWebAuthnEnrollmentData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/webauthn/begin-registration";
+};
+
+export type BeginWebAuthnEnrollmentErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type BeginWebAuthnEnrollmentError =
+  BeginWebAuthnEnrollmentErrors[keyof BeginWebAuthnEnrollmentErrors];
+
+export type BeginWebAuthnEnrollmentResponses = {
+  /**
+   * WebAuthn CredentialCreation options (raw, provider-defined shape)
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type BeginWebAuthnEnrollmentResponse =
+  BeginWebAuthnEnrollmentResponses[keyof BeginWebAuthnEnrollmentResponses];
+
+export type FinishWebAuthnEnrollmentData = {
+  body: {
+    /**
+     * Operator-chosen label for this credential (e.g. "YubiKey").
+     */
+    name: string;
+    /**
+     * Base64-encoded WebAuthn attestation response.
+     */
+    attestation: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/webauthn/finish-registration";
+};
+
+export type FinishWebAuthnEnrollmentErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type FinishWebAuthnEnrollmentError =
+  FinishWebAuthnEnrollmentErrors[keyof FinishWebAuthnEnrollmentErrors];
+
+export type FinishWebAuthnEnrollmentResponses = {
+  /**
+   * Credential registered
+   */
+  201: WebAuthnCredential;
+};
+
+export type FinishWebAuthnEnrollmentResponse =
+  FinishWebAuthnEnrollmentResponses[keyof FinishWebAuthnEnrollmentResponses];
+
+export type ListWebAuthnCredentialsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/webauthn/credentials";
+};
+
+export type ListWebAuthnCredentialsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type ListWebAuthnCredentialsError =
+  ListWebAuthnCredentialsErrors[keyof ListWebAuthnCredentialsErrors];
+
+export type ListWebAuthnCredentialsResponses = {
+  /**
+   * Credentials
+   */
+  200: {
+    items: Array<WebAuthnCredential>;
+  };
+};
+
+export type ListWebAuthnCredentialsResponse =
+  ListWebAuthnCredentialsResponses[keyof ListWebAuthnCredentialsResponses];
+
+export type DeleteWebAuthnCredentialData = {
+  body: {
+    current_password: string;
+  };
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/auth/2fa/webauthn/credentials/{id}";
+};
+
+export type DeleteWebAuthnCredentialErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type DeleteWebAuthnCredentialError =
+  DeleteWebAuthnCredentialErrors[keyof DeleteWebAuthnCredentialErrors];
+
+export type DeleteWebAuthnCredentialResponses = {
+  /**
+   * Credential deleted
+   */
+  204: void;
+};
+
+export type DeleteWebAuthnCredentialResponse =
+  DeleteWebAuthnCredentialResponses[keyof DeleteWebAuthnCredentialResponses];
+
+export type ListTrustedDevicesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/trusted-devices";
+};
+
+export type ListTrustedDevicesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type ListTrustedDevicesError =
+  ListTrustedDevicesErrors[keyof ListTrustedDevicesErrors];
+
+export type ListTrustedDevicesResponses = {
+  /**
+   * Trusted devices
+   */
+  200: {
+    items: Array<TrustedDevice>;
+  };
+};
+
+export type ListTrustedDevicesResponse =
+  ListTrustedDevicesResponses[keyof ListTrustedDevicesResponses];
+
+export type RevokeTrustedDeviceData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/auth/2fa/trusted-devices/{id}";
+};
+
+export type RevokeTrustedDeviceErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type RevokeTrustedDeviceError =
+  RevokeTrustedDeviceErrors[keyof RevokeTrustedDeviceErrors];
+
+export type RevokeTrustedDeviceResponses = {
+  /**
+   * Device revoked
+   */
+  204: void;
+};
+
+export type RevokeTrustedDeviceResponse =
+  RevokeTrustedDeviceResponses[keyof RevokeTrustedDeviceResponses];
+
+export type RevokeAllTrustedDevicesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/2fa/trusted-devices/revoke-all";
+};
+
+export type RevokeAllTrustedDevicesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type RevokeAllTrustedDevicesError =
+  RevokeAllTrustedDevicesErrors[keyof RevokeAllTrustedDevicesErrors];
+
+export type RevokeAllTrustedDevicesResponses = {
+  /**
+   * All devices revoked
+   */
+  204: void;
+};
+
+export type RevokeAllTrustedDevicesResponse =
+  RevokeAllTrustedDevicesResponses[keyof RevokeAllTrustedDevicesResponses];
+
 export type OidcLoginData = {
   body?: never;
   path?: never;
@@ -6688,6 +8164,31 @@ export type PatchMemberResponses = {
 export type PatchMemberResponse =
   PatchMemberResponses[keyof PatchMemberResponses];
 
+export type ListOrgsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/orgs";
+};
+
+export type ListOrgsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type ListOrgsError = ListOrgsErrors[keyof ListOrgsErrors];
+
+export type ListOrgsResponses = {
+  /**
+   * Organisations
+   */
+  200: OrgList;
+};
+
+export type ListOrgsResponse = ListOrgsResponses[keyof ListOrgsResponses];
+
 export type CreateOrgData = {
   body: CreateOrgRequest;
   path?: never;
@@ -6720,6 +8221,45 @@ export type CreateOrgResponses = {
 };
 
 export type CreateOrgResponse = CreateOrgResponses[keyof CreateOrgResponses];
+
+export type SwitchOrgData = {
+  body: {
+    tenant_id: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/api/v1/orgs/switch";
+};
+
+export type SwitchOrgErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Not a member of the requested organisation
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type SwitchOrgError = SwitchOrgErrors[keyof SwitchOrgErrors];
+
+export type SwitchOrgResponses = {
+  /**
+   * Active organisation switched
+   */
+  200: {
+    ok: boolean;
+    tenant_id: string;
+    tenant_name: string;
+  };
+};
+
+export type SwitchOrgResponse = SwitchOrgResponses[keyof SwitchOrgResponses];
 
 export type ActivateOrgData = {
   body?: never;
@@ -6756,6 +8296,127 @@ export type ActivateOrgResponses = {
 
 export type ActivateOrgResponse2 =
   ActivateOrgResponses[keyof ActivateOrgResponses];
+
+export type DeleteOrgData = {
+  body: {
+    confirm_name: string;
+  };
+  path: {
+    orgId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}";
+};
+
+export type DeleteOrgErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Not a member, or insufficient role (owner required)
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * org_already_deleted | billing_active | restore_in_progress — see the error `code` for which precondition failed
+   */
+  409: Error;
+  /**
+   * confirm_name does not match the organisation's name
+   */
+  422: Error;
+};
+
+export type DeleteOrgError = DeleteOrgErrors[keyof DeleteOrgErrors];
+
+export type DeleteOrgResponses = {
+  /**
+   * Organisation deleted (hard or soft, see `lane`)
+   */
+  200: DeleteOrgResponse;
+};
+
+export type DeleteOrgResponse2 = DeleteOrgResponses[keyof DeleteOrgResponses];
+
+export type RenameOrgData = {
+  body: {
+    name: string;
+  };
+  path: {
+    orgId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}";
+};
+
+export type RenameOrgErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Not a member, or insufficient role (admin/owner required)
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type RenameOrgError = RenameOrgErrors[keyof RenameOrgErrors];
+
+export type RenameOrgResponses = {
+  /**
+   * Organisation renamed
+   */
+  200: Org;
+};
+
+export type RenameOrgResponse = RenameOrgResponses[keyof RenameOrgResponses];
+
+export type RestoreOrgData = {
+  body?: never;
+  path: {
+    orgId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}/restore";
+};
+
+export type RestoreOrgErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Not a member, or insufficient role (owner required)
+   */
+  403: Error;
+  /**
+   * org_already_purged — the organisation was already permanently deleted
+   */
+  404: Error;
+  /**
+   * org_not_deleted | purge_in_progress — see the error `code` for which precondition failed
+   */
+  409: Error;
+};
+
+export type RestoreOrgError = RestoreOrgErrors[keyof RestoreOrgErrors];
+
+export type RestoreOrgResponses = {
+  /**
+   * Organisation restored
+   */
+  200: Org;
+};
+
+export type RestoreOrgResponse = RestoreOrgResponses[keyof RestoreOrgResponses];
 
 export type ListSiteSharesData = {
   body?: never;
@@ -6899,6 +8560,119 @@ export type ListSharedWithMeResponses = {
 
 export type ListSharedWithMeResponse =
   ListSharedWithMeResponses[keyof ListSharedWithMeResponses];
+
+export type ListSiteInvitationsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/invitations";
+};
+
+export type ListSiteInvitationsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListSiteInvitationsError =
+  ListSiteInvitationsErrors[keyof ListSiteInvitationsErrors];
+
+export type ListSiteInvitationsResponses = {
+  /**
+   * Invitation history
+   */
+  200: {
+    items: Array<SiteInvitation>;
+  };
+};
+
+export type ListSiteInvitationsResponse =
+  ListSiteInvitationsResponses[keyof ListSiteInvitationsResponses];
+
+export type RevokeSiteInvitationData = {
+  body?: never;
+  path: {
+    siteId: string;
+    invitationId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/invitations/{invitationId}";
+};
+
+export type RevokeSiteInvitationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type RevokeSiteInvitationError =
+  RevokeSiteInvitationErrors[keyof RevokeSiteInvitationErrors];
+
+export type RevokeSiteInvitationResponses = {
+  /**
+   * Invitation revoked
+   */
+  204: void;
+};
+
+export type RevokeSiteInvitationResponse =
+  RevokeSiteInvitationResponses[keyof RevokeSiteInvitationResponses];
+
+export type RegenerateSiteInvitationData = {
+  body?: never;
+  path: {
+    siteId: string;
+    invitationId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/invitations/{invitationId}/regenerate";
+};
+
+export type RegenerateSiteInvitationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type RegenerateSiteInvitationError =
+  RegenerateSiteInvitationErrors[keyof RegenerateSiteInvitationErrors];
+
+export type RegenerateSiteInvitationResponses = {
+  /**
+   * Token rotated
+   */
+  200: {
+    accept_link: string;
+  };
+};
+
+export type RegenerateSiteInvitationResponse =
+  RegenerateSiteInvitationResponses[keyof RegenerateSiteInvitationResponses];
 
 export type AcceptInvitationData = {
   body: AcceptInvitationRequest;
@@ -7243,6 +9017,108 @@ export type UpdateSiteDestinationResponses = {
 export type UpdateSiteDestinationResponse =
   UpdateSiteDestinationResponses[keyof UpdateSiteDestinationResponses];
 
+export type GetSmtpSettingsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/settings/smtp";
+};
+
+export type GetSmtpSettingsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetSmtpSettingsError =
+  GetSmtpSettingsErrors[keyof GetSmtpSettingsErrors];
+
+export type GetSmtpSettingsResponses = {
+  /**
+   * Current SMTP settings
+   */
+  200: SmtpSettings;
+};
+
+export type GetSmtpSettingsResponse =
+  GetSmtpSettingsResponses[keyof GetSmtpSettingsResponses];
+
+export type UpdateSmtpSettingsData = {
+  body: SmtpSettingsUpdate;
+  path?: never;
+  query?: never;
+  url: "/api/v1/settings/smtp";
+};
+
+export type UpdateSmtpSettingsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type UpdateSmtpSettingsError =
+  UpdateSmtpSettingsErrors[keyof UpdateSmtpSettingsErrors];
+
+export type UpdateSmtpSettingsResponses = {
+  /**
+   * Updated SMTP settings
+   */
+  200: SmtpSettings;
+};
+
+export type UpdateSmtpSettingsResponse =
+  UpdateSmtpSettingsResponses[keyof UpdateSmtpSettingsResponses];
+
+export type SendSmtpTestEmailData = {
+  body: {
+    to_address: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/api/v1/settings/smtp/test";
+};
+
+export type SendSmtpTestEmailErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type SendSmtpTestEmailError =
+  SendSmtpTestEmailErrors[keyof SendSmtpTestEmailErrors];
+
+export type SendSmtpTestEmailResponses = {
+  /**
+   * Test result
+   */
+  200: {
+    ok: boolean;
+    message: string;
+  };
+};
+
+export type SendSmtpTestEmailResponse =
+  SendSmtpTestEmailResponses[keyof SendSmtpTestEmailResponses];
+
 export type ListAuditData = {
   body?: never;
   path?: never;
@@ -7455,6 +9331,549 @@ export type CreateBillingPortalResponses = {
 export type CreateBillingPortalResponse =
   CreateBillingPortalResponses[keyof CreateBillingPortalResponses];
 
+export type VerifyBillingCheckoutCallbackData = {
+  body: {
+    razorpay_payment_id?: string;
+    razorpay_subscription_id?: string;
+    razorpay_signature?: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/api/v1/billing/checkout/verify";
+};
+
+export type VerifyBillingCheckoutCallbackErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type VerifyBillingCheckoutCallbackError =
+  VerifyBillingCheckoutCallbackErrors[keyof VerifyBillingCheckoutCallbackErrors];
+
+export type VerifyBillingCheckoutCallbackResponses = {
+  /**
+   * Verification result
+   */
+  200: {
+    verified: boolean;
+  };
+};
+
+export type VerifyBillingCheckoutCallbackResponse =
+  VerifyBillingCheckoutCallbackResponses[keyof VerifyBillingCheckoutCallbackResponses];
+
+export type CancelBillingSubscriptionData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/billing/cancel";
+};
+
+export type CancelBillingSubscriptionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type CancelBillingSubscriptionError =
+  CancelBillingSubscriptionErrors[keyof CancelBillingSubscriptionErrors];
+
+export type CancelBillingSubscriptionResponses = {
+  /**
+   * Cancellation scheduled
+   */
+  200: {
+    ok: boolean;
+  };
+};
+
+export type CancelBillingSubscriptionResponse =
+  CancelBillingSubscriptionResponses[keyof CancelBillingSubscriptionResponses];
+
+export type GetAdminStatsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/stats";
+};
+
+export type GetAdminStatsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminStatsError = GetAdminStatsErrors[keyof GetAdminStatsErrors];
+
+export type GetAdminStatsResponses = {
+  /**
+   * Instance stats
+   */
+  200: AdminStats;
+};
+
+export type GetAdminStatsResponse =
+  GetAdminStatsResponses[keyof GetAdminStatsResponses];
+
+export type ListAdminUsersData = {
+  body?: never;
+  path?: never;
+  query?: {
+    search?: string;
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/admin/users";
+};
+
+export type ListAdminUsersErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminUsersError =
+  ListAdminUsersErrors[keyof ListAdminUsersErrors];
+
+export type ListAdminUsersResponses = {
+  /**
+   * User list
+   */
+  200: {
+    items: Array<AdminUser>;
+  };
+};
+
+export type ListAdminUsersResponse =
+  ListAdminUsersResponses[keyof ListAdminUsersResponses];
+
+export type DeleteAdminUserData = {
+  body?: never;
+  path: {
+    userId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/users/{userId}";
+};
+
+export type DeleteAdminUserErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type DeleteAdminUserError =
+  DeleteAdminUserErrors[keyof DeleteAdminUserErrors];
+
+export type DeleteAdminUserResponses = {
+  /**
+   * Deletion result
+   */
+  200: AdminDeleteUserResult;
+};
+
+export type DeleteAdminUserResponse =
+  DeleteAdminUserResponses[keyof DeleteAdminUserResponses];
+
+export type SetAdminUserStatusData = {
+  body: {
+    status: string;
+  };
+  path: {
+    userId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/users/{userId}";
+};
+
+export type SetAdminUserStatusErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type SetAdminUserStatusError =
+  SetAdminUserStatusErrors[keyof SetAdminUserStatusErrors];
+
+export type SetAdminUserStatusResponses = {
+  /**
+   * Updated user
+   */
+  200: AdminUser;
+};
+
+export type SetAdminUserStatusResponse =
+  SetAdminUserStatusResponses[keyof SetAdminUserStatusResponses];
+
+export type ResendAdminUserVerificationData = {
+  body?: never;
+  path: {
+    userId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/users/{userId}/resend-verification";
+};
+
+export type ResendAdminUserVerificationErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type ResendAdminUserVerificationError =
+  ResendAdminUserVerificationErrors[keyof ResendAdminUserVerificationErrors];
+
+export type ResendAdminUserVerificationResponses = {
+  /**
+   * Resent
+   */
+  200: {
+    ok: boolean;
+  };
+};
+
+export type ResendAdminUserVerificationResponse =
+  ResendAdminUserVerificationResponses[keyof ResendAdminUserVerificationResponses];
+
+export type ListAdminUserSitesData = {
+  body?: never;
+  path: {
+    userId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/users/{userId}/sites";
+};
+
+export type ListAdminUserSitesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminUserSitesError =
+  ListAdminUserSitesErrors[keyof ListAdminUserSitesErrors];
+
+export type ListAdminUserSitesResponses = {
+  /**
+   * Sites reachable by this user
+   */
+  200: AdminUserSites;
+};
+
+export type ListAdminUserSitesResponse =
+  ListAdminUserSitesResponses[keyof ListAdminUserSitesResponses];
+
+export type GetAdminSiteTenancyData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/sites/{siteId}/tenancy";
+};
+
+export type GetAdminSiteTenancyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminSiteTenancyError =
+  GetAdminSiteTenancyErrors[keyof GetAdminSiteTenancyErrors];
+
+export type GetAdminSiteTenancyResponses = {
+  /**
+   * Tenancy diagnostic
+   */
+  200: AdminSiteTenancy;
+};
+
+export type GetAdminSiteTenancyResponse =
+  GetAdminSiteTenancyResponses[keyof GetAdminSiteTenancyResponses];
+
+export type GrantAdminSelfMembershipData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/sites/{siteId}/grant-self-membership";
+};
+
+export type GrantAdminSelfMembershipErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GrantAdminSelfMembershipError =
+  GrantAdminSelfMembershipErrors[keyof GrantAdminSelfMembershipErrors];
+
+export type GrantAdminSelfMembershipResponses = {
+  /**
+   * Membership result
+   */
+  200: AdminGrantSelfMembershipResult;
+};
+
+export type GrantAdminSelfMembershipResponse =
+  GrantAdminSelfMembershipResponses[keyof GrantAdminSelfMembershipResponses];
+
+export type GetAdminAccountsTenancyData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * ILIKE substring match against users.email. Omit or empty to match all users.
+     */
+    email?: string;
+  };
+  url: "/api/v1/admin/accounts-tenancy";
+};
+
+export type GetAdminAccountsTenancyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminAccountsTenancyError =
+  GetAdminAccountsTenancyErrors[keyof GetAdminAccountsTenancyErrors];
+
+export type GetAdminAccountsTenancyResponses = {
+  /**
+   * Accounts tenancy census
+   */
+  200: AdminAccountsTenancy;
+};
+
+export type GetAdminAccountsTenancyResponse =
+  GetAdminAccountsTenancyResponses[keyof GetAdminAccountsTenancyResponses];
+
+export type GetAdminVulnFeedStatusData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/vuln-feed/status";
+};
+
+export type GetAdminVulnFeedStatusErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * vuln_feed_not_wired
+   */
+  503: Error;
+};
+
+export type GetAdminVulnFeedStatusError =
+  GetAdminVulnFeedStatusErrors[keyof GetAdminVulnFeedStatusErrors];
+
+export type GetAdminVulnFeedStatusResponses = {
+  /**
+   * Feed status
+   */
+  200: AdminVulnFeedStatus;
+};
+
+export type GetAdminVulnFeedStatusResponse =
+  GetAdminVulnFeedStatusResponses[keyof GetAdminVulnFeedStatusResponses];
+
+export type ClearAdminVulnFeedKeyData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/vuln-feed/key";
+};
+
+export type ClearAdminVulnFeedKeyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * vuln_feed_not_wired
+   */
+  503: Error;
+};
+
+export type ClearAdminVulnFeedKeyError =
+  ClearAdminVulnFeedKeyErrors[keyof ClearAdminVulnFeedKeyErrors];
+
+export type ClearAdminVulnFeedKeyResponses = {
+  /**
+   * Key cleared
+   */
+  200: {
+    ok: boolean;
+    fallback_source: "ui" | "env" | "none";
+  };
+};
+
+export type ClearAdminVulnFeedKeyResponse =
+  ClearAdminVulnFeedKeyResponses[keyof ClearAdminVulnFeedKeyResponses];
+
+export type SetAdminVulnFeedKeyData = {
+  body: {
+    key: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/vuln-feed/key";
+};
+
+export type SetAdminVulnFeedKeyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * vuln_feed_not_wired
+   */
+  503: Error;
+};
+
+export type SetAdminVulnFeedKeyError =
+  SetAdminVulnFeedKeyErrors[keyof SetAdminVulnFeedKeyErrors];
+
+export type SetAdminVulnFeedKeyResponses = {
+  /**
+   * Key stored
+   */
+  200: {
+    ok: boolean;
+    syncing: boolean;
+    warning?: string;
+  };
+};
+
+export type SetAdminVulnFeedKeyResponse =
+  SetAdminVulnFeedKeyResponses[keyof SetAdminVulnFeedKeyResponses];
+
+export type SyncAdminVulnFeedData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/vuln-feed/sync";
+};
+
+export type SyncAdminVulnFeedErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * vuln_feed_not_wired
+   */
+  503: Error;
+};
+
+export type SyncAdminVulnFeedError =
+  SyncAdminVulnFeedErrors[keyof SyncAdminVulnFeedErrors];
+
+export type SyncAdminVulnFeedResponses = {
+  /**
+   * Sync enqueued
+   */
+  202: {
+    ok: boolean;
+    syncing: boolean;
+  };
+};
+
+export type SyncAdminVulnFeedResponse =
+  SyncAdminVulnFeedResponses[keyof SyncAdminVulnFeedResponses];
+
 export type ListAdminAccountsData = {
   body?: never;
   path?: never;
@@ -7528,10 +9947,10 @@ export type ListAdminAccountsResponse =
 export type GetAdminAccountData = {
   body?: never;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}";
+  url: "/api/v1/admin/accounts/{id}";
 };
 
 export type GetAdminAccountErrors = {
@@ -7569,10 +9988,10 @@ export type GetAdminAccountResponse =
 export type RevokeAdminAccountCompData = {
   body: AdminReasonRequest;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}/comp";
+  url: "/api/v1/admin/accounts/{id}/comp";
 };
 
 export type RevokeAdminAccountCompErrors = {
@@ -7614,10 +10033,10 @@ export type RevokeAdminAccountCompResponse =
 export type CompAdminAccountData = {
   body: AdminCompAccountRequest;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}/comp";
+  url: "/api/v1/admin/accounts/{id}/comp";
 };
 
 export type CompAdminAccountErrors = {
@@ -7659,10 +10078,10 @@ export type CompAdminAccountResponse =
 export type SetAdminAccountOverridesData = {
   body: AdminSetOverridesRequest;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}/overrides";
+  url: "/api/v1/admin/accounts/{id}/overrides";
 };
 
 export type SetAdminAccountOverridesErrors = {
@@ -7704,10 +10123,10 @@ export type SetAdminAccountOverridesResponse =
 export type ExtendAdminAccountGraceData = {
   body: AdminExtendGraceRequest;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}/grace";
+  url: "/api/v1/admin/accounts/{id}/grace";
 };
 
 export type ExtendAdminAccountGraceErrors = {
@@ -7749,10 +10168,10 @@ export type ExtendAdminAccountGraceResponse =
 export type SuspendAdminAccountData = {
   body: AdminReasonRequest;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}/suspend";
+  url: "/api/v1/admin/accounts/{id}/suspend";
 };
 
 export type SuspendAdminAccountErrors = {
@@ -7794,10 +10213,10 @@ export type SuspendAdminAccountResponse =
 export type RestoreAdminAccountData = {
   body?: AdminReasonRequest;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}/restore";
+  url: "/api/v1/admin/accounts/{id}/restore";
 };
 
 export type RestoreAdminAccountErrors = {
@@ -7839,10 +10258,10 @@ export type RestoreAdminAccountResponse =
 export type ForceAdminAccountStateData = {
   body: AdminForceStateRequest;
   path: {
-    tenantId: string;
+    id: string;
   };
   query?: never;
-  url: "/api/v1/admin/accounts/{tenantId}/state";
+  url: "/api/v1/admin/accounts/{id}/state";
 };
 
 export type ForceAdminAccountStateErrors = {
@@ -8454,6 +10873,76 @@ export type GetMediaJobResponses = {
 export type GetMediaJobResponse =
   GetMediaJobResponses[keyof GetMediaJobResponses];
 
+export type GetMediaSettingsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/media/settings";
+};
+
+export type GetMediaSettingsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetMediaSettingsError =
+  GetMediaSettingsErrors[keyof GetMediaSettingsErrors];
+
+export type GetMediaSettingsResponses = {
+  /**
+   * Current auto-optimize settings
+   */
+  200: MediaSettings;
+};
+
+export type GetMediaSettingsResponse =
+  GetMediaSettingsResponses[keyof GetMediaSettingsResponses];
+
+export type UpdateMediaSettingsData = {
+  body: MediaSettings;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/media/settings";
+};
+
+export type UpdateMediaSettingsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type UpdateMediaSettingsError =
+  UpdateMediaSettingsErrors[keyof UpdateMediaSettingsErrors];
+
+export type UpdateMediaSettingsResponses = {
+  /**
+   * Updated settings (see `X-Agent-Push-Warning` header for a non-fatal push failure)
+   */
+  200: MediaSettings;
+};
+
+export type UpdateMediaSettingsResponse =
+  UpdateMediaSettingsResponses[keyof UpdateMediaSettingsResponses];
+
 export type StreamSiteEventsData = {
   body?: never;
   path?: never;
@@ -8660,6 +11149,149 @@ export type EnrollResponses = {
 
 export type EnrollResponse2 = EnrollResponses[keyof EnrollResponses];
 
+export type RumIngestPreflightData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/rum/ingest";
+};
+
+export type RumIngestPreflightResponses = {
+  /**
+   * No content
+   */
+  204: void;
+};
+
+export type RumIngestPreflightResponse =
+  RumIngestPreflightResponses[keyof RumIngestPreflightResponses];
+
+export type IngestRumBeaconData = {
+  body: RumBeacon;
+  path?: never;
+  query?: never;
+  url: "/rum/ingest";
+};
+
+export type IngestRumBeaconErrors = {
+  /**
+   * Malformed body or unrecognised metric
+   */
+  400: unknown;
+  /**
+   * Missing or unparseable beacon key
+   */
+  401: unknown;
+  /**
+   * Body exceeds the 8 KiB cap
+   */
+  413: unknown;
+  /**
+   * Per-IP or per-site rate limit exceeded
+   */
+  429: unknown;
+};
+
+export type IngestRumBeaconResponses = {
+  /**
+   * Accepted, discarded, sampled out, or ingested (indistinguishable by design)
+   */
+  204: void;
+};
+
+export type IngestRumBeaconResponse =
+  IngestRumBeaconResponses[keyof IngestRumBeaconResponses];
+
+export type HandleEmailProviderWebhookData = {
+  /**
+   * Provider-defined envelope (SNS notification, SendGrid event array, or Postmark JSON). Mailgun's form-urlencoded POST is accepted on the wire too but is not separately modeled here (single-content-type schema keeps codegen well-formed).
+   */
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    provider: "ses" | "sendgrid" | "mailgun" | "postmark";
+    routeToken: string;
+  };
+  query?: never;
+  url: "/webhooks/email/{provider}/{routeToken}";
+};
+
+export type HandleEmailProviderWebhookErrors = {
+  /**
+   * Provider signature verification failed
+   */
+  401: unknown;
+  /**
+   * Unknown routeToken or provider
+   */
+  404: unknown;
+  /**
+   * Internal processing error
+   */
+  500: unknown;
+};
+
+export type HandleEmailProviderWebhookResponses = {
+  /**
+   * Event processed
+   */
+  200: unknown;
+};
+
+export type HandleBillingProviderWebhookData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    provider: "stripe";
+  };
+  query?: never;
+  url: "/webhooks/billing/{provider}";
+};
+
+export type HandleBillingProviderWebhookErrors = {
+  /**
+   * Signature verification failed
+   */
+  401: unknown;
+  /**
+   * Unknown provider
+   */
+  404: unknown;
+};
+
+export type HandleBillingProviderWebhookResponses = {
+  /**
+   * Event processed
+   */
+  200: unknown;
+};
+
+export type GetPublicPricingData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/pricing";
+};
+
+export type GetPublicPricingErrors = {
+  /**
+   * Hosted billing is not enabled on this instance
+   */
+  404: unknown;
+};
+
+export type GetPublicPricingResponses = {
+  /**
+   * Current pricing table
+   */
+  200: PublicPricing;
+};
+
+export type GetPublicPricingResponse =
+  GetPublicPricingResponses[keyof GetPublicPricingResponses];
+
 export type CreateAutologinData = {
   body?: AutologinCreate;
   path: {
@@ -8842,6 +11474,242 @@ export type AgentDisconnectResponses = {
 
 export type AgentDisconnectResponse =
   AgentDisconnectResponses[keyof AgentDisconnectResponses];
+
+export type AgentPushActivityData = {
+  body: AgentActivityIngestRequest;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/activity";
+};
+
+export type AgentPushActivityErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+  /**
+   * activity_unwired
+   */
+  503: Error;
+};
+
+export type AgentPushActivityError =
+  AgentPushActivityErrors[keyof AgentPushActivityErrors];
+
+export type AgentPushActivityResponses = {
+  /**
+   * Ingest result
+   */
+  200: {
+    ingested: number;
+    chain_breaks: number;
+  };
+};
+
+export type AgentPushActivityResponse =
+  AgentPushActivityResponses[keyof AgentPushActivityResponses];
+
+export type AgentPushDiagnosticsData = {
+  /**
+   * The 14-category diagnostics payload, keyed by category name.
+   */
+  body: {
+    [key: string]: unknown;
+  };
+  path?: never;
+  query?: never;
+  url: "/agent/v1/diagnostics";
+};
+
+export type AgentPushDiagnosticsErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+  /**
+   * diagnostics_unwired
+   */
+  503: Error;
+};
+
+export type AgentPushDiagnosticsError =
+  AgentPushDiagnosticsErrors[keyof AgentPushDiagnosticsErrors];
+
+export type AgentPushDiagnosticsResponses = {
+  /**
+   * Ingest result
+   */
+  200: {
+    categories_ingested: number;
+  };
+};
+
+export type AgentPushDiagnosticsResponse =
+  AgentPushDiagnosticsResponses[keyof AgentPushDiagnosticsResponses];
+
+export type AgentPushErrorsData = {
+  body: AgentErrorBatch;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/errors";
+};
+
+export type AgentPushErrorsErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+  /**
+   * diagnostics_unwired
+   */
+  503: Error;
+};
+
+export type AgentPushErrorsError =
+  AgentPushErrorsErrors[keyof AgentPushErrorsErrors];
+
+export type AgentPushErrorsResponses = {
+  /**
+   * Ingest result — `highest_id` lets the agent advance its local ship cursor
+   */
+  200: {
+    consumed_count: number;
+    highest_id: number;
+  };
+};
+
+export type AgentPushErrorsResponse =
+  AgentPushErrorsResponses[keyof AgentPushErrorsResponses];
+
+export type AgentPushLoginEventsData = {
+  body: AgentLoginEventBatch;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/security/login-events";
+};
+
+export type AgentPushLoginEventsErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+  /**
+   * security_unwired
+   */
+  503: Error;
+};
+
+export type AgentPushLoginEventsError =
+  AgentPushLoginEventsErrors[keyof AgentPushLoginEventsErrors];
+
+export type AgentPushLoginEventsResponses = {
+  /**
+   * Ingest result — `highest_id` lets the agent advance its local ship cursor
+   */
+  200: {
+    consumed_count: number;
+    highest_id: number;
+  };
+};
+
+export type AgentPushLoginEventsResponse =
+  AgentPushLoginEventsResponses[keyof AgentPushLoginEventsResponses];
+
+export type AgentGetHibpRangeData = {
+  body?: never;
+  path: {
+    /**
+     * Exactly 5 uppercase hex characters.
+     */
+    prefix: string;
+  };
+  query?: never;
+  url: "/agent/v1/security/hibp/range/{prefix}";
+};
+
+export type AgentGetHibpRangeErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * invalid_hibp_prefix
+   */
+  422: Error;
+};
+
+export type AgentGetHibpRangeError =
+  AgentGetHibpRangeErrors[keyof AgentGetHibpRangeErrors];
+
+export type AgentGetHibpRangeResponses = {
+  /**
+   * Raw SUFFIX:COUNT text body (possibly empty)
+   */
+  200: string;
+};
+
+export type AgentGetHibpRangeResponse =
+  AgentGetHibpRangeResponses[keyof AgentGetHibpRangeResponses];
+
+export type AgentGetUpdateManifestData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/update/manifest";
+};
+
+export type AgentGetUpdateManifestErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * update_unwired — the self-update channel is not configured
+   */
+  503: Error;
+};
+
+export type AgentGetUpdateManifestError =
+  AgentGetUpdateManifestErrors[keyof AgentGetUpdateManifestErrors];
+
+export type AgentGetUpdateManifestResponses = {
+  /**
+   * Signed manifest
+   */
+  200: {
+    /**
+     * Base64url-encoded signed JSON payload.
+     */
+    manifest: string;
+    /**
+     * Detached Ed25519 signature over the decoded manifest bytes.
+     */
+    signature: string;
+  };
+  /**
+   * No release has been published yet
+   */
+  204: void;
+};
+
+export type AgentGetUpdateManifestResponse =
+  AgentGetUpdateManifestResponses[keyof AgentGetUpdateManifestResponses];
 
 export type AgentMediaSyncBatchData = {
   body: AgentMediaSyncBatch;
@@ -9048,48 +11916,39 @@ export type AgentMediaSyncFinalizeResponses = {
 export type AgentMediaSyncFinalizeResponse =
   AgentMediaSyncFinalizeResponses[keyof AgentMediaSyncFinalizeResponses];
 
-export type AgentFontsTranscodeData = {
-  body: FontTranscodeRequest;
+export type AgentMediaAutoOptimizeData = {
+  body: AgentAutoOptimizeRequest;
   path?: never;
   query?: never;
-  url: "/agent/v1/fonts/transcode";
+  url: "/agent/v1/media/auto-optimize";
 };
 
-export type AgentFontsTranscodeErrors = {
-  /**
-   * Invalid request (source_size <= 0)
-   */
-  400: Error;
+export type AgentMediaAutoOptimizeErrors = {
   /**
    * Agent authentication failed
    */
   401: Error;
   /**
-   * source_hash is not a valid 64-char lowercase hex BLAKE3 digest
+   * auto_optimize_batch_too_large or malformed body
    */
   422: Error;
-  /**
-   * Daily per-tenant font transcode enqueue cap exceeded
-   */
-  429: Error;
-  /**
-   * Font transcode enqueuer not available (degraded deployment)
-   */
-  503: Error;
 };
 
-export type AgentFontsTranscodeError =
-  AgentFontsTranscodeErrors[keyof AgentFontsTranscodeErrors];
+export type AgentMediaAutoOptimizeError =
+  AgentMediaAutoOptimizeErrors[keyof AgentMediaAutoOptimizeErrors];
 
-export type AgentFontsTranscodeResponses = {
+export type AgentMediaAutoOptimizeResponses = {
   /**
-   * Current transcode state for this hash
+   * Batch result
    */
-  200: FontTranscodeResponse;
+  200: {
+    accepted: number;
+    skipped: number;
+  };
 };
 
-export type AgentFontsTranscodeResponse =
-  AgentFontsTranscodeResponses[keyof AgentFontsTranscodeResponses];
+export type AgentMediaAutoOptimizeResponse =
+  AgentMediaAutoOptimizeResponses[keyof AgentMediaAutoOptimizeResponses];
 
 export type AgentFontsResultsData = {
   body: AgentFontResultsRequest;
@@ -9121,6 +11980,379 @@ export type AgentFontsResultsResponses = {
 
 export type AgentFontsResultsResponse =
   AgentFontsResultsResponses[keyof AgentFontsResultsResponses];
+
+export type AgentReportCacheStatsData = {
+  body: AgentCacheStatsReport;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/cache/stats-report";
+};
+
+export type AgentReportCacheStatsErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type AgentReportCacheStatsError =
+  AgentReportCacheStatsErrors[keyof AgentReportCacheStatsErrors];
+
+export type AgentReportCacheStatsResponses = {
+  /**
+   * Accepted
+   */
+  200: {
+    ok: boolean;
+  };
+};
+
+export type AgentReportCacheStatsResponse =
+  AgentReportCacheStatsResponses[keyof AgentReportCacheStatsResponses];
+
+export type AgentAckPerfConfigData = {
+  body: AgentPerfConfigAck;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/perf/config-ack";
+};
+
+export type AgentAckPerfConfigErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type AgentAckPerfConfigError =
+  AgentAckPerfConfigErrors[keyof AgentAckPerfConfigErrors];
+
+export type AgentAckPerfConfigResponses = {
+  /**
+   * Acknowledged (`detail` present when there is no config row yet)
+   */
+  200: {
+    ok: boolean;
+    detail?: string;
+  };
+};
+
+export type AgentAckPerfConfigResponse =
+  AgentAckPerfConfigResponses[keyof AgentAckPerfConfigResponses];
+
+export type AgentIngestRucssData = {
+  body: {
+    /**
+     * JSON part — see description for the expected shape.
+     */
+    meta: string;
+    html: Blob | File;
+    css?: Blob | File;
+  };
+  path?: never;
+  query?: never;
+  url: "/agent/v1/rucss";
+};
+
+export type AgentIngestRucssErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * site_mismatch — meta.site_id does not match the authenticated site
+   */
+  403: Error;
+  /**
+   * A part (or the whole request) exceeded its size limit
+   */
+  413: Error;
+  /**
+   * Missing/invalid meta (no structure_hash) or missing html part
+   */
+  422: Error;
+};
+
+export type AgentIngestRucssError =
+  AgentIngestRucssErrors[keyof AgentIngestRucssErrors];
+
+export type AgentIngestRucssResponses = {
+  /**
+   * Cache hit — used-CSS content (gzip-encoded)
+   */
+  200: Blob | File;
+  /**
+   * Cache miss, or RUCSS degraded/unavailable
+   */
+  202: {
+    status?: "processing" | "unavailable";
+    job_id?: string;
+  };
+};
+
+export type AgentIngestRucssResponse =
+  AgentIngestRucssResponses[keyof AgentIngestRucssResponses];
+
+export type AgentReportDbCleanProgressData = {
+  body: AgentDbCleanProgress;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/db-clean/progress";
+};
+
+export type AgentReportDbCleanProgressErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * missing_job_id or missing_category
+   */
+  422: Error;
+};
+
+export type AgentReportDbCleanProgressError =
+  AgentReportDbCleanProgressErrors[keyof AgentReportDbCleanProgressErrors];
+
+export type AgentReportDbCleanProgressResponses = {
+  /**
+   * Accepted
+   */
+  200: {
+    ok: boolean;
+  };
+};
+
+export type AgentReportDbCleanProgressResponse =
+  AgentReportDbCleanProgressResponses[keyof AgentReportDbCleanProgressResponses];
+
+export type AgentReportDbOrphanDeleteProgressData = {
+  body: AgentDbOrphanDeleteProgress;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/db-orphan-delete/progress";
+};
+
+export type AgentReportDbOrphanDeleteProgressErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * missing_job_id
+   */
+  422: Error;
+};
+
+export type AgentReportDbOrphanDeleteProgressError =
+  AgentReportDbOrphanDeleteProgressErrors[keyof AgentReportDbOrphanDeleteProgressErrors];
+
+export type AgentReportDbOrphanDeleteProgressResponses = {
+  /**
+   * Accepted
+   */
+  200: {
+    ok: boolean;
+  };
+};
+
+export type AgentReportDbOrphanDeleteProgressResponse =
+  AgentReportDbOrphanDeleteProgressResponses[keyof AgentReportDbOrphanDeleteProgressResponses];
+
+export type AgentPushEmailLogData = {
+  body: AgentEmailLogIngestRequest;
+  path?: never;
+  query?: never;
+  url: "/agent/v1/email/log";
+};
+
+export type AgentPushEmailLogErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type AgentPushEmailLogError =
+  AgentPushEmailLogErrors[keyof AgentPushEmailLogErrors];
+
+export type AgentPushEmailLogResponses = {
+  /**
+   * Ingest result
+   */
+  200: {
+    acked_through: number;
+  };
+};
+
+export type AgentPushEmailLogResponse =
+  AgentPushEmailLogResponses[keyof AgentPushEmailLogResponses];
+
+export type AgentFetchSuppressionDeltasData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * Opaque keyset cursor from a previous call's `next_cursor`.
+     */
+    since?: string;
+  };
+  url: "/agent/v1/email/suppression";
+};
+
+export type AgentFetchSuppressionDeltasErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+};
+
+export type AgentFetchSuppressionDeltasError =
+  AgentFetchSuppressionDeltasErrors[keyof AgentFetchSuppressionDeltasErrors];
+
+export type AgentFetchSuppressionDeltasResponses = {
+  /**
+   * Suppression delta page
+   */
+  200: AgentSuppressionDeltaPage;
+};
+
+export type AgentFetchSuppressionDeltasResponse =
+  AgentFetchSuppressionDeltasResponses[keyof AgentFetchSuppressionDeltasResponses];
+
+export type AgentPresignBackupChunksData = {
+  body: AgentPresignChunksRequest;
+  path: {
+    snapshotId: string;
+  };
+  query?: never;
+  url: "/agent/v1/backups/{snapshotId}/presign";
+};
+
+export type AgentPresignBackupChunksErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * snapshot_site_mismatch — the snapshot does not belong to this site
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type AgentPresignBackupChunksError =
+  AgentPresignBackupChunksErrors[keyof AgentPresignBackupChunksErrors];
+
+export type AgentPresignBackupChunksResponses = {
+  /**
+   * Presigned upload URLs for not-yet-stored hashes
+   */
+  200: AgentPresignChunksResponse;
+};
+
+export type AgentPresignBackupChunksResponse =
+  AgentPresignBackupChunksResponses[keyof AgentPresignBackupChunksResponses];
+
+export type AgentSubmitBackupManifestData = {
+  body: AgentSubmitManifestRequest;
+  path: {
+    snapshotId: string;
+  };
+  query?: never;
+  url: "/agent/v1/backups/{snapshotId}/manifest";
+};
+
+export type AgentSubmitBackupManifestErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * snapshot_site_mismatch — the snapshot does not belong to this site
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type AgentSubmitBackupManifestError =
+  AgentSubmitBackupManifestErrors[keyof AgentSubmitBackupManifestErrors];
+
+export type AgentSubmitBackupManifestResponses = {
+  /**
+   * Manifest recorded
+   */
+  200: AgentSubmitManifestResponse;
+};
+
+export type AgentSubmitBackupManifestResponse =
+  AgentSubmitBackupManifestResponses[keyof AgentSubmitBackupManifestResponses];
+
+export type AgentReportBackupProgressData = {
+  body: {
+    phase: string;
+    phase_detail?: {
+      [key: string]: unknown;
+    };
+  };
+  path: {
+    snapshotId: string;
+  };
+  query?: never;
+  url: "/agent/v1/backups/{snapshotId}/progress";
+};
+
+export type AgentReportBackupProgressErrors = {
+  /**
+   * Agent authentication failed
+   */
+  401: Error;
+  /**
+   * snapshot_site_mismatch — the snapshot does not belong to this site
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * Body exceeds the progress payload size cap
+   */
+  413: unknown;
+};
+
+export type AgentReportBackupProgressError =
+  AgentReportBackupProgressErrors[keyof AgentReportBackupProgressErrors];
+
+export type AgentReportBackupProgressResponses = {
+  /**
+   * Progress recorded
+   */
+  200: {
+    ok: boolean;
+  };
+};
+
+export type AgentReportBackupProgressResponse =
+  AgentReportBackupProgressResponses[keyof AgentReportBackupProgressResponses];
 
 export type DeleteSiteData = {
   body?: never;
@@ -10103,6 +13335,50 @@ export type GetSiteAvailableUpdatesResponses = {
 export type GetSiteAvailableUpdatesResponse =
   GetSiteAvailableUpdatesResponses[keyof GetSiteAvailableUpdatesResponses];
 
+export type RecheckSiteData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/recheck";
+};
+
+export type RecheckSiteErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * recheck_rate_limited — see `Retry-After` header
+   */
+  429: Error;
+  /**
+   * agent_unreachable — could not reach the site agent
+   */
+  502: Error;
+  /**
+   * recheck_disabled or lifecycle_disabled — re-check is not available on this control plane
+   */
+  503: Error;
+};
+
+export type RecheckSiteError = RecheckSiteErrors[keyof RecheckSiteErrors];
+
+export type RecheckSiteResponses = {
+  /**
+   * Re-check completed
+   */
+  200: RecheckResponse;
+};
+
+export type RecheckSiteResponse =
+  RecheckSiteResponses[keyof RecheckSiteResponses];
+
 export type GetSiteUptimeData = {
   body?: never;
   path: {
@@ -10224,6 +13500,43 @@ export type GetFleetIncidentsResponses = {
 
 export type GetFleetIncidentsResponse =
   GetFleetIncidentsResponses[keyof GetFleetIncidentsResponses];
+
+export type GetFleetIncidentDetailData = {
+  body?: never;
+  path: {
+    incidentId: string;
+  };
+  query?: never;
+  url: "/api/v1/fleet/incidents/{incidentId}";
+};
+
+export type GetFleetIncidentDetailErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetFleetIncidentDetailError =
+  GetFleetIncidentDetailErrors[keyof GetFleetIncidentDetailErrors];
+
+export type GetFleetIncidentDetailResponses = {
+  /**
+   * Incident detail
+   */
+  200: FleetIncidentDetail;
+};
+
+export type GetFleetIncidentDetailResponse =
+  GetFleetIncidentDetailResponses[keyof GetFleetIncidentDetailResponses];
 
 export type GetFleetRumAggregateData = {
   body?: never;
@@ -10703,6 +14016,370 @@ export type ListSiteLoginEventsResponses = {
 export type ListSiteLoginEventsResponse =
   ListSiteLoginEventsResponses[keyof ListSiteLoginEventsResponses];
 
+export type GetSiteHardeningConfigData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/hardening";
+};
+
+export type GetSiteHardeningConfigErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetSiteHardeningConfigError =
+  GetSiteHardeningConfigErrors[keyof GetSiteHardeningConfigErrors];
+
+export type GetSiteHardeningConfigResponses = {
+  /**
+   * Current hardening config
+   */
+  200: SiteHardeningConfig;
+};
+
+export type GetSiteHardeningConfigResponse =
+  GetSiteHardeningConfigResponses[keyof GetSiteHardeningConfigResponses];
+
+export type PutSiteHardeningConfigData = {
+  body: SiteHardeningConfig;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/hardening";
+};
+
+export type PutSiteHardeningConfigErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type PutSiteHardeningConfigError =
+  PutSiteHardeningConfigErrors[keyof PutSiteHardeningConfigErrors];
+
+export type PutSiteHardeningConfigResponses = {
+  /**
+   * Hardening config saved (see `X-Agent-Push-Warning` header for a non-fatal push failure)
+   */
+  200: SiteHardeningConfig;
+};
+
+export type PutSiteHardeningConfigResponse =
+  PutSiteHardeningConfigResponses[keyof PutSiteHardeningConfigResponses];
+
+export type ListSiteBansData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/bans";
+};
+
+export type ListSiteBansErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListSiteBansError = ListSiteBansErrors[keyof ListSiteBansErrors];
+
+export type ListSiteBansResponses = {
+  /**
+   * Ban list
+   */
+  200: {
+    items: Array<SiteBan>;
+  };
+};
+
+export type ListSiteBansResponse =
+  ListSiteBansResponses[keyof ListSiteBansResponses];
+
+export type CreateSiteBanData = {
+  body: {
+    /**
+     * Ban entry kind (e.g. `ip`, `username`, `user_agent`).
+     */
+    type: string;
+    value: string;
+    comment?: string;
+  };
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/bans";
+};
+
+export type CreateSiteBanErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type CreateSiteBanError = CreateSiteBanErrors[keyof CreateSiteBanErrors];
+
+export type CreateSiteBanResponses = {
+  /**
+   * Ban created
+   */
+  201: SiteBan;
+};
+
+export type CreateSiteBanResponse =
+  CreateSiteBanResponses[keyof CreateSiteBanResponses];
+
+export type DeleteSiteBanData = {
+  body?: never;
+  path: {
+    siteId: string;
+    banId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/bans/{banId}";
+};
+
+export type DeleteSiteBanErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type DeleteSiteBanError = DeleteSiteBanErrors[keyof DeleteSiteBanErrors];
+
+export type DeleteSiteBanResponses = {
+  /**
+   * Ban deleted
+   */
+  204: void;
+};
+
+export type DeleteSiteBanResponse =
+  DeleteSiteBanResponses[keyof DeleteSiteBanResponses];
+
+export type GetSiteSecurityPolicyData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/policy";
+};
+
+export type GetSiteSecurityPolicyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetSiteSecurityPolicyError =
+  GetSiteSecurityPolicyErrors[keyof GetSiteSecurityPolicyErrors];
+
+export type GetSiteSecurityPolicyResponses = {
+  /**
+   * Current policy
+   */
+  200: SiteSecurityPolicy;
+};
+
+export type GetSiteSecurityPolicyResponse =
+  GetSiteSecurityPolicyResponses[keyof GetSiteSecurityPolicyResponses];
+
+export type PutSiteSecurityPolicyData = {
+  body: SiteSecurityPolicy;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/policy";
+};
+
+export type PutSiteSecurityPolicyErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type PutSiteSecurityPolicyError =
+  PutSiteSecurityPolicyErrors[keyof PutSiteSecurityPolicyErrors];
+
+export type PutSiteSecurityPolicyResponses = {
+  /**
+   * Policy saved (see `X-Agent-Push-Warning` header for a non-fatal push failure)
+   */
+  200: SiteSecurityPolicy;
+};
+
+export type PutSiteSecurityPolicyResponse =
+  PutSiteSecurityPolicyResponses[keyof PutSiteSecurityPolicyResponses];
+
+export type ListSitePolicyGroupsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/policy/groups";
+};
+
+export type ListSitePolicyGroupsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListSitePolicyGroupsError =
+  ListSitePolicyGroupsErrors[keyof ListSitePolicyGroupsErrors];
+
+export type ListSitePolicyGroupsResponses = {
+  /**
+   * Per-role overrides
+   */
+  200: {
+    items: Array<SitePolicyGroup>;
+  };
+};
+
+export type ListSitePolicyGroupsResponse =
+  ListSitePolicyGroupsResponses[keyof ListSitePolicyGroupsResponses];
+
+export type DeleteSitePolicyGroupData = {
+  body?: never;
+  path: {
+    siteId: string;
+    role: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/policy/groups/{role}";
+};
+
+export type DeleteSitePolicyGroupErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type DeleteSitePolicyGroupError =
+  DeleteSitePolicyGroupErrors[keyof DeleteSitePolicyGroupErrors];
+
+export type DeleteSitePolicyGroupResponses = {
+  /**
+   * Override deleted
+   */
+  204: void;
+};
+
+export type DeleteSitePolicyGroupResponse =
+  DeleteSitePolicyGroupResponses[keyof DeleteSitePolicyGroupResponses];
+
+export type PutSitePolicyGroupData = {
+  body: SitePolicyGroup;
+  path: {
+    siteId: string;
+    /**
+     * The WordPress role slug this override applies to (e.g. `administrator`).
+     */
+    role: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/security/policy/groups/{role}";
+};
+
+export type PutSitePolicyGroupErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type PutSitePolicyGroupError =
+  PutSitePolicyGroupErrors[keyof PutSitePolicyGroupErrors];
+
+export type PutSitePolicyGroupResponses = {
+  /**
+   * Override saved
+   */
+  200: SitePolicyGroup;
+};
+
+export type PutSitePolicyGroupResponse =
+  PutSitePolicyGroupResponses[keyof PutSitePolicyGroupResponses];
+
 export type GetSiteLoginBrandData = {
   body?: never;
   path: {
@@ -10750,6 +14427,445 @@ export type PutSiteLoginBrandResponses = {
 
 export type PutSiteLoginBrandResponse =
   PutSiteLoginBrandResponses[keyof PutSiteLoginBrandResponses];
+
+export type ListScanRunsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    limit?: number;
+  };
+  url: "/api/v1/sites/{siteId}/scans";
+};
+
+export type ListScanRunsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListScanRunsError = ListScanRunsErrors[keyof ListScanRunsErrors];
+
+export type ListScanRunsResponses = {
+  /**
+   * Scan run list
+   */
+  200: {
+    items: Array<ScanRun>;
+  };
+};
+
+export type ListScanRunsResponse =
+  ListScanRunsResponses[keyof ListScanRunsResponses];
+
+export type StartScanRunData = {
+  body?: {
+    kind?: string;
+  };
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/scans";
+};
+
+export type StartScanRunErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type StartScanRunError = StartScanRunErrors[keyof StartScanRunErrors];
+
+export type StartScanRunResponses = {
+  /**
+   * Scan run accepted
+   */
+  202: ScanRun;
+};
+
+export type StartScanRunResponse =
+  StartScanRunResponses[keyof StartScanRunResponses];
+
+export type GetScanRunData = {
+  body?: never;
+  path: {
+    siteId: string;
+    runId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/scans/{runId}";
+};
+
+export type GetScanRunErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetScanRunError = GetScanRunErrors[keyof GetScanRunErrors];
+
+export type GetScanRunResponses = {
+  /**
+   * Scan run
+   */
+  200: ScanRun;
+};
+
+export type GetScanRunResponse = GetScanRunResponses[keyof GetScanRunResponses];
+
+export type ListScanFindingsData = {
+  body?: never;
+  path: {
+    siteId: string;
+    runId: string;
+  };
+  query?: {
+    limit?: number;
+  };
+  url: "/api/v1/sites/{siteId}/scans/{runId}/findings";
+};
+
+export type ListScanFindingsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListScanFindingsError =
+  ListScanFindingsErrors[keyof ListScanFindingsErrors];
+
+export type ListScanFindingsResponses = {
+  /**
+   * Finding list
+   */
+  200: {
+    items: Array<ScanFinding>;
+  };
+};
+
+export type ListScanFindingsResponse =
+  ListScanFindingsResponses[keyof ListScanFindingsResponses];
+
+export type FetchScanFindingFileData = {
+  body?: never;
+  path: {
+    siteId: string;
+    runId: string;
+    fid: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/scans/{runId}/findings/{fid}/file";
+};
+
+export type FetchScanFindingFileErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type FetchScanFindingFileError =
+  FetchScanFindingFileErrors[keyof FetchScanFindingFileErrors];
+
+export type FetchScanFindingFileResponses = {
+  /**
+   * File content (or a fetch failure surfaced as `ok:false`)
+   */
+  200: ScanFindingFile;
+};
+
+export type FetchScanFindingFileResponse =
+  FetchScanFindingFileResponses[keyof FetchScanFindingFileResponses];
+
+export type ToggleScanFindingIgnoreData = {
+  body?: {
+    ignored?: boolean;
+  };
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/findings/{id}/ignore";
+};
+
+export type ToggleScanFindingIgnoreErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type ToggleScanFindingIgnoreError =
+  ToggleScanFindingIgnoreErrors[keyof ToggleScanFindingIgnoreErrors];
+
+export type ToggleScanFindingIgnoreResponses = {
+  /**
+   * Updated finding
+   */
+  200: ScanFinding;
+};
+
+export type ToggleScanFindingIgnoreResponse =
+  ToggleScanFindingIgnoreResponses[keyof ToggleScanFindingIgnoreResponses];
+
+export type GetFleetVulnerabilitiesData = {
+  body?: never;
+  path?: never;
+  query?: {
+    limit?: number;
+  };
+  url: "/api/v1/vulnerabilities";
+};
+
+export type GetFleetVulnerabilitiesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetFleetVulnerabilitiesError =
+  GetFleetVulnerabilitiesErrors[keyof GetFleetVulnerabilitiesErrors];
+
+export type GetFleetVulnerabilitiesResponses = {
+  /**
+   * Fleet vulnerability summary
+   */
+  200: FleetVulnerabilitiesResponse;
+};
+
+export type GetFleetVulnerabilitiesResponse =
+  GetFleetVulnerabilitiesResponses[keyof GetFleetVulnerabilitiesResponses];
+
+export type ListSiteVulnerabilitiesData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/vulnerabilities";
+};
+
+export type ListSiteVulnerabilitiesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type ListSiteVulnerabilitiesError =
+  ListSiteVulnerabilitiesErrors[keyof ListSiteVulnerabilitiesErrors];
+
+export type ListSiteVulnerabilitiesResponses = {
+  /**
+   * Open findings, severity-sorted, with feed attribution
+   */
+  200: SiteVulnerabilitiesResponse;
+};
+
+export type ListSiteVulnerabilitiesResponse =
+  ListSiteVulnerabilitiesResponses[keyof ListSiteVulnerabilitiesResponses];
+
+export type RescanSiteVulnerabilitiesData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/vulnerabilities/rescan";
+};
+
+export type RescanSiteVulnerabilitiesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Rescan enqueuer not wired
+   */
+  503: Error;
+};
+
+export type RescanSiteVulnerabilitiesError =
+  RescanSiteVulnerabilitiesErrors[keyof RescanSiteVulnerabilitiesErrors];
+
+export type RescanSiteVulnerabilitiesResponses = {
+  /**
+   * Rescan enqueued
+   */
+  200: {
+    ok: boolean;
+  };
+};
+
+export type RescanSiteVulnerabilitiesResponse =
+  RescanSiteVulnerabilitiesResponses[keyof RescanSiteVulnerabilitiesResponses];
+
+export type DismissSiteVulnerabilityData = {
+  body?: never;
+  path: {
+    siteId: string;
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/vulnerabilities/{id}/dismiss";
+};
+
+export type DismissSiteVulnerabilityErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type DismissSiteVulnerabilityError =
+  DismissSiteVulnerabilityErrors[keyof DismissSiteVulnerabilityErrors];
+
+export type DismissSiteVulnerabilityResponses = {
+  /**
+   * Finding dismissed
+   */
+  204: void;
+};
+
+export type DismissSiteVulnerabilityResponse =
+  DismissSiteVulnerabilityResponses[keyof DismissSiteVulnerabilityResponses];
+
+export type RestoreSiteVulnerabilityData = {
+  body?: never;
+  path: {
+    siteId: string;
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/vulnerabilities/{id}/restore";
+};
+
+export type RestoreSiteVulnerabilityErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type RestoreSiteVulnerabilityError =
+  RestoreSiteVulnerabilityErrors[keyof RestoreSiteVulnerabilityErrors];
+
+export type RestoreSiteVulnerabilityResponses = {
+  /**
+   * Finding restored
+   */
+  204: void;
+};
+
+export type RestoreSiteVulnerabilityResponse =
+  RestoreSiteVulnerabilityResponses[keyof RestoreSiteVulnerabilityResponses];
+
+export type RemediateSiteVulnerabilityData = {
+  body?: never;
+  path: {
+    siteId: string;
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/vulnerabilities/{id}/remediate";
+};
+
+export type RemediateSiteVulnerabilityErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type RemediateSiteVulnerabilityError =
+  RemediateSiteVulnerabilityErrors[keyof RemediateSiteVulnerabilityErrors];
+
+export type RemediateSiteVulnerabilityResponses = {
+  /**
+   * Update run started
+   */
+  200: {
+    run_id: string;
+  };
+};
+
+export type RemediateSiteVulnerabilityResponse =
+  RemediateSiteVulnerabilityResponses[keyof RemediateSiteVulnerabilityResponses];
 
 export type GetPerfConfigData = {
   body?: never;
@@ -10816,6 +14932,41 @@ export type GetCacheStatsResponses = {
 
 export type GetCacheStatsResponse =
   GetCacheStatsResponses[keyof GetCacheStatsResponses];
+
+export type GetCacheHealthData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    days?: number;
+  };
+  url: "/api/v1/sites/{siteId}/perf/cache/health";
+};
+
+export type GetCacheHealthErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetCacheHealthError =
+  GetCacheHealthErrors[keyof GetCacheHealthErrors];
+
+export type GetCacheHealthResponses = {
+  /**
+   * Cache hit-ratio health trend
+   */
+  200: CacheHealth;
+};
+
+export type GetCacheHealthResponse =
+  GetCacheHealthResponses[keyof GetCacheHealthResponses];
 
 export type PurgeCacheData = {
   body: PurgeRequest;
@@ -10950,6 +15101,147 @@ export type TriggerDbScanResponses = {
 export type TriggerDbScanResponse =
   TriggerDbScanResponses[keyof TriggerDbScanResponses];
 
+export type GetDbHealthData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    days?: number;
+  };
+  url: "/api/v1/sites/{siteId}/perf/db/health";
+};
+
+export type GetDbHealthErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetDbHealthError = GetDbHealthErrors[keyof GetDbHealthErrors];
+
+export type GetDbHealthResponses = {
+  /**
+   * Database health trend
+   */
+  200: DbHealth;
+};
+
+export type GetDbHealthResponse =
+  GetDbHealthResponses[keyof GetDbHealthResponses];
+
+export type GetDbOrphansReportData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/perf/db/orphans";
+};
+
+export type GetDbOrphansReportErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * corpus_unwired — the orphan-classification corpus reader is not configured
+   */
+  503: Error;
+};
+
+export type GetDbOrphansReportError =
+  GetDbOrphansReportErrors[keyof GetDbOrphansReportErrors];
+
+export type GetDbOrphansReportResponses = {
+  /**
+   * Orphan classification report
+   */
+  200: DbOrphansReport;
+};
+
+export type GetDbOrphansReportResponse =
+  GetDbOrphansReportResponses[keyof GetDbOrphansReportResponses];
+
+export type DeleteDbOrphansData = {
+  body: DbOrphanDeleteRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/perf/db/orphan-delete";
+};
+
+export type DeleteDbOrphansErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission (admin+ required for orphan deletion)
+   */
+  403: Error;
+  /**
+   * corpus_unwired — the orphan-classification corpus reader is not configured
+   */
+  503: Error;
+};
+
+export type DeleteDbOrphansError =
+  DeleteDbOrphansErrors[keyof DeleteDbOrphansErrors];
+
+export type DeleteDbOrphansResponses = {
+  /**
+   * Deletion accepted (or an agent-side rejection surfaced as `ok:false`); an advisory `X-Backup-Warning` header is set when no recent backup is found
+   */
+  200: DbOrphanDeleteResponse;
+};
+
+export type DeleteDbOrphansResponse =
+  DeleteDbOrphansResponses[keyof DeleteDbOrphansResponses];
+
+export type RunDbTableActionData = {
+  body: DbTableActionRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/perf/db/table-action";
+};
+
+export type RunDbTableActionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission (admin+ required for drop/empty)
+   */
+  403: Error;
+};
+
+export type RunDbTableActionError =
+  RunDbTableActionErrors[keyof RunDbTableActionErrors];
+
+export type RunDbTableActionResponses = {
+  /**
+   * Action accepted (or an agent-side rejection surfaced as `ok:false`)
+   */
+  200: DbTableActionResponse;
+};
+
+export type RunDbTableActionResponse =
+  RunDbTableActionResponses[keyof RunDbTableActionResponses];
+
 export type RunSearchReplaceData = {
   body: SearchReplaceRequest;
   path: {
@@ -11049,6 +15341,39 @@ export type DeleteDbSnapshotResponses = {
 
 export type DeleteDbSnapshotResponse =
   DeleteDbSnapshotResponses[keyof DeleteDbSnapshotResponses];
+
+export type GetDbCleanStatusData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/perf/db/clean";
+};
+
+export type GetDbCleanStatusErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetDbCleanStatusError =
+  GetDbCleanStatusErrors[keyof GetDbCleanStatusErrors];
+
+export type GetDbCleanStatusResponses = {
+  /**
+   * Watchdog state and latest clean result (null when none)
+   */
+  200: DbCleanStatus;
+};
+
+export type GetDbCleanStatusResponse =
+  GetDbCleanStatusResponses[keyof GetDbCleanStatusResponses];
 
 export type CleanDatabaseData = {
   body?: never;
@@ -11528,6 +15853,43 @@ export type SyncSiteEmailConfigResponses = {
 
 export type SyncSiteEmailConfigResponse =
   SyncSiteEmailConfigResponses[keyof SyncSiteEmailConfigResponses];
+
+export type BulkDeleteEmailLogData = {
+  body: BulkDeleteLogsRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/email/log";
+};
+
+export type BulkDeleteEmailLogErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type BulkDeleteEmailLogError =
+  BulkDeleteEmailLogErrors[keyof BulkDeleteEmailLogErrors];
+
+export type BulkDeleteEmailLogResponses = {
+  /**
+   * Number of rows deleted
+   */
+  200: BulkDeleteLogsResponse;
+};
+
+export type BulkDeleteEmailLogResponse =
+  BulkDeleteEmailLogResponses[keyof BulkDeleteEmailLogResponses];
 
 export type ListSiteEmailLogData = {
   body?: never;
@@ -12097,7 +16459,7 @@ export type BulkResendEmailLogData = {
     siteId: string;
   };
   query?: never;
-  url: "/api/v1/sites/{siteId}/email/log/bulk-resend";
+  url: "/api/v1/sites/{siteId}/email/log/resend";
 };
 
 export type BulkResendEmailLogErrors = {
@@ -12127,43 +16489,6 @@ export type BulkResendEmailLogResponses = {
 
 export type BulkResendEmailLogResponse =
   BulkResendEmailLogResponses[keyof BulkResendEmailLogResponses];
-
-export type BulkDeleteEmailLogData = {
-  body: BulkDeleteLogsRequest;
-  path: {
-    siteId: string;
-  };
-  query?: never;
-  url: "/api/v1/sites/{siteId}/email/log/bulk-delete";
-};
-
-export type BulkDeleteEmailLogErrors = {
-  /**
-   * Validation error
-   */
-  400: Error;
-  /**
-   * Not authenticated
-   */
-  401: Error;
-  /**
-   * Insufficient permission
-   */
-  403: Error;
-};
-
-export type BulkDeleteEmailLogError =
-  BulkDeleteEmailLogErrors[keyof BulkDeleteEmailLogErrors];
-
-export type BulkDeleteEmailLogResponses = {
-  /**
-   * Number of rows deleted
-   */
-  200: BulkDeleteLogsResponse;
-};
-
-export type BulkDeleteEmailLogResponse =
-  BulkDeleteEmailLogResponses[keyof BulkDeleteEmailLogResponses];
 
 export type ListEmailConnectionsData = {
   body?: never;
@@ -12413,6 +16738,41 @@ export type GetRumSummaryResponses = {
 
 export type GetRumSummaryResponse =
   GetRumSummaryResponses[keyof GetRumSummaryResponses];
+
+export type GetRumTrendData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    window_days?: number;
+    device?: string;
+  };
+  url: "/api/v1/sites/{siteId}/perf/rum/trend";
+};
+
+export type GetRumTrendErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetRumTrendError = GetRumTrendErrors[keyof GetRumTrendErrors];
+
+export type GetRumTrendResponses = {
+  /**
+   * RUM trend series
+   */
+  200: RumTrend;
+};
+
+export type GetRumTrendResponse =
+  GetRumTrendResponses[keyof GetRumTrendResponses];
 
 export type ListRumResultsData = {
   body?: never;

@@ -2254,7 +2254,7 @@ export const AdminAccountSiteSchema = {
 
 export const AdminAccountDetailSchema = {
   type: "object",
-  description: "The full GET /api/v1/admin/accounts/{tenantId} body.",
+  description: "The full GET /api/v1/admin/accounts/{id} body.",
   required: [
     "tenant_id",
     "org_name",
@@ -11098,6 +11098,2538 @@ export const FileVersionRestoreResultSchema = {
       type: "string",
       description:
         "The version ID that was restored (echoed for audit correlation).",
+    },
+  },
+} as const;
+
+export const TwoFactorStatusSchema = {
+  type: "object",
+  description: "Current 2FA configuration summary for the authenticated user.",
+  required: [
+    "totp_enabled",
+    "webauthn_count",
+    "recovery_codes_remaining",
+    "two_factor_enabled",
+    "trusted_devices",
+  ],
+  properties: {
+    totp_enabled: {
+      type: "boolean",
+    },
+    webauthn_count: {
+      type: "integer",
+    },
+    recovery_codes_remaining: {
+      type: "integer",
+    },
+    two_factor_enabled: {
+      type: "boolean",
+    },
+    trusted_devices: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/TrustedDevice",
+      },
+    },
+  },
+} as const;
+
+export const RecoveryCodesResponseSchema = {
+  type: "object",
+  description:
+    "A freshly (re)generated batch of 10 single-use recovery codes, shown exactly once.",
+  required: ["recovery_codes"],
+  properties: {
+    recovery_codes: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+  },
+} as const;
+
+export const TwoFactorChallengeCompleteRequestSchema = {
+  type: "object",
+  description:
+    "Completes the 2FA challenge minted at login. `challenge` is the nonce from the login response; `code` is the TOTP code or recovery code depending on the endpoint.",
+  required: ["challenge", "code"],
+  properties: {
+    challenge: {
+      type: "string",
+      format: "uuid",
+    },
+    code: {
+      type: "string",
+    },
+    remember_device: {
+      type: "boolean",
+      default: false,
+    },
+    device_label: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const WebAuthnCredentialSchema = {
+  type: "object",
+  required: ["id", "name", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_used_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const TrustedDeviceSchema = {
+  type: "object",
+  required: ["id", "label", "user_agent", "created_at", "expires_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    label: {
+      type: "string",
+    },
+    user_agent: {
+      type: "string",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_used_at: {
+      type: "string",
+      format: "date-time",
+    },
+    ip: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const OrgListSchema = {
+  type: "object",
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "name", "slug", "role"],
+        properties: {
+          id: {
+            type: "string",
+            format: "uuid",
+          },
+          name: {
+            type: "string",
+          },
+          slug: {
+            type: "string",
+          },
+          role: {
+            type: "string",
+            description: "The caller's role in this org.",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const DeleteOrgResponseSchema = {
+  type: "object",
+  required: ["id", "lane"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    lane: {
+      type: "string",
+      enum: ["hard", "soft"],
+      description:
+        "`hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and is recoverable until the grace-window purge worker runs.",
+    },
+    active_tenant_id: {
+      type: "string",
+      format: "uuid",
+      description:
+        "The caller's session active tenant AFTER this delete. Absent when it drops to no-org onboarding (this was their last live org).",
+    },
+  },
+} as const;
+
+export const SiteHardeningConfigSchema = {
+  type: "object",
+  description: "Per-site core-hardening toggles (ADR-057).",
+  properties: {
+    disable_file_editor: {
+      type: "boolean",
+    },
+    xmlrpc_mode: {
+      type: "string",
+      description: "One of the agent-defined XML-RPC restriction modes.",
+    },
+    restrict_rest_api: {
+      type: "string",
+      description: "One of the agent-defined REST API restriction modes.",
+    },
+    restrict_login_identifier: {
+      type: "string",
+      description:
+        "One of the agent-defined login-identifier restriction modes.",
+    },
+    force_unique_nickname: {
+      type: "boolean",
+    },
+    disable_author_archive_enum: {
+      type: "boolean",
+    },
+    force_ssl: {
+      type: "boolean",
+    },
+    disable_directory_browsing: {
+      type: "boolean",
+    },
+    disable_php_in_uploads: {
+      type: "boolean",
+    },
+    protect_system_files: {
+      type: "boolean",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteBanSchema = {
+  type: "object",
+  required: [
+    "id",
+    "type",
+    "value",
+    "comment",
+    "actor_type",
+    "actor_id",
+    "created_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    type: {
+      type: "string",
+      description: "Ban entry kind (e.g. ip, username, user_agent).",
+    },
+    value: {
+      type: "string",
+    },
+    comment: {
+      type: "string",
+    },
+    actor_type: {
+      type: "string",
+    },
+    actor_id: {
+      type: "string",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SiteSecurityPolicySchema = {
+  type: "object",
+  description:
+    "Site-user (WordPress user) auth policy — 2FA + password requirements (ADR-059).",
+  properties: {
+    two_factor_enabled: {
+      type: "boolean",
+    },
+    two_factor_methods: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    two_factor_required_roles: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    two_factor_grace_logins: {
+      type: "integer",
+    },
+    two_factor_remember_device_days: {
+      type: "integer",
+    },
+    block_xmlrpc_for_2fa_users: {
+      type: "boolean",
+    },
+    password_min_zxcvbn_score: {
+      type: "integer",
+    },
+    password_min_zxcvbn_roles: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    password_block_compromised: {
+      type: "boolean",
+    },
+    password_reuse_block_count: {
+      type: "integer",
+    },
+    password_max_age_days: {
+      type: "integer",
+    },
+    password_expiry_roles: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    hide_backend_enabled: {
+      type: "boolean",
+    },
+    hide_backend_slug: {
+      type: "string",
+    },
+    hide_backend_redirect: {
+      type: "string",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SitePolicyGroupSchema = {
+  type: "object",
+  description: "A per-role override of the site-user auth policy.",
+  required: ["role"],
+  properties: {
+    role: {
+      type: "string",
+      description:
+        "The WordPress role slug this override applies to (e.g. administrator).",
+    },
+    require_2fa: {
+      type: "boolean",
+      nullable: true,
+    },
+    allowed_methods: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    min_zxcvbn_score: {
+      type: "integer",
+      nullable: true,
+    },
+    block_compromised: {
+      type: "boolean",
+      nullable: true,
+    },
+    max_age_days: {
+      type: "integer",
+      nullable: true,
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const ScanRunSchema = {
+  type: "object",
+  required: ["id", "site_id", "kind", "status", "files_scanned", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    kind: {
+      type: "string",
+      description: "core | plugins | themes | full",
+    },
+    status: {
+      type: "string",
+      description: "queued | running | completed | failed",
+    },
+    files_scanned: {
+      type: "integer",
+      format: "int64",
+    },
+    wp_version: {
+      type: "string",
+    },
+    locale: {
+      type: "string",
+    },
+    error: {
+      type: "string",
+    },
+    finding_counts: {
+      type: "object",
+      additionalProperties: {
+        type: "integer",
+      },
+      description: "Count of findings by severity for this run.",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    started_at: {
+      type: "string",
+      format: "date-time",
+    },
+    finished_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const ScanFindingSchema = {
+  type: "object",
+  required: [
+    "id",
+    "site_id",
+    "run_id",
+    "finding_type",
+    "path",
+    "severity",
+    "ignored",
+    "created_at",
+    "last_seen_run",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    run_id: {
+      type: "string",
+      format: "uuid",
+    },
+    finding_type: {
+      type: "string",
+      description: "modified | added | missing",
+    },
+    path: {
+      type: "string",
+    },
+    severity: {
+      type: "string",
+    },
+    expected_md5: {
+      type: "string",
+    },
+    actual_md5: {
+      type: "string",
+    },
+    ignored: {
+      type: "boolean",
+    },
+    ignored_by: {
+      type: "string",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_seen_run: {
+      type: "string",
+      format: "uuid",
+    },
+  },
+} as const;
+
+export const ScanFindingFileSchema = {
+  type: "object",
+  required: ["ok", "path", "size"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    path: {
+      type: "string",
+    },
+    size: {
+      type: "integer",
+      format: "int64",
+    },
+    content_base64: {
+      type: "string",
+    },
+    error: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const VulnAttributionSchema = {
+  type: "object",
+  description:
+    "Vulnerability-feed attribution notices, rendered in the UI footer and on any finding row that shows a CVE.",
+  required: ["defiant_notice", "defiant_license", "mitre_notice"],
+  properties: {
+    defiant_notice: {
+      type: "string",
+    },
+    defiant_license: {
+      type: "string",
+    },
+    mitre_notice: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const VulnFindingSchema = {
+  type: "object",
+  required: [
+    "id",
+    "site_id",
+    "vuln_id",
+    "kind",
+    "slug",
+    "name",
+    "installed_version",
+    "severity",
+    "title",
+    "status",
+    "first_seen",
+    "last_seen",
+    "references",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    vuln_id: {
+      type: "string",
+    },
+    kind: {
+      type: "string",
+      description: "core | plugin | theme",
+    },
+    slug: {
+      type: "string",
+    },
+    name: {
+      type: "string",
+    },
+    installed_version: {
+      type: "string",
+    },
+    fixed_version: {
+      type: "string",
+    },
+    severity: {
+      type: "string",
+    },
+    cvss_score: {
+      type: "number",
+      format: "double",
+    },
+    cve: {
+      type: "string",
+    },
+    cve_link: {
+      type: "string",
+    },
+    title: {
+      type: "string",
+    },
+    status: {
+      type: "string",
+      description: "open | dismissed | remediated",
+    },
+    first_seen: {
+      type: "string",
+      format: "date-time",
+    },
+    last_seen: {
+      type: "string",
+      format: "date-time",
+    },
+    references: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+  },
+} as const;
+
+export const SiteVulnerabilitiesResponseSchema = {
+  type: "object",
+  required: ["items", "attribution", "feed_ok"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/VulnFinding",
+      },
+    },
+    attribution: {
+      $ref: "#/components/schemas/VulnAttribution",
+    },
+    feed_ok: {
+      type: "boolean",
+    },
+    feed_synced: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const FleetVulnerabilitiesResponseSchema = {
+  type: "object",
+  required: [
+    "total_open",
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "items",
+    "attribution",
+    "feed_ok",
+  ],
+  properties: {
+    total_open: {
+      type: "integer",
+    },
+    critical: {
+      type: "integer",
+    },
+    high: {
+      type: "integer",
+    },
+    medium: {
+      type: "integer",
+    },
+    low: {
+      type: "integer",
+    },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["site_id", "site_name", "site_url", "finding"],
+        properties: {
+          site_id: {
+            type: "string",
+            format: "uuid",
+          },
+          site_name: {
+            type: "string",
+          },
+          site_url: {
+            type: "string",
+          },
+          finding: {
+            $ref: "#/components/schemas/VulnFinding",
+          },
+        },
+      },
+    },
+    attribution: {
+      $ref: "#/components/schemas/VulnAttribution",
+    },
+    feed_ok: {
+      type: "boolean",
+    },
+    feed_synced: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SmtpSettingsSchema = {
+  type: "object",
+  required: [
+    "enabled",
+    "host",
+    "port",
+    "username",
+    "from_address",
+    "from_name",
+    "tls_mode",
+    "allow_insecure_tls",
+    "password_set",
+    "updated_at",
+  ],
+  properties: {
+    enabled: {
+      type: "boolean",
+    },
+    host: {
+      type: "string",
+    },
+    port: {
+      type: "integer",
+    },
+    username: {
+      type: "string",
+    },
+    from_address: {
+      type: "string",
+    },
+    from_name: {
+      type: "string",
+    },
+    tls_mode: {
+      type: "string",
+      description: "none | starttls | tls",
+    },
+    allow_insecure_tls: {
+      type: "boolean",
+    },
+    password_set: {
+      type: "boolean",
+      description:
+        "True when a password/secret is stored. The value itself is never returned.",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const SmtpSettingsUpdateSchema = {
+  type: "object",
+  required: [
+    "enabled",
+    "host",
+    "port",
+    "username",
+    "from_address",
+    "from_name",
+    "tls_mode",
+    "allow_insecure_tls",
+  ],
+  properties: {
+    enabled: {
+      type: "boolean",
+    },
+    host: {
+      type: "string",
+    },
+    port: {
+      type: "integer",
+    },
+    username: {
+      type: "string",
+    },
+    from_address: {
+      type: "string",
+    },
+    from_name: {
+      type: "string",
+    },
+    tls_mode: {
+      type: "string",
+      description: "none | starttls | tls",
+    },
+    allow_insecure_tls: {
+      type: "boolean",
+    },
+    password: {
+      type: "string",
+      format: "password",
+      nullable: true,
+      description:
+        "Write-only. Omit or null to leave the stored ciphertext unchanged.",
+    },
+  },
+} as const;
+
+export const SiteInvitationSchema = {
+  type: "object",
+  required: [
+    "id",
+    "email",
+    "role",
+    "status",
+    "expires_at",
+    "created_at",
+    "attempts",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    email: {
+      type: "string",
+      format: "email",
+    },
+    role: {
+      type: "string",
+    },
+    status: {
+      type: "string",
+      enum: ["pending", "accepted", "expired", "revoked"],
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    accepted_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    revoked_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    attempts: {
+      type: "integer",
+    },
+    invited_by: {
+      type: "string",
+      format: "uuid",
+      nullable: true,
+    },
+  },
+} as const;
+
+export const MediaSettingsSchema = {
+  type: "object",
+  required: [
+    "auto_optimize_enabled",
+    "auto_target_format",
+    "auto_target_quality",
+  ],
+  properties: {
+    auto_optimize_enabled: {
+      type: "boolean",
+    },
+    auto_target_format: {
+      type: "string",
+      description: "e.g. avif | webp",
+    },
+    auto_target_quality: {
+      type: "string",
+      description: "e.g. balanced | high | max",
+    },
+  },
+} as const;
+
+export const RecheckResponseSchema = {
+  type: "object",
+  required: ["connection_state", "recovered"],
+  properties: {
+    connection_state: {
+      type: "string",
+    },
+    last_seen_at: {
+      type: "string",
+      format: "date-time",
+    },
+    recovered: {
+      type: "boolean",
+      description:
+        "True when this re-check recovered the connection from degraded/disconnected to connected.",
+    },
+  },
+} as const;
+
+export const FleetIncidentDetailSchema = {
+  type: "object",
+  required: [
+    "id",
+    "site_id",
+    "name",
+    "url",
+    "started_at",
+    "ongoing",
+    "peak_status",
+    "last_http_status",
+    "reason",
+    "incident_count_30d",
+    "probes",
+    "probes_truncated",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+    },
+    url: {
+      type: "string",
+    },
+    started_at: {
+      type: "string",
+      format: "date-time",
+    },
+    ended_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    duration_seconds: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+    },
+    ongoing: {
+      type: "boolean",
+    },
+    peak_status: {
+      type: "string",
+    },
+    last_http_status: {
+      type: "integer",
+    },
+    reason: {
+      type: "string",
+    },
+    incident_count_30d: {
+      type: "integer",
+    },
+    probes: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["probed_at", "up", "http_status", "total_ms"],
+        properties: {
+          probed_at: {
+            type: "string",
+            format: "date-time",
+          },
+          up: {
+            type: "boolean",
+          },
+          http_status: {
+            type: "integer",
+          },
+          total_ms: {
+            type: "number",
+            format: "double",
+          },
+          error: {
+            type: "string",
+          },
+        },
+      },
+    },
+    probes_truncated: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const RumBeaconSchema = {
+  type: "object",
+  required: ["key", "url", "metric", "value"],
+  properties: {
+    key: {
+      type: "string",
+      description:
+        "Per-site beacon key (base64url). The sole access credential for this endpoint.",
+    },
+    url: {
+      type: "string",
+      description:
+        "The full page URL (window.location.href); normalised server-side to a path pattern.",
+    },
+    metric: {
+      type: "string",
+      enum: ["lcp", "inp", "cls", "ttfb", "fcp"],
+    },
+    value: {
+      type: "integer",
+      format: "int32",
+      description:
+        "Raw metric value. Milliseconds for timing metrics; milli-units (value*1000) for CLS.",
+    },
+    device: {
+      type: "string",
+      enum: ["desktop", "mobile", "tablet"],
+    },
+    country: {
+      type: "string",
+      description:
+        'ISO-3166-1 alpha-2 code. Falls back to "__other__" when absent/invalid.',
+    },
+    conn: {
+      type: "string",
+      enum: ["4g", "3g", "2g", "slow-2g", "offline", "unknown"],
+    },
+  },
+} as const;
+
+export const PriceQuoteSchema = {
+  type: "object",
+  required: ["amount", "currency", "interval"],
+  properties: {
+    amount: {
+      type: "integer",
+      format: "int64",
+      description: "Minor currency units (e.g. cents).",
+    },
+    currency: {
+      type: "string",
+    },
+    interval: {
+      type: "string",
+      description: "e.g. month",
+    },
+  },
+} as const;
+
+export const PublicPricingSchema = {
+  type: "object",
+  required: ["currency_default", "tiers"],
+  properties: {
+    currency_default: {
+      type: "string",
+    },
+    tiers: {
+      type: "array",
+      items: {
+        type: "object",
+        description:
+          "A free tier renders flat `{id,amount,currency,interval}` fields; a paid tier renders `{id,usd?,inr?}` — only the provider/currency pairs this instance actually resolved a price for.",
+        required: ["id"],
+        properties: {
+          id: {
+            type: "string",
+          },
+          amount: {
+            type: "integer",
+            format: "int64",
+          },
+          currency: {
+            type: "string",
+          },
+          interval: {
+            type: "string",
+          },
+          usd: {
+            $ref: "#/components/schemas/PriceQuote",
+          },
+          inr: {
+            $ref: "#/components/schemas/PriceQuote",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const DbHealthSchema = {
+  type: "object",
+  description: "Database-size trend and growth summary (M42 Phase 3.4).",
+  required: ["points", "growth_bytes", "growth_pct"],
+  properties: {
+    points: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          recorded_at: {
+            type: "string",
+            format: "date-time",
+          },
+          db_size_bytes: {
+            type: "integer",
+            format: "int64",
+          },
+        },
+      },
+    },
+    growth_bytes: {
+      type: "integer",
+      format: "int64",
+    },
+    growth_pct: {
+      type: "number",
+      format: "double",
+    },
+  },
+} as const;
+
+export const CacheHealthSchema = {
+  type: "object",
+  description: "Cache hit-ratio trend and average (M52 /",
+  required: ["points", "avg_ratio_pct"],
+  properties: {
+    points: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          hit_count: {
+            type: "integer",
+            format: "int64",
+          },
+          miss_count: {
+            type: "integer",
+            format: "int64",
+          },
+          ratio_pct: {
+            type: "number",
+            format: "double",
+          },
+        },
+      },
+    },
+    avg_ratio_pct: {
+      type: "number",
+      format: "double",
+    },
+  },
+} as const;
+
+export const DbOrphanItemSchema = {
+  type: "object",
+  description: "One classified candidate-orphan artifact (P3.5).",
+  required: ["name", "confidence", "installed", "deletable_eligible"],
+  properties: {
+    name: {
+      type: "string",
+    },
+    owner_slug: {
+      type: "string",
+    },
+    confidence: {
+      type: "string",
+      enum: ["exact", "prefix", "heuristic", "unknown"],
+    },
+    known_plugins: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    installed: {
+      type: "boolean",
+    },
+    deletable_eligible: {
+      type: "boolean",
+    },
+    size_bytes: {
+      type: "integer",
+      format: "int64",
+    },
+    autoload: {
+      type: "boolean",
+      nullable: true,
+    },
+    next_run_at: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+    },
+    recurrence: {
+      type: "string",
+    },
+    rows: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+    },
+  },
+} as const;
+
+export const DbOrphansReportSchema = {
+  type: "object",
+  required: [
+    "options",
+    "cron",
+    "tables",
+    "corpus_version",
+    "snapshot_available",
+    "hidden_installed",
+    "counts",
+  ],
+  properties: {
+    options: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/DbOrphanItem",
+      },
+    },
+    cron: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/DbOrphanItem",
+      },
+    },
+    tables: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/DbOrphanItem",
+      },
+    },
+    corpus_version: {
+      type: "integer",
+    },
+    snapshot_available: {
+      type: "boolean",
+    },
+    hidden_installed: {
+      type: "integer",
+    },
+    counts: {
+      type: "object",
+      required: ["options", "cron", "tables", "deletable"],
+      properties: {
+        options: {
+          type: "integer",
+        },
+        cron: {
+          type: "integer",
+        },
+        tables: {
+          type: "integer",
+        },
+        deletable: {
+          type: "integer",
+        },
+      },
+    },
+  },
+} as const;
+
+export const DbOrphanDeleteRequestSchema = {
+  type: "object",
+  required: ["items", "confirm"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["kind", "name", "owner_slug"],
+        properties: {
+          kind: {
+            type: "string",
+            enum: ["option", "cron", "table"],
+          },
+          name: {
+            type: "string",
+          },
+          owner_slug: {
+            type: "string",
+          },
+        },
+      },
+    },
+    confirm: {
+      type: "string",
+      description:
+        "Type-to-confirm token; the agent enforces it independently.",
+    },
+  },
+} as const;
+
+export const DbOrphanDeleteResponseSchema = {
+  type: "object",
+  required: ["ok", "job_id", "accepted_count", "dropped_count"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    job_id: {
+      type: "string",
+    },
+    accepted_count: {
+      type: "integer",
+    },
+    dropped_count: {
+      type: "integer",
+      description:
+        "Items dropped by the CP re-classify (no longer eligible or owner_slug drifted).",
+    },
+    backup_warning: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const DbTableActionRequestSchema = {
+  type: "object",
+  required: ["action", "tables"],
+  properties: {
+    action: {
+      type: "string",
+      enum: [
+        "optimize",
+        "repair",
+        "drop",
+        "empty",
+        "analyze",
+        "convert_innodb",
+      ],
+    },
+    tables: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    confirm: {
+      type: "string",
+      description: "Required type-to-confirm token for drop/empty.",
+    },
+  },
+} as const;
+
+export const DbTableActionResponseSchema = {
+  type: "object",
+  required: ["ok", "job_id", "action"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    job_id: {
+      type: "string",
+    },
+    action: {
+      type: "string",
+    },
+    results: {
+      type: "object",
+      description:
+        "Per-table result, keyed by table name (agent-defined shape).",
+    },
+    backup_warning: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const DbCleanStatusSchema = {
+  type: "object",
+  required: [
+    "clean_active",
+    "active_job_id",
+    "active_started_at",
+    "last_result",
+  ],
+  properties: {
+    clean_active: {
+      type: "boolean",
+    },
+    active_job_id: {
+      type: "string",
+      nullable: true,
+    },
+    active_started_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    last_result: {
+      type: "object",
+      nullable: true,
+      required: [
+        "job_id",
+        "rows_deleted",
+        "bytes_freed",
+        "result",
+        "cleaned_at",
+      ],
+      properties: {
+        job_id: {
+          type: "string",
+        },
+        rows_deleted: {
+          type: "integer",
+          format: "int64",
+        },
+        bytes_freed: {
+          type: "integer",
+          format: "int64",
+        },
+        result: {
+          type: "object",
+          description: "Per-category {rows_deleted,bytes_freed,state} map.",
+        },
+        cleaned_at: {
+          type: "string",
+          format: "date-time",
+        },
+      },
+    },
+  },
+} as const;
+
+export const RumTrendDayPointSchema = {
+  type: "object",
+  required: ["day", "p75_ms", "sample_count", "rating", "suppressed"],
+  properties: {
+    day: {
+      type: "string",
+      description: "YYYY-MM-DD",
+    },
+    p75_ms: {
+      type: "number",
+      format: "double",
+      description: "0 when suppressed",
+    },
+    sample_count: {
+      type: "integer",
+      format: "int64",
+    },
+    rating: {
+      type: "string",
+      enum: ["good", "needs-improvement", "poor", ""],
+    },
+    suppressed: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const RumTrendSchema = {
+  type: "object",
+  required: ["window_days", "min_sample_count", "metrics"],
+  properties: {
+    window_days: {
+      type: "integer",
+    },
+    min_sample_count: {
+      type: "integer",
+    },
+    metrics: {
+      type: "object",
+      description:
+        "Keyed by metric name (lcp, inp, cls, fcp, ttfb); each value is an ascending-by-day series.",
+      additionalProperties: {
+        type: "array",
+        items: {
+          $ref: "#/components/schemas/RumTrendDayPoint",
+        },
+      },
+    },
+  },
+} as const;
+
+export const AdminStatsSchema = {
+  type: "object",
+  required: ["users", "organizations", "sites"],
+  properties: {
+    users: {
+      type: "integer",
+      format: "int64",
+    },
+    organizations: {
+      type: "integer",
+      format: "int64",
+    },
+    sites: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminUserSchema = {
+  type: "object",
+  required: [
+    "id",
+    "email",
+    "name",
+    "status",
+    "email_verified",
+    "created_at",
+    "is_superadmin",
+    "org_count",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    email: {
+      type: "string",
+      format: "email",
+    },
+    name: {
+      type: "string",
+    },
+    status: {
+      type: "string",
+    },
+    email_verified: {
+      type: "boolean",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_login_at: {
+      type: "string",
+      format: "date-time",
+    },
+    is_superadmin: {
+      type: "boolean",
+    },
+    org_count: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminDeleteUserResultSchema = {
+  type: "object",
+  required: ["deleted_orgs", "kept_orgs_with_sites"],
+  properties: {
+    deleted_orgs: {
+      type: "integer",
+    },
+    kept_orgs_with_sites: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "name", "site_count"],
+        properties: {
+          id: {
+            type: "string",
+            format: "uuid",
+          },
+          name: {
+            type: "string",
+          },
+          site_count: {
+            type: "integer",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const AdminUserSitesSchema = {
+  type: "object",
+  required: ["user_id", "sites"],
+  properties: {
+    user_id: {
+      type: "string",
+      format: "uuid",
+    },
+    sites: {
+      type: "array",
+      items: {
+        type: "object",
+        required: [
+          "site_id",
+          "url",
+          "name",
+          "connection_state",
+          "site_created_at",
+          "tenant_id",
+          "tenant_name",
+          "member_role",
+        ],
+        properties: {
+          site_id: {
+            type: "string",
+            format: "uuid",
+          },
+          url: {
+            type: "string",
+          },
+          name: {
+            type: "string",
+          },
+          connection_state: {
+            type: "string",
+          },
+          enrolled_at: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+          },
+          site_created_at: {
+            type: "string",
+            format: "date-time",
+          },
+          tenant_id: {
+            type: "string",
+            format: "uuid",
+          },
+          tenant_name: {
+            type: "string",
+          },
+          member_role: {
+            type: "string",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const AdminTenancyRefSchema = {
+  type: "object",
+  required: ["tenant_id", "tenant_name"],
+  properties: {
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_name: {
+      type: "string",
+    },
+    role: {
+      type: "string",
+    },
+    count: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AdminSiteTenancySchema = {
+  type: "object",
+  required: [
+    "site_id",
+    "site_found",
+    "site_tenant_id",
+    "site_tenant_name",
+    "site_url",
+    "data_tenants",
+    "your_memberships",
+    "site_shares",
+    "verdict",
+  ],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_found: {
+      type: "boolean",
+    },
+    site_tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_tenant_name: {
+      type: "string",
+    },
+    site_url: {
+      type: "string",
+    },
+    data_tenants: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminTenancyRef",
+      },
+    },
+    your_memberships: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminTenancyRef",
+      },
+    },
+    site_shares: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AdminTenancyRef",
+      },
+    },
+    verdict: {
+      type: "object",
+      required: ["site_matches_data", "you_can_see_perf_data"],
+      properties: {
+        site_matches_data: {
+          type: "boolean",
+        },
+        you_can_see_perf_data: {
+          type: "boolean",
+        },
+      },
+    },
+  },
+} as const;
+
+export const AdminGrantSelfMembershipResultSchema = {
+  type: "object",
+  required: ["ok", "tenant_id", "tenant_name", "added", "detail"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    tenant_name: {
+      type: "string",
+    },
+    added: {
+      type: "boolean",
+    },
+    detail: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AdminAccountsTenancySchema = {
+  type: "object",
+  required: ["users", "orgs"],
+  properties: {
+    users: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "email", "is_superadmin", "memberships"],
+        properties: {
+          id: {
+            type: "string",
+            format: "uuid",
+          },
+          email: {
+            type: "string",
+            format: "email",
+          },
+          is_superadmin: {
+            type: "boolean",
+          },
+          memberships: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["tenant_id", "tenant_name", "role"],
+              properties: {
+                tenant_id: {
+                  type: "string",
+                  format: "uuid",
+                },
+                tenant_name: {
+                  type: "string",
+                },
+                role: {
+                  type: "string",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    orgs: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["tenant_id", "tenant_name", "site_count", "member_count"],
+        properties: {
+          tenant_id: {
+            type: "string",
+            format: "uuid",
+          },
+          tenant_name: {
+            type: "string",
+          },
+          site_count: {
+            type: "integer",
+            format: "int64",
+          },
+          member_count: {
+            type: "integer",
+            format: "int64",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const AdminVulnFeedStatusSchema = {
+  type: "object",
+  required: ["configured", "source", "feed_ok", "record_count"],
+  properties: {
+    configured: {
+      type: "boolean",
+    },
+    source: {
+      type: "string",
+      enum: ["ui", "env", "none"],
+    },
+    feed_ok: {
+      type: "boolean",
+    },
+    record_count: {
+      type: "integer",
+    },
+    last_synced: {
+      type: "string",
+      format: "date-time",
+    },
+    last_error: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AgentActivityIngestRequestSchema = {
+  type: "object",
+  required: ["events"],
+  properties: {
+    events: {
+      type: "array",
+      items: {
+        type: "object",
+        required: [
+          "seq",
+          "event_type",
+          "object_type",
+          "object_id",
+          "this_hash",
+          "prev_hash",
+          "occurred_at",
+        ],
+        properties: {
+          seq: {
+            type: "integer",
+            format: "int64",
+          },
+          event_type: {
+            type: "string",
+          },
+          object_type: {
+            type: "string",
+          },
+          object_id: {
+            type: "string",
+          },
+          object_label: {
+            type: "string",
+          },
+          actor_user_id: {
+            type: "integer",
+            format: "int64",
+          },
+          actor_login: {
+            type: "string",
+          },
+          actor_ip: {
+            type: "string",
+          },
+          summary: {
+            type: "string",
+          },
+          meta: {
+            type: "object",
+            description:
+              "Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never re-serialized.",
+          },
+          prev_hash: {
+            type: "string",
+          },
+          this_hash: {
+            type: "string",
+          },
+          occurred_at: {
+            type: "string",
+            format: "date-time",
+          },
+        },
+      },
+    },
+    chain_start_seq: {
+      type: "integer",
+      format: "int64",
+    },
+    agent_version: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AgentErrorBatchSchema = {
+  type: "object",
+  required: ["errors"],
+  properties: {
+    errors: {
+      type: "array",
+      items: {
+        type: "object",
+        description:
+          "Numeric fields may arrive as a JSON number or a numeric string (the agent's wpdb ARRAY_A encodes numeric columns as strings).",
+        required: ["md5", "severity", "message"],
+        properties: {
+          id: {
+            type: "string",
+          },
+          md5: {
+            type: "string",
+          },
+          code: {
+            type: "string",
+          },
+          severity: {
+            type: "string",
+          },
+          message: {
+            type: "string",
+          },
+          file: {
+            type: "string",
+          },
+          line: {
+            type: "string",
+          },
+          request_path: {
+            type: "string",
+          },
+          first_seen: {
+            type: "string",
+          },
+          last_seen: {
+            type: "string",
+          },
+          occurrence_count: {
+            type: "string",
+          },
+          backtrace: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                file: {
+                  type: "string",
+                },
+                line: {
+                  type: "string",
+                },
+                function: {
+                  type: "string",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const AgentLoginEventBatchSchema = {
+  type: "object",
+  required: ["login_events"],
+  properties: {
+    login_events: {
+      type: "array",
+      items: {
+        type: "object",
+        description:
+          "Numeric fields may arrive as a JSON number or a numeric string (the agent's wpdb ARRAY_A encodes numeric columns as strings).",
+        required: ["ip", "status", "category"],
+        properties: {
+          id: {
+            type: "string",
+          },
+          ip: {
+            type: "string",
+          },
+          status: {
+            type: "string",
+          },
+          category: {
+            type: "string",
+          },
+          username: {
+            type: "string",
+          },
+          request_id: {
+            type: "string",
+          },
+          occurred_at: {
+            type: "string",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const AgentCacheStatsReportSchema = {
+  type: "object",
+  properties: {
+    cached_pages_count: {
+      type: "integer",
+    },
+    cache_size_bytes: {
+      type: "integer",
+      format: "int64",
+    },
+    last_purged_at: {
+      type: "integer",
+      format: "int64",
+      description: "Unix seconds.",
+    },
+    last_purge_kind: {
+      type: "string",
+    },
+    last_preload_at: {
+      type: "integer",
+      format: "int64",
+      description: "Unix seconds.",
+    },
+    preload_pending: {
+      type: "integer",
+    },
+    preload_total: {
+      type: "integer",
+    },
+    cache_hit_count: {
+      type: "integer",
+      format: "int64",
+    },
+    cache_miss_count: {
+      type: "integer",
+      format: "int64",
+    },
+    woo_theme_fragments_supported: {
+      type: "boolean",
+      nullable: true,
+    },
+    object_cache: {
+      type: "object",
+      description:
+        "Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when the Object Cache feature is not wired.",
+      properties: {
+        state: {
+          type: "string",
+          enum: ["", "disabled", "connected", "degraded", "down"],
+        },
+        latency_ms: {
+          type: "number",
+          format: "double",
+        },
+        last_error_class: {
+          type: "string",
+        },
+        hit_ratio_window_pct: {
+          type: "number",
+          format: "double",
+        },
+        used_memory_bytes: {
+          type: "integer",
+          format: "int64",
+        },
+        engine_version: {
+          type: "string",
+        },
+        config_hash: {
+          type: "string",
+        },
+        hit_count: {
+          type: "integer",
+          format: "int64",
+        },
+        miss_count: {
+          type: "integer",
+          format: "int64",
+        },
+        avg_wait_ms: {
+          type: "number",
+          format: "double",
+        },
+        ops_per_sec: {
+          type: "number",
+          format: "double",
+        },
+        evicted_keys_delta: {
+          type: "integer",
+          format: "int64",
+        },
+        connected_clients: {
+          type: "integer",
+        },
+      },
+    },
+  },
+} as const;
+
+export const AgentPerfConfigAckSchema = {
+  type: "object",
+  required: [
+    "config_version",
+    "server_software",
+    "dropin_installed",
+    "wp_cache_constant_set",
+    "htaccess_managed",
+  ],
+  properties: {
+    config_version: {
+      type: "integer",
+    },
+    server_software: {
+      type: "string",
+    },
+    dropin_installed: {
+      type: "boolean",
+    },
+    wp_cache_constant_set: {
+      type: "boolean",
+    },
+    htaccess_managed: {
+      type: "boolean",
+    },
+    rum_beacon_present: {
+      type: "boolean",
+      nullable: true,
+      description:
+        "GH #174 — whether the agent currently holds a non-empty rum_beacon_key. Absent (not false) when a pre-#174 agent does not report it.",
+    },
+  },
+} as const;
+
+export const AgentDbCleanProgressSchema = {
+  type: "object",
+  required: ["job_id", "category", "state", "done"],
+  properties: {
+    job_id: {
+      type: "string",
+    },
+    category: {
+      type: "string",
+    },
+    rows_deleted: {
+      type: "integer",
+    },
+    bytes_freed: {
+      type: "integer",
+    },
+    state: {
+      type: "string",
+    },
+    detail: {
+      type: "string",
+    },
+    done: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const AgentDbOrphanDeleteProgressSchema = {
+  type: "object",
+  required: ["job_id", "done"],
+  properties: {
+    job_id: {
+      type: "string",
+    },
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+      },
+      description: "Agent-defined per-item result rows.",
+    },
+    deleted_options: {
+      type: "integer",
+    },
+    deleted_cron: {
+      type: "integer",
+    },
+    deleted_tables: {
+      type: "integer",
+    },
+    skipped: {
+      type: "integer",
+    },
+    done: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const AgentAutoOptimizeRequestSchema = {
+  type: "object",
+  required: ["attachments"],
+  properties: {
+    attachments: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["wp_attachment_id"],
+        properties: {
+          wp_attachment_id: {
+            type: "integer",
+            format: "int64",
+          },
+          title: {
+            type: "string",
+          },
+          original_path: {
+            type: "string",
+          },
+          original_url: {
+            type: "string",
+          },
+          original_mime: {
+            type: "string",
+          },
+          original_width: {
+            type: "integer",
+            nullable: true,
+          },
+          original_height: {
+            type: "integer",
+            nullable: true,
+          },
+          original_size_bytes: {
+            type: "integer",
+            format: "int64",
+          },
+          variant_count: {
+            type: "integer",
+          },
+          saved_bytes: {
+            type: "integer",
+            format: "int64",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const AgentEmailLogIngestRequestSchema = {
+  type: "object",
+  required: ["entries"],
+  properties: {
+    entries: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["agent_seq", "status"],
+        properties: {
+          agent_seq: {
+            type: "integer",
+            format: "int64",
+          },
+          message_id: {
+            type: "string",
+          },
+          to_addresses: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          from_address: {
+            type: "string",
+          },
+          subject: {
+            type: "string",
+          },
+          provider: {
+            type: "string",
+          },
+          status: {
+            type: "string",
+            enum: ["sent", "failed"],
+          },
+          response: {
+            description:
+              "Provider response — any JSON shape (string, object, or absent).",
+          },
+          error: {
+            type: "string",
+          },
+          retries: {
+            type: "integer",
+          },
+          resent_count: {
+            type: "integer",
+          },
+          body_stored: {
+            type: "boolean",
+          },
+          body: {
+            type: "string",
+            nullable: true,
+          },
+          created_at: {
+            description:
+              "Any parseable timestamp (RFC3339 or a MySQL-style string); unparseable values default to now.",
+          },
+          connection_key: {
+            type: "string",
+          },
+          attachments: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: {
+                  type: "string",
+                },
+                size_bytes: {
+                  type: "integer",
+                  format: "int64",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const AgentSuppressionDeltaPageSchema = {
+  type: "object",
+  required: ["entries", "next_cursor"],
+  properties: {
+    entries: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "tenant_id", "reason", "provider", "created_at"],
+        properties: {
+          id: {
+            type: "string",
+          },
+          tenant_id: {
+            type: "string",
+            format: "uuid",
+          },
+          site_id: {
+            type: "string",
+            nullable: true,
+          },
+          email: {
+            type: "string",
+            nullable: true,
+          },
+          reason: {
+            type: "string",
+          },
+          provider: {
+            type: "string",
+          },
+          event_at: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+          },
+          source_message_id: {
+            type: "string",
+            nullable: true,
+          },
+          created_at: {
+            type: "string",
+            format: "date-time",
+          },
+        },
+      },
+    },
+    next_cursor: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AgentChunkRefSchema = {
+  type: "object",
+  required: ["blake3", "size"],
+  properties: {
+    blake3: {
+      type: "string",
+    },
+    size: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AgentPresignChunksRequestSchema = {
+  type: "object",
+  required: ["snapshot_id", "hashes"],
+  properties: {
+    snapshot_id: {
+      type: "string",
+      format: "uuid",
+    },
+    hashes: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description:
+        "Candidate ciphertext chunk hashes (blake3, hex) the agent produced.",
+    },
+  },
+} as const;
+
+export const AgentPresignChunksResponseSchema = {
+  type: "object",
+  required: ["uploads", "ttl_seconds"],
+  properties: {
+    uploads: {
+      type: "object",
+      description:
+        "blake3 hash -> presigned PUT URL, for hashes NOT already stored for the tenant.",
+      additionalProperties: {
+        type: "string",
+      },
+    },
+    ttl_seconds: {
+      type: "integer",
+    },
+  },
+} as const;
+
+export const AgentManifestEntrySchema = {
+  type: "object",
+  required: ["path", "entry_kind", "mode", "size", "chunks"],
+  properties: {
+    path: {
+      type: "string",
+    },
+    entry_kind: {
+      type: "string",
+    },
+    table_name: {
+      type: "string",
+    },
+    mode: {
+      type: "integer",
+    },
+    size: {
+      type: "integer",
+      format: "int64",
+    },
+    chunks: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AgentChunkRef",
+      },
+    },
+  },
+} as const;
+
+export const AgentSubmitManifestRequestSchema = {
+  type: "object",
+  required: ["snapshot_id", "age_recipient", "entries"],
+  properties: {
+    snapshot_id: {
+      type: "string",
+      format: "uuid",
+    },
+    age_recipient: {
+      type: "string",
+    },
+    entries: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AgentManifestEntry",
+      },
+    },
+    cycle_files_scanned: {
+      type: "integer",
+      format: "int64",
+    },
+    cycle_files_changed: {
+      type: "integer",
+      format: "int64",
+    },
+    cycle_files_deleted: {
+      type: "integer",
+      format: "int64",
+    },
+    cycle_bytes_uploaded: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const AgentSubmitManifestResponseSchema = {
+  type: "object",
+  required: ["ok", "chunk_count", "stored_count"],
+  properties: {
+    ok: {
+      type: "boolean",
+    },
+    chunk_count: {
+      type: "integer",
+      format: "int64",
+    },
+    stored_count: {
+      type: "integer",
+      format: "int64",
     },
   },
 } as const;
