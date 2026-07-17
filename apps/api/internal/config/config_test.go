@@ -148,34 +148,6 @@ func TestLoadRiverMediaSchemaEnv(t *testing.T) {
 	}
 }
 
-// TestLoadUptimeKeepWarmDefault verifies the interim /sites uptime keep-warm
-// refresher (site.UptimeKeepWarmer) defaults to ENABLED with no
-// WPMGR_UPTIME_KEEPWARM env configured — it must be on by default so the
-// stopgap actually protects prod without an operator opting in.
-func TestLoadUptimeKeepWarmDefault(t *testing.T) {
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !cfg.Uptime.KeepWarmEnabled {
-		t.Fatal("Uptime.KeepWarmEnabled = false, want true by default")
-	}
-}
-
-// TestLoadUptimeKeepWarmEnvDisable verifies WPMGR_UPTIME_KEEPWARM=false is
-// read from the environment, so the interim refresher can be turned off
-// cleanly (and later removed entirely) without a code change.
-func TestLoadUptimeKeepWarmEnvDisable(t *testing.T) {
-	t.Setenv("WPMGR_UPTIME_KEEPWARM", "false")
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Uptime.KeepWarmEnabled {
-		t.Fatal("Uptime.KeepWarmEnabled = true, want false when WPMGR_UPTIME_KEEPWARM=false")
-	}
-}
-
 // TestValidateRiverMediaSchema verifies that an invalid WPMGR_RIVER_MEDIA_SCHEMA
 // surfaces as a config Issue (so the server parks in readyz-degraded) while
 // empty, public, and valid identifiers are accepted.

@@ -1401,6 +1401,135 @@ CREATE POLICY site_uptime_probes_tenant_isolation ON site_uptime_probes
 CREATE POLICY site_uptime_probes_agent ON site_uptime_probes
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+-- Note: the live schema also carries a site_uptime_probes_site_scope
+-- RESTRICTIVE policy (m19 20260531050000_m19_orgs_sharing.sql section 5h) —
+-- pre-existing drift versus this declarative file that predates this change
+-- and is out of scope here; the two NEW tables below include the equivalent
+-- policy inline since m19's own header convention requires it on every
+-- direct site-keyed table.
+
+-- ---------------------------------------------------------------------------
+-- site_uptime_daily  (M99 — durable rollup replacing the interim keep-warm)
+-- ---------------------------------------------------------------------------
+-- One row per (site, calendar day, UTC), incremented once per probe by the
+-- probe worker (metrics.pgStore.UpsertRollup, called from
+-- uptime.ProbeWorker.Sweep right after InsertChecks writes the raw probe).
+-- QueryFleetUptime (the /api/v1/sites uptime-enrichment query) reads ONLY
+-- this table + site_uptime_status below — never the raw site_uptime_probes
+-- table — so the query cost is O(days-in-window) per site instead of
+-- O(probes-in-window) (~43k rows/site for a 30-day window at a 60s probe
+-- cadence). This is the durable fix; it replaces the interim
+-- WPMGR_UPTIME_KEEPWARM refresher (removed in the same change).
+--
+-- Columns mirror exactly what the old per-request aggregate computed so
+-- historical uptime % / avg latency are preserved:
+--   up_checks        count(*) FILTER (WHERE up)
+--   total_checks      count(*)
+--   sum_latency_ms    sum(total_ms) FILTER (WHERE up AND total_ms <> 0)
+--   latency_samples   count(*) FILTER (WHERE up AND total_ms <> 0)
+-- sum_latency_ms / latency_samples reproduces the old
+-- AVG(NULLIF(total_ms, 0)) FILTER (WHERE up) exactly — NULLIF(total_ms, 0)
+-- excludes zero-latency readings from both the numerator and the
+-- denominator, which is why latency_samples cannot be derived from
+-- up_checks alone.
+CREATE TABLE site_uptime_daily (
+    tenant_id       uuid             NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id         uuid             NOT NULL REFERENCES sites   (id) ON DELETE CASCADE,
+    day             date             NOT NULL,
+    up_checks       integer          NOT NULL DEFAULT 0,
+    total_checks    integer          NOT NULL DEFAULT 0,
+    sum_latency_ms  double precision NOT NULL DEFAULT 0,
+    latency_samples integer          NOT NULL DEFAULT 0,
+    updated_at      timestamptz      NOT NULL DEFAULT now(),
+    PRIMARY KEY (site_id, day)
+);
+
+-- PRIMARY KEY (site_id, day) already covers "WHERE site_id = $1 AND day >=
+-- $2" (the QueryFleetUptime access path); this index serves tenant-wide
+-- reads (mirrors every other tenant-scoped table's defense-in-depth index).
+CREATE INDEX site_uptime_daily_tenant_idx ON site_uptime_daily (tenant_id);
+
+ALTER TABLE site_uptime_daily ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_uptime_daily FORCE ROW LEVEL SECURITY;
+CREATE POLICY site_uptime_daily_tenant_isolation ON site_uptime_daily
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- The probe worker upserts cross-tenant under app.agent (one batch per
+-- sweep); QueryFleetUptime also reads under app.agent with an explicit
+-- tenant_id predicate — same convention as site_uptime_probes.
+CREATE POLICY site_uptime_daily_agent ON site_uptime_daily
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+CREATE POLICY site_uptime_daily_site_scope ON site_uptime_daily
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- site_uptime_status  (M99 — per-site current-status stamp)
+-- ---------------------------------------------------------------------------
+-- One row per site, upserted every sweep alongside site_uptime_daily above.
+-- Holds exactly the "latest probe" fields QueryFleetUptime needs (latest_up,
+-- last_probed_at, tls_expiry) so the query never has to read
+-- site_uptime_probes even for the "most recent probe" half of the old
+-- LEFT JOIN LATERAL. Row absence means "never probed" (mirrors the old
+-- code's "latest_up IS NULL => omit from map" contract).
+--
+-- last_probed_at is used as a freshness guard on UPDATE (WHERE
+-- EXCLUDED.last_probed_at >= site_uptime_status.last_probed_at in the
+-- upsert) so an overlapping/delayed sweep can never regress a fresher
+-- status with stale data — see metrics.pgStore.UpsertRollup.
+CREATE TABLE site_uptime_status (
+    site_id        uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id      uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    latest_up      boolean     NOT NULL,
+    last_probed_at timestamptz NOT NULL,
+    tls_expiry     timestamptz,
+    updated_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_uptime_status_tenant_idx ON site_uptime_status (tenant_id);
+
+ALTER TABLE site_uptime_status ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_uptime_status FORCE ROW LEVEL SECURITY;
+CREATE POLICY site_uptime_status_tenant_isolation ON site_uptime_status
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY site_uptime_status_agent ON site_uptime_status
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+CREATE POLICY site_uptime_status_site_scope ON site_uptime_status
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- site_incidents  (M94 — GH #148: persisted incident history)

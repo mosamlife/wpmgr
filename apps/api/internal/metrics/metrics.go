@@ -141,6 +141,30 @@ type Store interface {
 	QueryProbeWindow(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limitN int) ([]ProbeSample, error)
 }
 
+// RollupWriter is an OPTIONAL capability implemented by Store backends that
+// maintain a pre-aggregated per-site uptime rollup for QueryFleetUptime (m99
+// — see site_uptime_daily / site_uptime_status in db/schema.sql). Only the
+// Postgres backend (pgStore) implements it today: ClickHouse deployments
+// already read fleet uptime from ClickHouse's own aggregation and never scan
+// site_uptime_probes, so they have no need for the rollup.
+//
+// It is deliberately NOT part of the Store interface: adding it there would
+// force every Store implementation (chStore, and every test double across
+// internal/site and internal/uptime) to implement a method that only one
+// backend needs. Callers (uptime.ProbeWorker.Sweep) type-assert instead —
+// see that file for the call site — so unrelated backends/fakes are
+// unaffected.
+type RollupWriter interface {
+	// UpsertRollup folds one sweep's probe results into site_uptime_daily
+	// (additive per-day counters) and site_uptime_status (the latest-probe
+	// snapshot, freshness-guarded against out-of-order writes). Best-effort
+	// from the caller's perspective: a failure here must never prevent or
+	// roll back the raw probe write (InsertChecks) that already committed —
+	// callers should log and continue, never treat this as fatal to the
+	// sweep. No-ops on empty input.
+	UpsertRollup(ctx context.Context, checks []Check) error
+}
+
 // chStore is the ClickHouse-backed metrics store (ADR-028). The original M5
 // implementation.
 type chStore struct {
