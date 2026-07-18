@@ -8,7 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.70] - 2026-07-17
+## [0.61.71] - 2026-07-18
+
+### Fixed
+
+- The dashboard no longer under-reports a working page cache (GH #243). Three distinct gaps, all reporting or navigation defects; the cache itself was serving correctly:
+  - The cache hit-ratio chart showed a flat 0% on sites where the agent's managed web-server rules serve cached pages directly from disk, because those hits never execute PHP and cannot be counted there. The chart is now honest about what it measures: on such sites the Cache tab shows a "Served at the web-server level" state (that is the fastest path working as intended), the series is labeled as the PHP-layer ratio, and the copy explains how to verify caching via the `x-wpmgr-source` response header. No numbers are fabricated or altered.
+  - The site card's "Page Cache" and "Object Cache" configuration dots were gray for every site since they were introduced, because they looked for plugin entries that can never exist (both features are drop-ins, which WordPress does not list as plugins). The dots now read the real per-site cache configuration, exposed on the sites API.
+  - The agent's admin-bar "Manage in WPMgr" link pointed at a dashboard page that never existed and rendered "Not Found". The agent now links to the site's Cache tab, the dashboard redirects the old link target so already-installed agents work immediately after this control-plane update, and unknown dashboard paths now render a proper page with a way back instead of a bare "Not Found".
 
 ### Changed
 

@@ -39,6 +39,29 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.70 - 0.61.71",
+    date: "2026-07-18",
+    summary: "Honest cache reporting, working configuration dots, and a complete API reference.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The dashboard no longer under-reports a working page cache (GH #243). On sites where the managed web-server rules serve cached pages directly from disk, those hits never reach PHP and cannot be counted there; the Cache tab now shows a \"Served at the web-server level\" state, labels the chart as the PHP-layer ratio, and explains how to verify caching via the x-wpmgr-source response header. No numbers are fabricated.",
+      },
+      {
+        tag: "Fixed",
+        text: "The site card's Page Cache and Object Cache dots now reflect the real per-site configuration. They previously looked for plugin entries that can never exist (both features are drop-ins), so they showed gray for every site.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent's admin-bar \"Manage in WPMgr\" link now opens the site's Cache tab. It previously pointed at a page that never existed; the dashboard also redirects the old link target so already-installed agents work immediately, and unknown dashboard paths render a proper page instead of a bare \"Not Found\".",
+      },
+      {
+        tag: "Changed",
+        text: "The API reference at wpmgr.app/docs now documents the full control-plane surface (about 97 previously missing endpoints), kept in lockstep with the live routes by a new contract test. New user guides cover the file manager, security suite, monitoring, clients and portal, object cache, and audit log.",
+      },
+    ],
+  },
+  {
     version: "0.61.69",
     date: "2026-07-17",
     summary: "Site tags: organize, filter, and bulk-manage your fleet with colored tags.",

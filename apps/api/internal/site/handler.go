@@ -596,9 +596,15 @@ func toAPI(s Site) gen.Site {
 		HealthStatus: gen.SiteHealthStatus(s.HealthStatus),
 		Multisite:    s.Multisite,
 		Tags:         s.Tags,
-		Enrolled:     gen.NewOptBool(s.EnrolledAt != nil),
-		CreatedAt:    s.CreatedAt,
-		UpdatedAt:    s.UpdatedAt,
+		// GH #243 — the real drop-in config state (site_perf_config.cache_enabled
+		// / site_object_cache_config.enabled), replacing the old plugin-slug
+		// inference that could never match. Always present (COALESCE'd to false
+		// in the query when no config row exists yet).
+		PageCacheEnabled:   s.PageCacheEnabled,
+		ObjectCacheEnabled: s.ObjectCacheEnabled,
+		Enrolled:           gen.NewOptBool(s.EnrolledAt != nil),
+		CreatedAt:          s.CreatedAt,
+		UpdatedAt:          s.UpdatedAt,
 	}
 	if s.Tags == nil {
 		out.Tags = []string{}

@@ -300,7 +300,7 @@ func (r *pgRepo) Get(ctx context.Context, tenantID, id uuid.UUID) (Site, error) 
 			}
 			return domain.Internal("site_get_failed", "failed to load site").WithCause(err)
 		}
-		out = toModel(row)
+		out = toModelFromGetSiteRow(row)
 		return nil
 	})
 	return out, err
@@ -355,7 +355,7 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 		}
 		out = make([]Site, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, toModel(row))
+			out = append(out, toModelFromListSitesRow(row))
 		}
 		// Batched per-site latest-backup lookup for the sites-table "Backup"
 		// column — ONE query for every listed site (index-only seek per site),
@@ -865,6 +865,96 @@ func toModel(s sqlc.Site) Site {
 		id := uuid.UUID(s.ClientID.Bytes)
 		m.ClientID = &id
 	}
+	return m
+}
+
+// toModelFromGetSiteRow converts the GH #243 GetSite row (the sites.* columns
+// plus the joined page_cache_enabled/object_cache_enabled) into a Site. It
+// re-uses toModel for the base sites.* fields by re-assembling an sqlc.Site
+// from the row (GetSiteRow's join adds two trailing columns sqlc.Site does
+// not have, so the two types cannot share Scan destinations directly).
+func toModelFromGetSiteRow(row sqlc.GetSiteRow) Site {
+	m := toModel(sqlc.Site{
+		ID:                    row.ID,
+		TenantID:              row.TenantID,
+		Url:                   row.Url,
+		Name:                  row.Name,
+		Status:                row.Status,
+		WpVersion:             row.WpVersion,
+		PhpVersion:            row.PhpVersion,
+		AgentVersion:          row.AgentVersion,
+		AgentPublicKey:        row.AgentPublicKey,
+		EnrolledAt:            row.EnrolledAt,
+		LastSeenAt:            row.LastSeenAt,
+		HealthStatus:          row.HealthStatus,
+		ServerInfo:            row.ServerInfo,
+		Multisite:             row.Multisite,
+		ActiveTheme:           row.ActiveTheme,
+		Components:            row.Components,
+		Tags:                  row.Tags,
+		AgeRecipient:          row.AgeRecipient,
+		WpTimezone:            row.WpTimezone,
+		WpGmtOffset:           row.WpGmtOffset,
+		HostProvider:          row.HostProvider,
+		HostProviderOrg:       row.HostProviderOrg,
+		HostProviderIp:        row.HostProviderIp,
+		HostProviderCheckedAt: row.HostProviderCheckedAt,
+		ConnectionState:       row.ConnectionState,
+		ConnectionGeneration:  row.ConnectionGeneration,
+		DisconnectedAt:        row.DisconnectedAt,
+		DisconnectedReason:    row.DisconnectedReason,
+		ArchivedAt:            row.ArchivedAt,
+		MissedHeartbeats:      row.MissedHeartbeats,
+		ClientID:              row.ClientID,
+		CreatedAt:             row.CreatedAt,
+		UpdatedAt:             row.UpdatedAt,
+	})
+	m.PageCacheEnabled = row.PageCacheEnabled
+	m.ObjectCacheEnabled = row.ObjectCacheEnabled
+	return m
+}
+
+// toModelFromListSitesRow is toModelFromGetSiteRow's ListSites counterpart
+// (identical join, separate sqlc row type since sqlc generates one Row struct
+// per query).
+func toModelFromListSitesRow(row sqlc.ListSitesRow) Site {
+	m := toModel(sqlc.Site{
+		ID:                    row.ID,
+		TenantID:              row.TenantID,
+		Url:                   row.Url,
+		Name:                  row.Name,
+		Status:                row.Status,
+		WpVersion:             row.WpVersion,
+		PhpVersion:            row.PhpVersion,
+		AgentVersion:          row.AgentVersion,
+		AgentPublicKey:        row.AgentPublicKey,
+		EnrolledAt:            row.EnrolledAt,
+		LastSeenAt:            row.LastSeenAt,
+		HealthStatus:          row.HealthStatus,
+		ServerInfo:            row.ServerInfo,
+		Multisite:             row.Multisite,
+		ActiveTheme:           row.ActiveTheme,
+		Components:            row.Components,
+		Tags:                  row.Tags,
+		AgeRecipient:          row.AgeRecipient,
+		WpTimezone:            row.WpTimezone,
+		WpGmtOffset:           row.WpGmtOffset,
+		HostProvider:          row.HostProvider,
+		HostProviderOrg:       row.HostProviderOrg,
+		HostProviderIp:        row.HostProviderIp,
+		HostProviderCheckedAt: row.HostProviderCheckedAt,
+		ConnectionState:       row.ConnectionState,
+		ConnectionGeneration:  row.ConnectionGeneration,
+		DisconnectedAt:        row.DisconnectedAt,
+		DisconnectedReason:    row.DisconnectedReason,
+		ArchivedAt:            row.ArchivedAt,
+		MissedHeartbeats:      row.MissedHeartbeats,
+		ClientID:              row.ClientID,
+		CreatedAt:             row.CreatedAt,
+		UpdatedAt:             row.UpdatedAt,
+	})
+	m.PageCacheEnabled = row.PageCacheEnabled
+	m.ObjectCacheEnabled = row.ObjectCacheEnabled
 	return m
 }
 

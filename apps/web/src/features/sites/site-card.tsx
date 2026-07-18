@@ -82,15 +82,13 @@ function hostnameFromUrl(url: string): string {
  * `enabled` flag — never hue alone.
  */
 function buildCapabilityItems(site: Site): CapabilityItem[] {
-  const hasPageCache =
-    site.components?.plugins?.some(
-      (p) => p.slug === "wpmgr-page-cache" && p.active === true,
-    ) ?? false;
-
-  const hasObjectCache =
-    site.components?.plugins?.some(
-      (p) => p.slug === "wpmgr-object-cache" && p.active === true,
-    ) ?? false;
+  // GH #243 — read the real drop-in state directly off the site record.
+  // Page Cache / Object Cache both ship as drop-ins, never as a plugin, so
+  // an active-plugin-slug inference can never be true; it was a permanent
+  // false positive since v0.49.0. `site.page_cache_enabled` /
+  // `site.object_cache_enabled` are the authoritative booleans.
+  const hasPageCache = site.page_cache_enabled;
+  const hasObjectCache = site.object_cache_enabled;
 
   const isHttps = site.url.startsWith("https://");
   const hasBackups = site.last_backup_status != null;

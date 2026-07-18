@@ -97653,6 +97653,14 @@ func (s *Site) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		e.FieldStart("page_cache_enabled")
+		e.Bool(s.PageCacheEnabled)
+	}
+	{
+		e.FieldStart("object_cache_enabled")
+		e.Bool(s.ObjectCacheEnabled)
+	}
+	{
 		e.FieldStart("created_at")
 		json.EncodeDateTime(e, s.CreatedAt)
 	}
@@ -97662,7 +97670,7 @@ func (s *Site) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfSite = [39]string{
+var jsonFieldsNameOfSite = [41]string{
 	0:  "id",
 	1:  "tenant_id",
 	2:  "url",
@@ -97700,8 +97708,10 @@ var jsonFieldsNameOfSite = [39]string{
 	34: "uptime_pct",
 	35: "avg_latency_ms",
 	36: "tls_expires_at",
-	37: "created_at",
-	38: "updated_at",
+	37: "page_cache_enabled",
+	38: "object_cache_enabled",
+	39: "created_at",
+	40: "updated_at",
 }
 
 // Decode decodes Site from json.
@@ -97709,7 +97719,7 @@ func (s *Site) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode Site to nil")
 	}
-	var requiredBitSet [5]uint8
+	var requiredBitSet [6]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -98107,8 +98117,32 @@ func (s *Site) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"tls_expires_at\"")
 			}
-		case "created_at":
+		case "page_cache_enabled":
 			requiredBitSet[4] |= 1 << 5
+			if err := func() error {
+				v, err := d.Bool()
+				s.PageCacheEnabled = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"page_cache_enabled\"")
+			}
+		case "object_cache_enabled":
+			requiredBitSet[4] |= 1 << 6
+			if err := func() error {
+				v, err := d.Bool()
+				s.ObjectCacheEnabled = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"object_cache_enabled\"")
+			}
+		case "created_at":
+			requiredBitSet[4] |= 1 << 7
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -98120,7 +98154,7 @@ func (s *Site) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "updated_at":
-			requiredBitSet[4] |= 1 << 6
+			requiredBitSet[5] |= 1 << 0
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -98140,12 +98174,13 @@ func (s *Site) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [5]uint8{
+	for i, mask := range [6]uint8{
 		0b11111111,
 		0b01010000,
 		0b00000000,
 		0b00000000,
-		0b01100000,
+		0b11100000,
+		0b00000001,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

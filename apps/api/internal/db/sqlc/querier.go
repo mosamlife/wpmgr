@@ -790,7 +790,15 @@ type Querier interface {
 	// The repo wraps each call in InTenantTx (operator) or InAgentTx (worker).
 	// updated_at is set here via now(); there is no trigger.
 	GetScreenshot(ctx context.Context, arg GetScreenshotParams) (SiteScreenshot, error)
-	GetSite(ctx context.Context, arg GetSiteParams) (Site, error)
+	// GH #243: page_cache_enabled / object_cache_enabled surface the REAL
+	// drop-in config state (site_perf_config.cache_enabled / site_object_cache_
+	// config.enabled) via a PK-keyed LEFT JOIN (both tables are one-row-per-site,
+	// site_id PRIMARY KEY) instead of the old plugin-slug inference that could
+	// never match (both features ship as drop-ins, not plugins). Both joined
+	// tables carry their own tenant_isolation RLS, so this is RLS-safe; the
+	// explicit tenant_id match in the ON clause is defense-in-depth + keeps the
+	// planner on the PK index (project convention — see clients.sql).
+	GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, error)
 	// Cross-tenant read of one site's alert state (app.agent GUC) for the probe job.
 	GetSiteAlertState(ctx context.Context, siteID uuid.UUID) (SiteAlertState, error)
 	// Cross-tenant read-and-LOCK of one site's alert state (app.agent GUC), used by
@@ -1418,7 +1426,11 @@ type Querier interface {
 	// replace the single-tag filter; both are served by the sites_tags_idx GIN
 	// index. The service maps exactly ONE of them per request (legacy ?tag=
 	// becomes any_tags=[tag]).
-	ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error)
+	// GH #243: page_cache_enabled / object_cache_enabled — see GetSite's comment
+	// above. Both LEFT JOINs are PK lookups (site_id), so this stays O(sites) per
+	// page (an index-only nested-loop per row) and does not regress the
+	// optimized /sites path.
+	ListSites(ctx context.Context, arg ListSitesParams) ([]ListSitesRow, error)
 	// connected sites whose last heartbeat is older than the degrade cutoff.
 	// url is included so the active-verify sweeper can dial the agent without a
 	// secondary tenant-scoped lookup.
