@@ -185,6 +185,24 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.36.0. This project ships frequently; not every intermediate patch release is listed here individually -- see the full history at https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md.
 
+= 0.61.71 =
+* Fix: the "Manage in WPMgr" admin bar link now opens the site's Cache page in the control-plane dashboard. It previously pointed at a page that has never existed.
+
+= 0.61.64 =
+* Fix: scheduled backups no longer stall indefinitely at "queued". A backup run now always starts immediately instead of depending solely on WordPress cron, and a request-driven check recovers any run that still gets stuck. A file-based lock alongside the existing database lock prevents two runs of the same backup from overlapping.
+
+= 0.61.63 =
+* Changed: the Real User Monitoring script now ships with a readable, non-minified source file alongside the minified one, for WordPress.org directory transparency. No behavior change.
+
+= 0.61.62 =
+* Fix: pre-update rollback snapshots (captured before each core, plugin, or theme update) are now reliably cleaned up instead of accumulating indefinitely on a quiet site. Cleanup no longer depends on WordPress cron.
+
+= 0.61.61 =
+* Hardening: a second WordPress.org-compliance pass. Login and forced-password-change screens now escape their output through an explicit allowed-tag list, the media-library helper script is enqueued instead of printed inline, the settings screen is fully translatable, and the WordPress.org build measures folder sizes without shelling out to the operating system.
+
+= 0.61.58 =
+* Fix: bulk update runs no longer repeat a full WordPress.org update check for every item in the batch. Updates no longer fail with "Could not copy file" on hosts with an overloaded shared temporary directory. The fleet backup-health check no longer errors for a site with no completed backup. Hide-login no longer blocks front-end AJAX requests. Two-factor sign-in messaging is clearer, with a wider accepted time window and single-use setup codes.
+
 = 0.61.57 =
 * Hardening: code-quality and WordPress.org-compliance pass with no behavior change for connected sites. Real User Monitoring now loads through the standard wp_enqueue_script mechanism instead of a hand-built script tag; the two-factor and forced-password-change login screens now escape their output through an explicit allowed-tag list at the point of output; the long-running backup, restore, database-dump, and media routines now use a bounded time limit instead of an unbounded one; and the CloudPanel cache-purge integration sanitizes its server-variable reads inline.
 

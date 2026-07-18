@@ -75,7 +75,7 @@ export function CacheTab({
 
       <PreloadProgress siteId={siteId} />
 
-      <CacheHitRatioTrendCard siteId={siteId} />
+      <CacheHitRatioTrendCard siteId={siteId} htaccessManaged={cfg.htaccess_managed} />
 
       {canOperate || canManage ? (
         <CacheControls

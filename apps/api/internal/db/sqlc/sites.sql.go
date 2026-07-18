@@ -233,8 +233,15 @@ func (q *Queries) DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, 
 }
 
 const getSite = `-- name: GetSite :one
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, created_at, updated_at FROM sites
-WHERE id = $1 AND tenant_id = $2
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.created_at, s.updated_at,
+       COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
+       COALESCE(oc.enabled, false) AS object_cache_enabled
+FROM sites s
+LEFT JOIN site_perf_config pc
+    ON pc.site_id = s.id AND pc.tenant_id = s.tenant_id
+LEFT JOIN site_object_cache_config oc
+    ON oc.site_id = s.id AND oc.tenant_id = s.tenant_id
+WHERE s.id = $1 AND s.tenant_id = $2
 `
 
 type GetSiteParams struct {
@@ -242,9 +249,55 @@ type GetSiteParams struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 }
 
-func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (Site, error) {
+type GetSiteRow struct {
+	ID                    uuid.UUID          `json:"id"`
+	TenantID              uuid.UUID          `json:"tenant_id"`
+	Url                   string             `json:"url"`
+	Name                  string             `json:"name"`
+	Status                string             `json:"status"`
+	WpVersion             string             `json:"wp_version"`
+	PhpVersion            string             `json:"php_version"`
+	AgentVersion          string             `json:"agent_version"`
+	AgentPublicKey        string             `json:"agent_public_key"`
+	EnrolledAt            pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt            pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus          string             `json:"health_status"`
+	ServerInfo            string             `json:"server_info"`
+	Multisite             bool               `json:"multisite"`
+	ActiveTheme           string             `json:"active_theme"`
+	Components            []byte             `json:"components"`
+	Tags                  []string           `json:"tags"`
+	AgeRecipient          string             `json:"age_recipient"`
+	WpTimezone            string             `json:"wp_timezone"`
+	WpGmtOffset           float32            `json:"wp_gmt_offset"`
+	HostProvider          string             `json:"host_provider"`
+	HostProviderOrg       string             `json:"host_provider_org"`
+	HostProviderIp        string             `json:"host_provider_ip"`
+	HostProviderCheckedAt pgtype.Timestamptz `json:"host_provider_checked_at"`
+	ConnectionState       string             `json:"connection_state"`
+	ConnectionGeneration  int32              `json:"connection_generation"`
+	DisconnectedAt        pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason    *string            `json:"disconnected_reason"`
+	ArchivedAt            pgtype.Timestamptz `json:"archived_at"`
+	MissedHeartbeats      int32              `json:"missed_heartbeats"`
+	ClientID              pgtype.UUID        `json:"client_id"`
+	CreatedAt             time.Time          `json:"created_at"`
+	UpdatedAt             time.Time          `json:"updated_at"`
+	PageCacheEnabled      bool               `json:"page_cache_enabled"`
+	ObjectCacheEnabled    bool               `json:"object_cache_enabled"`
+}
+
+// GH #243: page_cache_enabled / object_cache_enabled surface the REAL
+// drop-in config state (site_perf_config.cache_enabled / site_object_cache_
+// config.enabled) via a PK-keyed LEFT JOIN (both tables are one-row-per-site,
+// site_id PRIMARY KEY) instead of the old plugin-slug inference that could
+// never match (both features ship as drop-ins, not plugins). Both joined
+// tables carry their own tenant_isolation RLS, so this is RLS-safe; the
+// explicit tenant_id match in the ON clause is defense-in-depth + keeps the
+// planner on the PK index (project convention — see clients.sql).
+func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, error) {
 	row := q.db.QueryRow(ctx, getSite, arg.ID, arg.TenantID)
-	var i Site
+	var i GetSiteRow
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
@@ -279,6 +332,8 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (Site, error) 
 		&i.ClientID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PageCacheEnabled,
+		&i.ObjectCacheEnabled,
 	)
 	return i, err
 }
@@ -630,16 +685,23 @@ func (q *Queries) ListLatestBackupsForSites(ctx context.Context, arg ListLatestB
 }
 
 const listSites = `-- name: ListSites :many
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, created_at, updated_at FROM sites
-WHERE tenant_id = $1
-  AND ($4::text[] IS NULL OR tags && $4::text[])
-  AND ($5::text[] IS NULL OR tags @> $5::text[])
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.created_at, s.updated_at,
+       COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
+       COALESCE(oc.enabled, false) AS object_cache_enabled
+FROM sites s
+LEFT JOIN site_perf_config pc
+    ON pc.site_id = s.id AND pc.tenant_id = s.tenant_id
+LEFT JOIN site_object_cache_config oc
+    ON oc.site_id = s.id AND oc.tenant_id = s.tenant_id
+WHERE s.tenant_id = $1
+  AND ($4::text[] IS NULL OR s.tags && $4::text[])
+  AND ($5::text[] IS NULL OR s.tags @> $5::text[])
   AND (
-        ($6::text IS NULL AND connection_state <> 'archived')
-        OR $6::text = connection_state
+        ($6::text IS NULL AND s.connection_state <> 'archived')
+        OR $6::text = s.connection_state
       )
-  AND ($7::uuid IS NULL OR client_id = $7::uuid)
-ORDER BY created_at DESC
+  AND ($7::uuid IS NULL OR s.client_id = $7::uuid)
+ORDER BY s.created_at DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -653,6 +715,44 @@ type ListSitesParams struct {
 	ClientID pgtype.UUID `json:"client_id"`
 }
 
+type ListSitesRow struct {
+	ID                    uuid.UUID          `json:"id"`
+	TenantID              uuid.UUID          `json:"tenant_id"`
+	Url                   string             `json:"url"`
+	Name                  string             `json:"name"`
+	Status                string             `json:"status"`
+	WpVersion             string             `json:"wp_version"`
+	PhpVersion            string             `json:"php_version"`
+	AgentVersion          string             `json:"agent_version"`
+	AgentPublicKey        string             `json:"agent_public_key"`
+	EnrolledAt            pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt            pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus          string             `json:"health_status"`
+	ServerInfo            string             `json:"server_info"`
+	Multisite             bool               `json:"multisite"`
+	ActiveTheme           string             `json:"active_theme"`
+	Components            []byte             `json:"components"`
+	Tags                  []string           `json:"tags"`
+	AgeRecipient          string             `json:"age_recipient"`
+	WpTimezone            string             `json:"wp_timezone"`
+	WpGmtOffset           float32            `json:"wp_gmt_offset"`
+	HostProvider          string             `json:"host_provider"`
+	HostProviderOrg       string             `json:"host_provider_org"`
+	HostProviderIp        string             `json:"host_provider_ip"`
+	HostProviderCheckedAt pgtype.Timestamptz `json:"host_provider_checked_at"`
+	ConnectionState       string             `json:"connection_state"`
+	ConnectionGeneration  int32              `json:"connection_generation"`
+	DisconnectedAt        pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason    *string            `json:"disconnected_reason"`
+	ArchivedAt            pgtype.Timestamptz `json:"archived_at"`
+	MissedHeartbeats      int32              `json:"missed_heartbeats"`
+	ClientID              pgtype.UUID        `json:"client_id"`
+	CreatedAt             time.Time          `json:"created_at"`
+	UpdatedAt             time.Time          `json:"updated_at"`
+	PageCacheEnabled      bool               `json:"page_cache_enabled"`
+	ObjectCacheEnabled    bool               `json:"object_cache_enabled"`
+}
+
 // Defaults to hiding archived sites (ADR-041). When sqlc.narg('state') is set
 // the list is filtered to exactly that connection_state (e.g. 'archived' for
 // the archived chip); when it is NULL every non-archived site is returned.
@@ -661,7 +761,11 @@ type ListSitesParams struct {
 // replace the single-tag filter; both are served by the sites_tags_idx GIN
 // index. The service maps exactly ONE of them per request (legacy ?tag=
 // becomes any_tags=[tag]).
-func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, error) {
+// GH #243: page_cache_enabled / object_cache_enabled — see GetSite's comment
+// above. Both LEFT JOINs are PK lookups (site_id), so this stays O(sites) per
+// page (an index-only nested-loop per row) and does not regress the
+// optimized /sites path.
+func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSitesRow, error) {
 	rows, err := q.db.Query(ctx, listSites,
 		arg.TenantID,
 		arg.Limit,
@@ -675,9 +779,9 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, e
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Site
+	var items []ListSitesRow
 	for rows.Next() {
-		var i Site
+		var i ListSitesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
@@ -712,6 +816,8 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]Site, e
 			&i.ClientID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.PageCacheEnabled,
+			&i.ObjectCacheEnabled,
 		); err != nil {
 			return nil, err
 		}

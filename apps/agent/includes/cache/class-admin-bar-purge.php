@@ -275,7 +275,7 @@ final class AdminBarPurge
         if ($cpUrl === '' || $siteId === '') {
             return '';
         }
-        return rtrim($cpUrl, '/') . '/sites/' . rawurlencode($siteId) . '/performance';
+        return rtrim($cpUrl, '/') . '/sites/' . rawurlencode($siteId) . '/cache';
     }
 
     /**

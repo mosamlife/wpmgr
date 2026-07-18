@@ -119,6 +119,8 @@ export const SiteSchema = {
     "health_status",
     "multisite",
     "tags",
+    "page_cache_enabled",
+    "object_cache_enabled",
     "created_at",
     "updated_at",
   ],
@@ -304,6 +306,16 @@ export const SiteSchema = {
       format: "date-time",
       description:
         "RFC 3339 timestamp of the TLS certificate expiry captured on the most-recent uptime probe.\nAbsent/null when the site is non-HTTPS or has never been probed.\n",
+    },
+    page_cache_enabled: {
+      type: "boolean",
+      description:
+        "GH #243 — the real Page Cache drop-in state (site_perf_config.cache_enabled),\nnot an inference from an installed-plugin slug (the feature ships as a\ndrop-in, not a plugin, so no such slug can ever exist). false both when\ncaching is off AND when the site has no performance config yet.\n",
+    },
+    object_cache_enabled: {
+      type: "boolean",
+      description:
+        "GH #243 — the real Object Cache drop-in state (site_object_cache_config.enabled),\nnot an inference from an installed-plugin slug (the feature ships as a\ndrop-in, not a plugin, so no such slug can ever exist). false both when\nobject caching is off AND when the site has no object cache config yet.\n",
     },
     created_at: {
       type: "string",

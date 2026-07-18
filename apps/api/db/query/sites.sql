@@ -6,8 +6,23 @@ VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: GetSite :one
-SELECT * FROM sites
-WHERE id = $1 AND tenant_id = $2;
+-- GH #243: page_cache_enabled / object_cache_enabled surface the REAL
+-- drop-in config state (site_perf_config.cache_enabled / site_object_cache_
+-- config.enabled) via a PK-keyed LEFT JOIN (both tables are one-row-per-site,
+-- site_id PRIMARY KEY) instead of the old plugin-slug inference that could
+-- never match (both features ship as drop-ins, not plugins). Both joined
+-- tables carry their own tenant_isolation RLS, so this is RLS-safe; the
+-- explicit tenant_id match in the ON clause is defense-in-depth + keeps the
+-- planner on the PK index (project convention — see clients.sql).
+SELECT s.*,
+       COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
+       COALESCE(oc.enabled, false) AS object_cache_enabled
+FROM sites s
+LEFT JOIN site_perf_config pc
+    ON pc.site_id = s.id AND pc.tenant_id = s.tenant_id
+LEFT JOIN site_object_cache_config oc
+    ON oc.site_id = s.id AND oc.tenant_id = s.tenant_id
+WHERE s.id = $1 AND s.tenant_id = $2;
 
 -- name: ListSites :many
 -- Defaults to hiding archived sites (ADR-041). When sqlc.narg('state') is set
@@ -18,16 +33,27 @@ WHERE id = $1 AND tenant_id = $2;
 -- replace the single-tag filter; both are served by the sites_tags_idx GIN
 -- index. The service maps exactly ONE of them per request (legacy ?tag=
 -- becomes any_tags=[tag]).
-SELECT * FROM sites
-WHERE tenant_id = $1
-  AND (sqlc.narg('any_tags')::text[] IS NULL OR tags && sqlc.narg('any_tags')::text[])
-  AND (sqlc.narg('all_tags')::text[] IS NULL OR tags @> sqlc.narg('all_tags')::text[])
+-- GH #243: page_cache_enabled / object_cache_enabled — see GetSite's comment
+-- above. Both LEFT JOINs are PK lookups (site_id), so this stays O(sites) per
+-- page (an index-only nested-loop per row) and does not regress the
+-- optimized /sites path.
+SELECT s.*,
+       COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
+       COALESCE(oc.enabled, false) AS object_cache_enabled
+FROM sites s
+LEFT JOIN site_perf_config pc
+    ON pc.site_id = s.id AND pc.tenant_id = s.tenant_id
+LEFT JOIN site_object_cache_config oc
+    ON oc.site_id = s.id AND oc.tenant_id = s.tenant_id
+WHERE s.tenant_id = $1
+  AND (sqlc.narg('any_tags')::text[] IS NULL OR s.tags && sqlc.narg('any_tags')::text[])
+  AND (sqlc.narg('all_tags')::text[] IS NULL OR s.tags @> sqlc.narg('all_tags')::text[])
   AND (
-        (sqlc.narg('state')::text IS NULL AND connection_state <> 'archived')
-        OR sqlc.narg('state')::text = connection_state
+        (sqlc.narg('state')::text IS NULL AND s.connection_state <> 'archived')
+        OR sqlc.narg('state')::text = s.connection_state
       )
-  AND (sqlc.narg('client_id')::uuid IS NULL OR client_id = sqlc.narg('client_id')::uuid)
-ORDER BY created_at DESC
+  AND (sqlc.narg('client_id')::uuid IS NULL OR s.client_id = sqlc.narg('client_id')::uuid)
+ORDER BY s.created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListClientNamesForSites :many

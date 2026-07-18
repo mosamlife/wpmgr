@@ -65,6 +65,7 @@ import { Route as AuthedSitesSiteIdUpdatesRouteImport } from './routes/_authed/s
 import { Route as AuthedSitesSiteIdToolsRouteImport } from './routes/_authed/sites/$siteId.tools'
 import { Route as AuthedSitesSiteIdSettingsRouteImport } from './routes/_authed/sites/$siteId.settings'
 import { Route as AuthedSitesSiteIdSecurityRouteImport } from './routes/_authed/sites/$siteId.security'
+import { Route as AuthedSitesSiteIdPerformanceRouteImport } from './routes/_authed/sites/$siteId.performance'
 import { Route as AuthedSitesSiteIdOptimizeRouteImport } from './routes/_authed/sites/$siteId.optimize'
 import { Route as AuthedSitesSiteIdMediaRouteImport } from './routes/_authed/sites/$siteId.media'
 import { Route as AuthedSitesSiteIdHealthRouteImport } from './routes/_authed/sites/$siteId.health'
@@ -366,6 +367,12 @@ const AuthedSitesSiteIdSecurityRoute =
     path: '/security',
     getParentRoute: () => AuthedSitesSiteIdRoute,
   } as any)
+const AuthedSitesSiteIdPerformanceRoute =
+  AuthedSitesSiteIdPerformanceRouteImport.update({
+    id: '/performance',
+    path: '/performance',
+    getParentRoute: () => AuthedSitesSiteIdRoute,
+  } as any)
 const AuthedSitesSiteIdOptimizeRoute =
   AuthedSitesSiteIdOptimizeRouteImport.update({
     id: '/optimize',
@@ -513,6 +520,7 @@ export interface FileRoutesByFullPath {
   '/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
   '/sites/$siteId/media': typeof AuthedSitesSiteIdMediaRoute
   '/sites/$siteId/optimize': typeof AuthedSitesSiteIdOptimizeRoute
+  '/sites/$siteId/performance': typeof AuthedSitesSiteIdPerformanceRoute
   '/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
   '/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
   '/sites/$siteId/tools': typeof AuthedSitesSiteIdToolsRoute
@@ -579,6 +587,7 @@ export interface FileRoutesByTo {
   '/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
   '/sites/$siteId/media': typeof AuthedSitesSiteIdMediaRoute
   '/sites/$siteId/optimize': typeof AuthedSitesSiteIdOptimizeRoute
+  '/sites/$siteId/performance': typeof AuthedSitesSiteIdPerformanceRoute
   '/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
   '/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
   '/sites/$siteId/tools': typeof AuthedSitesSiteIdToolsRoute
@@ -653,6 +662,7 @@ export interface FileRoutesById {
   '/_authed/sites/$siteId/health': typeof AuthedSitesSiteIdHealthRoute
   '/_authed/sites/$siteId/media': typeof AuthedSitesSiteIdMediaRoute
   '/_authed/sites/$siteId/optimize': typeof AuthedSitesSiteIdOptimizeRoute
+  '/_authed/sites/$siteId/performance': typeof AuthedSitesSiteIdPerformanceRoute
   '/_authed/sites/$siteId/security': typeof AuthedSitesSiteIdSecurityRoute
   '/_authed/sites/$siteId/settings': typeof AuthedSitesSiteIdSettingsRoute
   '/_authed/sites/$siteId/tools': typeof AuthedSitesSiteIdToolsRoute
@@ -727,6 +737,7 @@ export interface FileRouteTypes {
     | '/sites/$siteId/health'
     | '/sites/$siteId/media'
     | '/sites/$siteId/optimize'
+    | '/sites/$siteId/performance'
     | '/sites/$siteId/security'
     | '/sites/$siteId/settings'
     | '/sites/$siteId/tools'
@@ -793,6 +804,7 @@ export interface FileRouteTypes {
     | '/sites/$siteId/health'
     | '/sites/$siteId/media'
     | '/sites/$siteId/optimize'
+    | '/sites/$siteId/performance'
     | '/sites/$siteId/security'
     | '/sites/$siteId/settings'
     | '/sites/$siteId/tools'
@@ -866,6 +878,7 @@ export interface FileRouteTypes {
     | '/_authed/sites/$siteId/health'
     | '/_authed/sites/$siteId/media'
     | '/_authed/sites/$siteId/optimize'
+    | '/_authed/sites/$siteId/performance'
     | '/_authed/sites/$siteId/security'
     | '/_authed/sites/$siteId/settings'
     | '/_authed/sites/$siteId/tools'
@@ -1286,6 +1299,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSitesSiteIdSecurityRouteImport
       parentRoute: typeof AuthedSitesSiteIdRoute
     }
+    '/_authed/sites/$siteId/performance': {
+      id: '/_authed/sites/$siteId/performance'
+      path: '/performance'
+      fullPath: '/sites/$siteId/performance'
+      preLoaderRoute: typeof AuthedSitesSiteIdPerformanceRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
     '/_authed/sites/$siteId/optimize': {
       id: '/_authed/sites/$siteId/optimize'
       path: '/optimize'
@@ -1502,6 +1522,7 @@ interface AuthedSitesSiteIdRouteChildren {
   AuthedSitesSiteIdHealthRoute: typeof AuthedSitesSiteIdHealthRoute
   AuthedSitesSiteIdMediaRoute: typeof AuthedSitesSiteIdMediaRoute
   AuthedSitesSiteIdOptimizeRoute: typeof AuthedSitesSiteIdOptimizeRoute
+  AuthedSitesSiteIdPerformanceRoute: typeof AuthedSitesSiteIdPerformanceRoute
   AuthedSitesSiteIdSecurityRoute: typeof AuthedSitesSiteIdSecurityRoute
   AuthedSitesSiteIdSettingsRoute: typeof AuthedSitesSiteIdSettingsRoute
   AuthedSitesSiteIdToolsRoute: typeof AuthedSitesSiteIdToolsRoute
@@ -1519,6 +1540,7 @@ const AuthedSitesSiteIdRouteChildren: AuthedSitesSiteIdRouteChildren = {
   AuthedSitesSiteIdHealthRoute: AuthedSitesSiteIdHealthRoute,
   AuthedSitesSiteIdMediaRoute: AuthedSitesSiteIdMediaRoute,
   AuthedSitesSiteIdOptimizeRoute: AuthedSitesSiteIdOptimizeRoute,
+  AuthedSitesSiteIdPerformanceRoute: AuthedSitesSiteIdPerformanceRoute,
   AuthedSitesSiteIdSecurityRoute: AuthedSitesSiteIdSecurityRoute,
   AuthedSitesSiteIdSettingsRoute: AuthedSitesSiteIdSettingsRoute,
   AuthedSitesSiteIdToolsRoute: AuthedSitesSiteIdToolsRoute,

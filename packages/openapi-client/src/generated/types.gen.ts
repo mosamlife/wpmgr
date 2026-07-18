@@ -181,6 +181,22 @@ export type Site = {
    *
    */
   tls_expires_at?: string;
+  /**
+   * GH #243 — the real Page Cache drop-in state (site_perf_config.cache_enabled),
+   * not an inference from an installed-plugin slug (the feature ships as a
+   * drop-in, not a plugin, so no such slug can ever exist). false both when
+   * caching is off AND when the site has no performance config yet.
+   *
+   */
+  page_cache_enabled: boolean;
+  /**
+   * GH #243 — the real Object Cache drop-in state (site_object_cache_config.enabled),
+   * not an inference from an installed-plugin slug (the feature ships as a
+   * drop-in, not a plugin, so no such slug can ever exist). false both when
+   * object caching is off AND when the site has no object cache config yet.
+   *
+   */
+  object_cache_enabled: boolean;
   created_at: string;
   updated_at: string;
 };

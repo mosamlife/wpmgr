@@ -39575,8 +39575,18 @@ type Site struct {
 	// RFC 3339 timestamp of the TLS certificate expiry captured on the most-recent uptime probe.
 	// Absent/null when the site is non-HTTPS or has never been probed.
 	TLSExpiresAt OptDateTime `json:"tls_expires_at"`
-	CreatedAt    time.Time   `json:"created_at"`
-	UpdatedAt    time.Time   `json:"updated_at"`
+	// GH #243 — the real Page Cache drop-in state (site_perf_config.cache_enabled),
+	// not an inference from an installed-plugin slug (the feature ships as a
+	// drop-in, not a plugin, so no such slug can ever exist). false both when
+	// caching is off AND when the site has no performance config yet.
+	PageCacheEnabled bool `json:"page_cache_enabled"`
+	// GH #243 — the real Object Cache drop-in state (site_object_cache_config.enabled),
+	// not an inference from an installed-plugin slug (the feature ships as a
+	// drop-in, not a plugin, so no such slug can ever exist). false both when
+	// object caching is off AND when the site has no object cache config yet.
+	ObjectCacheEnabled bool      `json:"object_cache_enabled"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -39762,6 +39772,16 @@ func (s *Site) GetAvgLatencyMs() OptInt32 {
 // GetTLSExpiresAt returns the value of TLSExpiresAt.
 func (s *Site) GetTLSExpiresAt() OptDateTime {
 	return s.TLSExpiresAt
+}
+
+// GetPageCacheEnabled returns the value of PageCacheEnabled.
+func (s *Site) GetPageCacheEnabled() bool {
+	return s.PageCacheEnabled
+}
+
+// GetObjectCacheEnabled returns the value of ObjectCacheEnabled.
+func (s *Site) GetObjectCacheEnabled() bool {
+	return s.ObjectCacheEnabled
 }
 
 // GetCreatedAt returns the value of CreatedAt.
@@ -39957,6 +39977,16 @@ func (s *Site) SetAvgLatencyMs(val OptInt32) {
 // SetTLSExpiresAt sets the value of TLSExpiresAt.
 func (s *Site) SetTLSExpiresAt(val OptDateTime) {
 	s.TLSExpiresAt = val
+}
+
+// SetPageCacheEnabled sets the value of PageCacheEnabled.
+func (s *Site) SetPageCacheEnabled(val bool) {
+	s.PageCacheEnabled = val
+}
+
+// SetObjectCacheEnabled sets the value of ObjectCacheEnabled.
+func (s *Site) SetObjectCacheEnabled(val bool) {
+	s.ObjectCacheEnabled = val
 }
 
 // SetCreatedAt sets the value of CreatedAt.

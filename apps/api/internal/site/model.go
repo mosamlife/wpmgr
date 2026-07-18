@@ -96,6 +96,15 @@ type Site struct {
 	UptimeUp       *bool      // current up/down from the most-recent probe; nil = never probed
 	AvgLatencyMs   *float64   // average total_ms over successful probes in the 30d window
 	TLSExpiresAt   *time.Time // cert expiry from the most-recent probe; nil = non-HTTPS or no probes
+	// GH #243 — the real drop-in config state, populated by repo.Get/List via a
+	// PK-keyed LEFT JOIN onto site_perf_config.cache_enabled and
+	// site_object_cache_config.enabled (both one-row-per-site, site_id PK).
+	// false both when a config row exists with the feature off AND when no
+	// config row exists yet (the site has never touched that feature). This
+	// replaces the old site-card capability dots, which inferred state from
+	// plugin slugs that can never exist — both features ship as drop-ins.
+	PageCacheEnabled   bool
+	ObjectCacheEnabled bool
 }
 
 // CreateInput is the validated input for creating a site under a tenant.

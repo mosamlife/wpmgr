@@ -89,9 +89,16 @@ describe("SslChip — label text", () => {
 });
 
 // ---------------------------------------------------------------------------
-// CapabilityStrip — lit / dim derivation
+// CapabilityStrip — lit / dim derivation (GH #243)
 // ---------------------------------------------------------------------------
 // The buildCapabilityItems logic from site-card.tsx extracted as a pure fn.
+//
+// Page Cache / Object Cache read the real contract booleans
+// (`site.page_cache_enabled` / `site.object_cache_enabled`) — both features
+// ship as drop-ins, so an active-plugin-slug inference could never be true
+// (that was the GH #243 bug: both dots were unconditionally gray since
+// v0.49.0). These tests assert on/off directly from the booleans, never from
+// a fabricated plugin-list fixture.
 
 import type { Site } from "@wpmgr/api";
 
@@ -104,14 +111,8 @@ interface CapabilityFlags {
 }
 
 function deriveCapabilityFlags(site: Partial<Site>): CapabilityFlags {
-  const hasPageCache =
-    site.components?.plugins?.some(
-      (p) => p.slug === "wpmgr-page-cache" && p.active === true,
-    ) ?? false;
-  const hasObjectCache =
-    site.components?.plugins?.some(
-      (p) => p.slug === "wpmgr-object-cache" && p.active === true,
-    ) ?? false;
+  const hasPageCache = site.page_cache_enabled ?? false;
+  const hasObjectCache = site.object_cache_enabled ?? false;
   const isHttps = (site.url ?? "").startsWith("https://");
   const hasBackups = site.last_backup_status != null;
   const isMultisite = site.multisite ?? false;
@@ -119,27 +120,25 @@ function deriveCapabilityFlags(site: Partial<Site>): CapabilityFlags {
 }
 
 describe("CapabilityStrip — lit glyphs (enabled=true)", () => {
-  it("page cache is lit when wpmgr-page-cache plugin is active", () => {
+  it("page cache is lit when site.page_cache_enabled is true", () => {
     const site: Partial<Site> = {
       url: "https://example.com",
       multisite: false,
       last_backup_status: undefined,
-      components: {
-        plugins: [{ slug: "wpmgr-page-cache", active: true }],
-      },
+      page_cache_enabled: true,
+      object_cache_enabled: false,
     };
     const flags = deriveCapabilityFlags(site);
     expect(flags.hasPageCache).toBe(true);
   });
 
-  it("object cache is lit when wpmgr-object-cache plugin is active", () => {
+  it("object cache is lit when site.object_cache_enabled is true", () => {
     const site: Partial<Site> = {
       url: "https://example.com",
       multisite: false,
       last_backup_status: undefined,
-      components: {
-        plugins: [{ slug: "wpmgr-object-cache", active: true }],
-      },
+      page_cache_enabled: false,
+      object_cache_enabled: true,
     };
     expect(deriveCapabilityFlags(site).hasObjectCache).toBe(true);
   });
@@ -165,20 +164,39 @@ describe("CapabilityStrip — lit glyphs (enabled=true)", () => {
 });
 
 describe("CapabilityStrip — dim glyphs (enabled=false)", () => {
-  it("page cache is dim when plugin is absent", () => {
-    const flags = deriveCapabilityFlags({ url: "https://example.com", multisite: false });
-    expect(flags.hasPageCache).toBe(false);
-  });
-
-  it("page cache is dim when plugin is present but inactive", () => {
+  it("page cache is dim when site.page_cache_enabled is false", () => {
     const site: Partial<Site> = {
       url: "https://example.com",
       multisite: false,
-      components: {
-        plugins: [{ slug: "wpmgr-page-cache", active: false }],
-      },
+      page_cache_enabled: false,
+      object_cache_enabled: false,
     };
     expect(deriveCapabilityFlags(site).hasPageCache).toBe(false);
+  });
+
+  it("object cache is dim when site.object_cache_enabled is false", () => {
+    const site: Partial<Site> = {
+      url: "https://example.com",
+      multisite: false,
+      page_cache_enabled: false,
+      object_cache_enabled: false,
+    };
+    expect(deriveCapabilityFlags(site).hasObjectCache).toBe(false);
+  });
+
+  it("both dots are dim when the site has no performance config yet (both false, not absent)", () => {
+    // Per the contract: page_cache_enabled/object_cache_enabled are required
+    // booleans that are false both when the feature is off AND when the site
+    // has no perf config row yet — never undefined.
+    const site: Partial<Site> = {
+      url: "https://example.com",
+      multisite: false,
+      page_cache_enabled: false,
+      object_cache_enabled: false,
+    };
+    const flags = deriveCapabilityFlags(site);
+    expect(flags.hasPageCache).toBe(false);
+    expect(flags.hasObjectCache).toBe(false);
   });
 
   it("HTTPS is dim for http:// sites", () => {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.70
+  version: 0.61.71
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -12151,7 +12151,7 @@ components:
     Site:
       type: object
       required:
-        [id, tenant_id, url, name, status, wp_version, php_version, health_status, multisite, tags, created_at, updated_at]
+        [id, tenant_id, url, name, status, wp_version, php_version, health_status, multisite, tags, page_cache_enabled, object_cache_enabled, created_at, updated_at]
       properties:
         id:
           type: string
@@ -12295,6 +12295,20 @@ components:
           description: |
             RFC 3339 timestamp of the TLS certificate expiry captured on the most-recent uptime probe.
             Absent/null when the site is non-HTTPS or has never been probed.
+        page_cache_enabled:
+          type: boolean
+          description: |
+            GH #243 — the real Page Cache drop-in state (site_perf_config.cache_enabled),
+            not an inference from an installed-plugin slug (the feature ships as a
+            drop-in, not a plugin, so no such slug can ever exist). false both when
+            caching is off AND when the site has no performance config yet.
+        object_cache_enabled:
+          type: boolean
+          description: |
+            GH #243 — the real Object Cache drop-in state (site_object_cache_config.enabled),
+            not an inference from an installed-plugin slug (the feature ships as a
+            drop-in, not a plugin, so no such slug can ever exist). false both when
+            object caching is off AND when the site has no object cache config yet.
         created_at:
           type: string
           format: date-time
