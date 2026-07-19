@@ -26,6 +26,8 @@ const STATUS_CONNECTED: VulnFeedStatus = {
   record_count: 12_431,
   last_synced: "2026-06-21T10:30:00Z",
   last_error: "",
+  enrichment_available: true,
+  last_enrichment_at: "2026-06-21T10:30:00Z",
 };
 
 /** Feed key comes from the environment variable, not the UI. */
@@ -36,6 +38,8 @@ const STATUS_ENV_SOURCE: VulnFeedStatus = {
   record_count: 7_200,
   last_synced: "2026-06-21T08:00:00Z",
   last_error: "",
+  enrichment_available: true,
+  last_enrichment_at: "2026-06-21T08:00:00Z",
 };
 
 /** Feed is configured but the last sync failed (bad key or network error). */
@@ -46,6 +50,7 @@ const STATUS_ERROR: VulnFeedStatus = {
   record_count: 0,
   last_synced: null,
   last_error: "feed auth failed: 401 Unauthorized",
+  enrichment_available: false,
 };
 
 /** No key has been configured from any source. */
@@ -56,6 +61,24 @@ const STATUS_NOT_CONFIGURED: VulnFeedStatus = {
   record_count: 0,
   last_synced: null,
   last_error: "",
+  enrichment_available: false,
+};
+
+/**
+ * Feed is connected and scanning fine (feed_ok=true), but the last sync was
+ * scanner-only: CVSS enrichment did not complete (GH #245 degraded state).
+ * Distinct from STATUS_ERROR (which fails the scanner-driven feed_ok gate
+ * entirely).
+ */
+const STATUS_CONNECTED_ENRICHMENT_DEGRADED: VulnFeedStatus = {
+  configured: true,
+  source: "ui",
+  feed_ok: true,
+  record_count: 12_431,
+  last_synced: "2026-07-19T10:30:00Z",
+  last_error: "",
+  enrichment_available: false,
+  last_enrichment_at: "2026-07-10T00:00:00Z",
 };
 
 /** Successful PUT /key response — sync kicked off immediately. */
@@ -121,6 +144,42 @@ describe("VulnFeedStatus DTO shape — connected state", () => {
 
   it("source='ui' when the key was saved via the admin console", () => {
     expect(STATUS_CONNECTED.source).toBe("ui");
+  });
+
+  it("has enrichment_available and optional last_enrichment_at", () => {
+    const s: VulnFeedStatus = STATUS_CONNECTED;
+    expect(typeof s.enrichment_available).toBe("boolean");
+    expect(s.enrichment_available).toBe(true);
+    expect(typeof s.last_enrichment_at).toBe("string");
+  });
+});
+
+describe("VulnFeedStatus DTO shape: connected but enrichment-degraded state (GH #245)", () => {
+  it("feed_ok=true + enrichment_available=false is distinct from the error state (scanner still healthy)", () => {
+    const s: VulnFeedStatus = STATUS_CONNECTED_ENRICHMENT_DEGRADED;
+    expect(s.configured).toBe(true);
+    expect(s.feed_ok).toBe(true);
+    expect(s.enrichment_available).toBe(false);
+  });
+
+  it("last_enrichment_at may lag behind last_synced when only the scanner ran", () => {
+    const s: VulnFeedStatus = STATUS_CONNECTED_ENRICHMENT_DEGRADED;
+    expect(s.last_synced).not.toBe(s.last_enrichment_at);
+  });
+
+  it("the 'Connected' header state derivation is unaffected by enrichment_available (feed_ok drives the header, not enrichment)", () => {
+    const state = !STATUS_CONNECTED_ENRICHMENT_DEGRADED.configured
+      ? "not-configured"
+      : STATUS_CONNECTED_ENRICHMENT_DEGRADED.feed_ok
+        ? "connected"
+        : "error";
+    expect(state).toBe("connected");
+    // The degraded sub-line is an ADDITIONAL signal layered on top of
+    // "Connected", never a replacement for it.
+    const showsDegradedSubline =
+      STATUS_CONNECTED_ENRICHMENT_DEGRADED.feed_ok &&
+      !STATUS_CONNECTED_ENRICHMENT_DEGRADED.enrichment_available;
+    expect(showsDegradedSubline).toBe(true);
   });
 });
 

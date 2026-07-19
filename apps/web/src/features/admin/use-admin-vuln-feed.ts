@@ -46,6 +46,16 @@ export interface VulnFeedStatus {
   last_synced: string | null;
   /** Human-readable description of the last sync error, or empty string. */
   last_error: string;
+  /**
+   * True when the feed's CVSS/CVE enrichment pass succeeded on the last
+   * sync, independent of `feed_ok` (which tracks scanner-driven detection
+   * freshness). False means the last sync was scanner-only: findings may be
+   * showing as `unknown` severity fleet-wide even though the feed itself is
+   * reachable.
+   */
+  enrichment_available: boolean;
+  /** ISO-8601 timestamp of the last successful enrichment pass, or absent when enrichment has never completed. */
+  last_enrichment_at?: string;
 }
 
 /**

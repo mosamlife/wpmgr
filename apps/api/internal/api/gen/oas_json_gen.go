@@ -7980,15 +7980,27 @@ func (s *AdminVulnFeedStatus) encodeFields(e *jx.Encoder) {
 			s.LastError.Encode(e)
 		}
 	}
+	{
+		e.FieldStart("enrichment_available")
+		e.Bool(s.EnrichmentAvailable)
+	}
+	{
+		if s.LastEnrichmentAt.Set {
+			e.FieldStart("last_enrichment_at")
+			s.LastEnrichmentAt.Encode(e, json.EncodeDateTime)
+		}
+	}
 }
 
-var jsonFieldsNameOfAdminVulnFeedStatus = [6]string{
+var jsonFieldsNameOfAdminVulnFeedStatus = [8]string{
 	0: "configured",
 	1: "source",
 	2: "feed_ok",
 	3: "record_count",
 	4: "last_synced",
 	5: "last_error",
+	6: "enrichment_available",
+	7: "last_enrichment_at",
 }
 
 // Decode decodes AdminVulnFeedStatus from json.
@@ -8066,6 +8078,28 @@ func (s *AdminVulnFeedStatus) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"last_error\"")
 			}
+		case "enrichment_available":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
+				v, err := d.Bool()
+				s.EnrichmentAvailable = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"enrichment_available\"")
+			}
+		case "last_enrichment_at":
+			if err := func() error {
+				s.LastEnrichmentAt.Reset()
+				if err := s.LastEnrichmentAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_enrichment_at\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -8076,7 +8110,7 @@ func (s *AdminVulnFeedStatus) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00001111,
+		0b01001111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -52856,6 +52890,10 @@ func (s *FleetVulnerabilitiesResponse) encodeFields(e *jx.Encoder) {
 		e.Int(s.Low)
 	}
 	{
+		e.FieldStart("unknown")
+		e.Int(s.Unknown)
+	}
+	{
 		e.FieldStart("items")
 		e.ArrStart()
 		for _, elem := range s.Items {
@@ -52877,18 +52915,31 @@ func (s *FleetVulnerabilitiesResponse) encodeFields(e *jx.Encoder) {
 			s.FeedSynced.Encode(e, json.EncodeDateTime)
 		}
 	}
+	{
+		e.FieldStart("enrichment_available")
+		e.Bool(s.EnrichmentAvailable)
+	}
+	{
+		if s.LastEnrichmentAt.Set {
+			e.FieldStart("last_enrichment_at")
+			s.LastEnrichmentAt.Encode(e, json.EncodeDateTime)
+		}
+	}
 }
 
-var jsonFieldsNameOfFleetVulnerabilitiesResponse = [9]string{
-	0: "total_open",
-	1: "critical",
-	2: "high",
-	3: "medium",
-	4: "low",
-	5: "items",
-	6: "attribution",
-	7: "feed_ok",
-	8: "feed_synced",
+var jsonFieldsNameOfFleetVulnerabilitiesResponse = [12]string{
+	0:  "total_open",
+	1:  "critical",
+	2:  "high",
+	3:  "medium",
+	4:  "low",
+	5:  "unknown",
+	6:  "items",
+	7:  "attribution",
+	8:  "feed_ok",
+	9:  "feed_synced",
+	10: "enrichment_available",
+	11: "last_enrichment_at",
 }
 
 // Decode decodes FleetVulnerabilitiesResponse from json.
@@ -52960,8 +53011,20 @@ func (s *FleetVulnerabilitiesResponse) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"low\"")
 			}
-		case "items":
+		case "unknown":
 			requiredBitSet[0] |= 1 << 5
+			if err := func() error {
+				v, err := d.Int()
+				s.Unknown = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"unknown\"")
+			}
+		case "items":
+			requiredBitSet[0] |= 1 << 6
 			if err := func() error {
 				s.Items = make([]FleetVulnerabilitiesResponseItemsItem, 0)
 				if err := d.Arr(func(d *jx.Decoder) error {
@@ -52979,7 +53042,7 @@ func (s *FleetVulnerabilitiesResponse) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"items\"")
 			}
 		case "attribution":
-			requiredBitSet[0] |= 1 << 6
+			requiredBitSet[0] |= 1 << 7
 			if err := func() error {
 				if err := s.Attribution.Decode(d); err != nil {
 					return err
@@ -52989,7 +53052,7 @@ func (s *FleetVulnerabilitiesResponse) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"attribution\"")
 			}
 		case "feed_ok":
-			requiredBitSet[0] |= 1 << 7
+			requiredBitSet[1] |= 1 << 0
 			if err := func() error {
 				v, err := d.Bool()
 				s.FeedOk = bool(v)
@@ -53010,6 +53073,28 @@ func (s *FleetVulnerabilitiesResponse) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"feed_synced\"")
 			}
+		case "enrichment_available":
+			requiredBitSet[1] |= 1 << 2
+			if err := func() error {
+				v, err := d.Bool()
+				s.EnrichmentAvailable = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"enrichment_available\"")
+			}
+		case "last_enrichment_at":
+			if err := func() error {
+				s.LastEnrichmentAt.Reset()
+				if err := s.LastEnrichmentAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_enrichment_at\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -53021,7 +53106,7 @@ func (s *FleetVulnerabilitiesResponse) Decode(d *jx.Decoder) error {
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
 		0b11111111,
-		0b00000000,
+		0b00000101,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -108195,13 +108280,25 @@ func (s *SiteVulnerabilitiesResponse) encodeFields(e *jx.Encoder) {
 			s.FeedSynced.Encode(e, json.EncodeDateTime)
 		}
 	}
+	{
+		e.FieldStart("enrichment_available")
+		e.Bool(s.EnrichmentAvailable)
+	}
+	{
+		if s.LastEnrichmentAt.Set {
+			e.FieldStart("last_enrichment_at")
+			s.LastEnrichmentAt.Encode(e, json.EncodeDateTime)
+		}
+	}
 }
 
-var jsonFieldsNameOfSiteVulnerabilitiesResponse = [4]string{
+var jsonFieldsNameOfSiteVulnerabilitiesResponse = [6]string{
 	0: "items",
 	1: "attribution",
 	2: "feed_ok",
 	3: "feed_synced",
+	4: "enrichment_available",
+	5: "last_enrichment_at",
 }
 
 // Decode decodes SiteVulnerabilitiesResponse from json.
@@ -108263,6 +108360,28 @@ func (s *SiteVulnerabilitiesResponse) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"feed_synced\"")
 			}
+		case "enrichment_available":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				v, err := d.Bool()
+				s.EnrichmentAvailable = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"enrichment_available\"")
+			}
+		case "last_enrichment_at":
+			if err := func() error {
+				s.LastEnrichmentAt.Reset()
+				if err := s.LastEnrichmentAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_enrichment_at\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -108273,7 +108392,7 @@ func (s *SiteVulnerabilitiesResponse) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000111,
+		0b00010111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

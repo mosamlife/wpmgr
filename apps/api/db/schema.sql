@@ -3699,15 +3699,25 @@ CREATE INDEX IF NOT EXISTS idx_wf_vuln_software_lookup
 -- ---------------------------------------------------------------------------
 -- No RLS. Single row (id=1). Freshness timestamp, attribution notices, error.
 CREATE TABLE IF NOT EXISTS wordfence_vuln_feed_meta (
-    id              integer PRIMARY KEY DEFAULT 1
+    id                 integer PRIMARY KEY DEFAULT 1
         CONSTRAINT wordfence_vuln_feed_meta_singleton_chk CHECK (id = 1),
-    fetched_at      timestamptz,
-    ok              boolean NOT NULL DEFAULT false,
-    record_count    integer NOT NULL DEFAULT 0,
-    defiant_notice  text,
-    defiant_license text,
-    mitre_notice    text,
-    last_error      text
+    fetched_at         timestamptz,
+    ok                 boolean NOT NULL DEFAULT false,
+    record_count       integer NOT NULL DEFAULT 0,
+    defiant_notice     text,
+    defiant_license    text,
+    mitre_notice       text,
+    last_error         text,
+    -- m101 — Production-enrichment health, tracked independently of
+    -- ok/fetched_at/record_count (which track Scanner-driven detection
+    -- freshness and gate RescanSite). See internal/vuln/model.go FeedMeta doc.
+    enrichment_ok      boolean NOT NULL DEFAULT false,
+    last_enrichment_at timestamptz,
+    -- m101 — Scanner/Production alternation cursor (internal worker state
+    -- only; never exposed via the API). See internal/vuln/repo.go NextFeedKind.
+    next_feed_kind     text NOT NULL DEFAULT 'scanner'
+        CONSTRAINT wordfence_vuln_feed_meta_next_feed_chk
+        CHECK (next_feed_kind IN ('scanner', 'production'))
 );
 
 -- ---------------------------------------------------------------------------
@@ -3727,7 +3737,10 @@ CREATE TABLE IF NOT EXISTS site_vulnerabilities (
     fixed_version     text,
     severity          text NOT NULL
         CONSTRAINT site_vulnerabilities_severity_chk
-        CHECK (severity IN ('critical', 'high', 'medium', 'low')),
+        -- m101 — 'unknown': a finding with neither a cvss_rating nor a
+        -- cvss_score is genuinely "no data", not a confirmed low severity
+        -- (GH #245). See SeverityFromRating in internal/vuln/model.go.
+        CHECK (severity IN ('critical', 'high', 'medium', 'low', 'unknown')),
     cvss_score        numeric(3,1),
     cve               text,
     title             text NOT NULL,

@@ -73,6 +73,7 @@ describe("VulnPanel — feed-not-configured state (security-misleading regressio
       attribution: ATTRIBUTION,
       feed_ok: false,
       feed_synced: null,
+      enrichment_available: false,
     };
     mockedUseSiteVulnerabilities.mockReturnValue(
       mockQueryResult<SiteVulnsResponse>({ data: response }),
@@ -91,6 +92,12 @@ describe("VulnPanel — feed-not-configured state (security-misleading regressio
     // case a future edit rewords it without changing the underlying bug.
     expect(screen.queryByText(/no known vulnerabilities/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/no vulnerabilities found/i)).not.toBeInTheDocument();
+
+    // The degraded-enrichment banner must NOT fire here either: feed-not-
+    // configured always takes priority, and this is a different state.
+    expect(
+      screen.queryByText(/Severity data unavailable/i),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -130,6 +137,7 @@ describe("VulnPanel — findings table + Gate 0 attribution", () => {
       attribution: ATTRIBUTION,
       feed_ok: true,
       feed_synced: "2026-07-06T00:00:00Z",
+      enrichment_available: true,
     };
     mockedUseSiteVulnerabilities.mockReturnValue(
       mockQueryResult<SiteVulnsResponse>({ data: response }),
@@ -159,5 +167,66 @@ describe("VulnPanel — findings table + Gate 0 attribution", () => {
     expect(screen.getByText(ATTRIBUTION.defiant_license)).toBeInTheDocument();
     expect(screen.getByText(ATTRIBUTION.mitre_notice)).toBeInTheDocument();
     expect(screen.getByText("Wordfence Intelligence")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GH #245: degraded CVSS enrichment banner
+// ---------------------------------------------------------------------------
+
+describe("VulnPanel degraded-enrichment banner (GH #245)", () => {
+  it("renders the amber banner when feed_ok=true but enrichment_available=false", () => {
+    const response: SiteVulnsResponse = {
+      items: [
+        buildFinding({
+          id: "f-unknown",
+          slug: "unrated-plugin",
+          name: "Unrated Plugin",
+          severity: "unknown",
+          cvss_score: null,
+        }),
+      ],
+      attribution: ATTRIBUTION,
+      feed_ok: true,
+      feed_synced: "2026-07-06T00:00:00Z",
+      enrichment_available: false,
+    };
+    mockedUseSiteVulnerabilities.mockReturnValue(
+      mockQueryResult<SiteVulnsResponse>({ data: response }),
+    );
+
+    renderWithProviders(<VulnPanel siteId="site-1" />);
+
+    expect(
+      screen.getByText(/Severity data unavailable\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /The CVSS enrichment feed was not reachable on the last sync, so some findings may be understated\./,
+      ),
+    ).toBeInTheDocument();
+
+    // The finding renders with the distinct Unknown chip, not Low.
+    expect(screen.getByText("Unknown")).toBeInTheDocument();
+    expect(screen.queryByText("Low")).not.toBeInTheDocument();
+  });
+
+  it("does NOT render the banner when enrichment_available is true", () => {
+    const response: SiteVulnsResponse = {
+      items: [buildFinding({ severity: "low" })],
+      attribution: ATTRIBUTION,
+      feed_ok: true,
+      feed_synced: "2026-07-06T00:00:00Z",
+      enrichment_available: true,
+    };
+    mockedUseSiteVulnerabilities.mockReturnValue(
+      mockQueryResult<SiteVulnsResponse>({ data: response }),
+    );
+
+    renderWithProviders(<VulnPanel siteId="site-1" />);
+
+    expect(
+      screen.queryByText(/Severity data unavailable/i),
+    ).not.toBeInTheDocument();
   });
 });

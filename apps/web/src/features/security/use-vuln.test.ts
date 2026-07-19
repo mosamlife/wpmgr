@@ -126,6 +126,29 @@ const ATTRIBUTION: VulnAttribution = {
 // Fixture: per-site response with findings
 // ---------------------------------------------------------------------------
 
+/** Genuinely unrated finding: CVSS enrichment never landed a score. */
+const UNKNOWN_PLUGIN_FINDING: VulnFinding = {
+  id: "aaaaaaaa-0000-0000-0000-000000000006",
+  site_id: "bbbbbbbb-0000-0000-0000-000000000001",
+  vuln_id: "cccccccc-6666-6666-6666-666666666666",
+  kind: "plugin",
+  slug: "elementor",
+  name: "Elementor",
+  installed_version: "3.10.0",
+  fixed_version: "3.10.5",
+  severity: "unknown",
+  cvss_score: null,
+  cve: null,
+  cve_link: null,
+  title: "Elementor vulnerability (severity not yet rated)",
+  status: "open",
+  first_seen: "2024-06-10T00:00:00Z",
+  last_seen: "2024-06-15T10:00:00Z",
+  references: [
+    "https://www.wordfence.com/threat-intel/vulnerabilities/id/cccccccc-6666-6666-6666-666666666666",
+  ],
+};
+
 const SITE_VULNS_WITH_FINDINGS: SiteVulnsResponse = {
   items: [
     CRITICAL_PLUGIN_FINDING,
@@ -136,6 +159,7 @@ const SITE_VULNS_WITH_FINDINGS: SiteVulnsResponse = {
   attribution: ATTRIBUTION,
   feed_ok: true,
   feed_synced: "2024-06-15T09:00:00Z",
+  enrichment_available: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +171,7 @@ const SITE_VULNS_CLEAN: SiteVulnsResponse = {
   attribution: ATTRIBUTION,
   feed_ok: true,
   feed_synced: "2024-06-15T09:00:00Z",
+  enrichment_available: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -162,6 +187,20 @@ const SITE_VULNS_FEED_NOT_CONFIGURED: SiteVulnsResponse = {
   },
   feed_ok: false,
   feed_synced: null,
+  enrichment_available: false,
+};
+
+// ---------------------------------------------------------------------------
+// Fixture: per-site response, feed configured + scanning, but the last sync
+// was scanner-only (CVSS enrichment unreachable): GH #245 degraded state.
+// ---------------------------------------------------------------------------
+
+const SITE_VULNS_ENRICHMENT_DEGRADED: SiteVulnsResponse = {
+  items: [MEDIUM_CORE_FINDING],
+  attribution: ATTRIBUTION,
+  feed_ok: true,
+  feed_synced: "2024-06-15T09:00:00Z",
+  enrichment_available: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -192,10 +231,12 @@ const FLEET_VULNS_RESPONSE: FleetVulnsResponse = {
   high: 1,
   medium: 0,
   low: 0,
+  unknown: 0,
   items: [FLEET_FINDING_1, FLEET_FINDING_2],
   attribution: ATTRIBUTION,
   feed_ok: true,
   feed_synced: "2024-06-15T09:00:00Z",
+  enrichment_available: true,
 };
 
 const FLEET_VULNS_FEED_NOT_CONFIGURED: FleetVulnsResponse = {
@@ -204,6 +245,7 @@ const FLEET_VULNS_FEED_NOT_CONFIGURED: FleetVulnsResponse = {
   high: 0,
   medium: 0,
   low: 0,
+  unknown: 0,
   items: [],
   attribution: {
     defiant_notice: "",
@@ -212,6 +254,38 @@ const FLEET_VULNS_FEED_NOT_CONFIGURED: FleetVulnsResponse = {
   },
   feed_ok: false,
   feed_synced: null,
+  enrichment_available: false,
+};
+
+// ---------------------------------------------------------------------------
+// Fixture: fleet response with unrated findings, feed configured but the
+// last sync was scanner-only (GH #245 degraded state).
+// ---------------------------------------------------------------------------
+
+const FLEET_VULNS_ENRICHMENT_DEGRADED: FleetVulnsResponse = {
+  total_open: 1,
+  critical: 0,
+  high: 0,
+  medium: 0,
+  low: 0,
+  unknown: 1,
+  items: [
+    {
+      site_id: "bbbbbbbb-0000-0000-0000-000000000001",
+      site_name: "acme.example.com",
+      site_url: "https://acme.example.com",
+      finding: {
+        ...CRITICAL_PLUGIN_FINDING,
+        id: "aaaaaaaa-0000-0000-0000-000000000007",
+        severity: "unknown",
+        cvss_score: null,
+      },
+    },
+  ],
+  attribution: ATTRIBUTION,
+  feed_ok: true,
+  feed_synced: "2024-06-15T09:00:00Z",
+  enrichment_available: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -233,7 +307,7 @@ describe("VulnFinding DTO shape — all required fields present", () => {
     expect(f.slug).toBeDefined();
     expect(f.name).toBeDefined();
     expect(f.installed_version).toBeDefined();
-    expect(["critical", "high", "medium", "low"]).toContain(f.severity);
+    expect(["critical", "high", "medium", "low", "unknown"]).toContain(f.severity);
     expect(f.title).toBeDefined();
     expect(["open", "dismissed", "remediated"]).toContain(f.status);
     expect(f.first_seen).toBeDefined();
@@ -259,11 +333,12 @@ describe("VulnFinding DTO shape — all required fields present", () => {
 });
 
 describe("SiteVulnsResponse DTO shape", () => {
-  it("has items, attribution, feed_ok, and optional feed_synced", () => {
+  it("has items, attribution, feed_ok, enrichment_available, and optional feed_synced", () => {
     const r: SiteVulnsResponse = SITE_VULNS_WITH_FINDINGS;
     expect(Array.isArray(r.items)).toBe(true);
     expect(typeof r.attribution).toBe("object");
     expect(typeof r.feed_ok).toBe("boolean");
+    expect(typeof r.enrichment_available).toBe("boolean");
   });
 
   it("feed_ok=true + empty items represents a clean site", () => {
@@ -277,21 +352,38 @@ describe("SiteVulnsResponse DTO shape", () => {
     expect(r.feed_ok).toBe(false);
     expect(r.items).toHaveLength(0);
   });
+
+  it("feed_ok=true + enrichment_available=false represents the GH #245 degraded state (scanner-only sync)", () => {
+    const r: SiteVulnsResponse = SITE_VULNS_ENRICHMENT_DEGRADED;
+    expect(r.feed_ok).toBe(true);
+    expect(r.enrichment_available).toBe(false);
+    // Distinct from feed-not-configured: the feed IS working, just without CVSS enrichment.
+    expect(r.feed_ok && !r.enrichment_available).toBe(true);
+  });
 });
 
 describe("FleetVulnsResponse DTO shape", () => {
-  it("has total_open, severity counts, items, attribution, feed_ok", () => {
+  it("has total_open, severity counts (incl. unknown), items, attribution, feed_ok, enrichment_available", () => {
     const r: FleetVulnsResponse = FLEET_VULNS_RESPONSE;
     expect(typeof r.total_open).toBe("number");
     expect(typeof r.critical).toBe("number");
     expect(typeof r.high).toBe("number");
     expect(typeof r.medium).toBe("number");
     expect(typeof r.low).toBe("number");
+    expect(typeof r.unknown).toBe("number");
     expect(Array.isArray(r.items)).toBe(true);
     expect(typeof r.attribution.defiant_notice).toBe("string");
     expect(typeof r.attribution.defiant_license).toBe("string");
     expect(typeof r.attribution.mitre_notice).toBe("string");
     expect(typeof r.feed_ok).toBe("boolean");
+    expect(typeof r.enrichment_available).toBe("boolean");
+  });
+
+  it("feed_ok=true + enrichment_available=false represents the GH #245 degraded fleet state", () => {
+    const r: FleetVulnsResponse = FLEET_VULNS_ENRICHMENT_DEGRADED;
+    expect(r.feed_ok).toBe(true);
+    expect(r.enrichment_available).toBe(false);
+    expect(r.unknown).toBeGreaterThan(0);
   });
 
   it("each fleet item has site_id, site_name, site_url, and a nested finding", () => {
@@ -373,6 +465,10 @@ describe("isHighRisk", () => {
   it("returns false for low severity", () => {
     expect(isHighRisk("low")).toBe(false);
   });
+
+  it("returns true for unknown severity (elevated, NOT mild; GH #245)", () => {
+    expect(isHighRisk("unknown")).toBe(true);
+  });
 });
 
 describe("countHighRisk", () => {
@@ -395,6 +491,16 @@ describe("countHighRisk", () => {
       status: "dismissed",
     };
     expect(countHighRisk([dismissed])).toBe(0);
+  });
+
+  it("counts open unknown-severity findings as high risk (GH #245: a fleet of unrated findings must not read as benign)", () => {
+    expect(countHighRisk([UNKNOWN_PLUGIN_FINDING])).toBe(1);
+  });
+
+  it("a mix of medium/low findings plus one open unknown finding is still high risk", () => {
+    const findings = [MEDIUM_CORE_FINDING, UNKNOWN_PLUGIN_FINDING];
+    // Only UNKNOWN_PLUGIN_FINDING should count (medium is not high risk).
+    expect(countHighRisk(findings)).toBe(1);
   });
 });
 
@@ -435,6 +541,21 @@ describe("worstSeverity", () => {
       CRITICAL_PLUGIN_FINDING,
     ];
     expect(worstSeverity(all)).toBe("critical");
+  });
+
+  it("returns unknown when only unknown findings are present", () => {
+    expect(worstSeverity([UNKNOWN_PLUGIN_FINDING])).toBe("unknown");
+  });
+
+  it("ranks unknown above medium and low but below critical and high (matches the CP's ORDER BY CASE)", () => {
+    const low: VulnFinding = { ...LOW_DISMISSED_FINDING, status: "open" };
+    expect(worstSeverity([low, MEDIUM_CORE_FINDING, UNKNOWN_PLUGIN_FINDING])).toBe(
+      "unknown",
+    );
+    expect(worstSeverity([UNKNOWN_PLUGIN_FINDING, HIGH_THEME_FINDING])).toBe("high");
+    expect(worstSeverity([UNKNOWN_PLUGIN_FINDING, CRITICAL_PLUGIN_FINDING])).toBe(
+      "critical",
+    );
   });
 });
 
@@ -646,6 +767,38 @@ describe("feed_ok state — correct UI branch selection", () => {
     expect(r.total_open).toBe(0);
     const isNotConfigured = !r.feed_ok;
     expect(isNotConfigured).toBe(true);
+  });
+
+  it("enrichment_available=false is distinct from feed_ok=false: the degraded banner gate must not fire when the feed isn't configured at all", () => {
+    // The feed-not-configured branch always wins first: it renders before the
+    // degraded banner is ever considered, so a caller must check `!feed_ok`
+    // BEFORE `!enrichment_available`.
+    const notConfigured = SITE_VULNS_FEED_NOT_CONFIGURED;
+    const degraded = SITE_VULNS_ENRICHMENT_DEGRADED;
+
+    expect(notConfigured.feed_ok).toBe(false);
+    expect(degraded.feed_ok).toBe(true);
+    expect(degraded.enrichment_available).toBe(false);
+
+    // Simulate the UI's branch order.
+    function showsFeedNotConfigured(r: SiteVulnsResponse): boolean {
+      return !r.feed_ok;
+    }
+    function showsDegradedBanner(r: SiteVulnsResponse): boolean {
+      return r.feed_ok && !r.enrichment_available;
+    }
+    expect(showsFeedNotConfigured(notConfigured)).toBe(true);
+    expect(showsDegradedBanner(notConfigured)).toBe(false);
+    expect(showsFeedNotConfigured(degraded)).toBe(false);
+    expect(showsDegradedBanner(degraded)).toBe(true);
+  });
+
+  it("fleet enrichment_available=false degraded state uses the same branch order as the per-site response", () => {
+    const r = FLEET_VULNS_ENRICHMENT_DEGRADED;
+    expect(r.feed_ok).toBe(true);
+    expect(r.enrichment_available).toBe(false);
+    const showsDegradedBanner = r.feed_ok && !r.enrichment_available;
+    expect(showsDegradedBanner).toBe(true);
   });
 });
 

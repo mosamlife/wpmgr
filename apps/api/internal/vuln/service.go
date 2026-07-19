@@ -315,7 +315,7 @@ func (s *Service) Remediate(ctx context.Context, tenantID, siteID, findingID, us
 
 // GetFleetSummary returns the cross-site vulnerability counts + prioritized list.
 func (s *Service) GetFleetSummary(ctx context.Context, tenantID uuid.UUID, limit int) (FleetSummary, FeedMeta, error) {
-	critical, high, medium, low, err := s.repo.FleetOpenCounts(ctx, tenantID)
+	critical, high, medium, low, unknown, err := s.repo.FleetOpenCounts(ctx, tenantID)
 	if err != nil {
 		return FleetSummary{}, FeedMeta{}, domain.Internal("fleet_counts_failed", "failed to aggregate fleet vulnerability counts").WithCause(err)
 	}
@@ -326,11 +326,15 @@ func (s *Service) GetFleetSummary(ctx context.Context, tenantID uuid.UUID, limit
 	meta, _ := s.repo.GetFeedMeta(ctx)
 
 	fleet := FleetSummary{
-		TotalOpen: critical + high + medium + low,
+		// Unknown MUST be included in TotalOpen — an unknown-severity finding
+		// (no CVSS data yet) is still an open finding; dropping it from the
+		// total would make it vanish from the fleet count entirely (GH #245).
+		TotalOpen: critical + high + medium + low + unknown,
 		Critical:  critical,
 		High:      high,
 		Medium:    medium,
 		Low:       low,
+		Unknown:   unknown,
 	}
 	for _, row := range rows {
 		fleet.Findings = append(fleet.Findings, FleetFinding{

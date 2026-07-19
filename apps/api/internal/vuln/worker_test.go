@@ -418,6 +418,77 @@ func TestParseFeedRecord_CVSSObject(t *testing.T) {
 	}
 }
 
+// TestParseFeedRecord_CVSSRatingWithoutScore is the GH #245 follow-up
+// hardening guard: an object like {"rating":"Critical"} with no score field
+// must NOT be discarded. Before the fix, extractCVSS gated the whole object
+// branch on obj.Score != nil, so a rating-without-score record silently lost
+// its rating (and would have fallen back into SeverityFromRating's honest
+// "unknown" bucket even though a real rating string was present on the wire).
+func TestParseFeedRecord_CVSSRatingWithoutScore(t *testing.T) {
+	raw := json.RawMessage(`{
+		"title": "Rating without score",
+		"software": [{"type":"plugin","slug":"plug","affected_versions":{},"patched":false,"patched_versions":[]}],
+		"cvss": {"rating": "Critical"}
+	}`)
+	rec, _, _, _, err := vuln.ParseFeedRecord("rating-no-score", raw)
+	if err != nil {
+		t.Fatalf("parseFeedRecord error: %v", err)
+	}
+	if rec.CVSSScore != nil {
+		t.Errorf("CVSSScore = %v; want nil (absent from the object)", rec.CVSSScore)
+	}
+	if rec.CVSSRating != "Critical" {
+		t.Errorf("CVSSRating = %q; want %q (must survive a missing score)", rec.CVSSRating, "Critical")
+	}
+}
+
+// TestParseFeedRecord_CVSSStringifiedScore is the second GH #245 follow-up
+// hardening guard: a stringified score ("9.8" instead of 9.8) must not cause
+// the WHOLE cvss object unmarshal to fail — json.Unmarshal aborts a struct
+// decode on any field type mismatch, so a stringified score previously
+// discarded a co-present rating too.
+func TestParseFeedRecord_CVSSStringifiedScore(t *testing.T) {
+	raw := json.RawMessage(`{
+		"title": "Stringified score",
+		"software": [{"type":"plugin","slug":"plug","affected_versions":{},"patched":false,"patched_versions":[]}],
+		"cvss": {"score": "9.8", "rating": "Critical"}
+	}`)
+	rec, _, _, _, err := vuln.ParseFeedRecord("stringified-score", raw)
+	if err != nil {
+		t.Fatalf("parseFeedRecord error: %v", err)
+	}
+	if rec.CVSSScore == nil {
+		t.Fatal("CVSSScore is nil; want 9.8 (stringified score must be tolerated)")
+	}
+	if *rec.CVSSScore != 9.8 {
+		t.Errorf("CVSSScore = %v; want 9.8", *rec.CVSSScore)
+	}
+	if rec.CVSSRating != "Critical" {
+		t.Errorf("CVSSRating = %q; want %q (must survive a stringified score sibling field)", rec.CVSSRating, "Critical")
+	}
+}
+
+// TestParseFeedRecord_CVSSStringifiedScore_Unparseable verifies a garbage
+// stringified score degrades to a nil score (never an error / dropped record)
+// while still preserving a co-present rating.
+func TestParseFeedRecord_CVSSStringifiedScore_Unparseable(t *testing.T) {
+	raw := json.RawMessage(`{
+		"title": "Garbage stringified score",
+		"software": [{"type":"plugin","slug":"plug","affected_versions":{},"patched":false,"patched_versions":[]}],
+		"cvss": {"score": "not-a-number", "rating": "High"}
+	}`)
+	rec, _, _, _, err := vuln.ParseFeedRecord("garbage-score", raw)
+	if err != nil {
+		t.Fatalf("parseFeedRecord error: %v", err)
+	}
+	if rec.CVSSScore != nil {
+		t.Errorf("CVSSScore = %v; want nil (unparseable string)", rec.CVSSScore)
+	}
+	if rec.CVSSRating != "High" {
+		t.Errorf("CVSSRating = %q; want %q", rec.CVSSRating, "High")
+	}
+}
+
 func TestParseFeedRecord_CVSSNull(t *testing.T) {
 	raw := json.RawMessage(`{
 		"title": "No CVSS",

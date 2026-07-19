@@ -24,12 +24,17 @@ import (
 )
 
 // Severity levels mirror the Wordfence cvss_rating buckets and the scan
-// domain's severity vocabulary.
+// domain's severity vocabulary. SeverityUnknown is a distinct bucket (GH
+// #245): a finding whose feed record carries neither a cvss_rating nor a
+// cvss_score is NOT the same thing as a confirmed-low-severity finding, and
+// must never be silently indistinguishable from one — the honest signal is
+// "unknown", not "low".
 const (
 	SeverityCritical = "critical"
 	SeverityHigh     = "high"
 	SeverityMedium   = "medium"
 	SeverityLow      = "low"
+	SeverityUnknown  = "unknown"
 )
 
 // Status values for a site_vulnerabilities row.
@@ -47,14 +52,22 @@ const (
 )
 
 // FeedMeta holds the current state of the feed ingestion sentinel row.
+//
+// OK/FetchedAt/RecordCount track Scanner-driven DETECTION freshness (Scanner
+// is the authoritative superset ID catalog; RescanSite gates on OK).
+// EnrichmentOK/LastEnrichmentAt separately track Production-driven CVSS/CVE
+// ENRICHMENT health — kept independent so a transient Production hiccup
+// (rate-limited, zero records) never blocks detection rescans.
 type FeedMeta struct {
-	FetchedAt      *time.Time
-	OK             bool
-	RecordCount    int
-	DefiantNotice  string
-	DefiantLicense string
-	MitreNotice    string
-	LastError      string
+	FetchedAt        *time.Time
+	OK               bool
+	RecordCount      int
+	DefiantNotice    string
+	DefiantLicense   string
+	MitreNotice      string
+	LastError        string
+	EnrichmentOK     bool
+	LastEnrichmentAt *time.Time
 }
 
 // VulnSoftware is one row from the wordfence_vuln_software index — a
@@ -113,6 +126,7 @@ type FleetSummary struct {
 	High      int
 	Medium    int
 	Low       int
+	Unknown   int
 	Findings  []FleetFinding
 }
 
@@ -143,8 +157,12 @@ type ComponentSnapshot struct {
 }
 
 // SeverityFromRating maps a Wordfence cvss_rating string to our severity bucket.
-// Falls back to numeric score when rating is absent. Falls back to "low" on
-// unknown inputs so we never silently drop a finding.
+// Falls back to numeric score when rating is absent. When NEITHER a
+// recognised rating NOR a numeric score is available, returns SeverityUnknown
+// — NOT SeverityLow (GH #245: bucketing "no data" as "low" silently hid a
+// CVSS 9.8 core RCE behind a confirmed-low-severity label). "None" is a
+// legitimate Wordfence rating (CVSS 0.0, informational) and stays mapped to
+// low; only the true no-data case changes.
 func SeverityFromRating(rating string, score *float64) string {
 	switch rating {
 	case "Critical":
@@ -169,5 +187,5 @@ func SeverityFromRating(rating string, score *float64) string {
 			return SeverityLow
 		}
 	}
-	return SeverityLow
+	return SeverityUnknown
 }

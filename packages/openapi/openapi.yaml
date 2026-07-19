@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.71
+  version: 0.61.72
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -20125,7 +20125,7 @@ components:
           items: { type: string }
     SiteVulnerabilitiesResponse:
       type: object
-      required: [items, attribution, feed_ok]
+      required: [items, attribution, feed_ok, enrichment_available]
       properties:
         items:
           type: array
@@ -20133,15 +20133,22 @@ components:
         attribution: { $ref: "#/components/schemas/VulnAttribution" }
         feed_ok: { type: boolean }
         feed_synced: { type: string, format: date-time }
+        enrichment_available:
+          type: boolean
+          description: True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).
+        last_enrichment_at: { type: string, format: date-time }
     FleetVulnerabilitiesResponse:
       type: object
-      required: [total_open, critical, high, medium, low, items, attribution, feed_ok]
+      required: [total_open, critical, high, medium, low, unknown, items, attribution, feed_ok, enrichment_available]
       properties:
         total_open: { type: integer }
         critical: { type: integer }
         high: { type: integer }
         medium: { type: integer }
         low: { type: integer }
+        unknown:
+          type: integer
+          description: Findings with neither a CVSS rating nor a numeric score yet — genuinely unknown severity, not a confirmed low.
         items:
           type: array
           items:
@@ -20155,6 +20162,10 @@ components:
         attribution: { $ref: "#/components/schemas/VulnAttribution" }
         feed_ok: { type: boolean }
         feed_synced: { type: string, format: date-time }
+        enrichment_available:
+          type: boolean
+          description: True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).
+        last_enrichment_at: { type: string, format: date-time }
 
     # ---------------------------------------------------------------------------
     # ADR-045 instance SMTP settings
@@ -20628,7 +20639,7 @@ components:
               member_count: { type: integer, format: int64 }
     AdminVulnFeedStatus:
       type: object
-      required: [configured, source, feed_ok, record_count]
+      required: [configured, source, feed_ok, record_count, enrichment_available]
       properties:
         configured: { type: boolean }
         source: { type: string, enum: [ui, env, none] }
@@ -20636,6 +20647,10 @@ components:
         record_count: { type: integer }
         last_synced: { type: string, format: date-time }
         last_error: { type: string }
+        enrichment_available:
+          type: boolean
+          description: True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).
+        last_enrichment_at: { type: string, format: date-time }
 
     # ---------------------------------------------------------------------------
     # Agent protocol — activity / diagnostics / errors / security ingest

@@ -56,6 +56,13 @@
   --severity-high:      oklch(58% 0.20   25);
   --severity-medium:    oklch(70% 0.14   75);
   --severity-low:       oklch(58% 0.10  235);
+  /* Unknown (GH #245): a genuinely unrated finding, not a confirmed-low.
+     Near-zero chroma (true slate/gray) so it never reads as a tint of the
+     blue Low chip - solid + darker L than Low so it carries visual weight
+     ("needs triage"), matching Critical/High's dedicated-foreground pattern
+     rather than Medium/Low's pale-surface-plus-generic-text one. */
+  --severity-unknown:            oklch(40% 0.006 235);
+  --severity-unknown-foreground: oklch(99% 0.004 235);
 
   --chart-1: oklch(58% 0.12 195);
   --chart-2: oklch(60% 0.14 155);
@@ -113,6 +120,13 @@
   --severity-high:      oklch(68% 0.20   25);
   --severity-medium:    oklch(78% 0.16   75);
   --severity-low:       oklch(68% 0.12  235);
+  /* L raised 55% -> 60% (measured AA fix): the 55% bg against the 15% fg
+     text only reached ~4.059:1 for the chip's 12px font-medium label,
+     just under WCAG AA's 4.5:1 floor. 60% clears it at ~4.989:1 while
+     staying a desaturated slate (chroma unchanged), still clearly below
+     Low's L=68% chroma=0.12 so the two chips remain visually distinct. */
+  --severity-unknown:            oklch(60% 0.008 235);
+  --severity-unknown-foreground: oklch(15% 0.012 235);
 }
 
 @theme inline {
@@ -174,6 +188,8 @@
   --color-severity-high: var(--severity-high);
   --color-severity-medium: var(--severity-medium);
   --color-severity-low: var(--severity-low);
+  --color-severity-unknown: var(--severity-unknown);
+  --color-severity-unknown-foreground: var(--severity-unknown-foreground);
 
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);

@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.72] - 2026-07-19
+
+### Fixed
+
+- Vulnerability findings no longer all show as "Low" (GH #245). Severity comes from the Wordfence Intelligence feed's CVSS data, but a request-spacing bug rate-limited the enrichment feed on every sync, so every finding was stored without a CVSS score and fell back to the lowest severity, meaning a critical core vulnerability could appear with a "Low" badge. The feed requests are now spaced correctly (the two feeds alternate across syncs, one request per sync) so real severities land and existing findings re-derive their severity on the next scan. A finding that genuinely has no severity data is now shown as "Unknown", ranked for attention above Low and Medium, never silently bucketed as Low. And when the enrichment feed is unreachable, the Vulnerabilities page and the admin feed status now say so explicitly instead of understating risk without a trace. Control plane and dashboard.
+
 ## [0.61.71] - 2026-07-18
 
 ### Fixed

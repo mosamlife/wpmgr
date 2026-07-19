@@ -1247,14 +1247,17 @@ type WordfenceVulnFeed struct {
 }
 
 type WordfenceVulnFeedMetum struct {
-	ID             int32              `json:"id"`
-	FetchedAt      pgtype.Timestamptz `json:"fetched_at"`
-	Ok             bool               `json:"ok"`
-	RecordCount    int32              `json:"record_count"`
-	DefiantNotice  *string            `json:"defiant_notice"`
-	DefiantLicense *string            `json:"defiant_license"`
-	MitreNotice    *string            `json:"mitre_notice"`
-	LastError      *string            `json:"last_error"`
+	ID               int32              `json:"id"`
+	FetchedAt        pgtype.Timestamptz `json:"fetched_at"`
+	Ok               bool               `json:"ok"`
+	RecordCount      int32              `json:"record_count"`
+	DefiantNotice    *string            `json:"defiant_notice"`
+	DefiantLicense   *string            `json:"defiant_license"`
+	MitreNotice      *string            `json:"mitre_notice"`
+	LastError        *string            `json:"last_error"`
+	EnrichmentOk     bool               `json:"enrichment_ok"`
+	LastEnrichmentAt pgtype.Timestamptz `json:"last_enrichment_at"`
+	NextFeedKind     string             `json:"next_feed_kind"`
 }
 
 type WordfenceVulnSoftware struct {

@@ -6365,6 +6365,11 @@ export type SiteVulnerabilitiesResponse = {
   attribution: VulnAttribution;
   feed_ok: boolean;
   feed_synced?: string;
+  /**
+   * True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).
+   */
+  enrichment_available: boolean;
+  last_enrichment_at?: string;
 };
 
 export type FleetVulnerabilitiesResponse = {
@@ -6373,6 +6378,10 @@ export type FleetVulnerabilitiesResponse = {
   high: number;
   medium: number;
   low: number;
+  /**
+   * Findings with neither a CVSS rating nor a numeric score yet — genuinely unknown severity, not a confirmed low.
+   */
+  unknown: number;
   items: Array<{
     site_id: string;
     site_name: string;
@@ -6382,6 +6391,11 @@ export type FleetVulnerabilitiesResponse = {
   attribution: VulnAttribution;
   feed_ok: boolean;
   feed_synced?: string;
+  /**
+   * True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).
+   */
+  enrichment_available: boolean;
+  last_enrichment_at?: string;
 };
 
 export type SmtpSettings = {
@@ -6773,6 +6787,11 @@ export type AdminVulnFeedStatus = {
   record_count: number;
   last_synced?: string;
   last_error?: string;
+  /**
+   * True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).
+   */
+  enrichment_available: boolean;
+  last_enrichment_at?: string;
 };
 
 export type AgentActivityIngestRequest = {

@@ -29,8 +29,17 @@ import { toError } from "@/features/auth/use-auth";
 // Domain types — MUST match Go DTOs exactly (handler.go lines 89-147)
 // ---------------------------------------------------------------------------
 
-/** Severity values: must match Go `site_vulnerabilities.severity` column. */
-export type VulnSeverity = "critical" | "high" | "medium" | "low";
+/**
+ * Severity values: must match Go `site_vulnerabilities.severity` column.
+ *
+ * `unknown` (GH #245) is a genuinely-unrated finding: the scanner detected a
+ * vulnerable component but CVSS enrichment never landed a real score for it.
+ * It is NOT the same thing as a confirmed-low finding, and must never be
+ * bucketed together with `low` in the UI: the bug this shipped to fix was
+ * exactly that conflation (every unrated finding silently displayed as
+ * "Low", once hiding a CVSS 9.8 core RCE behind a muted label).
+ */
+export type VulnSeverity = "critical" | "high" | "medium" | "low" | "unknown";
 
 /** Status values: must match Go `site_vulnerabilities.status` column. */
 export type VulnStatus = "open" | "dismissed" | "remediated";
@@ -97,6 +106,16 @@ export interface SiteVulnsResponse {
   feed_ok: boolean;
   /** RFC 3339 string or absent when the feed has never been synced. */
   feed_synced?: string | null;
+  /**
+   * True when the Wordfence Intelligence feed's CVSS/CVE enrichment pass
+   * succeeded on the last sync, independent of `feed_ok` (which tracks
+   * scanner-driven detection freshness, not enrichment). False means some
+   * findings may show as `unknown` severity even though a real rating
+   * exists upstream and simply could not be fetched.
+   */
+  enrichment_available: boolean;
+  /** RFC 3339 timestamp of the last successful enrichment pass, or absent when enrichment has never completed. */
+  last_enrichment_at?: string;
 }
 
 /**
@@ -120,10 +139,21 @@ export interface FleetVulnsResponse {
   high: number;
   medium: number;
   low: number;
+  /** Findings with neither a CVSS rating nor a numeric score yet: genuinely unknown severity, not a confirmed low. */
+  unknown: number;
   items: FleetVulnFinding[];
   attribution: VulnAttribution;
   feed_ok: boolean;
   feed_synced?: string | null;
+  /**
+   * True when the Wordfence Intelligence feed's CVSS/CVE enrichment pass
+   * succeeded on the last sync, independent of `feed_ok`. False means some
+   * findings across the fleet may show as `unknown` severity even though a
+   * real rating exists upstream and simply could not be fetched.
+   */
+  enrichment_available: boolean;
+  /** RFC 3339 timestamp of the last successful enrichment pass, or absent when enrichment has never completed. */
+  last_enrichment_at?: string;
 }
 
 /** POST /rescan response — maps to `rescanResponseDTO`. */
@@ -334,9 +364,15 @@ export function useRemediateVuln(
 // Helpers — exported for tests and components
 // ---------------------------------------------------------------------------
 
-/** True when the severity warrants a dangerous/urgent colour (auto-expand card). */
+/**
+ * True when the severity warrants a dangerous/urgent colour (auto-expand
+ * card). `unknown` counts as high risk, NOT mild: a genuinely-unrated
+ * finding might be a CVSS 9.8 that enrichment simply hasn't scored yet
+ * (GH #245), so treating it as benign would repeat the exact bug this
+ * severity bucket exists to fix.
+ */
 export function isHighRisk(severity: VulnSeverity): boolean {
-  return severity === "critical" || severity === "high";
+  return severity === "critical" || severity === "high" || severity === "unknown";
 }
 
 /** Returns the count of open findings with critical or high severity. */
@@ -346,8 +382,13 @@ export function countHighRisk(findings: VulnFinding[]): number {
   ).length;
 }
 
-/** Severity ranked worst-first, for picking the single worst severity to display. */
-const SEVERITY_RANK: VulnSeverity[] = ["critical", "high", "medium", "low"];
+/**
+ * Severity ranked worst-first, for picking the single worst severity to
+ * display. `unknown` ranks between `high` and `medium`, matching the CP's
+ * own ORDER BY CASE in repo.go (findings + fleetFindings queries), because
+ * an unrated finding could turn out to be critical once enrichment lands.
+ */
+const SEVERITY_RANK: VulnSeverity[] = ["critical", "high", "unknown", "medium", "low"];
 
 /**
  * Returns the worst (highest-priority) severity among the given findings, or

@@ -7,7 +7,7 @@ import type { HardeningConfig } from "./use-hardening";
 import type { SiteLoginProtectionConfig } from "@wpmgr/api";
 import type { ScanRun } from "./use-scan";
 import type { SiteSecurityPolicy } from "./use-policy";
-import type { SiteVulnsResponse } from "./use-vuln";
+import { isHighRisk, type SiteVulnsResponse } from "./use-vuln";
 
 // SecurityOverview — four status tiles at the top of the Security tab.
 //
@@ -237,8 +237,12 @@ export function SecurityOverview({
       const openCount = (vulnData.items ?? []).filter(
         (f) => f.status === "open",
       ).length;
-      const criticalCount = (vulnData.items ?? []).filter(
-        (f) => f.status === "open" && (f.severity === "critical" || f.severity === "high"),
+      // GH #245: unknown-severity findings count as high risk too (NOT
+      // mild). An unrated finding could be a CVSS 9.8 that enrichment
+      // simply hasn't scored yet, so it must never fall into the calm
+      // "amber" branch below alongside genuinely-confirmed medium/low.
+      const highRiskCount = (vulnData.items ?? []).filter(
+        (f) => f.status === "open" && isHighRisk(f.severity),
       ).length;
       if (openCount === 0) {
         vulnMetric = "Clean";
@@ -247,10 +251,10 @@ export function SecurityOverview({
       } else {
         vulnMetric = `${openCount}`;
         vulnStateLabel =
-          criticalCount > 0
-            ? `${criticalCount} critical/high`
+          highRiskCount > 0
+            ? `${highRiskCount} critical/high`
             : `${openCount} open`;
-        vulnColor = criticalCount > 0 ? "red" : "amber";
+        vulnColor = highRiskCount > 0 ? "red" : "amber";
       }
     }
   }

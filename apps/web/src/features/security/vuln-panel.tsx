@@ -13,6 +13,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
 import { VulnSeverityChip } from "@/components/status/vuln-severity-chip";
+import { VulnEnrichmentBanner } from "./vuln-enrichment-banner";
 import { toast } from "@/components/toast";
 import { relativeTime } from "@/lib/utils";
 
@@ -43,6 +44,12 @@ import { useUpdateRun, useRunEventStream } from "@/features/updates/use-updates"
 // FEED-NOT-CONFIGURED STATE: when feed_ok is false, render an informational
 // state — never an empty "No vulnerabilities found" which would be misleading
 // when the feed hasn't been set up.
+//
+// DEGRADED-ENRICHMENT BANNER (GH #245): when feed_ok is true but
+// enrichment_available is false, the scanner is healthy but the last sync's
+// CVSS enrichment pass did not complete. Some findings may be showing as
+// Unknown severity when a real rating exists upstream. Distinct from the
+// feed-not-configured state; rendered via VulnEnrichmentBanner.
 //
 // GATE 0 ATTRIBUTION: Defiant copyright/license footer + MITRE notice on CVE
 // rows. These are legally required and must NOT be removed.
@@ -390,6 +397,11 @@ export function VulnPanel({ siteId, canWrite = false }: VulnPanelProps) {
           ) : null}
         </div>
       </div>
+
+      {/* GH #245 degraded-enrichment banner. Distinct from the FeedNotConfiguredState
+          early-return above: the feed IS configured and scanning (feed_ok=true),
+          but CVSS enrichment did not complete on the last sync. */}
+      {!data.enrichment_available ? <VulnEnrichmentBanner /> : null}
 
       {/* Zero-findings + feed OK state */}
       {allFindings.length === 0 ? (

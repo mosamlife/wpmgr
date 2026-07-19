@@ -34,7 +34,7 @@ func TestSeverityFromRating(t *testing.T) {
 		{"High", nil, "high"},
 		{"Medium", nil, "medium"},
 		{"Low", nil, "low"},
-		{"None", nil, "low"},
+		{"None", nil, "low"}, // Wordfence "None" = CVSS 0.0, informational; a legitimate confirmed-low, not "no data"
 		{"", score(9.8), "critical"},
 		{"", score(9.0), "critical"},
 		{"", score(8.9), "high"},
@@ -43,8 +43,11 @@ func TestSeverityFromRating(t *testing.T) {
 		{"", score(4.0), "medium"},
 		{"", score(3.9), "low"},
 		{"", score(0.0), "low"},
-		{"", nil, "low"}, // no rating, no score → low
-		{"Unknown", nil, "low"},
+		// GH #245: no rating AND no score is genuinely "no data" — must be
+		// "unknown", never silently bucketed as a confirmed "low" (that
+		// fallback previously hid a CVSS 9.8 core RCE behind a "low" label).
+		{"", nil, "unknown"},
+		{"Unknown", nil, "unknown"}, // unrecognised rating string + no score → also honest-unknown
 	}
 	for _, tc := range cases {
 		got := vuln.SeverityFromRating(tc.rating, tc.score)
