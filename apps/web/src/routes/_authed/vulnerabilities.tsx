@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
 import { VulnSeverityChip } from "@/components/status/vuln-severity-chip";
 import { VulnAttributionFooter } from "@/features/security/vuln-panel";
+import { VulnEnrichmentBanner } from "@/features/security/vuln-enrichment-banner";
 import {
   Table,
   TableBody,
@@ -33,11 +34,15 @@ import {
 //
 // Replaces the <PlannedFeature> stub (previously at this route) with a real
 // fleet rollup page:
-//   - 4-tile severity header (Critical / High / Medium / Low counts) +
+//   - 5-tile severity header (Critical / High / Unknown / Medium / Low counts) +
 //     total_open, click-to-filter by severity.
 //   - Prioritized table: site, component name, kind, installed -> fixed,
 //     severity badge, CVSS, CVE link + Wordfence reference link-back.
 //   - FEED-NOT-CONFIGURED STATE: feed_ok=false renders a clear info state.
+//   - DEGRADED-ENRICHMENT BANNER: feed_ok=true but enrichment_available=false
+//     (GH #245) renders an amber banner. The feed is scanning fine, but the
+//     last sync's CVSS enrichment pass did not complete, so findings may be
+//     showing as Unknown when a real rating exists upstream.
 //   - GATE 0 ATTRIBUTION: Defiant + MITRE notices rendered in footer/rows.
 //
 // Sidebar entry already exists (sidebar.tsx Security > Vulnerabilities).
@@ -74,6 +79,14 @@ const SEVERITY_COLORS: Record<
     icon: "text-[var(--color-muted-foreground)]",
     label: "text-[var(--color-muted-foreground)]",
   },
+  // Unknown (GH #245): a genuinely-unrated finding, not a confirmed low.
+  // Neutral slate, deliberately distinct from Low's plain card surface, so
+  // an unrated finding never reads as "checked and safe".
+  unknown: {
+    bg: "border-slate-300 bg-slate-100 dark:border-slate-700 dark:bg-slate-800",
+    icon: "text-slate-600 dark:text-slate-300",
+    label: "text-slate-700 dark:text-slate-200",
+  },
 };
 
 const SEVERITY_WORD: Record<VulnSeverity, string> = {
@@ -81,6 +94,7 @@ const SEVERITY_WORD: Record<VulnSeverity, string> = {
   high: "High",
   medium: "Medium",
   low: "Low",
+  unknown: "Unknown",
 };
 
 function SeverityTile({
@@ -320,8 +334,8 @@ function FleetVulnSkeleton() {
       className="space-y-6"
     >
       <span className="sr-only">Loading vulnerability data</span>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, i) => (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, i) => (
           <Skeleton key={i} className="h-20 w-full rounded-xl" />
         ))}
       </div>
@@ -411,10 +425,14 @@ function VulnerabilitiesPage() {
     setActiveSeverity((prev) => (prev === sev ? null : sev));
   }
 
-  const severityOrder: VulnSeverity[] = ["critical", "high", "medium", "low"];
+  // Order matches the CP's own ORDER BY CASE in repo.go: unknown ranks above
+  // Medium/Low (an unrated finding could turn out to be a CVSS 9.8) but
+  // below Critical/High.
+  const severityOrder: VulnSeverity[] = ["critical", "high", "unknown", "medium", "low"];
   const countBySeverity: Record<VulnSeverity, number> = {
     critical: data.critical,
     high: data.high,
+    unknown: data.unknown,
     medium: data.medium,
     low: data.low,
   };
@@ -430,9 +448,14 @@ function VulnerabilitiesPage() {
         }
       />
 
+      {/* GH #245 degraded-enrichment banner. Distinct from the FeedNotConfiguredState
+          early-return above: the feed IS configured and scanning (feed_ok=true),
+          but CVSS enrichment did not complete on the last sync. */}
+      {!data.enrichment_available ? <VulnEnrichmentBanner /> : null}
+
       {/* Severity summary header */}
       <div
-        className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+        className="grid grid-cols-2 gap-3 sm:grid-cols-5"
         role="group"
         aria-label="Filter vulnerabilities by severity"
       >

@@ -71,14 +71,16 @@ func (e *captureFeedEnqueuer) EnqueueFeedRefresh(_ context.Context) error {
 
 // fakeFeedMetaReader returns canned status values for the status endpoint.
 type fakeFeedMetaReader struct {
-	ok          bool
-	recordCount int
-	lastSynced  *time.Time
-	lastError   string
+	ok               bool
+	recordCount      int
+	lastSynced       *time.Time
+	lastError        string
+	enrichmentOK     bool
+	lastEnrichmentAt *time.Time
 }
 
-func (f *fakeFeedMetaReader) GetFeedMetaStatus(_ context.Context) (bool, int, *time.Time, string, error) {
-	return f.ok, f.recordCount, f.lastSynced, f.lastError, nil
+func (f *fakeFeedMetaReader) GetFeedMetaStatus(_ context.Context) (bool, int, *time.Time, string, bool, *time.Time, error) {
+	return f.ok, f.recordCount, f.lastSynced, f.lastError, f.enrichmentOK, f.lastEnrichmentAt, nil
 }
 
 // newTestAgeIdentity returns a fresh ephemeral age identity for testing.
@@ -309,6 +311,67 @@ func TestVulnFeedStatus_NeverReturnsKey(t *testing.T) {
 		}
 	}
 }
+
+// TestVulnFeedStatus_ReflectsEnrichmentAvailable (WP3): the status endpoint's
+// enrichment_available/last_enrichment_at fields must reflect the
+// Production-enrichment state returned by GetFeedMetaStatus, independently of
+// feed_ok (which tracks Scanner-driven detection freshness).
+func TestVulnFeedStatus_ReflectsEnrichmentAvailable(t *testing.T) {
+	age := newTestAgeIdentity(t)
+	repo := newFakeInstSettingsRepo()
+	keySvc := NewVulnFeedKeyService(repo, age, "env-key-12345678", nil, nil)
+
+	cases := []struct {
+		name             string
+		ok               bool
+		enrichmentOK     bool
+		lastEnrichmentAt *time.Time
+	}{
+		{name: "detection_ok_enrichment_never_landed", ok: true, enrichmentOK: false, lastEnrichmentAt: nil},
+		{name: "detection_ok_enrichment_ok", ok: true, enrichmentOK: true, lastEnrichmentAt: timePtr(time.Now())},
+		{name: "detection_degraded_enrichment_still_sticky_ok", ok: false, enrichmentOK: true, lastEnrichmentAt: timePtr(time.Now())},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := &fakeFeedMetaReader{
+				ok:               tc.ok,
+				recordCount:      10,
+				enrichmentOK:     tc.enrichmentOK,
+				lastEnrichmentAt: tc.lastEnrichmentAt,
+			}
+			h := NewHandler(&Service{}, nil)
+			h.SetVulnFeed(meta, keySvc)
+			engine := buildTestEngine(h)
+
+			req := httptest.NewRequest(http.MethodGet, "/admin/vuln-feed/status", nil)
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status %d; want 200 (body: %s)", w.Code, w.Body.String())
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if resp["feed_ok"] != tc.ok {
+				t.Errorf("feed_ok = %v; want %v", resp["feed_ok"], tc.ok)
+			}
+			if resp["enrichment_available"] != tc.enrichmentOK {
+				t.Errorf("enrichment_available = %v; want %v", resp["enrichment_available"], tc.enrichmentOK)
+			}
+			_, hasLastEnrichAt := resp["last_enrichment_at"]
+			if tc.lastEnrichmentAt == nil && hasLastEnrichAt {
+				t.Errorf("last_enrichment_at present = %v; want absent (omitempty, nil)", resp["last_enrichment_at"])
+			}
+			if tc.lastEnrichmentAt != nil && !hasLastEnrichAt {
+				t.Error("last_enrichment_at missing; want present")
+			}
+		})
+	}
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
 
 // Test handler: PUT /admin/vuln-feed/key triggers an immediate sync.
 func TestVulnFeedSetKey_TriggersSyncViaHandler(t *testing.T) {

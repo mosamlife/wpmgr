@@ -3087,6 +3087,10 @@ type AdminVulnFeedStatus struct {
 	RecordCount int                       `json:"record_count"`
 	LastSynced  OptDateTime               `json:"last_synced"`
 	LastError   OptString                 `json:"last_error"`
+	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent
+	// of feed_ok (which tracks Scanner-driven detection freshness).
+	EnrichmentAvailable bool        `json:"enrichment_available"`
+	LastEnrichmentAt    OptDateTime `json:"last_enrichment_at"`
 }
 
 // GetConfigured returns the value of Configured.
@@ -3119,6 +3123,16 @@ func (s *AdminVulnFeedStatus) GetLastError() OptString {
 	return s.LastError
 }
 
+// GetEnrichmentAvailable returns the value of EnrichmentAvailable.
+func (s *AdminVulnFeedStatus) GetEnrichmentAvailable() bool {
+	return s.EnrichmentAvailable
+}
+
+// GetLastEnrichmentAt returns the value of LastEnrichmentAt.
+func (s *AdminVulnFeedStatus) GetLastEnrichmentAt() OptDateTime {
+	return s.LastEnrichmentAt
+}
+
 // SetConfigured sets the value of Configured.
 func (s *AdminVulnFeedStatus) SetConfigured(val bool) {
 	s.Configured = val
@@ -3147,6 +3161,16 @@ func (s *AdminVulnFeedStatus) SetLastSynced(val OptDateTime) {
 // SetLastError sets the value of LastError.
 func (s *AdminVulnFeedStatus) SetLastError(val OptString) {
 	s.LastError = val
+}
+
+// SetEnrichmentAvailable sets the value of EnrichmentAvailable.
+func (s *AdminVulnFeedStatus) SetEnrichmentAvailable(val bool) {
+	s.EnrichmentAvailable = val
+}
+
+// SetLastEnrichmentAt sets the value of LastEnrichmentAt.
+func (s *AdminVulnFeedStatus) SetLastEnrichmentAt(val OptDateTime) {
+	s.LastEnrichmentAt = val
 }
 
 func (*AdminVulnFeedStatus) getAdminVulnFeedStatusRes() {}
@@ -18633,15 +18657,22 @@ func (s *FleetUptimeStatusItemStatus) UnmarshalText(data []byte) error {
 
 // Ref: #/components/schemas/FleetVulnerabilitiesResponse
 type FleetVulnerabilitiesResponse struct {
-	TotalOpen   int                                     `json:"total_open"`
-	Critical    int                                     `json:"critical"`
-	High        int                                     `json:"high"`
-	Medium      int                                     `json:"medium"`
-	Low         int                                     `json:"low"`
+	TotalOpen int `json:"total_open"`
+	Critical  int `json:"critical"`
+	High      int `json:"high"`
+	Medium    int `json:"medium"`
+	Low       int `json:"low"`
+	// Findings with neither a CVSS rating nor a numeric score yet — genuinely unknown severity, not a
+	// confirmed low.
+	Unknown     int                                     `json:"unknown"`
 	Items       []FleetVulnerabilitiesResponseItemsItem `json:"items"`
 	Attribution VulnAttribution                         `json:"attribution"`
 	FeedOk      bool                                    `json:"feed_ok"`
 	FeedSynced  OptDateTime                             `json:"feed_synced"`
+	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent
+	// of feed_ok (which tracks Scanner-driven detection freshness).
+	EnrichmentAvailable bool        `json:"enrichment_available"`
+	LastEnrichmentAt    OptDateTime `json:"last_enrichment_at"`
 }
 
 // GetTotalOpen returns the value of TotalOpen.
@@ -18669,6 +18700,11 @@ func (s *FleetVulnerabilitiesResponse) GetLow() int {
 	return s.Low
 }
 
+// GetUnknown returns the value of Unknown.
+func (s *FleetVulnerabilitiesResponse) GetUnknown() int {
+	return s.Unknown
+}
+
 // GetItems returns the value of Items.
 func (s *FleetVulnerabilitiesResponse) GetItems() []FleetVulnerabilitiesResponseItemsItem {
 	return s.Items
@@ -18687,6 +18723,16 @@ func (s *FleetVulnerabilitiesResponse) GetFeedOk() bool {
 // GetFeedSynced returns the value of FeedSynced.
 func (s *FleetVulnerabilitiesResponse) GetFeedSynced() OptDateTime {
 	return s.FeedSynced
+}
+
+// GetEnrichmentAvailable returns the value of EnrichmentAvailable.
+func (s *FleetVulnerabilitiesResponse) GetEnrichmentAvailable() bool {
+	return s.EnrichmentAvailable
+}
+
+// GetLastEnrichmentAt returns the value of LastEnrichmentAt.
+func (s *FleetVulnerabilitiesResponse) GetLastEnrichmentAt() OptDateTime {
+	return s.LastEnrichmentAt
 }
 
 // SetTotalOpen sets the value of TotalOpen.
@@ -18714,6 +18760,11 @@ func (s *FleetVulnerabilitiesResponse) SetLow(val int) {
 	s.Low = val
 }
 
+// SetUnknown sets the value of Unknown.
+func (s *FleetVulnerabilitiesResponse) SetUnknown(val int) {
+	s.Unknown = val
+}
+
 // SetItems sets the value of Items.
 func (s *FleetVulnerabilitiesResponse) SetItems(val []FleetVulnerabilitiesResponseItemsItem) {
 	s.Items = val
@@ -18732,6 +18783,16 @@ func (s *FleetVulnerabilitiesResponse) SetFeedOk(val bool) {
 // SetFeedSynced sets the value of FeedSynced.
 func (s *FleetVulnerabilitiesResponse) SetFeedSynced(val OptDateTime) {
 	s.FeedSynced = val
+}
+
+// SetEnrichmentAvailable sets the value of EnrichmentAvailable.
+func (s *FleetVulnerabilitiesResponse) SetEnrichmentAvailable(val bool) {
+	s.EnrichmentAvailable = val
+}
+
+// SetLastEnrichmentAt sets the value of LastEnrichmentAt.
+func (s *FleetVulnerabilitiesResponse) SetLastEnrichmentAt(val OptDateTime) {
+	s.LastEnrichmentAt = val
 }
 
 func (*FleetVulnerabilitiesResponse) getFleetVulnerabilitiesRes() {}
@@ -44668,6 +44729,10 @@ type SiteVulnerabilitiesResponse struct {
 	Attribution VulnAttribution `json:"attribution"`
 	FeedOk      bool            `json:"feed_ok"`
 	FeedSynced  OptDateTime     `json:"feed_synced"`
+	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent
+	// of feed_ok (which tracks Scanner-driven detection freshness).
+	EnrichmentAvailable bool        `json:"enrichment_available"`
+	LastEnrichmentAt    OptDateTime `json:"last_enrichment_at"`
 }
 
 // GetItems returns the value of Items.
@@ -44690,6 +44755,16 @@ func (s *SiteVulnerabilitiesResponse) GetFeedSynced() OptDateTime {
 	return s.FeedSynced
 }
 
+// GetEnrichmentAvailable returns the value of EnrichmentAvailable.
+func (s *SiteVulnerabilitiesResponse) GetEnrichmentAvailable() bool {
+	return s.EnrichmentAvailable
+}
+
+// GetLastEnrichmentAt returns the value of LastEnrichmentAt.
+func (s *SiteVulnerabilitiesResponse) GetLastEnrichmentAt() OptDateTime {
+	return s.LastEnrichmentAt
+}
+
 // SetItems sets the value of Items.
 func (s *SiteVulnerabilitiesResponse) SetItems(val []VulnFinding) {
 	s.Items = val
@@ -44708,6 +44783,16 @@ func (s *SiteVulnerabilitiesResponse) SetFeedOk(val bool) {
 // SetFeedSynced sets the value of FeedSynced.
 func (s *SiteVulnerabilitiesResponse) SetFeedSynced(val OptDateTime) {
 	s.FeedSynced = val
+}
+
+// SetEnrichmentAvailable sets the value of EnrichmentAvailable.
+func (s *SiteVulnerabilitiesResponse) SetEnrichmentAvailable(val bool) {
+	s.EnrichmentAvailable = val
+}
+
+// SetLastEnrichmentAt sets the value of LastEnrichmentAt.
+func (s *SiteVulnerabilitiesResponse) SetLastEnrichmentAt(val OptDateTime) {
+	s.LastEnrichmentAt = val
 }
 
 func (*SiteVulnerabilitiesResponse) listSiteVulnerabilitiesRes() {}

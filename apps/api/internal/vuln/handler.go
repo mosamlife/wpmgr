@@ -77,13 +77,17 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 //	    "mitre_notice":    "..."
 //	  },
 //	  "feed_ok":     true,
-//	  "feed_synced": "2026-06-20T12:00:00Z"
+//	  "feed_synced": "2026-06-20T12:00:00Z",
+//	  "enrichment_available": true,
+//	  "last_enrichment_at":   "2026-06-20T12:00:00Z"
 //	}
 type siteVulnsResponseDTO struct {
-	Items       []findingDTO   `json:"items"`
-	Attribution attributionDTO `json:"attribution"`
-	FeedOK      bool           `json:"feed_ok"`
-	FeedSynced  *string        `json:"feed_synced,omitempty"`
+	Items               []findingDTO   `json:"items"`
+	Attribution         attributionDTO `json:"attribution"`
+	FeedOK              bool           `json:"feed_ok"`
+	FeedSynced          *string        `json:"feed_synced,omitempty"`
+	EnrichmentAvailable bool           `json:"enrichment_available"`
+	LastEnrichmentAt    *string        `json:"last_enrichment_at,omitempty"`
 }
 
 // attributionDTO carries the Wordfence Intelligence attribution notices.
@@ -123,21 +127,27 @@ type findingDTO struct {
 //	  "high":       8,
 //	  "medium":     20,
 //	  "low":        11,
+//	  "unknown":    0,
 //	  "items":      [ <fleetFindingDTO>, ... ],
 //	  "attribution": { ... },
 //	  "feed_ok":     true,
-//	  "feed_synced": "2026-06-20T12:00:00Z"
+//	  "feed_synced": "2026-06-20T12:00:00Z",
+//	  "enrichment_available": true,
+//	  "last_enrichment_at":   "2026-06-20T12:00:00Z"
 //	}
 type fleetVulnsResponseDTO struct {
-	TotalOpen   int              `json:"total_open"`
-	Critical    int              `json:"critical"`
-	High        int              `json:"high"`
-	Medium      int              `json:"medium"`
-	Low         int              `json:"low"`
-	Items       []fleetFindingDTO `json:"items"`
-	Attribution attributionDTO   `json:"attribution"`
-	FeedOK      bool             `json:"feed_ok"`
-	FeedSynced  *string          `json:"feed_synced,omitempty"`
+	TotalOpen           int               `json:"total_open"`
+	Critical            int               `json:"critical"`
+	High                int               `json:"high"`
+	Medium              int               `json:"medium"`
+	Low                 int               `json:"low"`
+	Unknown             int               `json:"unknown"`
+	Items               []fleetFindingDTO `json:"items"`
+	Attribution         attributionDTO    `json:"attribution"`
+	FeedOK              bool              `json:"feed_ok"`
+	FeedSynced          *string           `json:"feed_synced,omitempty"`
+	EnrichmentAvailable bool              `json:"enrichment_available"`
+	LastEnrichmentAt    *string           `json:"last_enrichment_at,omitempty"`
 }
 
 type fleetFindingDTO struct {
@@ -204,6 +214,16 @@ func feedSyncedStr(meta FeedMeta) *string {
 	return &s
 }
 
+// lastEnrichmentStr formats meta.LastEnrichmentAt for the wire, or nil when
+// Production has never successfully enriched the feed yet.
+func lastEnrichmentStr(meta FeedMeta) *string {
+	if meta.LastEnrichmentAt == nil {
+		return nil
+	}
+	s := meta.LastEnrichmentAt.UTC().Format(time.RFC3339)
+	return &s
+}
+
 // refsFromJSON parses the raw JSONB references column into a string slice of
 // URLs for the DTO.  Non-fatal: returns nil on parse error.
 func refsFromJSON(raw []byte) []string {
@@ -252,10 +272,12 @@ func (h *Handler) listFindings(c *gin.Context) {
 		items = append(items, toFindingDTO(f))
 	}
 	c.JSON(http.StatusOK, siteVulnsResponseDTO{
-		Items:       items,
-		Attribution: toAttributionDTO(meta),
-		FeedOK:      meta.OK,
-		FeedSynced:  feedSyncedStr(meta),
+		Items:               items,
+		Attribution:         toAttributionDTO(meta),
+		FeedOK:              meta.OK,
+		FeedSynced:          feedSyncedStr(meta),
+		EnrichmentAvailable: meta.EnrichmentOK,
+		LastEnrichmentAt:    lastEnrichmentStr(meta),
 	})
 }
 
@@ -381,15 +403,18 @@ func (h *Handler) fleetSummary(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, fleetVulnsResponseDTO{
-		TotalOpen:   summary.TotalOpen,
-		Critical:    summary.Critical,
-		High:        summary.High,
-		Medium:      summary.Medium,
-		Low:         summary.Low,
-		Items:       items,
-		Attribution: toAttributionDTO(meta),
-		FeedOK:      meta.OK,
-		FeedSynced:  feedSyncedStr(meta),
+		TotalOpen:           summary.TotalOpen,
+		Critical:            summary.Critical,
+		High:                summary.High,
+		Medium:              summary.Medium,
+		Low:                 summary.Low,
+		Unknown:             summary.Unknown,
+		Items:               items,
+		Attribution:         toAttributionDTO(meta),
+		FeedOK:              meta.OK,
+		FeedSynced:          feedSyncedStr(meta),
+		EnrichmentAvailable: meta.EnrichmentOK,
+		LastEnrichmentAt:    lastEnrichmentStr(meta),
 	})
 }
 

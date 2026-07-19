@@ -39,6 +39,17 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.72",
+    date: "2026-07-19",
+    summary: "Vulnerability severities are now accurate, with an honest state when severity data is unavailable.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Vulnerability findings no longer all show as \"Low\" (GH #245). A request-spacing bug rate-limited the severity-enrichment feed on every sync, so every finding was stored without a CVSS score and fell back to the lowest severity, meaning a critical core vulnerability could appear with a \"Low\" badge. Severities now populate correctly. A finding with genuinely no severity data is shown as \"Unknown\", ranked for attention rather than hidden as Low, and when the enrichment feed is unreachable the Vulnerabilities page and admin feed status say so explicitly.",
+      },
+    ],
+  },
+  {
     version: "0.61.70 - 0.61.71",
     date: "2026-07-18",
     summary: "Honest cache reporting, working configuration dots, and a complete API reference.",

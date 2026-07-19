@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   ExternalLink,
   Info,
@@ -31,8 +32,7 @@ import {
   useVulnFeedSync,
   type VulnFeedStatus,
 } from "@/features/admin/use-admin-vuln-feed";
-import { relativeTime } from "@/lib/utils";
-import { cn } from "@/lib/utils";
+import { relativeTime, cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Route — auth gate is enforced by the parent /admin layout route (route.tsx);
@@ -109,7 +109,12 @@ function VulnFeedAdminPage() {
 // FeedStatusCard
 // ---------------------------------------------------------------------------
 
-function FeedStatusCard({ status }: { status: VulnFeedStatus }) {
+// Exported (alongside `Route`) so tests can render this card directly rather
+// than through `Route.options.component`. Mirrors `SETTINGS_NAV_ITEMS` in
+// routes/_authed/settings/route.tsx, a plain named export living beside the
+// route registration without affecting the router vite plugin's
+// autoCodeSplitting of the `component:` reference.
+export function FeedStatusCard({ status }: { status: VulnFeedStatus }) {
   const sync = useVulnFeedSync();
 
   // Derive the connection state for display.
@@ -161,6 +166,21 @@ function FeedStatusCard({ status }: { status: VulnFeedStatus }) {
             ) : state === "error" && status.last_error ? (
               <p className="mt-0.5 text-xs text-destructive">
                 {status.last_error}
+              </p>
+            ) : null}
+            {/* GH #245 degraded-enrichment sub-line: the header stays green
+                "Connected" (the scanner IS healthy) but the last sync did not
+                complete CVSS enrichment, so severities may be understated. */}
+            {state === "connected" && !status.enrichment_available ? (
+              <p className="mt-1 flex items-start gap-1 text-xs text-warning-subtle-fg">
+                <AlertTriangle aria-hidden="true" className="mt-px size-3 shrink-0" />
+                <span>
+                  Last sync was scanner-only. CVSS enrichment was unavailable,
+                  so severities may be understated.
+                  {status.last_enrichment_at
+                    ? ` Last enrichment ${relativeTime(status.last_enrichment_at) ?? "recently"}.`
+                    : null}
+                </span>
               </p>
             ) : null}
           </div>

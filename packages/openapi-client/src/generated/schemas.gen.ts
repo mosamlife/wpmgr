@@ -11722,7 +11722,7 @@ export const VulnFindingSchema = {
 
 export const SiteVulnerabilitiesResponseSchema = {
   type: "object",
-  required: ["items", "attribution", "feed_ok"],
+  required: ["items", "attribution", "feed_ok", "enrichment_available"],
   properties: {
     items: {
       type: "array",
@@ -11740,6 +11740,15 @@ export const SiteVulnerabilitiesResponseSchema = {
       type: "string",
       format: "date-time",
     },
+    enrichment_available: {
+      type: "boolean",
+      description:
+        "True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).",
+    },
+    last_enrichment_at: {
+      type: "string",
+      format: "date-time",
+    },
   },
 } as const;
 
@@ -11751,9 +11760,11 @@ export const FleetVulnerabilitiesResponseSchema = {
     "high",
     "medium",
     "low",
+    "unknown",
     "items",
     "attribution",
     "feed_ok",
+    "enrichment_available",
   ],
   properties: {
     total_open: {
@@ -11770,6 +11781,11 @@ export const FleetVulnerabilitiesResponseSchema = {
     },
     low: {
       type: "integer",
+    },
+    unknown: {
+      type: "integer",
+      description:
+        "Findings with neither a CVSS rating nor a numeric score yet — genuinely unknown severity, not a confirmed low.",
     },
     items: {
       type: "array",
@@ -11800,6 +11816,15 @@ export const FleetVulnerabilitiesResponseSchema = {
       type: "boolean",
     },
     feed_synced: {
+      type: "string",
+      format: "date-time",
+    },
+    enrichment_available: {
+      type: "boolean",
+      description:
+        "True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).",
+    },
+    last_enrichment_at: {
       type: "string",
       format: "date-time",
     },
@@ -12924,7 +12949,13 @@ export const AdminAccountsTenancySchema = {
 
 export const AdminVulnFeedStatusSchema = {
   type: "object",
-  required: ["configured", "source", "feed_ok", "record_count"],
+  required: [
+    "configured",
+    "source",
+    "feed_ok",
+    "record_count",
+    "enrichment_available",
+  ],
   properties: {
     configured: {
       type: "boolean",
@@ -12945,6 +12976,15 @@ export const AdminVulnFeedStatusSchema = {
     },
     last_error: {
       type: "string",
+    },
+    enrichment_available: {
+      type: "boolean",
+      description:
+        "True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).",
+    },
+    last_enrichment_at: {
+      type: "string",
+      format: "date-time",
     },
   },
 } as const;

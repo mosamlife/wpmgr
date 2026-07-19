@@ -35,6 +35,19 @@ func NewRepo(pool *db.Pool) *Repo {
 // UpsertFeedRecord inserts or replaces one vulnerability record and its
 // associated software rows inside the provided transaction.  Called once per
 // record during the feed import batch.
+//
+// cve/cve_link/cvss_score/cvss_rating/cwe/reference_urls are written STICKY
+// against the existing row: under the Scanner/Production alternation (GH
+// #245), a Scanner run's records typically carry none of these fields at all
+// (nilString turns "" into NULL, CVSSScore is already a nil-able *float64,
+// and parseFeedRecord defaults an absent references[] to a non-NULL '[]'
+// jsonb — never NULL), and a blind overwrite would erase enrichment a prior
+// Production run had already populated — flapping severity AND reference
+// link-outs between real values and empty every other hour. A Production
+// run's non-empty values always win: cve/cve_link/cvss_score/cvss_rating/cwe
+// via COALESCE (NULL loses to any non-NULL), reference_urls via
+// COALESCE(NULLIF(...,'[]'::jsonb), ...) since its "no data" sentinel is the
+// literal empty array, not SQL NULL.
 func (r *Repo) UpsertFeedRecord(ctx context.Context, tx pgx.Tx, rec FeedRecord) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO wordfence_vuln_feed
@@ -43,13 +56,13 @@ func (r *Repo) UpsertFeedRecord(ctx context.Context, tx pgx.Tx, rec FeedRecord) 
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (vuln_id) DO UPDATE SET
 			title          = EXCLUDED.title,
-			cve            = EXCLUDED.cve,
-			cve_link       = EXCLUDED.cve_link,
-			cvss_score     = EXCLUDED.cvss_score,
-			cvss_rating    = EXCLUDED.cvss_rating,
-			cwe            = EXCLUDED.cwe,
+			cve            = COALESCE(EXCLUDED.cve, wordfence_vuln_feed.cve),
+			cve_link       = COALESCE(EXCLUDED.cve_link, wordfence_vuln_feed.cve_link),
+			cvss_score     = COALESCE(EXCLUDED.cvss_score, wordfence_vuln_feed.cvss_score),
+			cvss_rating    = COALESCE(EXCLUDED.cvss_rating, wordfence_vuln_feed.cvss_rating),
+			cwe            = COALESCE(EXCLUDED.cwe, wordfence_vuln_feed.cwe),
 			informational  = EXCLUDED.informational,
-			reference_urls = EXCLUDED.reference_urls,
+			reference_urls = COALESCE(NULLIF(EXCLUDED.reference_urls, '[]'::jsonb), wordfence_vuln_feed.reference_urls),
 			published      = EXCLUDED.published,
 			updated        = EXCLUDED.updated,
 			raw            = EXCLUDED.raw`,
@@ -96,6 +109,13 @@ func (r *Repo) UpsertFeedRecord(ctx context.Context, tx pgx.Tx, rec FeedRecord) 
 // BulkUpsertFeedRecords upserts all feed records in a single pgx Batch, sending
 // every INSERT ... ON CONFLICT DO UPDATE in one round-trip instead of one per record.
 // This replaces the O(N) per-record path that timed out on 13k-record full-dump ingest.
+//
+// Sticky enrichment: see the identical rationale on UpsertFeedRecord — the
+// cve/cve_link/cvss_score/cvss_rating/cwe/reference_urls columns are all
+// preserved (COALESCE, or COALESCE+NULLIF for reference_urls whose "no data"
+// sentinel is the literal '[]' jsonb rather than NULL) so a Scanner run's
+// records (which normally carry none of these) can never blank out a prior
+// Production run's enrichment — including its reference link-outs.
 func (r *Repo) BulkUpsertFeedRecords(ctx context.Context, tx pgx.Tx, recs []FeedRecord) error {
 	if len(recs) == 0 {
 		return nil
@@ -108,13 +128,13 @@ func (r *Repo) BulkUpsertFeedRecords(ctx context.Context, tx pgx.Tx, recs []Feed
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (vuln_id) DO UPDATE SET
 			title          = EXCLUDED.title,
-			cve            = EXCLUDED.cve,
-			cve_link       = EXCLUDED.cve_link,
-			cvss_score     = EXCLUDED.cvss_score,
-			cvss_rating    = EXCLUDED.cvss_rating,
-			cwe            = EXCLUDED.cwe,
+			cve            = COALESCE(EXCLUDED.cve, wordfence_vuln_feed.cve),
+			cve_link       = COALESCE(EXCLUDED.cve_link, wordfence_vuln_feed.cve_link),
+			cvss_score     = COALESCE(EXCLUDED.cvss_score, wordfence_vuln_feed.cvss_score),
+			cvss_rating    = COALESCE(EXCLUDED.cvss_rating, wordfence_vuln_feed.cvss_rating),
+			cwe            = COALESCE(EXCLUDED.cwe, wordfence_vuln_feed.cwe),
 			informational  = EXCLUDED.informational,
-			reference_urls = EXCLUDED.reference_urls,
+			reference_urls = COALESCE(NULLIF(EXCLUDED.reference_urls, '[]'::jsonb), wordfence_vuln_feed.reference_urls),
 			published      = EXCLUDED.published,
 			updated        = EXCLUDED.updated,
 			raw            = EXCLUDED.raw`
@@ -159,8 +179,8 @@ func (r *Repo) BulkUpsertFeedRecords(ctx context.Context, tx pgx.Tx, recs []Feed
 //   - A single feed record's software[] array listing the same (kind, slug) more
 //     than once (e.g. a plugin entry that appears with two different affected-version
 //     ranges).
-//   - Future expansion of mergeEnrichment to merge production software rows into
-//     scanner rows.
+//   - A future feed revision that lists the same (kind, slug) with a split
+//     affected-version range across two entries.
 //
 // Both are eliminated by dedupSoftwareRows, which merges rows sharing the same
 // normalised (vuln_id, kind, slug) key. A final map-based guard prevents any
@@ -385,27 +405,47 @@ func (r *Repo) PruneMissingVulns(ctx context.Context, tx pgx.Tx, knownIDs []stri
 	return nil
 }
 
-// StampFeedMeta writes the freshness + attribution sentinel row.
+// StampFeedMeta writes the freshness + attribution sentinel row after a
+// successful ingest of either feed.
+//
+// defiant_notice/defiant_license/mitre_notice are written via COALESCE so a
+// run whose records happened not to carry a copyrights block (odd shape,
+// truncated response, etc.) never blanks out previously-captured attribution
+// text — that text is a standing legal display obligation, not a per-run
+// value.
+//
+// enrichment_ok/last_enrichment_at are ALSO COALESCE-preserved: meta.EnrichmentOK
+// and meta.LastEnrichmentAt are nil-able pointers, and nil means "this run did
+// not touch enrichment" (the Scanner-run case) — leaving the last Production
+// run's enrichment status sticky rather than flapping it false every other
+// hour purely because Scanner doesn't carry CVSS.
 func (r *Repo) StampFeedMeta(ctx context.Context, tx pgx.Tx, meta FeedMetaUpdate) error {
 	_, err := tx.Exec(ctx, `
 		UPDATE wordfence_vuln_feed_meta SET
-			fetched_at      = $1,
-			ok              = $2,
-			record_count    = $3,
-			defiant_notice  = $4,
-			defiant_license = $5,
-			mitre_notice    = $6,
-			last_error      = $7
+			fetched_at         = $1,
+			ok                 = $2,
+			record_count       = $3,
+			defiant_notice     = COALESCE($4, defiant_notice),
+			defiant_license    = COALESCE($5, defiant_license),
+			mitre_notice       = COALESCE($6, mitre_notice),
+			last_error         = $7,
+			enrichment_ok      = COALESCE($8, enrichment_ok),
+			last_enrichment_at = COALESCE($9, last_enrichment_at)
 		WHERE id = 1`,
 		meta.FetchedAt, meta.OK, meta.RecordCount,
 		nilString(meta.DefiantNotice), nilString(meta.DefiantLicense),
 		nilString(meta.MitreNotice), nilString(meta.LastError),
+		meta.EnrichmentOK, meta.LastEnrichmentAt,
 	)
 	return err
 }
 
-// StampFeedError records an error without resetting the ok/fetched_at fields
-// from the last successful run.
+// StampFeedError records a DETECTION-feed error: it sets ok = false (the flag
+// RescanSite gates on) and last_error. It must only be called for a Scanner
+// fetch failure or a hard/non-rate-limit failure that affects the feed as a
+// whole — never for a routine Production-only hiccup (use
+// StampEnrichmentDegraded for that), or detection rescans would wrongly skip
+// every other hour once Scanner/Production alternation is in play.
 func (r *Repo) StampFeedError(ctx context.Context, lastError string) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE wordfence_vuln_feed_meta SET ok = false, last_error = $1 WHERE id = 1`,
@@ -414,23 +454,43 @@ func (r *Repo) StampFeedError(ctx context.Context, lastError string) error {
 	return err
 }
 
+// StampEnrichmentDegraded records a Production-fetch failure or degradation
+// (rate-limited, zero records, transient error) WITHOUT touching the
+// detection-feed ok/fetched_at/record_count fields. Those track Scanner-driven
+// detection freshness and must stay exactly as the last successful Scanner run
+// left them — a Production hiccup is real (surfaced via enrichment_ok=false +
+// last_error) but must never make RescanSite skip a cycle.
+func (r *Repo) StampEnrichmentDegraded(ctx context.Context, lastError string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE wordfence_vuln_feed_meta SET enrichment_ok = false, last_error = $1 WHERE id = 1`,
+		lastError,
+	)
+	return err
+}
+
 // GetFeedMeta returns the current feed sentinel row.
 func (r *Repo) GetFeedMeta(ctx context.Context) (FeedMeta, error) {
 	var m FeedMeta
-	var fetchedAt pgtype.Timestamptz
+	var fetchedAt, lastEnrichmentAt pgtype.Timestamptz
 	var defiantNotice, defiantLicense, mitreNotice, lastError pgtype.Text
 	err := r.pool.QueryRow(ctx, `
 		SELECT fetched_at, ok, record_count,
-		       defiant_notice, defiant_license, mitre_notice, last_error
+		       defiant_notice, defiant_license, mitre_notice, last_error,
+		       enrichment_ok, last_enrichment_at
 		FROM wordfence_vuln_feed_meta WHERE id = 1`,
 	).Scan(&fetchedAt, &m.OK, &m.RecordCount,
-		&defiantNotice, &defiantLicense, &mitreNotice, &lastError)
+		&defiantNotice, &defiantLicense, &mitreNotice, &lastError,
+		&m.EnrichmentOK, &lastEnrichmentAt)
 	if err != nil {
 		return m, fmt.Errorf("get feed meta: %w", err)
 	}
 	if fetchedAt.Valid {
 		t := fetchedAt.Time
 		m.FetchedAt = &t
+	}
+	if lastEnrichmentAt.Valid {
+		t := lastEnrichmentAt.Time
+		m.LastEnrichmentAt = &t
 	}
 	m.DefiantNotice = defiantNotice.String
 	m.DefiantLicense = defiantLicense.String
@@ -443,12 +503,40 @@ func (r *Repo) GetFeedMeta(ctx context.Context) (FeedMeta, error) {
 // superadmin status endpoint. This satisfies admin.VulnFeedMetaReader.
 // Returns zero values with nil error when the meta row has never been written
 // (fetched_at IS NULL) — i.e. the feed has not yet run.
-func (r *Repo) GetFeedMetaStatus(ctx context.Context) (ok bool, recordCount int, lastSynced *time.Time, lastError string, err error) {
+func (r *Repo) GetFeedMetaStatus(ctx context.Context) (ok bool, recordCount int, lastSynced *time.Time, lastError string, enrichmentOK bool, lastEnrichmentAt *time.Time, err error) {
 	meta, ferr := r.GetFeedMeta(ctx)
 	if ferr != nil {
-		return false, 0, nil, "", ferr
+		return false, 0, nil, "", false, nil, ferr
 	}
-	return meta.OK, meta.RecordCount, meta.FetchedAt, meta.LastError, nil
+	return meta.OK, meta.RecordCount, meta.FetchedAt, meta.LastError, meta.EnrichmentOK, meta.LastEnrichmentAt, nil
+}
+
+// NextFeedKind atomically reads-and-advances the Scanner/Production
+// alternation cursor, returning the feed kind ("scanner"|"production") this
+// worker cycle should fetch. The cursor is flipped in the SAME statement via
+// a CTE + row lock, so alternation is a pure function of invocation count —
+// it does not depend on whether this cycle's fetch succeeds. That keeps the
+// invariant simple: each periodic run issues at most one Wordfence HTTP
+// request, and successive runs always target the other feed.
+func (r *Repo) NextFeedKind(ctx context.Context) (string, error) {
+	var kind string
+	err := r.pool.QueryRow(ctx, `
+		WITH cur AS (
+			SELECT next_feed_kind FROM wordfence_vuln_feed_meta WHERE id = 1 FOR UPDATE
+		)
+		UPDATE wordfence_vuln_feed_meta m
+		SET next_feed_kind = CASE cur.next_feed_kind
+			WHEN 'scanner' THEN 'production'
+			ELSE 'scanner'
+		END
+		FROM cur
+		WHERE m.id = 1
+		RETURNING cur.next_feed_kind`,
+	).Scan(&kind)
+	if err != nil {
+		return "", fmt.Errorf("advance feed cursor: %w", err)
+	}
+	return kind, nil
 }
 
 // LookupSoftware returns all vulnerability software rows for the given (kind, slug).
@@ -583,8 +671,10 @@ func (r *Repo) ListOpenFindings(ctx context.Context, tenantID, siteID uuid.UUID)
 				CASE v.severity
 					WHEN 'critical' THEN 1
 					WHEN 'high'     THEN 2
-					WHEN 'medium'   THEN 3
-					ELSE 4
+					WHEN 'unknown'  THEN 3
+					WHEN 'medium'   THEN 4
+					WHEN 'low'      THEN 5
+					ELSE 6
 				END,
 				v.cvss_score DESC NULLS LAST,
 				v.first_seen DESC`,
@@ -677,7 +767,7 @@ func (r *Repo) RestoreFinding(ctx context.Context, tenantID, siteID, findingID u
 
 // FleetOpenCounts returns the open finding counts per severity across all
 // sites for a tenant.
-func (r *Repo) FleetOpenCounts(ctx context.Context, tenantID uuid.UUID) (critical, high, medium, low int, err error) {
+func (r *Repo) FleetOpenCounts(ctx context.Context, tenantID uuid.UUID) (critical, high, medium, low, unknown int, err error) {
 	err = r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT severity, count(*)
@@ -703,6 +793,8 @@ func (r *Repo) FleetOpenCounts(ctx context.Context, tenantID uuid.UUID) (critica
 				medium = cnt
 			case SeverityLow:
 				low = cnt
+			case SeverityUnknown:
+				unknown = cnt
 			}
 		}
 		return rows.Err()
@@ -733,8 +825,10 @@ func (r *Repo) FleetOpenFindings(ctx context.Context, tenantID uuid.UUID, limit 
 				CASE v.severity
 					WHEN 'critical' THEN 1
 					WHEN 'high'     THEN 2
-					WHEN 'medium'   THEN 3
-					ELSE 4
+					WHEN 'unknown'  THEN 3
+					WHEN 'medium'   THEN 4
+					WHEN 'low'      THEN 5
+					ELSE 6
 				END,
 				v.cvss_score DESC NULLS LAST,
 				v.first_seen DESC
@@ -789,6 +883,11 @@ type SoftwareRow struct {
 }
 
 // FeedMetaUpdate is the data written to the sentinel row after ingestion.
+//
+// EnrichmentOK/LastEnrichmentAt are nil-able: nil means "this run did not
+// touch enrichment status" (a Scanner run), preserving whatever the last
+// Production run wrote (see StampFeedMeta doc). A non-nil pointer means this
+// run WAS a Production run and its outcome should replace the stored value.
 type FeedMetaUpdate struct {
 	FetchedAt      time.Time
 	OK             bool
@@ -797,6 +896,9 @@ type FeedMetaUpdate struct {
 	DefiantLicense string
 	MitreNotice    string
 	LastError      string
+
+	EnrichmentOK     *bool
+	LastEnrichmentAt *time.Time
 }
 
 // VulnSoftwareRow is the projection returned by LookupSoftware: all the

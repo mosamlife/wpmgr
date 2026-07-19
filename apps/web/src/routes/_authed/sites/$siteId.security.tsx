@@ -145,6 +145,10 @@ function hideLoginStatus(
     : { variant: "muted", label: "Off" };
 }
 
+// GH #245: `countHighRisk` treats `unknown`-severity findings as elevated
+// (same as critical/high), so a site with only unrated findings correctly
+// falls into the `destructive` branch below rather than `success`/`warning`.
+// A fleet of unrated findings must never render as a benign card status.
 function vulnStatus(
   vulnData: ReturnType<typeof useSiteVulnerabilities>["data"],
 ): CardStatus {

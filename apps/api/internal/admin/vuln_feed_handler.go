@@ -27,8 +27,14 @@ import (
 type VulnFeedMetaReader interface {
 	// GetFeedMetaStatus returns the condensed feed meta needed by the status
 	// endpoint. Returns zero values (ok=false, recordCount=0, lastSynced=nil,
-	// lastError="") with nil error when the meta row has never been written.
-	GetFeedMetaStatus(ctx context.Context) (ok bool, recordCount int, lastSynced *time.Time, lastError string, err error)
+	// lastError="", enrichmentOK=false, lastEnrichmentAt=nil) with nil error
+	// when the meta row has never been written.
+	//
+	// ok/recordCount/lastSynced track Scanner-driven DETECTION freshness;
+	// enrichmentOK/lastEnrichmentAt separately track Production-driven CVSS
+	// enrichment health (kept independent so a Production hiccup never masks
+	// as a whole-feed outage — see vuln.FeedMeta doc).
+	GetFeedMetaStatus(ctx context.Context) (ok bool, recordCount int, lastSynced *time.Time, lastError string, enrichmentOK bool, lastEnrichmentAt *time.Time, err error)
 }
 
 // vulnFeedAdminHandler groups the vuln-feed admin sub-handler dependencies.
@@ -67,14 +73,19 @@ func (h *Handler) vulnFeedStatus(c *gin.Context) {
 
 	// Read feed meta (non-fatal: if the table row is never set, ok=false is fine).
 	if vf.meta != nil {
-		ok, cnt, synced, lastErr, err := vf.meta.GetFeedMetaStatus(ctx)
+		ok, cnt, synced, lastErr, enrichmentOK, lastEnrichAt, err := vf.meta.GetFeedMetaStatus(ctx)
 		if err == nil {
 			status.FeedOK = ok
 			status.RecordCount = cnt
 			status.LastError = lastErr
+			status.EnrichmentAvailable = enrichmentOK
 			if synced != nil {
 				s := synced.UTC().Format(time.RFC3339)
 				status.LastSynced = &s
+			}
+			if lastEnrichAt != nil {
+				s := lastEnrichAt.UTC().Format(time.RFC3339)
+				status.LastEnrichmentAt = &s
 			}
 		}
 		// If err != nil, leave zero values — the UI shows "not yet synced".

@@ -215,6 +215,12 @@ type VulnFeedStatus struct {
 	RecordCount int     `json:"record_count"`
 	LastSynced  *string `json:"last_synced,omitempty"` // RFC3339
 	LastError   string  `json:"last_error,omitempty"`
+
+	// EnrichmentAvailable/LastEnrichmentAt track the Production-feed CVSS
+	// enrichment pipeline independently of FeedOK (which tracks Scanner-driven
+	// detection freshness) — see vuln.FeedMeta doc.
+	EnrichmentAvailable bool    `json:"enrichment_available"`
+	LastEnrichmentAt    *string `json:"last_enrichment_at,omitempty"` // RFC3339
 }
 
 // feedMetaReader is a narrow slice of the vuln repo used by the status endpoint.

@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-export type VulnSeverity = "critical" | "high" | "medium" | "low";
+export type VulnSeverity = "critical" | "high" | "medium" | "low" | "unknown";
 
 export interface VulnSeverityChipProps {
   severity: VulnSeverity;
@@ -14,6 +14,7 @@ const severityWord: Record<VulnSeverity, string> = {
   high: "High",
   medium: "Medium",
   low: "Low",
+  unknown: "Unknown",
 };
 
 const severityClasses: Record<VulnSeverity, string> = {
@@ -23,10 +24,18 @@ const severityClasses: Record<VulnSeverity, string> = {
   // hits AA against both backgrounds.
   medium: "bg-severity-medium text-foreground",
   low: "bg-severity-low text-foreground",
+  // Unknown is a genuinely unrated finding (no CVSS score reached the CP),
+  // not a confirmed-low. GH #245: a CVSS ingestion bug once silently
+  // bucketed every unrated finding as "Low", hiding a critical RCE behind a
+  // muted label. Solid neutral slate with its own dedicated foreground
+  // token (mirroring Critical/High, not Medium/Low's pale-surface pattern)
+  // so it is deliberately, unmistakably distinct from the Low chip and
+  // reads as "needs triage", never as "safe".
+  unknown: "bg-severity-unknown text-severity-unknown-foreground",
 };
 
 /**
- * VulnSeverityChip — discrete 4-step vulnerability severity indicator.
+ * VulnSeverityChip — discrete 5-step vulnerability severity indicator.
  *
  * Per DESIGN: severity is a *discrete* scale, never a continuous gradient,
  * and the severity *word* must always appear (never a bare dot). Counts
