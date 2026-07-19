@@ -37,11 +37,32 @@
 // that drive more than one Work() call use backdateLastRequest to rewind
 // wordfence_vuln_feed_meta.last_request_at directly rather than sleeping for
 // 31+ real minutes.
+//
+// Second post-deploy follow-up (streaming): once the spacing fix let a
+// Production request through cleanly for the first time, buffering the whole
+// (much richer per-record) Production response in memory OOM'd the pod
+// (SIGKILL). FeedWorker now streams Production in bounded batches
+// (fetchAndIngestProduction / streamProductionRecords) instead of
+// accumulating a whole-feed map like Scanner's fetchFeed still does (Scanner
+// is small enough to buffer and needs the full ID set for
+// BulkReplaceAllSoftware/PruneMissingVulns anyway). These tests additionally
+// prove:
+//   - a mid-stream decode failure leaves already-flushed batches durably
+//     committed and does NOT advance the cursor;
+//   - the production path logs "vuln: feed refresh complete" with
+//     feed=production and the total record count (the ABSENCE of that log is
+//     exactly what made the OOM hard to spot in prod).
+//
+// The batching/memory-bound claim itself (records flushed in batches that
+// never exceed the flush size) is proven in a pure, DB-free unit test —
+// internal/vuln/worker_test.go's TestFeedWorker_StreamProductionRecords_*
+// tests, via the exported StreamProductionRecords test wrapper.
 package tests
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -64,10 +85,15 @@ import (
 
 // fakeFeedHTTPClient implements vuln.FeedHTTPDoer, returning a canned response
 // per URL and recording every request it receives (in order) so tests can
-// assert the exact number and target of HTTP calls made per Work() cycle.
+// assert the exact number and target of HTTP calls made per Work() cycle. It
+// also records each request's context deadline (deadlines []time.Time),
+// letting tests prove the fetch is bounded by vuln.FeedFetchTimeout (~8m) and
+// NOT by the shared 30s cfg.Update.HTTPTimeout — without a real client or a
+// slow/real-time-waiting server.
 type fakeFeedHTTPClient struct {
 	mu        sync.Mutex
 	calls     []string
+	deadlines []time.Time
 	responses map[string]func() (int, string) // URL -> (status, body) thunk
 }
 
@@ -85,6 +111,11 @@ func (c *fakeFeedHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	c.mu.Lock()
 	url := req.URL.String()
 	c.calls = append(c.calls, url)
+	if dl, ok := req.Context().Deadline(); ok {
+		c.deadlines = append(c.deadlines, dl)
+	} else {
+		c.deadlines = append(c.deadlines, time.Time{}) // no deadline — recorded as zero
+	}
 	thunk, ok := c.responses[url]
 	c.mu.Unlock()
 
@@ -97,6 +128,17 @@ func (c *fakeFeedHTTPClient) Do(req *http.Request) (*http.Response, error) {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     make(http.Header),
 	}, nil
+}
+
+// lastDeadline returns the context deadline attached to the most recent
+// request (zero Time if that request's context had no deadline).
+func (c *fakeFeedHTTPClient) lastDeadline() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.deadlines) == 0 {
+		return time.Time{}
+	}
+	return c.deadlines[len(c.deadlines)-1]
 }
 
 func (c *fakeFeedHTTPClient) callCount() int {
@@ -138,7 +180,13 @@ func (noopRescanEnqueuer) EnqueueRescanSite(_ context.Context, _ vuln.RescanSite
 // buildFeedWorker wires a *vuln.FeedWorker against the real pool + a fake
 // HTTP client, mirroring the production wiring in cmd/wpmgr/main.go.
 func buildFeedWorker(pool *db.Pool, client *fakeFeedHTTPClient) *vuln.FeedWorker {
-	logger := slog.Default()
+	return buildFeedWorkerWithLogger(pool, client, slog.Default())
+}
+
+// buildFeedWorkerWithLogger is buildFeedWorker with an injectable logger —
+// used by tests that need to observe log output (e.g. the production path's
+// completion log, whose absence is exactly what hid the OOM incident in prod).
+func buildFeedWorkerWithLogger(pool *db.Pool, client *fakeFeedHTTPClient, logger *slog.Logger) *vuln.FeedWorker {
 	repo := vuln.NewRepo(pool)
 	svc := vuln.NewService(repo, pool, noopSiteLoader{}, nil, noopRescanEnqueuer{}, logger)
 	resolver := vuln.NewStaticKeyResolver("test-wordfence-key-1234")
@@ -184,9 +232,9 @@ func scannerBodyNoCVSS(vulnID string) string {
 const productionBodyReferenceURL = "https://www.wordfence.com/threat-intel/vulnerabilities/test"
 
 // productionBodyWithCVSS is a Production-shaped response for the SAME
-// vuln_id, carrying a full cvss object + cve + a reference URL — the
+// vuln_id, carrying a full cvss object + cve + cwe + a reference URL — the
 // enrichment data Scanner never sends (scannerBodyNoCVSS above carries
-// neither a "cvss" key nor a "references" key, matching the real feeds).
+// neither a "cvss" nor a "references" nor a "cwe" key, matching the real feeds).
 func productionBodyWithCVSS(vulnID string) string {
 	return `{"` + vulnID + `": {
 		"title": "Test Plugin XSS",
@@ -195,6 +243,7 @@ func productionBodyWithCVSS(vulnID string) string {
 		],
 		"cvss": {"vector":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H","score":9.8,"rating":"Critical"},
 		"cve": "CVE-2026-24500",
+		"cwe": {"id": 79, "name": "Cross-site Scripting"},
 		"references": ["` + productionBodyReferenceURL + `"]
 	}}`
 }
@@ -234,6 +283,77 @@ func feedReferenceURLs(t *testing.T, pool *db.Pool, vulnID string) []string {
 		t.Fatalf("unmarshal reference_urls (%s): %v", raw, err)
 	}
 	return urls
+}
+
+// feedCWERaw reads wordfence_vuln_feed.cwe for vulnID as raw JSON (nil when NULL).
+func feedCWERaw(t *testing.T, pool *db.Pool, vulnID string) []byte {
+	t.Helper()
+	var raw []byte
+	if err := pool.QueryRow(context.Background(),
+		`SELECT cwe FROM wordfence_vuln_feed WHERE vuln_id = $1`, vulnID,
+	).Scan(&raw); err != nil {
+		t.Fatalf("select cwe: %v", err)
+	}
+	return raw
+}
+
+// ---------------------------------------------------------------------------
+// Third post-deploy follow-up: the fetch must NOT be bounded by the shared
+// 30s cfg.Update.HTTPTimeout. Pre-streaming-fix, Production OOM'd ~10s in —
+// before 30s could even matter. Post-streaming-fix it no longer OOMs, so it
+// downloads the full feed, which can easily exceed 30s; without its own
+// budget the 30s cap would now fail it a different way (timeout instead of
+// OOM). worker.go wraps the request context with FeedFetchTimeout (~8m)
+// regardless of what Timeout the injected client itself carries.
+// ---------------------------------------------------------------------------
+
+// TestFeedWorker_FetchContextDeadline_UsesFeedFetchTimeout_NotSharedShortTimeout
+// asserts the ACTUAL mechanism the fix depends on: the *http.Request handed
+// to the client carries a context deadline close to vuln.FeedFetchTimeout
+// (~8 minutes out), never the shared 30s update timeout. This is fast and
+// deterministic (no real waiting / slow server needed) because it inspects
+// the request's context directly rather than timing an actual slow transfer.
+func TestFeedWorker_FetchContextDeadline_UsesFeedFetchTimeout_NotSharedShortTimeout(t *testing.T) {
+	pool := startPostgres(t)
+	client := newFakeFeedHTTPClient()
+	client.setResponse(vuln.ScannerFeedURL, http.StatusOK, scannerBodyNoCVSS("245-deadline-scanner-vuln"))
+	client.setResponse(vuln.ProductionFeedURL, http.StatusOK, productionBodyWithCVSS("245-deadline-production-vuln"))
+
+	w := buildFeedWorker(pool, client)
+
+	// Run 1 (Scanner): the fix applies to BOTH feeds.
+	callTime := time.Now()
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 1 (scanner): %v", err)
+	}
+	assertDeadlineIsFeedFetchTimeout(t, "scanner", callTime, client.lastDeadline())
+
+	// Run 2 (Production): the feed the streaming fix actually targets.
+	backdateLastRequest(t, pool, 32*time.Minute)
+	callTime = time.Now()
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 2 (production): %v", err)
+	}
+	assertDeadlineIsFeedFetchTimeout(t, "production", callTime, client.lastDeadline())
+}
+
+func assertDeadlineIsFeedFetchTimeout(t *testing.T, feed string, callTime, deadline time.Time) {
+	t.Helper()
+	if deadline.IsZero() {
+		t.Fatalf("%s: request had no context deadline at all; want ~%v (FeedFetchTimeout)", feed, vuln.FeedFetchTimeout)
+	}
+	elapsed := deadline.Sub(callTime)
+	// Must be comfortably longer than the shared 30s update timeout that
+	// would otherwise fail Production mid-download.
+	if elapsed <= 30*time.Second {
+		t.Fatalf("%s: request context deadline is only %v out; want >> 30s (the shared cfg.Update.HTTPTimeout must NOT bound this fetch)", feed, elapsed)
+	}
+	// Must be close to FeedFetchTimeout (allow slack for test wall-clock jitter).
+	const slack = 5 * time.Second
+	if elapsed < vuln.FeedFetchTimeout-slack || elapsed > vuln.FeedFetchTimeout+slack {
+		t.Errorf("%s: request context deadline ~%v from call time; want close to FeedFetchTimeout=%v (±%v)",
+			feed, elapsed, vuln.FeedFetchTimeout, slack)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +494,11 @@ func TestFeedWorker_StickyEnrichment_ScannerRunPreservesCVSS(t *testing.T) {
 	}
 	if rating != "Critical" {
 		t.Errorf("cvss_rating = %q; want %q preserved across the scanner run", rating, "Critical")
+	}
+
+	// cwe must also be preserved (COALESCE-sticky, same as cvss/cve).
+	if cwe := feedCWERaw(t, pool, vulnID); len(cwe) == 0 || string(cwe) == "null" {
+		t.Errorf("cwe = %s; want the production-populated CWE object preserved across the scanner run", cwe)
 	}
 
 	// enrichment_ok must ALSO remain sticky-true (a scanner run must not touch it).
@@ -759,5 +884,212 @@ func insertTenantAndSite(t *testing.T, pool *db.Pool, tenantID, siteID uuid.UUID
 		return err
 	}); err != nil {
 		t.Fatalf("seed tenant/site: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Production streaming (OOM follow-up): mid-stream durability + completion log.
+//
+// The pure batching/memory-bound claim itself is proven without any HTTP/DB
+// dependency in internal/vuln/worker_test.go's
+// TestFeedWorker_StreamProductionRecords_* tests. These two tests instead
+// drive the FULL wired-up Work() -> workProduction ->
+// fetchAndIngestProduction path against the real DB + fake HTTP client, to
+// prove the end-to-end wiring: a mid-stream failure leaves earlier batches
+// durably committed and never advances the cursor, and a successful run
+// logs its completion (whose absence hid the OOM in prod).
+// ---------------------------------------------------------------------------
+
+// productionBodyManyRecordsThenBroken builds a Production-shaped root JSON
+// object with validCount valid records (vuln_id prefix "stream-err-vuln-")
+// followed by one syntactically invalid trailing value — the same shape as
+// internal/vuln/worker_test.go's syntheticProductionStream, duplicated here
+// (rather than exported across the API boundary) since this file drives the
+// fake HTTP layer, not the decoder directly.
+func productionBodyManyRecordsThenBroken(validCount int) string {
+	var sb strings.Builder
+	sb.WriteString("{")
+	for i := 0; i < validCount; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `"stream-err-vuln-%05d": {"title":"t","software":[{"type":"plugin","slug":"sp%05d","affected_versions":{},"patched":false,"patched_versions":[]}],"cvss":{"score":5.0,"rating":"Medium"}}`, i, i)
+	}
+	if validCount > 0 {
+		sb.WriteString(",")
+	}
+	sb.WriteString(`"stream-err-vuln-BROKEN": not-valid-json}`)
+	return sb.String()
+}
+
+// TestFeedWorker_ProductionStream_MidStreamError_NoCursorAdvance_PartialProgressPersists
+// covers requirement (c): a mid-stream decode failure on the Production leg
+// must return an error (River retries) and must NOT advance the alternation
+// cursor — but, thanks to streaming, the batch(es) that DID complete before
+// the failure remain durably committed rather than being lost entirely (the
+// improvement streaming buys over the old buffer-then-write-once approach).
+func TestFeedWorker_ProductionStream_MidStreamError_NoCursorAdvance_PartialProgressPersists(t *testing.T) {
+	pool := startPostgres(t)
+	client := newFakeFeedHTTPClient()
+	client.setResponse(vuln.ScannerFeedURL, http.StatusOK, scannerBodyNoCVSS("245-stream-err-scanner-vuln"))
+	// Exactly one full batch (ProductionBatchSize records) flushes inline
+	// before the broken trailing record breaks the decode.
+	client.setResponse(vuln.ProductionFeedURL, http.StatusOK, productionBodyManyRecordsThenBroken(vuln.ProductionBatchSize))
+
+	w := buildFeedWorker(pool, client)
+	repo := vuln.NewRepo(pool)
+
+	// Run 1: scanner succeeds — cursor -> production.
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 1 (scanner): %v", err)
+	}
+	gateBefore, err := repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate after run 1: %v", err)
+	}
+	if gateBefore.FeedKind != vuln.FeedKindProduction {
+		t.Fatalf("cursor after run 1 = %q; want %q", gateBefore.FeedKind, vuln.FeedKindProduction)
+	}
+
+	// Run 2: production hits the mid-stream decode failure.
+	backdateLastRequest(t, pool, 32*time.Minute)
+	if err := runFeedWork(t, w); err == nil {
+		t.Fatal("run 2 (production, mid-stream failure): Work returned nil; want a non-nil error (River should retry)")
+	}
+
+	// The cursor must be UNCHANGED — still production, so the next eligible
+	// run retries production rather than moving on to scanner and abandoning
+	// the enrichment that never finished landing.
+	gateAfter, err := repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate after run 2: %v", err)
+	}
+	if gateAfter.FeedKind != vuln.FeedKindProduction {
+		t.Errorf("cursor after a mid-stream failure = %q; want still %q (unchanged)", gateAfter.FeedKind, vuln.FeedKindProduction)
+	}
+
+	// Partial progress: the one batch that completed before the failure
+	// (ProductionBatchSize records) must be durably present in the DB.
+	var landedCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM wordfence_vuln_feed WHERE vuln_id LIKE 'stream-err-vuln-%' AND vuln_id != 'stream-err-vuln-BROKEN'`,
+	).Scan(&landedCount); err != nil {
+		t.Fatalf("count landed records: %v", err)
+	}
+	if landedCount != vuln.ProductionBatchSize {
+		t.Errorf("landed records after mid-stream failure = %d; want %d (the one batch that completed before the failure, durably committed)",
+			landedCount, vuln.ProductionBatchSize)
+	}
+
+	// The broken record itself must never have landed.
+	var brokenCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM wordfence_vuln_feed WHERE vuln_id = 'stream-err-vuln-BROKEN'`,
+	).Scan(&brokenCount); err != nil {
+		t.Fatalf("count broken record: %v", err)
+	}
+	if brokenCount != 0 {
+		t.Error("the syntactically-broken trailing record must never land in wordfence_vuln_feed")
+	}
+}
+
+// capturingHandler is a minimal slog.Handler that records emitted log
+// records for test assertions — used to prove the production path logs its
+// completion (requirement (d)): the ABSENCE of that log is exactly what made
+// the OOM incident hard to spot in prod (the job just died mid-fetch with no
+// "feed refresh complete" ever printed).
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *capturingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// findRecord returns the LAST captured log record with the given message —
+// both the Scanner and Production paths log the same "vuln: feed refresh
+// complete" message, so callers driving multiple Work() runs want the most
+// recent one.
+func (h *capturingHandler) findRecord(msg string) (slog.Record, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := len(h.records) - 1; i >= 0; i-- {
+		if h.records[i].Message == msg {
+			return h.records[i], true
+		}
+	}
+	return slog.Record{}, false
+}
+
+func recordAttrString(r slog.Record, key string) (string, bool) {
+	var val string
+	var found bool
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			val, found = a.Value.String(), true
+			return false
+		}
+		return true
+	})
+	return val, found
+}
+
+func recordAttrInt64(r slog.Record, key string) (int64, bool) {
+	var val int64
+	var found bool
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			val, found = a.Value.Int64(), true
+			return false
+		}
+		return true
+	})
+	return val, found
+}
+
+// TestFeedWorker_ProductionPath_LogsCompletionWithRecordCount covers
+// requirement (d): a successful Production ingest must log
+// "vuln: feed refresh complete" with feed=production and the total record
+// count — matching the Scanner path's existing completion log. Its absence
+// is exactly what made the prod OOM (the job died mid-fetch, so this log
+// line never printed) hard to diagnose from logs alone.
+func TestFeedWorker_ProductionPath_LogsCompletionWithRecordCount(t *testing.T) {
+	pool := startPostgres(t)
+	const vulnID = "245-completion-log-vuln-1"
+	client := newFakeFeedHTTPClient()
+	client.setResponse(vuln.ScannerFeedURL, http.StatusOK, scannerBodyNoCVSS(vulnID))
+	client.setResponse(vuln.ProductionFeedURL, http.StatusOK, productionBodyWithCVSS(vulnID))
+
+	handler := &capturingHandler{}
+	logger := slog.New(handler)
+	w := buildFeedWorkerWithLogger(pool, client, logger)
+
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 1 (scanner): %v", err)
+	}
+	backdateLastRequest(t, pool, 32*time.Minute)
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 2 (production): %v", err)
+	}
+
+	rec, ok := handler.findRecord("vuln: feed refresh complete")
+	if !ok {
+		t.Fatal(`no "vuln: feed refresh complete" log record found for the production run — its absence is exactly what hid the OOM incident in prod`)
+	}
+	if feed, _ := recordAttrString(rec, "feed"); feed != vuln.FeedKindProduction {
+		t.Errorf(`completion log "feed" attr = %q; want %q`, feed, vuln.FeedKindProduction)
+	}
+	records, found := recordAttrInt64(rec, "records")
+	if !found || records != 1 {
+		t.Errorf(`completion log "records" attr = %v (found=%v); want 1`, records, found)
 	}
 }

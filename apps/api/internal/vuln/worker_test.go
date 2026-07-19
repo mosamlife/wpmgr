@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -574,5 +575,183 @@ func TestParseFeedRecord_SlugNormalised(t *testing.T) {
 	}
 	if rec.Software[0].Slug != "woocommerce" {
 		t.Errorf("Slug = %q; want %q", rec.Software[0].Slug, "woocommerce")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Production streaming: batching + memory-bound proof (OOM follow-up).
+//
+// Once the wall-clock spacing fix let a Production request through cleanly
+// for the first time, buffering the whole (much richer per-record) response
+// in one in-memory map OOM'd the api pod (SIGKILL). These tests exercise the
+// extracted (*vuln.FeedWorker).StreamProductionRecords core loop directly —
+// no HTTP or DB dependency — to prove records are written in BOUNDED
+// batches, not accumulated whole-feed, regardless of total feed size.
+// ---------------------------------------------------------------------------
+
+// syntheticProductionStream builds a root JSON object with n valid,
+// Production-shaped records (each with a usable software[] entry and a cvss
+// object), optionally followed by a syntactically invalid trailing value —
+// used by the mid-stream-failure test below. Returns the object as a string,
+// still needing its opening '{' consumed before being handed to
+// StreamProductionRecords (mirroring how fetchAndIngestProduction calls it).
+func syntheticProductionStream(validCount int, appendBroken bool) string {
+	var sb strings.Builder
+	sb.WriteString("{")
+	for i := 0; i < validCount; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `"stream-vuln-%05d": {"title":"t","software":[{"type":"plugin","slug":"p%05d","affected_versions":{},"patched":false,"patched_versions":[]}],"cvss":{"score":5.0,"rating":"Medium"}}`, i, i)
+	}
+	if appendBroken {
+		if validCount > 0 {
+			sb.WriteString(",")
+		}
+		// A syntactically invalid value (bare unquoted token) — dec.Decode
+		// into json.RawMessage fails on this, simulating a mid-stream error.
+		sb.WriteString(`"stream-vuln-BROKEN": not-valid-json`)
+	}
+	sb.WriteString("}")
+	return sb.String()
+}
+
+// newDecoderPastOpenBrace builds a json.Decoder over body and consumes the
+// opening '{' token, matching the state StreamProductionRecords expects.
+func newDecoderPastOpenBrace(t *testing.T, body string) *json.Decoder {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("read opening token: %v", err)
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		t.Fatalf("opening token = %v; want '{'", tok)
+	}
+	return dec
+}
+
+func newTestFeedWorker() *vuln.FeedWorker {
+	return vuln.NewFeedWorker(nil, nil, nil, nil, nil, slog.Default())
+}
+
+// TestFeedWorker_StreamProductionRecords_BatchesAndBoundsMemory is the direct
+// proof for the OOM fix: streaming a few-thousand-record synthetic Production
+// object flushes in multiple bounded batches — never one whole-feed batch —
+// and NO single flush ever receives more than batchSize records (the memory
+// bound the OOM fix depends on).
+func TestFeedWorker_StreamProductionRecords_BatchesAndBoundsMemory(t *testing.T) {
+	const totalRecords = 2500
+	batchSize := vuln.ProductionBatchSize // the real production constant (500)
+
+	dec := newDecoderPastOpenBrace(t, syntheticProductionStream(totalRecords, false))
+
+	var flushSizes []int
+	flushedTotal := 0
+	flush := func(batch []vuln.FeedRecord) error {
+		// Copy the length now — the caller reuses the backing array after
+		// this call returns, so retaining the slice itself would be unsafe,
+		// but capturing len(batch) here is exactly the "one batch at a time"
+		// assertion we need.
+		flushSizes = append(flushSizes, len(batch))
+		flushedTotal += len(batch)
+		if len(batch) > batchSize {
+			t.Fatalf("flush called with %d records; must never exceed batchSize=%d (memory-bound violation — this is exactly the OOM mechanism)", len(batch), batchSize)
+		}
+		return nil
+	}
+
+	w := newTestFeedWorker()
+	n, _, _, _, err := w.StreamProductionRecords(dec, batchSize, flush)
+	if err != nil {
+		t.Fatalf("StreamProductionRecords: %v", err)
+	}
+	if n != totalRecords {
+		t.Errorf("n = %d; want %d", n, totalRecords)
+	}
+	if flushedTotal != totalRecords {
+		t.Errorf("flushedTotal = %d; want %d (no records lost/duplicated across batches)", flushedTotal, totalRecords)
+	}
+	wantFlushes := (totalRecords + batchSize - 1) / batchSize // ceil division
+	if len(flushSizes) != wantFlushes {
+		t.Errorf("flush() called %d times; want %d (ceil(%d/%d)) — proves BATCHED writes, not one whole-feed write",
+			len(flushSizes), wantFlushes, totalRecords, batchSize)
+	}
+	if len(flushSizes) < 2 {
+		t.Fatalf("only %d flush(es) observed for %d records at batchSize=%d; want multiple — this is the batching claim itself",
+			len(flushSizes), totalRecords, batchSize)
+	}
+	// Every full batch must be exactly batchSize; only the final (remainder)
+	// batch may be smaller.
+	for i, sz := range flushSizes {
+		if i < len(flushSizes)-1 && sz != batchSize {
+			t.Errorf("flush[%d] size = %d; want %d (only the LAST flush may be a partial remainder)", i, sz, batchSize)
+		}
+	}
+}
+
+// TestFeedWorker_StreamProductionRecords_SmallFeedSingleFlush is the inverse
+// sanity check: a feed smaller than batchSize still flushes correctly (the
+// remainder-only flush path), proving the existing small-fixture tests
+// (productionBodyWithCVSS et al.) exercise the same code path as production.
+func TestFeedWorker_StreamProductionRecords_SmallFeedSingleFlush(t *testing.T) {
+	const totalRecords = 3
+	dec := newDecoderPastOpenBrace(t, syntheticProductionStream(totalRecords, false))
+
+	var flushSizes []int
+	flush := func(batch []vuln.FeedRecord) error {
+		flushSizes = append(flushSizes, len(batch))
+		return nil
+	}
+
+	w := newTestFeedWorker()
+	n, _, _, _, err := w.StreamProductionRecords(dec, 500, flush)
+	if err != nil {
+		t.Fatalf("StreamProductionRecords: %v", err)
+	}
+	if n != totalRecords {
+		t.Errorf("n = %d; want %d", n, totalRecords)
+	}
+	if len(flushSizes) != 1 || flushSizes[0] != totalRecords {
+		t.Errorf("flushSizes = %v; want a single flush of %d", flushSizes, totalRecords)
+	}
+}
+
+// TestFeedWorker_StreamProductionRecords_MidStreamError_PartialProgressKept
+// proves that a mid-stream decode failure (a) returns a non-nil error whose
+// message names the failing record index ("stream failed at record N"), and
+// (b) leaves every ALREADY-COMPLETED flush's data intact (the caller —
+// fetchAndIngestProduction — never re-flushes or rolls back a previously
+// successful batch): only the partially-filled, not-yet-flushed batch at the
+// moment of failure is discarded.
+func TestFeedWorker_StreamProductionRecords_MidStreamError_PartialProgressKept(t *testing.T) {
+	const batchSize = 500
+	const validBeforeBreak = 500 // exactly one full batch, flushed inline as soon as it fills
+
+	dec := newDecoderPastOpenBrace(t, syntheticProductionStream(validBeforeBreak, true))
+
+	var flushSizes []int
+	flush := func(batch []vuln.FeedRecord) error {
+		flushSizes = append(flushSizes, len(batch))
+		return nil
+	}
+
+	w := newTestFeedWorker()
+	n, _, _, _, err := w.StreamProductionRecords(dec, batchSize, flush)
+	if err == nil {
+		t.Fatal("StreamProductionRecords: got nil error; want a decode failure from the malformed trailing record")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("stream failed at record %d", validBeforeBreak)) {
+		t.Errorf("error = %q; want it to mention \"stream failed at record %d\"", err.Error(), validBeforeBreak)
+	}
+	// n reflects records successfully queued before the failure (the 500 that
+	// filled and flushed the first batch); the broken record never counted.
+	if n != validBeforeBreak {
+		t.Errorf("n = %d; want %d (records queued before the failure)", n, validBeforeBreak)
+	}
+	// Exactly one flush must have completed (the full batch of 500) — the
+	// broken record's batch never got a chance to flush.
+	if len(flushSizes) != 1 || flushSizes[0] != validBeforeBreak {
+		t.Errorf("flushSizes = %v; want exactly one flush of %d (partial progress preserved, nothing re-flushed or lost)", flushSizes, validBeforeBreak)
 	}
 }

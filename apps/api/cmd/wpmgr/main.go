@@ -1572,7 +1572,23 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		nil, // enqueuer wired below after River starts
 		logger,
 	)
-	vulnFeedWorker := vuln.NewFeedWorker(vulnRepo, pool, nil /*svc: wired below*/, vulnFeedKeySvc, ssrfClient, logger)
+	// Post-deploy follow-up: the Wordfence Intelligence Production feed can
+	// take several minutes to download+stream even after the streaming fix
+	// (its per-record payload is far richer than Scanner's) — well past the
+	// shared 30s ssrfClient's Timeout (cfg.Update.HTTPTimeout, tuned for
+	// unrelated agent/site traffic). Using the shared client here would make
+	// Production fail by client timeout instead of by OOM. Mirrors the
+	// update-apply/backup/media dedicated-client pattern
+	// (buildUpdateApplyCommander et al.): a SEPARATE SSRF-hardened client with
+	// a longer per-attempt cap (vuln.FeedFetchTimeout, 8m) just for the vuln
+	// feed worker. MaxRetries: 0 — a failed attempt is retried by the next
+	// wall-clock-eligible feed-worker run (Repo.GetFeedGate), not by an
+	// in-process retry loop.
+	vulnFeedHTTPClient := httpclient.New(httpclient.Config{
+		Timeout:    vuln.FeedFetchTimeout,
+		MaxRetries: 0,
+	})
+	vulnFeedWorker := vuln.NewFeedWorker(vulnRepo, pool, nil /*svc: wired below*/, vulnFeedKeySvc, vulnFeedHTTPClient, logger)
 	vulnRescanWorker := vuln.NewRescanSiteWorker(nil /*svc: wired below*/, logger)
 
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{

@@ -102,6 +102,31 @@ const (
 // jitter so a request is never dispatched right at the edge of the window.
 const minRequestSpacing = 31 * time.Minute
 
+// FeedFetchTimeout bounds a single Wordfence Intelligence HTTP fetch (Scanner
+// or Production) via the REQUEST CONTEXT — not the shared httpclient's
+// per-request Timeout (cfg.Update.HTTPTimeout, 30s in cmd/wpmgr/main.go),
+// which is tuned for unrelated agent/site traffic and far too short here.
+//
+// Pre-streaming-fix, a large Production response OOM'd the pod ~10s in —
+// well before 30s could even matter. Post-streaming-fix it no longer OOMs,
+// so it downloads the FULL feed, which for Production (far richer per-record
+// than Scanner) can easily exceed 30s; without a dedicated budget the very
+// same 30s cap would now fail it a different way (mid-stream timeout instead
+// of OOM). FeedFetchTimeout gives the fetch up to 8 minutes, comfortably
+// under the River job's 10-minute Timeout (2 minutes of margin for the
+// DB flushes — see ingestRecords/BulkUpsertFeedRecordsPool, which typically
+// complete in low single-digit seconds even for thousands of records).
+//
+// cmd/wpmgr/main.go pairs this with a DEDICATED SSRF-hardened httpclient.Client
+// (httpclient.New(Config{Timeout: FeedFetchTimeout, ...})) built the SAME way
+// as the existing update-apply/backup/media dedicated-client precedent
+// (buildUpdateApplyCommander et al.) — never the shared 30s ssrfClient — so
+// the client's own Timeout cannot undercut this context deadline either.
+// Applying context.WithTimeout here too (in fetchFeed/fetchAndIngestProduction)
+// is defense-in-depth AND keeps the ~8m budget self-evident and unit-testable
+// from this package without depending on how main.go wires the client.
+const FeedFetchTimeout = 8 * time.Minute
+
 // errRateLimited marks a 429 from the Wordfence feed. Wordfence documents no
 // Retry-After and no per-window number ("too many requests in a short period"),
 // so a 429 must NOT trigger an immediate in-process retry — that just re-hits
@@ -173,12 +198,27 @@ func NewFeedWorker(repo *Repo, pool *db.Pool, svc *Service, resolver APIKeyResol
 // once at boot after startRiver returns (the service needs the River client).
 func (w *FeedWorker) SetService(svc *Service) { w.svc = svc }
 
-// Timeout gives the feed refresh job 10 minutes. A full-dump ingest of ~13k
-// records via CopyFrom completes in seconds, but the single HTTP fetch (one
-// feed per run — see GetFeedGate) + any Postgres latency under load consume
-// real wall time. 10 minutes is generous headroom well above the expected
-// 15–30s wall time and avoids the context deadline that previously killed the
-// per-record loop.
+// Timeout gives the feed refresh job 10 minutes — comfortably above
+// FeedFetchTimeout (8 minutes, the cap on the HTTP fetch itself) with a
+// 2-minute margin for the DB flushes that follow (BulkUpsertFeedRecordsPool/
+// ingestRecords typically complete in low single-digit seconds even for
+// thousands of records — see TestBulkIngest_Scale). A full-dump ingest of
+// ~13k records via CopyFrom completes in seconds; the previous per-record
+// loop is what originally needed this much headroom, and it still comfortably
+// covers the streaming Production path (incremental flushes interleaved with
+// the download, rather than one big end-of-run write).
+//
+// This Timeout bounds the WHOLE River job. It is deliberately independent of
+// (and larger than) FeedFetchTimeout, which bounds only the HTTP fetch via
+// the request context (see fetchFeed/fetchAndIngestProduction) — and is in
+// turn independent of the *http.Client's own per-request Timeout: the vuln
+// feed worker is wired in cmd/wpmgr/main.go with a DEDICATED SSRF-hardened
+// client (httpclient.New(Config{Timeout: FeedFetchTimeout, ...}), built the
+// same way as the update-apply/backup/media dedicated-client precedent — see
+// buildUpdateApplyCommander), never the shared 30s ssrfClient used for
+// unrelated agent/update traffic. Using that 30s-capped client here would
+// have made Production fail by timeout instead of by OOM once the streaming
+// fix stopped it from OOM'ing first.
 func (w *FeedWorker) Timeout(*river.Job[FeedRefreshArgs]) time.Duration {
 	return 10 * time.Minute
 }
@@ -190,6 +230,16 @@ func (w *FeedWorker) Timeout(*river.Job[FeedRefreshArgs]) time.Duration {
 // since the last actual request, not by an assumption about job cadence —
 // consecutive runs (periodic + a manually triggered sync, or any other
 // clustering) can land far closer together than the nominal hourly interval.
+//
+// The two feed kinds use DIFFERENT ingest strategies (workScanner /
+// workProduction below): Scanner is small enough (~37k MINIMAL records) to
+// buffer entirely in memory and ingest in one atomic transaction, and needs
+// the full record set anyway for BulkReplaceAllSoftware/PruneMissingVulns.
+// Production carries a much richer per-record payload (full CVSS/CVE/CWE/
+// copyrights/remediation/raw JSON) and is enrichment-only (no prune), so it
+// is STREAMED and flushed in bounded batches — buffering the whole Production
+// response in memory once let a request through for the first time (after
+// the wall-clock spacing fix) and OOM'd the pod (SIGKILL, prod incident).
 func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) error {
 	// Resolve the key at run-time so a UI-set key takes effect on the next job
 	// without requiring a restart. Priority: UI key > env key > no-op.
@@ -222,120 +272,176 @@ func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) 
 			}
 		}
 	}
-	feedURL := ScannerFeedURL
-	if feedKind == FeedKindProduction {
-		feedURL = ProductionFeedURL
-	}
 
 	w.logger.Info("vuln: starting Wordfence Intelligence feed refresh", slog.String("feed", feedKind))
 
-	records, defiantNotice, defiantLicense, mitreNotice, requested, err := w.fetchFeed(ctx, feedURL, apiKey)
-	if requested {
-		// A response was received from Wordfence's server (200, 429, or any
-		// other status) — that attempt consumed the shared rate-limit slot,
-		// regardless of outcome, so the wall-clock gate above must see it on
-		// the next run. A pure transport failure (requested=false) never
-		// reached Wordfence and does not count.
-		if serr := w.repo.StampRequestAt(ctx, time.Now().UTC()); serr != nil {
-			w.logger.Warn("vuln: failed to stamp last_request_at", slog.Any("error", serr))
-		}
+	if feedKind == FeedKindProduction {
+		return w.workProduction(ctx, apiKey)
 	}
-	if err != nil {
-		if errors.Is(err, errRateLimited) {
-			// Do NOT retry inside this cycle: a globally rate-limited window
-			// cannot be escaped by an immediate retry. Stamp degraded and
-			// leave the cursor untouched (belt-and-suspenders: the wall-clock
-			// gate above should normally prevent reaching this branch at all,
-			// but an external caller could still consume the shared slot) —
-			// the next ELIGIBLE run retries the SAME feed. A Production
-			// rate-limit must NOT flip the detection ok flag (RescanSite
-			// gates on it); a Scanner rate-limit legitimately does, matching
-			// prior behavior.
-			msg := fmt.Sprintf("%s feed rate limited by Wordfence; will retry on the next eligible refresh", feedKind)
-			if feedKind == FeedKindProduction {
-				_ = w.repo.StampEnrichmentDegraded(ctx, msg)
-			} else {
-				_ = w.repo.StampFeedError(ctx, msg)
-			}
-			w.logger.Warn("vuln: feed rate limited; skipping this cycle (no in-window retry)",
-				slog.String("feed", feedKind))
-			return nil
-		}
-		errMsg := fmt.Sprintf("%s feed fetch failed: %v", feedKind, err)
-		_ = w.repo.StampFeedError(ctx, errMsg)
-		return fmt.Errorf("vuln feed refresh (%s): %w", feedKind, err) // River will retry real failures
-	}
+	return w.workScanner(ctx, apiKey)
+}
 
-	if len(records) == 0 {
-		// A zero-record response counts as "no enrichment" for a Production
-		// run (per WP2 spec) but must not touch the detection ok flag — the
-		// Scanner-driven catalog from the last successful Scanner run is still
-		// perfectly valid. A zero-record Scanner response is treated as before
-		// (ok=false): it means we have no usable detection catalog this cycle.
-		// Neither path advances the cursor — the SAME feed is retried next
-		// eligible run.
-		msg := fmt.Sprintf("%s feed returned zero records; not applying update", feedKind)
+// stampRequestIfMade records last_request_at when requested is true — a
+// response (of any kind: 200, 429, or otherwise) was actually received from
+// Wordfence's server, which is what the wall-clock spacing gate in Work()
+// needs to see on the next run. A pure transport failure (requested=false)
+// never reached Wordfence and must not advance the gate.
+func (w *FeedWorker) stampRequestIfMade(ctx context.Context, requested bool) {
+	if !requested {
+		return
+	}
+	if serr := w.repo.StampRequestAt(ctx, time.Now().UTC()); serr != nil {
+		w.logger.Warn("vuln: failed to stamp last_request_at", slog.Any("error", serr))
+	}
+}
+
+// handleFetchError applies the shared rate-limit / hard-error handling common
+// to both feed paths (including a mid-stream Production failure, which
+// surfaces here as a plain non-errRateLimited error). Returns nil for a
+// rate-limit (no River retry; the cursor is never touched by either branch —
+// StampEnrichmentDegraded/StampFeedError do not reference next_feed_kind) or
+// the wrapped error for a hard failure (River retries; the cursor still
+// never advances because StampFeedMeta/StampFeedMetaFinal — the only calls
+// that flip it — are never reached on this path).
+func (w *FeedWorker) handleFetchError(ctx context.Context, feedKind string, err error) error {
+	if errors.Is(err, errRateLimited) {
+		msg := fmt.Sprintf("%s feed rate limited by Wordfence; will retry on the next eligible refresh", feedKind)
 		if feedKind == FeedKindProduction {
 			_ = w.repo.StampEnrichmentDegraded(ctx, msg)
 		} else {
 			_ = w.repo.StampFeedError(ctx, msg)
 		}
-		w.logger.Warn("vuln: " + msg)
+		w.logger.Warn("vuln: feed rate limited; skipping this cycle (no in-window retry)",
+			slog.String("feed", feedKind))
+		return nil
+	}
+	errMsg := fmt.Sprintf("%s feed fetch failed: %v", feedKind, err)
+	_ = w.repo.StampFeedError(ctx, errMsg)
+	return fmt.Errorf("vuln feed refresh (%s): %w", feedKind, err) // River will retry real failures
+}
+
+// handleZeroRecords applies the shared zero-record-response handling. A
+// zero-record Production response degrades enrichment_ok only (detection
+// freshness is untouched); a zero-record Scanner response means there is no
+// usable detection catalog this cycle (ok=false, matching prior behavior).
+// Neither advances the cursor.
+func (w *FeedWorker) handleZeroRecords(ctx context.Context, feedKind string) {
+	msg := fmt.Sprintf("%s feed returned zero records; not applying update", feedKind)
+	if feedKind == FeedKindProduction {
+		_ = w.repo.StampEnrichmentDegraded(ctx, msg)
+	} else {
+		_ = w.repo.StampFeedError(ctx, msg)
+	}
+	w.logger.Warn("vuln: " + msg)
+}
+
+// triggerRescanAll fans out per-site rescans after a successful ingest of
+// either feed: a Scanner ingest carries new/changed detection data, and a
+// Production ingest can land CVSS that upgrades findings out of the
+// "unknown" severity bucket — both should become visible promptly.
+func (w *FeedWorker) triggerRescanAll(ctx context.Context) {
+	if err := w.svc.RescanAll(ctx, uuid.Nil); err != nil {
+		w.logger.Warn("vuln: post-feed rescan-all enqueue failed", slog.Any("error", err))
+	}
+}
+
+// workScanner fetches and ingests the Scanner feed: buffer the whole
+// (minimal, ~37k-record) response in memory, then a single atomic transaction
+// (BulkUpsertFeedRecords + BulkReplaceAllSoftware + PruneMissingVulns +
+// StampFeedMeta — see ingestRecords). Scanner is small enough that buffering
+// is fine, and it NEEDS the full record set in one pass for prune to be
+// correct (see ingestRecords doc).
+func (w *FeedWorker) workScanner(ctx context.Context, apiKey string) error {
+	records, defiantNotice, defiantLicense, mitreNotice, requested, err := w.fetchFeed(ctx, ScannerFeedURL, apiKey)
+	w.stampRequestIfMade(ctx, requested)
+	if err != nil {
+		return w.handleFetchError(ctx, FeedKindScanner, err)
+	}
+	if len(records) == 0 {
+		w.handleZeroRecords(ctx, FeedKindScanner)
 		return nil
 	}
 
-	// Persist in a batch transaction using the pool directly (feed tables have
-	// no RLS, so no GUC setup is required; we set app.agent='on' anyway inside
-	// ingestRecords for forward-compatibility).
 	knownIDs := make([]string, 0, len(records))
 	for id := range records {
 		knownIDs = append(knownIDs, id)
 	}
 
-	now := time.Now().UTC()
 	meta := FeedMetaUpdate{
-		FetchedAt:      now,
+		FetchedAt:      time.Now().UTC(),
 		OK:             true,
 		RecordCount:    len(records),
 		DefiantNotice:  defiantNotice,
 		DefiantLicense: defiantLicense,
 		MitreNotice:    mitreNotice,
 	}
-	if feedKind == FeedKindProduction {
-		// len(records) > 0 is already established above, so this run
-		// successfully enriched at least one record.
-		enrichOK := true
-		meta.EnrichmentOK = &enrichOK
-		meta.LastEnrichmentAt = &now
-	}
 
 	// ingestRecords calls StampFeedMeta, which — ONLY on this successful,
-	// non-empty-ingest path — also advances next_feed_kind to the other feed.
-	// Every other outcome above (spacing-skip, 429, zero records, hard error)
-	// returns before reaching here, leaving the cursor exactly as it was.
-	pgErr := w.ingestRecords(ctx, records, knownIDs, meta, feedKind)
-	if pgErr != nil {
+	// non-empty-ingest path — also advances next_feed_kind to production.
+	if pgErr := w.ingestRecords(ctx, records, knownIDs, meta); pgErr != nil {
 		_ = w.repo.StampFeedError(ctx, pgErr.Error())
-		return fmt.Errorf("vuln: ingest records (%s): %w", feedKind, pgErr)
+		return fmt.Errorf("vuln: ingest records (%s): %w", FeedKindScanner, pgErr)
 	}
 
 	w.logger.Info("vuln: feed refresh complete",
-		slog.String("feed", feedKind), slog.Int("records", len(records)))
-
-	// Trigger a cross-tenant rescan (throttled: enqueues per-site River jobs).
-	// This runs after BOTH a Scanner ingest (new/changed detection data) and a
-	// Production ingest (newly-landed CVSS can upgrade findings out of the
-	// "unknown" severity bucket), so enrichment becomes visible promptly.
-	if err := w.svc.RescanAll(ctx, uuid.Nil); err != nil {
-		w.logger.Warn("vuln: post-feed rescan-all enqueue failed", slog.Any("error", err))
-	}
-
+		slog.String("feed", FeedKindScanner), slog.Int("records", len(records)))
+	w.triggerRescanAll(ctx)
 	return nil
 }
 
-// ingestRecords writes all records and the meta row in one transaction using
-// bulk operations. The previous per-record loop (13k × DELETE+INSERT round-trips)
-// exceeded the River context deadline; the bulk path replaces that with:
+// workProduction streams and ingests the Production feed in bounded batches
+// (fetchAndIngestProduction) rather than buffering the whole response — see
+// the package/Work doc comments for why. On success it stamps enrichment_ok +
+// last_enrichment_at and advances the cursor (StampFeedMetaFinal); on any
+// failure (rate limit, zero records, or a mid-stream error) it falls through
+// to the shared handlers, none of which touch the cursor.
+func (w *FeedWorker) workProduction(ctx context.Context, apiKey string) error {
+	n, defiantNotice, defiantLicense, mitreNotice, requested, err := w.fetchAndIngestProduction(ctx, apiKey)
+	w.stampRequestIfMade(ctx, requested)
+	if err != nil {
+		return w.handleFetchError(ctx, FeedKindProduction, err)
+	}
+	if n == 0 {
+		w.handleZeroRecords(ctx, FeedKindProduction)
+		return nil
+	}
+
+	now := time.Now().UTC()
+	enrichOK := true
+	meta := FeedMetaUpdate{
+		FetchedAt:        now,
+		OK:               true,
+		RecordCount:      n,
+		DefiantNotice:    defiantNotice,
+		DefiantLicense:   defiantLicense,
+		MitreNotice:      mitreNotice,
+		EnrichmentOK:     &enrichOK,
+		LastEnrichmentAt: &now,
+	}
+
+	// This is what advances next_feed_kind to scanner — only reached once
+	// every batch has already been durably flushed by
+	// fetchAndIngestProduction, so a mid-stream failure (returned as err
+	// above) can never reach here.
+	if serr := w.repo.StampFeedMetaFinal(ctx, meta); serr != nil {
+		_ = w.repo.StampFeedError(ctx, serr.Error())
+		return fmt.Errorf("vuln: stamp feed meta (%s): %w", FeedKindProduction, serr)
+	}
+
+	w.logger.Info("vuln: feed refresh complete",
+		slog.String("feed", FeedKindProduction), slog.Int("records", n))
+	w.triggerRescanAll(ctx)
+	return nil
+}
+
+// ingestRecords writes all Scanner records and the meta row in one
+// transaction using bulk operations. Scanner-ONLY: Production streams and
+// flushes incrementally instead (see fetchAndIngestProduction /
+// BulkUpsertFeedRecordsPool / StampFeedMetaFinal) since it is enrichment-only
+// and does not need BulkReplaceAllSoftware/PruneMissingVulns, which require
+// the FULL Scanner ID set in one pass to be correct. The previous per-record
+// loop (13k × DELETE+INSERT round-trips) exceeded the River context deadline;
+// the bulk path replaces that with:
 //
 //  1. A pgx Batch that sends all feed-row upserts in a single round-trip. The
 //     upsert is STICKY for the enrichment columns (cvss_score, cvss_rating,
@@ -345,19 +451,14 @@ func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) 
 //     had already populated, flapping every finding's severity AND reference
 //     link-outs between real values and empty/"unknown" every other hour
 //     (GH #245 reintroduced).
-//  2. Scanner runs ONLY: a set-based DELETE of software rows for every
-//     vuln_id in the batch, then a single CopyFrom that streams all new
-//     software rows to Postgres.
-//  3. Scanner runs ONLY: PruneMissingVulns (single set-based DELETE of
-//     retracted vulns). Production's ID set is a proper SUBSET of Scanner's
-//     (it omits brand-new unrated entries), so running this off a Production
-//     batch would incorrectly delete legitimate Scanner-only rows every other
-//     cycle. Production ONLY enriches rows that already exist (or are
-//     inserted fresh via step 1) — it never determines existence.
-//  4. StampFeedMeta (single UPDATE).
+//  2. A set-based DELETE of software rows for every vuln_id in the batch,
+//     then a single CopyFrom that streams all new software rows to Postgres.
+//  3. PruneMissingVulns (single set-based DELETE of retracted vulns) — safe
+//     here because Scanner's ID set is the authoritative superset.
+//  4. StampFeedMeta (single UPDATE) — advances next_feed_kind to production.
 //
 // The entire operation is one transaction — atomic, with no partial state.
-func (w *FeedWorker) ingestRecords(ctx context.Context, records map[string]FeedRecord, knownIDs []string, meta FeedMetaUpdate, feedKind string) error {
+func (w *FeedWorker) ingestRecords(ctx context.Context, records map[string]FeedRecord, knownIDs []string, meta FeedMetaUpdate) error {
 	// Flatten the map into a slice for deterministic ordering (maps in Go are
 	// unordered; a slice makes the Batch and CopyFrom reproducible for debugging).
 	recs := make([]FeedRecord, 0, len(records))
@@ -379,13 +480,11 @@ func (w *FeedWorker) ingestRecords(ctx context.Context, records map[string]FeedR
 	if err := w.repo.BulkUpsertFeedRecords(ctx, tx, recs); err != nil {
 		return err
 	}
-	if feedKind == FeedKindScanner {
-		if err := w.repo.BulkReplaceAllSoftware(ctx, tx, recs); err != nil {
-			return err
-		}
-		if err := w.repo.PruneMissingVulns(ctx, tx, knownIDs); err != nil {
-			return err
-		}
+	if err := w.repo.BulkReplaceAllSoftware(ctx, tx, recs); err != nil {
+		return err
+	}
+	if err := w.repo.PruneMissingVulns(ctx, tx, knownIDs); err != nil {
+		return err
 	}
 	if err := w.repo.StampFeedMeta(ctx, tx, meta); err != nil {
 		return err
@@ -406,7 +505,14 @@ func (w *FeedWorker) ingestRecords(ctx context.Context, records map[string]FeedR
 // errored — DNS/connect/timeout before any response). The caller
 // (FeedWorker.Work) uses requested to decide whether to stamp last_request_at.
 func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (records map[string]FeedRecord, defiantNotice, defiantLicense, mitreNotice string, requested bool, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
+	// Bound the fetch (request + full body read/decode, which happens
+	// synchronously below before this function returns) to FeedFetchTimeout —
+	// NOT the shared httpclient's much shorter per-request Timeout. Applied to
+	// Scanner too for consistency, even though Scanner already completes fast.
+	fetchCtx, cancel := context.WithTimeout(ctx, FeedFetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, feedURL, nil)
 	if err != nil {
 		return nil, "", "", "", false, err
 	}
@@ -509,6 +615,215 @@ func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (rec
 	}
 
 	return recs, defiantNotice, defiantLicense, mitreNotice, requested, nil
+}
+
+// ProductionBatchSize is the number of Production feed records accumulated in
+// memory before each flush to the database. The Production feed carries a
+// much richer per-record payload than Scanner (full cvss/cve/cwe/copyrights/
+// remediation/raw JSON for every analyzed vulnerability), so — unlike
+// Scanner, which fetchFeed buffers entirely because its ~37k MINIMAL records
+// fit comfortably — Production MUST be streamed in bounded batches. Once the
+// wall-clock spacing fix (m102) let a Production request through cleanly for
+// the first time, buffering that response whole exceeded the pod's 1Gi
+// memory limit and SIGKILL'd it (prod incident, GH #245 third follow-up). 500
+// keeps memory bounded to roughly a handful of MB per batch regardless of
+// total feed size; 1000 would also be safe — this sits in the middle of the
+// requested 500–1000 range.
+const ProductionBatchSize = 500
+
+// fetchAndIngestProduction streams the Production feed and flushes it to
+// wordfence_vuln_feed in bounded batches of ProductionBatchSize records via
+// Repo.BulkUpsertFeedRecordsPool, so memory is O(batch) rather than O(whole
+// feed). This differs from fetchFeed (Scanner) in exactly one respect: it
+// never accumulates a full records map — the JSON is still decoded
+// token-by-token via the SAME json.Decoder approach (dec.Token() for each
+// key, dec.Decode(&rawMsg) for each value — see fetchFeed), but each decoded
+// record is appended to a small reusable batch slice that gets flushed and
+// reset (batch[:0], keeping the same backing array so memory never grows)
+// once it reaches ProductionBatchSize, instead of being retained in a
+// whole-feed map until the caller returns.
+//
+// Every batch flush goes through the SAME sticky COALESCE/NULLIF upsert as
+// Scanner (Repo.BulkUpsertFeedRecords, wrapped by BulkUpsertFeedRecordsPool
+// in its own short transaction): cve/cve_link/cvss_score/cvss_rating/cwe/
+// reference_urls are never nulled out. Production never touches software
+// rows or prunes (see ingestRecords doc) — each batch's upsert-only write is
+// independently safe to commit, so a mid-stream failure on batch K leaves
+// batches 1..K-1 durably enriched instead of losing all forward progress (an
+// improvement over the one-big-transaction approach, which would have rolled
+// back everything on any failure anyway).
+//
+// Returns: total records successfully ingested (recordCount — used for the
+// enrichment_ok=(recordCount>0) decision and the completion log), the
+// attribution strings, requested (whether the request reached Wordfence — see
+// fetchFeed doc), and error. On a mid-stream failure, recordCount reflects
+// however many records were flushed before the failure (already durable) and
+// err is non-nil; the caller (workProduction) routes err through
+// handleFetchError, which never advances the cursor — StampFeedMetaFinal
+// (the only call that does) is only reached on a nil error.
+func (w *FeedWorker) fetchAndIngestProduction(ctx context.Context, apiKey string) (recordCount int, defiantNotice, defiantLicense, mitreNotice string, requested bool, err error) {
+	// Bound the HTTP request + streamed body read to FeedFetchTimeout — NOT
+	// the shared httpclient's much shorter per-request Timeout (that 30s cap
+	// is what would make Production fail mid-stream now that the streaming
+	// fix means it no longer OOMs first). This deliberately does NOT wrap the
+	// DB flush calls below (they keep using the outer job ctx, whose deadline
+	// comes from the River job Timeout) — a slow-but-still-flushing batch
+	// write should not be cut off just because the HTTP-specific budget is
+	// tighter than the overall job budget.
+	fetchCtx, cancel := context.WithTimeout(ctx, FeedFetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, ProductionFeedURL, nil)
+	if err != nil {
+		return 0, "", "", "", false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "WPMgr-VulnScanner/1.0")
+
+	resp, doErr := w.client.Do(req)
+	if doErr != nil {
+		// Transport-level failure: no response ever came back from Wordfence,
+		// so this attempt did not consume the shared rate-limit slot.
+		return 0, "", "", "", false, fmt.Errorf("http get %s: %w", ProductionFeedURL, doErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// A response was received — from here on every return path counts as a
+	// real request against the rate-limit window, regardless of status code.
+	requested = true
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// proceed
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return 0, "", "", "", requested, fmt.Errorf("feed auth failed (HTTP %d): check the Wordfence Intelligence API key in the superadmin settings", resp.StatusCode)
+	case http.StatusTooManyRequests:
+		return 0, "", "", "", requested, fmt.Errorf("rate limited (429) fetching %s: %w", ProductionFeedURL, errRateLimited)
+	default:
+		// Bounded 512-byte diagnostic read ONLY — never the full body. This is
+		// the sole non-streaming Read on the production path, and only ever
+		// hit on an already-failed non-OK status, before any streaming begins.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return 0, "", "", "", requested, fmt.Errorf("unexpected status %d from %s: %s", resp.StatusCode, ProductionFeedURL, body)
+	}
+
+	// Stream-decode the root JSON object token-by-token — identical approach
+	// to fetchFeed — but flush in bounded batches (streamProductionRecords)
+	// below instead of accumulating a whole-feed map.
+	dec := json.NewDecoder(resp.Body)
+	if tok, terr := dec.Token(); terr != nil || tok.(json.Delim) != '{' {
+		return 0, "", "", "", requested, fmt.Errorf("expected root object from %s", ProductionFeedURL)
+	}
+
+	n, defiantNotice, defiantLicense, mitreNotice, serr := w.streamProductionRecords(dec, ProductionBatchSize,
+		func(batch []FeedRecord) error { return w.repo.BulkUpsertFeedRecordsPool(ctx, batch) })
+	return n, defiantNotice, defiantLicense, mitreNotice, requested, serr
+}
+
+// streamProductionRecords decodes key/value pairs from dec — already
+// positioned just past the feed's opening '{' — and flushes them via flush in
+// batches of at most batchSize records, resetting the batch slice (keeping
+// its backing array) after each flush so memory never exceeds batchSize
+// records regardless of total feed size. This is the core loop extracted from
+// fetchAndIngestProduction so it can be unit-tested without any HTTP/DB
+// dependency (see export_test.go's StreamProductionRecords wrapper and
+// worker_test.go's TestFeedWorker_StreamProductionRecords_* tests, which
+// assert flush is called multiple times and never with more than batchSize
+// records).
+//
+// Returns the total records successfully queued-and-flushed, the attribution
+// strings, and an error. On error, the return values reflect whatever was
+// flushed via COMPLETED flush calls before the failure — the in-progress
+// (not-yet-flushed) batch at the moment of failure is discarded, which is why
+// FeedWorker.fetchAndIngestProduction's default ProductionBatchSize keeps
+// that discarded slice small regardless of total feed size.
+func (w *FeedWorker) streamProductionRecords(dec *json.Decoder, batchSize int, flush func(batch []FeedRecord) error) (n int, defiantNotice, defiantLicense, mitreNotice string, err error) {
+	logStreamFail := func(n int, stage string, streamErr error) {
+		w.logger.Error(fmt.Sprintf("vuln: production feed stream failed at record %d", n),
+			slog.String("stage", stage), slog.Any("error", streamErr))
+	}
+
+	batch := make([]FeedRecord, 0, batchSize)
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if ferr := flush(batch); ferr != nil {
+			return ferr
+		}
+		batch = batch[:0] // reuse the backing array — memory never exceeds batchSize records
+		return nil
+	}
+
+	for dec.More() {
+		// Read the vuln UUID key.
+		keyTok, kerr := dec.Token()
+		if kerr != nil {
+			logStreamFail(n, "read_key", kerr)
+			return n, defiantNotice, defiantLicense, mitreNotice,
+				fmt.Errorf("production feed stream failed at record %d: read key: %w", n, kerr)
+		}
+		vulnID, ok := keyTok.(string)
+		if !ok {
+			continue
+		}
+
+		// Decode the record object as raw JSON first (so we can preserve it in raw).
+		var rawMsg json.RawMessage
+		if derr := dec.Decode(&rawMsg); derr != nil {
+			logStreamFail(n, "decode_record", derr)
+			return n, defiantNotice, defiantLicense, mitreNotice,
+				fmt.Errorf("production feed stream failed at record %d (%s): decode: %w", n, vulnID, derr)
+		}
+
+		rec, notice, license, mitre, perr := parseFeedRecord(vulnID, rawMsg)
+		if perr != nil {
+			if errors.Is(perr, errNoUsableSoftware) {
+				// A record with no usable software cannot match any site inventory.
+				// Skip at Debug level — this is expected for certain informational entries.
+				w.logger.Debug("vuln: skipping record with no usable software",
+					slog.String("vuln_id", vulnID))
+			} else {
+				// Defensive catch-all: parseFeedRecord is designed to never return other
+				// errors, but guard here anyway.
+				w.logger.Warn("vuln: skipping unparseable record",
+					slog.String("vuln_id", vulnID), slog.Any("error", perr))
+			}
+			continue
+		}
+
+		batch = append(batch, rec)
+		n++
+
+		// Capture the first non-empty attribution texts seen.
+		if defiantNotice == "" && notice != "" {
+			defiantNotice = notice
+		}
+		if defiantLicense == "" && license != "" {
+			defiantLicense = license
+		}
+		if mitreNotice == "" && mitre != "" {
+			mitreNotice = mitre
+		}
+
+		if len(batch) >= batchSize {
+			if ferr := flushBatch(); ferr != nil {
+				logStreamFail(n, "flush_batch", ferr)
+				return n, defiantNotice, defiantLicense, mitreNotice,
+					fmt.Errorf("production feed stream failed at record %d: flush batch: %w", n, ferr)
+			}
+		}
+	}
+
+	// Flush the remainder (fewer than batchSize records left over).
+	if ferr := flushBatch(); ferr != nil {
+		logStreamFail(n, "flush_final_batch", ferr)
+		return n, defiantNotice, defiantLicense, mitreNotice,
+			fmt.Errorf("production feed stream failed at record %d: flush final batch: %w", n, ferr)
+	}
+
+	return n, defiantNotice, defiantLicense, mitreNotice, nil
 }
 
 // ---------------------------------------------------------------------------
