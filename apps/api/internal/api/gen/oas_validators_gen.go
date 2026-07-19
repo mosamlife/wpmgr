@@ -1820,6 +1820,17 @@ func (s *AlertConfig) Validate() error {
 			Error: err,
 		})
 	}
+	if err := func() error {
+		if err := s.VulnMinSeverity.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "vuln_min_severity",
+			Error: err,
+		})
+	}
 	if len(failures) > 0 {
 		return &validate.Error{Fields: failures}
 	}
@@ -1869,10 +1880,58 @@ func (s *AlertConfigUpdate) Validate() error {
 			Error: err,
 		})
 	}
+	if err := func() error {
+		if value, ok := s.VulnMinSeverity.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "vuln_min_severity",
+			Error: err,
+		})
+	}
 	if len(failures) > 0 {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s AlertConfigUpdateVulnMinSeverity) Validate() error {
+	switch s {
+	case "critical":
+		return nil
+	case "high":
+		return nil
+	case "medium":
+		return nil
+	case "low":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AlertConfigVulnMinSeverity) Validate() error {
+	switch s {
+	case "critical":
+		return nil
+	case "high":
+		return nil
+	case "medium":
+		return nil
+	case "low":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s *ApiKey) Validate() error {

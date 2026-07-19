@@ -4597,8 +4597,16 @@ export const UptimeSummaryItemSchema = {
 export const AlertConfigSchema = {
   type: "object",
   description:
-    "A tenant's uptime alert channel. The webhook secret is write-only and is\nnever returned; webhook_configured indicates whether a webhook URL is set.\n",
-  required: ["email_recipients", "enabled", "webhook_configured"],
+    "A tenant's alert channel, shared by uptime downtime/recovery,\nhigh-severity security events, and vulnerability alerting (GH #247).\nThe webhook secret is write-only and is never returned;\nwebhook_configured indicates whether a webhook URL is set.\n",
+  required: [
+    "email_recipients",
+    "enabled",
+    "webhook_configured",
+    "notify_security",
+    "notify_vulns",
+    "vuln_min_severity",
+    "vuln_include_in_digest",
+  ],
   properties: {
     email_recipients: {
       type: "array",
@@ -4616,12 +4624,33 @@ export const AlertConfigSchema = {
     enabled: {
       type: "boolean",
     },
+    notify_security: {
+      type: "boolean",
+      description:
+        "Routes high-severity activity-log security events into this same\nchannel (email + webhook).\n",
+    },
+    notify_vulns: {
+      type: "boolean",
+      description:
+        "Routes new vulnerability findings into this same channel (email +\nwebhook). Opt-in; default false.\n",
+    },
+    vuln_min_severity: {
+      type: "string",
+      enum: ["critical", "high", "medium", "low"],
+      description:
+        "The minimum severity that triggers a vulnerability alert. A\nfinding with unknown severity (no CVSS data yet) always alerts\nregardless of this threshold.\n",
+    },
+    vuln_include_in_digest: {
+      type: "boolean",
+      description:
+        "Whether open vulnerabilities appear in the periodic email digest\n(see EmailNotifySettings). Default true.\n",
+    },
   },
 } as const;
 
 export const AlertConfigUpdateSchema = {
   type: "object",
-  description: "Create or update the tenant's uptime alert channel.",
+  description: "Create or update the tenant's alert channel.",
   properties: {
     email_recipients: {
       type: "array",
@@ -4640,6 +4669,24 @@ export const AlertConfigUpdateSchema = {
     enabled: {
       type: "boolean",
       default: true,
+    },
+    notify_security: {
+      type: "boolean",
+      description:
+        "Omitted preserves the tenant's currently-stored value (all fields\nin this update body are optional and independently preservable).\n",
+    },
+    notify_vulns: {
+      type: "boolean",
+      description: "Omitted preserves the tenant's currently-stored value.",
+    },
+    vuln_min_severity: {
+      type: "string",
+      enum: ["critical", "high", "medium", "low"],
+      description: "Omitted preserves the tenant's currently-stored value.",
+    },
+    vuln_include_in_digest: {
+      type: "boolean",
+      description: "Omitted preserves the tenant's currently-stored value.",
     },
   },
 } as const;

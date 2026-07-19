@@ -57,7 +57,7 @@ func (q *Queries) CountRecentIncidents(ctx context.Context, arg CountRecentIncid
 
 const getAlertConfig = `-- name: GetAlertConfig :one
 
-SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, created_at, updated_at FROM alert_configs
+SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, created_at, updated_at FROM alert_configs
 WHERE tenant_id = $1
 `
 
@@ -74,6 +74,9 @@ func (q *Queries) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (Alert
 		&i.WebhookSecret,
 		&i.Enabled,
 		&i.NotifySecurity,
+		&i.NotifyVulns,
+		&i.VulnMinSeverity,
+		&i.VulnIncludeInDigest,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -186,7 +189,7 @@ func (q *Queries) GetSiteAlertStateForUpdate(ctx context.Context, siteID uuid.UU
 }
 
 const listAlertConfigsAllTenants = `-- name: ListAlertConfigsAllTenants :many
-SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, created_at, updated_at FROM alert_configs
+SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, created_at, updated_at FROM alert_configs
 WHERE enabled = true
 `
 
@@ -209,6 +212,9 @@ func (q *Queries) ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig
 			&i.WebhookSecret,
 			&i.Enabled,
 			&i.NotifySecurity,
+			&i.NotifyVulns,
+			&i.VulnMinSeverity,
+			&i.VulnIncludeInDigest,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -262,28 +268,43 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) erro
 }
 
 const upsertAlertConfig = `-- name: UpsertAlertConfig :one
-INSERT INTO alert_configs (tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO alert_configs (
+    tenant_id, email_recipients, webhook_url, webhook_secret, enabled,
+    notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (tenant_id) DO UPDATE
-SET email_recipients = EXCLUDED.email_recipients,
-    webhook_url       = EXCLUDED.webhook_url,
-    webhook_secret    = EXCLUDED.webhook_secret,
-    enabled           = EXCLUDED.enabled,
-    notify_security   = EXCLUDED.notify_security,
-    updated_at        = now()
-RETURNING id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, created_at, updated_at
+SET email_recipients       = EXCLUDED.email_recipients,
+    webhook_url             = EXCLUDED.webhook_url,
+    webhook_secret          = EXCLUDED.webhook_secret,
+    enabled                 = EXCLUDED.enabled,
+    notify_security         = EXCLUDED.notify_security,
+    notify_vulns            = EXCLUDED.notify_vulns,
+    vuln_min_severity       = EXCLUDED.vuln_min_severity,
+    vuln_include_in_digest  = EXCLUDED.vuln_include_in_digest,
+    updated_at              = now()
+RETURNING id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, created_at, updated_at
 `
 
 type UpsertAlertConfigParams struct {
-	TenantID        uuid.UUID `json:"tenant_id"`
-	EmailRecipients []string  `json:"email_recipients"`
-	WebhookUrl      string    `json:"webhook_url"`
-	WebhookSecret   string    `json:"webhook_secret"`
-	Enabled         bool      `json:"enabled"`
-	NotifySecurity  bool      `json:"notify_security"`
+	TenantID            uuid.UUID `json:"tenant_id"`
+	EmailRecipients     []string  `json:"email_recipients"`
+	WebhookUrl          string    `json:"webhook_url"`
+	WebhookSecret       string    `json:"webhook_secret"`
+	Enabled             bool      `json:"enabled"`
+	NotifySecurity      bool      `json:"notify_security"`
+	NotifyVulns         bool      `json:"notify_vulns"`
+	VulnMinSeverity     string    `json:"vuln_min_severity"`
+	VulnIncludeInDigest bool      `json:"vuln_include_in_digest"`
 }
 
 // Tenant-scoped create-or-update of the tenant's default alert channel.
+// m103 (GH #247): notify_vulns/vuln_min_severity/vuln_include_in_digest are
+// the vulnerability-alerting fields — the service layer (uptime.Service.
+// SaveAlertConfig) is responsible for merging omitted-on-PUT fields from the
+// existing row before calling this query (see the mergeAlertConfigUpdate /
+// Or(existing.X) pattern in handler.go); this query always writes exactly
+// what it is given.
 func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error) {
 	row := q.db.QueryRow(ctx, upsertAlertConfig,
 		arg.TenantID,
@@ -292,6 +313,9 @@ func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigPa
 		arg.WebhookSecret,
 		arg.Enabled,
 		arg.NotifySecurity,
+		arg.NotifyVulns,
+		arg.VulnMinSeverity,
+		arg.VulnIncludeInDigest,
 	)
 	var i AlertConfig
 	err := row.Scan(
@@ -302,6 +326,9 @@ func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigPa
 		&i.WebhookSecret,
 		&i.Enabled,
 		&i.NotifySecurity,
+		&i.NotifyVulns,
+		&i.VulnMinSeverity,
+		&i.VulnIncludeInDigest,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

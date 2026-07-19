@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -135,5 +136,92 @@ func TestNextDigestAt_Daily(t *testing.T) {
 	}
 	if next.Hour() != 8 {
 		t.Errorf("expected hour 8, got %d", next.Hour())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// m103 (GH #247) — vulnerability digest section
+// ---------------------------------------------------------------------------
+
+// fakeVulnDigestSource is a test double for VulnDigestSource.
+type fakeVulnDigestSource struct {
+	summary  VulnDigestSummary
+	included bool
+	err      error
+}
+
+func (f *fakeVulnDigestSource) GetVulnDigestSummary(_ context.Context, _ uuid.UUID) (VulnDigestSummary, bool, error) {
+	return f.summary, f.included, f.err
+}
+
+// TestBuildDigestData_VulnOnly_StillSends is the widened-skip-send
+// regression: a tenant with ZERO email activity but open vulnerabilities
+// (and vuln_include_in_digest on) must still receive a digest instead of
+// being silently skipped — the pre-m103 rule skipped whenever the email
+// Total was 0, which would have suppressed a vuln-only digest entirely.
+func TestBuildDigestData_VulnOnly_StillSends(t *testing.T) {
+	tenantID := uuid.New()
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = newFakeRepo()
+	svc.vulnDigest = &fakeVulnDigestSource{
+		included: true,
+		summary: VulnDigestSummary{
+			OpenCount:         3,
+			CriticalHighCount: 1,
+			Top: []VulnDigestItem{
+				{SiteName: "example.com", Component: "Plugin: Foo", Severity: "Critical", CVE: "CVE-2024-1"},
+			},
+		},
+	}
+	settings := defaultNotifySettings(tenantID)
+	from, to := time.Now().AddDate(0, 0, -7), time.Now()
+
+	data, err := svc.buildDigestData(context.Background(), tenantID, settings, from, to)
+	if err != nil {
+		t.Fatalf("buildDigestData: %v", err)
+	}
+	if data == nil {
+		t.Fatal("expected a non-nil digest data map for a vuln-only period (widened skip-send)")
+	}
+	if data["Total"] != int64(0) {
+		t.Errorf("Total should still reflect zero email activity, got %v", data["Total"])
+	}
+	if data["OpenVulnCount"] != 3 {
+		t.Errorf("OpenVulnCount = %v, want 3", data["OpenVulnCount"])
+	}
+	if data["CriticalHighCount"] != 1 {
+		t.Errorf("CriticalHighCount = %v, want 1", data["CriticalHighCount"])
+	}
+	topVulns, ok := data["TopVulns"].([]map[string]any)
+	if !ok || len(topVulns) != 1 {
+		t.Fatalf("expected 1 TopVulns entry, got %v", data["TopVulns"])
+	}
+	if data["VulnDashboardURL"] == "" {
+		t.Error("expected a non-empty VulnDashboardURL")
+	}
+}
+
+// TestBuildDigestData_FlagOff_OmitsSection_PreservesZeroSkip proves the
+// vuln_include_in_digest gate: when the flag is off (included=false, even
+// though the source has open findings), the vuln section is entirely absent
+// from the data, AND the original Total==0 skip-send rule still applies when
+// there is also no email activity.
+func TestBuildDigestData_FlagOff_OmitsSection_PreservesZeroSkip(t *testing.T) {
+	tenantID := uuid.New()
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = newFakeRepo()
+	svc.vulnDigest = &fakeVulnDigestSource{
+		included: false, // flag off
+		summary:  VulnDigestSummary{OpenCount: 5},
+	}
+	settings := defaultNotifySettings(tenantID)
+	from, to := time.Now().AddDate(0, 0, -7), time.Now()
+
+	data, err := svc.buildDigestData(context.Background(), tenantID, settings, from, to)
+	if err != nil {
+		t.Fatalf("buildDigestData: %v", err)
+	}
+	if data != nil {
+		t.Fatalf("expected skip-send (nil) when the flag is off and there is no email activity, got %v", data)
 	}
 }

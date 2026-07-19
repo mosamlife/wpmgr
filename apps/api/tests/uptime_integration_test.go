@@ -95,6 +95,7 @@ func TestUptimeProbeAlertsTransitionDedupe(t *testing.T) {
 		WebhookURL:      hook.URL,
 		WebhookSecret:   "s3cr3t",
 		Enabled:         true,
+		VulnMinSeverity: uptime.VulnSeverityHigh, // m103 (GH #247): NOT NULL + CHECK enum
 	}); err != nil {
 		t.Fatalf("upsert alert config: %v", err)
 	}
@@ -723,6 +724,11 @@ func TestAlertConfigRLS(t *testing.T) {
 		TenantID:        tenantA,
 		EmailRecipients: []string{"a@example.com"},
 		Enabled:         true,
+		// m103 (GH #247): vuln_min_severity is NOT NULL with a CHECK enum;
+		// the service layer always defaults this before calling the repo
+		// (see mergeAlertConfigUpdate / defaultNotifySettings-style
+		// defaults), but this test calls the repo directly.
+		VulnMinSeverity: uptime.VulnSeverityHigh,
 	}); err != nil {
 		t.Fatalf("upsert config A: %v", err)
 	}

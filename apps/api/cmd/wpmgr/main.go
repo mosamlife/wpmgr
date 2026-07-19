@@ -1590,6 +1590,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	})
 	vulnFeedWorker := vuln.NewFeedWorker(vulnRepo, pool, nil /*svc: wired below*/, vulnFeedKeySvc, vulnFeedHTTPClient, logger)
 	vulnRescanWorker := vuln.NewRescanSiteWorker(nil /*svc: wired below*/, logger)
+	// m103 (GH #247) — batched vulnerability-alert dispatch worker; svc and
+	// the debounced enqueuer are wired below once riverClient is up.
+	vulnAlertDispatchWorker := vuln.NewAlertDispatchWorker(nil /*svc: wired below*/, logger)
 
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
 		healthChecker:          healthChecker,
@@ -1654,6 +1657,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// when WPMGR_WORDFENCE_API_KEY is unset).
 		vulnFeedWorker:   vulnFeedWorker,
 		vulnRescanWorker: vulnRescanWorker,
+		// m103 (GH #247) — batched vulnerability-alert dispatch (always wired).
+		vulnAlertDispatchWorker: vulnAlertDispatchWorker,
 		// m82 — file-transfers GC (always non-nil; object deletion is a no-op
 		// when S3 is not configured).
 		fileTransfersGCWorker: fileTransfersGCWorker,
@@ -1733,6 +1738,26 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// PUT /admin/vuln-feed/key endpoint can trigger an immediate sync.
 	vulnFeedKeySvc.SetEnqueuer(vulnFeedRefreshEnq)
 	vulnH := vuln.NewHandler(vulnSvc, vulnRescanEnq, auditRec)
+
+	// m103 (GH #247) — vulnerability alerting: the debounced dispatch
+	// enqueuer (RescanSiteWorker.Work triggers it after every successful
+	// rescan), the dispatch worker's service pointer, and the vuln service's
+	// mailer/webhook/alert-config wiring. Reuses the SAME templated-mailer
+	// queue (mailer.NewEnqueuer) as every other transactional email, and the
+	// SAME signed-webhook channel as uptime/security alerts
+	// (uptimeDispatcher.PostSignedWebhook, via vulnWebhookAdapter) rather than
+	// standing up a parallel notification system.
+	vulnAlertDispatchEnq := vuln.NewRiverAlertDispatchEnqueuer(riverClient)
+	vulnAlertDispatchWorker.SetService(vulnSvc)
+	vulnRescanWorker.SetAlertDispatchEnqueuer(vulnAlertDispatchEnq)
+	vulnSvc.SetMailer(mailer.NewEnqueuer(mailerSvc, riverClient))
+	vulnSvc.SetWebhookPoster(vulnWebhookAdapter{d: uptimeDispatcher})
+	vulnSvc.SetAlertConfigReader(vulnAlertConfigAdapter{svc: uptimeSvc})
+	vulnSvc.SetPublicBase(emailPublicBase)
+	// The email digest's "new vulnerabilities" section composes the uptime
+	// alert-config gate (vuln_include_in_digest) with the vuln service's
+	// fleet summary — see vulnDigestSourceAdapter.
+	emailSvc.SetVulnDigestSource(vulnDigestSourceAdapter{uptime: uptimeSvc, vuln: vulnSvc})
 
 	// M23 Media Optimizer: wire the EncodeArgs enqueuer now that River has
 	// started. The enqueuer lives in the PURE media package (no encoder import),
@@ -2751,6 +2776,8 @@ type riverDeps struct {
 	// WPMGR_WORDFENCE_API_KEY is not set.
 	vulnFeedWorker   *vuln.FeedWorker
 	vulnRescanWorker *vuln.RescanSiteWorker
+	// m103 (GH #247) — batched vulnerability-alert dispatch worker. Always wired.
+	vulnAlertDispatchWorker *vuln.AlertDispatchWorker
 	// m82 — File-transfers GC: deletes stale file_transfers rows (and best-effort
 	// deletes their staged objects) once per day. Always wired; object deletion is
 	// a no-op when the object store is not configured.
@@ -3200,6 +3227,14 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	if d.vulnRescanWorker != nil {
 		river.AddWorker(workers, d.vulnRescanWorker)
 		queues[vuln.RescanSiteQueue] = river.QueueConfig{MaxWorkers: 8}
+	}
+	// m103 (GH #247) — batched vulnerability-alert dispatch. Debounced
+	// enqueue happens in RescanSiteWorker.Work (5-minute delay + 10-minute
+	// dedupe window — see vuln.EnqueueAlertDispatch); no periodic schedule of
+	// its own is needed since every rescan wave re-triggers it.
+	if d.vulnAlertDispatchWorker != nil {
+		river.AddWorker(workers, d.vulnAlertDispatchWorker)
+		queues[vuln.AlertDispatchQueue] = river.QueueConfig{MaxWorkers: 1}
 	}
 
 	// m82 — file-transfers GC: prunes stale file_transfers rows (and their

@@ -285,12 +285,15 @@ func (r *pgRepo) UpsertAlertConfig(ctx context.Context, cfg AlertConfig) (AlertC
 	var out AlertConfig
 	err := r.pool.InTenantTx(ctx, cfg.TenantID, func(tx pgx.Tx) error {
 		row, err := sqlc.New(tx).UpsertAlertConfig(ctx, sqlc.UpsertAlertConfigParams{
-			TenantID:        cfg.TenantID,
-			EmailRecipients: recipients,
-			WebhookUrl:      cfg.WebhookURL,
-			WebhookSecret:   cfg.WebhookSecret,
-			Enabled:         cfg.Enabled,
-			NotifySecurity:  cfg.NotifySecurity,
+			TenantID:            cfg.TenantID,
+			EmailRecipients:     recipients,
+			WebhookUrl:          cfg.WebhookURL,
+			WebhookSecret:       cfg.WebhookSecret,
+			Enabled:             cfg.Enabled,
+			NotifySecurity:      cfg.NotifySecurity,
+			NotifyVulns:         cfg.NotifyVulns,
+			VulnMinSeverity:     cfg.VulnMinSeverity,
+			VulnIncludeInDigest: cfg.VulnIncludeInDigest,
 		})
 		if err != nil {
 			return domain.Internal("uptime_upsert_config_failed", "failed to save alert config").WithCause(err)
@@ -519,13 +522,16 @@ func alertConfigFromRow(row sqlc.AlertConfig) AlertConfig {
 		recipients = []string{}
 	}
 	return AlertConfig{
-		TenantID:        row.TenantID,
-		EmailRecipients: recipients,
-		WebhookURL:      row.WebhookUrl,
-		WebhookSecret:   row.WebhookSecret,
-		Enabled:         row.Enabled,
-		NotifySecurity:  row.NotifySecurity,
-		UpdatedAt:       row.UpdatedAt,
+		TenantID:            row.TenantID,
+		EmailRecipients:     recipients,
+		WebhookURL:          row.WebhookUrl,
+		WebhookSecret:       row.WebhookSecret,
+		Enabled:             row.Enabled,
+		NotifySecurity:      row.NotifySecurity,
+		NotifyVulns:         row.NotifyVulns,
+		VulnMinSeverity:     row.VulnMinSeverity,
+		VulnIncludeInDigest: row.VulnIncludeInDigest,
+		UpdatedAt:           row.UpdatedAt,
 	}
 }
 

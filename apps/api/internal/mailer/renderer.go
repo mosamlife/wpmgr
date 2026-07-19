@@ -32,6 +32,8 @@ var subjects = map[string]string{
 	// m62: per-site email alerts + digest.
 	"email_failure_alert": "Email delivery failures detected",
 	"email_digest":        "Your WPMgr email delivery digest",
+	// m103 (GH #247): vulnerability alerting.
+	"vuln_alert": "New vulnerabilities detected",
 	// m64: white-label client reports.
 	"report_ready": "Your website report is ready",
 	// m66: client portal.

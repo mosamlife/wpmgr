@@ -23,6 +23,14 @@ TOP FAILURES
   Error: {{.Error}}
 {{end}}
 {{end}}
+{{if .TopVulns}}
+NEW VULNERABILITIES ({{.OpenVulnCount}} open, {{.CriticalHighCount}} critical/high)
+--------------------
+{{range .TopVulns}}{{.SiteName}} — {{.Component}}
+  {{.Severity}}{{if .CVE}} ({{.CVE}}){{end}}
+{{end}}
+View all vulnerabilities: {{.VulnDashboardURL}}
+{{end}}
 Open email dashboard: {{.DashboardURL}}
 
 ---

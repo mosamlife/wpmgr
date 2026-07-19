@@ -1841,6 +1841,12 @@ type Querier interface {
 	// row (0 rows = operator has never saved a config for this site).
 	UpdateWooThemeFragmentsSupported(ctx context.Context, arg UpdateWooThemeFragmentsSupportedParams) (int64, error)
 	// Tenant-scoped create-or-update of the tenant's default alert channel.
+	// m103 (GH #247): notify_vulns/vuln_min_severity/vuln_include_in_digest are
+	// the vulnerability-alerting fields — the service layer (uptime.Service.
+	// SaveAlertConfig) is responsible for merging omitted-on-PUT fields from the
+	// existing row before calling this query (see the mergeAlertConfigUpdate /
+	// Or(existing.X) pattern in handler.go); this query always writes exactly
+	// what it is given.
 	UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error)
 	// Moves the tenant's integrity anchor to the given chain-head snapshot. At
 	// most one row per tenant (PRIMARY KEY tenant_id) — a second re-baseline

@@ -108,9 +108,13 @@ func (m *SMTPMailer) Send(ctx context.Context, recipients []string, subject, bod
 }
 
 // WebhookPoster delivers a signed alert webhook. An interface so the evaluator
-// can be tested without real network I/O.
+// can be tested without real network I/O. payload is `any` (not the
+// uptime-specific WebhookPayload struct) so the SAME signing + SSRF-hardened
+// delivery can be reused for other alert-producing domains' payload shapes —
+// see Dispatcher.PostSignedWebhook, used by internal/vuln's batched
+// vulnerability-findings webhook (m103, GH #247).
 type WebhookPoster interface {
-	Post(ctx context.Context, url, secret string, payload WebhookPayload) error
+	Post(ctx context.Context, url, secret string, payload any) error
 }
 
 // WebhookPayload is the JSON body POSTed to an alert webhook.
@@ -138,8 +142,10 @@ func NewSSRFWebhookPoster(client *httpclient.Client) *SSRFWebhookPoster {
 }
 
 // Post marshals, signs (HMAC-SHA256 hex over the body), and POSTs the payload.
-// The Client.Do path already applies bounded retries with backoff.
-func (p *SSRFWebhookPoster) Post(ctx context.Context, url, secret string, payload WebhookPayload) error {
+// The Client.Do path already applies bounded retries with backoff. payload is
+// `any` and marshaled via encoding/json — any JSON-serializable struct works,
+// not just WebhookPayload (see the interface doc above).
+func (p *SSRFWebhookPoster) Post(ctx context.Context, url, secret string, payload any) error {
 	if url == "" {
 		return nil
 	}

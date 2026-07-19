@@ -176,28 +176,19 @@ func (h *Handler) putAlertConfig(c *gin.Context) {
 		return
 	}
 
-	// Read the existing config so an omitted webhook_secret preserves the stored
-	// one (the secret is write-only and never echoed back, so the client cannot
-	// resubmit it).
+	// Read the existing config so every OMITTED optional field preserves its
+	// stored value instead of resetting to a hardcoded default. Before m103
+	// this handler only did this for webhook_secret — every other optional
+	// field (including notify_security) was unconditionally overwritten with
+	// its Go zero value/hardcoded default on every PUT, so e.g. saving a
+	// webhook_secret rotation with notify_security omitted silently turned
+	// notify_security back off. See mergeAlertConfigUpdate.
 	existing, err := h.svc.GetAlertConfig(c.Request.Context(), tenantID)
 	if err != nil {
 		httpx.Error(c, err)
 		return
 	}
-	recipients := req.EmailRecipients
-	if recipients == nil {
-		recipients = []string{}
-	}
-	cfg := AlertConfig{
-		TenantID:        tenantID,
-		EmailRecipients: recipients,
-		WebhookURL:      req.WebhookURL.Or(""),
-		WebhookSecret:   existing.WebhookSecret,
-		Enabled:         req.Enabled.Or(true),
-	}
-	if req.WebhookSecret.Set {
-		cfg.WebhookSecret = req.WebhookSecret.Value
-	}
+	cfg := mergeAlertConfigUpdate(tenantID, existing, req)
 
 	saved, err := h.svc.SaveAlertConfig(c.Request.Context(), cfg)
 	if err != nil {
@@ -205,11 +196,44 @@ func (h *Handler) putAlertConfig(c *gin.Context) {
 		return
 	}
 	h.record(c, tenantID, map[string]any{
-		"email_recipients":   len(saved.EmailRecipients),
-		"webhook_configured": saved.WebhookURL != "",
-		"enabled":            saved.Enabled,
+		"email_recipients":       len(saved.EmailRecipients),
+		"webhook_configured":     saved.WebhookURL != "",
+		"enabled":                saved.Enabled,
+		"notify_security":        saved.NotifySecurity,
+		"notify_vulns":           saved.NotifyVulns,
+		"vuln_min_severity":      saved.VulnMinSeverity,
+		"vuln_include_in_digest": saved.VulnIncludeInDigest,
 	})
 	c.JSON(http.StatusOK, alertConfigToAPI(saved))
+}
+
+// mergeAlertConfigUpdate applies a partial AlertConfigUpdate onto the
+// tenant's existing config. Every optional field follows the same
+// nil-sentinel "Or(existing.X)" pattern: an omitted field in the request body
+// preserves whatever is already stored rather than resetting it to a zero
+// value/hardcoded default. Declared as a pure function (no I/O) so the m103
+// regression — notify_security being unconditionally dropped on every PUT —
+// is directly unit-testable without a database or HTTP round-trip.
+func mergeAlertConfigUpdate(tenantID uuid.UUID, existing AlertConfig, req gen.AlertConfigUpdate) AlertConfig {
+	recipients := req.EmailRecipients
+	if recipients == nil {
+		recipients = []string{}
+	}
+	cfg := AlertConfig{
+		TenantID:            tenantID,
+		EmailRecipients:     recipients,
+		WebhookURL:          req.WebhookURL.Or(existing.WebhookURL),
+		WebhookSecret:       existing.WebhookSecret,
+		Enabled:             req.Enabled.Or(existing.Enabled),
+		NotifySecurity:      req.NotifySecurity.Or(existing.NotifySecurity),
+		NotifyVulns:         req.NotifyVulns.Or(existing.NotifyVulns),
+		VulnMinSeverity:     string(req.VulnMinSeverity.Or(gen.AlertConfigUpdateVulnMinSeverity(existing.VulnMinSeverity))),
+		VulnIncludeInDigest: req.VulnIncludeInDigest.Or(existing.VulnIncludeInDigest),
+	}
+	if req.WebhookSecret.Set {
+		cfg.WebhookSecret = req.WebhookSecret.Value
+	}
+	return cfg
 }
 
 func (h *Handler) record(c *gin.Context, tenantID uuid.UUID, meta map[string]any) {
@@ -377,9 +401,13 @@ func alertConfigToAPI(cfg AlertConfig) *gen.AlertConfig {
 		recipients = []string{}
 	}
 	out := &gen.AlertConfig{
-		EmailRecipients:   recipients,
-		WebhookConfigured: cfg.WebhookURL != "",
-		Enabled:           cfg.Enabled,
+		EmailRecipients:     recipients,
+		WebhookConfigured:   cfg.WebhookURL != "",
+		Enabled:             cfg.Enabled,
+		NotifySecurity:      cfg.NotifySecurity,
+		NotifyVulns:         cfg.NotifyVulns,
+		VulnMinSeverity:     gen.AlertConfigVulnMinSeverity(cfg.VulnMinSeverity),
+		VulnIncludeInDigest: cfg.VulnIncludeInDigest,
 	}
 	if cfg.WebhookURL != "" {
 		out.WebhookURL = gen.NewOptString(cfg.WebhookURL)

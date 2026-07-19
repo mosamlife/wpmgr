@@ -258,6 +258,26 @@ func (s *Service) insertLog(ctx context.Context, tenantID uuid.UUID, recipients 
 	return id
 }
 
+// insertLogTx writes a pending email_log row using the CALLER'S transaction
+// instead of opening a new one via InAgentTx — used by Enqueuer.EnqueueTx so
+// the log row + the send_email River job insert commit atomically with
+// whatever else the caller is doing in the same tx (see EnqueueTx doc).
+// tx must already carry a GUC (app.tenant_id or app.agent) satisfying
+// email_log's RLS policies — the caller's InTenantTx/InAgentTx wrapper does
+// this; insertLogTx itself sets nothing.
+func (s *Service) insertLogTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, recipients []string, subject, template string) (uuid.UUID, error) {
+	row, err := sqlc.New(tx).InsertEmailLog(ctx, sqlc.InsertEmailLogParams{
+		TenantID:    pgUUID(tenantID),
+		ToAddresses: recipients,
+		Subject:     subject,
+		Template:    template,
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return row.ID, nil
+}
+
 func (s *Service) markSent(ctx context.Context, id uuid.UUID) {
 	if id == uuid.Nil {
 		return

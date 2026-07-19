@@ -144,7 +144,13 @@ func (s *Service) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (Alert
 		return AlertConfig{}, err
 	}
 	if !found {
-		return AlertConfig{TenantID: tenantID, EmailRecipients: []string{}, Enabled: true}, nil
+		return AlertConfig{
+			TenantID:            tenantID,
+			EmailRecipients:     []string{},
+			Enabled:             true,
+			VulnMinSeverity:     VulnSeverityHigh,
+			VulnIncludeInDigest: true,
+		}, nil
 	}
 	return cfg, nil
 }
@@ -338,6 +344,10 @@ func (s *Service) SaveAlertConfig(ctx context.Context, cfg AlertConfig) (AlertCo
 		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") {
 			return AlertConfig{}, domain.Validation("webhook_url_scheme", "webhook_url must be an http or https URL")
 		}
+	}
+	if !ValidVulnMinSeverity(cfg.VulnMinSeverity) {
+		return AlertConfig{}, domain.Validation("invalid_vuln_min_severity",
+			"vuln_min_severity must be one of: critical, high, medium, low")
 	}
 	return s.repo.UpsertAlertConfig(ctx, cfg)
 }

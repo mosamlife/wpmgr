@@ -93,6 +93,42 @@ func sampleData(name string) map[string]any {
 			{"SiteName": "example.com", "Subject": "Order receipt", "Error": "550 mailbox unavailable"},
 		}
 		common["DashboardURL"] = "https://manage.wpmgr.app/email"
+		// m103 (GH #247): mirrors the shape buildDigestData adds when
+		// alert_configs.vuln_include_in_digest is on.
+		common["OpenVulnCount"] = 4
+		common["CriticalHighCount"] = 2
+		common["TopVulns"] = []map[string]any{
+			{"SiteName": "example.com", "Component": "Plugin: Rank Math SEO", "Severity": "Critical", "CVE": "CVE-2024-12345"},
+			{"SiteName": "shop.example.com", "Component": "Plugin: WooCommerce", "Severity": "High", "CVE": ""},
+		}
+		common["VulnDashboardURL"] = "https://manage.wpmgr.app/vulnerabilities"
+	case "vuln_alert":
+		// Mirrors the production shape built in vuln/alertdispatch.go
+		// buildVulnAlertEmailData: severity-rank-desc grouped per site, an
+		// empty FixedVersion is pre-formatted to "no fixed version yet", and
+		// OverflowCount is set to exercise the "+N more" summary line.
+		common["NewCount"] = 3
+		common["SiteCount"] = 2
+		common["Sites"] = []map[string]any{
+			{
+				"SiteName": "example.com",
+				"SiteURL":  "https://example.com",
+				"Findings": []map[string]any{
+					{"Component": "Plugin: Rank Math SEO", "InstalledVersion": "1.0.98", "FixedVersion": "1.0.114", "Severity": "Critical", "CVE": "CVE-2024-12345"},
+					{"Component": "Theme: Astra", "InstalledVersion": "4.6.0", "FixedVersion": "no fixed version yet", "Severity": "Unknown (no CVSS yet)", "CVE": ""},
+				},
+			},
+			{
+				"SiteName": "shop.example.com",
+				"SiteURL":  "https://shop.example.com",
+				"Findings": []map[string]any{
+					{"Component": "Plugin: WooCommerce", "InstalledVersion": "8.0.0", "FixedVersion": "8.0.3", "Severity": "High", "CVE": ""},
+				},
+			},
+		}
+		common["OverflowCount"] = 5
+		common["DashboardURL"] = "https://manage.wpmgr.app/vulnerabilities"
+		common["FooterNote"] = "You are receiving this because vulnerability alerts are enabled for this account. Manage this in Alerts settings."
 	}
 	return common
 }
