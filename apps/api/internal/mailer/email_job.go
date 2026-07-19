@@ -90,3 +90,33 @@ func (e *Enqueuer) Enqueue(ctx context.Context, tenantID uuid.UUID, recipients [
 	}
 	return nil
 }
+
+// EnqueueTx behaves like Enqueue but inserts BOTH the email_log row and the
+// send_email River job inside the CALLER's transaction (tx) instead of
+// opening new ones, so the enqueue commits or rolls back atomically with
+// whatever else the caller is doing in the same tx. This is a transactional
+// outbox: internal/vuln's alert dispatcher uses it to enqueue a batched
+// vuln_alert email in the SAME tx as claiming the underlying findings
+// (stamping notified_at) — if the email enqueue fails, the whole tx rolls
+// back and the claim is undone, so the findings are retried on the next
+// dispatch cycle instead of being silently claimed-but-unemailed.
+func (e *Enqueuer) EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, recipients []string, template string, data map[string]any) error {
+	subject, ok := subjects[template]
+	if !ok {
+		return fmt.Errorf("unknown email template %q", template)
+	}
+	logID, err := e.svc.insertLogTx(ctx, tx, tenantID, recipients, subject, template)
+	if err != nil {
+		return fmt.Errorf("insert email log (tx): %w", err)
+	}
+	if _, err := e.client.InsertTx(ctx, tx, SendEmailArgs{
+		EmailLogID: logID,
+		TenantID:   tenantID,
+		Recipients: recipients,
+		Template:   template,
+		Data:       data,
+	}, nil); err != nil {
+		return fmt.Errorf("enqueue send_email (tx): %w", err)
+	}
+	return nil
+}

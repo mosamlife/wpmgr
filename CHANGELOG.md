@@ -8,7 +8,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.74] - 2026-07-19
+## [0.61.75] - 2026-07-19
+
+### Added
+
+- Vulnerability alerts (GH #247). WPMgr now notifies operators when a new vulnerability is found, instead of the finding only appearing on the dashboard:
+  - A single email per scan that summarizes the new findings across your sites (site, component, installed and fixed versions, severity, and CVE), batched so one feed update that matches many sites sends one email, not one per site or per finding.
+  - An operator-configurable minimum severity (High and above by default); findings that do not have a severity score yet are always included.
+  - A signed webhook fires the same event for Slack or custom integrations (best effort; email is the guaranteed channel).
+  - An open-findings section in the daily email digest.
+  - Configured on the Alerts page alongside downtime alerts, sharing the same recipients. Opt-in and off by default; existing findings are not retroactively alerted when you enable it.
+  - Also fixes a bug where saving alert settings could silently reset the security-events toggle and a couple of other fields.
 
 ### Fixed
 

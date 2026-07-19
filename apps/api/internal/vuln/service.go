@@ -47,6 +47,14 @@ type Service struct {
 	updates UpdateCreator
 	enqueue RescanEnqueuer
 	logger  *slog.Logger
+
+	// m103 (GH #247) — vulnerability alerting. All four are wired post-boot
+	// via their Set* methods (mirrors email.Service's SetMailer/SetPublicBase
+	// pattern); a nil alertCfg makes DispatchVulnAlerts a clean no-op.
+	mailer     AlertMailer
+	webhook    WebhookPoster
+	alertCfg   AlertConfigReader
+	publicBase string
 }
 
 // NewService builds a Service.

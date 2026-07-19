@@ -59,10 +59,20 @@ export function mockQueryResult<TData, TError = Error>(
  * Builds a `UseMutationResult` for mocking a mutation hook. Defaults to
  * idle (never called). Pass `{ mutate: vi.fn() }` / `{ mutateAsync:
  * vi.fn() }` to capture and assert on calls the component under test makes.
+ *
+ * `TContext` (the optimistic-update context type from a hook's `onMutate`,
+ * e.g. `usePutAlertConfig`'s `{ previous: AlertConfig | null | undefined }`)
+ * defaults to `unknown` so the common case — a mutation hook with no
+ * explicit context type — needs no 4th type argument at the call site.
  */
-export function mockMutationResult<TData, TVariables, TError = Error>(
-  overrides: Partial<UseMutationResult<TData, TError, TVariables>>,
-): UseMutationResult<TData, TError, TVariables> {
+export function mockMutationResult<
+  TData,
+  TVariables,
+  TError = Error,
+  TContext = unknown,
+>(
+  overrides: Partial<UseMutationResult<TData, TError, TVariables, TContext>>,
+): UseMutationResult<TData, TError, TVariables, TContext> {
   const base = {
     mutate: vi.fn(),
     mutateAsync: vi.fn(),
@@ -82,5 +92,5 @@ export function mockMutationResult<TData, TVariables, TError = Error>(
     reset: vi.fn(),
     ...overrides,
   };
-  return base as unknown as UseMutationResult<TData, TError, TVariables>;
+  return base as unknown as UseMutationResult<TData, TError, TVariables, TContext>;
 }

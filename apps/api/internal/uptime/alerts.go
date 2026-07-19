@@ -163,8 +163,9 @@ func (d *Dispatcher) sendEmail(ctx context.Context, recipients []string, subject
 
 // sendWebhook POSTs the alert webhook (when configured) and returns the REAL
 // delivery outcome, with a coarse/scrubbed reason on failure that NEVER
-// includes the endpoint's response body.
-func (d *Dispatcher) sendWebhook(ctx context.Context, url, secret string, payload WebhookPayload) (SendResult, error) {
+// includes the endpoint's response body. payload is `any` so this helper
+// serves any alert-producing domain's payload shape (see WebhookPoster doc).
+func (d *Dispatcher) sendWebhook(ctx context.Context, url, secret string, payload any) (SendResult, error) {
 	if d.webhook == nil || url == "" {
 		return SendResult{Status: SendResultSkipped, Reason: "webhook_not_configured"}, nil
 	}
@@ -232,6 +233,25 @@ func (d *Dispatcher) FireSecurityEvent(ctx context.Context, cfg AlertConfig, ev 
 			Metadata:   meta,
 		})
 	}
+}
+
+// PostSignedWebhook posts an arbitrary JSON-serializable payload to url,
+// signed with the SAME HMAC-SHA256-over-body scheme (X-WPMgr-Signature
+// header) and delivered over the SAME SSRF-hardened client as
+// Fire/FireSecurityEvent. It is a thin passthrough to sendWebhook, exported
+// so other alert-producing domains can reuse this channel's signing +
+// delivery exactly instead of duplicating it — e.g. internal/vuln's batched
+// vulnerability-findings webhook (m103, GH #247), which has its own payload
+// shape (spanning multiple sites) that does not fit the uptime-specific
+// WebhookPayload struct. Returns an error only on an actual delivery failure
+// (never merely "no webhook configured" — an empty url is a silent no-op,
+// mirroring sendWebhook's SendResultSkipped case).
+func (d *Dispatcher) PostSignedWebhook(ctx context.Context, url, secret string, payload any) error {
+	if url == "" {
+		return nil
+	}
+	_, err := d.sendWebhook(ctx, url, secret, payload)
+	return err
 }
 
 // channelMetadata builds the shared email/webhook outcome fields persisted on

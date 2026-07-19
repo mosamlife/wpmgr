@@ -2299,8 +2299,10 @@ export type UptimeSummaryItem = {
 };
 
 /**
- * A tenant's uptime alert channel. The webhook secret is write-only and is
- * never returned; webhook_configured indicates whether a webhook URL is set.
+ * A tenant's alert channel, shared by uptime downtime/recovery,
+ * high-severity security events, and vulnerability alerting (GH #247).
+ * The webhook secret is write-only and is never returned;
+ * webhook_configured indicates whether a webhook URL is set.
  *
  */
 export type AlertConfig = {
@@ -2308,10 +2310,35 @@ export type AlertConfig = {
   webhook_url?: string;
   webhook_configured: boolean;
   enabled: boolean;
+  /**
+   * Routes high-severity activity-log security events into this same
+   * channel (email + webhook).
+   *
+   */
+  notify_security: boolean;
+  /**
+   * Routes new vulnerability findings into this same channel (email +
+   * webhook). Opt-in; default false.
+   *
+   */
+  notify_vulns: boolean;
+  /**
+   * The minimum severity that triggers a vulnerability alert. A
+   * finding with unknown severity (no CVSS data yet) always alerts
+   * regardless of this threshold.
+   *
+   */
+  vuln_min_severity: "critical" | "high" | "medium" | "low";
+  /**
+   * Whether open vulnerabilities appear in the periodic email digest
+   * (see EmailNotifySettings). Default true.
+   *
+   */
+  vuln_include_in_digest: boolean;
 };
 
 /**
- * Create or update the tenant's uptime alert channel.
+ * Create or update the tenant's alert channel.
  */
 export type AlertConfigUpdate = {
   email_recipients?: Array<string>;
@@ -2321,6 +2348,24 @@ export type AlertConfigUpdate = {
    */
   webhook_secret?: string;
   enabled?: boolean;
+  /**
+   * Omitted preserves the tenant's currently-stored value (all fields
+   * in this update body are optional and independently preservable).
+   *
+   */
+  notify_security?: boolean;
+  /**
+   * Omitted preserves the tenant's currently-stored value.
+   */
+  notify_vulns?: boolean;
+  /**
+   * Omitted preserves the tenant's currently-stored value.
+   */
+  vuln_min_severity?: "critical" | "high" | "medium" | "low";
+  /**
+   * Omitted preserves the tenant's currently-stored value.
+   */
+  vuln_include_in_digest?: boolean;
 };
 
 /**

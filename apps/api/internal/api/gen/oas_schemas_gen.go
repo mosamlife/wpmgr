@@ -6806,14 +6806,29 @@ func (s *AgentSuppressionDeltaPageEntriesItem) SetCreatedAt(val time.Time) {
 	s.CreatedAt = val
 }
 
-// A tenant's uptime alert channel. The webhook secret is write-only and is
-// never returned; webhook_configured indicates whether a webhook URL is set.
+// A tenant's alert channel, shared by uptime downtime/recovery,
+// high-severity security events, and vulnerability alerting (GH #247).
+// The webhook secret is write-only and is never returned;
+// webhook_configured indicates whether a webhook URL is set.
 // Ref: #/components/schemas/AlertConfig
 type AlertConfig struct {
 	EmailRecipients   []string  `json:"email_recipients"`
 	WebhookURL        OptString `json:"webhook_url"`
 	WebhookConfigured bool      `json:"webhook_configured"`
 	Enabled           bool      `json:"enabled"`
+	// Routes high-severity activity-log security events into this same
+	// channel (email + webhook).
+	NotifySecurity bool `json:"notify_security"`
+	// Routes new vulnerability findings into this same channel (email +
+	// webhook). Opt-in; default false.
+	NotifyVulns bool `json:"notify_vulns"`
+	// The minimum severity that triggers a vulnerability alert. A
+	// finding with unknown severity (no CVSS data yet) always alerts
+	// regardless of this threshold.
+	VulnMinSeverity AlertConfigVulnMinSeverity `json:"vuln_min_severity"`
+	// Whether open vulnerabilities appear in the periodic email digest
+	// (see EmailNotifySettings). Default true.
+	VulnIncludeInDigest bool `json:"vuln_include_in_digest"`
 }
 
 // GetEmailRecipients returns the value of EmailRecipients.
@@ -6836,6 +6851,26 @@ func (s *AlertConfig) GetEnabled() bool {
 	return s.Enabled
 }
 
+// GetNotifySecurity returns the value of NotifySecurity.
+func (s *AlertConfig) GetNotifySecurity() bool {
+	return s.NotifySecurity
+}
+
+// GetNotifyVulns returns the value of NotifyVulns.
+func (s *AlertConfig) GetNotifyVulns() bool {
+	return s.NotifyVulns
+}
+
+// GetVulnMinSeverity returns the value of VulnMinSeverity.
+func (s *AlertConfig) GetVulnMinSeverity() AlertConfigVulnMinSeverity {
+	return s.VulnMinSeverity
+}
+
+// GetVulnIncludeInDigest returns the value of VulnIncludeInDigest.
+func (s *AlertConfig) GetVulnIncludeInDigest() bool {
+	return s.VulnIncludeInDigest
+}
+
 // SetEmailRecipients sets the value of EmailRecipients.
 func (s *AlertConfig) SetEmailRecipients(val []string) {
 	s.EmailRecipients = val
@@ -6856,9 +6891,29 @@ func (s *AlertConfig) SetEnabled(val bool) {
 	s.Enabled = val
 }
 
+// SetNotifySecurity sets the value of NotifySecurity.
+func (s *AlertConfig) SetNotifySecurity(val bool) {
+	s.NotifySecurity = val
+}
+
+// SetNotifyVulns sets the value of NotifyVulns.
+func (s *AlertConfig) SetNotifyVulns(val bool) {
+	s.NotifyVulns = val
+}
+
+// SetVulnMinSeverity sets the value of VulnMinSeverity.
+func (s *AlertConfig) SetVulnMinSeverity(val AlertConfigVulnMinSeverity) {
+	s.VulnMinSeverity = val
+}
+
+// SetVulnIncludeInDigest sets the value of VulnIncludeInDigest.
+func (s *AlertConfig) SetVulnIncludeInDigest(val bool) {
+	s.VulnIncludeInDigest = val
+}
+
 func (*AlertConfig) putAlertConfigRes() {}
 
-// Create or update the tenant's uptime alert channel.
+// Create or update the tenant's alert channel.
 // Ref: #/components/schemas/AlertConfigUpdate
 type AlertConfigUpdate struct {
 	EmailRecipients []string  `json:"email_recipients"`
@@ -6866,6 +6921,15 @@ type AlertConfigUpdate struct {
 	// Write-only HMAC signing secret for the webhook payload.
 	WebhookSecret OptString `json:"webhook_secret"`
 	Enabled       OptBool   `json:"enabled"`
+	// Omitted preserves the tenant's currently-stored value (all fields
+	// in this update body are optional and independently preservable).
+	NotifySecurity OptBool `json:"notify_security"`
+	// Omitted preserves the tenant's currently-stored value.
+	NotifyVulns OptBool `json:"notify_vulns"`
+	// Omitted preserves the tenant's currently-stored value.
+	VulnMinSeverity OptAlertConfigUpdateVulnMinSeverity `json:"vuln_min_severity"`
+	// Omitted preserves the tenant's currently-stored value.
+	VulnIncludeInDigest OptBool `json:"vuln_include_in_digest"`
 }
 
 // GetEmailRecipients returns the value of EmailRecipients.
@@ -6888,6 +6952,26 @@ func (s *AlertConfigUpdate) GetEnabled() OptBool {
 	return s.Enabled
 }
 
+// GetNotifySecurity returns the value of NotifySecurity.
+func (s *AlertConfigUpdate) GetNotifySecurity() OptBool {
+	return s.NotifySecurity
+}
+
+// GetNotifyVulns returns the value of NotifyVulns.
+func (s *AlertConfigUpdate) GetNotifyVulns() OptBool {
+	return s.NotifyVulns
+}
+
+// GetVulnMinSeverity returns the value of VulnMinSeverity.
+func (s *AlertConfigUpdate) GetVulnMinSeverity() OptAlertConfigUpdateVulnMinSeverity {
+	return s.VulnMinSeverity
+}
+
+// GetVulnIncludeInDigest returns the value of VulnIncludeInDigest.
+func (s *AlertConfigUpdate) GetVulnIncludeInDigest() OptBool {
+	return s.VulnIncludeInDigest
+}
+
 // SetEmailRecipients sets the value of EmailRecipients.
 func (s *AlertConfigUpdate) SetEmailRecipients(val []string) {
 	s.EmailRecipients = val
@@ -6906,6 +6990,140 @@ func (s *AlertConfigUpdate) SetWebhookSecret(val OptString) {
 // SetEnabled sets the value of Enabled.
 func (s *AlertConfigUpdate) SetEnabled(val OptBool) {
 	s.Enabled = val
+}
+
+// SetNotifySecurity sets the value of NotifySecurity.
+func (s *AlertConfigUpdate) SetNotifySecurity(val OptBool) {
+	s.NotifySecurity = val
+}
+
+// SetNotifyVulns sets the value of NotifyVulns.
+func (s *AlertConfigUpdate) SetNotifyVulns(val OptBool) {
+	s.NotifyVulns = val
+}
+
+// SetVulnMinSeverity sets the value of VulnMinSeverity.
+func (s *AlertConfigUpdate) SetVulnMinSeverity(val OptAlertConfigUpdateVulnMinSeverity) {
+	s.VulnMinSeverity = val
+}
+
+// SetVulnIncludeInDigest sets the value of VulnIncludeInDigest.
+func (s *AlertConfigUpdate) SetVulnIncludeInDigest(val OptBool) {
+	s.VulnIncludeInDigest = val
+}
+
+// Omitted preserves the tenant's currently-stored value.
+type AlertConfigUpdateVulnMinSeverity string
+
+const (
+	AlertConfigUpdateVulnMinSeverityCritical AlertConfigUpdateVulnMinSeverity = "critical"
+	AlertConfigUpdateVulnMinSeverityHigh     AlertConfigUpdateVulnMinSeverity = "high"
+	AlertConfigUpdateVulnMinSeverityMedium   AlertConfigUpdateVulnMinSeverity = "medium"
+	AlertConfigUpdateVulnMinSeverityLow      AlertConfigUpdateVulnMinSeverity = "low"
+)
+
+// AllValues returns all AlertConfigUpdateVulnMinSeverity values.
+func (AlertConfigUpdateVulnMinSeverity) AllValues() []AlertConfigUpdateVulnMinSeverity {
+	return []AlertConfigUpdateVulnMinSeverity{
+		AlertConfigUpdateVulnMinSeverityCritical,
+		AlertConfigUpdateVulnMinSeverityHigh,
+		AlertConfigUpdateVulnMinSeverityMedium,
+		AlertConfigUpdateVulnMinSeverityLow,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AlertConfigUpdateVulnMinSeverity) MarshalText() ([]byte, error) {
+	switch s {
+	case AlertConfigUpdateVulnMinSeverityCritical:
+		return []byte(s), nil
+	case AlertConfigUpdateVulnMinSeverityHigh:
+		return []byte(s), nil
+	case AlertConfigUpdateVulnMinSeverityMedium:
+		return []byte(s), nil
+	case AlertConfigUpdateVulnMinSeverityLow:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AlertConfigUpdateVulnMinSeverity) UnmarshalText(data []byte) error {
+	switch AlertConfigUpdateVulnMinSeverity(data) {
+	case AlertConfigUpdateVulnMinSeverityCritical:
+		*s = AlertConfigUpdateVulnMinSeverityCritical
+		return nil
+	case AlertConfigUpdateVulnMinSeverityHigh:
+		*s = AlertConfigUpdateVulnMinSeverityHigh
+		return nil
+	case AlertConfigUpdateVulnMinSeverityMedium:
+		*s = AlertConfigUpdateVulnMinSeverityMedium
+		return nil
+	case AlertConfigUpdateVulnMinSeverityLow:
+		*s = AlertConfigUpdateVulnMinSeverityLow
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// The minimum severity that triggers a vulnerability alert. A
+// finding with unknown severity (no CVSS data yet) always alerts
+// regardless of this threshold.
+type AlertConfigVulnMinSeverity string
+
+const (
+	AlertConfigVulnMinSeverityCritical AlertConfigVulnMinSeverity = "critical"
+	AlertConfigVulnMinSeverityHigh     AlertConfigVulnMinSeverity = "high"
+	AlertConfigVulnMinSeverityMedium   AlertConfigVulnMinSeverity = "medium"
+	AlertConfigVulnMinSeverityLow      AlertConfigVulnMinSeverity = "low"
+)
+
+// AllValues returns all AlertConfigVulnMinSeverity values.
+func (AlertConfigVulnMinSeverity) AllValues() []AlertConfigVulnMinSeverity {
+	return []AlertConfigVulnMinSeverity{
+		AlertConfigVulnMinSeverityCritical,
+		AlertConfigVulnMinSeverityHigh,
+		AlertConfigVulnMinSeverityMedium,
+		AlertConfigVulnMinSeverityLow,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AlertConfigVulnMinSeverity) MarshalText() ([]byte, error) {
+	switch s {
+	case AlertConfigVulnMinSeverityCritical:
+		return []byte(s), nil
+	case AlertConfigVulnMinSeverityHigh:
+		return []byte(s), nil
+	case AlertConfigVulnMinSeverityMedium:
+		return []byte(s), nil
+	case AlertConfigVulnMinSeverityLow:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AlertConfigVulnMinSeverity) UnmarshalText(data []byte) error {
+	switch AlertConfigVulnMinSeverity(data) {
+	case AlertConfigVulnMinSeverityCritical:
+		*s = AlertConfigVulnMinSeverityCritical
+		return nil
+	case AlertConfigVulnMinSeverityHigh:
+		*s = AlertConfigVulnMinSeverityHigh
+		return nil
+	case AlertConfigVulnMinSeverityMedium:
+		*s = AlertConfigVulnMinSeverityMedium
+		return nil
+	case AlertConfigVulnMinSeverityLow:
+		*s = AlertConfigVulnMinSeverityLow
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/ApiKey
@@ -25647,6 +25865,52 @@ func (o OptAgentMediaPresignOKUploads) Get() (v AgentMediaPresignOKUploads, ok b
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAgentMediaPresignOKUploads) Or(d AgentMediaPresignOKUploads) AgentMediaPresignOKUploads {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAlertConfigUpdateVulnMinSeverity returns new OptAlertConfigUpdateVulnMinSeverity with value set to v.
+func NewOptAlertConfigUpdateVulnMinSeverity(v AlertConfigUpdateVulnMinSeverity) OptAlertConfigUpdateVulnMinSeverity {
+	return OptAlertConfigUpdateVulnMinSeverity{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAlertConfigUpdateVulnMinSeverity is optional AlertConfigUpdateVulnMinSeverity.
+type OptAlertConfigUpdateVulnMinSeverity struct {
+	Value AlertConfigUpdateVulnMinSeverity
+	Set   bool
+}
+
+// IsSet returns true if OptAlertConfigUpdateVulnMinSeverity was set.
+func (o OptAlertConfigUpdateVulnMinSeverity) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAlertConfigUpdateVulnMinSeverity) Reset() {
+	var v AlertConfigUpdateVulnMinSeverity
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAlertConfigUpdateVulnMinSeverity) SetTo(v AlertConfigUpdateVulnMinSeverity) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAlertConfigUpdateVulnMinSeverity) Get() (v AlertConfigUpdateVulnMinSeverity, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAlertConfigUpdateVulnMinSeverity) Or(d AlertConfigUpdateVulnMinSeverity) AlertConfigUpdateVulnMinSeverity {
 	if v, ok := o.Get(); ok {
 		return v
 	}

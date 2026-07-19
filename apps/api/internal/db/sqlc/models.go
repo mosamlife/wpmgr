@@ -20,15 +20,18 @@ type AgentNonce struct {
 }
 
 type AlertConfig struct {
-	ID              uuid.UUID `json:"id"`
-	TenantID        uuid.UUID `json:"tenant_id"`
-	EmailRecipients []string  `json:"email_recipients"`
-	WebhookUrl      string    `json:"webhook_url"`
-	WebhookSecret   string    `json:"webhook_secret"`
-	Enabled         bool      `json:"enabled"`
-	NotifySecurity  bool      `json:"notify_security"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                  uuid.UUID `json:"id"`
+	TenantID            uuid.UUID `json:"tenant_id"`
+	EmailRecipients     []string  `json:"email_recipients"`
+	WebhookUrl          string    `json:"webhook_url"`
+	WebhookSecret       string    `json:"webhook_secret"`
+	Enabled             bool      `json:"enabled"`
+	NotifySecurity      bool      `json:"notify_security"`
+	NotifyVulns         bool      `json:"notify_vulns"`
+	VulnMinSeverity     string    `json:"vuln_min_severity"`
+	VulnIncludeInDigest bool      `json:"vuln_include_in_digest"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 type ApiKey struct {
@@ -1068,6 +1071,7 @@ type SiteVulnerability struct {
 	ResolvedAt       pgtype.Timestamptz `json:"resolved_at"`
 	DismissedAt      pgtype.Timestamptz `json:"dismissed_at"`
 	DismissedBy      pgtype.UUID        `json:"dismissed_by"`
+	NotifiedAt       pgtype.Timestamptz `json:"notified_at"`
 }
 
 type SmtpSetting struct {

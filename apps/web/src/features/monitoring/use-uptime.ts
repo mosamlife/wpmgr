@@ -148,6 +148,12 @@ export function usePutAlertConfig(): UseMutationResult<
           email_recipients:
             body.email_recipients ?? previous.email_recipients,
           webhook_url: body.webhook_url ?? previous.webhook_url,
+          notify_security: body.notify_security ?? previous.notify_security,
+          notify_vulns: body.notify_vulns ?? previous.notify_vulns,
+          vuln_min_severity:
+            body.vuln_min_severity ?? previous.vuln_min_severity,
+          vuln_include_in_digest:
+            body.vuln_include_in_digest ?? previous.vuln_include_in_digest,
         });
       }
       return { previous };

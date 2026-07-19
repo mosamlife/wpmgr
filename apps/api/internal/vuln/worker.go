@@ -1263,6 +1263,10 @@ type RescanSiteWorker struct {
 	river.WorkerDefaults[RescanSiteArgs]
 	svc    *Service
 	logger *slog.Logger
+	// alertEnqueue is the m103 (GH #247) debounced vuln-alert-dispatch
+	// enqueuer, wired post-boot via SetAlertDispatchEnqueuer. Nil is safe
+	// (the dispatch hook below is skipped).
+	alertEnqueue AlertDispatchEnqueuer
 }
 
 // NewRescanSiteWorker builds a RescanSiteWorker.
@@ -1274,7 +1278,15 @@ func NewRescanSiteWorker(svc *Service, logger *slog.Logger) *RescanSiteWorker {
 // once at boot after startRiver returns (the service needs the River client).
 func (w *RescanSiteWorker) SetService(svc *Service) { w.svc = svc }
 
-// Work performs the per-site vulnerability rescan.
+// SetAlertDispatchEnqueuer wires the debounced batched-alert-dispatch
+// enqueuer. Called once at boot after River starts (mirrors SetService).
+func (w *RescanSiteWorker) SetAlertDispatchEnqueuer(e AlertDispatchEnqueuer) { w.alertEnqueue = e }
+
+// Work performs the per-site vulnerability rescan, then — on success —
+// enqueues a debounced, batched vuln-alert-dispatch job (m103, GH #247). This
+// is the ONE hook that covers every rescan trigger (the operator-facing
+// "rescan now" route, the post-feed-refresh RescanAll fan-out, and any future
+// caller): all of them enqueue a RescanSiteArgs job, which always lands here.
 func (w *RescanSiteWorker) Work(ctx context.Context, job *river.Job[RescanSiteArgs]) error {
 	args := job.Args
 	if err := w.svc.RescanSite(ctx, args.TenantID, args.SiteID); err != nil {
@@ -1282,6 +1294,59 @@ func (w *RescanSiteWorker) Work(ctx context.Context, job *river.Job[RescanSiteAr
 			slog.String("tenant_id", args.TenantID.String()),
 			slog.String("site_id", args.SiteID.String()),
 			slog.Any("error", err))
+		return err
+	}
+
+	// Best-effort: a failure here must never fail the rescan itself (findings
+	// are already durably saved) — it just means this tenant's alert waits
+	// for the next rescan to re-trigger the debounce.
+	if w.alertEnqueue != nil {
+		if err := w.alertEnqueue.EnqueueAlertDispatch(ctx); err != nil {
+			w.logger.Warn("vuln: enqueue alert dispatch failed",
+				slog.String("tenant_id", args.TenantID.String()),
+				slog.String("site_id", args.SiteID.String()),
+				slog.Any("error", err))
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Vulnerability alert dispatch worker (m103, GH #247)
+// ---------------------------------------------------------------------------
+
+// AlertDispatchQueue is the River queue for the batched vuln-alert dispatch job.
+const AlertDispatchQueue = "vuln_alert_dispatch"
+
+// AlertDispatchArgs is the (argument-less) River job payload for the
+// debounced, cross-tenant vulnerability-alert dispatch. Empty args + the
+// UniqueOpts on EnqueueAlertDispatch are what collapse a whole rescan wave
+// into a single dispatch job.
+type AlertDispatchArgs struct{}
+
+// Kind implements river.JobArgs.
+func (AlertDispatchArgs) Kind() string { return "vuln_alert_dispatch" }
+
+// AlertDispatchWorker runs Service.DispatchVulnAlerts.
+type AlertDispatchWorker struct {
+	river.WorkerDefaults[AlertDispatchArgs]
+	svc    *Service
+	logger *slog.Logger
+}
+
+// NewAlertDispatchWorker builds an AlertDispatchWorker.
+func NewAlertDispatchWorker(svc *Service, logger *slog.Logger) *AlertDispatchWorker {
+	return &AlertDispatchWorker{svc: svc, logger: logger}
+}
+
+// SetService wires the vuln service into the worker after construction.
+// Called once at boot after startRiver returns (mirrors RescanSiteWorker).
+func (w *AlertDispatchWorker) SetService(svc *Service) { w.svc = svc }
+
+// Work runs the batched dispatch across every tenant with unnotified findings.
+func (w *AlertDispatchWorker) Work(ctx context.Context, job *river.Job[AlertDispatchArgs]) error {
+	if err := w.svc.DispatchVulnAlerts(ctx); err != nil {
+		w.logger.Warn("vuln: alert dispatch job failed", slog.Any("error", err))
 		return err
 	}
 	return nil

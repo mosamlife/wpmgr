@@ -124,6 +124,9 @@ type Service struct {
 	mailerStatus MailerStatus
 	// m62: public base URL for constructing dashboard links in emails.
 	publicBase string
+	// m103 (GH #247): supplies the digest's "new vulnerabilities" section.
+	// Nil is safe — buildDigestData skips the section entirely.
+	vulnDigest VulnDigestSource
 }
 
 // NewService builds the email service. enc may be nil (all secret-write paths
@@ -167,6 +170,12 @@ func (s *Service) SetMailerStatus(ms MailerStatus) {
 // notification emails (e.g. "https://manage.wpmgr.app"). Called from main.go.
 func (s *Service) SetPublicBase(base string) {
 	s.publicBase = base
+}
+
+// SetVulnDigestSource wires the vulnerability-digest data source (m103, GH
+// #247). Called from main.go once both the uptime and vuln services exist.
+func (s *Service) SetVulnDigestSource(v VulnDigestSource) {
+	s.vulnDigest = v
 }
 
 // ---------------------------------------------------------------------------

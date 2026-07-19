@@ -703,6 +703,17 @@ func (r *Repo) UpsertFinding(ctx context.Context, tx pgx.Tx, f FindingUpsert) er
 			resolved_at = CASE
 				WHEN site_vulnerabilities.status = 'resolved' THEN NULL
 				ELSE site_vulnerabilities.resolved_at
+			END,
+			-- m103 (GH #247): a reappearing vulnerability alerts again. Every
+			-- OTHER branch of this upsert (a routine re-match of an already-open
+			-- finding, e.g. on every rescan) must NEVER touch notified_at — that
+			-- is the sole responsibility of the alert dispatcher's claim
+			-- (Repo.ClaimUnnotifiedFindings) and an enrichment-only DO UPDATE
+			-- (e.g. the Production feed later filling in a CVSS score for an
+			-- already-claimed 'unknown' finding) must not silently re-arm it.
+			notified_at = CASE
+				WHEN site_vulnerabilities.status = 'resolved' THEN NULL
+				ELSE site_vulnerabilities.notified_at
 			END`,
 		f.TenantID, f.SiteID, f.VulnID, f.Kind, f.Slug, f.Name,
 		f.InstalledVersion, nilString(f.FixedVersion), f.Severity,
@@ -936,6 +947,135 @@ func (r *Repo) FleetOpenFindings(ctx context.Context, tenantID uuid.UUID, limit 
 		return rows.Err()
 	})
 	return result, err
+}
+
+// ---------------------------------------------------------------------------
+// Vulnerability alerting (m103, GH #247)
+// ---------------------------------------------------------------------------
+
+// ClaimedFinding is one site_vulnerabilities row claimed by
+// ClaimUnnotifiedFindings, joined with its site's name/url so the alert
+// dispatcher can build the batched email/webhook payload without a second
+// round-trip.
+type ClaimedFinding struct {
+	Finding  Finding
+	SiteName string
+	SiteURL  string
+}
+
+// ListTenantsWithUnnotifiedFindings returns the distinct set of tenants that
+// currently have at least one open, not-yet-notified finding
+// (status='open' AND notified_at IS NULL). Runs under InAgentTx (cross-tenant
+// enumeration, mirrors the feed worker's cross-tenant tenant listing) — the
+// caller (Service.DispatchVulnAlerts) fans out to dispatchTenant per tenant,
+// each of which claims and gates independently under its own InTenantTx.
+func (r *Repo) ListTenantsWithUnnotifiedFindings(ctx context.Context) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT DISTINCT tenant_id FROM site_vulnerabilities
+			WHERE status = 'open' AND notified_at IS NULL`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			out = append(out, id)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// ClaimUnnotifiedFindings atomically claims every open, not-yet-notified
+// finding for a tenant by stamping notified_at = now(), and returns the
+// claimed rows joined with their site's name/url. MUST run inside the
+// caller's transaction (tx) — the claim and any resulting email-enqueue
+// happen in the SAME tx so they commit or roll back together (transactional
+// outbox; see Service.dispatchTenant). The UPDATE's row locks make concurrent
+// dispatchers safe: a second dispatcher racing on the same tenant claims zero
+// rows once the first has committed (or blocks until it does, then also
+// claims zero).
+//
+// ALL matching rows are claimed regardless of severity, and regardless of
+// whether alerting is even enabled for the tenant — the caller applies the
+// notify_vulns/severity gate AFTER claiming. Stamping unconditionally means
+// enabling alerts later (or lowering the threshold) never floods the tenant
+// with a backlog of old findings that predate the change.
+func (r *Repo) ClaimUnnotifiedFindings(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) ([]ClaimedFinding, error) {
+	rows, err := tx.Query(ctx, `
+		WITH claimed AS (
+			UPDATE site_vulnerabilities
+			SET notified_at = now()
+			WHERE tenant_id = $1 AND status = 'open' AND notified_at IS NULL
+			RETURNING id, tenant_id, site_id, vuln_id, kind, slug, name,
+			          installed_version, fixed_version, severity, cvss_score,
+			          cve, title, status, first_seen, last_seen,
+			          resolved_at, dismissed_at, dismissed_by
+		)
+		SELECT c.id, c.tenant_id, c.site_id, c.vuln_id, c.kind, c.slug, c.name,
+		       c.installed_version, c.fixed_version, c.severity, c.cvss_score,
+		       c.cve, c.title, c.status, c.first_seen, c.last_seen,
+		       c.resolved_at, c.dismissed_at, c.dismissed_by,
+		       s.name AS site_name, s.url AS site_url
+		FROM claimed c
+		JOIN sites s ON s.id = c.site_id`,
+		tenantID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("claim unnotified findings for tenant %s: %w", tenantID, err)
+	}
+	defer rows.Close()
+
+	var out []ClaimedFinding
+	for rows.Next() {
+		var cf ClaimedFinding
+		var (
+			cvssScore   pgtype.Numeric
+			resolvedAt  pgtype.Timestamptz
+			dismissedAt pgtype.Timestamptz
+			dismissedBy pgtype.UUID
+			fixedVer    pgtype.Text
+			cve         pgtype.Text
+		)
+		f := &cf.Finding
+		if err := rows.Scan(
+			&f.ID, &f.TenantID, &f.SiteID, &f.VulnID, &f.Kind, &f.Slug, &f.Name,
+			&f.InstalledVersion, &fixedVer, &f.Severity, &cvssScore,
+			&cve, &f.Title, &f.Status, &f.FirstSeen, &f.LastSeen,
+			&resolvedAt, &dismissedAt, &dismissedBy,
+			&cf.SiteName, &cf.SiteURL,
+		); err != nil {
+			return nil, fmt.Errorf("scan claimed finding: %w", err)
+		}
+		f.FixedVersion = fixedVer.String
+		f.CVE = cve.String
+		if cvssScore.Valid {
+			fv, _ := cvssScore.Float64Value()
+			if fv.Valid {
+				v := fv.Float64
+				f.CVSSScore = &v
+			}
+		}
+		if resolvedAt.Valid {
+			t := resolvedAt.Time
+			f.ResolvedAt = &t
+		}
+		if dismissedAt.Valid {
+			t := dismissedAt.Time
+			f.DismissedAt = &t
+		}
+		if dismissedBy.Valid {
+			uid := uuid.UUID(dismissedBy.Bytes)
+			f.DismissedBy = &uid
+		}
+		out = append(out, cf)
+	}
+	return out, rows.Err()
 }
 
 // ---------------------------------------------------------------------------

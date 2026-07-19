@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.74
+  version: 0.61.75
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -15196,9 +15196,20 @@ components:
     AlertConfig:
       type: object
       description: |
-        A tenant's uptime alert channel. The webhook secret is write-only and is
-        never returned; webhook_configured indicates whether a webhook URL is set.
-      required: [email_recipients, enabled, webhook_configured]
+        A tenant's alert channel, shared by uptime downtime/recovery,
+        high-severity security events, and vulnerability alerting (GH #247).
+        The webhook secret is write-only and is never returned;
+        webhook_configured indicates whether a webhook URL is set.
+      required:
+        [
+          email_recipients,
+          enabled,
+          webhook_configured,
+          notify_security,
+          notify_vulns,
+          vuln_min_severity,
+          vuln_include_in_digest,
+        ]
       properties:
         email_recipients:
           type: array
@@ -15211,9 +15222,31 @@ components:
           type: boolean
         enabled:
           type: boolean
+        notify_security:
+          type: boolean
+          description: |
+            Routes high-severity activity-log security events into this same
+            channel (email + webhook).
+        notify_vulns:
+          type: boolean
+          description: |
+            Routes new vulnerability findings into this same channel (email +
+            webhook). Opt-in; default false.
+        vuln_min_severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: |
+            The minimum severity that triggers a vulnerability alert. A
+            finding with unknown severity (no CVSS data yet) always alerts
+            regardless of this threshold.
+        vuln_include_in_digest:
+          type: boolean
+          description: |
+            Whether open vulnerabilities appear in the periodic email digest
+            (see EmailNotifySettings). Default true.
     AlertConfigUpdate:
       type: object
-      description: Create or update the tenant's uptime alert channel.
+      description: Create or update the tenant's alert channel.
       properties:
         email_recipients:
           type: array
@@ -15228,6 +15261,21 @@ components:
         enabled:
           type: boolean
           default: true
+        notify_security:
+          type: boolean
+          description: |
+            Omitted preserves the tenant's currently-stored value (all fields
+            in this update body are optional and independently preservable).
+        notify_vulns:
+          type: boolean
+          description: Omitted preserves the tenant's currently-stored value.
+        vuln_min_severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Omitted preserves the tenant's currently-stored value.
+        vuln_include_in_digest:
+          type: boolean
+          description: Omitted preserves the tenant's currently-stored value.
     AutologinCreate:
       type: object
       description: |

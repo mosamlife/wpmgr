@@ -1292,6 +1292,19 @@ CREATE TABLE alert_configs (
     -- SAME alert channel (email + webhook) as downtime/recovery. Default off so
     -- existing tenants do not start receiving security alerts unexpectedly.
     notify_security  boolean   NOT NULL DEFAULT false,
+    -- m103 (GH #247) — vulnerability alerting is the THIRD signal on this same
+    -- per-tenant channel. notify_vulns is opt-in (default off), mirroring
+    -- notify_security. vuln_min_severity is the operator-configurable alert
+    -- threshold ('unknown' is deliberately NOT a selectable option here — an
+    -- unknown-severity finding always alerts regardless of threshold; see
+    -- internal/vuln/alertdispatch.go). vuln_include_in_digest gates a
+    -- "new vulnerabilities" section on the existing email digest and defaults
+    -- ON so an operator who has digests enabled sees vuln activity by default.
+    notify_vulns     boolean   NOT NULL DEFAULT false,
+    vuln_min_severity text     NOT NULL DEFAULT 'high'
+        CONSTRAINT alert_configs_vuln_min_severity_chk
+        CHECK (vuln_min_severity IN ('critical', 'high', 'medium', 'low')),
+    vuln_include_in_digest boolean NOT NULL DEFAULT true,
     created_at       timestamptz NOT NULL DEFAULT now(),
     updated_at       timestamptz NOT NULL DEFAULT now()
 );
@@ -3759,6 +3772,14 @@ CREATE TABLE IF NOT EXISTS site_vulnerabilities (
     resolved_at       timestamptz,
     dismissed_at      timestamptz,
     dismissed_by      uuid,
+    -- m103 (GH #247) — vulnerability alerting debounce/claim stamp. NULL means
+    -- "not yet alerted"; the dispatch job claims a batch by atomically setting
+    -- this to now() (see internal/vuln.Repo.ClaimUnnotifiedFindings). A
+    -- resolved->open re-open (UpsertFinding) resets this to NULL so a
+    -- reappearing vulnerability alerts again. A fresh migration backfills this
+    -- to now() for every pre-existing row so the first-ever dispatch does not
+    -- email every operator their entire historical backlog.
+    notified_at       timestamptz,
 
     CONSTRAINT site_vulnerabilities_tenant_fkey
         FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
@@ -3776,6 +3797,12 @@ CREATE INDEX IF NOT EXISTS idx_site_vuln_tenant_sev
 
 CREATE INDEX IF NOT EXISTS site_vulnerabilities_tenant_idx
     ON site_vulnerabilities (tenant_id, site_id);
+
+-- m103: the dispatch job's claim query filters on exactly this predicate
+-- (status='open' AND notified_at IS NULL) grouped by tenant_id.
+CREATE INDEX IF NOT EXISTS idx_site_vuln_tenant_unnotified
+    ON site_vulnerabilities (tenant_id)
+    WHERE status = 'open' AND notified_at IS NULL;
 
 ALTER TABLE site_vulnerabilities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE site_vulnerabilities FORCE ROW LEVEL SECURITY;

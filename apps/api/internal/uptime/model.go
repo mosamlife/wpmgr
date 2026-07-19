@@ -43,7 +43,18 @@ type AlertConfig struct {
 	// NotifySecurity routes high-severity ADR-037 activity-log events into this
 	// same channel (email + webhook). Default false.
 	NotifySecurity bool
-	UpdatedAt      time.Time
+	// m103 (GH #247) — vulnerability alerting is the THIRD signal on this same
+	// channel. NotifyVulns is opt-in (default false), mirroring NotifySecurity.
+	NotifyVulns bool
+	// VulnMinSeverity is the alert threshold: "critical"|"high"|"medium"|"low".
+	// A finding with SeverityUnknown ALWAYS alerts regardless of this value
+	// (see internal/vuln/alertdispatch.go) — "unknown" is deliberately not a
+	// selectable threshold value.
+	VulnMinSeverity string
+	// VulnIncludeInDigest gates a "new vulnerabilities" section on the existing
+	// email digest. Default true.
+	VulnIncludeInDigest bool
+	UpdatedAt           time.Time
 }
 
 // AlertState is a site's durable alert transition memory.
@@ -211,6 +222,30 @@ type IncidentDetail struct {
 	IncidentCount30d int             `json:"incident_count_30d"`
 	Probes           []IncidentProbe `json:"probes"`
 	ProbesTruncated  bool            `json:"probes_truncated"`
+}
+
+// Vulnerability alert-threshold values (m103, GH #247) for AlertConfig.
+// VulnMinSeverity. These deliberately mirror internal/vuln's severity
+// vocabulary as plain string literals (not an import of that package) so
+// internal/uptime does not take on a cross-domain dependency for four
+// constants — see CLAUDE.md's "don't cross-import sibling domains" rule.
+// "unknown" is intentionally absent: it is never a selectable threshold (an
+// unknown-severity finding always alerts regardless of threshold).
+const (
+	VulnSeverityCritical = "critical"
+	VulnSeverityHigh     = "high"
+	VulnSeverityMedium   = "medium"
+	VulnSeverityLow      = "low"
+)
+
+// ValidVulnMinSeverity reports whether s is one of the four selectable
+// alert-threshold values.
+func ValidVulnMinSeverity(s string) bool {
+	switch s {
+	case VulnSeverityCritical, VulnSeverityHigh, VulnSeverityMedium, VulnSeverityLow:
+		return true
+	}
+	return false
 }
 
 // AlertKind distinguishes a downtime alert from a recovery alert.

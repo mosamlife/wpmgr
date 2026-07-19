@@ -19492,13 +19492,33 @@ func (s *AlertConfig) encodeFields(e *jx.Encoder) {
 		e.FieldStart("enabled")
 		e.Bool(s.Enabled)
 	}
+	{
+		e.FieldStart("notify_security")
+		e.Bool(s.NotifySecurity)
+	}
+	{
+		e.FieldStart("notify_vulns")
+		e.Bool(s.NotifyVulns)
+	}
+	{
+		e.FieldStart("vuln_min_severity")
+		s.VulnMinSeverity.Encode(e)
+	}
+	{
+		e.FieldStart("vuln_include_in_digest")
+		e.Bool(s.VulnIncludeInDigest)
+	}
 }
 
-var jsonFieldsNameOfAlertConfig = [4]string{
+var jsonFieldsNameOfAlertConfig = [8]string{
 	0: "email_recipients",
 	1: "webhook_url",
 	2: "webhook_configured",
 	3: "enabled",
+	4: "notify_security",
+	5: "notify_vulns",
+	6: "vuln_min_severity",
+	7: "vuln_include_in_digest",
 }
 
 // Decode decodes AlertConfig from json.
@@ -19564,6 +19584,52 @@ func (s *AlertConfig) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"enabled\"")
 			}
+		case "notify_security":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				v, err := d.Bool()
+				s.NotifySecurity = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"notify_security\"")
+			}
+		case "notify_vulns":
+			requiredBitSet[0] |= 1 << 5
+			if err := func() error {
+				v, err := d.Bool()
+				s.NotifyVulns = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"notify_vulns\"")
+			}
+		case "vuln_min_severity":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
+				if err := s.VulnMinSeverity.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"vuln_min_severity\"")
+			}
+		case "vuln_include_in_digest":
+			requiredBitSet[0] |= 1 << 7
+			if err := func() error {
+				v, err := d.Bool()
+				s.VulnIncludeInDigest = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"vuln_include_in_digest\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -19574,7 +19640,7 @@ func (s *AlertConfig) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00001101,
+		0b11111101,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -19657,13 +19723,41 @@ func (s *AlertConfigUpdate) encodeFields(e *jx.Encoder) {
 			s.Enabled.Encode(e)
 		}
 	}
+	{
+		if s.NotifySecurity.Set {
+			e.FieldStart("notify_security")
+			s.NotifySecurity.Encode(e)
+		}
+	}
+	{
+		if s.NotifyVulns.Set {
+			e.FieldStart("notify_vulns")
+			s.NotifyVulns.Encode(e)
+		}
+	}
+	{
+		if s.VulnMinSeverity.Set {
+			e.FieldStart("vuln_min_severity")
+			s.VulnMinSeverity.Encode(e)
+		}
+	}
+	{
+		if s.VulnIncludeInDigest.Set {
+			e.FieldStart("vuln_include_in_digest")
+			s.VulnIncludeInDigest.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAlertConfigUpdate = [4]string{
+var jsonFieldsNameOfAlertConfigUpdate = [8]string{
 	0: "email_recipients",
 	1: "webhook_url",
 	2: "webhook_secret",
 	3: "enabled",
+	4: "notify_security",
+	5: "notify_vulns",
+	6: "vuln_min_severity",
+	7: "vuln_include_in_digest",
 }
 
 // Decode decodes AlertConfigUpdate from json.
@@ -19724,6 +19818,46 @@ func (s *AlertConfigUpdate) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"enabled\"")
 			}
+		case "notify_security":
+			if err := func() error {
+				s.NotifySecurity.Reset()
+				if err := s.NotifySecurity.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"notify_security\"")
+			}
+		case "notify_vulns":
+			if err := func() error {
+				s.NotifyVulns.Reset()
+				if err := s.NotifyVulns.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"notify_vulns\"")
+			}
+		case "vuln_min_severity":
+			if err := func() error {
+				s.VulnMinSeverity.Reset()
+				if err := s.VulnMinSeverity.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"vuln_min_severity\"")
+			}
+		case "vuln_include_in_digest":
+			if err := func() error {
+				s.VulnIncludeInDigest.Reset()
+				if err := s.VulnIncludeInDigest.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"vuln_include_in_digest\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -19744,6 +19878,94 @@ func (s *AlertConfigUpdate) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AlertConfigUpdate) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AlertConfigUpdateVulnMinSeverity as json.
+func (s AlertConfigUpdateVulnMinSeverity) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AlertConfigUpdateVulnMinSeverity from json.
+func (s *AlertConfigUpdateVulnMinSeverity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AlertConfigUpdateVulnMinSeverity to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AlertConfigUpdateVulnMinSeverity(v) {
+	case AlertConfigUpdateVulnMinSeverityCritical:
+		*s = AlertConfigUpdateVulnMinSeverityCritical
+	case AlertConfigUpdateVulnMinSeverityHigh:
+		*s = AlertConfigUpdateVulnMinSeverityHigh
+	case AlertConfigUpdateVulnMinSeverityMedium:
+		*s = AlertConfigUpdateVulnMinSeverityMedium
+	case AlertConfigUpdateVulnMinSeverityLow:
+		*s = AlertConfigUpdateVulnMinSeverityLow
+	default:
+		*s = AlertConfigUpdateVulnMinSeverity(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AlertConfigUpdateVulnMinSeverity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AlertConfigUpdateVulnMinSeverity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AlertConfigVulnMinSeverity as json.
+func (s AlertConfigVulnMinSeverity) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AlertConfigVulnMinSeverity from json.
+func (s *AlertConfigVulnMinSeverity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AlertConfigVulnMinSeverity to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AlertConfigVulnMinSeverity(v) {
+	case AlertConfigVulnMinSeverityCritical:
+		*s = AlertConfigVulnMinSeverityCritical
+	case AlertConfigVulnMinSeverityHigh:
+		*s = AlertConfigVulnMinSeverityHigh
+	case AlertConfigVulnMinSeverityMedium:
+		*s = AlertConfigVulnMinSeverityMedium
+	case AlertConfigVulnMinSeverityLow:
+		*s = AlertConfigVulnMinSeverityLow
+	default:
+		*s = AlertConfigVulnMinSeverity(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AlertConfigVulnMinSeverity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AlertConfigVulnMinSeverity) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -70930,6 +71152,39 @@ func (s OptAgentMediaPresignOKUploads) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAgentMediaPresignOKUploads) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AlertConfigUpdateVulnMinSeverity as json.
+func (o OptAlertConfigUpdateVulnMinSeverity) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AlertConfigUpdateVulnMinSeverity from json.
+func (o *OptAlertConfigUpdateVulnMinSeverity) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAlertConfigUpdateVulnMinSeverity to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAlertConfigUpdateVulnMinSeverity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAlertConfigUpdateVulnMinSeverity) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

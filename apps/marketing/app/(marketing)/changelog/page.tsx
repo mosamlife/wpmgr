@@ -39,6 +39,17 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.75",
+    date: "2026-07-19",
+    summary: "Get notified when a new vulnerability is found, instead of having to check the dashboard.",
+    items: [
+      {
+        tag: "Added",
+        text: "Vulnerability alerts (GH #247). WPMgr now emails you when a new vulnerability is found on your sites: one summary email per scan (site, component, installed and fixed versions, severity, and CVE), batched so a feed update matching many sites sends one email, not one per site. Set a minimum severity (High and above by default; unscored findings are always included), fire a signed webhook for Slack or custom integrations, and add an open-findings section to the daily digest. Configured on the Alerts page alongside downtime alerts, opt-in and off by default.",
+      },
+    ],
+  },
+  {
     version: "0.61.72",
     date: "2026-07-19",
     summary: "Vulnerability severities are now accurate, with an honest state when severity data is unavailable.",

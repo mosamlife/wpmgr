@@ -34,6 +34,37 @@ type MailerStatus interface {
 	Enabled(ctx context.Context) bool
 }
 
+// VulnDigestSource supplies the "new vulnerabilities" section of the email
+// digest (m103, GH #247). Declared locally (mirrors MailerEnqueuer) so
+// internal/email never imports internal/uptime or internal/vuln directly;
+// the adapter wired in cmd/wpmgr/main.go composes *uptime.Service (the
+// vuln_include_in_digest gate, which lives on the alert_configs table, NOT
+// this package's own NotifySettings) with *vuln.Service (open-finding data)
+// to satisfy it.
+type VulnDigestSource interface {
+	// GetVulnDigestSummary returns the tenant's current open-vulnerability
+	// summary and whether the digest should include it at all. When
+	// included=false the caller must not render the section regardless of
+	// summary.OpenCount (e.g. the flag is off, or the read itself failed).
+	GetVulnDigestSummary(ctx context.Context, tenantID uuid.UUID) (summary VulnDigestSummary, included bool, err error)
+}
+
+// VulnDigestSummary is the vulnerability data for one tenant's digest section.
+type VulnDigestSummary struct {
+	OpenCount         int
+	CriticalHighCount int
+	// Top holds at most 5 findings, most-severe first.
+	Top []VulnDigestItem
+}
+
+// VulnDigestItem is one finding row in the digest's "top vulnerabilities" list.
+type VulnDigestItem struct {
+	SiteName  string
+	Component string
+	Severity  string
+	CVE       string
+}
+
 // maxAlertFailureSamples is the maximum number of recent failure samples
 // included in a per-failure alert email body.
 const maxAlertFailureSamples = 5
@@ -157,7 +188,28 @@ func (s *Service) buildDigestData(ctx context.Context, tenantID uuid.UUID, setti
 		bouncedCount += row.BouncedCount
 	}
 
-	if total == 0 {
+	// m103 (GH #247): fetch the vulnerability-digest section, gated on
+	// alert_configs.vuln_include_in_digest (a flag on a DIFFERENT table than
+	// this tenant's own email digest settings). Best-effort: a read failure
+	// here must never block the rest of the digest — the section is simply
+	// omitted, exactly like vulnIncluded=false.
+	var vulnSummary VulnDigestSummary
+	var vulnIncluded bool
+	if s.vulnDigest != nil {
+		vs, included, vErr := s.vulnDigest.GetVulnDigestSummary(ctx, tenantID)
+		if vErr != nil {
+			s.log.Warn("email digest: vuln summary fetch failed",
+				slog.String("tenant_id", tenantID.String()), slog.Any("error", vErr))
+		} else {
+			vulnSummary, vulnIncluded = vs, included
+		}
+	}
+
+	// Widened skip-send: previously this skipped whenever the EMAIL total was
+	// 0, which would silently suppress a digest that has NOTHING to report
+	// except open vulnerabilities. Skip only when there is truly nothing in
+	// either section.
+	if total == 0 && (!vulnIncluded || vulnSummary.OpenCount == 0) {
 		return nil, nil // skip-send per spec
 	}
 
@@ -217,7 +269,7 @@ func (s *Service) buildDigestData(ctx context.Context, tenantID uuid.UUID, setti
 
 	periodLabel := computePeriodLabel(settings.DigestCadence, from)
 
-	return map[string]any{
+	data := map[string]any{
 		"PeriodLabel":  periodLabel,
 		"From":         from.Format("2006-01-02"),
 		"To":           to.Format("2006-01-02"),
@@ -229,7 +281,25 @@ func (s *Service) buildDigestData(ctx context.Context, tenantID uuid.UUID, setti
 		"Sites":        siteList,
 		"TopFailures":  failureList,
 		"DashboardURL": s.publicBase + "/email",
-	}, nil
+	}
+
+	if vulnIncluded {
+		topVulns := make([]map[string]any, 0, len(vulnSummary.Top))
+		for _, v := range vulnSummary.Top {
+			topVulns = append(topVulns, map[string]any{
+				"SiteName":  v.SiteName,
+				"Component": v.Component,
+				"Severity":  v.Severity,
+				"CVE":       v.CVE,
+			})
+		}
+		data["OpenVulnCount"] = vulnSummary.OpenCount
+		data["CriticalHighCount"] = vulnSummary.CriticalHighCount
+		data["TopVulns"] = topVulns
+		data["VulnDashboardURL"] = s.publicBase + "/vulnerabilities"
+	}
+
+	return data, nil
 }
 
 // computePeriodLabel formats a human-readable period label (e.g. "July 2026").

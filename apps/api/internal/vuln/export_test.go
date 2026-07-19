@@ -2,7 +2,11 @@
 // the vuln_test package. This file is compiled only during `go test`.
 package vuln
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/google/uuid"
+)
 
 // IsSafeURL is isSafeURL exposed for testing (F2).
 func IsSafeURL(u string) bool { return isSafeURL(u) }
@@ -31,6 +35,31 @@ func MergeAffectedVersions(a, b []byte) []byte { return mergeAffectedVersions(a,
 
 // MergePatchedVersions exposes mergePatchedVersions for unit tests.
 func MergePatchedVersions(a, b []byte) []byte { return mergePatchedVersions(a, b) }
+
+// PassesSeverityThreshold exposes passesSeverityThreshold for tests (m103, GH #247).
+func PassesSeverityThreshold(severity, minSeverity string) bool {
+	return passesSeverityThreshold(severity, minSeverity)
+}
+
+// FilterBySeverity exposes filterBySeverity for tests.
+func FilterBySeverity(claimed []ClaimedFinding, minSeverity string) []ClaimedFinding {
+	return filterBySeverity(claimed, minSeverity)
+}
+
+// SortedForDisplay exposes sortedForDisplay for tests.
+func SortedForDisplay(claimed []ClaimedFinding) []ClaimedFinding {
+	return sortedForDisplay(claimed)
+}
+
+// BuildVulnAlertEmailData exposes buildVulnAlertEmailData for tests.
+func BuildVulnAlertEmailData(claimed []ClaimedFinding, publicBase string) map[string]any {
+	return buildVulnAlertEmailData(claimed, publicBase)
+}
+
+// BuildVulnAlertWebhookPayload exposes buildVulnAlertWebhookPayload for tests.
+func BuildVulnAlertWebhookPayload(tenantID uuid.UUID, claimed []ClaimedFinding) VulnAlertWebhookPayload {
+	return buildVulnAlertWebhookPayload(tenantID, claimed)
+}
 
 // StreamProductionRecords exposes (*FeedWorker).streamProductionRecords for
 // white-box unit testing the Production streaming/batching/memory-bound

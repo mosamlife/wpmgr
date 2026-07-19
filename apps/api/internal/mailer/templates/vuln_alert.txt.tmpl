@@ -1,0 +1,17 @@
+New vulnerabilities detected — {{.ProductName}}
+
+The latest vulnerability scan found {{.NewCount}} new finding{{if ne .NewCount 1}}s{{end}} across {{.SiteCount}} of your sites.
+{{range .Sites}}
+{{.SiteName}}
+  {{.SiteURL}}
+{{range .Findings}}  - {{.Component}} — installed {{.InstalledVersion}}, fixed in {{.FixedVersion}} — {{.Severity}}{{if .CVE}} ({{.CVE}}){{end}}
+{{end}}{{end}}{{if .OverflowCount}}
++{{.OverflowCount}} more finding{{if ne .OverflowCount 1}}s{{end}} not shown above.
+{{end}}
+Review and update: {{.DashboardURL}}
+
+--
+{{.ProductName}} — fleet control for WordPress
+{{if .FooterNote}}{{.FooterNote}}
+{{end}}Need help? Contact {{.SupportEmail}}.
+(c) {{.Year}} {{.ProductName}}.
