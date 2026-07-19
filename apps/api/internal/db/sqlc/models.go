@@ -1258,6 +1258,7 @@ type WordfenceVulnFeedMetum struct {
 	EnrichmentOk     bool               `json:"enrichment_ok"`
 	LastEnrichmentAt pgtype.Timestamptz `json:"last_enrichment_at"`
 	NextFeedKind     string             `json:"next_feed_kind"`
+	LastRequestAt    pgtype.Timestamptz `json:"last_request_at"`
 }
 
 type WordfenceVulnSoftware struct {

@@ -3714,10 +3714,17 @@ CREATE TABLE IF NOT EXISTS wordfence_vuln_feed_meta (
     enrichment_ok      boolean NOT NULL DEFAULT false,
     last_enrichment_at timestamptz,
     -- m101 — Scanner/Production alternation cursor (internal worker state
-    -- only; never exposed via the API). See internal/vuln/repo.go NextFeedKind.
+    -- only; never exposed via the API). Advances only inside StampFeedMeta,
+    -- on a successful non-empty ingest — see internal/vuln/repo.go GetFeedGate.
     next_feed_kind     text NOT NULL DEFAULT 'scanner'
         CONSTRAINT wordfence_vuln_feed_meta_next_feed_chk
-        CHECK (next_feed_kind IN ('scanner', 'production'))
+        CHECK (next_feed_kind IN ('scanner', 'production')),
+    -- m102 — wall-clock time of the last ACTUAL Wordfence HTTP request (any
+    -- status code). Internal worker state only; never exposed via the API.
+    -- FeedWorker.Work() gates every run on this, not on assumed job cadence
+    -- (GH #245 post-deploy: a manually triggered sync landed 6 minutes after
+    -- the periodic tick, well inside Wordfence's ~30-min rate-limit window).
+    last_request_at    timestamptz
 );
 
 -- ---------------------------------------------------------------------------

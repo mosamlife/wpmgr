@@ -19,6 +19,24 @@
 //   - a 429 on the Production leg degrades enrichment_ok without an in-window
 //     retry and WITHOUT affecting the detection-feed ok flag (which gates
 //     RescanSite).
+//
+// Post-deploy follow-up (m102): the alternation above relied on the FALSE
+// assumption that consecutive runs are ~1h apart. Prod logs showed a
+// manually-triggered sync landing only ~6 minutes after the periodic tick, so
+// the Production request still fell inside Wordfence's ~30-min window and
+// 429'd — and because the cursor used to advance unconditionally, Production
+// was abandoned for a full cycle. These tests additionally prove:
+//   - a run inside the 31-min wall-clock spacing window makes NO request and
+//     leaves the alternation cursor untouched (nothing is ever abandoned);
+//   - a run that IS eligible (spacing satisfied) fetches the feed the cursor
+//     still points at and advances it only on success;
+//   - last_request_at advances on both a 200 and a 429 (either consumes the
+//     shared rate-limit slot), but the cursor never advances on a 429.
+//
+// Because the spacing gate is wall-clock (time.Since, not injectable), tests
+// that drive more than one Work() call use backdateLastRequest to rewind
+// wordfence_vuln_feed_meta.last_request_at directly rather than sleeping for
+// 31+ real minutes.
 package tests
 
 import (
@@ -30,6 +48,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -131,6 +150,20 @@ func runFeedWork(t *testing.T, w *vuln.FeedWorker) error {
 	return w.Work(context.Background(), &river.Job[vuln.FeedRefreshArgs]{})
 }
 
+// backdateLastRequest rewinds wordfence_vuln_feed_meta.last_request_at so the
+// NEXT Work() call is immediately eligible to make a request, without a test
+// waiting the real 31-minute wall-clock spacing the gate enforces.
+func backdateLastRequest(t *testing.T, pool *db.Pool, ago time.Duration) {
+	t.Helper()
+	target := time.Now().UTC().Add(-ago)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE wordfence_vuln_feed_meta SET last_request_at = $1 WHERE id = 1`,
+		target,
+	); err != nil {
+		t.Fatalf("backdate last_request_at: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Fixture feed bodies
 // ---------------------------------------------------------------------------
@@ -218,9 +251,14 @@ func TestFeedWorker_AlternatesFeedsOneRequestPerRun(t *testing.T) {
 
 	// The alternation cursor defaults to 'scanner' (schema default), so run 1
 	// must hit the Scanner URL and run 2 must hit Production, run 3 back to
-	// Scanner — and each run must issue EXACTLY one HTTP request.
+	// Scanner — and each run must issue EXACTLY one HTTP request. Runs after
+	// the first are backdated to be immediately eligible under the wall-clock
+	// spacing gate (m102) — this test is about alternation, not spacing.
 	wantSequence := []string{vuln.ScannerFeedURL, vuln.ProductionFeedURL, vuln.ScannerFeedURL}
 	for i, wantURL := range wantSequence {
+		if i > 0 {
+			backdateLastRequest(t, pool, 32*time.Minute)
+		}
 		before := client.callCount()
 		if err := runFeedWork(t, w); err != nil {
 			t.Fatalf("run %d: Work returned error: %v", i+1, err)
@@ -258,7 +296,9 @@ func TestFeedWorker_ProductionFetch_CVSSLandsEndToEnd(t *testing.T) {
 		t.Fatalf("after scanner-only run: score=%v rating=%q cve=%q; want all empty (scanner never carries CVSS)", score, rating, cve)
 	}
 
-	// Run 2: Production enriches the SAME row.
+	// Run 2: Production enriches the SAME row. Backdate to be immediately
+	// eligible under the wall-clock spacing gate (m102).
+	backdateLastRequest(t, pool, 32*time.Minute)
 	if err := runFeedWork(t, w); err != nil {
 		t.Fatalf("run 2 (production): %v", err)
 	}
@@ -303,10 +343,13 @@ func TestFeedWorker_StickyEnrichment_ScannerRunPreservesCVSS(t *testing.T) {
 
 	w := buildFeedWorker(pool, client)
 
-	// Run 1: scanner (no cvss). Run 2: production (cvss lands).
+	// Run 1: scanner (no cvss). Run 2: production (cvss lands). Runs after the
+	// first are backdated to be immediately eligible under the wall-clock
+	// spacing gate (m102).
 	if err := runFeedWork(t, w); err != nil {
 		t.Fatalf("run 1 (scanner): %v", err)
 	}
+	backdateLastRequest(t, pool, 32*time.Minute)
 	if err := runFeedWork(t, w); err != nil {
 		t.Fatalf("run 2 (production): %v", err)
 	}
@@ -318,6 +361,7 @@ func TestFeedWorker_StickyEnrichment_ScannerRunPreservesCVSS(t *testing.T) {
 	// Run 3: scanner AGAIN, re-sending the SAME record with no cvss key. This
 	// is exactly the flap scenario GH #245's follow-up warns about: a naive
 	// blind-overwrite upsert would null cvss_score/cvss_rating right back out.
+	backdateLastRequest(t, pool, 32*time.Minute)
 	if err := runFeedWork(t, w); err != nil {
 		t.Fatalf("run 3 (scanner again): %v", err)
 	}
@@ -368,7 +412,9 @@ func TestFeedWorker_StickyEnrichment_ScannerRunPreservesReferences(t *testing.T)
 		t.Fatalf("after scanner-only run: reference_urls = %v; want empty", refs)
 	}
 
-	// Run 2: production lands a real reference URL.
+	// Run 2: production lands a real reference URL. Backdate to be
+	// immediately eligible under the wall-clock spacing gate (m102).
+	backdateLastRequest(t, pool, 32*time.Minute)
 	if err := runFeedWork(t, w); err != nil {
 		t.Fatalf("run 2 (production): %v", err)
 	}
@@ -382,6 +428,7 @@ func TestFeedWorker_StickyEnrichment_ScannerRunPreservesReferences(t *testing.T)
 	// exactly the value a naive COALESCE(EXCLUDED.x, existing.x) upsert cannot
 	// distinguish from "no update"; a blind overwrite would erase the URL
 	// Production just landed, making advisory link-outs oscillate every hour.
+	backdateLastRequest(t, pool, 32*time.Minute)
 	if err := runFeedWork(t, w); err != nil {
 		t.Fatalf("run 3 (scanner again): %v", err)
 	}
@@ -420,7 +467,11 @@ func TestFeedWorker_ProductionRateLimited_NoInWindowRetry_DetectionUnaffected(t 
 
 	// Run 2: production is rate-limited (429). Must return nil (no River
 	// retry) and must issue EXACTLY one HTTP request this cycle — no
-	// synchronous in-window retry loop.
+	// synchronous in-window retry loop. Backdate to be immediately eligible
+	// under the wall-clock spacing gate (m102) so this run actually attempts
+	// the request (rather than being spacing-skipped, which would also make
+	// zero requests but for a different reason).
+	backdateLastRequest(t, pool, 32*time.Minute)
 	before := client.callCount()
 	if err := runFeedWork(t, w); err != nil {
 		t.Fatalf("run 2 (production 429): Work returned an error; want nil (no River retry on a rate limit): %v", err)
@@ -446,6 +497,164 @@ func TestFeedWorker_ProductionRateLimited_NoInWindowRetry_DetectionUnaffected(t 
 	}
 	if meta.LastError == "" || !strings.Contains(strings.ToLower(meta.LastError), "rate limit") {
 		t.Errorf("meta.LastError = %q; want it to mention the rate limit", meta.LastError)
+	}
+
+	// Belt-and-suspenders: a 429 must NOT advance the cursor — the same feed
+	// (production) is retried on the next eligible run rather than abandoned.
+	gate, err := repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate after run 2: %v", err)
+	}
+	if gate.FeedKind != vuln.FeedKindProduction {
+		t.Errorf("cursor after a 429 = %q; want still %q (429 must not advance the cursor)", gate.FeedKind, vuln.FeedKindProduction)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// m102 follow-up: wall-clock request spacing, independent of job cadence.
+// ---------------------------------------------------------------------------
+
+// TestFeedWorker_SpacingSkip_NoRequestNoCursorAdvance covers (a)+(d): a run
+// that lands inside the 31-min wall-clock spacing window — regardless of how
+// long it's actually been since the periodic job last fired — makes NO
+// Wordfence request and leaves the alternation cursor untouched, so the feed
+// it intended to fetch is retried, never abandoned, on the next eligible run.
+// This is the direct regression guard for the prod incident: a scanner run at
+// 04:47 followed by a second run only 6 minutes later must now skip entirely
+// instead of 429ing on production and losing that cycle.
+func TestFeedWorker_SpacingSkip_NoRequestNoCursorAdvance(t *testing.T) {
+	pool := startPostgres(t)
+	const vulnID = "245-spacing-skip-vuln-1"
+	client := newFakeFeedHTTPClient()
+	client.setResponse(vuln.ScannerFeedURL, http.StatusOK, scannerBodyNoCVSS(vulnID))
+	client.setResponse(vuln.ProductionFeedURL, http.StatusOK, productionBodyWithCVSS(vulnID))
+
+	w := buildFeedWorker(pool, client)
+	repo := vuln.NewRepo(pool)
+
+	// Run 1: scanner succeeds — establishes last_request_at ~now, cursor -> production.
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 1 (scanner): %v", err)
+	}
+	if got := client.callCount(); got != 1 {
+		t.Fatalf("after run 1: callCount = %d; want 1", got)
+	}
+	gate, err := repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate after run 1: %v", err)
+	}
+	if gate.FeedKind != vuln.FeedKindProduction {
+		t.Fatalf("cursor after run 1 = %q; want %q", gate.FeedKind, vuln.FeedKindProduction)
+	}
+
+	// Run 2: immediately after (real elapsed time in a test is milliseconds,
+	// nowhere near 31 minutes) — must skip entirely: no request, no error,
+	// cursor unchanged.
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 2 (spacing skip): Work returned an error; want nil: %v", err)
+	}
+	if got := client.callCount(); got != 1 {
+		t.Errorf("after run 2 (spacing-skip): callCount = %d; want still 1 (no new request)", got)
+	}
+	gate, err = repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate after run 2: %v", err)
+	}
+	if gate.FeedKind != vuln.FeedKindProduction {
+		t.Errorf("cursor after a spacing-skip = %q; want still %q (unchanged — never abandon a feed)", gate.FeedKind, vuln.FeedKindProduction)
+	}
+}
+
+// TestFeedWorker_EligibleAfterSpacing_FetchesIntendedFeedAndAdvances covers
+// (b): once >=31 minutes have elapsed since the last actual Wordfence request
+// (simulated here via backdateLastRequest rather than a real 31-minute
+// sleep), the next run fetches the feed the cursor still points at (the one
+// abandoned by the earlier spacing-skip scenario) and, on success, advances
+// the cursor — proving production is fetched on the first eligible run
+// instead of being skipped over indefinitely.
+func TestFeedWorker_EligibleAfterSpacing_FetchesIntendedFeedAndAdvances(t *testing.T) {
+	pool := startPostgres(t)
+	const vulnID = "245-eligible-vuln-1"
+	client := newFakeFeedHTTPClient()
+	client.setResponse(vuln.ScannerFeedURL, http.StatusOK, scannerBodyNoCVSS(vulnID))
+	client.setResponse(vuln.ProductionFeedURL, http.StatusOK, productionBodyWithCVSS(vulnID))
+
+	w := buildFeedWorker(pool, client)
+	repo := vuln.NewRepo(pool)
+
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 1 (scanner): %v", err)
+	}
+	backdateLastRequest(t, pool, 32*time.Minute)
+
+	before := client.callCount()
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 2 (eligible production): %v", err)
+	}
+	after := client.callCount()
+	if after-before != 1 {
+		t.Errorf("run 2: made %d HTTP request(s); want exactly 1 (now eligible)", after-before)
+	}
+	if got := client.lastCall(); got != vuln.ProductionFeedURL {
+		t.Errorf("run 2: fetched %q; want %q (cursor pointed at production)", got, vuln.ProductionFeedURL)
+	}
+
+	gate, err := repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate: %v", err)
+	}
+	if gate.FeedKind != vuln.FeedKindScanner {
+		t.Errorf("cursor after a successful eligible production ingest = %q; want %q (advanced)", gate.FeedKind, vuln.FeedKindScanner)
+	}
+}
+
+// TestFeedWorker_LastRequestAt_UpdatesOn200And429 covers (c): last_request_at
+// must advance on EVERY actual Wordfence request, whether it succeeds (200)
+// or is rate-limited (429) — both consume the shared rate-limit slot, so both
+// must feed the wall-clock spacing gate (otherwise a 429 would look like "no
+// request happened" and the very next run could immediately re-hit the same
+// still-limited window).
+func TestFeedWorker_LastRequestAt_UpdatesOn200And429(t *testing.T) {
+	pool := startPostgres(t)
+	const vulnID = "245-last-req-vuln-1"
+	client := newFakeFeedHTTPClient()
+	client.setResponse(vuln.ScannerFeedURL, http.StatusOK, scannerBodyNoCVSS(vulnID))
+	client.setResponse(vuln.ProductionFeedURL, http.StatusTooManyRequests, `{"error":"rate limited"}`)
+
+	w := buildFeedWorker(pool, client)
+	repo := vuln.NewRepo(pool)
+
+	// Run 1: scanner succeeds (200) — last_request_at must be set.
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 1 (scanner 200): %v", err)
+	}
+	gate, err := repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate after run 1: %v", err)
+	}
+	if gate.LastRequestAt == nil {
+		t.Fatal("LastRequestAt is nil after a successful (200) request; want non-nil")
+	}
+	firstStamp := *gate.LastRequestAt
+
+	// Make run 2 eligible, then hit the 429 on production.
+	backdateLastRequest(t, pool, 32*time.Minute)
+	if err := runFeedWork(t, w); err != nil {
+		t.Fatalf("run 2 (production 429): %v", err)
+	}
+	gate, err = repo.GetFeedGate(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeedGate after run 2: %v", err)
+	}
+	if gate.LastRequestAt == nil {
+		t.Fatal("LastRequestAt is nil after a 429; want non-nil (a 429 still consumes the rate-limit slot)")
+	}
+	if !gate.LastRequestAt.After(firstStamp) {
+		t.Errorf("LastRequestAt after the 429 (%v) did not advance past the first stamp (%v)", gate.LastRequestAt, firstStamp)
+	}
+	// Cursor must NOT have advanced on the 429 (same feed retried next eligible run).
+	if gate.FeedKind != vuln.FeedKindProduction {
+		t.Errorf("cursor after a 429 = %q; want still %q (429 does not advance the cursor)", gate.FeedKind, vuln.FeedKindProduction)
 	}
 }
 

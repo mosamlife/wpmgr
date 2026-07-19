@@ -406,7 +406,15 @@ func (r *Repo) PruneMissingVulns(ctx context.Context, tx pgx.Tx, knownIDs []stri
 }
 
 // StampFeedMeta writes the freshness + attribution sentinel row after a
-// successful ingest of either feed.
+// successful ingest of either feed, and ADVANCES the Scanner/Production
+// alternation cursor (next_feed_kind) to the other value.
+//
+// StampFeedMeta is called ONLY on a successful, non-empty ingest (see
+// FeedWorker.ingestRecords) — every other outcome (spacing-skip, 429,
+// zero-record response, hard fetch/ingest error) leaves the cursor untouched,
+// so a feed that hasn't yet been successfully fetched is never abandoned: the
+// next eligible (>=31min-spaced) run retries the SAME feed kind until it
+// finally lands (GH #245 wall-clock-spacing follow-up).
 //
 // defiant_notice/defiant_license/mitre_notice are written via COALESCE so a
 // run whose records happened not to carry a copyrights block (odd shape,
@@ -430,12 +438,31 @@ func (r *Repo) StampFeedMeta(ctx context.Context, tx pgx.Tx, meta FeedMetaUpdate
 			mitre_notice       = COALESCE($6, mitre_notice),
 			last_error         = $7,
 			enrichment_ok      = COALESCE($8, enrichment_ok),
-			last_enrichment_at = COALESCE($9, last_enrichment_at)
+			last_enrichment_at = COALESCE($9, last_enrichment_at),
+			next_feed_kind     = CASE next_feed_kind
+				WHEN 'scanner' THEN 'production'
+				ELSE 'scanner'
+			END
 		WHERE id = 1`,
 		meta.FetchedAt, meta.OK, meta.RecordCount,
 		nilString(meta.DefiantNotice), nilString(meta.DefiantLicense),
 		nilString(meta.MitreNotice), nilString(meta.LastError),
 		meta.EnrichmentOK, meta.LastEnrichmentAt,
+	)
+	return err
+}
+
+// StampRequestAt records the wall-clock time of an ACTUAL Wordfence HTTP
+// request — called whenever fetchFeed got a response from Wordfence's server,
+// regardless of status code (200 OR 429 both consume the shared ~30-min
+// rate-limit slot; a transport-level failure that never reached Wordfence
+// does not). This is deliberately separate from fetched_at, which is
+// success-only: last_request_at is the wall-clock input to Work()'s spacing
+// gate (GetFeedGate), so the gate is accurate even across a run that 429'd.
+func (r *Repo) StampRequestAt(ctx context.Context, at time.Time) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE wordfence_vuln_feed_meta SET last_request_at = $1 WHERE id = 1`,
+		at,
 	)
 	return err
 }
@@ -511,32 +538,43 @@ func (r *Repo) GetFeedMetaStatus(ctx context.Context) (ok bool, recordCount int,
 	return meta.OK, meta.RecordCount, meta.FetchedAt, meta.LastError, meta.EnrichmentOK, meta.LastEnrichmentAt, nil
 }
 
-// NextFeedKind atomically reads-and-advances the Scanner/Production
-// alternation cursor, returning the feed kind ("scanner"|"production") this
-// worker cycle should fetch. The cursor is flipped in the SAME statement via
-// a CTE + row lock, so alternation is a pure function of invocation count —
-// it does not depend on whether this cycle's fetch succeeds. That keeps the
-// invariant simple: each periodic run issues at most one Wordfence HTTP
-// request, and successive runs always target the other feed.
-func (r *Repo) NextFeedKind(ctx context.Context) (string, error) {
-	var kind string
+// FeedGate is the worker's fetch-eligibility + alternation-cursor state, read
+// once at the top of Work(). Internal worker bookkeeping only — never
+// exposed via the API (mirrors next_feed_kind's existing internal-only status).
+type FeedGate struct {
+	// FeedKind is the feed ("scanner"|"production") this cycle should fetch
+	// IF eligible. It only changes when StampFeedMeta successfully advances it
+	// after a completed ingest — never on a read.
+	FeedKind string
+	// LastRequestAt is the wall-clock time of the last ACTUAL Wordfence HTTP
+	// request (any status code), or nil if none has ever been made. Work()
+	// uses this — NOT an assumption about job cadence — to enforce the
+	// ~30-min global rate-limit spacing (GH #245 follow-up: consecutive
+	// periodic + manually-triggered runs can land far closer together than
+	// the nominal hourly cadence).
+	LastRequestAt *time.Time
+}
+
+// GetFeedGate reads the current alternation cursor and last-request timestamp
+// WITHOUT mutating anything — a pure read. Advancing next_feed_kind (via
+// StampFeedMeta) and stamping last_request_at (via StampRequestAt) are
+// separate, explicit steps the caller invokes only after it has decided to
+// actually make a request and, for the cursor, only after that request's
+// ingest succeeds.
+func (r *Repo) GetFeedGate(ctx context.Context) (FeedGate, error) {
+	var g FeedGate
+	var lastRequestAt pgtype.Timestamptz
 	err := r.pool.QueryRow(ctx, `
-		WITH cur AS (
-			SELECT next_feed_kind FROM wordfence_vuln_feed_meta WHERE id = 1 FOR UPDATE
-		)
-		UPDATE wordfence_vuln_feed_meta m
-		SET next_feed_kind = CASE cur.next_feed_kind
-			WHEN 'scanner' THEN 'production'
-			ELSE 'scanner'
-		END
-		FROM cur
-		WHERE m.id = 1
-		RETURNING cur.next_feed_kind`,
-	).Scan(&kind)
+		SELECT next_feed_kind, last_request_at FROM wordfence_vuln_feed_meta WHERE id = 1`,
+	).Scan(&g.FeedKind, &lastRequestAt)
 	if err != nil {
-		return "", fmt.Errorf("advance feed cursor: %w", err)
+		return g, fmt.Errorf("get feed gate: %w", err)
 	}
-	return kind, nil
+	if lastRequestAt.Valid {
+		t := lastRequestAt.Time
+		g.LastRequestAt = &t
+	}
+	return g, nil
 }
 
 // LookupSoftware returns all vulnerability software rows for the given (kind, slug).
