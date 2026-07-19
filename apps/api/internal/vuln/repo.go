@@ -159,6 +159,34 @@ func (r *Repo) BulkUpsertFeedRecords(ctx context.Context, tx pgx.Tx, recs []Feed
 	return br.Close()
 }
 
+// BulkUpsertFeedRecordsPool wraps BulkUpsertFeedRecords in its own short-lived
+// transaction — used by the streaming Production ingest path
+// (FeedWorker.fetchAndIngestProduction), which flushes bounded batches as the
+// feed is decoded rather than holding one long transaction open for the
+// entire (potentially very large) response. Production only ever upserts
+// existing/enrichment data (never BulkReplaceAllSoftware/PruneMissingVulns —
+// see ingestRecords), so each batch committing independently is safe: a
+// mid-stream failure on a later batch leaves earlier batches durably
+// enriched rather than losing all forward progress.
+func (r *Repo) BulkUpsertFeedRecordsPool(ctx context.Context, recs []FeedRecord) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.agent','on',true)"); err != nil {
+		return fmt.Errorf("set agent guc: %w", err)
+	}
+	if err := r.BulkUpsertFeedRecords(ctx, tx, recs); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // BulkReplaceAllSoftware replaces the software rows for every vuln_id in recs
 // using two set-based operations instead of per-record DELETE + INSERT loops:
 //
@@ -450,6 +478,27 @@ func (r *Repo) StampFeedMeta(ctx context.Context, tx pgx.Tx, meta FeedMetaUpdate
 		meta.EnrichmentOK, meta.LastEnrichmentAt,
 	)
 	return err
+}
+
+// StampFeedMetaFinal opens its own transaction to call StampFeedMeta directly
+// against the pool — used by the streaming Production ingest path
+// (FeedWorker.fetchAndIngestProduction / workProduction), whose record
+// batches are already committed incrementally (BulkUpsertFeedRecordsPool)
+// rather than atomically with the meta stamp. Calling this is what advances
+// next_feed_kind (via the CASE in StampFeedMeta's SQL), so it must only be
+// called once the ENTIRE stream has completed successfully — never on a
+// mid-stream failure, which returns an error before reaching this call.
+func (r *Repo) StampFeedMetaFinal(ctx context.Context, meta FeedMetaUpdate) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := r.StampFeedMeta(ctx, tx, meta); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // StampRequestAt records the wall-clock time of an ACTUAL Wordfence HTTP

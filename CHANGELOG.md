@@ -8,7 +8,11 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.73] - 2026-07-19
+## [0.61.74] - 2026-07-19
+
+### Fixed
+
+- Follow-up to GH #245: the vulnerability CVSS enrichment feed now downloads reliably, so real severities populate. Once the earlier rate-limit fix let the enrichment feed request through cleanly for the first time, the download surfaced two latent problems that had always been hidden behind the rate limiting: the enrichment feed (much larger than the detection feed, since it carries CVSS, CVE, CWE, and reference data for every analyzed vulnerability) was loaded into memory all at once, which exhausted the control plane's memory and killed the process mid-download; and the fetch shared a short timeout intended for other traffic, which would have cut off the large download regardless. The enrichment feed is now streamed and written to the database in bounded batches so memory stays flat no matter how large the feed grows, and the fetch is given its own adequate time budget (with the network egress protections unchanged). The detection feed path is unchanged. Control plane only.
 
 ### Fixed
 

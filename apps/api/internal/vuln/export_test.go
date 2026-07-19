@@ -31,3 +31,13 @@ func MergeAffectedVersions(a, b []byte) []byte { return mergeAffectedVersions(a,
 
 // MergePatchedVersions exposes mergePatchedVersions for unit tests.
 func MergePatchedVersions(a, b []byte) []byte { return mergePatchedVersions(a, b) }
+
+// StreamProductionRecords exposes (*FeedWorker).streamProductionRecords for
+// white-box unit testing the Production streaming/batching/memory-bound
+// behavior without any HTTP or DB dependency: dec must already be positioned
+// just past the feed's opening '{' (matching how fetchAndIngestProduction
+// calls it), and flush is invoked once per completed batch (plus once more
+// for any remainder) with a slice that is never longer than batchSize.
+func (w *FeedWorker) StreamProductionRecords(dec *json.Decoder, batchSize int, flush func(batch []FeedRecord) error) (n int, defiantNotice, defiantLicense, mitreNotice string, err error) {
+	return w.streamProductionRecords(dec, batchSize, flush)
+}
