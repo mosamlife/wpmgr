@@ -1,0 +1,31 @@
+-- m102 — GH #245 post-deploy follow-up: enforce Wordfence request spacing by
+-- wall-clock, not by assumed job cadence.
+--
+-- m101 alternated Scanner/Production across successive worker runs assuming
+-- consecutive runs are ~1h apart (the periodic job's nominal cadence). Prod
+-- logs showed that assumption is false: an admin-triggered sync (deduped on
+-- its own 5-min ByPeriod window, independent of the periodic job's 1h
+-- ByPeriod window — River does not treat two different dedup windows as
+-- duplicates of each other) landed only ~6 minutes after the periodic tick,
+-- so the Production request still fell inside Wordfence's ~30-min global
+-- rate-limit window and 429'd — and because the cursor advanced
+-- unconditionally, Production was abandoned for a full cycle instead of
+-- retried. CVSS never landed; severities stayed 'unknown'.
+--
+-- Fix: last_request_at records the wall-clock time of the last ACTUAL
+-- Wordfence HTTP request (any status code — 200 or 429 both consume the
+-- shared rate-limit slot). internal/vuln/worker.go's Work() checks this at
+-- the START of every run, before making any request, and skips the entire
+-- run (zero requests) when less than the spacing threshold has elapsed. The
+-- Scanner/Production cursor (next_feed_kind, m101) now advances ONLY inside
+-- a successful, non-empty ingest (StampFeedMeta) — never on a spacing-skip,
+-- a 429, or any other failure — so an abandoned feed is always retried on the
+-- next eligible run rather than skipped over.
+--
+-- last_request_at is internal worker state only, like next_feed_kind — never
+-- exposed via the API.
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS (mirrors m101/m92/m93).
+
+ALTER TABLE "public"."wordfence_vuln_feed_meta"
+    ADD COLUMN IF NOT EXISTS "last_request_at" timestamptz;

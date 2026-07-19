@@ -8,7 +8,11 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
-## [0.61.72] - 2026-07-19
+## [0.61.73] - 2026-07-19
+
+### Fixed
+
+- Follow-up to the vulnerability-severity fix (GH #245): the CVSS enrichment feed now refreshes reliably. The previous release alternated the two Wordfence feeds across syncs to respect the feed's rate limit, but that only worked if syncs were spaced far apart; when two syncs happened close together (for example a manual refresh shortly after a scheduled one, which are tracked in separate schedules and so are not de-duplicated against each other), the enrichment request was still rate-limited and skipped, leaving severities unrated for longer. The control plane now enforces the minimum spacing by wall-clock time: a sync that would arrive too soon after the previous request is skipped entirely (no request is made), and the feed it intended to fetch is retried on the next eligible run rather than passed over, so CVSS severities populate on the first available cycle regardless of how the syncs are timed. Control plane only.
 
 ### Fixed
 

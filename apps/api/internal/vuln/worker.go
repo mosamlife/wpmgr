@@ -66,8 +66,24 @@ func (RescanSiteArgs) Kind() string { return "vuln_rescan_site" }
 // cycle, so Production — and therefore all CVSS/CVE enrichment — never landed
 // (GH #245: every finding fell back to a fabricated "low" severity, hiding a
 // real CVSS 9.8 core RCE). The fix: alternate feeds across successive runs via
-// a persisted cursor (Repo.NextFeedKind) so each run issues exactly ONE
-// request, comfortably inside the rate-limit window.
+// a persisted cursor (Repo.GetFeedGate / StampFeedMeta) so each run issues
+// exactly ONE request, comfortably inside the rate-limit window.
+//
+// Follow-up (GH #245 post-deploy): the alternation above relied on the FALSE
+// assumption that consecutive runs are ~1h apart. In prod, a manually
+// triggered sync (admin.VulnFeedKeyService.TriggerSync, deduped on its own
+// 5-min ByPeriod window — distinct from the hourly periodic job's 1h ByPeriod
+// window, so River does NOT treat them as duplicates of each other) landed
+// only 6 minutes after the periodic tick, so the second (Production) request
+// still fell inside the 30-min window and 429'd — and because the cursor used
+// to advance unconditionally, Production was abandoned for a full cycle
+// instead of retried. Fix: Work() now enforces the spacing by WALL-CLOCK
+// (Repo.GetFeedGate.LastRequestAt, stamped on every actual request — 200 or
+// 429), skipping the entire run (zero requests) when too soon, and the
+// cursor advances ONLY inside StampFeedMeta after a successful, non-empty
+// ingest — never on a skip, a 429, or any other failure — so an abandoned
+// feed is always retried on the next eligible run instead of being skipped
+// over.
 const (
 	ScannerFeedURL    = "https://www.wordfence.com/api/intelligence/v3/vulnerabilities/scanner"
 	ProductionFeedURL = "https://www.wordfence.com/api/intelligence/v3/vulnerabilities/production"
@@ -80,12 +96,19 @@ const (
 	FeedKindProduction = "production"
 )
 
+// minRequestSpacing is the minimum wall-clock gap Work() enforces between two
+// ACTUAL Wordfence HTTP requests, regardless of job/trigger cadence. Wordfence
+// enforces ~30 minutes; the extra 1-minute margin absorbs clock/scheduling
+// jitter so a request is never dispatched right at the edge of the window.
+const minRequestSpacing = 31 * time.Minute
+
 // errRateLimited marks a 429 from the Wordfence feed. Wordfence documents no
 // Retry-After and no per-window number ("too many requests in a short period"),
 // so a 429 must NOT trigger an immediate in-process retry — that just re-hits
 // the endpoint and keeps the rate-limit window warm. Instead we stamp the
-// status and succeed; the next scheduled run (which targets the ALTERNATE
-// feed, per NextFeedKind) is the natural, well-spaced retry.
+// status and succeed; the next ELIGIBLE run (wall-clock spaced, see
+// minRequestSpacing) is the natural, well-spaced retry of the SAME feed (the
+// cursor does not advance on a 429).
 var errRateLimited = errors.New("wordfence feed rate limited (429)")
 
 // FeedHTTPDoer is the subset of httpclient.Client the feed worker needs.
@@ -152,7 +175,7 @@ func (w *FeedWorker) SetService(svc *Service) { w.svc = svc }
 
 // Timeout gives the feed refresh job 10 minutes. A full-dump ingest of ~13k
 // records via CopyFrom completes in seconds, but the single HTTP fetch (one
-// feed per run — see NextFeedKind) + any Postgres latency under load consume
+// feed per run — see GetFeedGate) + any Postgres latency under load consume
 // real wall time. 10 minutes is generous headroom well above the expected
 // 15–30s wall time and avoids the context deadline that previously killed the
 // per-record loop.
@@ -160,10 +183,13 @@ func (w *FeedWorker) Timeout(*river.Job[FeedRefreshArgs]) time.Duration {
 	return 10 * time.Minute
 }
 
-// Work performs the feed refresh: exactly ONE Wordfence Intelligence HTTP
+// Work performs the feed refresh: at most ONE Wordfence Intelligence HTTP
 // request per invocation, alternating Scanner/Production across successive
-// runs (see the package-level doc comment above the feed URL constants and
-// Repo.NextFeedKind).
+// ELIGIBLE runs (see the package-level doc comment above the feed URL
+// constants and Repo.GetFeedGate). Eligibility is gated by WALL-CLOCK spacing
+// since the last actual request, not by an assumption about job cadence —
+// consecutive runs (periodic + a manually triggered sync, or any other
+// clustering) can land far closer together than the nominal hourly interval.
 func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) error {
 	// Resolve the key at run-time so a UI-set key takes effect on the next job
 	// without requiring a restart. Priority: UI key > env key > no-op.
@@ -175,15 +201,26 @@ func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) 
 	}
 	_ = source // used only for debug logging above
 
-	// Advance the alternation cursor first: the flip is unconditional (does
-	// not depend on this cycle's outcome) so successive runs strictly
-	// alternate feeds regardless of transient failures. Fall back to Scanner
-	// on a cursor read error so a meta-row hiccup never wedges the worker.
-	feedKind, cerr := w.repo.NextFeedKind(ctx)
-	if cerr != nil {
-		w.logger.Warn("vuln: failed to read feed alternation cursor; defaulting to scanner",
-			slog.Any("error", cerr))
-		feedKind = FeedKindScanner
+	// Read (never mutate) the alternation cursor + last-request timestamp.
+	// Fall back to Scanner/no-prior-request on a read error so a meta-row
+	// hiccup never wedges the worker.
+	gate, gerr := w.repo.GetFeedGate(ctx)
+	feedKind := FeedKindScanner
+	if gerr != nil {
+		w.logger.Warn("vuln: failed to read feed gate; defaulting to scanner",
+			slog.Any("error", gerr))
+	} else {
+		feedKind = gate.FeedKind
+		if gate.LastRequestAt != nil {
+			if elapsed := time.Since(*gate.LastRequestAt); elapsed < minRequestSpacing {
+				// Make NO Wordfence request this cycle and leave the cursor
+				// exactly where it is: the next eligible run retries the SAME
+				// feed kind, so nothing is ever abandoned by a too-soon run.
+				w.logger.Info("vuln: skipping feed refresh, <31m since last Wordfence request (rate-limit spacing)",
+					slog.Float64("elapsed_minutes", elapsed.Minutes()))
+				return nil
+			}
+		}
 	}
 	feedURL := ScannerFeedURL
 	if feedKind == FeedKindProduction {
@@ -192,16 +229,29 @@ func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) 
 
 	w.logger.Info("vuln: starting Wordfence Intelligence feed refresh", slog.String("feed", feedKind))
 
-	records, defiantNotice, defiantLicense, mitreNotice, err := w.fetchFeed(ctx, feedURL, apiKey)
+	records, defiantNotice, defiantLicense, mitreNotice, requested, err := w.fetchFeed(ctx, feedURL, apiKey)
+	if requested {
+		// A response was received from Wordfence's server (200, 429, or any
+		// other status) — that attempt consumed the shared rate-limit slot,
+		// regardless of outcome, so the wall-clock gate above must see it on
+		// the next run. A pure transport failure (requested=false) never
+		// reached Wordfence and does not count.
+		if serr := w.repo.StampRequestAt(ctx, time.Now().UTC()); serr != nil {
+			w.logger.Warn("vuln: failed to stamp last_request_at", slog.Any("error", serr))
+		}
+	}
 	if err != nil {
 		if errors.Is(err, errRateLimited) {
 			// Do NOT retry inside this cycle: a globally rate-limited window
-			// cannot be escaped by an immediate retry. Stamp degraded and let
-			// the next scheduled run — which targets the ALTERNATE feed and is
-			// naturally ~1 hour away — recover. A Production rate-limit must
-			// NOT flip the detection ok flag (RescanSite gates on it); a
-			// Scanner rate-limit legitimately does, matching prior behavior.
-			msg := fmt.Sprintf("%s feed rate limited by Wordfence; will retry on the next scheduled refresh", feedKind)
+			// cannot be escaped by an immediate retry. Stamp degraded and
+			// leave the cursor untouched (belt-and-suspenders: the wall-clock
+			// gate above should normally prevent reaching this branch at all,
+			// but an external caller could still consume the shared slot) —
+			// the next ELIGIBLE run retries the SAME feed. A Production
+			// rate-limit must NOT flip the detection ok flag (RescanSite
+			// gates on it); a Scanner rate-limit legitimately does, matching
+			// prior behavior.
+			msg := fmt.Sprintf("%s feed rate limited by Wordfence; will retry on the next eligible refresh", feedKind)
 			if feedKind == FeedKindProduction {
 				_ = w.repo.StampEnrichmentDegraded(ctx, msg)
 			} else {
@@ -222,6 +272,8 @@ func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) 
 		// Scanner-driven catalog from the last successful Scanner run is still
 		// perfectly valid. A zero-record Scanner response is treated as before
 		// (ok=false): it means we have no usable detection catalog this cycle.
+		// Neither path advances the cursor — the SAME feed is retried next
+		// eligible run.
 		msg := fmt.Sprintf("%s feed returned zero records; not applying update", feedKind)
 		if feedKind == FeedKindProduction {
 			_ = w.repo.StampEnrichmentDegraded(ctx, msg)
@@ -257,6 +309,10 @@ func (w *FeedWorker) Work(ctx context.Context, job *river.Job[FeedRefreshArgs]) 
 		meta.LastEnrichmentAt = &now
 	}
 
+	// ingestRecords calls StampFeedMeta, which — ONLY on this successful,
+	// non-empty-ingest path — also advances next_feed_kind to the other feed.
+	// Every other outcome above (spacing-skip, 429, zero records, hard error)
+	// returns before reaching here, leaving the cursor exactly as it was.
 	pgErr := w.ingestRecords(ctx, records, knownIDs, meta, feedKind)
 	if pgErr != nil {
 		_ = w.repo.StampFeedError(ctx, pgErr.Error())
@@ -339,21 +395,36 @@ func (w *FeedWorker) ingestRecords(ctx context.Context, records map[string]FeedR
 
 // fetchFeed downloads and parses a Wordfence Intelligence V3 feed URL.
 // The V3 feed is a JSON object keyed by vuln UUID: { "<uuid>": { ... }, ... }.
-// Returned values: records map, defiant notice, defiant license, mitre notice, error.
-func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (map[string]FeedRecord, string, string, string, error) {
+//
+// Returned values: records map, defiant notice, defiant license, mitre
+// notice, requested, error. requested reports whether a response was actually
+// received from Wordfence's server (true for EVERY status code — 200, 429,
+// 401/403, 5xx, or any other — since all of those represent a completed
+// network round-trip that counts against the shared ~30-min rate-limit slot).
+// requested is false only when the request never reached Wordfence at all
+// (building the *http.Request failed, or the transport-level Do() call itself
+// errored — DNS/connect/timeout before any response). The caller
+// (FeedWorker.Work) uses requested to decide whether to stamp last_request_at.
+func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (records map[string]FeedRecord, defiantNotice, defiantLicense, mitreNotice string, requested bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
 	if err != nil {
-		return nil, "", "", "", err
+		return nil, "", "", "", false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "WPMgr-VulnScanner/1.0")
 
-	resp, err := w.client.Do(req)
-	if err != nil {
-		return nil, "", "", "", fmt.Errorf("http get %s: %w", feedURL, err)
+	resp, doErr := w.client.Do(req)
+	if doErr != nil {
+		// Transport-level failure: no response ever came back from Wordfence,
+		// so this attempt did not consume the shared rate-limit slot.
+		return nil, "", "", "", false, fmt.Errorf("http get %s: %w", feedURL, doErr)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// A response was received — from here on every return path counts as a
+	// real request against the rate-limit window, regardless of status code.
+	requested = true
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -362,7 +433,7 @@ func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (map
 		// Bad or missing API key — surface a clean error without including the key
 		// itself in the message (the message is stored in wordfence_vuln_feed_meta
 		// and returned to the superadmin via the status endpoint).
-		return nil, "", "", "", fmt.Errorf("feed auth failed (HTTP %d): check the Wordfence Intelligence API key in the superadmin settings", resp.StatusCode)
+		return nil, "", "", "", requested, fmt.Errorf("feed auth failed (HTTP %d): check the Wordfence Intelligence API key in the superadmin settings", resp.StatusCode)
 	case http.StatusTooManyRequests:
 		// Do NOT retry inside this cycle: Wordfence's rate limit is a ~30-minute
 		// GLOBAL window per API key with no documented Retry-After and no fixed
@@ -371,12 +442,12 @@ func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (map
 		// keeps the window warm (this was the direct mechanism behind GH #245:
 		// the Production fetch was always the second request in the same
 		// cycle, so it 429'd every time). The caller stamps degraded status and
-		// returns; the next scheduled run — which alternates to the OTHER feed
-		// via NextFeedKind — is the well-spaced retry.
-		return nil, "", "", "", fmt.Errorf("rate limited (429) fetching %s: %w", feedURL, errRateLimited)
+		// returns; the next ELIGIBLE run (wall-clock spaced) retries the SAME
+		// feed since the cursor does not advance on a 429.
+		return nil, "", "", "", requested, fmt.Errorf("rate limited (429) fetching %s: %w", feedURL, errRateLimited)
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, "", "", "", fmt.Errorf("unexpected status %d from %s: %s", resp.StatusCode, feedURL, body)
+		return nil, "", "", "", requested, fmt.Errorf("unexpected status %d from %s: %s", resp.StatusCode, feedURL, body)
 	}
 
 	// Stream-decode the root JSON object so we don't load multi-MB into memory
@@ -384,18 +455,17 @@ func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (map
 	dec := json.NewDecoder(resp.Body)
 
 	// Read opening "{".
-	if tok, err := dec.Token(); err != nil || tok.(json.Delim) != '{' {
-		return nil, "", "", "", fmt.Errorf("expected root object from %s", feedURL)
+	if tok, terr := dec.Token(); terr != nil || tok.(json.Delim) != '{' {
+		return nil, "", "", "", requested, fmt.Errorf("expected root object from %s", feedURL)
 	}
 
-	records := make(map[string]FeedRecord)
-	var defiantNotice, defiantLicense, mitreNotice string
+	recs := make(map[string]FeedRecord)
 
 	for dec.More() {
 		// Read the vuln UUID key.
-		keyTok, err := dec.Token()
-		if err != nil {
-			return nil, "", "", "", fmt.Errorf("read key: %w", err)
+		keyTok, kerr := dec.Token()
+		if kerr != nil {
+			return nil, "", "", "", requested, fmt.Errorf("read key: %w", kerr)
 		}
 		vulnID, ok := keyTok.(string)
 		if !ok {
@@ -404,13 +474,13 @@ func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (map
 
 		// Decode the record object as raw JSON first (so we can preserve it in raw).
 		var rawMsg json.RawMessage
-		if err := dec.Decode(&rawMsg); err != nil {
-			return nil, "", "", "", fmt.Errorf("decode record %s: %w", vulnID, err)
+		if derr := dec.Decode(&rawMsg); derr != nil {
+			return nil, "", "", "", requested, fmt.Errorf("decode record %s: %w", vulnID, derr)
 		}
 
-		rec, notice, license, mitre, err := parseFeedRecord(vulnID, rawMsg)
-		if err != nil {
-			if errors.Is(err, errNoUsableSoftware) {
+		rec, notice, license, mitre, perr := parseFeedRecord(vulnID, rawMsg)
+		if perr != nil {
+			if errors.Is(perr, errNoUsableSoftware) {
 				// A record with no usable software cannot match any site inventory.
 				// Skip at Debug level — this is expected for certain informational entries.
 				w.logger.Debug("vuln: skipping record with no usable software",
@@ -419,12 +489,12 @@ func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (map
 				// Defensive catch-all: parseFeedRecord is designed to never return other
 				// errors, but guard here anyway.
 				w.logger.Warn("vuln: skipping unparseable record",
-					slog.String("vuln_id", vulnID), slog.Any("error", err))
+					slog.String("vuln_id", vulnID), slog.Any("error", perr))
 			}
 			continue
 		}
 
-		records[vulnID] = rec
+		recs[vulnID] = rec
 
 		// Capture the first non-empty attribution texts seen.
 		if defiantNotice == "" && notice != "" {
@@ -438,7 +508,7 @@ func (w *FeedWorker) fetchFeed(ctx context.Context, feedURL, apiKey string) (map
 		}
 	}
 
-	return records, defiantNotice, defiantLicense, mitreNotice, nil
+	return recs, defiantNotice, defiantLicense, mitreNotice, requested, nil
 }
 
 // ---------------------------------------------------------------------------
