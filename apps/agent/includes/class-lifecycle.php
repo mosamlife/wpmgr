@@ -444,6 +444,10 @@ final class Lifecycle
             Keystore::OPTION_SITE_KEYPAIR,
             Keystore::OPTION_AGE_IDENTITY,
             Keystore::OPTION_MASTER_KEY_SOURCE,
+            // GH #257 last-resort tier: the raw (base64) master key itself,
+            // when this install's key lives in the database rather than a
+            // file or salts. Must not outlive the plugin.
+            Keystore::OPTION_DB_MASTER_KEY,
             Settings::OPTION_CP_URL,
             Settings::OPTION_SITE_ID,
             Settings::OPTION_TENANT_ID,

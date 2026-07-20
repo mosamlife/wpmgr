@@ -133,8 +133,15 @@ final class PluginActivationTest extends TestCase
             'A persistent keystore-error option must be set.'
         );
         $this->assertIsString($this->options[Plugin::OPTION_KEYSTORE_ERROR]);
+        // The pinned 'file' source (a nonexistent path) is unavailable: the
+        // message surfaces that specific pinned-source-drift cause (GH #257
+        // cause-specific messaging) rather than a generic fixed string.
         $this->assertStringContainsString(
-            'WPMGR_AGENT_KEY_FILE',
+            'pinned master key file is missing or invalid',
+            $this->options[Plugin::OPTION_KEYSTORE_ERROR]
+        );
+        $this->assertStringContainsString(
+            'active but inactive',
             $this->options[Plugin::OPTION_KEYSTORE_ERROR]
         );
 

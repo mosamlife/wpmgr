@@ -185,6 +185,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.36.0. This project ships frequently; not every intermediate patch release is listed here individually -- see the full history at https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md.
 
+= 0.61.78 =
+* Fix: the plugin could fail to set up its encryption key on some managed hosts (for example Hostinger and other CloudLinux/CageFS hosts), leaving it active but unable to connect (GH #257). It now tolerates a wp-config.php with missing or partial secret salts, tries the uploads folder as an additional fallback file location, and as a last resort can store a dedicated encryption key in the database when no file location is writable. The key setup is now safe against two requests racing to set it up at the same time and against a write that is interrupted partway through. Already-connected sites are unaffected. The setup notice now explains the actual cause when the key still cannot be established.
+
 = 0.61.71 =
 * Fix: the "Manage in WPMgr" admin bar link now opens the site's Cache page in the control-plane dashboard. It previously pointed at a page that has never existed.
 

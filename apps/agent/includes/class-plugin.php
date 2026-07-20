@@ -1066,17 +1066,73 @@ final class Plugin
 
             return true;
         } catch (\Throwable $e) {
-            update_option(
-                self::OPTION_KEYSTORE_ERROR,
-                'WPMgr Agent could not establish its encryption key. Define WPMGR_AGENT_KEY_FILE '
-                . 'in wp-config.php pointing to a writable path, or ensure your wp-config.php '
-                . 'secret salts (AUTH_KEY, ...) are set. The plugin is active but inactive until '
-                . 'this is resolved.',
-                false
-            );
+            update_option(self::OPTION_KEYSTORE_ERROR, $this->keystoreErrorMessage($e), false);
 
             return false;
         }
+    }
+
+    /**
+     * Build a cause-specific, plain-text admin message for a keystore setup
+     * failure. Distinguishes three situations rather than showing one fixed
+     * opaque message for every failure (GH #257):
+     *
+     *   (a) A required crypto PHP extension (sodium or openssl) is missing.
+     *   (b) A previously-pinned master-key source has become unavailable (an
+     *       operator removed WPMGR_AGENT_KEY_FILE, edited/removed wp-config
+     *       salts, or deleted a key file/option) — the underlying
+     *       RuntimeException message from the pinned-source honour block in
+     *       Keystore::resolveMasterKey() already names the specific cause, so
+     *       it is surfaced directly instead of a generic message.
+     *   (c) First-time establishment failure: every tier (constant, salts,
+     *       every file candidate, AND the database fallback) was unusable.
+     *       Only reachable when WPMGR_AGENT_DISABLE_DB_KEY is defined (the
+     *       operator opted out of the last-resort tier) or the database
+     *       write itself failed.
+     *
+     * The return value is plain text (no markup); renderKeystoreNotice()
+     * escapes it with esc_html() at the point of output.
+     *
+     * @param \Throwable $e The exception caught while setting up the keystore.
+     * @return string Human-readable failure message.
+     */
+    private function keystoreErrorMessage(\Throwable $e): string
+    {
+        $suffix = ' The plugin is active but inactive until this is resolved.';
+
+        // (a) Missing crypto extension. Checked independently of $e's content
+        // (a missing extension typically surfaces as an "undefined function"
+        // \Error rather than a message that names the extension).
+        $missingExtensions = [];
+        if (!extension_loaded('sodium')) {
+            $missingExtensions[] = 'sodium';
+        }
+        if (!extension_loaded('openssl')) {
+            $missingExtensions[] = 'openssl';
+        }
+        if ($missingExtensions !== []) {
+            $plural = count($missingExtensions) > 1;
+            return 'WPMgr Agent requires the PHP ' . implode(' and ', $missingExtensions)
+                . ' extension' . ($plural ? 's' : '') . ', which ' . ($plural ? 'are' : 'is')
+                . ' not available on this server. Ask your host to enable '
+                . ($plural ? 'them' : 'it') . '.' . $suffix;
+        }
+
+        $message = $e->getMessage();
+
+        // (b) Pinned-source drift: every honour-block RuntimeException in
+        // Keystore::resolveMasterKey() names the source in its message and
+        // contains the word "pinned".
+        if (strpos($message, 'pinned') !== false) {
+            return 'WPMgr Agent could not re-establish its encryption key: ' . $message . $suffix;
+        }
+
+        // (c) First-time establishment failure (every tier, including the
+        // database fallback, was unusable).
+        return 'WPMgr Agent could not establish its encryption key. Define WPMGR_AGENT_KEY_FILE '
+            . 'in wp-config.php pointing to a writable path, ensure your wp-config.php secret salts '
+            . '(AUTH_KEY, ...) are set, or (if WPMGR_AGENT_DISABLE_DB_KEY is defined) remove that '
+            . 'constant so the database-stored fallback key can be used.' . $suffix;
     }
 
     /**

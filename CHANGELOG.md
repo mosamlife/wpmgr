@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.78] - 2026-07-20
+
+### Fixed
+
+- The agent could fail to set up its encryption key on some managed hosts (for example Hostinger and other CloudLinux/CageFS hosts), leaving the plugin active but unable to connect or enroll (GH #257). This had two causes that often occurred together on these hosts: a wp-config.php without real secret salts, and a fallback key-file location that landed outside the account's allowed write paths. The agent now tolerates a wp-config.php that is missing some (or has only one) of its secret salts, tries the uploads folder as an additional fallback location before falling back to a location outside the site's own folder, and as a final safety net can store a dedicated encryption key in the database on hosts where no file location is writable and no secret salts are usable. This last option can be turned off for stricter setups. The key file and database fallback are created and read back safely so that two requests setting up the key at the same time, or a write interrupted partway through, can never leave the site with a broken or mismatched key. Sites that already connected successfully are unaffected: their existing key is always re-read from the same place, never regenerated. The setup notice shown in the WordPress admin, when the key still cannot be established, now explains the actual cause instead of one generic message.
+
 ## [0.61.77] - 2026-07-20
 
 ### Fixed
