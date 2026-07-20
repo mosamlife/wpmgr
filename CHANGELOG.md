@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.77] - 2026-07-20
+
+### Fixed
+
+- Internal: made a Sites-page UI test deterministic so it no longer fails intermittently in CI. No user-facing change; carries the 0.61.76 dashboard fixes.
+
 ## [0.61.76] - 2026-07-20
 
 ### Fixed

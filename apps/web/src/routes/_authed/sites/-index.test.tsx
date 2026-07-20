@@ -126,6 +126,37 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
+// Both tests below wait on the actual "Add site" button(s) as the PRIMARY
+// (and only) async anchor, with a generous explicit timeout rather than
+// testing-library's 1000ms default. This closes a real flake: RouterProvider's
+// first paint is an async microtask (see src/test/render.tsx's module doc),
+// and on a busy/contended CI runner that paint can land after the default
+// findBy* timeout, well before any application-level slowness. `findByRole`
+// on `role="toolbar"` (or, in the empty-state test, the onboarding heading)
+// raced that SAME async paint with the SAME default timeout and intermittently
+// lost. Reproduced locally by running this file under CPU contention (many
+// parallel vitest + CPU-bound processes), which deterministically reproduced
+// "Unable to find role=\"toolbar\" and name \"Filter sites\"" (and the
+// analogous heading miss in the second test) even though the component logic
+// itself is 100% synchronous once mounted (the mocked `useSites` never
+// transitions through a pending state, so there is nothing async to wait on
+// BELOW the first paint).
+//
+// `findAllByRole` for the button is deliberately the wait target instead of
+// `findByRole`: unlike the singular query, it doesn't throw on >1 match, so a
+// REGRESSION of the GH #252 bug (both triggers rendering again) still fails
+// the length assertion below with a clear message, rather than failing early
+// inside the wait with a less informative "found multiple elements" error.
+//
+// Once the button wait resolves, the toolbar/heading check that follows is a
+// SYNCHRONOUS assertion (no waiting): by the time the button is in the DOM,
+// SitesPage has already committed its single render pass, so the toolbar (or
+// the onboarding heading) is guaranteed to already be present too. This keeps
+// the test's real invariant intact: it still genuinely proves the "sites
+// loaded" (or "truly empty") branch rendered, not just that any element
+// showed up trivially fast.
+const FIND_TIMEOUT = 5000;
+
 describe("Sites page: exactly one 'Add site' trigger for an operator (GH #252)", () => {
   it("list view with sites loaded renders exactly one Add site button (the PageHeader's)", async () => {
     mockedUseSites.mockImplementation((options?: UseSitesOptions) =>
@@ -134,16 +165,19 @@ describe("Sites page: exactly one 'Add site' trigger for an operator (GH #252)",
 
     renderSitesPage();
 
-    // The page renders asynchronously behind RouterProvider's first paint
-    // (see src/test/render.tsx's module doc); the row list itself is
-    // virtualized (react-virtuoso), which does not measure/paint rows in
-    // jsdom's zero-size layout, so assert on the toolbar landing (proof the
-    // "sites loaded" branch, not the empty/error one, is showing) rather
-    // than on a specific row's text.
-    await screen.findByRole("toolbar", { name: "Filter sites" });
+    const addSiteButtons = await screen.findAllByRole(
+      "button",
+      { name: /^add site$/i },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    // Confirms this is genuinely the "sites loaded" branch (toolbar + row
+    // list), not the empty/error branch. The toolbar is where the GH #252
+    // duplicate used to live, so its presence here is load-bearing, not
+    // incidental.
+    expect(screen.getByRole("toolbar", { name: "Filter sites" })).toBeInTheDocument();
     expect(screen.getByText("1 site enrolled")).toBeInTheDocument();
 
-    const addSiteButtons = screen.getAllByRole("button", { name: /^add site$/i });
     expect(addSiteButtons).toHaveLength(1);
   });
 
@@ -157,11 +191,18 @@ describe("Sites page: exactly one 'Add site' trigger for an operator (GH #252)",
 
     renderSitesPage();
 
-    await screen.findByRole("heading", {
-      name: "Connect your first WordPress site.",
-    });
+    const addSiteButtons = await screen.findAllByRole(
+      "button",
+      { name: /^add site$/i },
+      { timeout: FIND_TIMEOUT },
+    );
 
-    const addSiteButtons = screen.getAllByRole("button", { name: /^add site$/i });
+    // Confirms this is genuinely the truly-empty NoSitesEmpty branch (where
+    // the second GH #252 duplicate used to live), not some other branch.
+    expect(
+      screen.getByRole("heading", { name: "Connect your first WordPress site." }),
+    ).toBeInTheDocument();
+
     expect(addSiteButtons).toHaveLength(1);
   });
 });
