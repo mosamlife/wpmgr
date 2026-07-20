@@ -8,6 +8,13 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.76] - 2026-07-20
+
+### Fixed
+
+- The fleet Email log now shows each site's name instead of its internal ID (GH #251). Dashboard only.
+- Removed a duplicate "Add site" button on the Sites page; the button also no longer appeared twice on the empty state (GH #252). Dashboard only.
+
 ## [0.61.75] - 2026-07-19
 
 ### Added

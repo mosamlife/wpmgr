@@ -697,7 +697,13 @@ function SitesPage() {
             />
           ) : null}
           <SitesPageEmpty
-            cta={operate ? undefined : <AddSitePlaceholder />}
+            // GH #252: NoSitesEmpty (rendered here once onboarding has been
+            // dismissed on this browser) defaults its own `cta` to another
+            // <AddSiteDialog />. The PageHeader's action above already owns
+            // the page's one Add-site trigger, so suppress this one for
+            // BOTH roles (not just non-operators) rather than let a second
+            // "Add site" button appear alongside the header's.
+            cta={<AddSitePlaceholder />}
             onOnboardingHandoff={operate ? ({ url }) => setOnboardingUrl(url) : undefined}
           />
         </>
@@ -779,7 +785,12 @@ function SitesPage() {
             onBulkSetClient={handleBulkSetClient}
             onBulkPauseMonitoring={handleBulkPauseMonitoring}
             onBulkDelete={handleBulkDelete}
-            addSiteSlot={operate ? <AddSiteDialog /> : <AddSitePlaceholder />}
+            // GH #252: the primary "Add site" action lives in the PageHeader
+            // only (top-right, matching every other list page's primary
+            // action), so don't duplicate the trigger here. Non-operators
+            // keep the placeholder slot wired so the affordance point stays
+            // in exactly one place.
+            addSiteSlot={operate ? undefined : <AddSitePlaceholder />}
           />
 
           {/* Phase 5 — archived filter chip */}
