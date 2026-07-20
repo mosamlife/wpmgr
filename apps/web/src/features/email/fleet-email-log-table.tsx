@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Download, Loader2, Search, Paperclip } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 
@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
 import { relativeTime } from "@/lib/utils";
+import { useSites } from "@/features/sites/use-sites";
 import type { SiteEmailLogEntry } from "@wpmgr/api";
 import {
   useFleetEmailLog,
@@ -49,6 +50,20 @@ export function FleetEmailLogTable() {
     error,
     refetch,
   } = useFleetEmailLog(filters);
+
+  // Bug #251: the log entries only carry `site_id`; resolve it to a name via
+  // the shared sites list (same cache the Sites list and capability dots
+  // read, so this is no extra network cost). Loading and archived/removed
+  // sites simply miss the map, so FleetEmailRow falls back to the truncated
+  // id.
+  const { data: sites } = useSites();
+  const siteNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of sites ?? []) {
+      map.set(s.id, s.name || s.url);
+    }
+    return map;
+  }, [sites]);
 
   function setFilter<K extends keyof FleetEmailLogFilters>(
     key: K,
@@ -149,7 +164,11 @@ export function FleetEmailLogTable() {
             </TableHeader>
             <TableBody>
               {entries.map((entry) => (
-                <FleetEmailRow key={entry.id} entry={entry} />
+                <FleetEmailRow
+                  key={entry.id}
+                  entry={entry}
+                  siteName={siteNameById.get(entry.site_id)}
+                />
               ))}
             </TableBody>
           </Table>
@@ -181,7 +200,16 @@ export function FleetEmailLogTable() {
 // Row with site drill-in link
 // ---------------------------------------------------------------------------
 
-function FleetEmailRow({ entry }: { entry: SiteEmailLogEntry }) {
+function FleetEmailRow({
+  entry,
+  siteName,
+}: {
+  entry: SiteEmailLogEntry;
+  /** Resolved from the tenant's sites list; undefined while loading or when
+   *  the site is archived/removed and no longer in the list. Either way we
+   *  fall back to the truncated id so the row never breaks. */
+  siteName?: string;
+}) {
   const toLabel = entry.to_addresses.slice(0, 2).join(", ");
   const hasMore = entry.to_addresses.length > 2;
 
@@ -195,9 +223,9 @@ function FleetEmailRow({ entry }: { entry: SiteEmailLogEntry }) {
         <Link
           to="/sites/$siteId/email"
           params={{ siteId: entry.site_id }}
-          className="text-sm text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+          className="block max-w-[160px] truncate text-sm text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
         >
-          {entry.site_id.slice(0, 8)}…
+          {siteName || `${entry.site_id.slice(0, 8)}…`}
         </Link>
       </TableCell>
       <TableCell className="max-w-[140px] truncate text-sm">
