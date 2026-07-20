@@ -7,16 +7,37 @@
  *   - This site's own Ed25519 keypair (generated on activation; the public
  *     half is shared with the control plane, the secret half signs responses).
  *
- * The AES-256-GCM master key never touches the database. It is acquired from a
- * portable, deterministic source (in priority order):
+ * The master key is acquired from a portable, deterministic source (in
+ * priority order):
  *
  *   1. The WPMGR_AGENT_KEY_FILE constant (define it in wp-config.php).
  *   2. Derivation from the wp-config.php secret salts (AUTH_KEY, ...) via
  *      HKDF-SHA256. This is the preferred default: the salts live outside the
  *      database and are present on virtually every real install, so no file
  *      write is needed and the key is identical across requests.
- *   3. A 0600 key file written to the first writable candidate location, with
- *      web-root locations hardened by index.php + .htaccess.
+ *   3. A key file created atomically (O_EXCL) at the first writable
+ *      candidate location (uploads, then wp-content, then — for backward
+ *      compatibility with pre-existing installs only — one level above
+ *      ABSPATH), 0600-permissioned, with web-root locations hardened by
+ *      index.php + .htaccess. A candidate whose file already exists adopts
+ *      the existing key instead of overwriting it (self-heal), and a
+ *      partial write (disk full/quota mid-write) is rolled back rather than
+ *      pinned. There is deliberately no system-temp-directory candidate: on
+ *      shared (non-CageFS) hosting /tmp is often readable/writable by other
+ *      tenants, who could pre-plant a symlink at the predictable path and
+ *      capture the key.
+ *   4. Last resort: a random key stored in a dedicated wp_option, for hosts
+ *      where neither the salts nor any candidate directory is usable (for
+ *      example some CloudLinux/CageFS shared-hosting configurations that
+ *      restrict writes above the account's own webroot while also shipping
+ *      wp-config.php without real secret salts). Claimed atomically via
+ *      add_option()'s UNIQUE(option_name) semantics, so two concurrent
+ *      first-establishment requests converge on one winning key rather than
+ *      each encrypting under a different one. This key lives in the
+ *      database alongside the ciphertext it protects, so it is strictly
+ *      weaker than tiers 1-3 — defining WPMGR_AGENT_KEY_FILE or setting real
+ *      wp-config.php salts is the recommended defense-in-depth upgrade. It
+ *      can be disabled outright with the WPMGR_AGENT_DISABLE_DB_KEY constant.
  *
  * To stay deterministic (the keystore must decrypt what it earlier encrypted),
  * the chosen source is pinned in a wp-option marker the first time a key is
@@ -70,8 +91,16 @@ final class Keystore implements EmailKeystoreInterface
      *   ['source' => 'constant']
      *   ['source' => 'salts']
      *   ['source' => 'file', 'path' => '/abs/path']
+     *   ['source' => 'db']
      */
     public const OPTION_MASTER_KEY_SOURCE = 'wpmgr_agent_master_key_source';
+
+    /**
+     * Option holding the last-resort master key itself (base64-encoded raw
+     * bytes), used only when no portable file/salt source is available. Kept
+     * non-autoloaded (see keyFromDatabase()) so it never inflates alloptions.
+     */
+    public const OPTION_DB_MASTER_KEY = 'wpmgr_agent_db_master_key';
 
     /** Length in bytes of an AES-256 key. */
     private const KEY_BYTES = 32;
@@ -107,11 +136,22 @@ final class Keystore implements EmailKeystoreInterface
     ];
 
     /**
-     * Minimum combined length (bytes) the concatenated salts must reach before
-     * we trust them as keying material. Eight default WP salts are 64+ chars
-     * each; we require well above any single-salt fluke.
+     * Minimum combined length (bytes) the concatenated salts (including the
+     * domain-separation labels) must reach before we trust them as keying
+     * material. Eight default WP salts are 64+ chars each; we require well
+     * above any single-salt fluke.
      */
     private const SALT_MIN_COMBINED_LENGTH = 96;
+
+    /**
+     * Minimum combined length (bytes) of the raw salt VALUES ALONE (excluding
+     * the "NAME=" labels and separators) that we trust as keying material.
+     * A pure superset of SALT_MIN_COMBINED_LENGTH: it accepts installs whose
+     * wp-config.php carries only one or two real salts (a common outcome of a
+     * migrated or minimally-generated wp-config.php) rather than requiring
+     * the full default set of eight.
+     */
+    private const SALT_MIN_VALUE_BYTES = 32;
 
     /** Cached resolved master key for the lifetime of this request. */
     private ?string $cachedKey = null;
@@ -396,13 +436,16 @@ final class Keystore implements EmailKeystoreInterface
     /**
      * Resolve the 32-byte AES master key for this install.
      *
-     * The key never lives in the database. Resolution honours the pinned source
-     * marker (if any) so decrypt always re-derives/reads the identical key, then
-     * falls back to source discovery on first use:
+     * Resolution honours the pinned source marker (if any) so decrypt always
+     * re-derives/reads the identical key, then falls back to source discovery
+     * on first use:
      *
      *   1. WPMGR_AGENT_KEY_FILE constant.
      *   2. Derivation from wp-config secret salts (HKDF-SHA256). Preferred.
      *   3. A 0600 key file at the first writable candidate location.
+     *   4. A random key stored in wp_options (last resort; see
+     *      keyFromDatabase()). The key itself lives in the database for this
+     *      tier only — tiers 1-3 never store the key material there.
      *
      * @return string 32 raw bytes.
      * @throws \RuntimeException If no portable key source can be established.
@@ -428,13 +471,20 @@ final class Keystore implements EmailKeystoreInterface
      * use and honouring an already-pinned source thereafter.
      *
      * @return string 32 raw bytes.
-     * @throws \RuntimeException If the key cannot be established.
+     * @throws \RuntimeException If the key cannot be established, or if a
+     *                            previously-pinned source has become
+     *                            unavailable.
      */
     private function resolveMasterKey(): string
     {
         $pinned = $this->pinnedSource();
 
         // Honour an already-pinned source so we never silently switch keys.
+        // Every case below either returns the ORIGINAL key or throws; none is
+        // allowed to fall through to fresh discovery, which would derive a
+        // different key and permanently orphan everything already encrypted
+        // under this install's real key (site keypair, age backup identity,
+        // stored control-plane public key, ...).
         if ($pinned !== null) {
             switch ($pinned['source']) {
                 case 'constant':
@@ -442,7 +492,10 @@ final class Keystore implements EmailKeystoreInterface
                     if ($key !== null) {
                         return $key;
                     }
-                    break;
+                    throw new \RuntimeException(
+                        'WPMgr Agent: pinned WPMGR_AGENT_KEY_FILE master key is no longer available '
+                        . '(the constant was removed or its file is missing).'
+                    );
                 case 'salts':
                     $key = $this->keyFromSalts();
                     if ($key !== null) {
@@ -459,9 +512,25 @@ final class Keystore implements EmailKeystoreInterface
                         return $key;
                     }
                     throw new \RuntimeException('WPMgr Agent: pinned master key file is missing or invalid.');
+                case 'db':
+                    $key = $this->readDatabaseKey();
+                    if ($key !== null) {
+                        return $key;
+                    }
+                    throw new \RuntimeException(
+                        'WPMgr Agent: pinned database-stored master key is missing or corrupt.'
+                    );
+                default:
+                    // An unrecognised pinned source (corrupt marker, hand
+                    // edit, or a foreign/future value) fails closed like
+                    // every recognised case above: silently re-discovering
+                    // could mint or derive a DIFFERENT key and re-key an
+                    // install that already has ciphertext under the
+                    // original one.
+                    throw new \RuntimeException(
+                        'WPMgr Agent: master-key source marker is corrupt or unrecognised.'
+                    );
             }
-            // 'constant' fell through (constant undefined now): continue to
-            // re-discover, but keep backward-compat file reads below.
         }
 
         // First run (or unpinned legacy install): discover a source in order.
@@ -473,12 +542,19 @@ final class Keystore implements EmailKeystoreInterface
             return $key;
         }
 
-        // 1b. Backward-compat: reuse any key file written by a prior version
-        // (incl. the old dirname(ABSPATH) path) before generating anew.
-        foreach ($this->legacyKeyFilePaths() as $legacy) {
-            $key = $this->readKeyFile($legacy);
+        // 1b. Re-adopt any key file this install already has (current write
+        // candidates AND the pre-#257 legacy default) with priority over
+        // deriving/writing a new one. This matters even outside a true first
+        // run: if OPTION_MASTER_KEY_SOURCE is ever lost/corrupted (and this
+        // is not caught by the pinned-source honour block above, which only
+        // runs when a marker exists), re-discovery must not derive a
+        // DIFFERENT key from newly-available salts, or mint a brand-new file
+        // key, while an existing valid key file is sitting right there —
+        // either would silently orphan everything already encrypted under it.
+        foreach ($this->existingKeyFilePaths() as $existing) {
+            $key = $this->readKeyFile($existing);
             if ($key !== null) {
-                $this->pinSource(['source' => 'file', 'path' => $legacy]);
+                $this->pinSource(['source' => 'file', 'path' => $existing]);
                 return $key;
             }
         }
@@ -497,9 +573,21 @@ final class Keystore implements EmailKeystoreInterface
             return $written['key'];
         }
 
+        // 4. Last resort: a random key stored in wp_options. Opt out with
+        // WPMGR_AGENT_DISABLE_DB_KEY if your threat model requires the key to
+        // never live in the database (you must then guarantee tier 1-3
+        // availability yourself).
+        $key = $this->keyFromDatabase();
+        if ($key !== null) {
+            $this->pinSource(['source' => 'db']);
+            return $key;
+        }
+
         throw new \RuntimeException(
             'WPMgr Agent: unable to establish a master key. Define WPMGR_AGENT_KEY_FILE '
-            . 'to a writable path, or ensure wp-config.php secret salts are set.'
+            . 'to a writable path, ensure wp-config.php secret salts are set, or (if '
+            . 'WPMGR_AGENT_DISABLE_DB_KEY is defined) remove that constant so the '
+            . 'database-stored fallback key can be used.'
         );
     }
 
@@ -564,14 +652,22 @@ final class Keystore implements EmailKeystoreInterface
 
     /**
      * Deterministically derive a 32-byte master key from the wp-config secret
-     * salts via HKDF-SHA256. Returns null if the salts are absent, placeholder,
-     * or carry insufficient entropy/length.
+     * salts via HKDF-SHA256. Returns null if no usable salts are present.
      *
-     * @return string|null 32 raw bytes, or null if salts are unusable.
+     * A single placeholder or missing salt does NOT poison the whole
+     * derivation: that individual salt is skipped and the remaining real
+     * salts are used. A migrated, cloned, or minimally-generated wp-config.php
+     * commonly carries only some of the eight default salts (WordPress treats
+     * them as optional and self-heals missing ones into wp_options via
+     * wp_salt() — but this method only reads the constants, by design, so it
+     * stays independent of database state).
+     *
+     * @return string|null 32 raw bytes, or null if no salts are usable.
      */
     private function keyFromSalts(): ?string
     {
-        $ikm = '';
+        $ikm        = '';
+        $valueBytes = 0;
         foreach (self::SALT_CONSTANTS as $name) {
             if (!defined($name)) {
                 continue;
@@ -581,14 +677,20 @@ final class Keystore implements EmailKeystoreInterface
                 continue;
             }
             if (in_array($value, self::SALT_PLACEHOLDERS, true)) {
-                // A placeholder poisons the whole derivation: bail out.
-                return null;
+                // A placeholder salt carries no entropy: skip only this one
+                // and keep deriving from whatever real salts remain.
+                continue;
             }
             // Domain-separate each salt so reordering/concatenation is unambiguous.
-            $ikm .= $name . '=' . $value . "\n";
+            $ikm        .= $name . '=' . $value . "\n";
+            $valueBytes += strlen($value);
         }
 
-        if (strlen($ikm) < self::SALT_MIN_COMBINED_LENGTH) {
+        // Accept if EITHER the combined material (incl. labels) reaches the
+        // original threshold OR the raw salt values alone reach the looser
+        // threshold. This is a pure superset of the original single gate:
+        // every input that used to pass still passes identically.
+        if (strlen($ikm) < self::SALT_MIN_COMBINED_LENGTH && $valueBytes < self::SALT_MIN_VALUE_BYTES) {
             return null;
         }
 
@@ -600,6 +702,84 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
+     * Last-resort master key: a random 32-byte key stored (base64-encoded)
+     * in a dedicated, non-autoloaded wp_option. Used only when the constant,
+     * salts, and every candidate directory in writeKeyFileToFirstWritable()
+     * are all unusable — the situation on some CloudLinux/CageFS shared-
+     * hosting configurations, where writes above the account webroot are
+     * blocked by open_basedir and wp-config.php ships without real secret
+     * salts.
+     *
+     * This key lives in the database alongside the ciphertext it protects,
+     * so it is intentionally NOT derived from wp_salt(): salts are the thing
+     * an operator is advised to rotate after a compromise, and a salt-linked
+     * key would orphan the age backup identity (the only key that can
+     * decrypt prior backups) on every rotation. A dedicated key that never
+     * rotates on its own is strictly more stable here. Defining
+     * WPMGR_AGENT_KEY_FILE or setting real wp-config.php salts remains the
+     * recommended defense-in-depth upgrade over this tier.
+     *
+     * First establishment is claimed ATOMICALLY via add_option(), which
+     * INSERTs and returns false if the option row already exists (the
+     * wp_options table enforces UNIQUE(option_name)). Two requests racing to
+     * establish the key for the first time (for example an admin_init retry
+     * overlapping an in-flight Enroll POST) therefore cannot both "win": the
+     * loser's freshly generated bytes are discarded and it adopts whatever
+     * the winner actually persisted, so every request ends up encrypting
+     * under the SAME key.
+     *
+     * @return string|null 32 raw bytes, or null when disabled via
+     *                      WPMGR_AGENT_DISABLE_DB_KEY.
+     */
+    private function keyFromDatabase(): ?string
+    {
+        if (defined('WPMGR_AGENT_DISABLE_DB_KEY') && WPMGR_AGENT_DISABLE_DB_KEY === true) {
+            return null;
+        }
+
+        $existing = $this->readDatabaseKey();
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        $key = random_bytes(self::KEY_BYTES);
+        if (add_option(self::OPTION_DB_MASTER_KEY, base64_encode($key), '', false)) {
+            return $key;
+        }
+
+        // Lost the race: another request's add_option() already won.
+        // Discard this key and adopt whichever key actually got persisted.
+        sodium_memzero($key);
+
+        return $this->readDatabaseKey();
+    }
+
+    /**
+     * Read the stored database-fallback master key, if present and valid.
+     * Deliberately ignores WPMGR_AGENT_DISABLE_DB_KEY: once a key has been
+     * pinned to this source it must always be re-readable, regardless of
+     * whether the opt-out constant is defined later — disabling the tier only
+     * blocks NEW installs from adopting it.
+     *
+     * @return string|null 32 raw bytes, or null if absent/corrupt.
+     */
+    private function readDatabaseKey(): ?string
+    {
+        $stored = get_option(self::OPTION_DB_MASTER_KEY);
+        if (!is_string($stored) || $stored === '') {
+            return null;
+        }
+
+        $raw = base64_decode($stored, true);
+        if ($raw === false || strlen($raw) !== self::KEY_BYTES) {
+            // Corrupt/foreign value: treat as absent rather than using it.
+            return null;
+        }
+
+        return $raw;
+    }
+
+    /**
      * Read a 32-byte master key from a file, or null if it is absent/invalid.
      *
      * @param string $path Absolute file path.
@@ -607,10 +787,14 @@ final class Keystore implements EmailKeystoreInterface
      */
     private function readKeyFile(string $path): ?string
     {
-        if (!is_readable($path) || !is_file($path)) {
+        // Probes are @-suppressed: on open_basedir/CageFS hosts, checking a
+        // candidate outside the allowed path list emits a PHP warning that
+        // would otherwise corrupt any output generated during this request
+        // (e.g. the enrollment JSON response).
+        if (!@is_readable($path) || !@is_file($path)) {
             return null;
         }
-        $key = file_get_contents($path);
+        $key = @file_get_contents($path);
         if ($key === false || strlen($key) !== self::KEY_BYTES) {
             return null;
         }
@@ -619,21 +803,55 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Generate and write a fresh 32-byte key to $path with 0600 perms.
+     * Atomically create a fresh 32-byte key file at $path with 0600 perms, or
+     * adopt whatever key is already there.
+     *
+     * Uses 'xb' (O_CREAT|O_EXCL) so the create itself fails if the file
+     * already exists, instead of the previous blind file_put_contents()
+     * overwrite — two requests racing to establish a NEW key here can no
+     * longer clobber each other, and a lost/corrupted OPTION_MASTER_KEY_SOURCE
+     * pin re-adopts the pre-existing key on this path (self-heal, idempotent)
+     * rather than minting a different one and orphaning everything already
+     * encrypted under the original. If the existing file turns out to be
+     * missing/invalid/short, this candidate is simply unusable — the caller
+     * moves on to the next one.
+     *
+     * A short write (the byte count fwrite() actually persisted is less than
+     * KEY_BYTES — for example a disk-full or quota condition mid-write) is
+     * never pinned: the partial file is deleted and this candidate fails,
+     * rather than silently persisting a key that would read back short (and
+     * therefore be rejected as invalid) on every later request.
      *
      * @param string $path Absolute file path (its directory must already exist).
-     * @return string|null The written key, or null if the write failed.
+     * @return string|null The (possibly pre-existing, adopted) 32-byte key, or
+     *                      null if the candidate is unusable.
      */
     private function createKeyFile(string $path): ?string
     {
         $dir = dirname($path);
-        if (!is_dir($dir) || !is_writable($dir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized; direct writability probe is the only option
+        // Probes are @-suppressed: candidates outside open_basedir/CageFS's
+        // allowed path list otherwise emit a PHP warning that can corrupt
+        // any output generated during this request.
+        if (!@is_dir($dir) || !@is_writable($dir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized; direct writability probe is the only option
             return null;
         }
 
-        $key = random_bytes(self::KEY_BYTES);
-        if (file_put_contents($path, $key, LOCK_EX) === false) {
+        $handle = @fopen($path, 'xb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- headless agent; WP_Filesystem never initialized; O_EXCL atomic create has no WP_Filesystem equivalent
+        if ($handle === false) {
+            // Someone else already created this file — a concurrent writer,
+            // or a pre-existing key from an earlier request. Never overwrite
+            // it: adopt it if valid, otherwise this candidate is unusable.
+            return $this->readKeyFile($path);
+        }
+
+        $key     = random_bytes(self::KEY_BYTES);
+        $written = fwrite($handle, $key); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- headless agent; WP_Filesystem never initialized; pairs with the fopen() above
+        fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- headless agent; WP_Filesystem never initialized; pairs with the fopen() above
+
+        if ($written !== self::KEY_BYTES) {
+            // Partial write: never pin a key that was not fully persisted.
             sodium_memzero($key);
+            wp_delete_file($path);
             return null;
         }
         @chmod($path, 0600); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- explicit security perms (0600); WP_Filesystem would coerce to wider FS_CHMOD_FILE
@@ -654,10 +872,14 @@ final class Keystore implements EmailKeystoreInterface
             $dir       = $candidate['dir'];
             $inWebroot = $candidate['in_webroot'];
 
-            if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- explicit 0700 perms on secret/scratch dir; wp_mkdir_p would apply the wider FS_CHMOD_DIR
+            // Probes are @-suppressed: on open_basedir/CageFS hosts, checking
+            // a candidate outside the allowed path list emits a PHP warning
+            // that would otherwise corrupt any output generated during this
+            // request (e.g. the enrollment JSON response).
+            if (!@is_dir($dir) && !@mkdir($dir, 0700, true) && !@is_dir($dir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- explicit 0700 perms on secret/scratch dir; wp_mkdir_p would apply the wider FS_CHMOD_DIR
                 continue;
             }
-            if (!is_writable($dir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized; direct writability probe is the only option
+            if (!@is_writable($dir)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized; direct writability probe is the only option
                 continue;
             }
 
@@ -676,7 +898,23 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Ordered candidate directories for the fallback key file.
+     * Ordered candidate directories for the fallback key file. Uploads-first:
+     * on CloudLinux/CageFS and similar managed hosts, the uploads directory is
+     * near-universally writable, while a location one level above ABSPATH
+     * (the old default) commonly sits outside the account's open_basedir and
+     * fails silently. That legacy location is kept LAST, purely so an install
+     * that already has a key there is still discovered by
+     * existingKeyFilePaths() before any candidate here is tried — see
+     * resolveMasterKey() step 1b.
+     *
+     * Deliberately does NOT include sys_get_temp_dir(): on shared (non-CageFS)
+     * hosting, /tmp is frequently readable/writable by every tenant on the
+     * box, and the candidate path would be a function of ABSPATH alone — a
+     * co-tenant could predict it, pre-plant a symlink, and capture the master
+     * key the moment this install writes to it, or simply own the directory
+     * first. The database tier (see keyFromDatabase()) already covers hosts
+     * where uploads and wp-content are both unwritable, without stepping
+     * outside the account's own boundary.
      *
      * @return list<array{dir:string,in_webroot:bool,filename:string}>
      */
@@ -684,12 +922,13 @@ final class Keystore implements EmailKeystoreInterface
     {
         $candidates = [];
 
-        // a. One level above ABSPATH (outside webroot on most installs).
-        if (defined('ABSPATH') && is_string(ABSPATH) && ABSPATH !== '') {
+        // a. uploads base dir /wpmgr-agent (inside webroot -> hardened).
+        $uploadBase = $this->uploadsBaseDir();
+        if ($uploadBase !== null) {
             $candidates[] = [
-                'dir'        => rtrim(dirname(rtrim((string) ABSPATH, '/\\')), '/\\'),
-                'in_webroot' => false,
-                'filename'   => '.wpmgr-agent-master.key',
+                'dir'        => rtrim($uploadBase, '/\\') . '/wpmgr-agent',
+                'in_webroot' => true,
+                'filename'   => 'master.key',
             ];
         }
 
@@ -702,13 +941,16 @@ final class Keystore implements EmailKeystoreInterface
             ];
         }
 
-        // c. uploads base dir /wpmgr-agent (inside webroot -> hardened).
-        $uploadBase = $this->uploadsBaseDir();
-        if ($uploadBase !== null) {
+        // c. Backward-compat only: one level above ABSPATH. Kept as a WRITE
+        // candidate (last resort before the database tier) as well as a READ
+        // candidate (existingKeyFilePaths()) so a pre-existing install here
+        // keeps working, but new installs no longer prefer it — it is
+        // frequently outside open_basedir on managed hosts.
+        if (defined('ABSPATH') && is_string(ABSPATH) && ABSPATH !== '') {
             $candidates[] = [
-                'dir'        => rtrim($uploadBase, '/\\') . '/wpmgr-agent',
-                'in_webroot' => true,
-                'filename'   => 'master.key',
+                'dir'        => rtrim(dirname(rtrim((string) ABSPATH, '/\\')), '/\\'),
+                'in_webroot' => false,
+                'filename'   => '.wpmgr-agent-master.key',
             ];
         }
 
@@ -744,12 +986,12 @@ final class Keystore implements EmailKeystoreInterface
     {
         $dir   = rtrim($dir, '/\\');
         $index = $dir . '/index.php';
-        if (!file_exists($index)) {
+        if (!@file_exists($index)) {
             @file_put_contents($index, "<?php\n// Silence is golden.\n", LOCK_EX);
         }
 
         $htaccess = $dir . '/.htaccess';
-        if (!file_exists($htaccess)) {
+        if (!@file_exists($htaccess)) {
             $rules = "# Apache 2.2\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n"
                 . "# Apache 2.4\n<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n";
             @file_put_contents($htaccess, $rules, LOCK_EX);
@@ -757,16 +999,31 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Legacy key-file paths to check for backward compatibility before
-     * generating a new key (so existing installs keep decrypting).
+     * Every key-file path this install might already have a key at, in the
+     * same priority order as candidateKeyDirs() writes to them, checked
+     * BEFORE deriving/writing a new key (resolveMasterKey() step 1b). Covers
+     * both the current write candidates (uploads, wp-content) and the
+     * pre-#257 legacy default (one level above ABSPATH) — the legacy path is
+     * never dropped from this READ set, so an older install that already has
+     * a key there keeps working even though new installs no longer WRITE
+     * there first.
      *
      * @return list<string>
      */
-    private function legacyKeyFilePaths(): array
+    private function existingKeyFilePaths(): array
     {
         $paths = [];
 
-        // The pre-fix default: dirname(ABSPATH)/.wpmgr-agent-master.key.
+        $uploadBase = $this->uploadsBaseDir();
+        if ($uploadBase !== null) {
+            $paths[] = rtrim($uploadBase, '/\\') . '/wpmgr-agent/master.key';
+        }
+
+        if (defined('WP_CONTENT_DIR') && is_string(WP_CONTENT_DIR) && WP_CONTENT_DIR !== '') {
+            $paths[] = rtrim((string) WP_CONTENT_DIR, '/\\') . '/wpmgr-agent/master.key';
+        }
+
+        // The pre-#257 default: dirname(ABSPATH)/.wpmgr-agent-master.key.
         if (defined('ABSPATH') && is_string(ABSPATH) && ABSPATH !== '') {
             $paths[] = rtrim(dirname(rtrim((string) ABSPATH, '/\\')), '/\\') . '/.wpmgr-agent-master.key';
         }

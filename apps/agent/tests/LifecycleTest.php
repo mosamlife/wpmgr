@@ -520,6 +520,22 @@ final class LifecycleTest extends TestCase
         $this->assertStringEndsWith(Enrollment::PATH_HEARTBEAT, $url);
     }
 
+    public function test_uninstall_owned_options_include_db_master_key(): void
+    {
+        // GH #257 SHOULD-FIX 5: the last-resort database-stored master key
+        // (OPTION_DB_MASTER_KEY) must not outlive the plugin. ownedOptions()
+        // is private; invoke it directly via reflection.
+        $method = new \ReflectionMethod(Lifecycle::class, 'ownedOptions');
+        /** @var list<string> $owned */
+        $owned = $method->invoke($this->lifecycle);
+
+        $this->assertContains(
+            Keystore::OPTION_DB_MASTER_KEY,
+            $owned,
+            'uninstall must delete the database-stored fallback master key'
+        );
+    }
+
     public function test_reenroll_sequence_wipes_then_establishes_fresh_identity(): void
     {
         // Capture the ORIGINAL site keypair so we can prove it was rotated.
