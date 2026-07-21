@@ -342,7 +342,7 @@ final class CacheWriter
             'method'            => $method,
             'user_agent'        => $ua,
             'cookies'           => wp_unslash( $_COOKIE ), // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.NonceVerification.Recommended -- cache-key context only; each value is slugified to [a-z0-9-_] by CacheKey::sanitizeSegment, kept byte-identical to the pre-WordPress serve path in assets/wpmgr-advanced-cache.php; no output, no SQL, no state change.
-            'query'             => $_GET, // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- cache-key context assembly; read-only query data passed to cache-key builder; no state change, no form processing
+            'query'             => wp_unslash( $_GET ), // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- cache-key context assembly; read-only query data passed to cache-key builder; no state change, no form processing
             'is_admin'          => $isAdmin,
             'is_ajax'           => $isAjax,
             'status'            => $status,

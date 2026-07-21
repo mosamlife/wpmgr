@@ -95,7 +95,8 @@ final class FileGuards {
 	 *
 	 *   (c) Content sniff: decoded content contains '<?php', '<?=', or any bare '<?'
 	 *       not immediately followed by 'xml' (case-insensitive).
-	 *       "notes.txt" with body "<? system($_GET['c']);" → blocked.
+	 *       e.g. a plain ".txt" file whose decoded body opens with a bare
+	 *       short-open PHP tag is blocked.
 	 *       $content is the DECODED bytes (callers must pass decoded, not base64).
 	 *       An empty $content (e.g. rename with no content) does NOT trigger (c).
 	 *

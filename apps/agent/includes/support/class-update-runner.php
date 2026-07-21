@@ -861,7 +861,13 @@ class UpdateRunner
             $options['clear_working'] = true;
             return $options;
         };
-        add_filter('upgrader_package_options', $forceCleanWorking);
+        // Self-host only. The wp.org distribution build (WPMGR_WPORG_BUILD) must not
+        // alter core's upgrader behaviour, so it never registers this filter and
+        // degrades to WordPress's default working-directory handling. Kept for
+        // self-hosted installs to make interrupted-update recovery robust.
+        if (!defined('WPMGR_WPORG_BUILD') || !WPMGR_WPORG_BUILD) {
+            add_filter('upgrader_package_options', $forceCleanWorking);
+        }
 
         try {
             // Set by whichever case below actually ran an upgrade; used after
