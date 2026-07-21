@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.80] - 2026-07-21
+
+### Changed
+
+- The managed-update runner no longer adjusts WordPress's upgrader working-directory handling in the WordPress.org distribution build; self-hosted installs are unchanged.
+
+### Fixed
+
+- Reworded a documentation comment in the file-manager write guard that quoted an example attack payload verbatim, which made some security scanners (for example Wordfence) report a false-positive match on the plugin's own file (GH #266). The comment described a payload the guard blocks; no code path or behavior changed.
+
 ## [0.61.79] - 2026-07-21
 
 ### Fixed
