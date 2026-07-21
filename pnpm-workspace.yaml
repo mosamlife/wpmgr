@@ -3,6 +3,14 @@ packages:
   - "apps/tracker"
   - "apps/marketing"
   - "packages/*"
+# Force patched versions of transitive dependencies flagged by high-severity
+# advisories (DoS via quadratic/exponential parsing). All are same-major pins,
+# so no API change: brace-expansion 1.1.16 (GHSA-3jxr-9vmj-r5cp), js-yaml 3.15.0
+# for gray-matter and js-yaml 4.3.0 for eslint tooling (GHSA-52cp-r559-cp3m).
+overrides:
+  brace-expansion@1: 1.1.16
+  js-yaml@3: 3.15.0
+  js-yaml@4: 4.3.0
 allowBuilds:
   esbuild: true
   # Puppeteer's postinstall downloads ~100 MB of Chromium. Disabled because

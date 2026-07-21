@@ -3,7 +3,7 @@
  * Plugin Name:       WPMgr Agent
  * Plugin URI:        https://github.com/mosamlife/wpmgr
  * Description:        Connects this WordPress site to a WPMgr control plane for backups, updates, monitoring, and security scanning.
- * Version:           0.61.78
+ * Version:           0.61.79
  * Requires at least: 6.2
  * Requires PHP:      8.1
  * Author:            WPMgr contributors
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
     exit; // No direct access.
 }
 
-define('WPMGR_AGENT_VERSION', '0.61.78');
+define('WPMGR_AGENT_VERSION', '0.61.79');
 
 // Display name shown on the admin settings screen (menu label, page title).
 // Kept as its own constant (rather than hard-coded strings in class-admin.php)
@@ -32,49 +32,33 @@ define('WPMGR_AGENT_DISPLAY_NAME', 'WPMgr Agent');
 define('WPMGR_AGENT_FILE', __FILE__);
 define('WPMGR_AGENT_DIR', plugin_dir_path(__FILE__));
 
-// Composer autoloader (dev tooling + third-party deps).
+// Composer autoloader (dev tooling + third-party deps). When present, its
+// classmap autoloader is tried first by PHP's autoload chain.
 $wpmgr_autoload = WPMGR_AGENT_DIR . 'vendor/autoload.php';
 if (file_exists($wpmgr_autoload)) {
     require_once $wpmgr_autoload;
 }
 
+// The plugin's own class resolver. Required directly (not autoloaded) so it
+// is available even on installs that ship without a Composer vendor/
+// directory (a git clone or a GitHub source ZIP without `composer install`),
+// where it becomes the sole autoloader for the plugin's own classes. See
+// includes/class-autoloader.php for the resolution algorithm.
+require_once WPMGR_AGENT_DIR . 'includes/class-autoloader.php';
+
 /**
- * Lightweight autoloader mapping WPMgr\Agent\* to WordPress-style filenames
- * (class-*.php / interface-*.php) under includes/. This keeps the plugin's own
- * source compliant with WordPress file-naming conventions while remaining
- * Composer-friendly for vendor packages.
+ * Maps WPMgr\Agent\* class names to their WordPress-style filenames
+ * (class-*.php / interface-*.php) under includes/ via Autoloader::resolve().
+ * This keeps the plugin's own source compliant with WordPress file-naming
+ * conventions while remaining Composer-friendly for vendor packages.
  *
  * @param string $class Fully-qualified class name.
  * @return void
  */
 spl_autoload_register(static function (string $class): void {
-    $prefix = 'WPMgr\\Agent\\';
-    if (strpos($class, $prefix) !== 0) {
-        return;
-    }
-
-    $relative = substr($class, strlen($prefix));
-    $relative = str_replace('\\', '/', $relative);
-
-    $dir  = dirname($relative);
-    $base = basename($relative);
-
-    // Convert StudlyCase short name to wordpress kebab-case file slug.
-    $slug = strtolower(preg_replace('/(?<!^)[A-Z]/', '-$0', $base) ?? $base);
-
-    $subdir = ($dir === '.' || $dir === '') ? '' : strtolower($dir) . '/';
-
-    // Interfaces use the interface- prefix; everything else uses class-.
-    $candidates = [
-        WPMGR_AGENT_DIR . 'includes/' . $subdir . 'class-' . $slug . '.php',
-        WPMGR_AGENT_DIR . 'includes/' . $subdir . 'interface-' . $slug . '.php',
-    ];
-
-    foreach ($candidates as $file) {
-        if (file_exists($file)) {
-            require_once $file;
-            return;
-        }
+    $file = WPMgr\Agent\Autoloader::resolve($class);
+    if ($file !== null) {
+        require_once $file;
     }
 });
 

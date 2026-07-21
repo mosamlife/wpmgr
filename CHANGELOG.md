@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.79] - 2026-07-21
+
+### Fixed
+
+- The agent plugin could throw a fatal error on activation on any WordPress install that was set up from a plain git clone or a GitHub source download rather than a built release package, that is, one without a Composer `vendor` folder present (GH #262). The plugin's own class loader mapped its class names to files using a mechanical rule that did not match every actual filename on disk (some interface files, a renamed folder, and several integration and utility files with brand names or digits in them). This was previously masked whenever the `vendor` folder was present, because a second, more complete loader ran first and covered for it; without that folder, the plugin's own loader was the only one available and could fail to find some of its own files, so activation could fatal. The loader now resolves every one of the plugin's own files correctly on its own, with no dependency on the `vendor` folder.
+
+### Security
+
+- Pinned transitive dev and build tooling dependencies (`brace-expansion`, `js-yaml`) to versions that patch recently disclosed high-severity denial-of-service advisories. Same-major updates with no API change, and no change to agent, API, or dashboard runtime behavior.
+
 ## [0.61.78] - 2026-07-20
 
 ### Fixed
