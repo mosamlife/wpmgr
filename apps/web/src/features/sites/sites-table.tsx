@@ -56,6 +56,7 @@ import {
   type SitesSelection,
 } from "@/features/sites/use-sites-selection";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
+import { siteUptimeBadge, siteUptimeTextClass } from "@/features/sites/uptime-badge";
 
 // Surface 4.5 — the Sites table.
 //
@@ -517,37 +518,30 @@ function buildColumns(
       cell: ({ row }) => {
         const { up, uptime_pct } = row.original.site;
         // Neither field present: site has never been probed.
-        if (up === undefined && uptime_pct === undefined) {
+        if (up == null && uptime_pct === undefined) {
           return <span aria-hidden="true" />;
         }
+        // GH #272 — tri-state (never green/foreground-as-ok unless
+        // up === true); see uptime-badge.ts.
+        const badge = siteUptimeBadge(up);
+        const toneClass = siteUptimeTextClass(badge.status);
         // Show the 30-day percentage when available, otherwise the live
-        // up/down indicator.
+        // up/down/unknown indicator.
         if (uptime_pct !== undefined) {
           const pct = uptime_pct.toFixed(1);
-          const isDown = up === false;
           return (
             <span
-              className={cn(
-                "tabular-nums text-xs font-medium",
-                isDown
-                  ? "text-[var(--color-destructive)]"
-                  : "text-[var(--color-foreground)]",
-              )}
+              className={cn("tabular-nums text-xs font-medium", toneClass)}
               title={`${pct}% uptime (30 days)`}
             >
               {pct}%
             </span>
           );
         }
-        // Only live up/down is available (no 30-day window yet).
+        // Only live up/down/unknown is available (no 30-day window yet).
         return (
-          <span
-            className={cn(
-              "text-xs font-medium",
-              up ? "text-[var(--color-foreground)]" : "text-[var(--color-destructive)]",
-            )}
-          >
-            {up ? "Up" : "Down"}
+          <span className={cn("text-xs font-medium", toneClass)}>
+            {badge.label}
           </span>
         );
       },
