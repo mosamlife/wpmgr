@@ -39,6 +39,17 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.81",
+    date: "2026-07-22",
+    summary: "Fixes command updates failing on sites where another plugin globally intercepts the Authorization header.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Agent command updates (and other control-plane commands) could fail on sites running some third-party plugins that globally decode the Authorization header on every request, for example as part of their own JWT-based auth (GH #269). Such a plugin could error out on the agent's own signed request before the agent had a chance to verify it, causing the request to fail outright. The agent now moves its own signed Authorization value out of the request before any other plugin's code runs, so this class of conflict can no longer occur.",
+      },
+    ],
+  },
+  {
     version: "0.61.75",
     date: "2026-07-19",
     summary: "Get notified when a new vulnerability is found, instead of having to check the dashboard.",

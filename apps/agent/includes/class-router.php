@@ -208,11 +208,25 @@ final class Router
     /**
      * Extract a bearer token from the Authorization header.
      *
+     * Consults AuthHeaderShield first: on a normal request the header was
+     * already relocated out of $_SERVER at plugin-include time (see
+     * wpmgr-agent.php), specifically so third-party global auth filters never
+     * see it, which also means WordPress never populated it back onto the
+     * WP_REST_Request object. The live request header is still checked as a
+     * fallback, unchanged, for any path that never went through the shield
+     * (cookie-authenticated REST calls, or a test that injects the header
+     * directly).
+     *
      * @param \WP_REST_Request<array<string,mixed>> $request Incoming request.
      * @return string|null
      */
     private function bearerToken(\WP_REST_Request $request): ?string
     {
+        $stashed = \WPMgr\Agent\Support\AuthHeaderShield::bearer();
+        if (is_string($stashed) && $stashed !== '') {
+            return $stashed;
+        }
+
         $header = (string) $request->get_header('authorization');
         if ($header === '') {
             return null;

@@ -192,6 +192,11 @@ if (!class_exists('WP_REST_Request')) {
             return $this->headers[strtolower($key)] ?? '';
         }
 
+        public function set_header(string $key, string $value): void
+        {
+            $this->headers[strtolower($key)] = $value;
+        }
+
         /**
          * @return array<string,mixed>
          */
