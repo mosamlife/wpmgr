@@ -37,12 +37,36 @@ final class WpConfigEditor
     private ?string $explicitPath;
 
     /**
+     * Informational note captured by the most recent {@see setConstant()} call
+     * when it completed as a no-op WITHOUT writing wp-config.php because the
+     * constant is already enforced or the file is managed by another layer
+     * (e.g. a Roots/Bedrock install, which defines constants via
+     * `Roots\WPConfig\Config` before this editor's caller ever runs). Reset to
+     * null at the start of every {@see setConstant()} / {@see removeConstant()}
+     * call. This is NOT an error signal — the caller's intent (the constant
+     * ends up enforced) is satisfied either way; callers may surface it as an
+     * informational detail but must never treat it as a failure.
+     */
+    private ?string $lastNotice = null;
+
+    /**
      * @param string|null $explicitPath Absolute path to a wp-config.php (used by
      *   tests / unusual layouts). When null the path is auto-resolved.
      */
     public function __construct(?string $explicitPath = null)
     {
         $this->explicitPath = $explicitPath;
+    }
+
+    /**
+     * Informational note from the most recent setConstant()/removeConstant()
+     * call, or null when there is none. See {@see $lastNotice}.
+     *
+     * @return string|null
+     */
+    public function lastNotice(): ?string
+    {
+        return $this->lastNotice;
     }
 
     /**
@@ -103,12 +127,45 @@ final class WpConfigEditor
      * untouched (returns true). Otherwise any prior define line is stripped and a
      * fresh one is inserted immediately after the opening `<?php` tag.
      *
+     * GH #268: some platforms resolve/define config constants themselves ahead
+     * of any agent command — e.g. a Roots/Bedrock install's web/wp-config.php
+     * requires config/application.php, which manages constants via
+     * `Roots\WPConfig\Config::define()` and THROWS a
+     * `ConstantAlreadyDefinedException` if the same constant is defined again
+     * via a raw `define()`. By the time this command executes, wp-config.php
+     * (and any framework config layer it required) has already fully loaded
+     * for this request, so PHP's own `defined()`/`constant()` reflect the
+     * platform's real, current state. Before writing anything, this method:
+     *
+     *   1. Returns true (no-op) when the constant is already defined at
+     *      runtime with exactly the desired value — enforced elsewhere,
+     *      nothing to write.
+     *   2. Returns true (no-op) when the constant is defined at runtime with a
+     *      different value — owned by another layer (a platform config, another
+     *      plugin, or a raw define this editor did not write, e.g. a host or
+     *      user that set DISALLOW_FILE_EDIT=false). This branch IS reachable on
+     *      ordinary sites; the constant is never overwritten, to avoid a
+     *      conflicting redefinition, and a notice is surfaced. For
+     *      DISALLOW_FILE_EDIT the runtime user_has_cap filter still enforces the
+     *      toggle regardless of the file constant.
+     *   3. Returns true (no-op) when the constant is not yet defined but the
+     *      wp-config.php content itself looks framework-managed (see
+     *      {@see isManagedWpConfig()}) — refuses to insert a raw define that
+     *      could race or conflict with the framework's own constant
+     *      management.
+     *
+     * None of these paths are failures: the operator's intent (the constant
+     * ends up enforced) is satisfied either way. See {@see lastNotice()} for
+     * an informational (never error) explanation callers may surface.
+     *
      * @param string          $name  Constant name (validated [A-Z0-9_]).
      * @param string|bool|int $value Value to set.
      * @return bool True when the file ends in the desired state.
      */
     public function setConstant(string $name, $value): bool
     {
+        $this->lastNotice = null;
+
         if (!$this->validName($name)) {
             return false;
         }
@@ -126,8 +183,40 @@ final class WpConfigEditor
         $literal = $this->literal($value);
         $defineLine = sprintf("define('%s', %s); %s", $name, $literal, self::MARKER);
 
-        // Already present and identical? No-op.
+        // Already present (our own marked define) and identical? No-op.
         if ($this->hasExactDefine($content, $name, $literal)) {
+            return true;
+        }
+
+        // Runtime already reflects a defined constant (Roots/Bedrock or any
+        // other layer that resolved before this command ran) — never write
+        // over it. See the method docblock for the two sub-cases.
+        if (defined($name)) {
+            $current = constant($name);
+            if ($current === $value) {
+                $this->lastNotice = sprintf(
+                    "%s is already enforced (defined elsewhere with the requested value, e.g. by a platform such as Roots/Bedrock) — wp-config.php was left untouched.",
+                    $name
+                );
+            } else {
+                $this->lastNotice = sprintf(
+                    '%s is already defined with a different value by another layer (e.g. a platform config, another plugin, or a raw define this editor did not write) — wp-config.php was left untouched to avoid a conflicting redefinition.',
+                    $name
+                );
+            }
+            return true;
+        }
+
+        // Not yet defined at runtime, but the file itself indicates a
+        // framework-managed wp-config.php (e.g. Roots/Bedrock, whose actual
+        // constant definitions live in a required config file rather than
+        // wp-config.php itself) — refuse to insert a raw define even in this
+        // edge case, so we never race the framework's own definition.
+        if ($this->isManagedWpConfig($content)) {
+            $this->lastNotice = sprintf(
+                "%s was not written: wp-config.php appears to be managed by a framework such as Roots/Bedrock (references Roots\\WPConfig\\Config / requires config/application.php) — inserting a raw define here could conflict with the framework's own constant management.",
+                $name
+            );
             return true;
         }
 
@@ -148,11 +237,20 @@ final class WpConfigEditor
     /**
      * Remove any `define('NAME', ...)` line. Idempotent (absent ⇒ no-op true).
      *
+     * Safe on a framework-managed wp-config.php (e.g. Roots/Bedrock): a
+     * framework such as Roots/Bedrock manages constants via
+     * `Roots\WPConfig\Config::define()` in a separate, required config file,
+     * never a raw `define()` line inside wp-config.php itself, so
+     * {@see stripDefine()} simply finds nothing to remove there and returns
+     * this file untouched.
+     *
      * @param string $name Constant name.
      * @return bool
      */
     public function removeConstant(string $name): bool
     {
+        $this->lastNotice = null;
+
         if (!$this->validName($name)) {
             return false;
         }
@@ -237,6 +335,31 @@ final class WpConfigEditor
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Whether wp-config.php content indicates a framework-managed config
+     * layer that owns constant definitions itself (GH #268). Roots/Bedrock is
+     * the primary real-world case: its web/wp-config.php requires a separate
+     * config/application.php file, which defines every WP constant via
+     * `Roots\WPConfig\Config::define()` and throws on redefinition.
+     *
+     * Signals checked (any one is sufficient):
+     *   - references the `Roots\WPConfig\Config` class (the config manager).
+     *   - references the `roots/wp-config` package.
+     *   - a `require`/`require_once` of a `config/application.php` file
+     *     (Bedrock's own bootstrap step), regardless of quoting/concatenation.
+     *
+     * @param string $content wp-config.php content.
+     * @return bool
+     */
+    private function isManagedWpConfig(string $content): bool
+    {
+        if (str_contains($content, 'Roots\WPConfig\Config') || str_contains($content, 'roots/wp-config')) {
+            return true;
+        }
+
+        return preg_match('/\brequire(_once)?\b[^;]*config\/application\.php/', $content) === 1;
+    }
 
     /**
      * Atomic write: temp file in the same directory + rename over the target.

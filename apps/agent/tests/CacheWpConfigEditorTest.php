@@ -144,4 +144,75 @@ final class CacheWpConfigEditorTest extends TestCase
         $this->assertFalse($editor->setConstant('BAD NAME', true));
         $this->assertFalse($editor->setConstant('1BAD', true));
     }
+
+    public function test_set_constant_disallow_file_editor_writes_on_standard_wp(): void
+    {
+        // GH #268 baseline: standard WP (no framework markers, constant not
+        // defined) must be entirely unaffected by the managed-config guard —
+        // the define is inserted exactly as before.
+        $editor = $this->editor();
+        $this->assertTrue($editor->setConstant('DISALLOW_FILE_EDIT', true));
+
+        $content = (string) file_get_contents($this->configPath);
+        $this->assertStringContainsString("define('DISALLOW_FILE_EDIT', true); // Added by WPMgr Cache", $content);
+        $this->assertNull($editor->lastNotice(), 'a real write must not carry an informational notice');
+    }
+
+    // -------------------------------------------------------------------------
+    // GH #268 — Roots/Bedrock managed wp-config.php: never insert a raw define
+    // -------------------------------------------------------------------------
+
+    public function test_is_managed_wp_config_via_application_php_require_skips_write(): void
+    {
+        // Bedrock's own web/wp-config.php shape: no raw defines for WP
+        // constants at all — they live in the required config/application.php,
+        // which this test never actually requires (only the STRING signal
+        // matters to isManagedWpConfig()).
+        file_put_contents(
+            $this->configPath,
+            "<?php\nrequire_once __DIR__ . '/../config/application.php';\n"
+        );
+
+        $editor = $this->editor();
+        $before = (string) file_get_contents($this->configPath);
+
+        $this->assertTrue($editor->setConstant('DISALLOW_FILE_EDIT', true));
+
+        $after = (string) file_get_contents($this->configPath);
+        $this->assertSame($before, $after, 'a Bedrock-managed wp-config.php must be left byte-for-byte unchanged');
+        $this->assertStringNotContainsString('DISALLOW_FILE_EDIT', $after);
+        $this->assertNotNull($editor->lastNotice(), 'a managed-config skip must surface an informational notice');
+    }
+
+    public function test_is_managed_wp_config_via_roots_wpconfig_class_skips_write(): void
+    {
+        file_put_contents(
+            $this->configPath,
+            "<?php\nuse Roots\\WPConfig\\Config;\nConfig::define('WP_ENV', 'production');\n"
+        );
+
+        $editor = $this->editor();
+        $before = (string) file_get_contents($this->configPath);
+
+        $this->assertTrue($editor->setConstant('DISALLOW_FILE_EDIT', true));
+
+        $after = (string) file_get_contents($this->configPath);
+        $this->assertSame($before, $after, 'a Roots\\WPConfig\\Config-managed wp-config.php must be left unchanged');
+        $this->assertStringNotContainsString('DISALLOW_FILE_EDIT', $after);
+    }
+
+    public function test_remove_constant_on_managed_config_without_our_marker_is_a_safe_noop(): void
+    {
+        $managedContent = "<?php\nrequire_once __DIR__ . '/../config/application.php';\n";
+        file_put_contents($this->configPath, $managedContent);
+
+        $editor = $this->editor();
+
+        // Never had our marker (or any raw define for this name) — must be a
+        // clean no-op: no throw, file untouched.
+        $this->assertTrue($editor->removeConstant('DISALLOW_FILE_EDIT'));
+
+        $after = (string) file_get_contents($this->configPath);
+        $this->assertSame($managedContent, $after, 'removeConstant must not touch a managed wp-config.php that never had our define');
+    }
 }

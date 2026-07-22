@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.82] - 2026-07-22
+
+### Fixed
+
+- The "disable file editor" hardening toggle could fatal every request on a Roots/Bedrock site (GH #268). The agent wrote a raw `define('DISALLOW_FILE_EDIT', true)` at the top of wp-config.php, but Roots/Bedrock manages that same constant through its own config layer, which throws when the same constant is defined a second time. The agent now checks whether the constant is already defined (or the config file is otherwise framework-managed) before writing anything; when it is, nothing is written to wp-config.php and the toggle still reports success, since the constant is already enforced. Standard WordPress installs are unaffected: the constant is written exactly as before when nothing else has already defined it. The same protection now also covers the full-page cache's `WP_CACHE` constant, which is written through the same code path.
+
 ## [0.61.81] - 2026-07-22
 
 ### Fixed
