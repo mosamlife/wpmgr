@@ -125,6 +125,15 @@ final class SyncSecurityHardeningCommand implements CommandInterface
         $detail = 'applied';
         if ($config->disableFileEditor && !$wpConfigOk) {
             $detail = 'applied; wp-config.php not writable — disable_file_editor via runtime filter only';
+        } elseif ($config->disableFileEditor) {
+            // Informational only (GH #268): e.g. on Roots/Bedrock the constant
+            // is already enforced elsewhere and wp-config.php was left
+            // untouched. Never surfaced as a failure — $wpConfigOk is already
+            // true here.
+            $notice = $this->module->lastWpConfigNotice();
+            if ($notice !== null) {
+                $detail = 'applied; ' . $notice;
+            }
         }
 
         return ['ok' => true, 'detail' => $detail];

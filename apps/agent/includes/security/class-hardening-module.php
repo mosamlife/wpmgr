@@ -38,6 +38,15 @@ final class HardeningModule
     private const AGENT_AUTOLOGIN_PATH = '/autologin';
 
     /**
+     * Informational note from the most recent {@see syncWpConfigFileEdit()}
+     * call, captured from {@see WpConfigEditor::lastNotice()}. Null when the
+     * wp-config write succeeded/was a plain idempotent re-apply, the toggle
+     * was off, or no notice applies. This is NEVER a failure signal — see
+     * {@see lastWpConfigNotice()}.
+     */
+    private ?string $lastWpConfigNotice = null;
+
+    /**
      * Persist a new config and install/refresh the server-config block.
      *
      * Called by SyncSecurityHardeningCommand::execute(). Returns true when
@@ -140,11 +149,20 @@ final class HardeningModule
      * handler after persistence so the define lands in wp-config immediately.
      * Also removes the define when the toggle is turned off.
      *
+     * GH #268: on platforms such as Roots/Bedrock, DISALLOW_FILE_EDIT is
+     * already managed elsewhere by the time this runs (see
+     * {@see WpConfigEditor::setConstant()}); the write is safely skipped and
+     * this still returns true (intent satisfied) rather than fatal. Any
+     * informational (non-error) explanation of that skip is available via
+     * {@see lastWpConfigNotice()} afterwards.
+     *
      * @param HardeningConfig $config
      * @return bool
      */
     public function syncWpConfigFileEdit(HardeningConfig $config): bool
     {
+        $this->lastWpConfigNotice = null;
+
         $editor = new WpConfigEditor();
         if (!$editor->isWritable()) {
             // Non-writable wp-config: runtime filter (registered by install()) is
@@ -153,10 +171,25 @@ final class HardeningModule
         }
 
         if ($config->disableFileEditor) {
-            return $editor->setConstant('DISALLOW_FILE_EDIT', true);
+            $result = $editor->setConstant('DISALLOW_FILE_EDIT', true);
+            $this->lastWpConfigNotice = $editor->lastNotice();
+            return $result;
         } else {
             return $editor->removeConstant('DISALLOW_FILE_EDIT');
         }
+    }
+
+    /**
+     * Informational note from the most recent {@see syncWpConfigFileEdit()}
+     * call (e.g. "DISALLOW_FILE_EDIT is already enforced ... left untouched"
+     * on a Roots/Bedrock site), or null when there is none. Callers may
+     * surface this as an informational detail — it is never an error.
+     *
+     * @return string|null
+     */
+    public function lastWpConfigNotice(): ?string
+    {
+        return $this->lastWpConfigNotice;
     }
 
     /**

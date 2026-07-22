@@ -185,6 +185,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.36.0. This project ships frequently; not every intermediate patch release is listed here individually -- see the full history at https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md.
 
+= 0.61.82 =
+* Fixed: the "disable file editor" hardening toggle could fatal every request on a Roots/Bedrock site (GH #268). Roots/Bedrock manages that constant through its own config layer and throws when it is defined a second time; the agent now checks whether it is already defined (or the config file is otherwise framework-managed) before writing anything, so nothing is written in that case and the toggle still reports success. Standard WordPress installs are unaffected. The full-page cache's WP_CACHE constant is protected the same way.
+
 = 0.61.81 =
 * Fixed: agent command updates (and other control-plane commands) could fail on sites running some third-party plugins that globally decode the Authorization header on every request, for example as part of their own JWT-based auth (GH #269). The agent now moves its own signed Authorization value out of the request before any other plugin's code runs, so this class of conflict can no longer occur.
 
