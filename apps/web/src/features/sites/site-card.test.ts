@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { relativeTime } from "@/lib/utils";
+import { siteUptimeBadge } from "@/features/sites/uptime-badge";
 
 // ---------------------------------------------------------------------------
 // SslChip — threshold logic
@@ -382,17 +383,39 @@ describe("uptime row — conditional rendering", () => {
     expect(site.uptime_pct != null).toBe(false);
   });
 
-  it("StatusDot uses destructive tone when up is false", () => {
-    function uptimeTone(up: boolean | undefined): "destructive" | "success" {
-      return up === false ? "destructive" : "success";
-    }
-    expect(uptimeTone(false)).toBe("destructive");
+  it("StatusDot uses success tone + 'Up' label when up is true", () => {
+    const badge = siteUptimeBadge(true);
+    expect(badge.tone).toBe("success");
+    expect(badge.label).toBe("Up");
+    expect(badge.status).toBe("up");
   });
 
-  it("StatusDot uses success tone when up is true", () => {
-    function uptimeTone(up: boolean | undefined): "destructive" | "success" {
-      return up === false ? "destructive" : "success";
-    }
-    expect(uptimeTone(true)).toBe("success");
+  it("StatusDot uses destructive tone + 'Down' label when up is false", () => {
+    const badge = siteUptimeBadge(false);
+    expect(badge.tone).toBe("destructive");
+    expect(badge.label).toBe("Down");
+    expect(badge.status).toBe("down");
+  });
+
+  // GH #272 regression: a never-probed (null/undefined) site must render as
+  // a neutral "Unknown", never as green "Up" — a fully-down site with no
+  // probe result yet must not display a false "Up" during an incident.
+  it("GH #272 — StatusDot uses a neutral (non-success) tone + 'Unknown' label when up is undefined", () => {
+    const badge = siteUptimeBadge(undefined);
+    expect(badge.tone).not.toBe("success");
+    expect(badge.tone).toBe("muted");
+    expect(badge.label).toBe("Unknown");
+    expect(badge.status).toBe("unknown");
+  });
+
+  it("GH #272 — StatusDot uses a neutral (non-success) tone + 'Unknown' label when up is null", () => {
+    // API-level `Site.up` is nullable at runtime (Go `*bool`) even though the
+    // generated TS type currently narrows to `boolean | undefined`; guard the
+    // explicit-null case defensively.
+    const badge = siteUptimeBadge(null);
+    expect(badge.tone).not.toBe("success");
+    expect(badge.tone).toBe("muted");
+    expect(badge.label).toBe("Unknown");
+    expect(badge.status).toBe("unknown");
   });
 });

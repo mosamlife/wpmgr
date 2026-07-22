@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.83] - 2026-07-23
+
+### Fixed
+
+- The Sites dashboard uptime badge could show a green "Up" for a site that had never been probed, or whose probe result had not synced yet (GH #272). The badge only special-cased the literal `false` value, so `null`/absent uptime data fell through to "Up" instead of a neutral state, which is the wrong failure mode during an incident (a fully-down, never-probed site could display green). The badge is now a proper three-state indicator: "Up" (green) only after an explicit successful probe, "Down" (red) after an explicit failed probe, and a neutral "Unknown" whenever the probe result is not yet known, on both the grid and table views of the Sites list.
+
 ## [0.61.82] - 2026-07-22
 
 ### Fixed

@@ -58,6 +58,7 @@ import {
 } from "@/features/sites/connection-state";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
 import { SiteCardThumbnail } from "@/features/sites/site-card-thumbnail";
+import { siteUptimeBadge } from "@/features/sites/uptime-badge";
 import {
   CapabilityGroup,
   type CapabilityItem,
@@ -167,6 +168,8 @@ export function SiteCard({
   const backupTimeTitle = backupTime
     ? new Date(backupTime).toLocaleString()
     : undefined;
+  // GH #272 — tri-state (never green unless up === true); see uptime-badge.ts.
+  const uptimeBadge = siteUptimeBadge(site.up);
 
   const capabilityItems = buildCapabilityItems(site);
   const isCompact = cardSize === "compact";
@@ -400,12 +403,9 @@ export function SiteCard({
         <div className="flex min-h-5 items-center">
           {site.uptime_pct != null ? (
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <StatusDot
-                tone={site.up === false ? "destructive" : "success"}
-                label={site.up === false ? "Down" : "Up"}
-              />
+              <StatusDot tone={uptimeBadge.tone} label={uptimeBadge.label} />
               <span className="tabular-nums">
-                {site.up === false ? "Down" : "Up"}
+                {uptimeBadge.label}
                 {" · Uptime "}
                 <span className="font-medium text-foreground tabular-nums">
                   {site.uptime_pct.toFixed(2)}%
