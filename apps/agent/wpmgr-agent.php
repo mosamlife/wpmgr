@@ -3,7 +3,7 @@
  * Plugin Name:       WPMgr Agent
  * Plugin URI:        https://github.com/mosamlife/wpmgr
  * Description:        Connects this WordPress site to a WPMgr control plane for backups, updates, monitoring, and security scanning.
- * Version:           0.61.80
+ * Version:           0.61.81
  * Requires at least: 6.2
  * Requires PHP:      8.1
  * Author:            WPMgr contributors
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
     exit; // No direct access.
 }
 
-define('WPMGR_AGENT_VERSION', '0.61.80');
+define('WPMGR_AGENT_VERSION', '0.61.81');
 
 // Display name shown on the admin settings screen (menu label, page title).
 // Kept as its own constant (rather than hard-coded strings in class-admin.php)
@@ -61,6 +61,17 @@ spl_autoload_register(static function (string $class): void {
         require_once $file;
     }
 });
+
+// Relocate this plugin's own signed Authorization bearer token out of
+// $_SERVER, when present, before any other plugin's early REST auth hooks
+// (determine_current_user / rest_authentication_errors) get a chance to run.
+// Some third-party plugins install a global handler that tries to decode ANY
+// Authorization: Bearer value as one of their own JWTs and can fatal on a
+// token in a format they don't recognize; those hooks fire strictly AFTER
+// every active plugin's main file has been included, so doing this here,
+// synchronously at include time, preempts them unconditionally. See
+// includes/support/class-auth-header-shield.php.
+WPMgr\Agent\Support\AuthHeaderShield::protect();
 
 // Boot the plugin once WordPress is present.
 WPMgr\Agent\Plugin::boot();

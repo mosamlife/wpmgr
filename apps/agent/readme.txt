@@ -185,6 +185,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.36.0. This project ships frequently; not every intermediate patch release is listed here individually -- see the full history at https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md.
 
+= 0.61.81 =
+* Fixed: agent command updates (and other control-plane commands) could fail on sites running some third-party plugins that globally decode the Authorization header on every request, for example as part of their own JWT-based auth (GH #269). The agent now moves its own signed Authorization value out of the request before any other plugin's code runs, so this class of conflict can no longer occur.
+
 = 0.61.80 =
 * Changed: the WordPress.org distribution build no longer adjusts WordPress's own upgrader working-directory handling during a plugin, theme, or core update. Self-hosted installs are unaffected.
 * Fixed: reworded a documentation comment in the file-manager write guard that quoted an example attack payload verbatim, so security scanners no longer report a false-positive match on the plugin's own file (GH #266). No behavior changed.

@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.81] - 2026-07-22
+
+### Fixed
+
+- Agent command updates (and other control-plane commands) could fail on sites running some third-party plugins that globally decode the Authorization header on every request, for example as part of their own JWT-based auth (GH #269). Such a plugin could throw an error on the agent's own signed request before the agent had a chance to verify it, causing the request to fail outright instead of reaching the agent's own authorization check. The agent now moves its own signed Authorization value out of the request before any other plugin's code runs, so this class of conflict can no longer occur, and reads it back internally to authenticate as before. No control-plane or protocol change; self-hosted and hosted control planes are both covered.
+
 ## [0.61.80] - 2026-07-21
 
 ### Changed
