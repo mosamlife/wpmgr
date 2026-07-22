@@ -193,8 +193,9 @@ final class EncryptAndUpload
      */
     public function encryptChunks(string $scratchDir, array $artifacts, array $resume, callable $progress): array
     {
-        // Lift caller-imposed time/abort guards. We may be running inside an
-        // FPM request that has already called fastcgi_finish_request().
+        // Lift caller-imposed time/abort guards. We may be running inside a
+        // request that has already released the client connection via the
+        // SAPI-aware finish (fastcgi/litespeed/fallback — see ConnectionFinisher).
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running encrypt pass must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 

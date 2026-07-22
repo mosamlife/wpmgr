@@ -94,7 +94,7 @@ final class RestoreCommand implements CommandInterface
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).
      * @param array<string,mixed> $params RestoreRequest fields.
-     * @return array{ok:bool,detail:string}
+     * @return array{ok:bool,detail:string,code?:string}
      */
     public function execute(array $claims, array $params): array
     {
@@ -154,7 +154,7 @@ final class RestoreCommand implements CommandInterface
         // --- 2. Dedup claim ------------------------------------------------
         Schema::ensureCurrent();
         if (!$this->tryClaimDedup($snapshotId, $restoreId)) {
-            return $this->refuse('runner already in flight for this restore');
+            return $this->refuse('runner already in flight for this restore', 'runner_in_flight');
         }
 
         // --- 3. Prepare scratch dir + assemble runner params --------------
@@ -475,11 +475,19 @@ final class RestoreCommand implements CommandInterface
     /**
      * Refusal response.
      *
-     * @return array{ok:bool,detail:string}
+     * @param string $detail Human-readable reason (unchanged wire field).
+     * @param string $code   Optional stable machine code for the CP to branch
+     *                       on (e.g. 'runner_in_flight'). Empty string omits
+     *                       the field entirely — most refusals carry no code.
+     * @return array{ok:bool,detail:string,code?:string}
      */
-    private function refuse(string $detail): array
+    private function refuse(string $detail, string $code = ''): array
     {
-        return ['ok' => false, 'detail' => $detail];
+        $response = ['ok' => false, 'detail' => $detail];
+        if ($code !== '') {
+            $response['code'] = $code;
+        }
+        return $response;
     }
 
     /** @param array<string,mixed> $params */

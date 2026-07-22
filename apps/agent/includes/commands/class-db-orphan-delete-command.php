@@ -19,9 +19,10 @@
  * Async model:
  *   execute() returns the ACK immediately via the REST HTTP response, then
  *   register_shutdown_function runs the actual deletions AFTER the response is
- *   flushed. The full items[] array (kind + name + owner_slug) is captured into
- *   the closure by value — NOT just item names — so live re-verify has all fields
- *   available at delete time.
+ *   flushed, via the SAPI-aware ConnectionFinisher (fastcgi/litespeed/
+ *   fallback — see ConnectionFinisher). The full items[] array (kind + name +
+ *   owner_slug) is captured into the closure by value — NOT just item names —
+ *   so live re-verify has all fields available at delete time.
  *
  *   After each batch of up to BATCH_SIZE items the agent POSTs one progress push
  *   to progress_endpoint (signed with its Ed25519 key, same pattern as
@@ -54,6 +55,7 @@ use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Settings;
 use WPMgr\Agent\Signer;
 use WPMgr\Agent\Optimizer\DbCleanup;
+use WPMgr\Agent\Support\ConnectionFinisher;
 use WPMgr\Agent\Support\LongRunningJob;
 
 /**
@@ -171,22 +173,27 @@ final class DbOrphanDeleteCommand implements CommandInterface
     /** @var object|null Injected $wpdb (tests); defaults to global. */
     private ?object $wpdb;
 
+    private ConnectionFinisher $finisher;
+
     /**
-     * @param DbCleanup|null $cleanup  Injected for tests; defaults to a live engine.
-     * @param Keystore|null  $keystore Injected for tests; defaults to a fresh keystore.
-     * @param Settings|null  $settings Injected for tests; defaults to a fresh settings.
-     * @param object|null    $wpdb     Injected for tests; defaults to global $wpdb.
+     * @param DbCleanup|null          $cleanup  Injected for tests; defaults to a live engine.
+     * @param Keystore|null           $keystore Injected for tests; defaults to a fresh keystore.
+     * @param Settings|null           $settings Injected for tests; defaults to a fresh settings.
+     * @param object|null             $wpdb     Injected for tests; defaults to global $wpdb.
+     * @param ConnectionFinisher|null $finisher Injected for tests; defaults to a real ladder.
      */
     public function __construct(
         ?DbCleanup $cleanup = null,
         ?Keystore $keystore = null,
         ?Settings $settings = null,
-        ?object $wpdb = null
+        ?object $wpdb = null,
+        ?ConnectionFinisher $finisher = null
     ) {
         $this->cleanup  = $cleanup;
         $this->keystore = $keystore;
         $this->settings = $settings;
         $this->wpdb     = $wpdb ?? (isset($GLOBALS['wpdb']) && is_object($GLOBALS['wpdb']) ? $GLOBALS['wpdb'] : null);
+        $this->finisher = $finisher ?? new ConnectionFinisher();
     }
 
     /**
@@ -270,6 +277,7 @@ final class DbOrphanDeleteCommand implements CommandInterface
         $capturedCleanup  = $this->cleanup;
         $capturedKeystore = $this->keystore;
         $capturedWpdb     = $this->wpdb;
+        $capturedFinisher = $this->finisher;
 
         register_shutdown_function(
             static function () use (
@@ -278,14 +286,14 @@ final class DbOrphanDeleteCommand implements CommandInterface
                 $capturedEndpoint,
                 $capturedCleanup,
                 $capturedKeystore,
-                $capturedWpdb
+                $capturedWpdb,
+                $capturedFinisher
             ): void {
-                // On PHP-FPM: close the client connection while this worker
-                // process keeps running so the CP's ACK read completes before
-                // the delete loop starts.
-                if (function_exists('fastcgi_finish_request')) {
-                    fastcgi_finish_request();
-                }
+                // Release the client connection (SAPI-aware: PHP-FPM,
+                // OpenLiteSpeed — GH #274 — or a portable fallback) while
+                // this worker process keeps running so the CP's ACK read
+                // completes before the delete loop starts.
+                $capturedFinisher->finish();
 
                 // Expand execution budget — delete loops can be slow on large sites.
                 if (function_exists('set_time_limit')) {

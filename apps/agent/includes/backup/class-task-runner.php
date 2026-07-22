@@ -4,8 +4,9 @@
  * `wpmgr_backup_tasks` into a completed backup snapshot.
  *
  * This is the only "active" component in the state-machine pipeline: the
- * REST handler (Phase D) writes the task row, calls fastcgi_finish_request(),
- * then invokes TaskRunner::run() in the same PHP process. The watchdog hook
+ * REST handler (Phase D) writes the task row, calls the SAPI-aware finish
+ * (fastcgi/litespeed/fallback — see ConnectionFinisher), then invokes
+ * TaskRunner::run() in the same PHP process. The watchdog hook
  * (also Phase D) calls TaskRunner::run() on re-entry. Both entry points are
  * idempotent — the state machine reads `phase` + `sub_state` and resumes from
  * wherever the last invocation left off.

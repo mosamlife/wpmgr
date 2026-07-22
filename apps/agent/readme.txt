@@ -185,6 +185,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.36.0. This project ships frequently; not every intermediate patch release is listed here individually -- see the full history at https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md.
 
+= 0.61.84 =
+* Fixed: backups no longer time out on OpenLiteSpeed and LiteSpeed servers (GH #274). The agent acknowledges a backup request and continues the work in the background; it previously released that acknowledgment using a PHP-FPM-only mechanism, which OpenLiteSpeed's PHP does not provide, so the connection stayed open for the entire backup. The agent now releases the acknowledgment using whichever mechanism the site's server actually supports.
+
 = 0.61.82 =
 * Fixed: the "disable file editor" hardening toggle could fatal every request on a Roots/Bedrock site (GH #268). Roots/Bedrock manages that constant through its own config layer and throws when it is defined a second time; the agent now checks whether it is already defined (or the config file is otherwise framework-managed) before writing anything, so nothing is written in that case and the toggle still reports success. Standard WordPress installs are unaffected. The full-page cache's WP_CACHE constant is protected the same way.
 

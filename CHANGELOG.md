@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.84] - 2026-07-23
+
+### Fixed
+
+- Backups no longer time out on OpenLiteSpeed and LiteSpeed servers (GH #274). The agent acknowledges a backup request to the control plane and then continues the work in the background; it previously released that acknowledgment using a PHP-FPM-only mechanism, which OpenLiteSpeed's PHP does not provide, so the connection stayed open for the entire backup and a reverse proxy in front of the control plane eventually timed it out. The agent now releases the acknowledgment using whichever mechanism the site's server actually supports, covering PHP-FPM, OpenLiteSpeed and LiteSpeed, and any other server as a last resort. A backup or restore that was already running when a duplicate request arrived is also no longer misreported as failed to the operator or left orphaned in the dashboard; the control plane now recognizes this specific case and keeps tracking the original run instead.
+
 ## [0.61.83] - 2026-07-23
 
 ### Fixed

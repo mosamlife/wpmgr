@@ -23,6 +23,9 @@
     "disk_total_space",
     "disk_free_space",
     "set_error_handler",
-    "register_shutdown_function"
+    "register_shutdown_function",
+    "ob_get_level",
+    "ob_end_flush",
+    "flush"
   ]
 }

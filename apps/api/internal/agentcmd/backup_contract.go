@@ -219,9 +219,16 @@ type BackupRequest struct {
 //
 //	ok       the agent accepted the backup job.
 //	detail   short human-readable note (e.g. "queued" or an early refusal reason).
+//	code     GH #274: a STABLE machine-readable refusal code, set only when
+//	         ok=false. Empty on older agents and on refusals without a known
+//	         code — callers MUST treat an empty/unrecognized code as a normal
+//	         terminal refusal and only special-case the codes they know about
+//	         (e.g. "runner_in_flight"). Never parse `detail` text to recover
+//	         this — it is a free-form human string and may change wording.
 type BackupResponse struct {
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+	Code   string `json:"code,omitempty"`
 }
 
 // ChunkRef is one ordered ciphertext chunk of a manifest entry.
@@ -436,11 +443,15 @@ type RestoreRequest struct {
 //	restored_entries number of entries reassembled/imported.
 //	verified         true if every downloaded ciphertext chunk matched its blake3.
 //	log              short human-readable detail.
+//	code             GH #274: a STABLE machine-readable refusal code, set only
+//	                 when ok=false. Same contract as BackupResponse.Code — see
+//	                 its doc comment.
 type RestoreResponse struct {
 	OK              bool   `json:"ok"`
 	RestoredEntries int    `json:"restored_entries"`
 	Verified        bool   `json:"verified"`
 	Log             string `json:"log,omitempty"`
+	Code            string `json:"code,omitempty"`
 }
 
 // ============================================================================
