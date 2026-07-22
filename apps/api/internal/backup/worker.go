@@ -32,6 +32,26 @@ var chainBrokenErrorCodes = map[string]bool{
 	"parent_files_list_chunk_missing": true,
 }
 
+// codeRunnerInFlight (GH #274) is the STABLE machine-readable refusal code the
+// agent sets on BackupResponse.Code / RestoreResponse.Code when its own
+// single-flight dedup guard refuses a dispatch because a runner for this
+// exact snapshot is ALREADY in flight (class-backup-command.php /
+// class-restore-command.php: "runner already in flight for this
+// snapshot/restore"). This can legitimately happen on a slow host (e.g.
+// OpenLiteSpeed without fastcgi_finish_request): the agent's synchronous ack
+// takes long enough that the CP's HTTP round-trip times out and returns a
+// transport error, River retries the job with a fresh dispatch, and THAT
+// retry hits the still-running original run's guard.
+//
+// BackupWorker.Work and RestoreWorker.Work key ONLY on this exact Code value
+// — never on the free-form Detail/Log text, which is not a stable contract —
+// and treat it as benign/non-terminal: the snapshot is left running (or the
+// restore run left as-is) because the still-in-flight original run will
+// complete it via its own manifest submission / progress events. Any OTHER
+// ok=false refusal (empty Code, or a different Code) is UNCHANGED and still
+// takes the existing terminal-failure path.
+const codeRunnerInFlight = "runner_in_flight"
+
 // Audit action names for the backup/restore lifecycle.
 const (
 	ActionBackupStarted    = "backup.started"
@@ -262,6 +282,22 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		return fmt.Errorf("backup command to agent failed: %w", err)
 	}
 	if !resp.OK {
+		if resp.Code == codeRunnerInFlight {
+			// GH #274: benign — a backup for this snapshot is ALREADY running
+			// (this dispatch was a River retry of a slow/timed-out original
+			// attempt). Do NOT fail the snapshot: it stays `running`, the
+			// still-in-flight original run completes it via its own
+			// SubmitManifest call, and the existing 120s progress watchdog
+			// still catches a genuinely-dead run accurately. Terminal-failing
+			// here would flip a healthy running snapshot to failed, trip the
+			// SubmitManifest status==failed guard and orphan the real run's
+			// chunks, and fire a false backup_failed email.
+			w.logger.Warn("backup already running for snapshot; not failing this attempt",
+				slog.String("snapshot_id", snap.ID.String()),
+				slog.String("tenant_id", snap.TenantID.String()),
+				slog.String("detail", resp.Detail))
+			return nil
+		}
 		return w.fail(ctx, snap, "agent refused the backup: "+resp.Detail)
 	}
 	// The agent accepted the job; completion happens when it submits the manifest
@@ -526,6 +562,23 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 		return fmt.Errorf("restore command to agent failed: %w", err)
 	}
 	if !resp.OK {
+		if resp.Code == codeRunnerInFlight {
+			// GH #274: benign — a restore for this snapshot is ALREADY running
+			// (this dispatch was a River retry of a slow/timed-out original
+			// attempt). Do NOT record a terminal failure: recordAudit(...Failed)
+			// and RecordProgress("failed", ...) both flip the run/snapshot to a
+			// terminal state (RecordProgress's "failed" phase internally calls
+			// FailSnapshot), which would wrongly kill the still-in-flight
+			// original run and fire a false restore-failure signal. The
+			// original run continues to drive completion via its own
+			// /progress events.
+			w.logger.Warn("restore already running for snapshot; not failing this attempt",
+				slog.String("snapshot_id", snap.ID.String()),
+				slog.String("tenant_id", snap.TenantID.String()),
+				slog.String("restore_id", restoreID),
+				slog.String("detail", resp.Log))
+			return nil
+		}
 		// Agent refused the dispatch (e.g. another restore in flight). Terminal.
 		w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
 			"restore_id": restoreID,

@@ -116,6 +116,7 @@ use WPMgr\Agent\Media\MediaUploader;
 use WPMgr\Agent\Media\Rename;
 use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\ConnectionFinisher;
 use WPMgr\Agent\Support\ErrorMonitor;
 use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
@@ -1881,15 +1882,16 @@ final class Plugin
         // block above.
         $this->shipLoginEvents();
 
-        // Reliable-diagnostics opportunistic warm: if the PHP-FPM fast-finish
-        // hook is available, release the HTTP response to the CP first, then
-        // run a size probe to warm the cache for the next push. On a kill mid-
-        // walk (request_terminate_timeout) the previously-persisted last-good
-        // remains intact. On non-FPM SAPIs the probe still runs in-process but
-        // is in a non-blocking position (response already shipped via cron).
-        if (function_exists('fastcgi_finish_request')) {
-            fastcgi_finish_request();
-        }
+        // Reliable-diagnostics opportunistic warm: release the HTTP response
+        // to the CP first via the SAPI-aware ConnectionFinisher (fastcgi on
+        // PHP-FPM, litespeed_finish_request on OpenLiteSpeed — GH #274 — or a
+        // portable fallback), then run a size probe to warm the cache for the
+        // next push. On a kill mid-walk (request_terminate_timeout) the
+        // previously-persisted last-good remains intact. This is a cron
+        // loopback, not a CP-facing request, so there is no CP-side 504 risk
+        // here either way — adopted for symmetry with the other early-ACK
+        // sites.
+        (new ConnectionFinisher())->finish();
         if (function_exists('set_time_limit')) {
             @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
         }

@@ -18,10 +18,12 @@
  * Async model:
  *   execute() returns the ACK immediately via the REST HTTP response, then
  *   register_shutdown_function runs the actual cleanup AFTER the response is
- *   flushed.  On PHP-FPM, fastcgi_finish_request() closes the client connection
- *   while the worker process keeps running; on mod_php the connection stays open
- *   until the shutdown callback completes (acceptable — the CP client's timeout
- *   covers only the ACK round-trip).
+ *   flushed, via the SAPI-aware ConnectionFinisher (fastcgi/litespeed/
+ *   fallback — see ConnectionFinisher). On PHP-FPM or OpenLiteSpeed the
+ *   client connection is closed while the worker process keeps running; on
+ *   any other SAPI the connection stays open until the shutdown callback
+ *   completes (acceptable — the CP client's timeout covers only the ACK
+ *   round-trip).
  *
  *   After each category the agent POSTs one progress push to progress_endpoint
  *   (signed with its Ed25519 key, mirroring PerfReporter).  The final push has
@@ -41,6 +43,7 @@ use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Settings;
 use WPMgr\Agent\Signer;
 use WPMgr\Agent\Optimizer\DbCleanup;
+use WPMgr\Agent\Support\ConnectionFinisher;
 use WPMgr\Agent\Support\LongRunningJob;
 
 /**
@@ -83,19 +86,24 @@ final class DbCleanCommand implements CommandInterface
 
     private ?Settings $settings;
 
+    private ConnectionFinisher $finisher;
+
     /**
-     * @param DbCleanup|null $cleanup  Injected for tests; defaults to a live engine.
-     * @param Keystore|null  $keystore Injected for tests; defaults to a fresh keystore.
-     * @param Settings|null  $settings Injected for tests; defaults to a fresh settings.
+     * @param DbCleanup|null          $cleanup  Injected for tests; defaults to a live engine.
+     * @param Keystore|null           $keystore Injected for tests; defaults to a fresh keystore.
+     * @param Settings|null           $settings Injected for tests; defaults to a fresh settings.
+     * @param ConnectionFinisher|null $finisher Injected for tests; defaults to a real ladder.
      */
     public function __construct(
         ?DbCleanup $cleanup = null,
         ?Keystore $keystore = null,
-        ?Settings $settings = null
+        ?Settings $settings = null,
+        ?ConnectionFinisher $finisher = null
     ) {
         $this->cleanup  = $cleanup;
         $this->keystore = $keystore;
         $this->settings = $settings;
+        $this->finisher = $finisher ?? new ConnectionFinisher();
     }
 
     /**
@@ -153,6 +161,7 @@ final class DbCleanCommand implements CommandInterface
         $capturedEngine   = $engine;
         $capturedKeystore = $this->keystore;
         $capturedSettings = $this->settings;
+        $capturedFinisher = $this->finisher;
 
         register_shutdown_function(
             static function () use (
@@ -161,14 +170,14 @@ final class DbCleanCommand implements CommandInterface
                 $capturedEndpoint,
                 $capturedEngine,
                 $capturedKeystore,
-                $capturedSettings
+                $capturedSettings,
+                $capturedFinisher
             ): void {
-                // On PHP-FPM: close the client connection while this worker
-                // process keeps running so the CP's ACK read completes before
-                // the (potentially long) cleanup loop starts.
-                if (function_exists('fastcgi_finish_request')) {
-                    fastcgi_finish_request();
-                }
+                // Release the client connection (SAPI-aware: PHP-FPM,
+                // OpenLiteSpeed — GH #274 — or a portable fallback) while
+                // this worker process keeps running, so the CP's ACK read
+                // completes before the (potentially long) cleanup loop starts.
+                $capturedFinisher->finish();
 
                 // Expand execution budget — cleanup can be slow on large sites.
                 if (function_exists('set_time_limit')) {

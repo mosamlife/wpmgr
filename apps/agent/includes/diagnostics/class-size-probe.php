@@ -5,7 +5,8 @@
  * Owns ALL size logic so DiagnosticsCommand::execute() never blocks the daily
  * push on a tree walk. The push reads last-good from wp_options; the walk runs
  * in a dedicated WP-Cron event (wpmgr_agent_sizes_daily) and optionally after
- * fastcgi_finish_request has released the push response.
+ * the SAPI-aware finish (fastcgi/litespeed/fallback — see ConnectionFinisher)
+ * has released the push response.
  *
  * Computation order (first success wins per directory):
  *   1. `du -sb <dir>` — O(1) on most Linux/macOS hosts. Gated by
@@ -167,8 +168,8 @@ final class SizeProbe
      *
      * Safe to call under a dedicated cron event (a bounded set_time_limit() is called
      * by the handler in Plugin::registerHooks before invoking this). Also safe
-     * to call after fastcgi_finish_request — a PHP-FPM kill mid-walk leaves
-     * the previously-persisted last-good intact.
+     * to call after the SAPI-aware finish (fastcgi/litespeed/fallback) — a
+     * mid-walk kill leaves the previously-persisted last-good intact.
      *
      * @return array<string,mixed> The persisted blob (same shape as lastGood()).
      */

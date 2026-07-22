@@ -461,8 +461,15 @@ if ($wpmgr_method === 'HEAD') {
 readfile($wpmgr_file); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_readfile -- advanced-cache drop-in streams the cached body before WordPress is loaded; readfile is the canonical low-memory emit
 
 // Flush to the client before the loopback kick so the visitor never waits.
+// This file runs BEFORE the plugin autoloader (it's a WordPress drop-in), so
+// it cannot use the WPMgr\Agent\Support\ConnectionFinisher class — the same
+// fastcgi/litespeed/fallback ladder is kept inline here instead. The
+// litespeed_finish_request() rung covers OpenLiteSpeed hosts (GH #274), which
+// have no fastcgi_finish_request().
 if (function_exists('fastcgi_finish_request')) {
     @fastcgi_finish_request(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort FPM flush; failure falls back to ob_end_flush below
+} elseif (function_exists('litespeed_finish_request')) {
+    @litespeed_finish_request(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- OpenLiteSpeed/LiteSpeed equivalent of fastcgi_finish_request (GH #274); best-effort, falls back to ob_end_flush below
 } else {
     @ob_end_flush(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort flush; not all SAPI/OB setups support this
     flush();

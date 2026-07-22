@@ -14,8 +14,10 @@
  *   3. Persist the TaskRunner params into `wpmgr_backup_tasks.sub_state.params`
  *      so the watchdog can rehydrate the runner on a stall recovery.
  *   4. Schedule the watchdog cron event for +120s.
- *   5. `fastcgi_finish_request()` to release the HTTP response to the CP in
- *      well under a second.
+ *   5. The SAPI-aware finish (fastcgi/litespeed/fallback — see
+ *      ConnectionFinisher) to release the HTTP response to the CP in well
+ *      under a second, regardless of whether the host runs PHP-FPM or
+ *      OpenLiteSpeed (GH #274).
  *   6. Continue running under `ignore_user_abort(true)`: invoke
  *      `TaskRunner::run()` which drives the dumping_db → archiving_files →
  *      encrypting_uploading → submitting_manifest pipeline, persisting
@@ -42,13 +44,15 @@ use WPMgr\Agent\Backup\TaskRunner;
 use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Schema;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\ConnectionFinisher;
 use WPMgr\Agent\Support\DebugLog;
 use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Accepts a `backup` command from the CP, seeds the task row, and drives
- * the backup state machine. The HTTP response is released early via
- * `fastcgi_finish_request()` so the CP sees the ACK in well under a second
+ * the backup state machine. The HTTP response is released early via the
+ * SAPI-aware ConnectionFinisher (fastcgi/litespeed/fallback) so the CP sees
+ * the ACK in well under a second, on PHP-FPM or OpenLiteSpeed (GH #274),
  * while the real work continues under `ignore_user_abort(true)`.
  */
 final class BackupCommand implements CommandInterface
@@ -69,9 +73,16 @@ final class BackupCommand implements CommandInterface
 
     private AgeIdentity $identity;
 
-    public function __construct(AgeIdentity $identity)
+    private ConnectionFinisher $finisher;
+
+    /**
+     * @param AgeIdentity             $identity Backup-encryption identity/recipient checks.
+     * @param ConnectionFinisher|null $finisher Injected for tests; defaults to a real ladder.
+     */
+    public function __construct(AgeIdentity $identity, ?ConnectionFinisher $finisher = null)
     {
         $this->identity = $identity;
+        $this->finisher = $finisher ?? new ConnectionFinisher();
     }
 
     public function name(): string
@@ -84,7 +95,7 @@ final class BackupCommand implements CommandInterface
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused — Connector verified them).
      * @param array<string,mixed> $params BackupRequest fields.
-     * @return array{ok:bool,detail:string}
+     * @return array{ok:bool,detail:string,code?:string}
      */
     public function execute(array $claims, array $params): array
     {
@@ -188,7 +199,7 @@ final class BackupCommand implements CommandInterface
         // command uses to self-heal a stale install.
         Schema::ensureCurrent();
         if (!$this->tryClaimDedup($snapshotId)) {
-            return $this->refuse('runner already in flight for this snapshot');
+            return $this->refuse('runner already in flight for this snapshot', 'runner_in_flight');
         }
 
         // --- 3. Prepare scratch + assemble runner params ------------------
@@ -280,16 +291,19 @@ final class BackupCommand implements CommandInterface
         // cron health.
         //
         //   1. A PHP shutdown handler (fires after execute() returns and WP
-        //      REST flushes the response body to FPM) calls
-        //      fastcgi_finish_request() (defensive — WP has usually already
-        //      closed its output buffers) then runs TaskRunner::run()
-        //      directly in the same PHP process.
+        //      REST flushes the response body) calls the SAPI-aware
+        //      ConnectionFinisher (defensive — WP has usually already closed
+        //      its output buffers) then runs TaskRunner::run() directly in
+        //      the same PHP process. ConnectionFinisher tries
+        //      fastcgi_finish_request() (PHP-FPM), then
+        //      litespeed_finish_request() (OpenLiteSpeed — GH #274), then a
+        //      portable best-effort flush.
         //   2. execute() returns the ACK normally. The CP sees 200 < 1 s.
-        //   3. The FPM worker runs the backup while the FCGI connection is
-        //      closed (fastcgi_finish_request). On hosts where
-        //      fastcgi_finish_request does not fully close the upstream
-        //      connection, ignore_user_abort(true) + a bounded set_time_limit()
-        //      ensure the runner is not killed mid-backup.
+        //   3. The worker runs the backup while the connection has been
+        //      released by ConnectionFinisher. On hosts where none of the
+        //      finish-request functions fully close the upstream connection,
+        //      ignore_user_abort(true) + a bounded set_time_limit() ensure
+        //      the runner is not killed mid-backup.
         //
         // wp_schedule_single_event('wpmgr_backup_run') + spawn_cron() below
         // are KEPT as secondary triggers (they preserve the #131 watchdog +
@@ -318,16 +332,18 @@ final class BackupCommand implements CommandInterface
 
         // Capture the params in a local variable so the closure does not
         // hold a reference to $this (which would keep the entire
-        // BackupCommand object alive through the shutdown chain).
+        // BackupCommand object alive through the shutdown chain). $finisher
+        // is captured too — it is a small, stateless collaborator (no $this
+        // reference of its own), so this doesn't reintroduce the leak.
         $shutdownParams = $runnerParams;
-        register_shutdown_function(static function () use ($shutdownParams): void {
-            // fastcgi_finish_request() is only available under PHP-FPM.
-            // Call it defensively: WP has already closed its own output
-            // buffers before shutdown handlers run, so the response was
-            // most likely already sent. This is a belt-and-suspenders flush.
-            if (function_exists('fastcgi_finish_request')) {
-                fastcgi_finish_request(); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- intentional early-flush of the FCGI connection so the CP receives the ACK before TaskRunner runs
-            }
+        $finisher       = $this->finisher;
+        register_shutdown_function(static function () use ($shutdownParams, $finisher): void {
+            // The SAPI-aware finish. Called defensively: WP has already
+            // closed its own output buffers before shutdown handlers run, so
+            // the response was most likely already sent. This is a
+            // belt-and-suspenders flush that also covers OpenLiteSpeed
+            // (GH #274), which has no fastcgi_finish_request().
+            $finisher->finish();
             @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup runner must not hit max_execution_time; @-guarded
             @ignore_user_abort(true);
             try {
@@ -539,10 +555,22 @@ final class BackupCommand implements CommandInterface
         return false;
     }
 
-    /** Refusal response — the agent didn't accept the job. */
-    private function refuse(string $detail): array
+    /**
+     * Refusal response — the agent didn't accept the job.
+     *
+     * @param string $detail Human-readable reason (unchanged wire field).
+     * @param string $code   Optional stable machine code for the CP to branch
+     *                       on (e.g. 'runner_in_flight'). Empty string omits
+     *                       the field entirely — most refusals carry no code.
+     * @return array{ok:bool,detail:string,code?:string}
+     */
+    private function refuse(string $detail, string $code = ''): array
     {
-        return ['ok' => false, 'detail' => $detail];
+        $response = ['ok' => false, 'detail' => $detail];
+        if ($code !== '') {
+            $response['code'] = $code;
+        }
+        return $response;
     }
 
     /** @param array<string,mixed> $params */

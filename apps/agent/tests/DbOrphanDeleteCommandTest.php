@@ -24,6 +24,7 @@ use Brain\Monkey\Functions;
 use WPMgr\Agent\Commands\DbOrphanDeleteCommand;
 use WPMgr\Agent\Optimizer\DbCleanup;
 use WPMgr\Agent\Optimizer\PerfConfig;
+use WPMgr\Agent\Support\ConnectionFinisher;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -259,6 +260,66 @@ final class DbOrphanDeleteCommandTest extends TestCase
 
         $maxRef = new \ReflectionClassConstant(DbOrphanDeleteCommand::class, 'MAX_ITEMS');
         $this->assertSame(500, $maxRef->getValue(), 'MAX_ITEMS must be 500 per the contract');
+    }
+
+    // =========================================================================
+    // GitHub issue #274 — ConnectionFinisher call-site parity: the SAPI-aware
+    // finish fires exactly once from inside the shutdown closure, and adding
+    // it does not short-circuit the background delete (runAsync still runs
+    // to completion afterward). register_shutdown_function is intercepted
+    // via Functions\expect()->andReturnUsing() so the closure is captured and
+    // invoked directly here rather than actually registered as a real PHP
+    // shutdown handler (which would fire outside the Brain Monkey context —
+    // see the note above test_valid_request_ack_structure_via_name_and_constants).
+    // =========================================================================
+
+    public function test_connection_finisher_fires_once_and_delete_still_backgrounds(): void
+    {
+        Functions\expect('wp_clear_scheduled_hook')
+            ->once()
+            ->with('acme_cleanup');
+
+        $finishCalls = [];
+        $finisher    = new ConnectionFinisher(
+            static fn (string $fn): bool => $fn === 'fastcgi_finish_request',
+            static function (string $fn) use (&$finishCalls): void {
+                $finishCalls[] = $fn;
+            },
+            static function () use (&$finishCalls): void {
+                $finishCalls[] = 'fallback';
+            }
+        );
+
+        /** @var callable|null $captured */
+        $captured = null;
+        Functions\expect('register_shutdown_function')
+            ->once()
+            ->andReturnUsing(function ($cb) use (&$captured): bool {
+                $captured = $cb;
+                return true;
+            });
+
+        $wpdb = new OrphanWpdb();
+        $cmd  = new DbOrphanDeleteCommand(null, null, null, $wpdb, $finisher);
+
+        $res = $cmd->execute([], [
+            'job_id' => 'uuid-cf-parity',
+            'items'  => [['kind' => 'cron', 'name' => 'acme_cleanup', 'owner_slug' => 'acme-plugin']],
+            // progress_endpoint deliberately omitted — keeps runAsync's
+            // postProgress a no-op, so this test needs no network stubs.
+        ]);
+
+        $this->assertTrue($res['ok'] ?? false);
+        $this->assertNotNull($captured, 'shutdown runner was not registered');
+        $this->assertSame([], $finishCalls, 'finish() must not fire before the shutdown closure runs');
+
+        // Invoke the captured closure directly (never as a real PHP shutdown
+        // handler). This proves both that finish() fires exactly once AND
+        // that runAsync() still runs to completion afterward — call-site
+        // parity: adding the finisher did not short-circuit the delete.
+        ($captured)();
+
+        $this->assertSame(['fastcgi_finish_request'], $finishCalls, 'finish() must fire exactly once');
     }
 
     // =========================================================================
