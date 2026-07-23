@@ -281,6 +281,18 @@ type BackupConfig struct {
 	// for the long-running command channel (a separate httpclient.Client is built
 	// for backup/restore so the snappy update path is unaffected).
 	HTTPTimeout time.Duration `koanf:"http_timeout"`
+	// StallSoftTimeout is the GH #279 two-tier progress watchdog's SOFT
+	// deadline: a running snapshot whose progress has gone quiet this long is
+	// stamped stalled_at (status stays 'running', a slow-but-alive run can
+	// still complete) and the UI shows a "taking longer than expected" hint.
+	// Cleared by the next proof of life. Defaults to 3m.
+	StallSoftTimeout time.Duration `koanf:"stall_soft_timeout"`
+	// StallHardTimeout is the two-tier watchdog's HARD deadline: a running
+	// snapshot whose progress has gone quiet this long is actually failed,
+	// with a distinct stall-timeout reason. MUST be generous enough to cover
+	// the agent's worst-case total silent gap on a very large site. Defaults
+	// to 30m.
+	StallHardTimeout time.Duration `koanf:"stall_hard_timeout"`
 }
 
 // UpdateConfig holds the M3 bulk-update orchestration tuning.
@@ -531,6 +543,8 @@ func defaults() map[string]any {
 		"backup.schedule_interval":          "5m",
 		"backup.gc_interval":                "1h",
 		"backup.http_timeout":               "10m",
+		"backup.stall_soft_timeout":         "3m",
+		"backup.stall_hard_timeout":         "30m",
 		"clickhouse.addr":                   "",
 		"clickhouse.db":                     "wpmgr_metrics",
 		"clickhouse.username":               "default",

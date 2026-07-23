@@ -203,6 +203,20 @@ export function isRestoreActive(snapshot: BackupSnapshot): boolean {
   return isRestorePhase(fp.phase) && !phaseTerminal;
 }
 
+/**
+ * GH #279 — true only while a run is genuinely still active AND the CP's
+ * two-tier watchdog has stamped `stalled_at` (gone quiet past the soft
+ * threshold, not yet hard-failed). Gated on `status === "running"` so a
+ * terminal snapshot never shows the hint, even if a stale `stalled_at`
+ * value were somehow still present (the CP always clears it before failing
+ * or completing a run, but the UI gate does not rely on that alone).
+ */
+export function isSnapshotStalled(
+  snapshot: Pick<BackupSnapshot, "stalled_at" | "status">,
+): boolean {
+  return Boolean(snapshot.stalled_at) && snapshot.status === "running";
+}
+
 export interface FormattedProgress {
   phase: PhaseId;
   /** Render-ready phase label. */

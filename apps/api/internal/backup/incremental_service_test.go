@@ -167,11 +167,23 @@ func (r *fakeRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snaps
 func (r *fakeRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
 	panic("fakeRepo.FailSnapshot not implemented")
 }
+func (r *fakeRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	panic("fakeRepo.FailStalledSnapshot not implemented")
+}
 func (r *fakeRepo) UpdateSnapshotProgress(_ context.Context, _, _ uuid.UUID, _ []byte) (Snapshot, error) {
 	panic("fakeRepo.UpdateSnapshotProgress not implemented")
 }
-func (r *fakeRepo) ListStalledRunningSnapshots(_ context.Context, _ time.Duration) ([]StalledSnapshot, error) {
+func (r *fakeRepo) ListStalledRunningSnapshots(_ context.Context, _, _ time.Duration) ([]StalledSnapshot, error) {
 	panic("fakeRepo.ListStalledRunningSnapshots not implemented")
+}
+func (r *fakeRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	// Benign no-op: PresignChunks/SubmitManifest/RecordProgress call the GH
+	// #279 proof-of-life clearer unconditionally as part of the normal flow,
+	// so a bare fakeRepo not exercising the stall feature must not panic here.
+	return false, nil
+}
+func (r *fakeRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	return false, nil
 }
 func (r *fakeRepo) ListManifest(_ context.Context, _, _ uuid.UUID) ([]ManifestEntry, error) {
 	panic("fakeRepo.ListManifest not implemented")

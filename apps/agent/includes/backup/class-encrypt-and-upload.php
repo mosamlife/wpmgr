@@ -102,6 +102,19 @@ final class EncryptAndUpload
     /** Emit a progress event every N PUT calls (uploadChunks pass). */
     private const PROGRESS_EVERY_UPLOAD = 4;
 
+    /**
+     * GH #279: default wall-clock heartbeat interval, in seconds. Mirrors
+     * FilesArchiver::DEFAULT_HEARTBEAT_INTERVAL_SECONDS. Emitted in ADDITION
+     * to the per-N-chunks triggers above (PROGRESS_EVERY_ENCRYPT /
+     * PROGRESS_EVERY_UPLOAD) so a single slow chunk (a large fread(), a slow
+     * age-encrypt on the future V1 SaaS path, or a slow network PUT) still
+     * refreshes CP progress_updated_at before the watchdog's soft-stall
+     * threshold, even when the chunk-count trigger would otherwise stay
+     * quiet for a while. Overridable via the constructor (tests use a tiny
+     * value to assert the wall-clock gate without sleeping for real).
+     */
+    public const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0;
+
     private AgeCrypto $age;
     private BackupTransport $transport;
     private string $snapshotId;
@@ -118,6 +131,17 @@ final class EncryptAndUpload
      */
     private BackupDestination $destination;
 
+    /** GH #279: wall-clock heartbeat interval (seconds). See DEFAULT_HEARTBEAT_INTERVAL_SECONDS. */
+    private float $heartbeatIntervalSeconds;
+
+    /**
+     * Wall-clock timestamp (microtime(true)) of the most recent progress
+     * emit. Reset at the start of encryptChunks() / uploadChunks() and
+     * refreshed by safeProgress() on every call so the heartbeat gate never
+     * double-fires right after a real emit.
+     */
+    private float $lastProgressEmitAt = 0.0;
+
     /**
      * @param AgeCrypto             $age               Shared age helper.
      * @param BackupTransport       $transport         Configured M4 transport (CP-callbacks + raw PUT).
@@ -131,6 +155,8 @@ final class EncryptAndUpload
      *   'destination_config' => [...]]` plus the standard runner params (snapshot_id,
      *   presign_endpoint, manifest_endpoint — supplied automatically below). When
      *   null, the destination defaults to `cp`, preserving the 0.9.6 pipeline.
+     * @param float                 $heartbeatIntervalSeconds GH #279 wall-clock
+     *   progress heartbeat gate; defaults to DEFAULT_HEARTBEAT_INTERVAL_SECONDS.
      */
     public function __construct(
         AgeCrypto $age,
@@ -140,7 +166,8 @@ final class EncryptAndUpload
         string $presignEndpoint,
         string $manifestEndpoint,
         int $chunkBytes = self::DEFAULT_CHUNK_BYTES,
-        ?array $destinationParams = null
+        ?array $destinationParams = null,
+        float $heartbeatIntervalSeconds = self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS
     ) {
         $this->age              = $age;
         $this->transport        = $transport;
@@ -149,6 +176,7 @@ final class EncryptAndUpload
         $this->presignEndpoint  = $presignEndpoint;
         $this->manifestEndpoint = $manifestEndpoint;
         $this->chunkBytes       = max(1, $chunkBytes);
+        $this->heartbeatIntervalSeconds = max(0.0, $heartbeatIntervalSeconds);
 
         // Resolve the destination adapter. The resolver needs the runner
         // params it would normally read from sub_state; we synthesize the
@@ -207,6 +235,9 @@ final class EncryptAndUpload
         if (!is_dir($scratchDir)) {
             throw new \RuntimeException('EncryptAndUpload: scratchDir does not exist: ' . esc_html($scratchDir));
         }
+
+        // GH #279: start the wall-clock heartbeat window fresh for this pass.
+        $this->lastProgressEmitAt = microtime(true);
 
         // Inspection pass-0: walk the dump file BEFORE chunking and emit a
         // sql-inspection.json manifest entry that the CP consumes as the
@@ -350,6 +381,18 @@ final class EncryptAndUpload
                         ]);
                         $sinceTick = 0;
                     }
+
+                    // GH #279: wall-clock heartbeat, IN ADDITION to the
+                    // per-N-chunks trigger above. No-ops whenever a real emit
+                    // just fired this same tick (safeProgress() resets the
+                    // window on every call, including this one).
+                    $this->maybeEmitHeartbeat($progress, 'encrypting_uploading', [
+                        'stage'            => 'encrypt',
+                        'chunks_done'      => $chunksDone,
+                        'artifacts_done'   => $i,
+                        'artifacts_total'  => $artifactsTotal,
+                        'current_artifact' => $currentLogical,
+                    ]);
                 }
             } finally {
                 fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- closes a streaming handle over multi-GB archives; WP_Filesystem has no streaming API
@@ -411,6 +454,9 @@ final class EncryptAndUpload
         if (empty($encryptCursor['done']) || !isset($encryptCursor['all_hashes']) || !is_array($encryptCursor['all_hashes'])) {
             throw new \RuntimeException('EncryptAndUpload: uploadChunks called before encryptChunks completed.');
         }
+
+        // GH #279: start the wall-clock heartbeat window fresh for this pass.
+        $this->lastProgressEmitAt = microtime(true);
 
         $allHashes = array_values(array_filter(
             $encryptCursor['all_hashes'],
@@ -488,6 +534,15 @@ final class EncryptAndUpload
                     ]);
                     $sinceTick = 0;
                 }
+
+                // GH #279: wall-clock heartbeat, IN ADDITION to the
+                // per-N-chunks trigger above.
+                $this->maybeEmitHeartbeat($progress, 'encrypting_uploading', [
+                    'stage'          => 'upload',
+                    'chunks_done'    => $chunksDone,
+                    'chunks_total'   => $chunksTotal,
+                    'bytes_uploaded' => $bytesUploaded,
+                ]);
             }
         } else {
             // CP / s3_compat: legacy bulk-presign + PUT. Both kinds talk to
@@ -554,6 +609,17 @@ final class EncryptAndUpload
                     ]);
                     $sinceTick = 0;
                 }
+
+                // GH #279: wall-clock heartbeat, IN ADDITION to the
+                // per-N-chunks trigger above. A slow network PUT can stall
+                // this loop for longer than PROGRESS_EVERY_UPLOAD's chunk
+                // count would otherwise cover.
+                $this->maybeEmitHeartbeat($progress, 'encrypting_uploading', [
+                    'stage'          => 'upload',
+                    'chunks_done'    => $chunksDone,
+                    'chunks_total'   => $chunksTotal,
+                    'bytes_uploaded' => $bytesUploaded,
+                ]);
             }
 
             // Second sweep: drop local files for hashes the CP already had — they
@@ -1062,16 +1128,51 @@ final class EncryptAndUpload
      * Invoke the caller's progress callback safely. A broken progress hook
      * must never fail an otherwise-healthy backup.
      *
+     * Also stamps `$lastProgressEmitAt` (GH #279) on every call, whether
+     * chunk-count or heartbeat-triggered, so `maybeEmitHeartbeat()`'s
+     * wall-clock gate always measures from the most recent emit.
+     *
      * @param callable            $progress Caller-supplied callback.
      * @param string              $phase    Phase label.
      * @param array<string,mixed> $detail   Phase detail payload.
      */
     private function safeProgress(callable $progress, string $phase, array $detail): void
     {
+        $this->lastProgressEmitAt = microtime(true);
         try {
             $progress($phase, $detail);
         } catch (\Throwable $_) {
             // Swallow — progress reporting is best-effort observability.
         }
+    }
+
+    /**
+     * GH #279: emit a heartbeat progress tick if `$heartbeatIntervalSeconds`
+     * has elapsed since the last emit. Called on every chunk iteration
+     * (cheap: one `microtime(true)` call) inside encryptChunks()'s fread loop
+     * and uploadChunks()'s PUT loops so a single slow chunk (large fread, a
+     * slow age-encrypt, or a slow network PUT) still refreshes CP
+     * `progress_updated_at` before the watchdog's soft-stall threshold, even
+     * when the chunk-count trigger (PROGRESS_EVERY_ENCRYPT /
+     * PROGRESS_EVERY_UPLOAD) would otherwise stay quiet. Routed through
+     * `safeProgress()`, so a broken progress callback can never abort the
+     * pipeline, and every emit (this one included) resets the wall-clock
+     * window.
+     *
+     * @param callable             $progress Caller-supplied callback.
+     * @param string               $phase    Phase label.
+     * @param array<string,mixed>  $detail   Detail payload (a `heartbeat`
+     *                                       flag is merged in so the caller
+     *                                       can distinguish this tick from a
+     *                                       normal chunk-count tick).
+     * @return void
+     */
+    private function maybeEmitHeartbeat(callable $progress, string $phase, array $detail): void
+    {
+        if ((microtime(true) - $this->lastProgressEmitAt) < $this->heartbeatIntervalSeconds) {
+            return;
+        }
+        $detail['heartbeat'] = true;
+        $this->safeProgress($progress, $phase, $detail);
     }
 }

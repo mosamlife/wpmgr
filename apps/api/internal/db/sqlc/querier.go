@@ -246,6 +246,14 @@ type Querier interface {
 	ClearActiveDBCleanJob(ctx context.Context, siteID uuid.UUID) error
 	// Clear the in-flight db_scan watchdog columns on completion or failure.
 	ClearActiveDBScanJob(ctx context.Context, siteID uuid.UUID) error
+	// Proof-of-life clear (GH #279): a presign, manifest submit, or progress POST
+	// that lands after a soft stall clears it so the watchdog does not later
+	// hard-fail a run that was merely slow. The status='running' predicate is
+	// the whole anti-resurrection guarantee -- a snapshot the watchdog already
+	// hard-failed, or the operator cancelled, is never matched here (both moved
+	// status away from 'running' first), so this can never revive a genuinely
+	// terminal snapshot.
+	ClearBackupSnapshotStalled(ctx context.Context, arg ClearBackupSnapshotStalledParams) (int64, error)
 	// Clears the grace-window previous hash once the rotation grace period expires.
 	ClearBeaconKeyHashPrev(ctx context.Context, siteID uuid.UUID) error
 	// Clear the provisional secret after enrollment is confirmed (or on explicit
@@ -447,6 +455,18 @@ type Querier interface {
 	ExpireTwoFactorChallenge(ctx context.Context, id uuid.UUID) error
 	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (BackupSnapshot, error)
 	FailReport(ctx context.Context, arg FailReportParams) (GeneratedReport, error)
+	// TOCTOU-safe hard-fail for the two-tier progress watchdog (GH #279 must-fix).
+	// Identical to FailBackupSnapshot except for the added "AND status='running'"
+	// guard: ListStalledRunningSnapshots commits, then each hard row is failed in
+	// its own separate transaction, so between the two a row may have completed,
+	// been operator-cancelled, been agent-failed, or resumed. FailBackupSnapshot's
+	// blind UPDATE has no status guard (CancelSnapshot relies on that to fail a
+	// still-'pending' row), so it must stay unchanged; this query is the watchdog
+	// hard-fail branch's ONLY write path. Rows-affected (0 or 1) tells the caller
+	// whether a real transition happened, so it can gate the 'failed' SSE publish
+	// and the failure notification on an actual state change rather than firing
+	// them for a row that already moved on.
+	FailStalledBackupSnapshot(ctx context.Context, arg FailStalledBackupSnapshotParams) (int64, error)
 	// The "unknown tenant" fallback attribution path: resolves a tenant from
 	// (provider, provider_customer_id) when a webhook event's payload carries no
 	// tenant metadata (e.g. an invoice/charge event whose subscription was not
@@ -1457,12 +1477,15 @@ type Querier interface {
 	// cannot be unbounded; any remainder is caught by the next sweep. Runs under
 	// app.agent (cross-tenant).
 	ListStaleUpdateTasks(ctx context.Context, arg ListStaleUpdateTasksParams) ([]UpdateTask, error)
-	// Watchdog feeder: a running snapshot whose latest progress is older than the
-	// stall threshold (or whose runner never reported any progress despite being
-	// running for longer than the threshold). The new index
-	// backup_snapshots_running_progress_idx makes the predicate selective.
-	// Cross-tenant select via the GC RLS policy (app.agent='on').
-	ListStalledRunningSnapshots(ctx context.Context, dollar_1 pgtype.Interval) ([]ListStalledRunningSnapshotsRow, error)
+	// Watchdog feeder (two-tier, GH #279): a running snapshot whose latest
+	// progress (or start time, if no progress was ever posted) is older than the
+	// SOFT threshold. `hard` is computed the same way against the HARD threshold
+	// so the caller can tell a "stamp stalled_at, keep running" row from a
+	// "fail it now" row -- both compare against the DB clock so there is no
+	// CP/DB clock-drift risk. The index backup_snapshots_running_progress_idx
+	// makes the predicate selective. Cross-tenant select via the GC RLS policy
+	// (app.agent='on').
+	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
 	// GH #230 "rich tags" — tenant-level tag registry (m100). site_tags owns
 	// existence/color/canonical name; sites.tags (text[]) remains the assignment
 	// store. See internal/sitetag for the orchestration that keeps them in sync.
@@ -1532,6 +1555,10 @@ type Querier interface {
 	// Idempotent: returns 0 if another path already marked it (safe).
 	MarkAutologinTokenConsumed(ctx context.Context, arg MarkAutologinTokenConsumedParams) (int64, error)
 	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (BackupSnapshot, error)
+	// Soft-stall stamp (GH #279): idempotent via the status='running' AND
+	// stalled_at IS NULL guard -- a row already stalled, or no longer running,
+	// matches zero rows and the caller treats that as a no-op (not an error).
+	MarkBackupSnapshotStalled(ctx context.Context, arg MarkBackupSnapshotStalledParams) (uuid.UUID, error)
 	MarkBillingEventProcessed(ctx context.Context, id uuid.UUID) error
 	// Stamp the last-purge gauge from the CONTROL PLANE when an operator purge runs
 	// (dashboard "Purge everything" / "Purge URL"). The agent's periodic stats push

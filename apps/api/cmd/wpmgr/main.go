@@ -819,9 +819,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		gcWorker = backup.NewGCWorker(backupSvc, logger)
 		scheduleWorker = backup.NewScheduleWorker(backupSvc, logger)
 		scheduleWorker.SetPool(pool)
-		// M5.6 progress watchdog: 120s stall threshold (longest natural silent
-		// gap in the phpbu pipeline is age-encrypt for a multi-GB site).
-		progressWatchdog = backup.NewProgressWatchdogWorker(backupSvc, 120*time.Second, logger)
+		// GH #279 two-tier progress watchdog: a soft stall (default 3m) only
+		// stamps stalled_at and keeps the run going (the longest natural silent
+		// gap in the phpbu pipeline is age-encrypt for a multi-GB site); only a
+		// hard stall (default 30m) actually fails the run.
+		progressWatchdog = backup.NewProgressWatchdogWorker(backupSvc, cfg.Backup.StallSoftTimeout, cfg.Backup.StallHardTimeout, logger)
 		backupH = backup.NewHandler(backupSvc, backupHub, auditRec)
 		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
 		restoreRunH = backup.NewRestoreRunHandler(backupSvc)
@@ -2944,8 +2946,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		)
 		if d.progressWatchdog != nil {
 			river.AddWorker(workers, d.progressWatchdog)
-			// 30s tick is half the stall threshold — guarantees we detect a stall
-			// within at most threshold+30s. Cheap (a single indexed SELECT).
+			// 30s tick keeps detection latency low relative to both tiers (well
+			// under the soft default of 3m, and negligible next to the hard
+			// default of 30m). Cheap (a single indexed SELECT).
 			periodics = append(periodics, river.NewPeriodicJob(
 				river.PeriodicInterval(30*time.Second),
 				func() (river.JobArgs, *river.InsertOpts) { return backup.ProgressWatchdogArgs{}, nil },

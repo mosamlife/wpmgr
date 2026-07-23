@@ -1650,6 +1650,16 @@ func (s *Service) PresignChunks(ctx context.Context, tenantID, snapshotID uuid.U
 	if snap.Status == StatusCompleted || snap.Status == StatusFailed {
 		return nil, domain.Validation("snapshot_not_in_progress", "the snapshot is no longer accepting uploads")
 	}
+	// GH #279 proof of life: a presign request proves the agent is still
+	// alive, so clear a soft stall (if any) before it can be hard-failed.
+	if cleared, _ := s.ClearSnapshotStalledIfRunning(ctx, tenantID, snapshotID); cleared {
+		s.publish(BackupEvent{
+			SnapshotID:  snapshotID,
+			Phase:       "resumed",
+			PhaseDetail: map[string]any{},
+			Status:      StatusRunning,
+		})
+	}
 	existing, err := s.repo.ExistingChunkHashes(ctx, tenantID, hashes)
 	if err != nil {
 		return nil, err
@@ -1692,6 +1702,16 @@ func (s *Service) SubmitManifest(ctx context.Context, tenantID, snapshotID uuid.
 	// agent submit that finished after the operator cancelled the run.
 	if snap.Status == StatusFailed {
 		return 0, 0, domain.Conflict("snapshot_canceled", "the snapshot was cancelled and no longer accepts a manifest")
+	}
+	// GH #279 proof of life: a manifest submission proves the agent finished
+	// the run, so clear a soft stall (if any) before it can be hard-failed.
+	if cleared, _ := s.ClearSnapshotStalledIfRunning(ctx, tenantID, snapshotID); cleared {
+		s.publish(BackupEvent{
+			SnapshotID:  snapshotID,
+			Phase:       "resumed",
+			PhaseDetail: map[string]any{},
+			Status:      StatusRunning,
+		})
 	}
 
 	in := RecordManifestInput{
@@ -2012,11 +2032,66 @@ func (s *Service) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UU
 	return snap, nil
 }
 
+// FailStalledSnapshot is the TOCTOU-safe hard-fail path the progress watchdog
+// (GH #279 must-fix) uses instead of FailSnapshot. FailSnapshot's UPDATE has
+// no status guard — CancelSnapshot relies on that to fail a still-'pending'
+// row — so it can flip ANY snapshot to 'failed' regardless of what happened
+// to the row between ListStalledRunningSnapshots' commit and the watchdog's
+// own separate per-row transaction (it may have completed, been
+// operator-cancelled, been agent-failed, or resumed). This method's
+// repo.FailStalledSnapshot call adds "AND status='running'" to close that
+// window: transitioned reports whether a real state change happened, and the
+// caller (the watchdog) must only publish the 'failed' SSE event / trigger
+// the failure notification when it is true. When false the row already moved
+// on and its own terminal transition already published its own event — this
+// call is a silent no-op.
+func (s *Service) FailStalledSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (transitioned bool, err error) {
+	n, err := s.repo.FailStalledSnapshot(ctx, tenantID, snapshotID, msg)
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	snap, err := s.repo.GetSnapshot(ctx, tenantID, snapshotID)
+	if err != nil {
+		return true, err
+	}
+	s.publish(BackupEvent{
+		SnapshotID:  snapshotID,
+		Phase:       "failed",
+		PhaseDetail: map[string]any{"error": msg},
+		Status:      snap.Status,
+	})
+	// Reconcile the linked schedule run to 'failed' (best-effort) — mirrors
+	// FailSnapshot's reconciliation exactly, gated on the same real transition.
+	if s.scheduleRuns != nil {
+		errMsg := msg
+		_, _ = s.scheduleRuns.SetScheduleRunStatusBySnapshot(ctx, tenantID, snapshotID, SetScheduleRunStatusInput{
+			TenantID:    tenantID,
+			Status:      ScheduleRunStatusFailed,
+			Error:       &errMsg,
+			SetFinished: true,
+		})
+	}
+	s.sendBackupEmail(ctx, snap, "backup_failed")
+	return true, nil
+}
+
 // cancelByOperatorMsg is the error message stamped on a snapshot a user cancels.
 // It is also the marker the submit guards look for is purely cosmetic — the
 // status==failed transition is what rejects a late agent submit. Kept as a
 // constant so the UI label and the audit metadata stay in sync.
 const cancelByOperatorMsg = "cancelled by operator"
+
+// stallTimeoutMsg is the error message the watchdog stamps when a snapshot
+// crosses the HARD stall threshold (GH #279). There is no separate
+// "cancelled" or "stalled" status in this schema — status only ever reaches
+// 'failed', so this message string is the sole way ops/notifications/the UI
+// can tell a watchdog stall-timeout apart from an operator cancel
+// (cancelByOperatorMsg) or an agent-reported failure (agentFailReason). Kept
+// distinct on purpose: never reuse cancelByOperatorMsg here.
+const stallTimeoutMsg = "stopped responding; no progress within the allowed time"
 
 // CancelSnapshot marks a RUNNING (or PENDING) snapshot failed at the operator's
 // request. There is no separate "cancelled" status: a cancel is a fail with a
@@ -2614,6 +2689,27 @@ func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.
 		}
 	}
 
+	// GH #279 proof of life: a non-failure progress POST that reaches this
+	// point (the "failed" fast-fail branch above already returned when it
+	// successfully persisted a terminal failure) proves the agent is still
+	// alive, so clear a soft stall before it can be hard-failed. A
+	// phase=="failed" POST must NEVER clear the stall or publish 'resumed' --
+	// not even when it fell through here because agentFailReason was empty,
+	// or because the snapshot was already terminal (both skip the fast-fail
+	// branch above without returning). The agent is reporting a failure, not
+	// a resume, so this proof-of-life clear only applies to a genuine
+	// non-failure phase.
+	if phase != "failed" {
+		if cleared, _ := s.ClearSnapshotStalledIfRunning(ctx, tenantID, snapshotID); cleared {
+			s.publish(BackupEvent{
+				SnapshotID:  snapshotID,
+				Phase:       "resumed",
+				PhaseDetail: map[string]any{},
+				Status:      StatusRunning,
+			})
+		}
+	}
+
 	// Fan out the validated progress to live SSE subscribers. The Status mirrors
 	// the snapshot's status as returned by UpdateSnapshotProgress (the
 	// FailSnapshot path above short-circuits before this point when it succeeds,
@@ -2733,10 +2829,49 @@ func (s *Service) persistRestoreRunEvent(ctx context.Context, tenantID, snapshot
 }
 
 // ListStalledRunningSnapshots is the watchdog feeder: cross-tenant enumeration
-// of running snapshots whose runner has gone quiet for longer than `threshold`.
-// The caller (ProgressWatchdogWorker) marks each failed.
-func (s *Service) ListStalledRunningSnapshots(ctx context.Context, threshold time.Duration) ([]StalledSnapshot, error) {
-	return s.repo.ListStalledRunningSnapshots(ctx, threshold)
+// of running snapshots whose runner has gone quiet for longer than `soft`,
+// each row additionally reporting whether it has crossed the (longer) `hard`
+// deadline (GH #279 two-tier policy). The caller (ProgressWatchdogWorker)
+// stamps a soft-only row stalled and fails a hard row.
+func (s *Service) ListStalledRunningSnapshots(ctx context.Context, soft, hard time.Duration) ([]StalledSnapshot, error) {
+	return s.repo.ListStalledRunningSnapshots(ctx, soft, hard)
+}
+
+// MarkSnapshotStalled is called by the two-tier progress watchdog (GH #279)
+// when a running snapshot's progress has gone quiet past the SOFT threshold
+// but not yet the hard one. It stamps stalled_at, keeps status='running' (the
+// run may still complete), and publishes an SSE 'stalled' hint so the UI can
+// show a "taking longer than expected" indicator. Idempotent:
+// repo.MarkSnapshotStalled guards on stalled_at IS NULL, so a re-tick on an
+// already-stalled row is a silent no-op — no error, no duplicate publish.
+func (s *Service) MarkSnapshotStalled(ctx context.Context, tenantID, snapshotID uuid.UUID) error {
+	marked, err := s.repo.MarkSnapshotStalled(ctx, tenantID, snapshotID)
+	if err != nil {
+		return err
+	}
+	if marked {
+		s.publish(BackupEvent{
+			SnapshotID:  snapshotID,
+			Phase:       "stalled",
+			PhaseDetail: map[string]any{},
+			Status:      StatusRunning,
+		})
+	}
+	return nil
+}
+
+// ClearSnapshotStalledIfRunning is the GH #279 proof-of-life clear used by
+// PresignChunks, SubmitManifest, and RecordProgress: any agent callback that
+// proves the run is still alive clears a soft stall so the watchdog does not
+// later hard-fail a run the caller was merely slow on. The status='running'
+// predicate is the entire anti-resurrection guarantee: a snapshot the
+// watchdog already hard-failed, or the operator cancelled, is never revived
+// (both transition status away from 'running' first, so the clear matches
+// zero rows there). Idempotent: clearing an already-clear or non-running row
+// is a no-op (cleared=false, no error). The caller publishes the 'resumed'
+// SSE hint when cleared is true.
+func (s *Service) ClearSnapshotStalledIfRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (bool, error) {
+	return s.repo.ClearSnapshotStalled(ctx, tenantID, snapshotID)
 }
 
 // SiteForSnapshot returns the snapshot's site info (used by the backup worker to

@@ -174,6 +174,21 @@ final class FilesArchiver
     /** Emit a progress callback every N packed files. */
     private const PROGRESS_EVERY_FILES = 50;
 
+    /**
+     * GH #279: default wall-clock heartbeat interval, in seconds. Emitted in
+     * ADDITION to the N-files trigger above so a stretch of few-but-large
+     * files (each `ZipArchive::addFile()` call slow, but the file count never
+     * reaching PROGRESS_EVERY_FILES) still refreshes the CP's
+     * progress_updated_at before the watchdog's soft-stall threshold
+     * (default 180s). Also gates a heartbeat emitted immediately before each
+     * `closeActivePart()` call, since `ZipArchive::close()` on a large part
+     * is a single blocking finalize with no progress hook of its own.
+     * Overridable via the `heartbeat_interval_seconds` constructor option
+     * (tests use a tiny value to assert the wall-clock gate without sleeping
+     * for real).
+     */
+    public const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0;
+
     /** Name of the on-disk path-discovery cache (created in $outDir). */
     private const PATHS_CACHE_NAME = 'paths.cache';
 
@@ -258,6 +273,21 @@ final class FilesArchiver
     private int $generation;
 
     /**
+     * GH #279: wall-clock heartbeat interval (seconds). See
+     * DEFAULT_HEARTBEAT_INTERVAL_SECONDS for the rationale.
+     */
+    private float $heartbeatIntervalSeconds;
+
+    /**
+     * Wall-clock timestamp (microtime(true)) of the most recent progress
+     * emit. Reset at the start of every archive() call and refreshed by
+     * emitProgress() on every call (whether file-count-triggered,
+     * rotation-triggered, or heartbeat-triggered) so the heartbeat gate never
+     * double-fires right after a real emit.
+     */
+    private float $lastProgressEmitAt = 0.0;
+
+    /**
      * @param string              $sourceDir Absolute path of the root to back up
      *                                       (typically WP_CONTENT_DIR).
      * @param list<string>        $excludes  Path-segment names to skip; matched
@@ -271,7 +301,11 @@ final class FilesArchiver
      *                                         exclude_file_size_mb (int),
      *                                         include_components (list<string> of
      *                                           COMPONENT_PARTITIONS keys to INCLUDE;
-     *                                           absent/empty = include all).
+     *                                           absent/empty = include all),
+     *                                         heartbeat_interval_seconds (float,
+     *                                           GH #279 wall-clock progress
+     *                                           heartbeat gate; defaults to
+     *                                           DEFAULT_HEARTBEAT_INTERVAL_SECONDS).
      * @param int                 $generation Snapshot generation (0 = base full,
      *                                        >0 = increment). Namespaces the part
      *                                        filenames so overlay restore never
@@ -327,6 +361,12 @@ final class FilesArchiver
         $this->maxPartEntries = isset($opts['max_part_entries'])
             ? max(1, (int) $opts['max_part_entries'])
             : self::DEFAULT_MAX_PART_ENTRIES;
+
+        // GH #279: wall-clock heartbeat gate. 0 is a valid override (heartbeat
+        // on every loop tick) for tests; never negative.
+        $this->heartbeatIntervalSeconds = isset($opts['heartbeat_interval_seconds']) && is_numeric($opts['heartbeat_interval_seconds'])
+            ? max(0.0, (float) $opts['heartbeat_interval_seconds'])
+            : self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
 
         // A4 (#187): exclude by file extension. Normalise to lower-case, no dot.
         $rawExts = isset($opts['exclude_extensions']) && is_array($opts['exclude_extensions'])
@@ -576,6 +616,11 @@ final class FilesArchiver
         $filesSinceCheckpoint = 0;
         $currentRel           = '';
 
+        // GH #279: start the wall-clock heartbeat window at the top of the
+        // pack loop, not at zero, so a resumed run doesn't immediately fire a
+        // heartbeat before it's had a chance to make any progress.
+        $this->lastProgressEmitAt = microtime(true);
+
         while (($line = fgets($cacheHandle)) !== false) {
             $line = rtrim($line, "\r\n");
             if ($line === '') {
@@ -625,6 +670,19 @@ final class FilesArchiver
                 $needRotate = $compState[$compName]['part_entries'] >= $this->maxPartEntries
                     || $compState[$compName]['part_estimated_bytes'] >= $this->maxPartBytes;
                 if ($needRotate) {
+                    // GH #279: ZipArchive::close() on a large part is a single
+                    // blocking finalize with no progress hook of its own; emit
+                    // a heartbeat immediately before it so a slow finalize
+                    // doesn't leave CP progress_updated_at stale.
+                    $this->emitProgress($progress, [
+                        'files_done'    => $fileIndex,
+                        'files_total'   => $totalFiles,
+                        'parts_done'    => count($partsCompleted),
+                        'bytes_written' => $bytesWritten,
+                        'current_file'  => $currentRel,
+                        'component'     => $compName,
+                        'stage'         => 'finalizing_part',
+                    ]);
                     $closed = $this->closeActivePart($compState[$compName]);
                     if ($closed['size'] > 0) {
                         $bytesWritten     += $closed['size'];
@@ -661,6 +719,20 @@ final class FilesArchiver
                 $filesSinceProgress = 0;
             }
 
+            // GH #279: wall-clock heartbeat, IN ADDITION to the file-count
+            // trigger above. Guards the case where files are few but large;
+            // each addFile() call can take a while, so PROGRESS_EVERY_FILES
+            // may never be reached even though real wall-clock time is
+            // passing. No-ops (via the elapsed-time check) whenever a real
+            // emit -- rotation or file-count -- just fired this same tick.
+            $this->maybeEmitHeartbeat($progress, [
+                'files_done'    => $fileIndex,
+                'files_total'   => $totalFiles,
+                'parts_done'    => count($partsCompleted),
+                'bytes_written' => $bytesWritten,
+                'current_file'  => $currentRel,
+            ]);
+
             if ($filesSinceCheckpoint >= self::CHECKPOINT_EVERY_FILES) {
                 // Same semantics as before: we don't side-effect the caller's
                 // state; ZipArchive doesn't flush mid-stream; the cursor itself
@@ -676,6 +748,18 @@ final class FilesArchiver
             if ($state['zip'] === null) {
                 continue;
             }
+            // GH #279: same rationale as the rotation-triggered close above.
+            // This is the tail-of-run finalize (no more file-loop iterations
+            // left to trip PROGRESS_EVERY_FILES), so it's the one place a
+            // large final part could close with zero heartbeat otherwise.
+            $this->emitProgress($progress, [
+                'files_done'    => $fileIndex,
+                'files_total'   => $totalFiles,
+                'parts_done'    => count($partsCompleted),
+                'bytes_written' => $bytesWritten,
+                'component'     => $compName,
+                'stage'         => 'finalizing_part',
+            ]);
             $closed = $this->closeActivePart($state);
             if ($closed['size'] > 0) {
                 $bytesWritten     += $closed['size'];
@@ -1121,18 +1205,51 @@ final class FilesArchiver
      * Wrap the progress callback so a buggy callback can never abort the
      * archive run. Backup progress is observability, not correctness.
      *
+     * Also stamps `$lastProgressEmitAt` (GH #279) on every call: file-count,
+     * rotation, or heartbeat-triggered alike, so `maybeEmitHeartbeat()`'s
+     * wall-clock gate always measures from the most recent emit, whichever
+     * trigger fired it.
+     *
      * @param callable             $progress User-supplied callback.
      * @param array<string,mixed>  $detail   Detail payload.
      * @return void
      */
     private function emitProgress(callable $progress, array $detail): void
     {
+        $this->lastProgressEmitAt = microtime(true);
         try {
             $progress('archiving_files', $detail);
         } catch (\Throwable $e) { // phpcs:ignore -- intentional swallow.
             // Swallow. Don't even surface in a return — the backup itself
             // is making forward progress and that's what matters.
         }
+    }
+
+    /**
+     * GH #279: emit a heartbeat progress tick if `$heartbeatIntervalSeconds`
+     * has elapsed since the last emit. Called on every pack-loop iteration
+     * (cheap: one `microtime(true)` call) so a stretch of few-but-large files
+     * still refreshes CP `progress_updated_at` before the watchdog's
+     * soft-stall threshold, even when the file-count trigger
+     * (PROGRESS_EVERY_FILES) would otherwise stay quiet for a long time.
+     * Routed through `emitProgress()`, so a broken progress callback can
+     * never abort the archive run, and every emit (this one included)
+     * resets the wall-clock window.
+     *
+     * @param callable             $progress User-supplied callback.
+     * @param array<string,mixed>  $detail   Detail payload (a `heartbeat`
+     *                                       flag is merged in so the caller
+     *                                       can distinguish this tick from a
+     *                                       normal file-count/rotation tick).
+     * @return void
+     */
+    private function maybeEmitHeartbeat(callable $progress, array $detail): void
+    {
+        if ((microtime(true) - $this->lastProgressEmitAt) < $this->heartbeatIntervalSeconds) {
+            return;
+        }
+        $detail['heartbeat'] = true;
+        $this->emitProgress($progress, $detail);
     }
 
     /**

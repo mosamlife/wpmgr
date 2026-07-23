@@ -16,8 +16,9 @@ import { useMemo } from "react";
 import type { BackupSnapshot } from "@wpmgr/api";
 import { Progress } from "@/components/ui/progress";
 
-import { buildStepperPhases, formatProgress, isRestoreActive } from "./format-progress";
+import { buildStepperPhases, formatProgress, isRestoreActive, isSnapshotStalled } from "./format-progress";
 import { PhaseStepper } from "./phase-stepper";
+import { StalledHint } from "./stalled-hint";
 import { useBackupStream } from "./use-backup-stream";
 
 export function InlineSnapshotProgress({ snapshot }: { snapshot: BackupSnapshot }) {
@@ -87,6 +88,10 @@ export function InlineSnapshotProgress({ snapshot }: { snapshot: BackupSnapshot 
           {fp.currentFile ?? fp.artifact}
         </span>
       ) : null}
+
+      {/* GH #279 — calm "taking longer than expected" hint, mirrors the
+          Polling line below in cadence/placement. */}
+      {isSnapshotStalled(snapshot) ? <StalledHint compact /> : null}
 
       {/* Tiny live indicator at the right of the row (top-line dots already give phase status; this confirms transport) */}
       {!stream.isLive && stream.failureCount > 0 ? (

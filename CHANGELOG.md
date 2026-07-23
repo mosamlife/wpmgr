@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.85] - 2026-07-23
+
+### Fixed
+
+- Full backups on slow servers no longer fail at the upload stage (GH #279). The control plane watches each running backup for progress, and on a slow host a large backup could go quiet long enough during the archiving stage that the control plane wrongly marked it failed while it was still working; the next upload step was then rejected. The progress watchdog now has two stages: a quiet backup is flagged as taking longer than expected but kept running, and it is only failed after a much longer, configurable silence. Any sign of life from the agent (a progress report, an upload URL request, or a manifest submission) clears the flag at once. The agent now also sends progress heartbeats during long archive and encryption passes so the flag rarely appears, reports the exact control plane status and message when a callback is rejected, and removes its local working files when a run ends in failure. The dashboard shows a calm note while a backup is quiet.
+
+### Added
+
+- Two self-host settings tune the backup progress watchdog: WPMGR_BACKUP_STALL_SOFT_TIMEOUT (default 3 minutes, when a quiet backup is flagged as taking longer than expected) and WPMGR_BACKUP_STALL_HARD_TIMEOUT (default 30 minutes, when a truly stuck backup is failed).
+
 ## [0.61.84] - 2026-07-23
 
 ### Fixed

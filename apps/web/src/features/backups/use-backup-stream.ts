@@ -65,6 +65,14 @@ export const backupEventSchema = z.object({
     // Terminal — shared
     "completed",
     "failed",
+    // GH #279 — CP watchdog HINTS, not pipeline phases. The two-tier
+    // watchdog stamps `stalled_at` when a running snapshot has gone quiet
+    // past the soft threshold (status stays "running"), and clears it (plus
+    // emits "resumed") on the next proof of life (a presign, manifest
+    // submit, or progress POST). See `isStallHintPhase` below — these two
+    // must never be treated as a real pipeline phase.
+    "stalled",
+    "resumed",
   ]),
   phase_detail: z.record(z.string(), z.unknown()),
   status: z.enum(["pending", "running", "completed", "failed"]),
@@ -72,6 +80,25 @@ export const backupEventSchema = z.object({
 });
 
 export type BackupEvent = z.infer<typeof backupEventSchema>;
+
+/**
+ * GH #279 — the CP watchdog's "stalled" / "resumed" frames are HINTS, not
+ * real pipeline phases: they carry no `phase_detail` counters and are not in
+ * `PHASE_IDS` (`format-progress.ts`), so patching `progress.phase` with
+ * either value would clobber whatever real phase (e.g. "archiving_files")
+ * the UI is currently rendering — the stepper would find no matching node.
+ * Push is a hint; pull is the truth: a hint frame invalidates the snapshot
+ * detail query instead of patching the cache, so the next fetch reads the
+ * authoritative `stalled_at` column that actually drives the indicator.
+ */
+const STALL_HINT_PHASES: ReadonlySet<BackupEvent["phase"]> = new Set([
+  "stalled",
+  "resumed",
+]);
+
+export function isStallHintPhase(phase: BackupEvent["phase"]): boolean {
+  return STALL_HINT_PHASES.has(phase);
+}
 
 /**
  * Module-level coordination between `useBackupStream` (the producer of live
@@ -188,6 +215,16 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
        
       console.log("[wpmgr-sse] event", { phase: parsed.phase, status: parsed.status, detail: parsed.phase_detail });
       if (parsed.snapshot_id !== snapshotId) return;
+
+      // GH #279 — a stall hint carries no real progress; pull the truth
+      // (refetch) instead of patching the cache with a phase the UI can't
+      // render. See `isStallHintPhase` doc above.
+      if (isStallHintPhase(parsed.phase)) {
+        void queryClient.invalidateQueries({
+          queryKey: backupsKeys.detail(snapshotId),
+        });
+        return;
+      }
 
       queryClient.setQueryData<BackupSnapshotDetail>(
         backupsKeys.detail(snapshotId),

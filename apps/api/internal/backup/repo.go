@@ -54,10 +54,34 @@ type Repo interface {
 	UpdateSnapshotProgress(ctx context.Context, tenantID, snapshotID uuid.UUID, progress []byte) (Snapshot, error)
 	// ListStalledRunningSnapshots enumerates `status='running'` snapshots whose
 	// last progress update (or start time, if no progress was ever posted) is
-	// older than `threshold`. Cross-tenant — runs under `app.agent='on'` for the
-	// watchdog periodic. The caller marks each stalled snapshot failed via
-	// FailSnapshot (which IS tenant-scoped).
-	ListStalledRunningSnapshots(ctx context.Context, threshold time.Duration) ([]StalledSnapshot, error)
+	// older than `soft`. Each row also carries a Hard flag computed against the
+	// (longer) `hard` threshold. Cross-tenant — runs under `app.agent='on'` for
+	// the watchdog periodic (GH #279 two-tier policy). The caller stamps a
+	// soft-only row via MarkSnapshotStalled and fails a hard row via
+	// FailStalledSnapshot (both tenant-scoped).
+	ListStalledRunningSnapshots(ctx context.Context, soft, hard time.Duration) ([]StalledSnapshot, error)
+	// MarkSnapshotStalled stamps stalled_at=now() on a still-running snapshot
+	// whose progress has gone quiet past the soft threshold (GH #279). Returns
+	// marked=false with no error when the row was already stalled or is no
+	// longer running — an idempotent no-op, never an error. Tenant-scoped.
+	MarkSnapshotStalled(ctx context.Context, tenantID, snapshotID uuid.UUID) (bool, error)
+	// ClearSnapshotStalled clears stalled_at when the snapshot is still running
+	// (the GH #279 proof-of-life predicate). Returns cleared=false with no
+	// error when the row was not running or was not currently stalled — this
+	// is what prevents a late presign/manifest/progress POST from reviving a
+	// snapshot the watchdog already hard-failed or the operator cancelled.
+	// Tenant-scoped.
+	ClearSnapshotStalled(ctx context.Context, tenantID, snapshotID uuid.UUID) (bool, error)
+	// FailStalledSnapshot is the TOCTOU-safe hard-fail path used ONLY by the
+	// progress watchdog's hard-deadline branch (GH #279 must-fix). Unlike
+	// FailSnapshot's blind UPDATE — which CancelSnapshot depends on to fail a
+	// still-'pending' row and so must keep no status guard — this adds
+	// "AND status='running'" so a row that completed, was cancelled, was
+	// agent-failed, or resumed between ListStalledRunningSnapshots' commit and
+	// this call is left untouched. Returns the number of rows actually
+	// transitioned (0 or 1); the caller uses this to decide whether to publish
+	// the 'failed' SSE event and send the failure notification. Tenant-scoped.
+	FailStalledSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (int64, error)
 	// GetLatestCompletedSnapshot returns the most recent completed snapshot for
 	// (tenantID, siteID). Used by resolveChainForSite to determine is_incremental.
 	// Returns domain.NotFound when no completed snapshot exists.
@@ -336,13 +360,18 @@ type UpsertScheduleInput struct {
 }
 
 // StalledSnapshot is the cross-tenant projection used by the M5.6 progress
-// watchdog: enough to mark the snapshot failed in its own tenant scope.
+// watchdog: enough to mark the snapshot failed (or soft-stamp it) in its own
+// tenant scope. GH #279: StalledAt mirrors the persisted column (nil until
+// the watchdog stamps it) and Hard reports whether the row has ALSO crossed
+// the hard threshold — the watchdog uses Hard to decide fail vs. stamp.
 type StalledSnapshot struct {
 	ID                uuid.UUID
 	TenantID          uuid.UUID
 	SiteID            uuid.UUID
 	StartedAt         *time.Time
 	ProgressUpdatedAt *time.Time
+	StalledAt         *time.Time
+	Hard              bool
 }
 
 // SnapshotMeta is the slim projection used by the retention archive computation.
@@ -638,14 +667,19 @@ func (r *pgRepo) UpdateSnapshotProgress(ctx context.Context, tenantID, snapshotI
 }
 
 // ListStalledRunningSnapshots runs cross-tenant under app.agent='on' (same
-// pattern as ListDueSchedules / ListTenantsForGC). The watchdog then transitions
-// each row to failed via FailSnapshot (tenant-scoped).
-func (r *pgRepo) ListStalledRunningSnapshots(ctx context.Context, threshold time.Duration) ([]StalledSnapshot, error) {
+// pattern as ListDueSchedules / ListTenantsForGC). GH #279 two-tier policy:
+// the watchdog stamps a soft-only row via MarkSnapshotStalled and fails a
+// hard row via FailSnapshot (both tenant-scoped).
+func (r *pgRepo) ListStalledRunningSnapshots(ctx context.Context, soft, hard time.Duration) ([]StalledSnapshot, error) {
 	var out []StalledSnapshot
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		// pgtype.Interval round-trips as microseconds — convert duration to µs.
-		ival := pgtype.Interval{Microseconds: threshold.Microseconds(), Valid: true}
-		rows, err := sqlc.New(tx).ListStalledRunningSnapshots(ctx, ival)
+		softIval := pgtype.Interval{Microseconds: soft.Microseconds(), Valid: true}
+		hardIval := pgtype.Interval{Microseconds: hard.Microseconds(), Valid: true}
+		rows, err := sqlc.New(tx).ListStalledRunningSnapshots(ctx, sqlc.ListStalledRunningSnapshotsParams{
+			SoftInterval: softIval,
+			HardInterval: hardIval,
+		})
 		if err != nil {
 			return domain.Internal("backup_snapshot_stalled_list_failed", "failed to list stalled snapshots").WithCause(err)
 		}
@@ -660,11 +694,72 @@ func (r *pgRepo) ListStalledRunningSnapshots(ctx context.Context, threshold time
 				t := row.ProgressUpdatedAt.Time
 				s.ProgressUpdatedAt = &t
 			}
+			if row.StalledAt.Valid {
+				t := row.StalledAt.Time
+				s.StalledAt = &t
+			}
+			s.Hard = row.Hard != nil && *row.Hard
 			out = append(out, s)
 		}
 		return nil
 	})
 	return out, err
+}
+
+// MarkSnapshotStalled is the GH #279 soft-stall stamp. Tenant-scoped; the
+// underlying query's `status='running' AND stalled_at IS NULL` guard makes
+// this idempotent — a row already stalled (or no longer running) reports
+// marked=false with no error, never pgx.ErrNoRows surfaced as a failure.
+func (r *pgRepo) MarkSnapshotStalled(ctx context.Context, tenantID, snapshotID uuid.UUID) (bool, error) {
+	var marked bool
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := sqlc.New(tx).MarkBackupSnapshotStalled(ctx, sqlc.MarkBackupSnapshotStalledParams{ID: snapshotID, TenantID: tenantID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Already stalled, no longer running, or missing — idempotent no-op.
+				return nil
+			}
+			return domain.Internal("backup_snapshot_stall_mark_failed", "failed to mark snapshot stalled").WithCause(err)
+		}
+		marked = true
+		return nil
+	})
+	return marked, err
+}
+
+// ClearSnapshotStalled is the GH #279 proof-of-life clear. Tenant-scoped; the
+// status='running' predicate is the anti-resurrection guarantee — see the
+// Repo interface doc.
+func (r *pgRepo) ClearSnapshotStalled(ctx context.Context, tenantID, snapshotID uuid.UUID) (bool, error) {
+	var cleared bool
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		n, err := sqlc.New(tx).ClearBackupSnapshotStalled(ctx, sqlc.ClearBackupSnapshotStalledParams{ID: snapshotID, TenantID: tenantID})
+		if err != nil {
+			return domain.Internal("backup_snapshot_stall_clear_failed", "failed to clear stalled snapshot").WithCause(err)
+		}
+		cleared = n > 0
+		return nil
+	})
+	return cleared, err
+}
+
+// FailStalledSnapshot is the TOCTOU-safe hard-fail path for the progress
+// watchdog (GH #279 must-fix). The "AND status='running'" guard baked into
+// FailStalledBackupSnapshot is what FailSnapshot's blind UPDATE lacks — see
+// the Repo interface doc for why the shared FailSnapshot must stay unguarded.
+func (r *pgRepo) FailStalledSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (int64, error) {
+	var n int64
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).FailStalledBackupSnapshot(ctx, sqlc.FailStalledBackupSnapshotParams{
+			ID: snapshotID, TenantID: tenantID, Error: errMsg,
+		})
+		if err != nil {
+			return domain.Internal("backup_snapshot_stall_fail_failed", "failed to hard-fail stalled snapshot").WithCause(err)
+		}
+		n = rows
+		return nil
+	})
+	return n, err
 }
 
 func (r *pgRepo) mutateSnapshot(ctx context.Context, tenantID uuid.UUID, fn func(*sqlc.Queries) (sqlc.BackupSnapshot, error), code string) (Snapshot, error) {
@@ -1744,6 +1839,10 @@ func toSnapshot(s sqlc.BackupSnapshot) Snapshot {
 		t := s.ProgressUpdatedAt.Time
 		out.ProgressUpdatedAt = &t
 	}
+	if s.StalledAt.Valid {
+		t := s.StalledAt.Time
+		out.StalledAt = &t
+	}
 	return out
 }
 
@@ -1886,13 +1985,14 @@ const snapshotSelectColumns = `SELECT id, tenant_id, site_id, created_by, kind, 
         started_at, finished_at, created_at, updated_at,
         is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation,
         cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded,
-        locked, destination_id`
+        locked, destination_id, stalled_at`
 
 // scanSnapshotWithChainFields scans a row that includes the ADR-048 chain
-// columns (is_incremental … cycle_bytes_uploaded) plus the m49 locked column
-// and the M7 / ADR-036 P1 destination_id column. The SELECT must project all
-// standard snapshot columns plus the four chain UUID columns, the four cycle
-// counter columns, locked, and destination_id — in the exact order listed here.
+// columns (is_incremental … cycle_bytes_uploaded) plus the m49 locked column,
+// the M7 / ADR-036 P1 destination_id column, and the m104 / GH #279 stalled_at
+// column. The SELECT must project all standard snapshot columns plus the four
+// chain UUID columns, the four cycle counter columns, locked, destination_id,
+// and stalled_at (appended last) — in the exact order listed here.
 func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 	var (
 		s               Snapshot
@@ -1904,6 +2004,7 @@ func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 		baseID          pgtype.UUID
 		chainID         pgtype.UUID
 		destinationID   pgtype.UUID
+		stalledAt       pgtype.Timestamptz
 	)
 	err := row.Scan(
 		&s.ID, &s.TenantID, &s.SiteID, &createdBy, &s.Kind, &s.Status,
@@ -1912,10 +2013,14 @@ func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 		&s.CreatedAt, &s.UpdatedAt,
 		&s.IsIncremental, &parentID, &baseID, &chainID, &s.Generation,
 		&s.CycleFilesScanned, &s.CycleFilesChanged, &s.CycleFilesDeleted, &s.CycleBytesUploaded,
-		&s.Locked, &destinationID,
+		&s.Locked, &destinationID, &stalledAt,
 	)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	if stalledAt.Valid {
+		t := stalledAt.Time
+		s.StalledAt = &t
 	}
 	if createdBy.Valid {
 		id := uuid.UUID(createdBy.Bytes)

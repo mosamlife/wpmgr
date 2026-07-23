@@ -448,6 +448,18 @@ final class TaskRunner
                 // Swallow.
             }
 
+            // GH #279: GC the orphaned scratch dir + chunk/artifact files now
+            // that this run is genuinely terminal (the task row is about to
+            // be DELETEd below, so there will be no further watchdog
+            // re-entry to clean these up; cleanupOnCompleted() only ever ran
+            // on the COMPLETED path). Best-effort: a second exception here
+            // must never mask the original failure already captured above.
+            try {
+                $this->cleanupOnFailed();
+            } catch (\Throwable $_) {
+                // Swallow.
+            }
+
             // Bug 2 fix: also DELETE the failed row so a delayed watchdog
             // cron event can't re-enter and re-emit a stale phantom
             // /presign call. The CP-side audit + the just-posted `failed`
@@ -1908,6 +1920,96 @@ final class TaskRunner
             /** @phpstan-ignore-next-line */
             @$wpdb->delete($tasksTable, ['snapshot_id' => $this->snapshotId()], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; no core helper exists
         }
+    }
+
+    /**
+     * GH #279: best-effort GC of the scratch dir + chunk/artifact files on a
+     * genuinely terminal failure (a hard CP rejection past the watchdog's
+     * hard-stall deadline, an operator cancel, or any other uncaught
+     * exception the top-level catch in run() reduces to `failed`). Mirrors
+     * cleanupOnCompleted()'s file-level sweep (chunks, artifacts, the
+     * scratch dir itself) but intentionally does NOT touch the
+     * wpmgr_backup_tasks / wpmgr_backup_runs rows: the caller already
+     * DELETEs the task row right after this runs, and the legacy runs dedup
+     * row expires on its own window (BackupCommand::DEDUP_WINDOW_SECONDS) or
+     * is released explicitly by the command that owns it.
+     *
+     * Before this fix, only a genuinely COMPLETED run ever reached
+     * cleanupOnCompleted(); a terminally-failed run left its scratch dir +
+     * chunks-*.age/.bin files on disk until the age-gated
+     * BackupJanitor::gcRuns() backstop eventually swept them. Reconciling
+     * here means a terminal rejection frees the disk space (and, for the
+     * "local" destination, any partially-written local chunks) immediately
+     * instead of waiting on the backstop's age gate.
+     *
+     * Called from inside the top-level catch in run(); failures here are
+     * swallowed by the caller so a second exception never masks the
+     * original failure.
+     */
+    private function cleanupOnFailed(): void
+    {
+        $scratch = $this->scratchDir();
+        if ($scratch === '' || !is_dir($scratch)) {
+            return;
+        }
+
+        // 1. Chunk files (encrypted + plaintext).
+        $chunks = @glob($scratch . DIRECTORY_SEPARATOR . 'chunks-*.age');
+        if (is_array($chunks)) {
+            foreach ($chunks as $f) {
+                wp_delete_file($f);
+            }
+        }
+        $plainChunks = @glob($scratch . DIRECTORY_SEPARATOR . 'chunks-*.bin');
+        if (is_array($plainChunks)) {
+            foreach ($plainChunks as $f) {
+                wp_delete_file($f);
+            }
+        }
+        // ADR-051: remove the prev_files.list scratch file assembled from
+        // PrevFilesListChunks during the archiving phase.
+        $prevList = $scratch . DIRECTORY_SEPARATOR . 'prev_files.list';
+        if (is_file($prevList)) {
+            wp_delete_file($prevList);
+        }
+        // Sidecar sub_state file, if the cursor ever spilled to disk.
+        $sidecar = $scratch . DIRECTORY_SEPARATOR . self::SUBSTATE_SIDECAR_NAME;
+        if (is_file($sidecar)) {
+            wp_delete_file($sidecar);
+        }
+
+        // 2. Artifact files (DB dump + zip parts + files.list + tombstones.list).
+        $patterns = [
+            $scratch . DIRECTORY_SEPARATOR . 'database.sql.gz',
+            $scratch . DIRECTORY_SEPARATOR . 'paths.cache',
+            $scratch . DIRECTORY_SEPARATOR . FilesArchiver::FILES_LIST_NAME,
+            $scratch . DIRECTORY_SEPARATOR . FilesArchiver::TOMBSTONES_LIST_NAME,
+        ];
+        foreach ($patterns as $p) {
+            if (is_file($p)) {
+                wp_delete_file($p);
+            }
+        }
+        foreach (['plugins', 'themes', 'uploads', 'wp-content', 'core'] as $comp) {
+            // Match BOTH the generation-namespaced `<comp>.gNNN.partMMM.zip`
+            // and the legacy `<comp>.partMMM.zip` part filenames.
+            $zips = @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip');
+            if (is_array($zips)) {
+                foreach ($zips as $f) {
+                    wp_delete_file($f);
+                }
+            }
+        }
+        // Also clean up the on-disk core-paths.cache written by CoreFilesArchiver.
+        $coreCachePath = $scratch . DIRECTORY_SEPARATOR . 'core-paths.cache';
+        if (is_file($coreCachePath)) {
+            wp_delete_file($coreCachePath);
+        }
+
+        // 3. The scratch dir itself (rmdir refuses if not empty -- that's
+        // fine; BackupJanitor::gcRuns() is still the age-gated backstop for
+        // any artifact this best-effort sweep missed).
+        @rmdir($scratch); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removes an empty server-derived scratch dir; WP_Filesystem not initialized
     }
 
     // ==================================================================

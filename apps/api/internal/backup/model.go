@@ -124,6 +124,11 @@ type Snapshot struct {
 	// ProgressUpdatedAt to detect stalled runs.
 	Progress          []byte
 	ProgressUpdatedAt *time.Time
+	// StalledAt (m104 / GH #279) is set by the watchdog when a running
+	// snapshot has gone quiet past the soft threshold but is not yet
+	// hard-failed. Nil means healthy. Cleared by the next proof of life (a
+	// presign, manifest submit, or progress POST).
+	StalledAt *time.Time
 	// P0 URL rewriter (ADR-036): siteurl / home / content / upload recorded
 	// at backup time. Drives the restore's URL_REWRITE phase when restoring
 	// to a different environment (dev->prod, staging->prod). Empty strings

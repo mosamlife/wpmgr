@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.84
+  version: 0.61.85
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -14003,6 +14003,8 @@ components:
             - submitting_manifest
             - completed
             - failed
+            - stalled
+            - resumed
         phase_detail:
           type: object
           additionalProperties: true
@@ -14072,9 +14074,17 @@ components:
           type: string
           format: date-time
           description: |
-            Server timestamp of the last progress POST from the runner. Used by the
-            CP watchdog (>120s without an update on a running snapshot → marked
-            failed/stalled) and by the frontend to detect a silent runner.
+            Server timestamp of the last progress POST from the runner. Used by
+            the CP's two-tier watchdog (soft stall stamps stalled_at below; hard
+            stall fails the run) and by the frontend to detect a silent runner.
+        stalled_at:
+          type: string
+          format: date-time
+          description: |
+            Set by the CP watchdog when a running backup has gone quiet past the
+            soft threshold but is not yet failed. Cleared on the next proof of
+            life (a presign, manifest submit, or progress POST). Drives the
+            "taking longer than expected" hint; null means healthy.
         started_at:
           type: string
           format: date-time

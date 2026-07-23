@@ -193,6 +193,7 @@ type BackupSnapshot struct {
 	DestinationID      pgtype.UUID        `json:"destination_id"`
 	Progress           []byte             `json:"progress"`
 	ProgressUpdatedAt  pgtype.Timestamptz `json:"progress_updated_at"`
+	StalledAt          pgtype.Timestamptz `json:"stalled_at"`
 	StartedAt          pgtype.Timestamptz `json:"started_at"`
 	FinishedAt         pgtype.Timestamptz `json:"finished_at"`
 	IsIncremental      bool               `json:"is_incremental"`

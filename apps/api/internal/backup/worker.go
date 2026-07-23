@@ -675,37 +675,65 @@ type ProgressWatchdogArgs struct{}
 func (ProgressWatchdogArgs) Kind() string { return "backup_progress_watchdog" }
 
 // ProgressWatchdogWorker enumerates running snapshots whose phpbu runner has
-// gone silent for longer than the configured threshold and fails them with a
-// `stalled` error so the UI surfaces the dead run and the operator (or the
-// schedule's next tick) can retry. This defends against runner crashes,
-// host-side OOM kills, and `proc_open` losses that leave the snapshot row
-// stuck in `running` forever.
+// gone silent, and applies GH #279's two-tier policy:
+//
+//   - Past the SOFT threshold but not yet the HARD one: stamp stalled_at
+//     (status stays 'running') so the UI can show a "taking longer than
+//     expected" hint. A proof-of-life POST that arrives later (a presign,
+//     manifest submit, or progress update) clears it and the run continues
+//     uninterrupted.
+//   - Past the HARD threshold: fail the run with a distinct stall-timeout
+//     reason. This is the only path the watchdog uses to actually fail a
+//     snapshot; the soft tier never fails anything.
+//
+// This defends against runner crashes, host-side OOM kills, and `proc_open`
+// losses that leave the snapshot row stuck in `running` forever, without
+// punishing a slow-but-alive run (e.g. a large ZipArchive finalize with no
+// intermediate progress event — the GH #279 motivating case).
 type ProgressWatchdogWorker struct {
 	river.WorkerDefaults[ProgressWatchdogArgs]
-	svc       *Service
-	threshold time.Duration
-	logger    *slog.Logger
+	svc           *Service
+	softThreshold time.Duration
+	hardThreshold time.Duration
+	logger        *slog.Logger
 }
 
-// NewProgressWatchdogWorker builds the watchdog. threshold should be generous
-// enough to cover the agent's worst-case time-between-phase-events (the longest
-// silent gap is between `compressing_files` and the first `uploading` chunk —
-// that's the age-encrypt pass, which on a multi-GB site can be a couple
-// minutes). 120s is the recommended default.
-func NewProgressWatchdogWorker(svc *Service, threshold time.Duration, logger *slog.Logger) *ProgressWatchdogWorker {
+// NewProgressWatchdogWorker builds the watchdog. soft should be generous
+// enough to cover the agent's normal silent gaps between progress events
+// (e.g. a large ZipArchive finalize) without flagging a healthy run; it
+// defaults to 3m when <= 0. hard is the actual failure deadline and must be
+// generous enough to cover the agent's worst-case total silent gap on a very
+// large site; it defaults to 30m when <= 0, and is clamped up to soft if a
+// caller supplies hard < soft (a hard deadline shorter than the soft one
+// would never let a snapshot reach the soft tier).
+func NewProgressWatchdogWorker(svc *Service, soft, hard time.Duration, logger *slog.Logger) *ProgressWatchdogWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if threshold <= 0 {
-		threshold = 120 * time.Second
+	if soft <= 0 {
+		soft = 180 * time.Second
 	}
-	return &ProgressWatchdogWorker{svc: svc, threshold: threshold, logger: logger}
+	if hard <= 0 {
+		hard = 30 * time.Minute
+	}
+	if hard < soft {
+		// Operator-visible misconfig (Bug 3): a hard deadline shorter than the
+		// soft one is silently clamped below so boot never fails on it, but an
+		// inverted threshold pair usually means the operator swapped the two
+		// config values -- log it so it shows up during a deploy review rather
+		// than as a silent behavior change.
+		logger.Warn("backup progress watchdog: configured StallHardTimeout is less than StallSoftTimeout; clamping hard to soft",
+			slog.Duration("configured_soft", soft),
+			slog.Duration("configured_hard", hard))
+		hard = soft
+	}
+	return &ProgressWatchdogWorker{svc: svc, softThreshold: soft, hardThreshold: hard, logger: logger}
 }
 
 // Work runs one watchdog pass. The list query is cross-tenant under app.agent;
-// each fail is tenant-scoped.
+// each mark/fail is tenant-scoped.
 func (w *ProgressWatchdogWorker) Work(ctx context.Context, _ *river.Job[ProgressWatchdogArgs]) error {
-	stalled, err := w.svc.ListStalledRunningSnapshots(ctx, w.threshold)
+	stalled, err := w.svc.ListStalledRunningSnapshots(ctx, w.softThreshold, w.hardThreshold)
 	if err != nil {
 		w.logger.Warn("backup progress watchdog list error", slog.Any("error", err))
 		return err
@@ -713,28 +741,68 @@ func (w *ProgressWatchdogWorker) Work(ctx context.Context, _ *river.Job[Progress
 	if len(stalled) == 0 {
 		return nil
 	}
-	failed := 0
+	failed, marked := 0, 0
 	for _, s := range stalled {
-		// Stamp `stalled` with the silent-gap detail so the UI can render it.
-		// FailSnapshot moves status → failed and sets finished_at; subsequent
-		// passes won't pick the row up (the WHERE filter is status='running').
-		msg := fmt.Sprintf("stalled — no progress for >%s", w.threshold)
-		if _, err := w.svc.FailSnapshot(ctx, s.TenantID, s.ID, msg); err != nil {
-			w.logger.Warn("backup progress watchdog fail error",
+		if s.Hard {
+			// Past the hard deadline: fail the run now via the TOCTOU-safe
+			// FailStalledSnapshot (GH #279 must-fix), NOT the shared FailSnapshot
+			// -- ListStalledRunningSnapshots committed its list in a separate
+			// transaction from this per-row fail, so the row may have completed,
+			// been operator-cancelled, been agent-failed, or resumed in that
+			// window. FailStalledSnapshot's guarded UPDATE (status='running')
+			// only transitions a row that is genuinely still running, and only
+			// publishes the 'failed' SSE event and sends the failure
+			// notification when transitioned is true -- a row that already
+			// moved on is skipped silently so its own real terminal transition
+			// is never double-reported. stallTimeoutMsg is a distinct reason
+			// from cancelByOperatorMsg / an agent-reported failure so
+			// ops/notifications/UI can tell them apart.
+			transitioned, err := w.svc.FailStalledSnapshot(ctx, s.TenantID, s.ID, stallTimeoutMsg)
+			if err != nil {
+				w.logger.Warn("backup progress watchdog fail error",
+					slog.String("snapshot_id", s.ID.String()),
+					slog.String("tenant_id", s.TenantID.String()),
+					slog.Any("error", err))
+				continue
+			}
+			if !transitioned {
+				// The row already moved on (completed, cancelled, agent-failed,
+				// or resumed) between the list and this fail -- nothing to do.
+				w.logger.Info("backup progress watchdog hard-fail skipped: snapshot already terminal or resumed",
+					slog.String("snapshot_id", s.ID.String()),
+					slog.String("tenant_id", s.TenantID.String()))
+				continue
+			}
+			failed++
+			w.logger.Info("backup snapshot hard-failed by watchdog",
+				slog.String("snapshot_id", s.ID.String()),
+				slog.String("tenant_id", s.TenantID.String()),
+				slog.String("site_id", s.SiteID.String()),
+				slog.Duration("hard_threshold", w.hardThreshold))
+			continue
+		}
+		if s.StalledAt != nil {
+			// Already soft-stamped on a prior tick; a proof-of-life POST will
+			// clear it if the run resumes. Nothing to do this pass.
+			continue
+		}
+		if err := w.svc.MarkSnapshotStalled(ctx, s.TenantID, s.ID); err != nil {
+			w.logger.Warn("backup progress watchdog stall-mark error",
 				slog.String("snapshot_id", s.ID.String()),
 				slog.String("tenant_id", s.TenantID.String()),
 				slog.Any("error", err))
 			continue
 		}
-		failed++
-		w.logger.Info("backup snapshot marked stalled",
+		marked++
+		w.logger.Info("backup snapshot soft-stalled by watchdog",
 			slog.String("snapshot_id", s.ID.String()),
 			slog.String("tenant_id", s.TenantID.String()),
 			slog.String("site_id", s.SiteID.String()),
-			slog.Duration("threshold", w.threshold))
+			slog.Duration("soft_threshold", w.softThreshold))
 	}
-	if failed > 0 {
-		w.logger.Info("backup progress watchdog pass", slog.Int("stalled_failed", failed), slog.Int("found", len(stalled)))
+	if failed > 0 || marked > 0 {
+		w.logger.Info("backup progress watchdog pass",
+			slog.Int("hard_failed", failed), slog.Int("soft_stalled", marked), slog.Int("found", len(stalled)))
 	}
 	return nil
 }

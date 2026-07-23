@@ -860,6 +860,10 @@ func toAPISnapshot(s Snapshot) gen.BackupSnapshot {
 	if s.ProgressUpdatedAt != nil {
 		out.ProgressUpdatedAt = gen.NewOptDateTime(*s.ProgressUpdatedAt)
 	}
+	// GH #279 two-tier watchdog: nil (unset on the wire) means healthy.
+	if s.StalledAt != nil {
+		out.StalledAt = gen.NewOptDateTime(*s.StalledAt)
+	}
 	// ADR-048 incremental visibility. Scalars always carry a value (zero for
 	// pre-m44 / full-base rows); the chain pointers stay unset when nil.
 	out.IsIncremental = gen.NewOptBool(s.IsIncremental)

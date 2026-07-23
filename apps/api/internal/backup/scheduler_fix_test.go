@@ -222,11 +222,20 @@ func (r *schedulerTestRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, 
 func (r *schedulerTestRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
 	return Snapshot{Status: StatusFailed}, nil
 }
+func (r *schedulerTestRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	panic("schedulerTestRepo.FailStalledSnapshot not expected")
+}
 func (r *schedulerTestRepo) UpdateSnapshotProgress(_ context.Context, _, _ uuid.UUID, _ []byte) (Snapshot, error) {
 	panic("schedulerTestRepo.UpdateSnapshotProgress not expected")
 }
-func (r *schedulerTestRepo) ListStalledRunningSnapshots(_ context.Context, _ time.Duration) ([]StalledSnapshot, error) {
+func (r *schedulerTestRepo) ListStalledRunningSnapshots(_ context.Context, _, _ time.Duration) ([]StalledSnapshot, error) {
 	panic("schedulerTestRepo.ListStalledRunningSnapshots not expected")
+}
+func (r *schedulerTestRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	panic("schedulerTestRepo.MarkSnapshotStalled not expected")
+}
+func (r *schedulerTestRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	panic("schedulerTestRepo.ClearSnapshotStalled not expected")
 }
 func (r *schedulerTestRepo) GetLatestCompletedSnapshot(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
 	return Snapshot{}, domain.NotFound("not_found", "no completed snapshot")

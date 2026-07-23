@@ -48,6 +48,25 @@ SET status = 'failed',
 WHERE id = $1 AND tenant_id = $2
 RETURNING *;
 
+-- name: FailStalledBackupSnapshot :execrows
+-- TOCTOU-safe hard-fail for the two-tier progress watchdog (GH #279 must-fix).
+-- Identical to FailBackupSnapshot except for the added "AND status='running'"
+-- guard: ListStalledRunningSnapshots commits, then each hard row is failed in
+-- its own separate transaction, so between the two a row may have completed,
+-- been operator-cancelled, been agent-failed, or resumed. FailBackupSnapshot's
+-- blind UPDATE has no status guard (CancelSnapshot relies on that to fail a
+-- still-'pending' row), so it must stay unchanged; this query is the watchdog
+-- hard-fail branch's ONLY write path. Rows-affected (0 or 1) tells the caller
+-- whether a real transition happened, so it can gate the 'failed' SSE publish
+-- and the failure notification on an actual state change rather than firing
+-- them for a row that already moved on.
+UPDATE backup_snapshots
+SET status = 'failed',
+    error = $3,
+    finished_at = now(),
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'running';
+
 -- name: UpdateBackupSnapshotProgress :one
 -- M5.6 / ADR-032: agent runner posts a JSONB progress payload at every phpbu
 -- stage transition + per-chunk during the custom PresignedS3 Sync. We always
@@ -63,18 +82,46 @@ WHERE id = $1 AND tenant_id = $2
 RETURNING *;
 
 -- name: ListStalledRunningSnapshots :many
--- Watchdog feeder: a running snapshot whose latest progress is older than the
--- stall threshold (or whose runner never reported any progress despite being
--- running for longer than the threshold). The new index
--- backup_snapshots_running_progress_idx makes the predicate selective.
--- Cross-tenant select via the GC RLS policy (app.agent='on').
-SELECT id, tenant_id, site_id, created_at, started_at, progress_updated_at
+-- Watchdog feeder (two-tier, GH #279): a running snapshot whose latest
+-- progress (or start time, if no progress was ever posted) is older than the
+-- SOFT threshold. `hard` is computed the same way against the HARD threshold
+-- so the caller can tell a "stamp stalled_at, keep running" row from a
+-- "fail it now" row -- both compare against the DB clock so there is no
+-- CP/DB clock-drift risk. The index backup_snapshots_running_progress_idx
+-- makes the predicate selective. Cross-tenant select via the GC RLS policy
+-- (app.agent='on').
+SELECT id, tenant_id, site_id, created_at, started_at, progress_updated_at, stalled_at,
+    (
+      (progress_updated_at IS NOT NULL AND progress_updated_at < now() - (@hard_interval::interval))
+      OR (progress_updated_at IS NULL AND started_at IS NOT NULL AND started_at < now() - (@hard_interval::interval))
+    ) AS hard
 FROM backup_snapshots
 WHERE status = 'running'
   AND (
-    (progress_updated_at IS NOT NULL AND progress_updated_at < now() - ($1::interval))
-    OR (progress_updated_at IS NULL AND started_at IS NOT NULL AND started_at < now() - ($1::interval))
+    (progress_updated_at IS NOT NULL AND progress_updated_at < now() - (@soft_interval::interval))
+    OR (progress_updated_at IS NULL AND started_at IS NOT NULL AND started_at < now() - (@soft_interval::interval))
   );
+
+-- name: MarkBackupSnapshotStalled :one
+-- Soft-stall stamp (GH #279): idempotent via the status='running' AND
+-- stalled_at IS NULL guard -- a row already stalled, or no longer running,
+-- matches zero rows and the caller treats that as a no-op (not an error).
+UPDATE backup_snapshots
+SET stalled_at = now(), updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'running' AND stalled_at IS NULL
+RETURNING id;
+
+-- name: ClearBackupSnapshotStalled :execrows
+-- Proof-of-life clear (GH #279): a presign, manifest submit, or progress POST
+-- that lands after a soft stall clears it so the watchdog does not later
+-- hard-fail a run that was merely slow. The status='running' predicate is
+-- the whole anti-resurrection guarantee -- a snapshot the watchdog already
+-- hard-failed, or the operator cancelled, is never matched here (both moved
+-- status away from 'running' first), so this can never revive a genuinely
+-- terminal snapshot.
+UPDATE backup_snapshots
+SET stalled_at = NULL, updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'running' AND stalled_at IS NOT NULL;
 
 -- name: DeleteBackupSnapshot :execrows
 DELETE FROM backup_snapshots

@@ -1004,11 +1004,20 @@ CREATE TABLE backup_snapshots (
     -- payload posted by the agent runner. Shape:
     --   {"phase": "uploading", "phase_detail": {"chunks_done": 17, ...}}
     -- The watchdog (backup_progress_watchdog River periodic) scans for stalled
-    -- runs via progress_updated_at; >120s without an update on a status='running'
-    -- snapshot marks it failed with error='stalled'. JSONB so we can evolve the
-    -- payload shape without migrations.
+    -- runs via progress_updated_at. GH #279 two-tier policy: past the SOFT
+    -- threshold the watchdog stamps stalled_at below (status stays 'running',
+    -- a slow-but-alive run can still complete); only past the much longer HARD
+    -- threshold does it fail the run, with a distinct stall-timeout reason. JSONB
+    -- so we can evolve the payload shape without migrations.
     progress             jsonb       NOT NULL DEFAULT '{}'::jsonb,
     progress_updated_at  timestamptz,
+    -- stalled_at (m104 / GH #279): set by the watchdog when a running snapshot
+    -- has gone quiet past the soft threshold but is not yet hard-failed. NULL
+    -- means healthy. Cleared by the next proof of life (a presign, manifest
+    -- submit, or progress POST) so the run resumes silently. Never touched by
+    -- the hard-fail path — a failed snapshot's stalled_at is left as-is since
+    -- status alone drives every downstream check.
+    stalled_at    timestamptz,
     started_at    timestamptz,
     finished_at   timestamptz,
     -- m44 incremental backup columns (ADR-048)

@@ -1421,7 +1421,9 @@ export type BackupEvent = {
     | "encrypting_uploading"
     | "submitting_manifest"
     | "completed"
-    | "failed";
+    | "failed"
+    | "stalled"
+    | "resumed";
   /**
    * Pass-through of the agent's POST /progress payload (e.g. chunk counters).
    */
@@ -1473,12 +1475,20 @@ export type BackupSnapshot = {
     [key: string]: unknown;
   };
   /**
-   * Server timestamp of the last progress POST from the runner. Used by the
-   * CP watchdog (>120s without an update on a running snapshot → marked
-   * failed/stalled) and by the frontend to detect a silent runner.
+   * Server timestamp of the last progress POST from the runner. Used by
+   * the CP's two-tier watchdog (soft stall stamps stalled_at below; hard
+   * stall fails the run) and by the frontend to detect a silent runner.
    *
    */
   progress_updated_at?: string;
+  /**
+   * Set by the CP watchdog when a running backup has gone quiet past the
+   * soft threshold but is not yet failed. Cleared on the next proof of
+   * life (a presign, manifest submit, or progress POST). Drives the
+   * "taking longer than expected" hint; null means healthy.
+   *
+   */
+  stalled_at?: string;
   started_at?: string;
   finished_at?: string;
   created_at: string;

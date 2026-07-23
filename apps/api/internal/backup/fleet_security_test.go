@@ -70,11 +70,20 @@ func (r *secFleetRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ 
 func (r *secFleetRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
 	panic("secFleetRepo.FailSnapshot not implemented")
 }
+func (r *secFleetRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	panic("secFleetRepo.FailStalledSnapshot not implemented")
+}
 func (r *secFleetRepo) UpdateSnapshotProgress(_ context.Context, _, _ uuid.UUID, _ []byte) (Snapshot, error) {
 	panic("secFleetRepo.UpdateSnapshotProgress not implemented")
 }
-func (r *secFleetRepo) ListStalledRunningSnapshots(_ context.Context, _ time.Duration) ([]StalledSnapshot, error) {
+func (r *secFleetRepo) ListStalledRunningSnapshots(_ context.Context, _, _ time.Duration) ([]StalledSnapshot, error) {
 	panic("secFleetRepo.ListStalledRunningSnapshots not implemented")
+}
+func (r *secFleetRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	panic("secFleetRepo.MarkSnapshotStalled not implemented")
+}
+func (r *secFleetRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	panic("secFleetRepo.ClearSnapshotStalled not implemented")
 }
 func (r *secFleetRepo) GetLatestCompletedSnapshot(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
 	panic("secFleetRepo.GetLatestCompletedSnapshot not implemented")

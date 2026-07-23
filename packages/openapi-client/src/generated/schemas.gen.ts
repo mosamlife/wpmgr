@@ -2965,6 +2965,8 @@ export const BackupEventSchema = {
         "submitting_manifest",
         "completed",
         "failed",
+        "stalled",
+        "resumed",
       ],
     },
     phase_detail: {
@@ -3063,7 +3065,13 @@ export const BackupSnapshotSchema = {
       type: "string",
       format: "date-time",
       description:
-        "Server timestamp of the last progress POST from the runner. Used by the\nCP watchdog (>120s without an update on a running snapshot → marked\nfailed/stalled) and by the frontend to detect a silent runner.\n",
+        "Server timestamp of the last progress POST from the runner. Used by\nthe CP's two-tier watchdog (soft stall stamps stalled_at below; hard\nstall fails the run) and by the frontend to detect a silent runner.\n",
+    },
+    stalled_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        'Set by the CP watchdog when a running backup has gone quiet past the\nsoft threshold but is not yet failed. Cleared on the next proof of\nlife (a presign, manifest submit, or progress POST). Drives the\n"taking longer than expected" hint; null means healthy.\n',
     },
     started_at: {
       type: "string",
