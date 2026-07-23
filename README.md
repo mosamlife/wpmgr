@@ -20,6 +20,18 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
 
 ---
 
+## Quick start
+
+Get the whole stack running on your own server with one command, no repo clone needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mosamlife/wpmgr/main/scripts/quickstart-selfhost.sh | bash
+```
+
+The script downloads every file the stack needs, generates all secrets, and prints the exact command to bring WPMgr up. You need a 64-bit Linux host with Docker 24+ (2 GB RAM is enough to start). See [system requirements](./docs/requirements.md) for sizing by fleet size, or the [full quickstart](#quickstart-self-host) below for options, prebuilt images, and the build-from-source path.
+
+---
+
 ## Features
 
 ### Fleet connection
