@@ -21,14 +21,37 @@ import (
 // SiteInfo is the minimal site projection the backup service needs: identity,
 // the agent target URL, enrollment status, and the age PUBLIC recipient backups
 // for the site are encrypted to. WpTimezone/WpGmtOffset are the M17 timezone
-// fields for schedule computation.
+// fields for schedule computation. ConnectionState is the M21 lifecycle state
+// (GH #282): a plain string (not the site package's ConnectionState type) so
+// this package stays free of a site import; compare it against the
+// ConnState* constants below.
 type SiteInfo struct {
-	ID           uuid.UUID
-	URL          string
-	Enrolled     bool
-	AgeRecipient string
-	WpTimezone   string
-	WpGmtOffset  float64
+	ID              uuid.UUID
+	URL             string
+	Enrolled        bool
+	AgeRecipient    string
+	WpTimezone      string
+	WpGmtOffset     float64
+	ConnectionState string
+}
+
+// ConnState* mirror the connection_state values the site package's M21
+// lifecycle uses (site.StateArchived / site.StateRevoked), duplicated here as
+// plain strings so this package needs no site import. GH #282: a site in
+// either of these states is deliberately unmanaged, so its backup schedule
+// must not fire and its manual "run now" must be refused.
+const (
+	ConnStateArchived = "archived"
+	ConnStateRevoked  = "revoked"
+)
+
+// siteIsUnmanageable reports whether si's connection state means the site was
+// deliberately taken out of management (archived or revoked), as opposed to a
+// transient connectivity issue (degraded/disconnected) or a not-yet-enrolled
+// site (pending_enrollment); those keep their schedules live because a
+// failed backup there is still actionable operator signal.
+func siteIsUnmanageable(si SiteInfo) bool {
+	return si.ConnectionState == ConnStateArchived || si.ConnectionState == ConnStateRevoked
 }
 
 // SiteLookup resolves the target site (implemented by the site service, wired
@@ -496,6 +519,16 @@ func (s *Service) CreateBackup(ctx context.Context, tenantID, siteID, createdBy 
 	si, err := s.sites.GetBackupSiteInfo(ctx, tenantID, siteID)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	// GH #282: a manual "run now" against an archived or revoked site is
+	// refused the same way the scheduler skips it. The site was deliberately
+	// taken out of management, so no new backup should start until it is
+	// brought back (restore for archived, re-enroll for revoked).
+	switch si.ConnectionState {
+	case ConnStateArchived:
+		return Snapshot{}, domain.Validation("site_not_manageable", "site is archived; restore it to run backups")
+	case ConnStateRevoked:
+		return Snapshot{}, domain.Validation("site_not_manageable", "site is revoked; re-enroll it to run backups")
 	}
 	if !si.Enrolled {
 		return Snapshot{}, domain.Validation("site_not_enrolled", "the site is not enrolled; only enrolled sites can be backed up")
@@ -3563,6 +3596,17 @@ func (s *Service) sendBackupEmail(ctx context.Context, snap Snapshot, template s
 		return
 	}
 
+	// GH #282: suppress the notification for an archived/revoked site. This
+	// covers a manual "run now" fired just before archiving and a scheduled
+	// run that was already claimed and started before the site was archived
+	// mid-flight (the scheduler guard alone cannot catch either case). A site
+	// lookup failure falls through to the pre-existing best-effort behaviour
+	// (still send; SiteURL just stays empty) rather than blocking on it.
+	si, sierr := s.sites.GetBackupSiteInfo(ctx, snap.TenantID, snap.SiteID)
+	if sierr == nil && siteIsUnmanageable(si) {
+		return
+	}
+
 	data := map[string]any{
 		"SiteURL":    "",
 		"Kind":       snap.Kind,
@@ -3571,7 +3615,7 @@ func (s *Service) sendBackupEmail(ctx context.Context, snap Snapshot, template s
 		"FinishedAt": snap.FinishedAt,
 		"Error":      snap.Error,
 	}
-	if si, sierr := s.sites.GetBackupSiteInfo(ctx, snap.TenantID, snap.SiteID); sierr == nil {
+	if sierr == nil {
 		data["SiteURL"] = si.URL
 	}
 

@@ -1052,9 +1052,11 @@ func (r *pgRepo) ListDueSchedules(ctx context.Context, now time.Time, limit int3
 	var out []Schedule
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		pgRows, err := tx.Query(ctx,
-			scheduleSelectColumns+` FROM backup_schedules
-			  WHERE enabled = true AND next_run_at <= $1
-			  ORDER BY next_run_at ASC
+			scheduleSelectColumnsQualified+` FROM backup_schedules
+			  `+scheduleSiteJoin+`
+			  WHERE backup_schedules.enabled = true AND backup_schedules.next_run_at <= $1
+			  `+scheduleSiteStateGuard+`
+			  ORDER BY backup_schedules.next_run_at ASC
 			  LIMIT $2`,
 			now, limit,
 		)
@@ -1927,6 +1929,43 @@ const scheduleColumnList = `id, tenant_id, site_id, cadence, kind, enabled, rete
 
 const scheduleSelectColumns = `SELECT ` + scheduleColumnList
 
+// scheduleColumnListQualified is scheduleColumnList with every column
+// qualified by the backup_schedules table name. GH #282: the scheduler
+// queries below JOIN sites (and check tenants) to guard against an archived/
+// revoked site or a soft-deleted tenant, and several columns in this list
+// ("id", "tenant_id") also exist on sites/tenants, so an unqualified SELECT
+// against the joined query would raise a Postgres "column reference is
+// ambiguous" error. This constant keeps scanScheduleRow's column order intact
+// while resolving the ambiguity.
+const scheduleColumnListQualified = `backup_schedules.id, backup_schedules.tenant_id, backup_schedules.site_id,
+    backup_schedules.cadence, backup_schedules.kind, backup_schedules.enabled, backup_schedules.retention_days,
+    backup_schedules.monthly_archive_keep, backup_schedules.run_hour, backup_schedules.run_minute,
+    backup_schedules.day_of_week, backup_schedules.day_of_month,
+    backup_schedules.frequency_hours, backup_schedules.keep_last, backup_schedules.incremental_enabled,
+    backup_schedules.base_window_days,
+    backup_schedules.next_run_at, backup_schedules.last_run_at, backup_schedules.created_at, backup_schedules.updated_at`
+
+const scheduleSelectColumnsQualified = `SELECT ` + scheduleColumnListQualified
+
+// scheduleSiteStateGuard is the GH #282 non-destructive site-state guard
+// shared by the three scheduler queries (ListDueSchedules,
+// ClaimAndAdvanceDueSchedules, HealOverdueSchedules): a schedule is only DUE
+// when its site is not deliberately unmanaged (archived or revoked) and its
+// tenant has not been soft-deleted (m93). A transiently disconnected/degraded/
+// pending-enrollment site keeps firing its schedule, because a failed backup
+// on those states is still actionable operator signal; only a deliberate
+// archive or revoke should stop the schedule. Requires the caller's FROM
+// clause to include "JOIN sites s ON s.id = backup_schedules.site_id AND
+// s.tenant_id = backup_schedules.tenant_id".
+const scheduleSiteStateGuard = `
+    AND s.connection_state NOT IN ('archived', 'revoked')
+    AND NOT EXISTS (
+        SELECT 1 FROM tenants t
+         WHERE t.id = backup_schedules.tenant_id AND t.deleted_at IS NOT NULL
+    )`
+
+const scheduleSiteJoin = `JOIN sites s ON s.id = backup_schedules.site_id AND s.tenant_id = backup_schedules.tenant_id`
+
 // scanScheduleRow scans a row produced by scheduleSelectColumns into a
 // Schedule. After m50, Track-A and Track-B fields have moved to
 // site_backup_settings and are no longer present on backup_schedules.
@@ -2575,11 +2614,20 @@ func (r *pgRepo) ClaimAndAdvanceDueSchedules(ctx context.Context, now time.Time,
 	var out []Schedule
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		// 1. Lock all due, enabled rows — skip any already locked by a peer.
+		// GH #282: FOR UPDATE OF backup_schedules restricts the row lock to the
+		// backup_schedules rows only. Postgres rejects a bare FOR UPDATE against
+		// a query with an outer/joined table without naming the target relation
+		// once more than one relation is in the FROM list, and even where it
+		// would be accepted, an unqualified FOR UPDATE would also lock the
+		// joined sites row, which is undesired and unnecessary since sites is
+		// read-only here.
 		pgRows, err := tx.Query(ctx,
-			scheduleSelectColumns+` FROM backup_schedules
-			  WHERE enabled = true AND next_run_at <= $1
-			  ORDER BY next_run_at ASC
-			  FOR UPDATE SKIP LOCKED`,
+			scheduleSelectColumnsQualified+` FROM backup_schedules
+			  `+scheduleSiteJoin+`
+			  WHERE backup_schedules.enabled = true AND backup_schedules.next_run_at <= $1
+			  `+scheduleSiteStateGuard+`
+			  ORDER BY backup_schedules.next_run_at ASC
+			  FOR UPDATE OF backup_schedules SKIP LOCKED`,
 			now,
 		)
 		if err != nil {
@@ -2654,8 +2702,10 @@ func (r *pgRepo) HealOverdueSchedules(ctx context.Context, now time.Time, comput
 	var overdueRows []Schedule
 	if err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		pgRows, err := tx.Query(ctx,
-			scheduleSelectColumns+` FROM backup_schedules
-			  WHERE enabled = true AND next_run_at <= $1`,
+			scheduleSelectColumnsQualified+` FROM backup_schedules
+			  `+scheduleSiteJoin+`
+			  WHERE backup_schedules.enabled = true AND backup_schedules.next_run_at <= $1
+			  `+scheduleSiteStateGuard,
 			now,
 		)
 		if err != nil {
