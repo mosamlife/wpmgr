@@ -3,10 +3,16 @@
 Self-host WPMgr with Docker Compose. The stack runs the control plane (Go),
 dashboard (React), and data plane (Postgres, Redis, SeaweedFS, ClickHouse).
 
+> Fastest way in: the one-click installer, no clone needed. See
+> [Quickstart: prebuilt images, no clone](#quickstart-prebuilt-images-no-clone-recommended-for-first-time-installs)
+> below.
+
 ## Prerequisites
 
 - **Docker** 24+ with the Compose plugin (`docker compose`, not `docker-compose`)
-- ~2 GB free RAM for the full stack
+- Minimum ~2 GB RAM (lean, no Media Optimizer); ~8 GB recommended for the full
+  default stack. See [docs/requirements.md](./requirements.md) for the full
+  sizing breakdown by fleet size.
 
 ## 1. Configure env
 
