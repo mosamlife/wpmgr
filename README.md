@@ -16,7 +16,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
   <a href="https://wpmgr.app/docs/">API reference</a>
 </p>
 
-**v0.61.69** — open-source and production-usable for self-hosters.
+**v0.61.84** — open-source and production-usable for self-hosters.
 
 ---
 
@@ -249,16 +249,44 @@ See [docs/architecture.md](./docs/architecture.md) for a full system diagram.
 
 ## Quickstart (self-host)
 
-The bundled compose brings up the full stack — control plane, dashboard, Postgres, Redis, object storage, and the media encoder (screenshots + Media Optimizer) — building all three images from source:
+### One-click install (recommended)
+
+No repo clone needed. This single command downloads every file the stack needs, generates all secrets (session, agent signing, age), and prints the exact command to start WPMgr:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mosamlife/wpmgr/main/scripts/quickstart-selfhost.sh | bash
+```
+
+Options: `--hostname=https://wpmgr.example.com` (sets `WPMGR_PUBLIC_BASE_URL` non-interactively), `--version=vX.Y.Z` (pin a release tag, default `:latest`), `--dir=PATH` (default `./wpmgr`), `--force` (re-download files).
+
+Host requirements: Docker 24+ with the Compose plugin, `curl` or `wget`, and `openssl`.
+
+The script prints the exact command to run next, using the pull-only overlay (prebuilt images, no local build):
+
+```bash
+cd wpmgr
+docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
+curl localhost:8081/healthz   # {"status":"ok"}
+```
+
+Open `http://localhost:8088` in your browser; the first signup creates the owner account.
+
+`WPMGR_S3_ENDPOINT` in the generated `.env` must be reachable by your WordPress hosts, not just the control plane. The default (`http://seaweedfs:8333`) only resolves inside Docker; for remote WordPress sites, point it at a tunnel or public URL.
+
+See [docs/requirements.md](./docs/requirements.md) for CPU, RAM, and disk sizing by fleet size before you provision the host.
+
+### Build from source (clone path)
+
+If you have cloned the repo, the bundled compose brings up the full stack (control plane, dashboard, Postgres, Redis, object storage, and the media encoder for screenshots and the Media Optimizer), building all three images from source:
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum set WPMGR_SESSION_SECRET, WPMGR_DB_PASSWORD, WPMGR_S3_SECRET_KEY
+# Edit .env: at minimum set WPMGR_SESSION_SECRET, WPMGR_DB_PASSWORD, WPMGR_S3_SECRET_KEY
 docker compose -f infra/docker-compose.yml up -d
 curl localhost:8081/healthz   # {"status":"ok"}   (default WPMGR_API_PORT=8081)
 ```
 
-Open `http://localhost:8088` in your browser (the default `WPMGR_WEB_PORT`) — the first signup creates the owner account. After that, anyone can self-register and gains access only after verifying their email.
+Open `http://localhost:8088` in your browser (the default `WPMGR_WEB_PORT`); the first signup creates the owner account. After that, anyone can self-register and gains access only after verifying their email.
 
 The media encoder runs headless Chromium for screenshots, so it adds some RAM/CPU over the api/web images. On a constrained host you can skip it without editing the compose file:
 
@@ -270,18 +298,18 @@ Site screenshot cards then fall back to favicon/monogram and the Media Optimizer
 
 ### Prebuilt container images
 
-The control plane, dashboard, and media encoder are published on GitHub Container Registry as multi-arch (`linux/amd64` + `linux/arm64`) images — wire them into your own compose, Kubernetes, or Swarm for production:
+The control plane, dashboard, and media encoder are published on GitHub Container Registry as multi-arch (`linux/amd64` + `linux/arm64`) images, for wiring into your own compose, Kubernetes, or Swarm setup:
 
 ```bash
-docker pull ghcr.io/mosamlife/wpmgr-api:v0.43.3
-docker pull ghcr.io/mosamlife/wpmgr-web:v0.43.3
-docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.43.3
+docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.84
+docker pull ghcr.io/mosamlife/wpmgr-web:v0.61.84
+docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.61.84
 ```
 
 Or bring up the whole stack from the published images (no local build) with the pull-only Compose overlay:
 
 ```bash
-export WPMGR_VERSION=v0.43.3   # omit to track :latest
+export WPMGR_VERSION=v0.61.84   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
@@ -333,7 +361,7 @@ infra/
   Dockerfile.api · Dockerfile.web · Dockerfile.media-encoder
   postgres/ · seaweedfs/ · nginx/ · dex/ · grafana/
 docs/
-  install.md · agent.md · architecture.md · contributing.md · security.md · api.md · adr/
+  install.md · requirements.md · agent.md · architecture.md · contributing.md · security.md · api.md · adr/
 ```
 
 ---
@@ -371,6 +399,7 @@ See [docs/contributing.md](./docs/contributing.md) for the full dev setup, PR ch
 ## Links
 
 - [Install (self-host)](./docs/install.md)
+- [System requirements](./docs/requirements.md)
 - [WordPress agent](./docs/agent.md)
 - [Architecture](./docs/architecture.md)
 - [API reference](./docs/api.md)
