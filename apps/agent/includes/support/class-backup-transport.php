@@ -307,6 +307,14 @@ class BackupTransport
     /**
      * Decode a CP JSON response, asserting a 2xx status.
      *
+     * GH #279: on a non-2xx status, the thrown message includes the HTTP
+     * status and a truncated (200-char) body excerpt, mirroring
+     * getChunkWithStatus()'s body_excerpt pattern. Covers BOTH
+     * presignChunks() and submitManifest() since both route through here.
+     * The CP error body is a JSON `{error:{code,message}}` object, not a
+     * credential, so surfacing it is safe (contrast with putChunk()/
+     * getChunk(), which never log the presigned URL itself).
+     *
      * @param mixed $response wp_remote_* response or WP_Error.
      * @return array<string,mixed>
      * @throws \RuntimeException On error/non-2xx/invalid JSON.
@@ -317,10 +325,14 @@ class BackupTransport
             throw new \RuntimeException('WPMgr Agent: control plane unreachable.');
         }
         $status = (int) wp_remote_retrieve_response_code($response);
+        $raw    = (string) wp_remote_retrieve_body($response);
         if ($status < 200 || $status >= 300) {
-            throw new \RuntimeException('WPMgr Agent: control plane callback rejected.');
+            throw new \RuntimeException(sprintf( // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
+                'WPMgr Agent: control plane callback rejected (HTTP %s): %s',
+                esc_html((string) $status),
+                esc_html(substr($raw, 0, 200))
+            ));
         }
-        $raw  = (string) wp_remote_retrieve_body($response);
         $data = json_decode($raw, true);
         if (!is_array($data)) {
             throw new \RuntimeException('WPMgr Agent: malformed control plane response.');

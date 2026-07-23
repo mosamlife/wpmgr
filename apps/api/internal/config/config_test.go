@@ -106,6 +106,42 @@ func TestLoadUpdateApplyHTTPTimeoutEnv(t *testing.T) {
 	}
 }
 
+// TestLoadBackupStallDefaults verifies the GH #279 two-tier progress watchdog
+// defaults: a 3m soft threshold and a 30m hard threshold, with hard well
+// above soft (the whole point of a two-tier policy).
+func TestLoadBackupStallDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Backup.StallSoftTimeout; got != 3*time.Minute {
+		t.Fatalf("Backup.StallSoftTimeout = %v, want 3m default", got)
+	}
+	if got := cfg.Backup.StallHardTimeout; got != 30*time.Minute {
+		t.Fatalf("Backup.StallHardTimeout = %v, want 30m default", got)
+	}
+	if cfg.Backup.StallHardTimeout <= cfg.Backup.StallSoftTimeout {
+		t.Fatalf("Backup.StallHardTimeout (%v) must be > StallSoftTimeout (%v)", cfg.Backup.StallHardTimeout, cfg.Backup.StallSoftTimeout)
+	}
+}
+
+// TestLoadBackupStallTimeoutsEnv verifies WPMGR_BACKUP_STALL_SOFT_TIMEOUT and
+// WPMGR_BACKUP_STALL_HARD_TIMEOUT are loaded from the environment when set.
+func TestLoadBackupStallTimeoutsEnv(t *testing.T) {
+	t.Setenv("WPMGR_BACKUP_STALL_SOFT_TIMEOUT", "90s")
+	t.Setenv("WPMGR_BACKUP_STALL_HARD_TIMEOUT", "10m")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Backup.StallSoftTimeout; got != 90*time.Second {
+		t.Fatalf("Backup.StallSoftTimeout = %v, want 90s", got)
+	}
+	if got := cfg.Backup.StallHardTimeout; got != 10*time.Minute {
+		t.Fatalf("Backup.StallHardTimeout = %v, want 10m", got)
+	}
+}
+
 // TestLoadRiverMediaSchemaDefault verifies the media River schema defaults to
 // a dedicated "media_encoder" schema when the env var is unset (GH #205: a
 // shared default schema lets the media-encoder silently steal River

@@ -106,10 +106,19 @@ func (r *wiringRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ in
 func (r *wiringRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
 	panic("unused")
 }
+func (r *wiringRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	panic("unused")
+}
 func (r *wiringRepo) UpdateSnapshotProgress(_ context.Context, _, _ uuid.UUID, _ []byte) (Snapshot, error) {
 	panic("unused")
 }
-func (r *wiringRepo) ListStalledRunningSnapshots(_ context.Context, _ time.Duration) ([]StalledSnapshot, error) {
+func (r *wiringRepo) ListStalledRunningSnapshots(_ context.Context, _, _ time.Duration) ([]StalledSnapshot, error) {
+	panic("unused")
+}
+func (r *wiringRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	panic("unused")
+}
+func (r *wiringRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	panic("unused")
 }
 func (r *wiringRepo) RecordManifest(_ context.Context, _ RecordManifestInput) (int64, int64, error) {

@@ -32,8 +32,9 @@ import { useNow } from "@/lib/use-now";
 
 import { LiveIndicator } from "@/components/shared/live-indicator";
 
-import { buildStepperPhases, formatProgress, isRestorePhase } from "./format-progress";
+import { buildStepperPhases, formatProgress, isRestorePhase, isSnapshotStalled } from "./format-progress";
 import { PhaseStepper } from "./phase-stepper";
+import { StalledHint } from "./stalled-hint";
 import { formatElapsed, useEta, useEtaSamples } from "./use-eta";
 import { useBackupStream } from "./use-backup-stream";
 
@@ -159,6 +160,10 @@ export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot })
               {!fp.isTerminal ? " (live)" : ""}
             </div>
           ) : null}
+
+          {/* GH #279 — calm "taking longer than expected" hint. Only while
+              still running; never for a terminal snapshot. */}
+          {isSnapshotStalled(snapshot) ? <StalledHint /> : null}
 
           {/* Current file (during archiving) or current artifact (during encrypt/upload). */}
           {fp.currentFile ? (

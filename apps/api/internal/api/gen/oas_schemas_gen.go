@@ -9089,14 +9089,19 @@ type BackupSnapshot struct {
 	// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
 	// Phases form a closed set (see backup.allowedProgressPhases on the CP).
 	Progress OptBackupSnapshotProgress `json:"progress"`
-	// Server timestamp of the last progress POST from the runner. Used by the
-	// CP watchdog (>120s without an update on a running snapshot → marked
-	// failed/stalled) and by the frontend to detect a silent runner.
+	// Server timestamp of the last progress POST from the runner. Used by
+	// the CP's two-tier watchdog (soft stall stamps stalled_at below; hard
+	// stall fails the run) and by the frontend to detect a silent runner.
 	ProgressUpdatedAt OptDateTime `json:"progress_updated_at"`
-	StartedAt         OptDateTime `json:"started_at"`
-	FinishedAt        OptDateTime `json:"finished_at"`
-	CreatedAt         time.Time   `json:"created_at"`
-	UpdatedAt         time.Time   `json:"updated_at"`
+	// Set by the CP watchdog when a running backup has gone quiet past the
+	// soft threshold but is not yet failed. Cleared on the next proof of
+	// life (a presign, manifest submit, or progress POST). Drives the
+	// "taking longer than expected" hint; null means healthy.
+	StalledAt  OptDateTime `json:"stalled_at"`
+	StartedAt  OptDateTime `json:"started_at"`
+	FinishedAt OptDateTime `json:"finished_at"`
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
 	// ADR-048 incremental backup. True if this snapshot only stores files
 	// changed since its parent; false for full-base snapshots and all
 	// pre-m44 rows.
@@ -9179,6 +9184,11 @@ func (s *BackupSnapshot) GetProgress() OptBackupSnapshotProgress {
 // GetProgressUpdatedAt returns the value of ProgressUpdatedAt.
 func (s *BackupSnapshot) GetProgressUpdatedAt() OptDateTime {
 	return s.ProgressUpdatedAt
+}
+
+// GetStalledAt returns the value of StalledAt.
+func (s *BackupSnapshot) GetStalledAt() OptDateTime {
+	return s.StalledAt
 }
 
 // GetStartedAt returns the value of StartedAt.
@@ -9294,6 +9304,11 @@ func (s *BackupSnapshot) SetProgress(val OptBackupSnapshotProgress) {
 // SetProgressUpdatedAt sets the value of ProgressUpdatedAt.
 func (s *BackupSnapshot) SetProgressUpdatedAt(val OptDateTime) {
 	s.ProgressUpdatedAt = val
+}
+
+// SetStalledAt sets the value of StalledAt.
+func (s *BackupSnapshot) SetStalledAt(val OptDateTime) {
+	s.StalledAt = val
 }
 
 // SetStartedAt sets the value of StartedAt.
@@ -12495,14 +12510,19 @@ type CreateRestoreAccepted struct {
 	// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
 	// Phases form a closed set (see backup.allowedProgressPhases on the CP).
 	Progress OptCreateRestoreAcceptedProgress `json:"progress"`
-	// Server timestamp of the last progress POST from the runner. Used by the
-	// CP watchdog (>120s without an update on a running snapshot → marked
-	// failed/stalled) and by the frontend to detect a silent runner.
+	// Server timestamp of the last progress POST from the runner. Used by
+	// the CP's two-tier watchdog (soft stall stamps stalled_at below; hard
+	// stall fails the run) and by the frontend to detect a silent runner.
 	ProgressUpdatedAt OptDateTime `json:"progress_updated_at"`
-	StartedAt         OptDateTime `json:"started_at"`
-	FinishedAt        OptDateTime `json:"finished_at"`
-	CreatedAt         time.Time   `json:"created_at"`
-	UpdatedAt         time.Time   `json:"updated_at"`
+	// Set by the CP watchdog when a running backup has gone quiet past the
+	// soft threshold but is not yet failed. Cleared on the next proof of
+	// life (a presign, manifest submit, or progress POST). Drives the
+	// "taking longer than expected" hint; null means healthy.
+	StalledAt  OptDateTime `json:"stalled_at"`
+	StartedAt  OptDateTime `json:"started_at"`
+	FinishedAt OptDateTime `json:"finished_at"`
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
 	// ADR-048 incremental backup. True if this snapshot only stores files
 	// changed since its parent; false for full-base snapshots and all
 	// pre-m44 rows.
@@ -12588,6 +12608,11 @@ func (s *CreateRestoreAccepted) GetProgress() OptCreateRestoreAcceptedProgress {
 // GetProgressUpdatedAt returns the value of ProgressUpdatedAt.
 func (s *CreateRestoreAccepted) GetProgressUpdatedAt() OptDateTime {
 	return s.ProgressUpdatedAt
+}
+
+// GetStalledAt returns the value of StalledAt.
+func (s *CreateRestoreAccepted) GetStalledAt() OptDateTime {
+	return s.StalledAt
 }
 
 // GetStartedAt returns the value of StartedAt.
@@ -12708,6 +12733,11 @@ func (s *CreateRestoreAccepted) SetProgress(val OptCreateRestoreAcceptedProgress
 // SetProgressUpdatedAt sets the value of ProgressUpdatedAt.
 func (s *CreateRestoreAccepted) SetProgressUpdatedAt(val OptDateTime) {
 	s.ProgressUpdatedAt = val
+}
+
+// SetStalledAt sets the value of StalledAt.
+func (s *CreateRestoreAccepted) SetStalledAt(val OptDateTime) {
+	s.StalledAt = val
 }
 
 // SetStartedAt sets the value of StartedAt.

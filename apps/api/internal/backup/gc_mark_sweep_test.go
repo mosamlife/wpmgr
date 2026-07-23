@@ -353,10 +353,19 @@ func (r *gcFakeRepo) CompleteSnapshot(context.Context, uuid.UUID, uuid.UUID, int
 func (r *gcFakeRepo) FailSnapshot(context.Context, uuid.UUID, uuid.UUID, string) (Snapshot, error) {
 	panic("unused")
 }
+func (r *gcFakeRepo) FailStalledSnapshot(context.Context, uuid.UUID, uuid.UUID, string) (int64, error) {
+	panic("unused")
+}
 func (r *gcFakeRepo) UpdateSnapshotProgress(context.Context, uuid.UUID, uuid.UUID, []byte) (Snapshot, error) {
 	panic("unused")
 }
-func (r *gcFakeRepo) ListStalledRunningSnapshots(context.Context, time.Duration) ([]StalledSnapshot, error) {
+func (r *gcFakeRepo) ListStalledRunningSnapshots(context.Context, time.Duration, time.Duration) ([]StalledSnapshot, error) {
+	panic("unused")
+}
+func (r *gcFakeRepo) MarkSnapshotStalled(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	panic("unused")
+}
+func (r *gcFakeRepo) ClearSnapshotStalled(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
 	panic("unused")
 }
 func (r *gcFakeRepo) GetLatestCompletedSnapshot(context.Context, uuid.UUID, uuid.UUID) (Snapshot, error) {

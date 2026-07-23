@@ -15,6 +15,10 @@ overrides:
   # 0.35.0+; Next pulls it as an optional dep for image optimization and its
   # transform API is unchanged across this bump. Verified the marketing build.
   sharp: 0.35.3
+  # postcss <=8.5.11 allows arbitrary file read via a crafted source map
+  # (GHSA-6g55-p6wh-862q). Patched in 8.5.12; Next pulls it transitively and the
+  # patch is a same-major bug fix, so no API change. Verified the marketing build.
+  postcss: 8.5.12
 allowBuilds:
   esbuild: true
   # Puppeteer's postinstall downloads ~100 MB of Chromium. Disabled because
