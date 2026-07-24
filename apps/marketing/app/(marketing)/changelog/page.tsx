@@ -39,6 +39,17 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.88",
+    date: "2026-07-24",
+    summary: "Choose which account one-click wp-admin login uses, per site.",
+    items: [
+      {
+        tag: "Added",
+        text: "A per-site default account for one-click sign in (GH #286). On a site with several administrators, one-click login used to land on whichever admin had the lowest user ID, which was opaque and hard to audit. You can now pick the default account in Site settings under Access, or set it while logging in as a specific user, and the wp-admin button shows which account it will use. Leaving it blank keeps the previous behavior of signing in as the first administrator. The audit trail now records the actual account used, and existing site agents honor the setting with no update.",
+      },
+    ],
+  },
+  {
     version: "0.61.87",
     date: "2026-07-24",
     summary: "Backup reliability improvements for large sites and slow servers.",
