@@ -5,6 +5,9 @@ import { SiteComponentsTable } from "@/features/sites/site-components-table";
 import { countUpToDate } from "@/features/sites/site-components-helpers";
 import { SiteTagsEditor } from "@/features/sites/site-tags-editor";
 import { AutoLoginButton } from "@/features/sites/auto-login-button";
+import { AutologinPolicyPanel } from "@/features/sites/autologin-policy-panel";
+import { canAutoLogin } from "@/features/sites/use-autologin";
+import { useSaveDefaultLoginUser } from "@/features/sites/use-autologin-policy";
 import { LoginBrandPanel } from "@/features/sites/login-brand-panel";
 import { useSite } from "@/features/sites/use-sites";
 import { useMe, canOperate } from "@/features/auth/use-auth";
@@ -27,6 +30,7 @@ function SettingsTab() {
   const { data: site, isPending } = useSite(siteId);
   const { data: me } = useMe();
   const operate = canOperate(me);
+  const canLoginAs = canAutoLogin(me);
 
   if (isPending || !site) {
     return (
@@ -49,7 +53,7 @@ function SettingsTab() {
       >
         Settings
       </h2>
-      <SettingsCard site={site} canEditTags={operate} />
+      <SettingsCard site={site} canEditTags={operate} canLoginAs={canLoginAs} />
     </section>
   );
 }
@@ -57,10 +61,18 @@ function SettingsTab() {
 function SettingsCard({
   site,
   canEditTags,
+  canLoginAs,
 }: {
   site: Site;
   canEditTags: boolean;
+  canLoginAs: boolean;
 }) {
+  // GH #286: shared fetch for this tab's AutoLoginButton. The site-detail
+  // header calls the same hook (same query key), so this is one network
+  // round trip shared across both surfaces, not two.
+  const { policy: autologinPolicy, save: saveDefaultLoginUser } =
+    useSaveDefaultLoginUser(site.id, { enabled: canLoginAs });
+
   return (
     <div className="rounded-lg border border-border bg-card">
       <div className="space-y-1 p-6">
@@ -129,13 +141,24 @@ function SettingsCard({
         />
       </div>
       <hr className="border-border" aria-hidden="true" />
-      <div className="space-y-3 p-6">
-        <h3 className="text-sm font-semibold text-foreground">Access</h3>
-        <p className="text-xs text-muted-foreground">
-          One-click sign in into wp-admin as an existing administrator. Logs the
-          action to the audit trail.
-        </p>
-        <AutoLoginButton siteId={site.id} siteName={site.name} />
+      <div className="space-y-4 p-6">
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold text-foreground">Access</h3>
+          <p className="text-xs text-muted-foreground">
+            One-click sign in to wp-admin as the default login user configured
+            below, or the first administrator when none is set. Logged to the
+            audit trail.
+          </p>
+          <AutoLoginButton
+            siteId={site.id}
+            siteName={site.name}
+            defaultLoginUser={autologinPolicy.data?.default_wp_user_login}
+            onSaveDefaultUser={
+              autologinPolicy.data ? saveDefaultLoginUser : undefined
+            }
+          />
+        </div>
+        <AutologinPolicyPanel siteId={site.id} />
       </div>
       <hr className="border-border" aria-hidden="true" />
       <div className="space-y-3 p-6">

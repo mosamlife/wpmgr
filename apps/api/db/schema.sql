@@ -1704,6 +1704,11 @@ CREATE TABLE autologin_policies (
     allowed_wp_roles        text[]      NOT NULL DEFAULT ARRAY['administrator'],
     require_2fa_step_up     boolean     NOT NULL DEFAULT false,
     max_session_age_minutes integer     NOT NULL DEFAULT 30,
+    -- default_wp_user_login (m105 / GH #286): the per-site default WP login the
+    -- mint path injects when the operator's request omits target_wp_user_login.
+    -- Empty string preserves the pre-existing "agent picks the first admin"
+    -- fallback.
+    default_wp_user_login   text        NOT NULL DEFAULT '',
     updated_at              timestamptz NOT NULL DEFAULT now()
 );
 

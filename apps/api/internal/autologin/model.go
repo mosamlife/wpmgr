@@ -101,7 +101,12 @@ type Policy struct {
 	AllowedWPRoles       []string
 	Require2FAStepUp     bool
 	MaxSessionAgeMinutes int32
-	UpdatedAt            time.Time
+	// DefaultWPUserLogin (m105 / GH #286) is the per-site default WP login the
+	// mint path injects when the operator's request omits target_wp_user_login.
+	// Empty string preserves the pre-existing "agent picks the first admin"
+	// fallback. Writable ONLY via the /autologin-policy PUT endpoint.
+	DefaultWPUserLogin string
+	UpdatedAt          time.Time
 }
 
 // DefaultAllowedWPRoles is the policy default when no policy row exists.

@@ -2473,6 +2473,45 @@ export type AutologinConsumeResponse = {
   audit_id: string;
 };
 
+export type SiteAutologinPolicy = {
+  /**
+   * Whether one-click login is allowed for this site.
+   */
+  enabled: boolean;
+  /**
+   * The WordPress login the mint endpoint injects when an operator's
+   * mint request omits `target_wp_user_login`. Empty means the agent
+   * picks the first administrator (the pre-existing fallback).
+   *
+   */
+  default_wp_user_login: string;
+  /**
+   * READ-ONLY. The WP roles the agent is permitted to log the
+   * operator in as. Not writable via the PUT body; the ceiling can
+   * only be changed by a manual database operation.
+   *
+   */
+  allowed_wp_roles: Array<string>;
+  /**
+   * When the policy was last saved. Absent for the built-in default.
+   */
+  updated_at?: string;
+};
+
+export type SiteAutologinPolicyUpdate = {
+  /**
+   * Whether one-click login is allowed for this site.
+   */
+  enabled: boolean;
+  /**
+   * The WordPress login the mint endpoint injects when an operator's
+   * mint request omits `target_wp_user_login`, or `""` to clear the
+   * default and revert to the agent's first-administrator fallback.
+   *
+   */
+  default_wp_user_login: string;
+};
+
 export type SiteDiagnosticsCard = {
   /**
    * One of: identity, php, mysql, filesystem, http, cron, themes,
@@ -11432,6 +11471,83 @@ export type CreateAutologinResponses = {
 
 export type CreateAutologinResponse =
   CreateAutologinResponses[keyof CreateAutologinResponses];
+
+export type GetSiteAutologinPolicyData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/autologin-policy";
+};
+
+export type GetSiteAutologinPolicyErrors = {
+  /**
+   * RBAC denied (`insufficient_permission`).
+   */
+  403: Error;
+  /**
+   * Site not found, or `siteId` does not belong to the caller's
+   * tenant (`site_not_found`).
+   *
+   */
+  404: Error;
+};
+
+export type GetSiteAutologinPolicyError =
+  GetSiteAutologinPolicyErrors[keyof GetSiteAutologinPolicyErrors];
+
+export type GetSiteAutologinPolicyResponses = {
+  /**
+   * Current autologin policy
+   */
+  200: SiteAutologinPolicy;
+};
+
+export type GetSiteAutologinPolicyResponse =
+  GetSiteAutologinPolicyResponses[keyof GetSiteAutologinPolicyResponses];
+
+export type PutSiteAutologinPolicyData = {
+  body: SiteAutologinPolicyUpdate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/autologin-policy";
+};
+
+export type PutSiteAutologinPolicyErrors = {
+  /**
+   * RBAC denied (`insufficient_permission`).
+   */
+  403: Error;
+  /**
+   * Site not found, or `siteId` does not belong to the caller's
+   * tenant (`site_not_found`).
+   *
+   */
+  404: Error;
+  /**
+   * Validation failed (`default_wp_user_login_too_long`,
+   * `default_wp_user_login_invalid`, or an unknown field such as
+   * `allowed_wp_roles`).
+   *
+   */
+  422: Error;
+};
+
+export type PutSiteAutologinPolicyError =
+  PutSiteAutologinPolicyErrors[keyof PutSiteAutologinPolicyErrors];
+
+export type PutSiteAutologinPolicyResponses = {
+  /**
+   * Stored autologin policy
+   */
+  200: SiteAutologinPolicy;
+};
+
+export type PutSiteAutologinPolicyResponse =
+  PutSiteAutologinPolicyResponses[keyof PutSiteAutologinPolicyResponses];
 
 export type AgentAutologinConsumeData = {
   body: AutologinConsumeRequest;

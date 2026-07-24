@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -117,6 +118,16 @@ func (s *Service) Mint(ctx context.Context, req MintRequest) (Token, error) {
 	if err != nil {
 		return Token{}, s.failMint(ctx, req, "", err)
 	}
+	// GH #286: inject the per-site default WP login when the operator's
+	// request omits target_wp_user_login. An explicit picker choice always
+	// overrides the stored default. Because audit + token persistence read
+	// req.TargetWPUser downstream, the audit rows (autologin.requested and
+	// .consumed) automatically carry the real username instead of an opaque
+	// "first administrator" gap. An empty stored default is a no-op: the
+	// agent's pre-existing "first administrator" fallback is unchanged.
+	if req.TargetWPUser == "" {
+		req.TargetWPUser = policy.DefaultWPUserLogin
+	}
 	if !policy.Enabled {
 		return Token{}, s.failMint(ctx, req, "", domain.Forbidden("policy_disabled", "autologin is disabled for this site by policy"))
 	}
@@ -198,6 +209,103 @@ func (s *Service) Mint(ctx context.Context, req MintRequest) (Token, error) {
 		RedirectURL: redirectURL,
 		ExpiresAt:   expiresAt,
 	}, nil
+}
+
+// maxDefaultWPUserLoginLen mirrors WordPress's users.user_login column
+// (varchar(60)).
+const maxDefaultWPUserLoginLen = 60
+
+// defaultWPUserLoginPattern is the allowed charset for a WP login: letters,
+// digits, underscore, period, hyphen, and @ (WordPress usernames may be an
+// email address). Matches the picker's own client-side pattern.
+var defaultWPUserLoginPattern = regexp.MustCompile(`^[a-zA-Z0-9_.\-@]*$`)
+
+// PolicyInput is the validated PUT /autologin-policy input (GH #286).
+// AllowedWPRoles is intentionally absent: it is read-only via this API, and
+// the role ceiling can only be changed by a manual DB operation.
+type PolicyInput struct {
+	Enabled            bool
+	DefaultWPUserLogin string
+}
+
+// resolveSiteInTenant resolves siteID within tenantID the same way Mint does
+// (via SiteLookup), returning the same 404 site_not_found domain error Mint
+// returns on a miss. GetPolicy and UpdatePolicy MUST call this before
+// touching autologin_policies: that table's PK is site_id alone, and its RLS
+// WITH CHECK only validates tenant_id == app.tenant_id, it never validates
+// that site_id actually belongs to tenant_id. RequireSiteAccess is also a
+// no-op for org-scoped admins. Without this check, an org admin of tenant A
+// calling GET/PUT with another tenant's site UUID would create or overwrite
+// a phantom (siteB, tenantA) policy row keyed on siteB's PK, breaking tenant
+// B's own GetOrCreatePolicy/mint (the ON CONFLICT ... WHERE tenant_id guard
+// no longer matches), a cross-tenant write turned DoS.
+func (s *Service) resolveSiteInTenant(ctx context.Context, tenantID, siteID uuid.UUID) error {
+	_, ok, err := s.sites.GetSiteForAutologin(ctx, tenantID, siteID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return domain.NotFound("site_not_found", "site not found")
+	}
+	return nil
+}
+
+// GetPolicy returns the per-site autologin policy, auto-creating the default
+// row on first read (mirrors the mint path's GetOrCreatePolicy so GET and the
+// mint flow never disagree about what "no policy yet" means). The site is
+// resolved within the caller's tenant first (see resolveSiteInTenant).
+func (s *Service) GetPolicy(ctx context.Context, tenantID, siteID uuid.UUID) (Policy, error) {
+	if err := s.resolveSiteInTenant(ctx, tenantID, siteID); err != nil {
+		return Policy{}, err
+	}
+	return s.repo.GetOrCreatePolicy(ctx, tenantID, siteID)
+}
+
+// UpdatePolicy validates and persists {enabled, default_wp_user_login} for a
+// site's autologin policy (GH #286), seeding the other columns' table
+// defaults when no row exists yet. allowed_wp_roles is never written by this
+// path. Records audit.autologin.policy_updated on success. The site is
+// resolved within the caller's tenant first (see resolveSiteInTenant).
+func (s *Service) UpdatePolicy(ctx context.Context, tenantID, siteID uuid.UUID, actor domain.Principal, in PolicyInput) (Policy, error) {
+	if err := s.resolveSiteInTenant(ctx, tenantID, siteID); err != nil {
+		return Policy{}, err
+	}
+
+	login := strings.TrimSpace(in.DefaultWPUserLogin)
+	if len(login) > maxDefaultWPUserLoginLen {
+		return Policy{}, domain.Validation("default_wp_user_login_too_long",
+			fmt.Sprintf("default_wp_user_login must be at most %d characters", maxDefaultWPUserLoginLen))
+	}
+	if !defaultWPUserLoginPattern.MatchString(login) {
+		return Policy{}, domain.Validation("default_wp_user_login_invalid",
+			"default_wp_user_login may contain only letters, numbers, and the characters _ . - @")
+	}
+
+	saved, err := s.repo.UpdatePolicySettings(ctx, tenantID, siteID, in.Enabled, login)
+	if err != nil {
+		return Policy{}, err
+	}
+
+	if s.rec != nil {
+		actorType := audit.ActorUser
+		if actor.Type == domain.PrincipalAPIKey {
+			actorType = audit.ActorAPIKey
+		}
+		_, _ = s.rec.Record(ctx, audit.Event{
+			TenantID:   tenantID,
+			ActorType:  actorType,
+			ActorID:    actor.ActorID(),
+			Action:     audit.ActionAutologinPolicyUpdated,
+			TargetType: "site",
+			TargetID:   siteID.String(),
+			Metadata: map[string]any{
+				"enabled":               saved.Enabled,
+				"default_wp_user_login": saved.DefaultWPUserLogin,
+			},
+		})
+	}
+
+	return saved, nil
 }
 
 // Consume executes the agent-facing consume callback. agentSiteID is the

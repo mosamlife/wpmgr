@@ -78,12 +78,13 @@ type Deps struct {
 	// endpoint (manifest fetcher / CP-side legacy cache / River enqueuer). Any
 	// field may be nil — the handler degrades to a 503 pointing at the missing
 	// tier, so a partial rollout is observable rather than a 404 mystery.
-	InspectionDeps  backup.InspectionDeps
-	UptimeH         *uptime.Handler
-	AutologinH      *autologin.MintHandler
-	AutologinAgentH *autologin.AgentHandler
-	AgentAuth       *agent.Authenticator
-	AgentH          *agent.Handler
+	InspectionDeps   backup.InspectionDeps
+	UptimeH          *uptime.Handler
+	AutologinH       *autologin.MintHandler
+	AutologinPolicyH *autologin.PolicyHandler
+	AutologinAgentH  *autologin.AgentHandler
+	AgentAuth        *agent.Authenticator
+	AgentH           *agent.Handler
 	// UpdateAgentH serves the ADR-042 CP-driven self-update manifest at
 	// GET /agent/v1/update/manifest. nil ⇒ the route is not mounted (object
 	// storage or the signing key is unconfigured). Distinct from UpdateH, the
@@ -471,6 +472,9 @@ func New(deps Deps) *Server {
 	}
 	if deps.AutologinH != nil {
 		deps.AutologinH.Register(v1)
+	}
+	if deps.AutologinPolicyH != nil {
+		deps.AutologinPolicyH.Register(v1)
 	}
 	// ADR-037 Sprint 2 — operator-facing site Health + Errors routes.
 	if deps.DiagnosticsH != nil {

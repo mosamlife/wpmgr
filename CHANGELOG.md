@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.88] - 2026-07-24
+
+### Added
+
+- Per-site default "Login As User" account for one-click sign in (GH #286). You can now choose, per site, which account one-click wp-admin login uses, so a site with several administrators always signs you in as the account you picked instead of whichever administrator happens to have the lowest user ID. Set it in Site settings under Access, or check "Make this the default for this site" when you log in as a specific user. The default applies whenever you sign in without picking a user, and the site's wp-admin button now shows which account it will use. Leaving the default blank keeps the previous behavior of signing in as the first administrator. The autologin audit trail now records the actual account used, including for the default flow. This is a control-plane and dashboard change only; existing agents honor it with no update.
+
 ## [0.61.87] - 2026-07-24
 
 ### Fixed

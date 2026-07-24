@@ -100,6 +100,23 @@ func (r *fakeRepo) GetPolicyForAgent(_ context.Context, siteID uuid.UUID) (Polic
 	return p, ok, nil
 }
 
+// UpdatePolicySettings mirrors the real UpdateAutologinPolicySettings query:
+// upserts {enabled, default_wp_user_login}, seeding AllowedWPRoles/
+// MaxSessionAgeMinutes defaults on first write, and never touching
+// AllowedWPRoles on an existing row.
+func (r *fakeRepo) UpdatePolicySettings(_ context.Context, tenantID, siteID uuid.UUID, enabled bool, defaultWPUserLogin string) (Policy, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.policies[siteID]
+	if !ok {
+		p = Policy{SiteID: siteID, TenantID: tenantID, AllowedWPRoles: DefaultAllowedWPRoles, MaxSessionAgeMinutes: 30}
+	}
+	p.Enabled = enabled
+	p.DefaultWPUserLogin = defaultWPUserLogin
+	r.policies[siteID] = p
+	return p, nil
+}
+
 // fakeStore mimics Redis with no TTL handling — enough to assert the
 // Redis-hit and Redis-miss code paths in service.Consume.
 type fakeStore struct {

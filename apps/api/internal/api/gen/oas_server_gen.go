@@ -1552,6 +1552,21 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteAutologinPolicy implements getSiteAutologinPolicy operation.
+	//
+	// Returns the per-site autologin policy (GH #286), auto-creating the
+	// default row on first read when none exists yet (mirrors the mint
+	// endpoint's own auto-create behaviour, so GET and mint never disagree
+	// about what "no policy yet" means).
+	// `allowed_wp_roles` is READ-ONLY and informational; it is reported
+	// here but is never accepted on the PUT body. The role ceiling can only
+	// be widened by a manual database operation.
+	// Authorization: requires the `site:autologin` permission (owner+admin,
+	// the same floor as minting a login URL). Operator and viewer roles are
+	// denied.
+	//
+	// GET /api/v1/sites/{siteId}/autologin-policy
+	GetSiteAutologinPolicy(ctx context.Context, params GetSiteAutologinPolicyParams) (GetSiteAutologinPolicyRes, error)
 	// GetSiteAvailableUpdates implements getSiteAvailableUpdates operation.
 	//
 	// Returns the cached list of plugins/themes (and core) that have an update
@@ -2413,6 +2428,29 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/perf/config
 	PutPerfConfig(ctx context.Context, req *PerfConfig, params PutPerfConfigParams) (PutPerfConfigRes, error)
+	// PutSiteAutologinPolicy implements putSiteAutologinPolicy operation.
+	//
+	// Stores `{enabled, default_wp_user_login}` for the site (GH #286).
+	// `default_wp_user_login` is the WordPress login the mint endpoint
+	// injects when an operator's mint request omits `target_wp_user_login`;
+	// an explicit choice on mint always overrides it. An empty string
+	// clears the default, reverting to the agent's built-in "first
+	// administrator" fallback.
+	// `allowed_wp_roles` is NOT accepted on this body; it is read-only via
+	// the API. Unknown fields (including an attempt to send
+	// `allowed_wp_roles`) are rejected with 422 rather than silently
+	// ignored.
+	// **Validation**:
+	// - `default_wp_user_login` must be at most 60 characters (WordPress's
+	// `users.user_login` column is `varchar(60)`).
+	// - `default_wp_user_login` may contain only letters, numbers, and
+	// the characters `_ . - @` (WordPress usernames may be an email
+	// address).
+	// Authorization: requires the `site:autologin` permission (owner+admin).
+	// Operator and viewer roles are explicitly denied.
+	//
+	// PUT /api/v1/sites/{siteId}/autologin-policy
+	PutSiteAutologinPolicy(ctx context.Context, req *SiteAutologinPolicyUpdate, params PutSiteAutologinPolicyParams) (PutSiteAutologinPolicyRes, error)
 	// PutSiteEmailConfig implements putSiteEmailConfig operation.
 	//
 	// Creates or updates the per-site email configuration. Provide `secret` in
