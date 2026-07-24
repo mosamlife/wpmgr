@@ -139,12 +139,13 @@ func (l *backupSiteLookup) GetBackupSiteInfo(ctx context.Context, tenantID, site
 		return backup.SiteInfo{}, err
 	}
 	return backup.SiteInfo{
-		ID:           s.ID,
-		URL:          s.URL,
-		Enrolled:     s.EnrolledAt != nil,
-		AgeRecipient: s.AgeRecipient,
-		WpTimezone:   s.WpTimezone,
-		WpGmtOffset:  s.WpGmtOffset,
+		ID:              s.ID,
+		URL:             s.URL,
+		Enrolled:        s.EnrolledAt != nil,
+		AgeRecipient:    s.AgeRecipient,
+		WpTimezone:      s.WpTimezone,
+		WpGmtOffset:     s.WpGmtOffset,
+		ConnectionState: string(s.ConnectionState),
 	}, nil
 }
 

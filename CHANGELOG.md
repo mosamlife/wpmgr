@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.86] - 2026-07-24
+
+### Fixed
+
+- Archiving a site now stops its scheduled backups (GH #282). Previously the backup scheduler looked only at the schedule row, so a site that had been disconnected and archived kept firing its nightly backup, which then failed because the site is no longer managed and sent a misleading "backup failed" email. The scheduler now skips schedules for archived or revoked sites (and for organizations that have been deleted), while still attempting and alerting for sites that are only temporarily unreachable, since that failure is actionable. A failed backup for an archived or revoked site no longer sends an email, and a manual backup on such a site is refused with a clear message. Restoring a site resumes its schedule automatically on the next scheduler tick.
+
 ## [0.61.85] - 2026-07-23
 
 ### Fixed
