@@ -258,6 +258,94 @@ final class TaskRunnerTest extends TestCase
     }
 
     /**
+     * GH #283 follow-up: saveTaskState() must return true only when the
+     * write genuinely reached durable storage. A successful $wpdb->update()
+     * is the durable case.
+     */
+    public function test_save_task_state_returns_true_on_durable_persist(): void
+    {
+        $wpdb = new CapturingWpdb();
+        $GLOBALS['wpdb'] = $wpdb;
+
+        try {
+            $runner     = $this->buildRunner(TaskRunner::KIND_FULL);
+            $reflection = new ReflectionClass(TaskRunner::class);
+            $save       = $reflection->getMethod('saveTaskState');
+            $result     = $save->invoke($runner, TaskRunner::PHASE_ENCRYPTING_UPLOADING, ['upload' => ['uploaded_hashes' => ['abc']]]);
+
+            $this->assertTrue($result, 'a successful DB write must report true, not just "did not throw"');
+        } finally {
+            unset($GLOBALS['wpdb']);
+        }
+    }
+
+    /**
+     * GH #283 follow-up: saveTaskState() has three silent no-op paths that
+     * persist nothing and return normally, with nothing to throw. Each one
+     * must now report false so a caller relying on "did this throw" alone
+     * (the old bug) can instead check the return value.
+     */
+    public function test_save_task_state_returns_false_when_wpdb_missing(): void
+    {
+        unset($GLOBALS['wpdb']);
+
+        $runner     = $this->buildRunner(TaskRunner::KIND_FULL);
+        $reflection = new ReflectionClass(TaskRunner::class);
+        $save       = $reflection->getMethod('saveTaskState');
+        $result     = $save->invoke($runner, TaskRunner::PHASE_ENCRYPTING_UPLOADING, ['upload' => ['uploaded_hashes' => ['abc']]]);
+
+        $this->assertFalse($result, 'no $wpdb at all is a silent no-op and must report false, not just "did not throw"');
+    }
+
+    /**
+     * See test_save_task_state_returns_false_when_wpdb_missing for context.
+     * This covers the second silent path: $wpdb is present but the table
+     * name cannot be resolved (an empty prefix).
+     */
+    public function test_save_task_state_returns_false_when_table_name_unresolvable(): void
+    {
+        $wpdb = new CapturingWpdb();
+        $wpdb->prefix = '';
+        $GLOBALS['wpdb'] = $wpdb;
+
+        try {
+            $runner     = $this->buildRunner(TaskRunner::KIND_FULL);
+            $reflection = new ReflectionClass(TaskRunner::class);
+            $save       = $reflection->getMethod('saveTaskState');
+            $result     = $save->invoke($runner, TaskRunner::PHASE_ENCRYPTING_UPLOADING, ['upload' => ['uploaded_hashes' => ['abc']]]);
+
+            $this->assertFalse($result, 'an unresolvable table name is a silent no-op and must report false, not just "did not throw"');
+        } finally {
+            unset($GLOBALS['wpdb']);
+        }
+    }
+
+    /**
+     * See test_save_task_state_returns_false_when_wpdb_missing for context.
+     * This covers the third silent path: json_encode() itself fails
+     * (malformed UTF8 bytes in sub_state, which json_encode rejects by
+     * default with no flags to coerce or escape it).
+     */
+    public function test_save_task_state_returns_false_when_json_encode_fails(): void
+    {
+        $wpdb = new CapturingWpdb();
+        $GLOBALS['wpdb'] = $wpdb;
+
+        try {
+            $runner     = $this->buildRunner(TaskRunner::KIND_FULL);
+            $reflection = new ReflectionClass(TaskRunner::class);
+            $save       = $reflection->getMethod('saveTaskState');
+            // "\xB1\x31" is not valid UTF8, so json_encode() returns false.
+            $result = $save->invoke($runner, TaskRunner::PHASE_ENCRYPTING_UPLOADING, ['bad' => "\xB1\x31"]);
+
+            $this->assertFalse($result, 'a json_encode failure is a silent no-op and must report false, not just "did not throw"');
+            $this->assertNull($wpdb->lastSubState, 'nothing should have reached the DB update call');
+        } finally {
+            unset($GLOBALS['wpdb']);
+        }
+    }
+
+    /**
      * Build a TaskRunner with a minimal, syntactically-valid params payload.
      * We never actually touch the network/disk in these tests — the
      * reflection-driven asserts target pure transition helpers.
