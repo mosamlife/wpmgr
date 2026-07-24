@@ -1952,6 +1952,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// pool still constructs but every Set/GETDEL no-ops -> the service falls
 	// back to the durable PG single-shot consume on every callback.
 	var autologinH *autologin.MintHandler
+	var autologinPolicyH *autologin.PolicyHandler
 	var autologinAgentH *autologin.AgentHandler
 	{
 		var signer autologin.Signer
@@ -1983,6 +1984,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			autologin.Config{Require2FAStepUp: cfg.Autologin.Require2FAStepUp},
 		)
 		autologinH = autologin.NewMintHandler(autologinSvc)
+		autologinPolicyH = autologin.NewPolicyHandler(autologinSvc)
 		autologinAgentH = autologin.NewAgentHandler(autologinSvc)
 	}
 
@@ -2272,30 +2274,31 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	filesH := files.NewHandler(filesSvc, auditRec)
 
 	srv := server.New(server.Deps{
-		Config:          cfg,
-		Logger:          logger,
-		Pool:            pool,
-		Sessions:        sessions,
-		Auth:            authn,
-		AuthH:           authH,
-		MembersH:        auth.NewMembersHandler(authSvc, invitationSvc),
-		APIKeyH:         apikey.NewHandler(apiKeySvc, auditRec),
-		AuditH:          audit.NewHandler(auditRec),
-		TenantH:         tenant.NewHandler(tenantSvc, auditRec),
-		SiteH:           siteH,
-		SiteEventsH:     siteEventsH,
-		FilesH:          filesH,
-		UpdateH:         updateH,
-		BackupH:         backupH,
-		BackupAgentH:    backupAgentH,
-		InspectionDeps:  inspectionDeps,
-		UptimeH:         uptimeH,
-		AutologinH:      autologinH,
-		AutologinAgentH: autologinAgentH,
-		AgentAuth:       agentAuthn,
-		AgentH:          agentH,
-		UpdateAgentH:    updateAgentH,
-		SiteDestH:       siteDestH,
+		Config:           cfg,
+		Logger:           logger,
+		Pool:             pool,
+		Sessions:         sessions,
+		Auth:             authn,
+		AuthH:            authH,
+		MembersH:         auth.NewMembersHandler(authSvc, invitationSvc),
+		APIKeyH:          apikey.NewHandler(apiKeySvc, auditRec),
+		AuditH:           audit.NewHandler(auditRec),
+		TenantH:          tenant.NewHandler(tenantSvc, auditRec),
+		SiteH:            siteH,
+		SiteEventsH:      siteEventsH,
+		FilesH:           filesH,
+		UpdateH:          updateH,
+		BackupH:          backupH,
+		BackupAgentH:     backupAgentH,
+		InspectionDeps:   inspectionDeps,
+		UptimeH:          uptimeH,
+		AutologinH:       autologinH,
+		AutologinPolicyH: autologinPolicyH,
+		AutologinAgentH:  autologinAgentH,
+		AgentAuth:        agentAuthn,
+		AgentH:           agentH,
+		UpdateAgentH:     updateAgentH,
+		SiteDestH:        siteDestH,
 		// ADR-045 — instance SMTP settings.
 		SettingsH: smtpSettingsH,
 		// ADR-037 Sprint 2 wiring.

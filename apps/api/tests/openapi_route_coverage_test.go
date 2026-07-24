@@ -319,6 +319,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	uptimeH := uptime.NewHandler(uptimeSvc, auditRec)
 	autologinSvc := autologin.NewService(autologin.NewRepo(pool), nil, nil, nil, nil, nil, clock, autologin.Config{})
 	autologinH := autologin.NewMintHandler(autologinSvc)
+	autologinPolicyH := autologin.NewPolicyHandler(autologinSvc)
 	autologinAgentH := autologin.NewAgentHandler(autologinSvc)
 
 	// --- media optimizer -----------------------------------------------------
@@ -399,6 +400,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		InspectionDeps:         inspectionDeps,
 		UptimeH:                uptimeH,
 		AutologinH:             autologinH,
+		AutologinPolicyH:       autologinPolicyH,
 		AutologinAgentH:        autologinAgentH,
 		AgentAuth:              agentAuthn,
 		AgentH:                 agentH,

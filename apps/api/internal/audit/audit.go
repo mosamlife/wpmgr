@@ -95,6 +95,10 @@ const (
 	// fields: nonce_id (may be ""), site_id (may be uuid.Nil string), code (the
 	// domain error code), stage ("mint"|"consume").
 	ActionAutologinFailed = "autologin.failed"
+	// ActionAutologinPolicyUpdated is recorded on a successful PUT
+	// /autologin-policy (GH #286). Metadata fields: enabled (bool),
+	// default_wp_user_login (string, may be "").
+	ActionAutologinPolicyUpdated = "autologin.policy_updated"
 
 	// Media Optimizer (ADR-043 §6). The destructive delete-originals consent is
 	// recorded with ActorUser + the actor id so the hash chain attributes it.

@@ -98,6 +98,9 @@ export {
   // login whitelabel (M14)
   getSiteLoginBrand,
   putSiteLoginBrand,
+  // autologin default user policy (GH #286)
+  getSiteAutologinPolicy,
+  putSiteAutologinPolicy,
   // performance suite (ADR-046 / m36)
   getPerfConfig,
   putPerfConfig,
@@ -434,6 +437,13 @@ export type {
   GetSiteLoginBrandResponse,
   PutSiteLoginBrandData,
   PutSiteLoginBrandResponse,
+  // autologin default user policy (GH #286)
+  SiteAutologinPolicy,
+  SiteAutologinPolicyUpdate,
+  GetSiteAutologinPolicyData,
+  GetSiteAutologinPolicyResponse,
+  PutSiteAutologinPolicyData,
+  PutSiteAutologinPolicyResponse,
   // performance suite (ADR-046 / m36)
   PerfConfig,
   CdnCredentials,

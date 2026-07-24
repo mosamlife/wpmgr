@@ -20294,6 +20294,14 @@ type GetScheduleRunNotFound Error
 
 func (*GetScheduleRunNotFound) getScheduleRunRes() {}
 
+type GetSiteAutologinPolicyForbidden Error
+
+func (*GetSiteAutologinPolicyForbidden) getSiteAutologinPolicyRes() {}
+
+type GetSiteAutologinPolicyNotFound Error
+
+func (*GetSiteAutologinPolicyNotFound) getSiteAutologinPolicyRes() {}
+
 type GetSiteDestinationNotFound Error
 
 func (*GetSiteDestinationNotFound) getSiteDestinationRes() {}
@@ -35758,6 +35766,18 @@ type PutOrgEmailWebhookConfigUnauthorized Error
 
 func (*PutOrgEmailWebhookConfigUnauthorized) putOrgEmailWebhookConfigRes() {}
 
+type PutSiteAutologinPolicyForbidden Error
+
+func (*PutSiteAutologinPolicyForbidden) putSiteAutologinPolicyRes() {}
+
+type PutSiteAutologinPolicyNotFound Error
+
+func (*PutSiteAutologinPolicyNotFound) putSiteAutologinPolicyRes() {}
+
+type PutSiteAutologinPolicyUnprocessableEntity Error
+
+func (*PutSiteAutologinPolicyUnprocessableEntity) putSiteAutologinPolicyRes() {}
+
 type PutSiteEmailConfigBadRequest Error
 
 func (*PutSiteEmailConfigBadRequest) putSiteEmailConfigRes() {}
@@ -40645,6 +40665,95 @@ func (s *SiteActivityList) SetItems(val []SiteActivityEvent) {
 // SetNextCursor sets the value of NextCursor.
 func (s *SiteActivityList) SetNextCursor(val OptString) {
 	s.NextCursor = val
+}
+
+// Ref: #/components/schemas/SiteAutologinPolicy
+type SiteAutologinPolicy struct {
+	// Whether one-click login is allowed for this site.
+	Enabled bool `json:"enabled"`
+	// The WordPress login the mint endpoint injects when an operator's
+	// mint request omits `target_wp_user_login`. Empty means the agent
+	// picks the first administrator (the pre-existing fallback).
+	DefaultWpUserLogin string `json:"default_wp_user_login"`
+	// READ-ONLY. The WP roles the agent is permitted to log the
+	// operator in as. Not writable via the PUT body; the ceiling can
+	// only be changed by a manual database operation.
+	AllowedWpRoles []string `json:"allowed_wp_roles"`
+	// When the policy was last saved. Absent for the built-in default.
+	UpdatedAt OptDateTime `json:"updated_at"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *SiteAutologinPolicy) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetDefaultWpUserLogin returns the value of DefaultWpUserLogin.
+func (s *SiteAutologinPolicy) GetDefaultWpUserLogin() string {
+	return s.DefaultWpUserLogin
+}
+
+// GetAllowedWpRoles returns the value of AllowedWpRoles.
+func (s *SiteAutologinPolicy) GetAllowedWpRoles() []string {
+	return s.AllowedWpRoles
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SiteAutologinPolicy) GetUpdatedAt() OptDateTime {
+	return s.UpdatedAt
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *SiteAutologinPolicy) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetDefaultWpUserLogin sets the value of DefaultWpUserLogin.
+func (s *SiteAutologinPolicy) SetDefaultWpUserLogin(val string) {
+	s.DefaultWpUserLogin = val
+}
+
+// SetAllowedWpRoles sets the value of AllowedWpRoles.
+func (s *SiteAutologinPolicy) SetAllowedWpRoles(val []string) {
+	s.AllowedWpRoles = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SiteAutologinPolicy) SetUpdatedAt(val OptDateTime) {
+	s.UpdatedAt = val
+}
+
+func (*SiteAutologinPolicy) getSiteAutologinPolicyRes() {}
+func (*SiteAutologinPolicy) putSiteAutologinPolicyRes() {}
+
+// Ref: #/components/schemas/SiteAutologinPolicyUpdate
+type SiteAutologinPolicyUpdate struct {
+	// Whether one-click login is allowed for this site.
+	Enabled bool `json:"enabled"`
+	// The WordPress login the mint endpoint injects when an operator's
+	// mint request omits `target_wp_user_login`, or `""` to clear the
+	// default and revert to the agent's first-administrator fallback.
+	DefaultWpUserLogin string `json:"default_wp_user_login"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *SiteAutologinPolicyUpdate) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetDefaultWpUserLogin returns the value of DefaultWpUserLogin.
+func (s *SiteAutologinPolicyUpdate) GetDefaultWpUserLogin() string {
+	return s.DefaultWpUserLogin
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *SiteAutologinPolicyUpdate) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetDefaultWpUserLogin sets the value of DefaultWpUserLogin.
+func (s *SiteAutologinPolicyUpdate) SetDefaultWpUserLogin(val string) {
+	s.DefaultWpUserLogin = val
 }
 
 // Per-site cached list of items with updates available.

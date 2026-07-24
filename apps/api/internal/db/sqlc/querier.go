@@ -1801,6 +1801,16 @@ type Querier interface {
 	// Update last_used_at on a trusted device (called when it is reused at login).
 	TouchTrustedDevice(ctx context.Context, id uuid.UUID) error
 	TouchUserLogin(ctx context.Context, id uuid.UUID) error
+	// Operator PUT /autologin-policy path (app.tenant_id, GH #286). Upserts
+	// {enabled, default_wp_user_login} for (site_id, tenant_id); when no row
+	// exists yet the INSERT seeds the remaining columns (allowed_wp_roles,
+	// require_2fa_step_up, max_session_age_minutes) with their table defaults,
+	// exactly like UpsertAutologinPolicyDefault. On conflict, ONLY enabled and
+	// default_wp_user_login are touched; allowed_wp_roles is never written by
+	// this query (the role ceiling is not widenable via the API). The WHERE
+	// clause on the conflict target is defense-in-depth: it keeps the write
+	// scoped to the caller's own tenant even though RLS already enforces it.
+	UpdateAutologinPolicySettings(ctx context.Context, arg UpdateAutologinPolicySettingsParams) (AutologinPolicy, error)
 	// M5.6 / ADR-032: agent runner posts a JSONB progress payload at every phpbu
 	// stage transition + per-chunk during the custom PresignedS3 Sync. We always
 	// replace (no append/history) — the latest phase is what the UI renders, and

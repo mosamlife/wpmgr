@@ -76,6 +76,7 @@ type AutologinPolicy struct {
 	AllowedWpRoles       []string  `json:"allowed_wp_roles"`
 	Require2faStepUp     bool      `json:"require_2fa_step_up"`
 	MaxSessionAgeMinutes int32     `json:"max_session_age_minutes"`
+	DefaultWpUserLogin   string    `json:"default_wp_user_login"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 

@@ -4809,6 +4809,57 @@ export const AutologinConsumeResponseSchema = {
   },
 } as const;
 
+export const SiteAutologinPolicySchema = {
+  type: "object",
+  required: ["enabled", "default_wp_user_login", "allowed_wp_roles"],
+  properties: {
+    enabled: {
+      type: "boolean",
+      description: "Whether one-click login is allowed for this site.",
+    },
+    default_wp_user_login: {
+      type: "string",
+      maxLength: 60,
+      pattern: "^[a-zA-Z0-9_.\\-@]*$",
+      description:
+        "The WordPress login the mint endpoint injects when an operator's\nmint request omits `target_wp_user_login`. Empty means the agent\npicks the first administrator (the pre-existing fallback).\n",
+    },
+    allowed_wp_roles: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description:
+        "READ-ONLY. The WP roles the agent is permitted to log the\noperator in as. Not writable via the PUT body; the ceiling can\nonly be changed by a manual database operation.\n",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "When the policy was last saved. Absent for the built-in default.",
+    },
+  },
+} as const;
+
+export const SiteAutologinPolicyUpdateSchema = {
+  type: "object",
+  required: ["enabled", "default_wp_user_login"],
+  additionalProperties: false,
+  properties: {
+    enabled: {
+      type: "boolean",
+      description: "Whether one-click login is allowed for this site.",
+    },
+    default_wp_user_login: {
+      type: "string",
+      maxLength: 60,
+      pattern: "^[a-zA-Z0-9_.\\-@]*$",
+      description:
+        "The WordPress login the mint endpoint injects when an operator's\nmint request omits `target_wp_user_login`, or `\"\"` to clear the\ndefault and revert to the agent's first-administrator fallback.\n",
+    },
+  },
+} as const;
+
 export const SiteDiagnosticsCardSchema = {
   type: "object",
   required: ["category", "payload", "fresh"],

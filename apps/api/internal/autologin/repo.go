@@ -21,6 +21,12 @@ type Repo interface {
 	InsertToken(ctx context.Context, in InsertTokenInput) error
 	GetOrCreatePolicy(ctx context.Context, tenantID, siteID uuid.UUID) (Policy, error)
 
+	// UpdatePolicySettings upserts {enabled, default_wp_user_login} for
+	// (tenantID, siteID), seeding the remaining columns' table defaults on
+	// first write (GH #286 operator PUT /autologin-policy path, app.tenant_id).
+	// Never touches allowed_wp_roles.
+	UpdatePolicySettings(ctx context.Context, tenantID, siteID uuid.UUID, enabled bool, defaultWPUserLogin string) (Policy, error)
+
 	// Consume path (app.agent — cross-tenant, before any tenant scope is known).
 	// ConsumeToken is the single atomic arbiter for nonce consumption; both
 	// the Redis-hit and Redis-miss paths in the service drive it so PG is the
@@ -92,6 +98,29 @@ func (r *pgRepo) GetOrCreatePolicy(ctx context.Context, tenantID, siteID uuid.UU
 	return out, err
 }
 
+func (r *pgRepo) UpdatePolicySettings(ctx context.Context, tenantID, siteID uuid.UUID, enabled bool, defaultWPUserLogin string) (Policy, error) {
+	var out Policy
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).UpdateAutologinPolicySettings(ctx, sqlc.UpdateAutologinPolicySettingsParams{
+			SiteID: siteID, TenantID: tenantID, Enabled: enabled, DefaultWpUserLogin: defaultWPUserLogin,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// The conflict-target WHERE guard rejected the write (the site_id
+				// belongs to a different tenant than the caller's app.tenant_id).
+				// This should be unreachable given RequireSiteAccess + RLS already
+				// scope siteID to the caller's tenant, but fail closed rather than
+				// silently no-op.
+				return domain.Forbidden("tenant_mismatch", "site does not belong to the active tenant")
+			}
+			return domain.Internal("autologin_policy_update_failed", "failed to save autologin policy").WithCause(err)
+		}
+		out = policyFromRow(row)
+		return nil
+	})
+	return out, err
+}
+
 func (r *pgRepo) ConsumeToken(ctx context.Context, nonceID string, siteID uuid.UUID, consumedFromIP string) (ConsumedRow, bool, error) {
 	var out ConsumedRow
 	var found bool
@@ -150,6 +179,7 @@ func policyFromRow(row sqlc.AutologinPolicy) Policy {
 		AllowedWPRoles:       roles,
 		Require2FAStepUp:     row.Require2faStepUp,
 		MaxSessionAgeMinutes: row.MaxSessionAgeMinutes,
+		DefaultWPUserLogin:   row.DefaultWpUserLogin,
 		UpdatedAt:            row.UpdatedAt,
 	}
 }

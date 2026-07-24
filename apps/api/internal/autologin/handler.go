@@ -1,6 +1,7 @@
 package autologin
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -102,6 +103,122 @@ func (h *MintHandler) mint(c *gin.Context) {
 		RedirectURL: tok.RedirectURL,
 		ExpiresAt:   tok.ExpiresAt.UTC(),
 	})
+}
+
+// PolicyHandler serves the operator-facing per-site autologin policy routes
+// (GH #286) under /api/v1/sites/{siteId}/autologin-policy.
+//
+//	GET /autologin-policy: current policy (auto-creates the default row on
+//	                       first read, mirroring the mint path).
+//	PUT /autologin-policy: save {enabled, default_wp_user_login}.
+//	                       allowed_wp_roles is READ-ONLY and never accepted.
+type PolicyHandler struct {
+	svc *Service
+}
+
+// NewPolicyHandler builds a PolicyHandler.
+func NewPolicyHandler(svc *Service) *PolicyHandler { return &PolicyHandler{svc: svc} }
+
+// Register mounts GET+PUT /sites/:siteId/autologin-policy under the /api/v1
+// group. Both routes require the same Admin-floor permission as the mint
+// endpoint (site:autologin) plus the site allowlist guard.
+func (h *PolicyHandler) Register(r *gin.RouterGroup) {
+	r.GET("/sites/:siteId/autologin-policy", authz.RequirePermission(authz.PermSiteAutologin), authz.RequireSiteAccess("siteId"), h.get)
+	r.PUT("/sites/:siteId/autologin-policy", authz.RequirePermission(authz.PermSiteAutologin), authz.RequireSiteAccess("siteId"), h.put)
+}
+
+// autologinPolicyDTO is the JSON shape for both GET and PUT
+// /autologin-policy responses. allowed_wp_roles is READ-ONLY informational:
+// it is reported here but never accepted on the PUT body.
+type autologinPolicyDTO struct {
+	Enabled            bool     `json:"enabled"`
+	DefaultWPUserLogin string   `json:"default_wp_user_login"`
+	AllowedWPRoles     []string `json:"allowed_wp_roles"`
+	UpdatedAt          string   `json:"updated_at,omitempty"`
+}
+
+// autologinPolicyPutBody is the PUT /autologin-policy request body.
+// allowed_wp_roles is intentionally absent: policyBindJSON rejects unknown
+// fields, so a client attempting to widen it via this endpoint gets a 422
+// rather than a silently-ignored field.
+type autologinPolicyPutBody struct {
+	Enabled            bool   `json:"enabled"`
+	DefaultWPUserLogin string `json:"default_wp_user_login"`
+}
+
+func (h *PolicyHandler) get(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	siteID, err := uuid.Parse(c.Param("siteId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_site_id", "siteId is not a valid UUID"))
+		return
+	}
+	policy, err := h.svc.GetPolicy(c.Request.Context(), tenantID, siteID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, policyDTO(policy))
+}
+
+func (h *PolicyHandler) put(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	siteID, err := uuid.Parse(c.Param("siteId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_site_id", "siteId is not a valid UUID"))
+		return
+	}
+	var body autologinPolicyPutBody
+	if err := policyBindJSON(c, &body); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	saved, err := h.svc.UpdatePolicy(c.Request.Context(), tenantID, siteID, p, PolicyInput{
+		Enabled:            body.Enabled,
+		DefaultWPUserLogin: body.DefaultWPUserLogin,
+	})
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, policyDTO(saved))
+}
+
+func policyDTO(p Policy) autologinPolicyDTO {
+	roles := p.AllowedWPRoles
+	if roles == nil {
+		roles = []string{}
+	}
+	dto := autologinPolicyDTO{
+		Enabled:            p.Enabled,
+		DefaultWPUserLogin: p.DefaultWPUserLogin,
+		AllowedWPRoles:     roles,
+	}
+	if !p.UpdatedAt.IsZero() {
+		dto.UpdatedAt = p.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	return dto
+}
+
+// policyBindJSON decodes the request body strictly (unknown fields, such as
+// an attempt to send allowed_wp_roles, are rejected with 422 rather than
+// silently ignored).
+func policyBindJSON(c *gin.Context, dst any) error {
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return domain.Validation("invalid_body", "request body is not valid JSON or contains unknown fields")
+	}
+	return nil
 }
 
 // AgentHandler serves the agent-facing consume callback under /agent/v1. The

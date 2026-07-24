@@ -57,7 +57,7 @@ func (q *Queries) ConsumeAutologinToken(ctx context.Context, arg ConsumeAutologi
 }
 
 const getAutologinPolicy = `-- name: GetAutologinPolicy :one
-SELECT site_id, tenant_id, enabled, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes, updated_at FROM autologin_policies
+SELECT site_id, tenant_id, enabled, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes, default_wp_user_login, updated_at FROM autologin_policies
 WHERE site_id = $1 AND tenant_id = $2
 `
 
@@ -78,13 +78,14 @@ func (q *Queries) GetAutologinPolicy(ctx context.Context, arg GetAutologinPolicy
 		&i.AllowedWpRoles,
 		&i.Require2faStepUp,
 		&i.MaxSessionAgeMinutes,
+		&i.DefaultWpUserLogin,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getAutologinPolicyForAgent = `-- name: GetAutologinPolicyForAgent :one
-SELECT site_id, tenant_id, enabled, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes, updated_at FROM autologin_policies
+SELECT site_id, tenant_id, enabled, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes, default_wp_user_login, updated_at FROM autologin_policies
 WHERE site_id = $1
 `
 
@@ -100,6 +101,7 @@ func (q *Queries) GetAutologinPolicyForAgent(ctx context.Context, siteID uuid.UU
 		&i.AllowedWpRoles,
 		&i.Require2faStepUp,
 		&i.MaxSessionAgeMinutes,
+		&i.DefaultWpUserLogin,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -190,11 +192,59 @@ func (q *Queries) MarkAutologinTokenConsumed(ctx context.Context, arg MarkAutolo
 	return result.RowsAffected(), nil
 }
 
+const updateAutologinPolicySettings = `-- name: UpdateAutologinPolicySettings :one
+INSERT INTO autologin_policies (site_id, tenant_id, enabled, default_wp_user_login)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (site_id) DO UPDATE
+SET enabled = EXCLUDED.enabled,
+    default_wp_user_login = EXCLUDED.default_wp_user_login,
+    updated_at = now()
+WHERE autologin_policies.tenant_id = $2
+RETURNING site_id, tenant_id, enabled, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes, default_wp_user_login, updated_at
+`
+
+type UpdateAutologinPolicySettingsParams struct {
+	SiteID             uuid.UUID `json:"site_id"`
+	TenantID           uuid.UUID `json:"tenant_id"`
+	Enabled            bool      `json:"enabled"`
+	DefaultWpUserLogin string    `json:"default_wp_user_login"`
+}
+
+// Operator PUT /autologin-policy path (app.tenant_id, GH #286). Upserts
+// {enabled, default_wp_user_login} for (site_id, tenant_id); when no row
+// exists yet the INSERT seeds the remaining columns (allowed_wp_roles,
+// require_2fa_step_up, max_session_age_minutes) with their table defaults,
+// exactly like UpsertAutologinPolicyDefault. On conflict, ONLY enabled and
+// default_wp_user_login are touched; allowed_wp_roles is never written by
+// this query (the role ceiling is not widenable via the API). The WHERE
+// clause on the conflict target is defense-in-depth: it keeps the write
+// scoped to the caller's own tenant even though RLS already enforces it.
+func (q *Queries) UpdateAutologinPolicySettings(ctx context.Context, arg UpdateAutologinPolicySettingsParams) (AutologinPolicy, error) {
+	row := q.db.QueryRow(ctx, updateAutologinPolicySettings,
+		arg.SiteID,
+		arg.TenantID,
+		arg.Enabled,
+		arg.DefaultWpUserLogin,
+	)
+	var i AutologinPolicy
+	err := row.Scan(
+		&i.SiteID,
+		&i.TenantID,
+		&i.Enabled,
+		&i.AllowedWpRoles,
+		&i.Require2faStepUp,
+		&i.MaxSessionAgeMinutes,
+		&i.DefaultWpUserLogin,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const upsertAutologinPolicyDefault = `-- name: UpsertAutologinPolicyDefault :one
 INSERT INTO autologin_policies (site_id, tenant_id)
 VALUES ($1, $2)
 ON CONFLICT (site_id) DO UPDATE SET updated_at = autologin_policies.updated_at
-RETURNING site_id, tenant_id, enabled, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes, updated_at
+RETURNING site_id, tenant_id, enabled, allowed_wp_roles, require_2fa_step_up, max_session_age_minutes, default_wp_user_login, updated_at
 `
 
 type UpsertAutologinPolicyDefaultParams struct {
@@ -215,6 +265,7 @@ func (q *Queries) UpsertAutologinPolicyDefault(ctx context.Context, arg UpsertAu
 		&i.AllowedWpRoles,
 		&i.Require2faStepUp,
 		&i.MaxSessionAgeMinutes,
+		&i.DefaultWpUserLogin,
 		&i.UpdatedAt,
 	)
 	return i, err

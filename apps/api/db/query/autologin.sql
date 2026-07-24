@@ -63,3 +63,22 @@ RETURNING *;
 -- agent learns which WP roles it may log in as. NULL row -> defaults applied.
 SELECT * FROM autologin_policies
 WHERE site_id = $1;
+
+-- name: UpdateAutologinPolicySettings :one
+-- Operator PUT /autologin-policy path (app.tenant_id, GH #286). Upserts
+-- {enabled, default_wp_user_login} for (site_id, tenant_id); when no row
+-- exists yet the INSERT seeds the remaining columns (allowed_wp_roles,
+-- require_2fa_step_up, max_session_age_minutes) with their table defaults,
+-- exactly like UpsertAutologinPolicyDefault. On conflict, ONLY enabled and
+-- default_wp_user_login are touched; allowed_wp_roles is never written by
+-- this query (the role ceiling is not widenable via the API). The WHERE
+-- clause on the conflict target is defense-in-depth: it keeps the write
+-- scoped to the caller's own tenant even though RLS already enforces it.
+INSERT INTO autologin_policies (site_id, tenant_id, enabled, default_wp_user_login)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (site_id) DO UPDATE
+SET enabled = EXCLUDED.enabled,
+    default_wp_user_login = EXCLUDED.default_wp_user_login,
+    updated_at = now()
+WHERE autologin_policies.tenant_id = $2
+RETURNING *;
