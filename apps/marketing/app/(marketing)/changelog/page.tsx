@@ -39,6 +39,29 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.87",
+    date: "2026-07-24",
+    summary: "Backup reliability improvements for large sites and slow servers.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Full backups on slow servers no longer fail at the upload stage (GH #279). A large backup that went quiet for a while during archiving could be wrongly marked failed while it was still running. The control plane now flags a quiet backup as taking longer than expected but keeps it running, and only fails it after a much longer, configurable timeout.",
+      },
+      {
+        tag: "Fixed",
+        text: "An interrupted backup now resumes cleanly instead of failing (GH #283). If the server stopped a backup partway through its upload, the resumed run could fail looking for a chunk it had already uploaded and cleaned up. The agent now records its upload progress durably as it goes and skips work it has already completed on resume.",
+      },
+      {
+        tag: "Fixed",
+        text: "Archiving a site now stops its scheduled backups (GH #282). An archived or removed site kept running its nightly backup, which then failed and sent a misleading failure email. Archived and removed sites are now skipped, while a temporarily unreachable site still attempts its backup and alerts you.",
+      },
+      {
+        tag: "Fixed",
+        text: "Backups no longer time out on OpenLiteSpeed and LiteSpeed servers (GH #274). The agent now acknowledges a backup request and continues the work in the background using whichever mechanism the server supports.",
+      },
+    ],
+  },
+  {
     version: "0.61.81",
     date: "2026-07-22",
     summary: "Fixes command updates failing on sites where another plugin globally intercepts the Authorization header.",

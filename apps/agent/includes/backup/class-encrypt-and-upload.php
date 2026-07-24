@@ -25,9 +25,17 @@
  *      the CP returns presigned PUT URLs ONLY for hashes it doesn't already
  *      have (incremental dedup — repeat backups of the same site re-upload
  *      only the diff). For each (hash, url) the pass reads the local
- *      ciphertext, PUTs it, and on success @unlinks the local file to free
- *      disk progressively. Also @unlinks files for hashes the CP already had
- *      (no PUT needed; the local file is dead weight).
+ *      ciphertext and PUTs it. Also handles hashes the CP already had (no
+ *      PUT needed; the local file is dead weight). GH #283 delete-after-
+ *      persist invariant: a local chunk file is unlinked ONLY after its
+ *      hash has been durably persisted through the caller's checkpoint
+ *      callback (every PERSIST_EVERY_UPLOAD chunks and at the end of every
+ *      sweep): never inline right after the PUT/dedup decision. This keeps
+ *      a worker kill mid-loop safe: any file still on disk after a crash
+ *      belongs to a hash the resumed pass hasn't recorded yet, so it just
+ *      re-PUTs it (content-addressed key, identical bytes); any hash that
+ *      WAS durably recorded is skipped on resume before its (possibly
+ *      already-deleted) local file is ever touched again.
  *
  *   3. submitManifest()
  *      One signed POST to the CP's manifest endpoint with the ordered entries
@@ -101,6 +109,19 @@ final class EncryptAndUpload
 
     /** Emit a progress event every N PUT calls (uploadChunks pass). */
     private const PROGRESS_EVERY_UPLOAD = 4;
+
+    /**
+     * GH #283: durably persist the upload cursor (via the caller-supplied
+     * checkpoint callback) every N successful PUTs/dedup-skips, in addition
+     * to always flushing at the end of each sweep. A worker kill between two
+     * checkpoints can therefore delete at most N local chunk files whose
+     * hashes are not yet durably recorded, and even those are safe to lose,
+     * because the delete-after-persist ordering (see checkpointAndFlush())
+     * guarantees a file is only ever removed AFTER its hash was already
+     * confirmed persisted. A MySQL row UPDATE is on the order of a
+     * millisecond next to a multi-second PUT, so this cadence is cheap.
+     */
+    private const PERSIST_EVERY_UPLOAD = 16;
 
     /**
      * GH #279: default wall-clock heartbeat interval, in seconds. Mirrors
@@ -432,17 +453,41 @@ final class EncryptAndUpload
      * Calls BackupTransport::presignChunks() once with the full hash set; the
      * response is a `{hash => presigned PUT URL}` map of ONLY the hashes the
      * CP hasn't already stored (incremental dedup). For each entry we read
-     * the local ciphertext from scratch, PUT it, and on success @unlink the
-     * local file (free disk as we go). Hashes the CP already had are
-     * @unlink'd outright — no PUT needed.
+     * the local ciphertext from scratch, PUT it, and on success queue the
+     * local file for deletion. Hashes the CP already had are queued for
+     * deletion outright, no PUT needed.
+     *
+     * GH #283 (delete-after-persist invariant): a queued file is deleted
+     * ONLY after its hash has been durably persisted via the `$checkpoint`
+     * callback (see checkpointAndFlush()), every PERSIST_EVERY_UPLOAD
+     * chunks and always once more at the end of each sweep. This makes a
+     * worker kill mid-loop safe: any local file still on disk after a crash
+     * is, by construction, for a hash that was never confirmed persisted, so
+     * the resumed pass simply re-PUTs it (content-addressed key, identical
+     * bytes -> idempotent). Any hash that WAS persisted before the crash is
+     * skipped on resume (the `isset($uploadedHashes[$hash])` guards below,
+     * fed from `$resume['uploaded_hashes']`) before its local file is ever
+     * touched again, so a deleted-but-already-uploaded chunk never trips the
+     * "missing local chunk" throw.
      *
      * @param array<string,mixed> $encryptCursor The cursor returned by encryptChunks() with done=true.
      * @param array<string,mixed> $resume        Upload-pass resume cursor.
      * @param callable            $progress      function(string $phase, array $detail): void
+     * @param callable|null       $checkpoint    GH #283 optional durable-persist hook:
+     *   function(array $partialUploadCursor): void. Called periodically
+     *   during the loop (and once more after each sweep) with the SAME
+     *   shape as this method's return value, but with `done` false. The
+     *   caller is expected to write $partialUploadCursor into its own
+     *   resumable state (e.g. TaskRunner::saveTaskState) BEFORE returning,
+     *   so a thrown exception here safely aborts the pass without deleting
+     *   any file whose hash wasn't actually persisted. When null, local
+     *   files are still queued and flushed in the same batches, just
+     *   without any interim durability guarantee (matches pre-GH-#283
+     *   behavior for callers that don't opt in).
      * @return array<string,mixed> On completion: `done:true`, telemetry.
      * @throws \RuntimeException On transport-level PUT failure.
      */
-    public function uploadChunks(array $encryptCursor, array $resume, callable $progress): array
+    public function uploadChunks(array $encryptCursor, array $resume, callable $progress, ?callable $checkpoint = null): array
     {
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running upload pass must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
@@ -502,7 +547,14 @@ final class EncryptAndUpload
             // destination's putChunk no-ops when the file already exists).
             $this->destination->prepare($this->snapshotId);
             $uploads = [];
+            $sinceCheckpoint = 0;
+            /** @var array<string,string> $pendingDeletes hash => local chunk path, flushed only after checkpointAndFlush() has durably persisted it. */
+            $pendingDeletes = [];
             foreach ($allHashes as $hash) {
+                // GH #283: skip a hash the persisted cursor already confirms
+                // uploaded BEFORE ever touching its local file. On a resumed
+                // pass this is what prevents re-reading a file this same
+                // hash's earlier (persisted) checkpoint already deleted.
                 if (isset($uploadedHashes[$hash])) {
                     continue;
                 }
@@ -519,12 +571,24 @@ final class EncryptAndUpload
                 }
                 $bytesUploaded += strlen($cipher);
                 $cipher = '';
-                wp_delete_file($chunkPath);
 
+                // GH #283: record success and queue the local file for
+                // deletion. Do NOT delete yet. checkpointAndFlush() below
+                // persists the cursor first and only then flushes the queue,
+                // so a crash before that point leaves the file on disk for
+                // an idempotent resume (same content-addressed path).
                 $uploadedHashes[$hash] = 1;
+                $pendingDeletes[$hash] = $chunkPath;
                 $putCount++;
                 $chunksDone++;
                 $sinceTick++;
+                $sinceCheckpoint++;
+
+                if ($sinceCheckpoint >= self::PERSIST_EVERY_UPLOAD) {
+                    $this->checkpointAndFlush($checkpoint, $uploadedHashes, $chunksTotal, $putCount, $dedupHits, $bytesUploaded, $pendingDeletes);
+                    $sinceCheckpoint = 0;
+                }
+
                 if ($sinceTick >= self::PROGRESS_EVERY_UPLOAD) {
                     $this->safeProgress($progress, 'encrypting_uploading', [
                         'stage'          => 'upload',
@@ -544,6 +608,11 @@ final class EncryptAndUpload
                     'bytes_uploaded' => $bytesUploaded,
                 ]);
             }
+            // Flush any tail chunks that didn't reach a full PERSIST_EVERY_UPLOAD
+            // batch. GH #283 requires this pass to persist at least once at
+            // the end, not only every N chunks. A no-op when the loop above
+            // already flushed everything on its last iteration.
+            $this->checkpointAndFlush($checkpoint, $uploadedHashes, $chunksTotal, $putCount, $dedupHits, $bytesUploaded, $pendingDeletes);
         } else {
             // CP / s3_compat: legacy bulk-presign + PUT. Both kinds talk to
             // the CP callback identically — only audit/telemetry differ.
@@ -558,21 +627,33 @@ final class EncryptAndUpload
             }
 
             // First sweep: PUT the missing hashes.
+            $sinceCheckpoint = 0;
+            /** @var array<string,string> $pendingDeletes hash => local chunk path, flushed only after checkpointAndFlush() has durably persisted it. */
+            $pendingDeletes = [];
             foreach ($uploads as $hash => $url) {
                 if (!is_string($hash) || $hash === '' || !is_string($url) || $url === '') {
                     continue;
                 }
+                // GH #283: skip a hash the persisted cursor already confirms
+                // uploaded BEFORE the is_file()/throw check below. The CP's
+                // dedup is manifest-scoped and blind to in-flight presigned
+                // PUTs, so a resumed pass can legitimately be re-asked to
+                // "upload" a hash it already finished (and whose local file
+                // it already deleted) in a prior, interrupted run. Without
+                // this guard firing first, that hash would fall through to
+                // the missing-file throw below.
                 if (isset($uploadedHashes[$hash])) {
                     continue;
                 }
                 $chunkPath = $this->chunkPath($scratchDir, $hash);
                 if (!is_file($chunkPath)) {
-                    // The encrypt pass writes chunks-<hash>.age for every chunk we
-                    // emit; if it's gone, either a previous upload pass unlinked
-                    // it (dedup hit on a re-entry) or someone tampered with the
-                    // scratch dir. Treat as already-uploaded only if the CP no
-                    // longer asks for it — but here the CP IS asking for it, so
-                    // this is fatal.
+                    // GH #283: reachable only when a hash is neither in the
+                    // durably persisted uploaded_hashes cursor (the skip
+                    // above) NOR on disk. The delete-after-persist ordering
+                    // enforced by checkpointAndFlush() means every deletion
+                    // is preceded by a successful persist of that same hash,
+                    // so this should never fire in practice; kept as
+                    // defense-in-depth against a tampered scratch dir.
                     throw new \RuntimeException('EncryptAndUpload: missing local chunk for upload: ' . esc_html($hash));
                 }
                 $cipher = @file_get_contents($chunkPath);
@@ -592,13 +673,19 @@ final class EncryptAndUpload
                 $bytesUploaded += strlen($cipher);
                 $cipher         = '';
 
-                // Drop the local copy now we know it's durably uploaded.
-                wp_delete_file($chunkPath);
-
+                // GH #283: record success and queue the local file for
+                // deletion. Do NOT delete yet. See checkpointAndFlush().
                 $uploadedHashes[$hash] = 1;
+                $pendingDeletes[$hash] = $chunkPath;
                 $putCount++;
                 $chunksDone++;
                 $sinceTick++;
+                $sinceCheckpoint++;
+
+                if ($sinceCheckpoint >= self::PERSIST_EVERY_UPLOAD) {
+                    $this->checkpointAndFlush($checkpoint, $uploadedHashes, $chunksTotal, $putCount, $dedupHits, $bytesUploaded, $pendingDeletes);
+                    $sinceCheckpoint = 0;
+                }
 
                 if ($sinceTick >= self::PROGRESS_EVERY_UPLOAD) {
                     $this->safeProgress($progress, 'encrypting_uploading', [
@@ -621,11 +708,18 @@ final class EncryptAndUpload
                     'bytes_uploaded' => $bytesUploaded,
                 ]);
             }
+            // Flush the tail of the first sweep. GH #283 always persists at
+            // the end of a sweep, not only every PERSIST_EVERY_UPLOAD chunks,
+            // so the second sweep's dedup bookkeeping below builds on an
+            // already-durable base.
+            $this->checkpointAndFlush($checkpoint, $uploadedHashes, $chunksTotal, $putCount, $dedupHits, $bytesUploaded, $pendingDeletes);
 
             // Second sweep: drop local files for hashes the CP already had — they
             // weren't in $uploads, so they're not pending upload. (We do this
             // after the PUT loop so disk pressure during uploads is bounded only
             // by chunks we ARE uploading.)
+            $sinceCheckpoint = 0;
+            $pendingDeletes  = [];
             foreach ($allHashes as $hash) {
                 if (isset($uploadedHashes[$hash])) {
                     continue;
@@ -634,14 +728,23 @@ final class EncryptAndUpload
                     // Should have been put above; if not, the loop above threw.
                     continue;
                 }
+                $uploadedHashes[$hash] = 1;
                 $chunkPath = $this->chunkPath($scratchDir, $hash);
                 if (is_file($chunkPath)) {
-                    wp_delete_file($chunkPath);
+                    // GH #283: same delete-after-persist ordering as the PUT
+                    // sweep above: queue, don't delete inline.
+                    $pendingDeletes[$hash] = $chunkPath;
                 }
-                $uploadedHashes[$hash] = 1;
                 $dedupHits++;
                 $chunksDone++;
+                $sinceCheckpoint++;
+                if ($sinceCheckpoint >= self::PERSIST_EVERY_UPLOAD) {
+                    $this->checkpointAndFlush($checkpoint, $uploadedHashes, $chunksTotal, $putCount, $dedupHits, $bytesUploaded, $pendingDeletes);
+                    $sinceCheckpoint = 0;
+                }
             }
+            // Flush the tail of the second sweep.
+            $this->checkpointAndFlush($checkpoint, $uploadedHashes, $chunksTotal, $putCount, $dedupHits, $bytesUploaded, $pendingDeletes);
         }
 
         $this->safeProgress($progress, 'encrypting_uploading', [
@@ -1106,6 +1209,80 @@ final class EncryptAndUpload
             // ignore.
         }
         return $count;
+    }
+
+    /**
+     * GH #283: the delete-after-persist checkpoint. Called from inside
+     * uploadChunks()'s PUT/dedup loops every PERSIST_EVERY_UPLOAD chunks and
+     * once more at the end of every sweep.
+     *
+     * Order is the whole point: persist FIRST, delete SECOND.
+     *   1. If a `$checkpoint` callback was supplied, invoke it with the
+     *      current partial upload cursor (same shape as uploadChunks()'s
+     *      return value, `done` forced false). The caller is expected to
+     *      write this into its own durable resumable state (e.g.
+     *      TaskRunner writes it into `sub_state.upload` via saveTaskState())
+     *      BEFORE this call returns. If the callback throws (the
+     *      persist genuinely failed), the exception propagates out of this
+     *      method and `$pendingDeletes` is never flushed: every file it
+     *      references is left on disk, and the resumed pass will re-PUT (or
+     *      re-skip, for a dedup hit) each one under the same
+     *      content-addressed hash.
+     *   2. Only once step 1 has returned successfully do we unlink every
+     *      file in `$pendingDeletes` and clear the queue.
+     *
+     * Crash-window analysis this ordering guarantees:
+     *   - Crash during the PUT/dedup work itself (before this method is
+     *     even called): the chunk's local file still exists (never queued),
+     *     the cursor was never touched. Resume re-processes it from scratch.
+     *   - Crash inside step 1 (the persist itself failed or the process died
+     *     mid-write): `$pendingDeletes` is never flushed, so every one of
+     *     those files is still on disk. Resume re-PUTs/re-skips them
+     *     idempotently.
+     *   - Crash strictly after step 1 returns (persist succeeded) but during
+     *     or after step 2's deletes: the hash is already durably recorded in
+     *     `uploaded_hashes`, so the resumed pass's `isset($uploadedHashes[...])`
+     *     guard skips it before ever touching the (possibly already-deleted)
+     *     local file.
+     * In every case, a resumed pass either finds the file (re-upload is
+     * idempotent) or finds the hash already persisted (skip before touching
+     * the file), never both "file gone" AND "hash not persisted" together,
+     * which is exactly the state that produced the original "missing local
+     * chunk" throw.
+     *
+     * @param callable|null         $checkpoint     Caller's persist hook, or null to opt out (files still batch-delete, just without an interim durability guarantee).
+     * @param array<string,int>     $uploadedHashes Hash set (hash => 1) accumulated so far this pass.
+     * @param int                   $chunksTotal    Total hash count for this pass (for telemetry parity with the final return shape).
+     * @param int                   $putCount       PUTs performed so far.
+     * @param int                   $dedupHits      Dedup-skip count so far.
+     * @param int                   $bytesUploaded  Bytes PUT so far.
+     * @param array<string,string>  $pendingDeletes hash => absolute local chunk path queued since the previous checkpoint; cleared on return.
+     */
+    private function checkpointAndFlush(
+        ?callable $checkpoint,
+        array $uploadedHashes,
+        int $chunksTotal,
+        int $putCount,
+        int $dedupHits,
+        int $bytesUploaded,
+        array &$pendingDeletes
+    ): void {
+        if ($checkpoint !== null) {
+            $checkpoint([
+                'done'            => false,
+                'chunks_total'    => $chunksTotal,
+                'chunks_put'      => $putCount,
+                'chunks_dedup'    => $dedupHits,
+                'bytes_uploaded'  => $bytesUploaded,
+                'uploaded_hashes' => array_keys($uploadedHashes),
+            ]);
+        }
+        foreach ($pendingDeletes as $path) {
+            if (is_string($path) && $path !== '' && is_file($path)) {
+                wp_delete_file($path);
+            }
+        }
+        $pendingDeletes = [];
     }
 
     /**

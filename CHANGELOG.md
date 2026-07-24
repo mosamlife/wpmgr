@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.87] - 2026-07-24
+
+### Fixed
+
+- Interrupted backups now resume cleanly instead of failing with a missing local chunk (GH #283). During the upload stage the agent deletes each chunk from local disk right after uploading it, but it only recorded which chunks it had uploaded once the whole upload finished. If the server stopped the worker partway through, the resumed backup asked the control plane for upload URLs again, was correctly told to send chunks it had already uploaded and deleted, and then failed looking for the missing local files. The agent now records its upload progress durably as it goes, never deletes a local chunk until that progress is safely persisted, and on resume skips any chunk it has already uploaded. This was surfaced by the v0.61.85 backup watchdog change, which lets a slow backup resume rather than aborting.
+
 ## [0.61.86] - 2026-07-24
 
 ### Fixed

@@ -1268,6 +1268,35 @@ final class TaskRunner
             $uploadResume,
             function (string $phase, array $detail): void {
                 $this->onPhaseProgress($phase, $detail);
+            },
+            // GH #283: durable mid-loop checkpoint. Unlike the progress
+            // callback above (observability, best-effort, failures
+            // swallowed), this writes the partial uploaded_hashes cursor
+            // into sub_state.upload via the SAME saveTaskState() path the
+            // outer phase-dispatch loop uses, so a worker kill between two
+            // checkpoints resumes from a cursor that matches exactly which
+            // local chunk files EncryptAndUpload has already deleted. A
+            // thrown saveTaskState() failure here propagates out of
+            // uploadChunks() (per its checkpoint contract) so no local file
+            // is ever deleted on top of an unpersisted cursor.
+            //
+            // GH #283 follow-up: saveTaskState() also has three SILENT
+            // no-op paths (no $wpdb, no resolvable table name, or a
+            // json_encode failure) that persist nothing and return
+            // normally, with no exception to propagate. Left unchecked,
+            // checkpointAndFlush() would see the checkpoint callback return
+            // without throwing and go on to delete this batch's local
+            // chunk files even though uploaded_hashes was never actually
+            // advanced, reproducing the exact "missing local chunk for
+            // upload" failure on the next resume. Treat a false return the
+            // same as a thrown exception: throw here so checkpointAndFlush()
+            // keeps every queued file on disk for the next resume.
+            function (array $partialUploadCursor) use (&$subState): void {
+                $subState['upload'] = $partialUploadCursor;
+                $persisted = $this->saveTaskState(self::PHASE_ENCRYPTING_UPLOADING, $subState);
+                if (!$persisted) {
+                    throw new \RuntimeException('GH283: upload cursor persist failed; keeping local chunks for resume');
+                }
             }
         );
         $subState['upload'] = $upCursor;
@@ -1676,8 +1705,25 @@ final class TaskRunner
      * is done AFTER the sidecar write to avoid a false-positive on the
      * pointer row (the pointer is tiny and should never fail).
      *
+     * GH #283 follow-up: the three early-return paths below (no $wpdb, no
+     * table name, json_encode failure) used to persist nothing and return
+     * NORMALLY, indistinguishable from a genuine durable write to any caller
+     * that only checks "did this throw". A caller relying on "no exception
+     * means durably persisted" (e.g. EncryptAndUpload's checkpoint contract)
+     * could then treat those chunks as safely deletable when nothing was
+     * ever written. The return value makes that distinction explicit: `true`
+     * only when the write genuinely reached durable storage (the DB row or
+     * the sidecar file), `false` on each of the three no-op paths. Existing
+     * callers that ignore the return value are unaffected (PHP permits
+     * discarding a return value); this is purely additive.
+     *
      * @param string              $phase    New phase.
      * @param array<string,mixed> $subState New sub_state to persist.
+     * @return bool True when the state was durably persisted (DB row or
+     *              sidecar file). False on a silent no-op path (no $wpdb, no
+     *              resolvable table name, or json_encode failure): the
+     *              caller should treat this exactly like a thrown exception
+     *              for any invariant that depends on durability.
      * @throws \RuntimeException When the DB write fails AND we cannot fall
      *                           back to the sidecar.
      *
@@ -1685,15 +1731,15 @@ final class TaskRunner
      * overrides this to a no-op so runArchivingFiles can be driven without a
      * live $wpdb.
      */
-    protected function saveTaskState(string $phase, array $subState): void
+    protected function saveTaskState(string $phase, array $subState): bool
     {
         global $wpdb;
         if (!is_object($wpdb)) {
-            return;
+            return false;
         }
         $table = $this->tableName();
         if ($table === '') {
-            return;
+            return false;
         }
 
         $now     = time();
@@ -1704,7 +1750,7 @@ final class TaskRunner
             // part-cursor state we persist; if it does, logging is better
             // than wiping the prior cursor with '{}'.
             \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: sub_state json_encode failed for phase ' . $phase . ' — skipping state write to preserve the prior cursor');
-            return;
+            return false;
         }
 
         $this->lastDbUpdate = $now;
@@ -1755,6 +1801,8 @@ final class TaskRunner
                 'TaskRunner: DB update failed for phase ' . esc_html($phase) . ' (possible @@max_allowed_packet overflow or connection loss)'
             );
         }
+
+        return true;
     }
 
     /**
