@@ -141,6 +141,71 @@ func TestProbeGet_NoCacheHeaders_NotFlagged(t *testing.T) {
 	}
 }
 
+// TestDetectCacheHit_KnownVendorHeader proves the explicit cacheHitHeaders
+// list still works after generalizing DetectCacheHit (GH #291 Phase 2 change
+// 3): a named vendor header (LiteSpeed) with a HIT value is still detected.
+func TestDetectCacheHit_KnownVendorHeader(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-Litespeed-Cache", "hit")
+	hit, detail := DetectCacheHit(h)
+	if !hit {
+		t.Fatalf("expected CacheHit=true for a known vendor header, got hit=%v detail=%q", hit, detail)
+	}
+}
+
+// TestDetectCacheHit_UnknownVendorShapeHeader proves the GH #291 Phase 2
+// fix: a cache-status header NOT in cacheHitHeaders, but matching the common
+// x-<something>-cache shape with a HIT-like value, is still detected. This is
+// the exact gap the reporter's fleet fell into - a real stack's cache-status
+// header name matched neither vendor list, so the OLD detectCacheHit would
+// have silently missed the HIT on exactly the setup that produced the bug.
+func TestDetectCacheHit_UnknownVendorShapeHeader(t *testing.T) {
+	cases := []struct {
+		name, header, value string
+	}{
+		{"x-<something>-cache shape", "X-Swarm-Cache", "HIT"},
+		{"x-cache-<something> shape", "X-Cache-Hits", "STALE"},
+		{"updating value", "X-Rocket-Cache", "UPDATING"},
+		{"revalidated value", "X-Edge-Cache", "REVALIDATED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{}
+			h.Set(tc.header, tc.value)
+			hit, detail := DetectCacheHit(h)
+			if !hit {
+				t.Fatalf("expected CacheHit=true for %s: %s, got hit=%v detail=%q", tc.header, tc.value, hit, detail)
+			}
+		})
+	}
+}
+
+// TestDetectCacheHit_ShapeRegexDoesNotFalsePositive proves the shape fallback
+// is not trigger-happy: an unrelated header (even one that merely contains
+// "cache" somewhere) and a shape-matching header with a MISS/BYPASS value
+// (the cache was NOT the source of the response - proof the bypass worked)
+// are both left undetected.
+func TestDetectCacheHit_ShapeRegexDoesNotFalsePositive(t *testing.T) {
+	cases := []struct {
+		name, header, value string
+	}{
+		{"unrelated header merely containing cache", "X-My-Cacheable-Widget", "HIT"},
+		{"shape match but MISS value", "X-Swarm-Cache", "MISS"},
+		{"shape match but BYPASS value", "X-Cache-Status", "BYPASS"},
+		{"shape match but DYNAMIC value", "X-Edge-Cache", "DYNAMIC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{}
+			h.Set(tc.header, tc.value)
+			hit, detail := DetectCacheHit(h)
+			if hit {
+				t.Fatalf("expected CacheHit=false for %s: %s, got hit=%v detail=%q", tc.header, tc.value, hit, detail)
+			}
+		})
+	}
+}
+
 // TestProbeGet_FatalSignatureStillDetectedAlongsideBuster proves the existing
 // fatal-error body scan is unaffected by the cache-buster/cache-hit additions.
 func TestProbeGet_FatalSignatureStillDetectedAlongsideBuster(t *testing.T) {

@@ -55,6 +55,25 @@ type Check struct {
 	// TLSSubject is the leaf certificate subject CommonName. Empty when not HTTPS.
 	TLSSubject string
 	Error      string
+	// AppUp is the GH #291 Phase 2 application-health verdict (three-valued:
+	// true / false / nil=unknown), piggybacked onto whichever reachability
+	// Check this sweep tick also attempted an app probe for - see
+	// uptime.ProbeWorker.Sweep / appProbeDue. nil means "no app probe was
+	// attempted on THIS check" (the common case: the app probe runs on a
+	// slower cadence than the reachability probe), which is a DIFFERENT
+	// meaning than "attempted, verdict unknown" - see AppProbeReason, which
+	// disambiguates the two. Orthogonal to Up: never derived from it, never
+	// feeds site_uptime_probes.up / site_uptime_daily's up_checks /
+	// total_checks / site_uptime_status.latest_up.
+	AppUp *bool
+	// AppProbeReason is the machine-readable reason for AppUp's verdict (one
+	// of the AppProbeReason* constants in package uptime - this package does
+	// not import that one, to avoid a cross-domain dependency for a handful
+	// of string constants). Empty means "no app probe was attempted on this
+	// check" - the sentinel every write path (InsertChecks, UpsertRollup)
+	// uses to tell that apart from "attempted, verdict unknown" (a non-empty
+	// reason with a nil AppUp).
+	AppProbeReason string
 }
 
 // Aggregate is the windowed uptime summary for a single site.
@@ -114,6 +133,16 @@ type FleetUptimeRow struct {
 	AvgLatencyMs *float64
 	// TLSExpiry is the cert NotAfter from the most-recent probe (nil = non-HTTPS or no probes).
 	TLSExpiry *time.Time
+	// AppUp is the GH #291 Phase 2 application-health verdict from the most
+	// recent app probe: true, false, or nil (never probed, or the most
+	// recent probe was inconclusive - see AppProbeReason). Independent of Up:
+	// a cached 200 (Up=true) can coexist with AppUp=false when a page cache
+	// is masking a dead PHP backend - the literal GH #291 incident.
+	AppUp *bool
+	// AppProbeReason is the machine-readable reason for AppUp's most recent
+	// verdict (one of package uptime's AppProbeReason* constants). Empty
+	// when no app probe has run yet.
+	AppProbeReason string
 }
 
 // Store is the uptime metrics store contract. Backends implement it for
@@ -206,6 +235,30 @@ var uptimeChecksColumns = []uptimeChecksColumn{
 	{"total_ms", "Float64"},
 	{"tls_expiry", "DateTime"},
 	{"error", "String"},
+	// m107 (GH #291 Phase 2). This table has no Nullable column anywhere else
+	// (tls_expiry uses the chTime epoch-0 sentinel instead), so app_up
+	// follows that same convention rather than introducing the first
+	// Nullable(...) column: Int8 with -1 = unknown/not-probed-this-row,
+	// 1 = true, 0 = false. See chAppUp / the Check.AppUp doc comment for why
+	// "not probed this row" and "probed, verdict unknown" are both -1 here -
+	// unlike the Postgres side, ClickHouse's uptime_checks has no separate
+	// rollup-status table where that distinction matters for a COALESCE
+	// guard, so collapsing them is safe.
+	{"app_up", "Int8"},
+	{"app_probe_reason", "String"},
+}
+
+// chAppUp maps a Check.AppUp tri-state onto the Int8 sentinel scheme
+// uptime_checks.app_up uses (see uptimeChecksColumns): -1 unknown/not
+// probed, 1 true, 0 false.
+func chAppUp(v *bool) int8 {
+	if v == nil {
+		return -1
+	}
+	if *v {
+		return 1
+	}
+	return 0
 }
 
 // New connects to ClickHouse and ensures the schema exists. When cfg.Addr is
@@ -420,7 +473,8 @@ func (s *chStore) InsertChecks(ctx context.Context, checks []Check) error {
 		}
 		// Append order must match uptimeChecksColumns / columnNames above
 		// exactly: checked_at, tenant_id, site_id, up, http_status, dns_ms,
-		// connect_ms, tls_ms, ttfb_ms, total_ms, tls_expiry, error.
+		// connect_ms, tls_ms, ttfb_ms, total_ms, tls_expiry, error, app_up,
+		// app_probe_reason.
 		if err := batch.Append(
 			chTime(c.CheckedAt),
 			c.TenantID,
@@ -434,6 +488,8 @@ func (s *chStore) InsertChecks(ctx context.Context, checks []Check) error {
 			c.TotalMs,
 			chTime(c.TLSExpiry),
 			c.Error,
+			chAppUp(c.AppUp),
+			c.AppProbeReason,
 		); err != nil {
 			_ = batch.Abort()
 			return fmt.Errorf("clickhouse append row: %w", err)
@@ -524,21 +580,52 @@ func (s *chStore) QueryFleetUptime(ctx context.Context, tenantID uuid.UUID, site
 		return map[uuid.UUID]FleetUptimeRow{}, nil
 	}
 	since := time.Now().Add(-window)
+	// GH #291 Phase 2: the "latest app verdict" is joined from a SEPARATE
+	// subquery, pre-filtered to app_probe_reason != '' (a real app-probe
+	// attempt), rather than argMax'd in the same GROUP BY as the
+	// reachability aggregate above. The app probe runs on a slower cadence
+	// than the reachability probe this table's grain follows, so most rows
+	// in the window never attempted one - an unfiltered
+	// argMax(app_up, checked_at) would almost always resolve to the
+	// "not probed this row" sentinel from the globally-latest row even when
+	// a real verdict exists a few rows earlier. Both app_up and
+	// app_probe_reason are explicitly cast toNullable(...) so an unmatched
+	// site (never app-probed) reads back as a real SQL NULL from the LEFT
+	// JOIN regardless of the server's join_use_nulls setting, which a plain
+	// (non-Nullable) column's join-fill behavior does not guarantee.
 	rows, err := s.conn.Query(ctx, fmt.Sprintf(`
 SELECT
-    site_id,
-    argMax(up,        checked_at) AS latest_up,
-    max(checked_at)               AS latest_at,
-    argMax(tls_expiry, checked_at) AS latest_tls,
-    count()                        AS checks,
-    sum(up)                        AS up_checks,
-    avgOrNullIf(total_ms, up = 1)  AS avg_latency
-FROM %s.uptime_checks
-WHERE tenant_id = ?
-  AND site_id IN ?
-  AND checked_at >= ?
-GROUP BY site_id`, s.db),
-		tenantID, siteIDs, chTime(since))
+    r.site_id,
+    r.latest_up, r.latest_at, r.latest_tls, r.checks, r.up_checks, r.avg_latency,
+    a.latest_app_up, a.latest_app_reason
+FROM (
+    SELECT
+        site_id,
+        argMax(up,        checked_at) AS latest_up,
+        max(checked_at)               AS latest_at,
+        argMax(tls_expiry, checked_at) AS latest_tls,
+        count()                        AS checks,
+        sum(up)                        AS up_checks,
+        avgOrNullIf(total_ms, up = 1)  AS avg_latency
+    FROM %[1]s.uptime_checks
+    WHERE tenant_id = ?
+      AND site_id IN ?
+      AND checked_at >= ?
+    GROUP BY site_id
+) r
+LEFT JOIN (
+    SELECT
+        site_id,
+        toNullable(argMax(app_up,           checked_at)) AS latest_app_up,
+        toNullable(argMax(app_probe_reason, checked_at)) AS latest_app_reason
+    FROM %[1]s.uptime_checks
+    WHERE tenant_id = ?
+      AND site_id IN ?
+      AND checked_at >= ?
+      AND app_probe_reason != ''
+    GROUP BY site_id
+) a ON a.site_id = r.site_id`, s.db),
+		tenantID, siteIDs, chTime(since), tenantID, siteIDs, chTime(since))
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse fleet uptime query: %w", err)
 	}
@@ -547,15 +634,17 @@ GROUP BY site_id`, s.db),
 	out := make(map[uuid.UUID]FleetUptimeRow, len(siteIDs))
 	for rows.Next() {
 		var (
-			siteID     uuid.UUID
-			latestUpU  uint8
-			latestAt   time.Time
-			latestTLS  time.Time
-			checks     uint64
-			upChecks   uint64
-			avgLatency *float64
+			siteID          uuid.UUID
+			latestUpU       uint8
+			latestAt        time.Time
+			latestTLS       time.Time
+			checks          uint64
+			upChecks        uint64
+			avgLatency      *float64
+			latestAppUp     *int8
+			latestAppReason *string
 		)
-		if err := rows.Scan(&siteID, &latestUpU, &latestAt, &latestTLS, &checks, &upChecks, &avgLatency); err != nil {
+		if err := rows.Scan(&siteID, &latestUpU, &latestAt, &latestTLS, &checks, &upChecks, &avgLatency, &latestAppUp, &latestAppReason); err != nil {
 			return nil, fmt.Errorf("clickhouse fleet uptime scan: %w", err)
 		}
 		row := FleetUptimeRow{}
@@ -575,6 +664,13 @@ GROUP BY site_id`, s.db),
 		}
 		if avgLatency != nil {
 			row.AvgLatencyMs = avgLatency
+		}
+		if latestAppReason != nil && *latestAppReason != "" {
+			row.AppProbeReason = *latestAppReason
+			if latestAppUp != nil && *latestAppUp != -1 {
+				b := *latestAppUp == 1
+				row.AppUp = &b
+			}
 		}
 		out[siteID] = row
 	}

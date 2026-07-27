@@ -294,6 +294,109 @@ func absDiff(a, b float64) float64 {
 	return b - a
 }
 
+// TestQueryFleetUptime_SurfacesAppHealthColumns is the GH #291 Phase 2 review
+// fix: it proves the Postgres READ path (QueryFleetUptime), not just the
+// WRITE path (UpsertRollup, already proven by
+// tests/uptime_app_health_integration_test.go's TestAppHealthRollup_
+// CoalesceGuard), surfaces latest_app_up/app_probe_reason on the returned
+// FleetUptimeRow. Before this fix, fleetUptimeQuery never selected either
+// column, so every sweep wrote a correct application-health verdict to
+// site_uptime_status and QueryFleetUptime silently never returned it -
+// Postgres is the DEFAULT metrics backend and the one hosted production
+// actually runs (WPMGR_CLICKHOUSE_ADDR unset), so the entire Phase 2 feature
+// was invisible there. Exercises all three FleetUptimeRow.AppUp/
+// AppProbeReason states in one pass, mirroring the semantics
+// metrics.chStore.QueryFleetUptime already implements for ClickHouse:
+//
+//   - never app-probed: AppProbeReason == "" and AppUp == nil.
+//   - app-probed, conclusive: AppProbeReason == the reason and AppUp non-nil.
+//   - app-probed, inconclusive (unknown): AppProbeReason == the reason but
+//     AppUp == nil - this is the state a naive `latest_app_up != nil` guard
+//     cannot distinguish from "never probed"; only app_probe_reason can.
+func TestQueryFleetUptime_SurfacesAppHealthColumns(t *testing.T) {
+	app, admin := startMetricsTestPostgres(t)
+	ctx := context.Background()
+	store := NewPostgres(app, nil)
+	rw := store.(RollupWriter)
+
+	tenant := metricsSeedTenant(t, admin, "m291-app-health-"+uuid.NewString()[:8])
+	conclusiveTrueSite := metricsSeedSite(t, admin, tenant, "https://"+uuid.NewString()+".example.com")
+	conclusiveFalseSite := metricsSeedSite(t, admin, tenant, "https://"+uuid.NewString()+".example.com")
+	unknownSite := metricsSeedSite(t, admin, tenant, "https://"+uuid.NewString()+".example.com")
+	neverProbedSite := metricsSeedSite(t, admin, tenant, "https://"+uuid.NewString()+".example.com")
+
+	now := time.Now()
+	appTrue, appFalse := true, false
+	checks := []Check{
+		{TenantID: tenant, SiteID: conclusiveTrueSite, CheckedAt: now, Up: true, TotalMs: 50,
+			AppUp: &appTrue, AppProbeReason: "rest_ok"},
+		{TenantID: tenant, SiteID: conclusiveFalseSite, CheckedAt: now, Up: true, TotalMs: 50,
+			AppUp: &appFalse, AppProbeReason: "rest_5xx"},
+		{TenantID: tenant, SiteID: unknownSite, CheckedAt: now, Up: true, TotalMs: 50,
+			AppUp: nil, AppProbeReason: "rest_forbidden"},
+		// neverProbedSite: a reachability-only check, exactly like every
+		// sweep tick that does not land on the app-probe cadence
+		// (AppUp/AppProbeReason left zero-value).
+		{TenantID: tenant, SiteID: neverProbedSite, CheckedAt: now, Up: true, TotalMs: 50},
+	}
+	if err := store.InsertChecks(ctx, checks); err != nil {
+		t.Fatalf("insert checks: %v", err)
+	}
+	if err := rw.UpsertRollup(ctx, checks); err != nil {
+		t.Fatalf("upsert rollup: %v", err)
+	}
+
+	got, err := store.QueryFleetUptime(ctx, tenant,
+		[]uuid.UUID{conclusiveTrueSite, conclusiveFalseSite, unknownSite, neverProbedSite}, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("QueryFleetUptime: %v", err)
+	}
+
+	trueRow, ok := got[conclusiveTrueSite]
+	if !ok {
+		t.Fatal("conclusiveTrueSite missing from result")
+	}
+	if trueRow.AppProbeReason != "rest_ok" {
+		t.Fatalf("conclusiveTrueSite AppProbeReason = %q, want %q", trueRow.AppProbeReason, "rest_ok")
+	}
+	if trueRow.AppUp == nil || !*trueRow.AppUp {
+		t.Fatalf("conclusiveTrueSite AppUp = %v, want true", trueRow.AppUp)
+	}
+
+	falseRow, ok := got[conclusiveFalseSite]
+	if !ok {
+		t.Fatal("conclusiveFalseSite missing from result")
+	}
+	if falseRow.AppProbeReason != "rest_5xx" {
+		t.Fatalf("conclusiveFalseSite AppProbeReason = %q, want %q", falseRow.AppProbeReason, "rest_5xx")
+	}
+	if falseRow.AppUp == nil || *falseRow.AppUp {
+		t.Fatalf("conclusiveFalseSite AppUp = %v, want false", falseRow.AppUp)
+	}
+
+	unknownRow, ok := got[unknownSite]
+	if !ok {
+		t.Fatal("unknownSite missing from result")
+	}
+	if unknownRow.AppProbeReason != "rest_forbidden" {
+		t.Fatalf("unknownSite AppProbeReason = %q, want %q", unknownRow.AppProbeReason, "rest_forbidden")
+	}
+	if unknownRow.AppUp != nil {
+		t.Fatalf("unknownSite AppUp = %v, want nil (attempted, but inconclusive)", unknownRow.AppUp)
+	}
+
+	neverRow, ok := got[neverProbedSite]
+	if !ok {
+		t.Fatal("neverProbedSite missing from result")
+	}
+	if neverRow.AppProbeReason != "" {
+		t.Fatalf("neverProbedSite AppProbeReason = %q, want \"\" (no app probe ever attempted)", neverRow.AppProbeReason)
+	}
+	if neverRow.AppUp != nil {
+		t.Fatalf("neverProbedSite AppUp = %v, want nil", neverRow.AppUp)
+	}
+}
+
 // TestQueryFleetUptime_RawReadsAreIndexBounded proves, via EXPLAIN ANALYZE
 // against a realistically large site_uptime_probes table (well beyond the
 // ~2 edge days), that the two raw sub-selects inside fleetUptimeQuery are

@@ -1021,7 +1021,9 @@ func addCacheBuster(targetURL string) (string, error) {
 
 // cacheHitHeaders are the response headers various page/edge caches use to
 // report that a response was served from cache rather than freshly rendered.
-// Checked case-insensitively via http.Header.Get's own canonicalization.
+// Checked case-insensitively via http.Header.Get's own canonicalization. This
+// list can never be exhaustive - see cacheHitShapeRe below for the fallback
+// that catches a vendor not named here.
 var cacheHitHeaders = []string{
 	"Cf-Cache-Status",   // Cloudflare
 	"X-Litespeed-Cache", // LiteSpeed / OpenLiteSpeed built-in page cache
@@ -1031,13 +1033,42 @@ var cacheHitHeaders = []string{
 	"X-Cache-Status",    // the standard nginx add_header X-Cache-Status $upstream_cache_status form
 }
 
+// cacheHitShapeRe is the FALLBACK for a cache-status header not named in
+// cacheHitHeaders. Appending vendor names to that list forever is a losing
+// game - a real-world fleet was found running a stack whose cache-status
+// header matched neither list, so DetectCacheHit would have silently missed
+// a cache HIT on exactly the setup that motivates this check (GH #291 Phase
+// 2). Rather than chase every vendor, this also matches the common SHAPE of a
+// cache-status header name: "x-<something>-cache" (X-Swarm-Cache,
+// X-Rocket-Cache, ...) or "x-cache-<something>" (X-Cache-Hits, ...),
+// case-insensitively. Anchored on the full header name (not a substring
+// search) so an unrelated header merely containing "cache" somewhere in a
+// longer name never false-positives.
+var cacheHitShapeRe = regexp.MustCompile(`(?i)^x-[a-z0-9]+-cache$|^x-cache-[a-z0-9]+$`)
+
+// cacheHitValueRe matches a header value that reads as an affirmative
+// cache-status verdict: a bare HIT, plus the handful of near-hit states real
+// caches emit that still mean "this response did not come from a fresh
+// backend render" (STALE served while revalidating, UPDATING served the old
+// object while refreshing, REVALIDATED served after a conditional check).
+// MISS/BYPASS/EXPIRED/DYNAMIC are deliberately NOT matched - those mean the
+// cache was NOT the source of this response, which is exactly the "prove the
+// bypass worked" case this whole mechanism exists for.
+var cacheHitValueRe = regexp.MustCompile(`(?i)\b(HIT|STALE|UPDATING|REVALIDATED)\b`)
+
 // detectCacheHit reports whether h carries a cache-status header (or an Age
 // value greater than zero) indicating the response was served from cache. A
 // cache that ignores query strings when computing its cache key defeats
 // addCacheBuster with one click of configuration (see cacheBusterParam), so
 // this is the honest backstop that turns a silently-stale 200 into a
 // detectable, reportable CacheHit instead of trusted proof of health.
-func detectCacheHit(h http.Header) (hit bool, detail string) {
+//
+// Two layers, checked in order: the explicit cacheHitHeaders list (known
+// vendors, cheapest and most precise), then cacheHitShapeRe (a header this
+// deployment's cache emits under a name not in that list, but whose shape and
+// value still say HIT/STALE/UPDATING/REVALIDATED). The Age > 0 backstop
+// applies regardless of either header check.
+func DetectCacheHit(h http.Header) (hit bool, detail string) {
 	for _, name := range cacheHitHeaders {
 		v := h.Get(name)
 		if v == "" {
@@ -1045,6 +1076,16 @@ func detectCacheHit(h http.Header) (hit bool, detail string) {
 		}
 		if strings.Contains(strings.ToUpper(v), "HIT") {
 			return true, fmt.Sprintf("cache hit (%s: %s)", name, v)
+		}
+	}
+	for name, values := range h {
+		if !cacheHitShapeRe.MatchString(name) {
+			continue
+		}
+		for _, v := range values {
+			if v != "" && cacheHitValueRe.MatchString(v) {
+				return true, fmt.Sprintf("cache hit (%s: %s)", name, v)
+			}
 		}
 	}
 	if age := strings.TrimSpace(h.Get("Age")); age != "" {
@@ -1059,7 +1100,7 @@ func detectCacheHit(h http.Header) (hit bool, detail string) {
 // an SSRF block) is returned as err; a reachable-but-broken site is a non-error
 // ProbeResult with Healthy()==false. The URL is cache-busted (see
 // cacheBusterParam) and the response headers are checked for a cache-status
-// signal (see detectCacheHit / ProbeResult.CacheHit) before the caller decides
+// signal (see DetectCacheHit / ProbeResult.CacheHit) before the caller decides
 // what the result proves.
 func (p *Probe) Get(ctx context.Context, targetURL string) (ProbeResult, error) {
 	bustedURL, err := addCacheBuster(targetURL)
@@ -1078,7 +1119,7 @@ func (p *Probe) Get(ctx context.Context, targetURL string) (ProbeResult, error) 
 	}
 	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRespBody)); _ = resp.Body.Close() }()
 
-	cacheHit, cacheDetail := detectCacheHit(resp.Header)
+	cacheHit, cacheDetail := DetectCacheHit(resp.Header)
 
 	// Read a bounded prefix to scan for fatal-error signatures.
 	const scanLimit = 64 << 10

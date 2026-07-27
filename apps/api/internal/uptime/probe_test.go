@@ -48,6 +48,35 @@ func TestProbeUp200(t *testing.T) {
 	}
 }
 
+// TestProbeRequestsRootPathWithEmptyQuery locks in the FROZEN reachability
+// probe's request shape: it requests exactly "/" (the cacheable homepage)
+// with an EMPTY query string - no path suffix, no cache-buster or any other
+// query parameter. GH #291 Phase 2 added a second prober (AppProber) that
+// deliberately targets /wp-json/ (or an operator override) WITH a
+// cache-busting query parameter, and nothing previously asserted the two
+// could not silently drift into requesting the same shape - see the design
+// doc's two-signal model: probe.go's request shape must never change.
+func TestProbeRequestsRootPathWithEmptyQuery(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := NewProber(testClient(), 5*time.Second).Probe(context.Background(), srv.URL)
+	if !res.Up {
+		t.Fatalf("expected up, got %+v", res)
+	}
+	if gotPath != "/" {
+		t.Fatalf("expected the frozen reachability probe to request exactly \"/\", got %q", gotPath)
+	}
+	if gotQuery != "" {
+		t.Fatalf("expected the frozen reachability probe to send an EMPTY query string, got %q", gotQuery)
+	}
+}
+
 func TestProbeDown500(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

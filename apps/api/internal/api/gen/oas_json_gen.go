@@ -52860,9 +52860,21 @@ func (s *FleetUptimeStatusItem) encodeFields(e *jx.Encoder) {
 		e.FieldStart("health_status")
 		e.Str(s.HealthStatus)
 	}
+	{
+		if s.AppUp.Set {
+			e.FieldStart("app_up")
+			s.AppUp.Encode(e)
+		}
+	}
+	{
+		if s.AppProbeReason.Set {
+			e.FieldStart("app_probe_reason")
+			s.AppProbeReason.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfFleetUptimeStatusItem = [13]string{
+var jsonFieldsNameOfFleetUptimeStatusItem = [15]string{
 	0:  "site_id",
 	1:  "site_name",
 	2:  "site_url",
@@ -52876,6 +52888,8 @@ var jsonFieldsNameOfFleetUptimeStatusItem = [13]string{
 	10: "in_incident",
 	11: "connection_state",
 	12: "health_status",
+	13: "app_up",
+	14: "app_probe_reason",
 }
 
 // Decode decodes FleetUptimeStatusItem from json.
@@ -53032,6 +53046,26 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"health_status\"")
+			}
+		case "app_up":
+			if err := func() error {
+				s.AppUp.Reset()
+				if err := s.AppUp.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_up\"")
+			}
+		case "app_probe_reason":
+			if err := func() error {
+				s.AppProbeReason.Reset()
+				if err := s.AppProbeReason.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_probe_reason\"")
 			}
 		default:
 			return d.Skip()

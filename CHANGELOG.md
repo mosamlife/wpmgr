@@ -8,6 +8,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.92] - 2026-07-27
+
+### Added
+
+- WPMgr now checks whether WordPress itself is actually running, not just whether the site returns a page (GH #291). A site with page caching can keep serving visitors a saved copy of its homepage even when WordPress is completely broken, which is why such an outage could previously go unnoticed. Alongside the existing check, WPMgr now asks the site for something a cache does not answer, so a site that is serving cached pages while WordPress is down is shown as degraded with an explanation of what that means for logins, forms and the admin area.
+- Uptime figures are deliberately unchanged. A cached page that loads still counts as up, because visitors really are being served. Application health is reported as a separate signal, so historical uptime and SLA figures keep their meaning.
+- The check costs almost nothing on a healthy site: if the site agent has reported in recently, that already proves WordPress is running and no extra request is made at all. The direct check only runs for sites that have gone quiet, which is exactly when it is needed.
+- WPMgr reports this as unknown rather than guessing whenever it cannot be certain, including when a response turns out to have come from a cache, when the site is merely slow, when it is in maintenance mode during an update, or when a security plugin blocks the check. Only a genuine WordPress error counts as broken. No alerts are sent for this signal yet; that follows in a later release with an explicit opt in.
+
 ## [0.61.91] - 2026-07-27
 
 ### Fixed

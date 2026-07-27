@@ -4379,7 +4379,7 @@ export const FleetUptimeStatusItemSchema = {
     status_reason: {
       type: "string",
       description:
-        "Short machine-readable explanation for status, populated when\nstatus=degraded (agent_unreachable, agent_degraded, or\nslow_response). Empty/absent when the status needs no further\nexplanation.\n",
+        "Short machine-readable explanation for status, populated when\nstatus=degraded (agent_unreachable, agent_degraded, app_down, or\nslow_response). Empty/absent when the status needs no further\nexplanation.\n",
     },
     uptime_pct_7d: {
       type: "number",
@@ -4409,6 +4409,17 @@ export const FleetUptimeStatusItemSchema = {
     },
     health_status: {
       type: "string",
+    },
+    app_up: {
+      type: "boolean",
+      nullable: true,
+      description:
+        "GH #291 Phase 2 application-health verdict from the most recent\napp probe: true (WordPress responded), false (conclusively\ndown), or absent/null (never probed, or the most recent probe\nwas inconclusive; see app_probe_reason). Independent of `up`\n(the reachability signal, unchanged forever): a cached 200\n(up=true) can coexist with app_up=false when a page cache is\nmasking a dead PHP backend.\n",
+    },
+    app_probe_reason: {
+      type: "string",
+      description:
+        "Machine-readable reason for the most recent app-health verdict\n(agent_fresh, rest_ok, rest_5xx, wp_fatal_error, cache_hit,\nrest_forbidden, rest_absent, rest_4xx, rest_non_json,\nunreachable, rest_unexpected). Empty when no app probe has run\nyet.\n",
     },
   },
 } as const;

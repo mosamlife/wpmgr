@@ -41,6 +41,15 @@ type ProbeWorker struct {
 	logger      *slog.Logger
 	concurrency int
 	threshold   int
+
+	// GH #291 Phase 2 (application health). All three are zero-value/nil
+	// until SetAppProber is called: appProber stays nil, so Sweep's app-probe
+	// branch below never runs and every check this worker writes carries
+	// AppUp=nil / AppProbeReason="" - bit-identical to this worker's
+	// behavior before this feature existed. See SetAppProber.
+	appProber        *AppProber
+	probeInterval    time.Duration
+	appProbeInterval time.Duration
 }
 
 // NewProbeWorker builds the probe worker. concurrency caps simultaneous probes;
@@ -56,6 +65,25 @@ func NewProbeWorker(repo Repo, prober *Prober, store metrics.Store, dispatcher *
 		threshold = 2
 	}
 	return &ProbeWorker{repo: repo, prober: prober, store: store, dispatcher: dispatcher, sites: sites, logger: logger, concurrency: concurrency, threshold: threshold}
+}
+
+// SetAppProber wires the GH #291 Phase 2 application-health prober into the
+// existing reachability sweep. Optional: a ProbeWorker this is never called
+// on (every existing caller/test, and any deployment with
+// WPMGR_UPTIME_APP_PROBE_ENABLED=false) makes zero app-probe network
+// requests and writes exactly what it wrote before this feature existed -
+// this is the mechanism behind the design's bit-identical-on-upgrade
+// requirement, not a separate code path.
+//
+// probeInterval is this worker's OWN reachability cadence (the same value
+// main.go registers its periodic job under); appProbeInterval is the desired
+// app-probe cadence. Both feed appProbeDue, the stateless cadence check that
+// decides, per sweep tick and per site, whether THIS tick also attempts an
+// app probe.
+func (w *ProbeWorker) SetAppProber(ap *AppProber, probeInterval, appProbeInterval time.Duration) {
+	w.appProber = ap
+	w.probeInterval = probeInterval
+	w.appProbeInterval = appProbeInterval
 }
 
 // Work runs one sweep.
@@ -82,7 +110,11 @@ func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
 		checks  []metrics.Check
 		results = make(map[uuid.UUID]ProbeResult, len(sites))
 		sem     = make(chan struct{}, w.concurrency)
-		wg      sync.WaitGroup
+		// appSem is a SEPARATE, equally-sized semaphore for the GH #291
+		// Phase 2 app probe - see the release-order comment below for why
+		// this exists instead of reusing sem.
+		appSem = make(chan struct{}, w.concurrency)
+		wg     sync.WaitGroup
 	)
 
 	for _, s := range sites {
@@ -91,26 +123,59 @@ func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
 			res := w.prober.Probe(ctx, s.URL)
+			// Release the reachability slot as soon as the reachability
+			// probe itself finishes, BEFORE the (optional) app probe below
+			// - not via a single defer covering the whole goroutine. sem
+			// exists to bound how many probes hit the network at once for
+			// the reachability sweep specifically ("bounds concurrency ...
+			// so one sweep cannot stampede the network", ProbeWorker's own
+			// doc comment); if the app probe held this same slot for
+			// however long it additionally takes (review finding: up to
+			// 2*appProber.timeout after the FIX 4 change), a fleet-wide app
+			// probe would proportionally slow the reachability sweep for
+			// sites that have nothing to do with it. appSem below bounds
+			// the app probe's own concurrency instead, so it still cannot
+			// stampede the network, but on its OWN budget.
+			<-sem
 			checkedAt := time.Now()
+
+			// GH #291 Phase 2: piggyback an application-health probe onto
+			// THIS reachability check when the worker has one configured
+			// (SetAppProber) AND this site is due this tick (appProbeDue).
+			// Attaching it to the SAME Check below - never a separate write
+			// - is what keeps site_uptime_probes/site_uptime_daily free of
+			// the "second row corrupts every aggregate" trap (see the
+			// design doc and metrics.pgStore.UpsertRollup's doc comment).
+			var appUp *bool
+			var appReason string
+			if w.appProber != nil && appProbeDue(s.ID, now, w.probeInterval, w.appProbeInterval) {
+				appSem <- struct{}{}
+				ar := w.appProber.Probe(ctx, s.URL, s.LastSeenAt, w.appProbeInterval, s.AppProbePath)
+				<-appSem
+				appUp = ar.Up
+				appReason = ar.Reason
+			}
+
 			mu.Lock()
 			results[s.ID] = res
 			checks = append(checks, metrics.Check{
-				CheckedAt:  checkedAt,
-				TenantID:   s.TenantID,
-				SiteID:     s.ID,
-				Up:         res.Up,
-				HTTPStatus: uint16(res.HTTPStatus),
-				DNSMs:      res.DNSMs,
-				ConnectMs:  res.ConnectMs,
-				TLSMs:      res.TLSMs,
-				TTFBMs:     res.TTFBMs,
-				TotalMs:    res.TotalMs,
-				TLSExpiry:  res.TLSExpiry,
-				TLSIssuer:  res.TLSIssuer,
-				TLSSubject: res.TLSSubject,
-				Error:      res.Error,
+				CheckedAt:      checkedAt,
+				TenantID:       s.TenantID,
+				SiteID:         s.ID,
+				Up:             res.Up,
+				HTTPStatus:     uint16(res.HTTPStatus),
+				DNSMs:          res.DNSMs,
+				ConnectMs:      res.ConnectMs,
+				TLSMs:          res.TLSMs,
+				TTFBMs:         res.TTFBMs,
+				TotalMs:        res.TotalMs,
+				TLSExpiry:      res.TLSExpiry,
+				TLSIssuer:      res.TLSIssuer,
+				TLSSubject:     res.TLSSubject,
+				Error:          res.Error,
+				AppUp:          appUp,
+				AppProbeReason: appReason,
 			})
 			mu.Unlock()
 		}()

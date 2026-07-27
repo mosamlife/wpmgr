@@ -54,6 +54,14 @@ export const STATUS_REASON_COPY: Record<string, string> = {
   agent_unreachable:
     "Serving visitors, but the site agent is not responding. Cached pages may be masking a broken backend.",
   agent_degraded: "Serving visitors, but the site agent is late checking in.",
+  // GH #291 — the reason the explanation feature exists: a page cache can
+  // keep serving a healthy-looking 200 while WordPress itself is dead
+  // behind it. Honest in both directions: visitors are NOT seeing an
+  // outage (so this must not read as "down"), but WordPress is not
+  // responding (so it must not read as "fine" either), and it points an
+  // operator at what is actually broken.
+  app_down:
+    "Serving visitors from cache, but WordPress is not responding. Logins, forms and the admin area are likely already broken.",
   slow_response: "Responding slowly.",
 };
 

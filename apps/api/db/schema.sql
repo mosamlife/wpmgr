@@ -277,6 +277,13 @@ CREATE TABLE sites (
     -- The composite FK to clients (id, tenant_id) is added after the clients
     -- table definition below (ON DELETE SET NULL — unassign, never cascade).
     client_id   uuid,
+    -- m107 (GH #291 Phase 2): B3 override for the application-health probe.
+    -- When set, the app prober requests this path instead of auto-detecting
+    -- /wp-json/ (with the ?rest_route=/ fallback). NULL/empty means
+    -- auto-detect. Not yet operator-settable via the API (planned for Phase
+    -- 3's per-site override UI); the column and probe support exist now so
+    -- Phase 3 needs no further schema change.
+    app_probe_path text,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
@@ -1392,6 +1399,20 @@ CREATE TABLE site_uptime_probes (
     tls_issuer   text             NOT NULL DEFAULT '',
     tls_subject  text             NOT NULL DEFAULT '',
     error_text   text             NOT NULL DEFAULT '',
+    -- m107 (GH #291 Phase 2): the application-health probe rides the SAME row
+    -- as the reachability probe it was piggybacked onto (see
+    -- uptime.ProbeWorker.Sweep / appProbeDue) instead of a second row, so no
+    -- aggregate that counts/sums site_uptime_probes rows is ever affected by
+    -- app-health data. app_up is NULL on every row where no app probe was
+    -- attempted (the common case: the app probe runs on a slower cadence
+    -- than this reachability probe) and tri-state (true/false/NULL=unknown)
+    -- on a row where one was. app_probe_reason is NULL exactly when app_up
+    -- is NULL-because-not-attempted, and non-NULL (one of the
+    -- AppProbeReason* constants) whenever an app probe actually ran on this
+    -- row, including a conclusive "unknown" verdict - see
+    -- metrics.Check.AppProbeReason.
+    app_up            boolean,
+    app_probe_reason  text,
     PRIMARY KEY (id)
 );
 
@@ -1462,6 +1483,18 @@ CREATE TABLE site_uptime_daily (
     total_checks    integer          NOT NULL DEFAULT 0,
     sum_latency_ms  double precision NOT NULL DEFAULT 0,
     latency_samples integer          NOT NULL DEFAULT 0,
+    -- m107 (GH #291 Phase 2): additive app-health counters riding the SAME
+    -- (site_id, day) row - NOT a second row, which would double total_checks
+    -- and blend two different meanings into every uptime percentage in the
+    -- product (this table has no "kind" dimension to disambiguate rows).
+    -- Nullable with no default (mirrors this migration's other new columns);
+    -- the upsert COALESCEs against NULL so a pre-migration/never-touched row
+    -- adds correctly. app_total_checks counts every app probe ATTEMPT
+    -- (including an inconclusive "unknown" verdict); app_up_checks counts
+    -- only a conclusive true verdict - mirrors up_checks/total_checks
+    -- exactly, just for the app-health signal.
+    app_up_checks    integer,
+    app_total_checks integer,
     updated_at      timestamptz      NOT NULL DEFAULT now(),
     PRIMARY KEY (site_id, day)
 );
@@ -1521,6 +1554,19 @@ CREATE TABLE site_uptime_status (
     latest_up      boolean     NOT NULL,
     last_probed_at timestamptz NOT NULL,
     tls_expiry     timestamptz,
+    -- m107 (GH #291 Phase 2): the application-health snapshot, upserted
+    -- alongside the reachability fields above but COALESCE/CASE-guarded
+    -- against NULL independently of them (see metrics.pgStore.UpsertRollup).
+    -- The app probe runs on a slower cadence than the reachability probe
+    -- (default 300s vs 60s), so most sweeps that reach this upsert carry NO
+    -- app-health opinion at all - a plain "latest_app_up = EXCLUDED.
+    -- latest_app_up" would clobber a known value with NULL on ~4 of every 5
+    -- sweeps. last_app_probed_at is separate from last_probed_at (the
+    -- reachability timestamp this row's freshness guard is keyed on)
+    -- because the two probes do not always coincide.
+    latest_app_up      boolean,
+    app_probe_reason   text,
+    last_app_probed_at timestamptz,
     updated_at     timestamptz NOT NULL DEFAULT now()
 );
 

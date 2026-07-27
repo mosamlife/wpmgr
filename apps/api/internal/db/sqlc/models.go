@@ -596,6 +596,7 @@ type Site struct {
 	ArchivedAt            pgtype.Timestamptz `json:"archived_at"`
 	MissedHeartbeats      int32              `json:"missed_heartbeats"`
 	ClientID              pgtype.UUID        `json:"client_id"`
+	AppProbePath          *string            `json:"app_probe_path"`
 	CreatedAt             time.Time          `json:"created_at"`
 	UpdatedAt             time.Time          `json:"updated_at"`
 }
@@ -1023,34 +1024,41 @@ type SiteUptimeDaily struct {
 	TotalChecks    int32       `json:"total_checks"`
 	SumLatencyMs   float64     `json:"sum_latency_ms"`
 	LatencySamples int32       `json:"latency_samples"`
+	AppUpChecks    *int32      `json:"app_up_checks"`
+	AppTotalChecks *int32      `json:"app_total_checks"`
 	UpdatedAt      time.Time   `json:"updated_at"`
 }
 
 type SiteUptimeProbe struct {
-	ID         uuid.UUID          `json:"id"`
-	TenantID   uuid.UUID          `json:"tenant_id"`
-	SiteID     uuid.UUID          `json:"site_id"`
-	ProbedAt   time.Time          `json:"probed_at"`
-	Up         bool               `json:"up"`
-	HttpStatus int32              `json:"http_status"`
-	DnsMs      float64            `json:"dns_ms"`
-	ConnectMs  float64            `json:"connect_ms"`
-	TlsMs      float64            `json:"tls_ms"`
-	TtfbMs     float64            `json:"ttfb_ms"`
-	TotalMs    float64            `json:"total_ms"`
-	TlsExpiry  pgtype.Timestamptz `json:"tls_expiry"`
-	TlsIssuer  string             `json:"tls_issuer"`
-	TlsSubject string             `json:"tls_subject"`
-	ErrorText  string             `json:"error_text"`
+	ID             uuid.UUID          `json:"id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	SiteID         uuid.UUID          `json:"site_id"`
+	ProbedAt       time.Time          `json:"probed_at"`
+	Up             bool               `json:"up"`
+	HttpStatus     int32              `json:"http_status"`
+	DnsMs          float64            `json:"dns_ms"`
+	ConnectMs      float64            `json:"connect_ms"`
+	TlsMs          float64            `json:"tls_ms"`
+	TtfbMs         float64            `json:"ttfb_ms"`
+	TotalMs        float64            `json:"total_ms"`
+	TlsExpiry      pgtype.Timestamptz `json:"tls_expiry"`
+	TlsIssuer      string             `json:"tls_issuer"`
+	TlsSubject     string             `json:"tls_subject"`
+	ErrorText      string             `json:"error_text"`
+	AppUp          *bool              `json:"app_up"`
+	AppProbeReason *string            `json:"app_probe_reason"`
 }
 
 type SiteUptimeStatus struct {
-	SiteID       uuid.UUID          `json:"site_id"`
-	TenantID     uuid.UUID          `json:"tenant_id"`
-	LatestUp     bool               `json:"latest_up"`
-	LastProbedAt time.Time          `json:"last_probed_at"`
-	TlsExpiry    pgtype.Timestamptz `json:"tls_expiry"`
-	UpdatedAt    time.Time          `json:"updated_at"`
+	SiteID          uuid.UUID          `json:"site_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	LatestUp        bool               `json:"latest_up"`
+	LastProbedAt    time.Time          `json:"last_probed_at"`
+	TlsExpiry       pgtype.Timestamptz `json:"tls_expiry"`
+	LatestAppUp     *bool              `json:"latest_app_up"`
+	AppProbeReason  *string            `json:"app_probe_reason"`
+	LastAppProbedAt pgtype.Timestamptz `json:"last_app_probed_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
 }
 
 type SiteVulnerability struct {
@@ -1274,4 +1282,22 @@ type WordfenceVulnSoftware struct {
 	AffectedVersions []byte `json:"affected_versions"`
 	Patched          bool   `json:"patched"`
 	PatchedVersions  []byte `json:"patched_versions"`
+}
+
+type WporgPluginChecksum struct {
+	Kind      string    `json:"kind"`
+	Slug      string    `json:"slug"`
+	Version   string    `json:"version"`
+	Path      string    `json:"path"`
+	Md5       string    `json:"md5"`
+	Sha256    *string   `json:"sha256"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+
+type WporgPluginChecksumsMetum struct {
+	Kind      string    `json:"kind"`
+	Slug      string    `json:"slug"`
+	Version   string    `json:"version"`
+	FetchedAt time.Time `json:"fetched_at"`
+	Ok        bool      `json:"ok"`
 }

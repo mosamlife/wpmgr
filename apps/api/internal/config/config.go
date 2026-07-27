@@ -233,6 +233,24 @@ type UptimeConfig struct {
 	// CronKickConcurrency caps how many concurrent kicks fire per pass.
 	// Default 10. Env: WPMGR_CRON_KICK_CONCURRENCY.
 	CronKickConcurrency int `koanf:"cron_kick_concurrency"`
+
+	// AppProbeEnabled enables the GH #291 Phase 2 application-health probe
+	// (B0-B3, see internal/uptime/app_probe.go). Default true - the design
+	// is "measure and display from day one", with alerting (a later phase)
+	// staying opt-in separately. Set WPMGR_UPTIME_APP_PROBE_ENABLED=false to
+	// disable entirely (the reachability probe and everything it feeds are
+	// completely unaffected either way).
+	AppProbeEnabled bool `koanf:"app_probe_enabled"`
+	// AppProbeInterval is the desired app-probe cadence, piggybacked onto the
+	// existing reachability sweep via the stateless appProbeDue cadence
+	// check rather than its own periodic job. Default 300s (slower than the
+	// 60s reachability probe on purpose - see the design doc's "measure
+	// first" rollout notes). Env: WPMGR_UPTIME_APP_PROBE_INTERVAL.
+	AppProbeInterval time.Duration `koanf:"app_probe_interval"`
+	// AppProbeTimeout bounds a single app-probe HTTP attempt (B1, B2, or the
+	// B3 override - each gets its own timeout, not a combined one). Default
+	// 10s. Env: WPMGR_UPTIME_APP_PROBE_TIMEOUT.
+	AppProbeTimeout time.Duration `koanf:"app_probe_timeout"`
 }
 
 // S3Config holds the S3-compatible object-storage configuration (ADR-010).
@@ -564,6 +582,9 @@ func defaults() map[string]any {
 		"uptime.cron_kick_interval":         "5m",
 		"uptime.cron_kick_timeout":          "5s",
 		"uptime.cron_kick_concurrency":      10,
+		"uptime.app_probe_enabled":          true,
+		"uptime.app_probe_interval":         "300s",
+		"uptime.app_probe_timeout":          "10s",
 		"river.media_schema":                "media_encoder",
 		"autologin.require_2fa_step_up":     false,
 		"conn.degrade_after":                "300s",
