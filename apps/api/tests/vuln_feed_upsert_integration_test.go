@@ -176,6 +176,78 @@ func TestUpsertFeedRecord_RoundTrip(t *testing.T) {
 	})
 }
 
+// TestUpsertFeedRecord_EmptyNormalizedSlugSkipped proves the single-record
+// ingest path (UpsertFeedRecord) carries the same empty-normalised-slug guard
+// BulkReplaceAllSoftware already had: a software row whose slug normalises to
+// the empty string (here "/", which strings.Cut splits into an empty
+// directory component before the first "/") must be silently skipped rather
+// than stored, so it can never later be matched by an equally-empty
+// normalised lookup key.
+func TestUpsertFeedRecord_EmptyNormalizedSlugSkipped(t *testing.T) {
+	pool := startPostgres(t) // skips if Docker unavailable
+	ctx := context.Background()
+	repo := vuln.NewRepo(pool)
+
+	affectedVersions, _ := json.Marshal(map[string]any{})
+	patchedVersions, _ := json.Marshal([]string{})
+	refURLs, _ := json.Marshal([]string{"https://example.com/vuln"})
+	raw, _ := json.Marshal(map[string]any{"_test": true})
+
+	rec := vuln.FeedRecord{
+		VulnID:     "empty-slug-test-0000-0000-000000000001",
+		Title:      "Empty slug guard test",
+		References: refURLs,
+		Raw:        raw,
+		Software: []vuln.SoftwareRow{
+			// A slug that normalises to "" and must be skipped.
+			{Kind: "plugin", Slug: "/", AffectedVersions: affectedVersions, Patched: false, PatchedVersions: patchedVersions},
+			// A normal slug in the same record, which must still land.
+			{Kind: "plugin", Slug: "real-plugin", AffectedVersions: affectedVersions, Patched: false, PatchedVersions: patchedVersions},
+		},
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.agent','on',true)"); err != nil {
+		t.Fatalf("set agent guc: %v", err)
+	}
+	if err := repo.UpsertFeedRecord(ctx, tx, rec); err != nil {
+		t.Fatalf("UpsertFeedRecord: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	t.Run("empty_slug_row_not_stored", func(t *testing.T) {
+		var count int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM wordfence_vuln_software WHERE vuln_id = $1 AND slug = ''`,
+			rec.VulnID,
+		).Scan(&count); err != nil {
+			t.Fatalf("count query: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("wordfence_vuln_software rows with empty slug = %d; want 0 (must be skipped, not stored)", count)
+		}
+	})
+
+	t.Run("normal_slug_row_still_stored", func(t *testing.T) {
+		var count int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM wordfence_vuln_software WHERE vuln_id = $1 AND slug = 'real-plugin'`,
+			rec.VulnID,
+		).Scan(&count); err != nil {
+			t.Fatalf("count query: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("wordfence_vuln_software rows for real-plugin = %d; want 1", count)
+		}
+	})
+}
+
 // TestBulkIngest_Scale exercises the bulk ingest path that fixed the prod timeout.
 //
 // The per-record loop (UpsertFeedRecord called 13k times in one tx) blew the

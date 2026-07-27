@@ -11760,6 +11760,7 @@ export const VulnFindingSchema = {
     "first_seen",
     "last_seen",
     "references",
+    "wordfence_link",
   ],
   properties: {
     id: {
@@ -11822,6 +11823,11 @@ export const VulnFindingSchema = {
       items: {
         type: "string",
       },
+    },
+    wordfence_link: {
+      type: "string",
+      description:
+        "Deterministic per-record Wordfence Intelligence vulnerability-database URL, built from vuln_id (https://www.wordfence.com/threat-intel/vulnerabilities/id/{vuln_id}). Satisfies the Defiant per-record attribution requirement independently of the references[] array's contents.",
     },
   },
 } as const;

@@ -5,7 +5,16 @@
 // Detection is a pure CP-side join. No agent change is required: the CP already
 // holds each site's installed plugins/themes/core + version in Site.Components
 // (site/model.go). The agent's refresh_inventory command (already existing)
-// keeps that data fresh; a completed update triggers an immediate rescan.
+// keeps that data fresh. A rescan (RescanSite) has exactly two triggers today:
+// an operator hitting the per-site "rescan now" route (handler.go rescan), and
+// the feed-wide RescanAll fan-out after a successful Scanner/Production ingest
+// (service.go RescanAll, worker.go triggerRescanAll).
+//
+// Note what is NOT a trigger: neither creating a remediation update run
+// (service.go Remediate) nor a completed update re-scans the site. A patched
+// finding therefore stays open until one of the two triggers above fires, in
+// practice the next hourly feed ingest. Closing that loop (update completion to
+// targeted rescan) is a separate, planned change, not yet implemented.
 //
 // Attribution obligations (Wordfence Intelligence ToS, 2026-01-26):
 //   - Defiant copyright + license text are stored once in wordfence_vuln_feed_meta

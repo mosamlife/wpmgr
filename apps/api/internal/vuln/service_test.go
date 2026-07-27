@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -343,6 +344,119 @@ func TestSlugNormalisedToLowercase(t *testing.T) {
 		if got != tc.wantMatch {
 			t.Errorf("NormSlug(%q)==NormSlug(%q): got %v, want %v", tc.feedSlug, tc.inventorySlug, got, tc.wantMatch)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Plugin-vuln-matching fix: normSlug directory-cut canonicalisation
+// ---------------------------------------------------------------------------
+
+// TestNormSlug_DirectoryCutAndCase is the fixture for the plugin-vuln-matching
+// production bug: the agent reports a plugin's installed slug as the
+// get_plugins() ARRAY KEY (apps/agent/includes/commands/class-metadata-command.php:322,
+// "'slug' => $file"), which for an ordinary directory plugin is a FILE PATH
+// like "woocommerce/woocommerce.php", not the bare canonical slug
+// "woocommerce" that Wordfence stores. normSlug must strip the directory
+// component before lower-casing so the two forms compare equal.
+//
+// This test FAILS against the pre-fix normSlug (strings.ToLower only, no
+// directory cut): case "directory_plugin" below asserts
+// "woocommerce/woocommerce.php" normalises to "woocommerce"; the old
+// implementation left it as "woocommerce/woocommerce.php" (lower-cased but
+// still carrying the "/woocommerce.php" suffix), which would never equal the
+// feed's stored "woocommerce" key, reproducing the exact zero-match
+// production bug end to end.
+func TestNormSlug_DirectoryCutAndCase(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// (a) directory plugin: get_plugins() key "dir/file.php" resolves to
+		// the canonical directory component.
+		{"directory_plugin", "woocommerce/woocommerce.php", "woocommerce"},
+		{"directory_plugin_hyphenated_dir", "advanced-custom-fields/acf.php", "advanced-custom-fields"},
+		// (b) single-file plugin: no slash present, so the value passes
+		// through unchanged. Documented pre-existing limitation: Wordfence's
+		// canonical slug for Hello Dolly is "hello-dolly", not "hello", so a
+		// single-file plugin whose canonical slug differs from its file stem
+		// still will not match. This test only asserts normSlug's own
+		// (correct, unchanged) behaviour for the no-slash case, not that the
+		// match succeeds.
+		{"single_file_plugin_no_slash", "hello.php", "hello.php"},
+		// (c) themes/core never carry a "/" and must normalise identically to
+		// the pre-fix (lower-case-only) behaviour.
+		{"theme_slug_unchanged", "twentytwentyfour", "twentytwentyfour"},
+		{"core_slug_unchanged", "wordpress", "wordpress"},
+		// (d) mixed case, with and without a directory component.
+		{"mixed_case_directory", "WooCommerce/WooCommerce.php", "woocommerce"},
+		{"mixed_case_no_slash", "Akismet", "akismet"},
+		// (e) empty string.
+		{"empty_string", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := vuln.NormSlug(tc.in)
+			if got != tc.want {
+				t.Errorf("NormSlug(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormSlug_IngestIsNoOpForCanonicalFeedSlugs proves the invariant
+// documented on normSlug: Wordfence's own feed already sends bare,
+// directory-form canonical slugs with no "/", so applying the directory-cut
+// normSlug to a feed-supplied slug produces exactly the same result as the
+// old lower-case-only implementation. The fix only changes behaviour for the
+// agent-supplied (file-path-shaped) side of the comparison; the ingest side
+// is unaffected.
+func TestNormSlug_IngestIsNoOpForCanonicalFeedSlugs(t *testing.T) {
+	feedSlugs := []string{"woocommerce", "Akismet", "contact-form-7", "wordpress", "twentytwentyfour"}
+	for _, s := range feedSlugs {
+		got := vuln.NormSlug(s)
+		want := strings.ToLower(s)
+		if got != want {
+			t.Errorf("NormSlug(%q) = %q; want %q (a feed slug has no \"/\", so this must equal plain ToLower)", s, got, want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Security: an empty-normalized-slug must never reach the DB as a lookup key
+// ---------------------------------------------------------------------------
+
+// TestLookupSoftware_EmptyNormalizedSlugNeverQueried proves that a raw slug
+// which normalises to the empty string (e.g. "/x", a malicious or malformed
+// agent-reported slug; strings.Cut on "/x" yields an empty directory
+// component before the first "/") is refused before it is ever used as a
+// query key, rather than being sent to Postgres as an empty-string slug
+// filter. The Repo is built with a nil pool: if the guard were missing or
+// removed, the very next line (r.pool.Query) would nil-dereference and this
+// test would panic, proving the guard is what stops execution before the
+// query is ever built.
+func TestLookupSoftware_EmptyNormalizedSlugNeverQueried(t *testing.T) {
+	repo := vuln.NewRepo(nil)
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"leading_slash_no_dir", "/x"},
+		{"bare_slash", "/"},
+		{"empty_string", ""},
+	}
+	for _, tc := range cases {
+		raw := tc.raw
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := repo.LookupSoftware(context.Background(), vuln.KindPlugin, raw)
+			if err != nil {
+				t.Fatalf("LookupSoftware(%q): %v", raw, err)
+			}
+			if len(rows) != 0 {
+				t.Errorf("LookupSoftware(%q) = %d rows; want 0", raw, len(rows))
+			}
+		})
 	}
 }
 

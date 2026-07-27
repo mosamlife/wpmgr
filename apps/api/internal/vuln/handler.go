@@ -3,6 +3,7 @@ package vuln
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -117,6 +118,11 @@ type findingDTO struct {
 	FirstSeen        string   `json:"first_seen"`
 	LastSeen         string   `json:"last_seen"`
 	References       []string `json:"references"`
+	// WordfenceLink is the deterministic per-record Wordfence Intelligence
+	// vulnerability-database URL (see wordfenceLink below), satisfying the
+	// Defiant per-record attribution requirement independently of whatever
+	// the feed's own references[] array happens to contain this run.
+	WordfenceLink string `json:"wordfence_link"`
 }
 
 // The GET /api/v1/vulnerabilities fleet response shape:
@@ -185,6 +191,7 @@ func toFindingDTO(f Finding) findingDTO {
 		FirstSeen:        f.FirstSeen.UTC().Format(time.RFC3339),
 		LastSeen:         f.LastSeen.UTC().Format(time.RFC3339),
 		References:       refsFromJSON(f.References),
+		WordfenceLink:    wordfenceLink(f.VulnID),
 	}
 	if f.FixedVersion != "" {
 		dto.FixedVersion = &f.FixedVersion
@@ -249,6 +256,43 @@ func refsFromJSON(raw []byte) []string {
 		return urls
 	}
 	return []string{}
+}
+
+// wordfenceLink builds the deterministic per-record Wordfence Intelligence
+// vulnerability-database URL for a finding.
+//
+// The Defiant per-record licence requires that any copy of a vulnerability
+// record include a hyperlink to that specific record. Prior to this, WPMgr
+// relied INDIRECTLY on the feed's own reference_urls[] array happening to
+// contain a Wordfence link at some position, which is not guaranteed for
+// every record/position, and empty for records the feed sends with no
+// references at all. wordfenceLink instead derives the link deterministically
+// from a stable feed-supplied field the finding always carries: vuln_id,
+// which is the UUID key of the root JSON object in both the Scanner and
+// Production Wordfence Intelligence feeds (see FeedRecord.VulnID / wfRecord
+// in worker.go, the feed's own record identifier, not something WPMgr
+// invents). That same identifier is what Wordfence's own public vulnerability
+// database uses in its own per-record detail URL:
+//
+//	https://www.wordfence.com/threat-intel/vulnerabilities/id/<vuln_id>
+//
+// This is also the exact URL shape the Wordfence Intelligence feed itself
+// commonly supplies as a reference for a record (see the realistic fixture
+// data in apps/web/src/features/security/use-vuln.test.ts). Building it
+// deterministically here, rather than reading references[0], guarantees
+// every finding carries a valid, always-present per-record link-back
+// regardless of what the feed's references array contains for that record.
+//
+// The vuln_id segment is percent-encoded (url.PathEscape) as defense in
+// depth: it originates from external feed data and, while normally a plain
+// UUID, is never assumed to be safe to concatenate unescaped into a URL path.
+// Returns "" only when vulnID is empty (never expected in practice: vuln_id
+// is a NOT NULL primary-key component of every finding and feed record).
+func wordfenceLink(vulnID string) string {
+	if vulnID == "" {
+		return ""
+	}
+	return "https://www.wordfence.com/threat-intel/vulnerabilities/id/" + url.PathEscape(vulnID)
 }
 
 // ---------------------------------------------------------------------------

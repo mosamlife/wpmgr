@@ -174,6 +174,90 @@ describe("VulnPanel — findings table + Gate 0 attribution", () => {
 // GH #245: degraded CVSS enrichment banner
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// wordfence_link: per-record Wordfence Intelligence link-back required by
+// the Defiant Wordfence Intelligence feed license (any copy of a
+// vulnerability record must include a hyperlink to that record).
+// ---------------------------------------------------------------------------
+
+describe("VulnPanel: Wordfence per-record link (Defiant license link-back obligation)", () => {
+  it("renders a self-describing link to the Wordfence record when wordfence_link is present", () => {
+    const wordfenceLink =
+      "https://www.wordfence.com/threat-intel/vulnerabilities/id/cccccccc-1111-1111-1111-111111111111";
+    const response: SiteVulnsResponse = {
+      items: [
+        buildFinding({
+          id: "f-wordfence-link",
+          name: "Linked Plugin",
+          wordfence_link: wordfenceLink,
+        }),
+      ],
+      attribution: ATTRIBUTION,
+      feed_ok: true,
+      feed_synced: "2026-07-06T00:00:00Z",
+      enrichment_available: true,
+    };
+    mockedUseSiteVulnerabilities.mockReturnValue(
+      mockQueryResult<SiteVulnsResponse>({ data: response }),
+    );
+
+    renderWithProviders(<VulnPanel siteId="site-1" />);
+
+    // The accessible name is meaningful on its own, never a bare URL.
+    const link = screen.getByRole("link", {
+      name: /view the wordfence record/i,
+    });
+    expect(link).toHaveAttribute("href", wordfenceLink);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link.textContent).not.toMatch(/^https?:\/\//);
+  });
+
+  it("does not render the Wordfence record link when wordfence_link is absent (older CP response)", () => {
+    const response: SiteVulnsResponse = {
+      items: [buildFinding({ id: "f-no-wordfence-link", name: "Unlinked Plugin" })],
+      attribution: ATTRIBUTION,
+      feed_ok: true,
+      feed_synced: "2026-07-06T00:00:00Z",
+      enrichment_available: true,
+    };
+    mockedUseSiteVulnerabilities.mockReturnValue(
+      mockQueryResult<SiteVulnsResponse>({ data: response }),
+    );
+
+    renderWithProviders(<VulnPanel siteId="site-1" />);
+
+    expect(
+      screen.queryByRole("link", { name: /view the wordfence record/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render the Wordfence record link when wordfence_link is an empty string", () => {
+    const response: SiteVulnsResponse = {
+      items: [
+        buildFinding({
+          id: "f-empty-wordfence-link",
+          name: "Empty Link Plugin",
+          wordfence_link: "",
+        }),
+      ],
+      attribution: ATTRIBUTION,
+      feed_ok: true,
+      feed_synced: "2026-07-06T00:00:00Z",
+      enrichment_available: true,
+    };
+    mockedUseSiteVulnerabilities.mockReturnValue(
+      mockQueryResult<SiteVulnsResponse>({ data: response }),
+    );
+
+    renderWithProviders(<VulnPanel siteId="site-1" />);
+
+    expect(
+      screen.queryByRole("link", { name: /view the wordfence record/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("VulnPanel degraded-enrichment banner (GH #245)", () => {
   it("renders the amber banner when feed_ok=true but enrichment_available=false", () => {
     const response: SiteVulnsResponse = {

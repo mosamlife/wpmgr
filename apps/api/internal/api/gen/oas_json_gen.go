@@ -117091,9 +117091,13 @@ func (s *VulnFinding) encodeFields(e *jx.Encoder) {
 		}
 		e.ArrEnd()
 	}
+	{
+		e.FieldStart("wordfence_link")
+		e.Str(s.WordfenceLink)
+	}
 }
 
-var jsonFieldsNameOfVulnFinding = [17]string{
+var jsonFieldsNameOfVulnFinding = [18]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "vuln_id",
@@ -117111,6 +117115,7 @@ var jsonFieldsNameOfVulnFinding = [17]string{
 	14: "first_seen",
 	15: "last_seen",
 	16: "references",
+	17: "wordfence_link",
 }
 
 // Decode decodes VulnFinding from json.
@@ -117326,6 +117331,18 @@ func (s *VulnFinding) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"references\"")
 			}
+		case "wordfence_link":
+			requiredBitSet[2] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.WordfenceLink = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"wordfence_link\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -117338,7 +117355,7 @@ func (s *VulnFinding) Decode(d *jx.Decoder) error {
 	for i, mask := range [3]uint8{
 		0b01111111,
 		0b11110001,
-		0b00000001,
+		0b00000011,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

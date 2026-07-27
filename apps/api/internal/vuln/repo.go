@@ -82,13 +82,24 @@ func (r *Repo) UpsertFeedRecord(ctx context.Context, tx pgx.Tx, rec FeedRecord) 
 	}
 
 	// Re-insert software rows.
-	// F3: normalise slug to lower-case on ingest so the feed canonical slug
-	// ("Akismet") and an agent inventory slug ("akismet") always match. The
-	// original mixed-case slug is NOT stored because the conflict key
+	// normSlug canonicalises (case + directory form) on ingest so the feed
+	// canonical slug and an agent inventory slug always compare equal (see
+	// normSlug's doc comment below for the full rationale). The original
+	// mixed-case/raw slug is NOT stored because the conflict key
 	// (vuln_id, kind, slug) must be stable, and slug is matched in
-	// LookupSoftware using the same lower-cased value from the agent inventory.
+	// LookupSoftware using the same normalised value derived from the agent
+	// inventory.
 	for _, sw := range rec.Software {
 		slug := normSlug(sw.Slug)
+		if slug == "" {
+			// A software row whose slug normalises to empty can never be
+			// looked up (LookupSoftware refuses an empty normalised query
+			// key too; see its guard below) and would only ever occupy an
+			// unreachable row. BulkReplaceAllSoftware already carries this
+			// same guard for the bulk ingest path; this is the equivalent
+			// for the single-record path.
+			continue
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO wordfence_vuln_software
 				(vuln_id, kind, slug, affected_versions, patched, patched_versions)
@@ -628,11 +639,27 @@ func (r *Repo) GetFeedGate(ctx context.Context) (FeedGate, error) {
 
 // LookupSoftware returns all vulnerability software rows for the given (kind, slug).
 // Reads without a tenant GUC (global public table).
-// F3: the slug is lower-cased before comparison to match the normalisation
-// applied on ingest (see UpsertFeedRecord). This prevents false negatives when
-// the agent inventory slug differs in case from the Wordfence canonical slug.
+// The slug is canonicalised (normSlug: directory form + lower-case) before
+// comparison to match the normalisation applied on ingest (see
+// UpsertFeedRecord). This is what lets a plugin's agent-reported inventory
+// slug, a get_plugins() array-key FILE PATH such as
+// "woocommerce/woocommerce.php", match the Wordfence feed's bare canonical
+// directory slug ("woocommerce"). See normSlug's doc comment for the full
+// rationale and known limitations.
 func (r *Repo) LookupSoftware(ctx context.Context, kind, slug string) ([]VulnSoftwareRow, error) {
 	querySlug := normSlug(slug)
+	if querySlug == "" {
+		// An empty normalised slug must never be used as a lookup key. A raw
+		// slug like "/x" (a malicious or malformed agent-reported value)
+		// normalises to "" because strings.Cut's directory component before
+		// the first "/" is empty; every real stored row's slug is guaranteed
+		// non-empty (see the empty-slug guards on the ingest side in
+		// UpsertFeedRecord/BulkReplaceAllSoftware/parseFeedRecord), so an
+		// empty query key can only ever be an attempt to match rows that do
+		// not exist. Refuse outright rather than relying on that invariant
+		// never being violated on either side.
+		return nil, nil
+	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT s.vuln_id, s.kind, s.slug, s.affected_versions, s.patched, s.patched_versions,
 		       f.title, f.cve, f.cve_link, f.cvss_score, f.cvss_rating, f.reference_urls
@@ -1172,11 +1199,52 @@ type FleetFindingRow struct {
 // helpers
 // ---------------------------------------------------------------------------
 
-// normSlug lower-cases a software slug so that Wordfence canonical slugs
-// (e.g. "Akismet") match agent inventory slugs (e.g. "akismet") consistently.
-// Applied on both the ingest path (UpsertFeedRecord) and the lookup path
-// (LookupSoftware) so the stored key and the query key are always identical.
-func normSlug(slug string) string { return strings.ToLower(slug) }
+// normSlug canonicalises a software slug so the wordfence_vuln_software
+// storage key (ingest) and the lookup key (matching) always compare equal.
+// Two normalisations are applied, in order:
+//
+//  1. Directory form. A WordPress plugin's installed-inventory slug is the
+//     get_plugins() ARRAY KEY, which is the plugin's main FILE PATH relative
+//     to wp-content/plugins, e.g. "woocommerce/woocommerce.php" for an
+//     ordinary "directory" plugin (apps/agent/includes/commands/
+//     class-metadata-command.php stores this raw, unmodified, as the "slug"
+//     field of every plugin entry). Wordfence's own canonical slug for the
+//     same plugin is the DIRECTORY component only, "woocommerce", so
+//     normSlug takes everything before the first "/" (strings.Cut) and
+//     discards the rest. Before this, LookupSoftware compared the untouched
+//     "woocommerce/woocommerce.php" against the stored canonical
+//     "woocommerce" and NEVER matched, so no plugin vulnerability ever
+//     matched in production (themes/core were unaffected, see below).
+//
+//     KNOWN PRE-EXISTING LIMITATION, not solved here: a single-file plugin's
+//     get_plugins() key has no "/" at all (e.g. "hello.php" for Hello
+//     Dolly), so the directory cut is a no-op and the value is passed
+//     through unchanged. If that plugin's Wordfence canonical slug is NOT
+//     simply its file stem (Hello Dolly's canonical slug is "hello-dolly",
+//     not "hello"), it still will not match. Closing that gap needs an
+//     explicit slug-alias table, which is a separate, larger change.
+//
+//  2. Case. The result of step 1 is lower-cased so a mixed-case feed slug
+//     (e.g. "Akismet") or inventory slug always compares equal regardless of
+//     casing.
+//
+// Applied identically on BOTH the ingest path (UpsertFeedRecord,
+// BulkUpsertFeedRecords/BulkReplaceAllSoftware, dedupSoftwareRows) and the
+// lookup path (LookupSoftware) so the stored key and the query key are
+// always the same value.
+//
+// Ingest-side no-op guarantee: the Wordfence feed already sends bare,
+// directory-form canonical slugs with no "/" (e.g. "woocommerce",
+// "akismet"); parseFeedRecord normalises them before they ever reach
+// UpsertFeedRecord/BulkReplaceAllSoftware, so for every real feed record the
+// directory cut has nothing to cut and this is exactly the old
+// lower-case-only behaviour. Themes (the agent sends the theme's stylesheet
+// DIRECTORY, already canonical) and core (hard-coded "wordpress") never
+// contain a "/" either, so their normalised form is unchanged.
+func normSlug(slug string) string {
+	dir, _, _ := strings.Cut(slug, "/")
+	return strings.ToLower(dir)
+}
 
 func nilString(s string) *string {
 	if s == "" {

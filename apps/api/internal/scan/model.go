@@ -84,12 +84,17 @@ type ManagedFileRow struct {
 
 // PluginChecksumRow is one row from wporg_plugin_checksums.
 // Multiple rows per (kind, slug, version, path) are allowed (one per md5 variant).
+// SHA256 is the stronger hash wp.org reports alongside md5 for the same file
+// variant; "" means unknown (e.g. rows fetched before m106 added the column).
+// Nothing compares against SHA256 yet. See internal/scan/checksums.go for the
+// trust-model rule this field exists to support.
 type PluginChecksumRow struct {
 	Kind    string
 	Slug    string
 	Version string
 	Path    string
 	MD5     string
+	SHA256  string
 }
 
 // Run is one scan job row from scan_runs.

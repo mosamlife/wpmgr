@@ -150,10 +150,28 @@ func (s *Service) RescanSite(ctx context.Context, tenantID, siteID uuid.UUID) er
 			severity := SeverityFromRating(row.CVSSRating, row.CVSSScore)
 
 			upserts = append(upserts, FindingUpsert{
-				TenantID:         tenantID,
-				SiteID:           siteID,
-				VulnID:           row.VulnID,
-				Kind:             it.kind,
+				TenantID: tenantID,
+				SiteID:   siteID,
+				VulnID:   row.VulnID,
+				Kind:     it.kind,
+				// Store the RAW agent-inventory slug (it.slug), NOT the
+				// canonical wordfence_vuln_software slug (row.Slug). For a
+				// plugin, it.slug is the get_plugins() file path (e.g.
+				// "woocommerce/woocommerce.php"): that is exactly the value
+				// the update domain indexes a site's installed components by
+				// (update.Component.Slug is a straight passthrough of
+				// site.Component.Slug; see cmd/wpmgr/siteadapter.go
+				// toUpdateComponent), so Remediate can hand it straight to
+				// update.Service.CreateRun with no resolution step. Storing
+				// the raw form also keeps the finding's UNIQUE(site_id,
+				// vuln_id, kind, slug) key stable across rescans: the
+				// canonical form is lower-cased (normSlug), so a mixed-case
+				// raw slug such as a theme's stylesheet directory "Divi"
+				// would otherwise collide with a second "divi" row on the
+				// very next rescan, leaving the original row unreachable by
+				// ResolveStaleFindings and permanently open. normSlug is used
+				// ONLY to derive the LookupSoftware query key above, never to
+				// decide what gets stored here.
 				Slug:             it.slug,
 				Name:             it.name,
 				InstalledVersion: it.ver,
@@ -309,6 +327,14 @@ func (s *Service) Remediate(ctx context.Context, tenantID, siteID, findingID, us
 		itemType = "core"
 	}
 
+	// f.Slug is the RAW agent-inventory slug (RescanSite stores it.slug, not
+	// the canonical wordfence_vuln_software form; see the Slug comment in
+	// RescanSite). That is exactly the value the update domain indexes a
+	// site's installed components by (update.Component.Slug is a straight
+	// passthrough of site.Component.Slug; see cmd/wpmgr/siteadapter.go
+	// toUpdateComponent, which for a plugin is the get_plugins() file path,
+	// e.g. "woocommerce/woocommerce.php"), so it is handed straight through
+	// with no resolution step.
 	return s.updates.CreateRun(ctx, update.CreateRunInput{
 		TenantID:  tenantID,
 		CreatedBy: userID,

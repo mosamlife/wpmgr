@@ -47779,6 +47779,10 @@ type VulnFinding struct {
 	FirstSeen  time.Time `json:"first_seen"`
 	LastSeen   time.Time `json:"last_seen"`
 	References []string  `json:"references"`
+	// Deterministic per-record Wordfence Intelligence vulnerability-database URL, built from vuln_id
+	// (https://www.wordfence.com/threat-intel/vulnerabilities/id/{vuln_id}). Satisfies the Defiant
+	// per-record attribution requirement independently of the references[] array's contents.
+	WordfenceLink string `json:"wordfence_link"`
 }
 
 // GetID returns the value of ID.
@@ -47866,6 +47870,11 @@ func (s *VulnFinding) GetReferences() []string {
 	return s.References
 }
 
+// GetWordfenceLink returns the value of WordfenceLink.
+func (s *VulnFinding) GetWordfenceLink() string {
+	return s.WordfenceLink
+}
+
 // SetID sets the value of ID.
 func (s *VulnFinding) SetID(val uuid.UUID) {
 	s.ID = val
@@ -47949,6 +47958,11 @@ func (s *VulnFinding) SetLastSeen(val time.Time) {
 // SetReferences sets the value of References.
 func (s *VulnFinding) SetReferences(val []string) {
 	s.References = val
+}
+
+// SetWordfenceLink sets the value of WordfenceLink.
+func (s *VulnFinding) SetWordfenceLink(val string) {
+	s.WordfenceLink = val
 }
 
 // Ref: #/components/schemas/WebAuthnCredential

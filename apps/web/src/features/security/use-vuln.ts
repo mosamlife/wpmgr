@@ -80,6 +80,14 @@ export interface VulnFinding {
   last_seen: string;
   /** Wordfence Intelligence reference URLs for the link-back attribution gate. */
   references: string[];
+  /**
+   * Direct hyperlink to this specific vulnerability record on Wordfence
+   * Intelligence. Required by the per-record Defiant Wordfence Intelligence
+   * feed license: any copy of a vulnerability record must include a
+   * hyperlink to that record. Optional so an older CP response (emitted
+   * before this field existed) does not break the UI.
+   */
+  wordfence_link?: string;
 }
 
 /**
