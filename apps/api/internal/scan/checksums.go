@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -48,12 +49,27 @@ type HTTPDoer interface {
 type ChecksumProvider struct {
 	repo   *Repo
 	client HTTPDoer
+	logger *slog.Logger
 }
 
 // NewChecksumProvider builds a ChecksumProvider backed by the given Repo and
-// SSRF-safe HTTP client.
-func NewChecksumProvider(repo *Repo, client HTTPDoer) *ChecksumProvider {
-	return &ChecksumProvider{repo: repo, client: client}
+// SSRF-safe HTTP client. logger may be nil, in which case slog.Default() is
+// used (matching NewScanRunWorker/NewHashGCWorker's convention).
+func NewChecksumProvider(repo *Repo, client HTTPDoer, logger *slog.Logger) *ChecksumProvider {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &ChecksumProvider{repo: repo, client: client, logger: logger}
+}
+
+// log returns a usable logger even when a ChecksumProvider was built via a
+// bare struct literal (as the package's tests do) rather than through
+// NewChecksumProvider.
+func (p *ChecksumProvider) log() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
+	}
+	return slog.Default()
 }
 
 // Core returns the known-good checksum map for the given WordPress version and
@@ -232,44 +248,88 @@ func (p *ChecksumProvider) Plugin(ctx context.Context, kind, slug, version strin
 	// Cache miss or stale: fetch from wp.org.
 	// Themes use the same endpoint pattern; if wp.org returns 404, we
 	// negative-cache and fall through to baseline-only.
-	checksums, fetchErr := p.fetchPluginFromWPOrg(ctx, slug, version)
-	if fetchErr != nil || len(checksums) == 0 {
+	variantsByPath, fetchErr := p.fetchPluginFromWPOrg(ctx, slug, version)
+	if fetchErr != nil || len(variantsByPath) == 0 {
 		_ = p.repo.UpsertPluginChecksumsMeta(ctx, kind, slug, version, false)
 		return map[string][]string{}, nil
 	}
 
-	// Persist all variants (md5 in PK so each variant is a separate row).
+	// checksums is the returned path → []md5 map; unchanged shape/content from
+	// before m106 (comparison logic elsewhere still consumes md5 only).
+	checksums := make(map[string][]string, len(variantsByPath))
+	// Persist all variants (md5 in PK so each variant is a separate row);
+	// sha256 rides alongside md5 on the same row, not compared against yet.
 	var dbRows []PluginChecksumRow
-	for path, variants := range checksums {
-		for _, md5val := range variants {
+	for path, variants := range variantsByPath {
+		md5s := make([]string, 0, len(variants))
+		for _, v := range variants {
+			md5s = append(md5s, v.MD5)
 			dbRows = append(dbRows, PluginChecksumRow{
 				Kind:    kind,
 				Slug:    slug,
 				Version: version,
 				Path:    path,
-				MD5:     md5val,
+				MD5:     v.MD5,
+				SHA256:  v.SHA256,
 			})
 		}
+		checksums[path] = md5s
 	}
-	_ = p.repo.UpsertPluginChecksums(ctx, dbRows)
+	if upsertErr := p.repo.UpsertPluginChecksums(ctx, dbRows); upsertErr != nil {
+		// Do NOT stamp the positive freshness cache when the persist failed:
+		// doing so would mark this (kind, slug, version) fresh for the full
+		// 30-day positive-cache TTL over zero (or partially) written rows,
+		// silently disabling plugin file-integrity checksum comparison with
+		// no log and no finding until the cache expires. Leaving the meta row
+		// untouched means the next scan retries the fetch+persist instead.
+		p.log().Error("scan: failed to persist wp.org plugin checksums",
+			slog.String("kind", kind),
+			slog.String("slug", slug),
+			slog.String("version", version),
+			slog.Int("row_count", len(dbRows)),
+			slog.Any("error", upsertErr))
+		return checksums, nil
+	}
 	_ = p.repo.UpsertPluginChecksumsMeta(ctx, kind, slug, version, true)
 
 	return checksums, nil
 }
 
 // pluginChecksumAPIResponse is the shape returned by the wp.org
-// plugin-checksums endpoint. The md5 field may be a string OR an array of
-// strings (multiple accepted variants for line-ending / build differences).
-// sha256 is ignored (the agent uses md5_file()).
+// plugin-checksums endpoint. The md5 and sha256 fields may each be a string OR
+// an array of strings (multiple accepted variants for line-ending / build
+// differences); when both are arrays they are parallel, so index i of sha256
+// is the stronger hash for the same file content as index i of md5.
+//
+// Trust-model rule (program-wide, applies beyond this file): the agent only
+// computes md5_file(), so md5 is a NEGATIVE filter only, meaning "hashes
+// differ, therefore the file must be analyzed further." An md5 match must
+// never by itself grant a file positive trust (auto-clearing it as
+// known-good), because MD5 has cheap chosen-prefix collisions. Any future
+// positive-trust / auto-clear decision must be based on a stronger hash such
+// as this sha256.
+//
+// This change (m106) only stops discarding sha256 so it is persisted for a
+// later phase to use. It does not change any comparison/diff logic here, and
+// nothing in this codebase reads PluginChecksumRow.SHA256 yet.
 type pluginChecksumAPIResponse struct {
 	Files map[string]struct {
-		MD5 json.RawMessage `json:"md5"`
+		MD5    json.RawMessage `json:"md5"`
+		SHA256 json.RawMessage `json:"sha256"`
 	} `json:"files"`
 }
 
+// pluginFileVariant pairs one accepted md5 variant of a file with its
+// wp.org-reported sha256 counterpart (same array index in the source JSON).
+// SHA256 is "" when wp.org did not report one for that variant.
+type pluginFileVariant struct {
+	MD5    string
+	SHA256 string
+}
+
 // fetchPluginFromWPOrg fetches plugin checksums from downloads.wordpress.org
-// and decodes the multi-variant md5 shape into path → []md5.
-func (p *ChecksumProvider) fetchPluginFromWPOrg(ctx context.Context, slug, version string) (map[string][]string, error) {
+// and decodes the multi-variant md5+sha256 shape into path → []pluginFileVariant.
+func (p *ChecksumProvider) fetchPluginFromWPOrg(ctx context.Context, slug, version string) (map[string][]pluginFileVariant, error) {
 	// Defensive allowlist: reject malformed agent-supplied slug/version before
 	// interpolating them into the URL. The ssrfClient guards against host
 	// injection, but a clearly-invalid slug indicates bad data and should not
@@ -316,12 +376,38 @@ func (p *ChecksumProvider) fetchPluginFromWPOrg(ctx context.Context, slug, versi
 		return nil, nil
 	}
 
-	out := make(map[string][]string, len(envelope.Files))
+	out := make(map[string][]pluginFileVariant, len(envelope.Files))
 	for path, entry := range envelope.Files {
 		normalized := strings.TrimLeft(path, "/")
-		variants, decErr := decodeMD5Variants(entry.MD5)
-		if decErr != nil || len(variants) == 0 {
+		md5Variants, decErr := decodeMD5Variants(entry.MD5)
+		if decErr != nil || len(md5Variants) == 0 {
 			continue
+		}
+		// sha256 uses the same string-or-array shape as md5; decodeMD5Variants
+		// is hash-agnostic (just lowercases hex). A decode failure or absent
+		// field degrades to "no sha256 known" rather than dropping the md5.
+		sha256Variants, decErr := decodeMD5Variants(entry.SHA256)
+		if decErr != nil {
+			sha256Variants = nil
+		}
+		// The md5/sha256 arrays are documented as parallel (index i of one is
+		// the counterpart of index i of the other) ONLY when their lengths
+		// agree. If wp.org reports fewer sha256 entries than md5 entries, we
+		// cannot tell which md5 each sha256 actually belongs to; pairing by
+		// index anyway would silently attach a wrong sha256 to the low-index
+		// md5 variants. A wrong hash is worse than a missing one (it is a
+		// false positive-trust signal for a later phase), so on a length
+		// mismatch we drop sha256 entirely for this file rather than guess.
+		if len(sha256Variants) != len(md5Variants) {
+			sha256Variants = nil
+		}
+		variants := make([]pluginFileVariant, 0, len(md5Variants))
+		for i, md5val := range md5Variants {
+			v := pluginFileVariant{MD5: md5val}
+			if i < len(sha256Variants) {
+				v.SHA256 = sha256Variants[i]
+			}
+			variants = append(variants, v)
 		}
 		out[normalized] = variants
 	}

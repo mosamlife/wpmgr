@@ -1256,7 +1256,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	scanRepo := scan.NewRepo(pool)
 	scanSvc := scan.NewService(scanRepo, auditRec)
 	scanH := scan.NewHandler(scanSvc)
-	scanChecksums := scan.NewChecksumProvider(scanRepo, ssrfClient)
+	scanChecksums := scan.NewChecksumProvider(scanRepo, ssrfClient, logger)
 	scanSiteAdapter := newScanSiteAdapter(siteSvc)
 	var scanWorker *scan.ScanRunWorker
 	var scanHashGCWorker *scan.HashGCWorker

@@ -8,6 +8,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.89] - 2026-07-27
+
+### Fixed
+
+- Plugin vulnerabilities are now detected. The vulnerability scanner compared the plugin identifier WordPress reports internally (a path such as `woocommerce/woocommerce.php`) against the plugin slug the vulnerability feed publishes (`woocommerce`), so the two never matched and no plugin vulnerability was ever reported. Themes and WordPress core were unaffected and continued to match correctly. Since plugins account for the large majority of WordPress vulnerabilities, this means plugin findings will appear for the first time on the next scan, and existing sites may show a number of them at once. Every vulnerability view now also links directly to the matching Wordfence record.
+- Plugin and theme file-integrity verification could silently stop working for up to 30 days when the WordPress.org checksum service returned a duplicate entry for a file. The failure was recorded as a success, so no error surfaced. The duplicate is now handled, the result is only cached when the fetch genuinely succeeded, and the failure is logged.
+
+### Added
+
+- The official WordPress.org SHA-256 file hashes are now stored alongside the MD5 hashes already collected. Nothing consumes them yet; this is groundwork for stronger file-integrity verification, since a matching MD5 is no longer sufficient evidence that a file is unmodified.
+
 ## [0.61.88] - 2026-07-24
 
 ### Added

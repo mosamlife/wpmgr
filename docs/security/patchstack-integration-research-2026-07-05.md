@@ -360,3 +360,42 @@ Given §5, the **feed** key is master-key (instance-global). The **BYO App-API k
 6. **Attribution/licensing sign-off:** confirm legal will review Patchstack's attribution/license terms and that we will store+render them per-provider exactly as we do Defiant/MITRE.
 
 **Honest closing read:** the vuln **data** is parity with what WPMgr already gets free. The only reasons to spend here are **active protection (vPatch)** and **earlier mVDP timing** — and the only self-serve, self-host-friendly, zero-WPMgr-cost way to touch either today is the **BYO App-API-key co-existence** path. Everything richer (a real feed, resold vPatch, white-label) is a **contact-sales for-Hosts partnership** with **unpublished pricing that lands on WPMgr's margin**, and should not be built until that contract's terms are known.
+---
+
+## 10. AMENDMENT (2026-07-27) — the blocker is contractual, not commercial
+
+Appended after the security-expansion research of 2026-07-27 (see `security-expansion-research-2026-07-27.md`). The decision trail above is preserved deliberately; this section corrects it rather than rewriting it.
+
+**§5's core conclusion is CONFIRMED and still correct:** there is no self-serve BYO feed key. Two material corrections follow.
+
+### 10.1 The blocker is CONTRACTUAL. Money does not solve it.
+
+This document treats the obstacle as commercial (contact-sales gating, unpublished pricing landing on WPMgr's margin) and therefore as something a signed contract would unlock. That framing is wrong. §9 item 5(b) correctly listed "ToS on operating per-tenant keys and re-displaying feed data" as a blocking unknown. **That unknown is now answered, and the answer is prohibitive.**
+
+Governing document, verified 2026-07-27: `https://patchstack.com/terms-and-conditions/` (titled "Patchstack Terms of Service", Patchstack OU, Estonia). Note `https://patchstack.com/terms-of-service/` returns HTTP 404, so any earlier citation to that URL is broken.
+
+Under the PUBLIC terms, every core WPMgr use is prohibited:
+
+- **§3.2(d)** forbids use "by or for the benefit of any third party or by any direct or indirect competitor of Patchstack." An agency using WPMgr to protect CLIENT sites is definitionally third-party benefit.
+- **§3.2(e)** forbids use "to create, maintain, support, or enhance a competitive or substitute service, product, or offering."
+- **§3.5** defines Service Deliverables to expressly include "vulnerability and mitigation data" and requires that Customer "shall not disclose Service Deliverables to any third party." Rendering an advisory in a tenant's dashboard is that disclosure.
+- **§3.1** grants only a "non-sublicensable, non-transferable" licence "exclusively in support of Customer Operations", and the preamble states the Solution is "not to protect the websites, platforms, or operations of any third party."
+- **§7.3** requires destroying all copies of Service Deliverables on termination, which is structurally incompatible with a cached Postgres corpus (exactly how the vuln domain works).
+
+A standard paid subscription would still prohibit all of the above. **Only a separately negotiated for-Hosts/Enterprise agreement expressly overriding §3.1, §3.2, §3.5 and §7.3 unlocks anything.** §9 item 5 should be read as: do not contact sales expecting price discovery to resolve this; the first question is whether they will contractually override four clauses.
+
+Do not rely on the §1.2 "owned or operated by Customer" definition as a workaround for agencies. It is in direct tension with the preamble's third-party exclusion, and betting the product on resolving that ambiguity in our favour is not sound.
+
+### 10.2 The App API entry needs its stated basis and cost corrected
+
+The recommendation (BYO App-API-key co-existence as the only clean path) SURVIVES, but two supporting facts in this document are wrong:
+
+1. **The permission quote is gone.** The cited sentence "Patchstack App API can be used commercially for building custom tools and integrating third party platforms" has **zero occurrences** on `https://docs.patchstack.com/api-solutions/app-api/patchstack-app-api/` as of 2026-07-27. Do not cite it. The permission is now only IMPLIED, though the current docs do corroborate the intended shape through their own example use cases (integrating Patchstack inside your own product so customers control it from your platform).
+2. **It is not free.** This document calls the App API key "free with a Developer plan." Current docs state the App API is "available for the Developer and Enterprise plan users." An API gated behind a **$79/mo minimum** (25 sites; $69/mo annual) is not free. The claim that this path "costs WPMgr nothing" remains true only because the **tenant** bears the $79/mo, and that cost must be stated explicitly when the feature is pitched, because it materially shrinks the addressable set of tenants.
+3. **"Unlimited requests / no rate limiting" is UNVERIFIED.** No such statement appears on the current App API docs. Do not plan against it.
+
+### 10.3 Net position
+
+Unchanged in direction, firmer in reasoning: **do not ingest Patchstack data**, keep Wordfence Intelligence as the $0 default (its terms were verified clean: no non-commercial clause, no share-alike, no non-compete), and treat the BYO App-API-key co-existence panel as a late, optional retention nicety rather than a strategy.
+
+The strategic answer to Patchstack's vPatch moat is not to reproduce it. It is that **guarded auto-patch with verified rollback is a better remedy than a virtual patch whenever a fix exists**, and it is buildable from machinery already in this repo with no third-party licence at all.

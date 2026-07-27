@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.88
+  version: 0.61.89
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -20309,7 +20309,7 @@ components:
         mitre_notice: { type: string }
     VulnFinding:
       type: object
-      required: [id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status, first_seen, last_seen, references]
+      required: [id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status, first_seen, last_seen, references, wordfence_link]
       properties:
         id: { type: string, format: uuid }
         site_id: { type: string, format: uuid }
@@ -20330,6 +20330,13 @@ components:
         references:
           type: array
           items: { type: string }
+        wordfence_link:
+          type: string
+          description: >-
+            Deterministic per-record Wordfence Intelligence vulnerability-database
+            URL, built from vuln_id (https://www.wordfence.com/threat-intel/vulnerabilities/id/{vuln_id}).
+            Satisfies the Defiant per-record attribution requirement independently
+            of the references[] array's contents.
     SiteVulnerabilitiesResponse:
       type: object
       required: [items, attribution, feed_ok, enrichment_available]

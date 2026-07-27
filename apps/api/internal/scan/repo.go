@@ -639,7 +639,7 @@ func (r *Repo) UpsertPluginChecksumsMeta(ctx context.Context, kind, slug, versio
 // Multiple rows per path are expected (one per accepted md5 variant).
 func (r *Repo) GetPluginChecksums(ctx context.Context, kind, slug, version string) ([]PluginChecksumRow, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT kind, slug, version, path, md5
+		`SELECT kind, slug, version, path, md5, sha256
 		 FROM wporg_plugin_checksums
 		 WHERE kind = $1 AND slug = $2 AND version = $3`,
 		kind, slug, version,
@@ -651,21 +651,74 @@ func (r *Repo) GetPluginChecksums(ctx context.Context, kind, slug, version strin
 	var out []PluginChecksumRow
 	for rows.Next() {
 		var c PluginChecksumRow
-		if err := rows.Scan(&c.Kind, &c.Slug, &c.Version, &c.Path, &c.MD5); err != nil {
+		var sha256 *string
+		if err := rows.Scan(&c.Kind, &c.Slug, &c.Version, &c.Path, &c.MD5, &sha256); err != nil {
 			return nil, domain.Internal("plugin_checksums_get_failed", "failed to read plugin checksum row").WithCause(err)
+		}
+		if sha256 != nil {
+			c.SHA256 = *sha256
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
+// pluginChecksumConflictKey mirrors wporg_plugin_checksums' primary key,
+// which is also the ON CONFLICT target used by UpsertPluginChecksums.
+type pluginChecksumConflictKey struct {
+	Kind, Slug, Version, Path, MD5 string
+}
+
+// dedupePluginChecksumRows collapses rows that share the ON CONFLICT
+// (kind, slug, version, path, md5) target down to a single row per key.
+//
+// This is required because a single multi-value INSERT ... ON CONFLICT DO
+// UPDATE statement cannot affect the same target row twice: Postgres raises
+// cardinality_violation ("ON CONFLICT DO UPDATE command cannot affect row a
+// second time") if the VALUES list itself contains two rows with the same
+// conflict key. wp.org's plugin-checksums API can list a duplicate md5
+// within the same file's accepted-variant array (decodeMD5Variants passes
+// such duplicates through unchanged), which produces exactly that duplicate
+// key, so the batch must be deduplicated before the statement is built.
+//
+// Last-write-wins: rows are deduplicated in input order and a later
+// occurrence of a key overwrites an earlier one. This mirrors what a
+// sequential per-row upsert would have produced from the same input order,
+// since each later row's DO UPDATE would overwrite the row before it.
+func dedupePluginChecksumRows(rows []PluginChecksumRow) []PluginChecksumRow {
+	if len(rows) < 2 {
+		return rows
+	}
+	order := make([]pluginChecksumConflictKey, 0, len(rows))
+	byKey := make(map[pluginChecksumConflictKey]PluginChecksumRow, len(rows))
+	for _, row := range rows {
+		key := pluginChecksumConflictKey{row.Kind, row.Slug, row.Version, row.Path, row.MD5}
+		if _, seen := byKey[key]; !seen {
+			order = append(order, key)
+		}
+		byKey[key] = row
+	}
+	out := make([]PluginChecksumRow, 0, len(order))
+	for _, key := range order {
+		out = append(out, byKey[key])
+	}
+	return out
+}
+
 // UpsertPluginChecksums bulk-inserts plugin/theme checksum rows.
-// ON CONFLICT DO NOTHING: md5 is in the PK so duplicate variants are ignored;
-// re-inserts after a positive-cache refresh land cleanly.
+// ON CONFLICT: md5 is in the PK so duplicate variants target the same row.
+// sha256 is refreshed on conflict (COALESCE keeps a previously-stored value if
+// this fetch didn't decode one, so a transient decode gap never regresses an
+// already-known sha256 back to NULL); kind/slug/version/path/md5 are the
+// conflict target itself and never change.
+//
+// The input batch is deduplicated by the conflict key before the statement is
+// built; see dedupePluginChecksumRows.
 func (r *Repo) UpsertPluginChecksums(ctx context.Context, rows []PluginChecksumRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
+	rows = dedupePluginChecksumRows(rows)
 	const batchSize = 500
 	for i := 0; i < len(rows); i += batchSize {
 		end := i + batchSize
@@ -673,18 +726,20 @@ func (r *Repo) UpsertPluginChecksums(ctx context.Context, rows []PluginChecksumR
 			end = len(rows)
 		}
 		batch := rows[i:end]
-		args := make([]any, 0, len(batch)*5)
+		args := make([]any, 0, len(batch)*6)
 		placeholders := make([]string, 0, len(batch))
 		for j, c := range batch {
-			base := j*5 + 1
+			base := j*6 + 1
 			placeholders = append(placeholders,
 				"($"+itoa(base)+", $"+itoa(base+1)+", $"+itoa(base+2)+
-					", $"+itoa(base+3)+", $"+itoa(base+4)+", now())")
-			args = append(args, c.Kind, c.Slug, c.Version, c.Path, c.MD5)
+					", $"+itoa(base+3)+", $"+itoa(base+4)+", $"+itoa(base+5)+", now())")
+			args = append(args, c.Kind, c.Slug, c.Version, c.Path, c.MD5, nilIfEmpty(c.SHA256))
 		}
-		q := `INSERT INTO wporg_plugin_checksums (kind, slug, version, path, md5, fetched_at)
+		q := `INSERT INTO wporg_plugin_checksums (kind, slug, version, path, md5, sha256, fetched_at)
 			  VALUES ` + strings.Join(placeholders, ",") + `
-			  ON CONFLICT (kind, slug, version, path, md5) DO NOTHING`
+			  ON CONFLICT (kind, slug, version, path, md5) DO UPDATE
+			    SET sha256 = COALESCE(EXCLUDED.sha256, wporg_plugin_checksums.sha256),
+			        fetched_at = now()`
 		if _, err := r.pool.Exec(ctx, q, args...); err != nil {
 			return domain.Internal("plugin_checksums_upsert_failed", "failed to upsert plugin checksums").WithCause(err)
 		}

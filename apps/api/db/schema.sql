@@ -3652,6 +3652,49 @@ CREATE INDEX IF NOT EXISTS hibp_breach_cache_fetched_at_idx
     ON hibp_breach_cache (fetched_at);
 
 -- ---------------------------------------------------------------------------
+-- wporg_plugin_checksums / wporg_plugin_checksums_meta
+-- (m77: plugin/theme checksum cache; m106: added sha256)
+-- ---------------------------------------------------------------------------
+-- No RLS. Public reference data from the wp.org plugin-checksums endpoint,
+-- not tenant-scoped. md5 is part of the primary key because wp.org may list
+-- multiple accepted md5 variants per file (line-ending / build differences);
+-- sha256 is the variant's paired stronger hash, nullable because rows fetched
+-- before m106 have none. See internal/scan/checksums.go for the ingest path
+-- and the negative-filter-only trust rule this sets up.
+-- kind: 'plugin' or 'theme'. Shares the table; the kind column disambiguates.
+CREATE TABLE IF NOT EXISTS wporg_plugin_checksums (
+    kind       text NOT NULL
+        CONSTRAINT wporg_plugin_checksums_kind_chk
+        CHECK (kind IN ('plugin', 'theme')),
+    slug       text NOT NULL,
+    version    text NOT NULL,
+    path       text NOT NULL,
+    md5        text NOT NULL,
+    sha256     text,
+    fetched_at timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT wporg_plugin_checksums_pkey
+        PRIMARY KEY (kind, slug, version, path, md5)
+);
+
+CREATE INDEX IF NOT EXISTS wporg_plugin_checksums_lookup_idx
+    ON wporg_plugin_checksums (kind, slug, version, path);
+
+-- Freshness / negative-cache sentinel per (kind, slug, version). No RLS.
+CREATE TABLE IF NOT EXISTS wporg_plugin_checksums_meta (
+    kind       text NOT NULL
+        CONSTRAINT wporg_plugin_checksums_meta_kind_chk
+        CHECK (kind IN ('plugin', 'theme')),
+    slug       text NOT NULL,
+    version    text NOT NULL,
+    fetched_at timestamptz NOT NULL DEFAULT now(),
+    ok         boolean NOT NULL DEFAULT true,
+
+    CONSTRAINT wporg_plugin_checksums_meta_pkey
+        PRIMARY KEY (kind, slug, version)
+);
+
+-- ---------------------------------------------------------------------------
 -- instance_settings  (m80 — UI-configurable instance-level secrets)
 -- ---------------------------------------------------------------------------
 -- Generic key/value store for INSTANCE-GLOBAL (non-tenant-scoped) settings

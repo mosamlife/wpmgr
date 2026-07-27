@@ -145,6 +145,7 @@ function VulnFindingRow({ finding, siteId, mitreNotice, canWrite }: FindingRowPr
   // data:, etc.), causing the anchor branch to be skipped entirely.
   const safeCveHref = safeExternalHref(finding.cve_link);
   const safeRefHref = safeExternalHref(finding.references[0]);
+  const safeWordfenceLinkHref = safeExternalHref(finding.wordfence_link);
 
   return (
     <TableRow
@@ -228,20 +229,39 @@ function VulnFindingRow({ finding, siteId, mitreNotice, canWrite }: FindingRowPr
         )}
       </TableCell>
       <TableCell>
-        {/* Wordfence Intelligence reference link-back (Gate 0).
-            safeRefHref is undefined when the feed-supplied URL is not http(s). */}
-        {safeRefHref ? (
-          <a
-            href={safeRefHref}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
-            aria-label={`View vulnerability details on Wordfence Intelligence (opens in new tab)`}
-          >
-            Details
-            <ExternalLink aria-hidden="true" className="size-3" />
-          </a>
-        ) : null}
+        <div className="flex flex-col items-start gap-0.5">
+          {/* Wordfence Intelligence reference link-back (Gate 0).
+              safeRefHref is undefined when the feed-supplied URL is not http(s). */}
+          {safeRefHref ? (
+            <a
+              href={safeRefHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+              aria-label={`View vulnerability details on Wordfence Intelligence (opens in new tab)`}
+            >
+              Details
+              <ExternalLink aria-hidden="true" className="size-3" />
+            </a>
+          ) : null}
+          {/* Per-record Wordfence Intelligence link-back, required by the
+              Defiant Wordfence Intelligence feed license: any copy of a
+              vulnerability record must include a hyperlink to that record.
+              safeWordfenceLinkHref is undefined when wordfence_link is absent
+              (older CP response) or not an http(s) URL. */}
+          {safeWordfenceLinkHref ? (
+            <a
+              href={safeWordfenceLinkHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+              aria-label="View the Wordfence record (opens in new tab)"
+            >
+              View the Wordfence record
+              <ExternalLink aria-hidden="true" className="size-3" />
+            </a>
+          ) : null}
+        </div>
       </TableCell>
       {canWrite ? (
         <TableCell>

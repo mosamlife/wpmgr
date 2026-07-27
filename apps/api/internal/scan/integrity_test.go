@@ -181,6 +181,151 @@ func TestPluginChecksum_MultiMD5Variants(t *testing.T) {
 	}
 }
 
+// TestPluginChecksum_SHA256Persisted verifies that m106's sha256 field is
+// decoded and persisted onto PluginChecksumRow (paired with its md5 variant),
+// while the value returned to callers (path → []md5) is unchanged. Nothing
+// consumes SHA256 for comparison yet; this only checks it is no longer
+// discarded.
+func TestPluginChecksum_SHA256Persisted(t *testing.T) {
+	t.Parallel()
+
+	payload := `{
+		"plugin": "akismet",
+		"version": "5.3.1",
+		"files": {
+			"akismet.php": {
+				"md5": "aabbccdd00112233aabbccdd00112233",
+				"sha256": "6092976042c63653d75af6c308c3071f50b8d6d4dbf219bb0a6ef7a78c46b720"
+			}
+		}
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	repo := newFakePluginRepo()
+	provider := &ChecksumProvider{
+		repo:   &Repo{},
+		client: &testPluginHTTPClient{client: srv.Client(), baseURL: srv.URL},
+	}
+
+	result, err := provider.pluginFetchDirect(context.Background(), repo, "akismet", "5.3.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Returned map shape is unchanged: path → []md5, sha256 not exposed here.
+	if variants := result["akismet.php"]; len(variants) != 1 || variants[0] != "aabbccdd00112233aabbccdd00112233" {
+		t.Errorf("unexpected md5 result: %v", variants)
+	}
+
+	if len(repo.upserts) != 1 {
+		t.Fatalf("expected 1 upserted row, got %d", len(repo.upserts))
+	}
+	row := repo.upserts[0]
+	if row.MD5 != "aabbccdd00112233aabbccdd00112233" {
+		t.Errorf("unexpected md5 on persisted row: %q", row.MD5)
+	}
+	wantSHA256 := "6092976042c63653d75af6c308c3071f50b8d6d4dbf219bb0a6ef7a78c46b720"
+	if row.SHA256 != wantSHA256 {
+		t.Errorf("sha256 was discarded: got %q, want %q", row.SHA256, wantSHA256)
+	}
+}
+
+// TestPluginChecksum_SHA256MissingDegradesGracefully verifies that a file with
+// no sha256 field (or an md5/sha256 array length mismatch) still persists its
+// md5 variant(s) with SHA256 left empty, rather than dropping the row.
+func TestPluginChecksum_SHA256MissingDegradesGracefully(t *testing.T) {
+	t.Parallel()
+
+	payload := `{
+		"plugin": "legacy-plugin",
+		"version": "1.0.0",
+		"files": {
+			"legacy.php": {"md5": "11112222333344445555666677778888"}
+		}
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	repo := newFakePluginRepo()
+	provider := &ChecksumProvider{
+		repo:   &Repo{},
+		client: &testPluginHTTPClient{client: srv.Client(), baseURL: srv.URL},
+	}
+
+	result, err := provider.pluginFetchDirect(context.Background(), repo, "legacy-plugin", "1.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if variants := result["legacy.php"]; len(variants) != 1 {
+		t.Fatalf("expected md5 variant to still persist, got %v", variants)
+	}
+	if len(repo.upserts) != 1 {
+		t.Fatalf("expected 1 upserted row, got %d", len(repo.upserts))
+	}
+	if repo.upserts[0].SHA256 != "" {
+		t.Errorf("expected empty sha256 when wp.org omits it, got %q", repo.upserts[0].SHA256)
+	}
+}
+
+// TestPluginChecksum_SHA256LengthMismatchDropsPairing is the regression test
+// for the array-index pairing bug: when wp.org reports FEWER sha256 variants
+// than md5 variants for the same file, index-based pairing would silently
+// attach sha256Variants[0] to md5Variants[0] even though there is no
+// guarantee they describe the same file content (the arrays are only
+// documented as parallel when their lengths agree). Every persisted variant
+// for this file must have an EMPTY sha256 rather than a mismatched one. A
+// wrong hash is worse than a missing one.
+func TestPluginChecksum_SHA256LengthMismatchDropsPairing(t *testing.T) {
+	t.Parallel()
+
+	payload := `{
+		"plugin": "mismatched-plugin",
+		"version": "2.0.0",
+		"files": {
+			"mismatched.php": {
+				"md5": ["aaaa1111aaaa1111aaaa1111aaaa1111", "bbbb2222bbbb2222bbbb2222bbbb2222"],
+				"sha256": ["1111111111111111111111111111111111111111111111111111111111111111"]
+			}
+		}
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	repo := newFakePluginRepo()
+	provider := &ChecksumProvider{
+		repo:   &Repo{},
+		client: &testPluginHTTPClient{client: srv.Client(), baseURL: srv.URL},
+	}
+
+	result, err := provider.pluginFetchDirect(context.Background(), repo, "mismatched-plugin", "2.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if variants := result["mismatched.php"]; len(variants) != 2 {
+		t.Fatalf("expected both md5 variants to still persist, got %v", variants)
+	}
+	if len(repo.upserts) != 2 {
+		t.Fatalf("expected 2 upserted rows, got %d", len(repo.upserts))
+	}
+	for _, row := range repo.upserts {
+		if row.SHA256 != "" {
+			t.Errorf("length-mismatched sha256/md5 arrays must never be paired by index; got sha256=%q for md5=%q", row.SHA256, row.MD5)
+		}
+	}
+}
+
 // TestPluginChecksum_NegativeCache verifies that a 404 results in no rows
 // and that subsequent calls do not hit the server again (negative-cache).
 func TestPluginChecksum_NegativeCache(t *testing.T) {
@@ -247,6 +392,56 @@ func TestDecodeMD5Variants(t *testing.T) {
 				t.Errorf("want %d variants, got %d: %v", tc.wantLen, len(variants), variants)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// dedupePluginChecksumRows: the m106 sha256-backfill regression. Switching
+// UpsertPluginChecksums from ON CONFLICT DO NOTHING to DO UPDATE means a
+// batch with two rows sharing the (kind, slug, version, path, md5) conflict
+// key must be deduplicated before the statement is built, or Postgres raises
+// cardinality_violation and aborts the whole batch.
+// ---------------------------------------------------------------------------
+
+func TestDedupePluginChecksumRows_NoDuplicates(t *testing.T) {
+	t.Parallel()
+	rows := []PluginChecksumRow{
+		{Kind: "plugin", Slug: "akismet", Version: "5.3.1", Path: "akismet.php", MD5: "aaaa", SHA256: "sha-a"},
+		{Kind: "plugin", Slug: "akismet", Version: "5.3.1", Path: "readme.txt", MD5: "bbbb", SHA256: "sha-b"},
+	}
+	got := dedupePluginChecksumRows(rows)
+	if len(got) != 2 {
+		t.Fatalf("expected no rows dropped when keys are already unique, got %d: %+v", len(got), got)
+	}
+}
+
+// TestDedupePluginChecksumRows_DuplicateKeyLastWriteWins reproduces the
+// duplicate-conflict-key shape decodeMD5Variants can produce from upstream
+// wp.org data (the same md5 listed twice in one file's accepted-variant
+// array) and verifies the batch collapses to one row per conflict key, with
+// the LAST occurrence's data winning.
+func TestDedupePluginChecksumRows_DuplicateKeyLastWriteWins(t *testing.T) {
+	t.Parallel()
+	rows := []PluginChecksumRow{
+		{Kind: "plugin", Slug: "woocommerce", Version: "8.0.0", Path: "woocommerce.php", MD5: "dupe", SHA256: "sha-first"},
+		{Kind: "plugin", Slug: "woocommerce", Version: "8.0.0", Path: "readme.txt", MD5: "unique", SHA256: "sha-unique"},
+		{Kind: "plugin", Slug: "woocommerce", Version: "8.0.0", Path: "woocommerce.php", MD5: "dupe", SHA256: "sha-second"},
+	}
+	got := dedupePluginChecksumRows(rows)
+	if len(got) != 2 {
+		t.Fatalf("expected the duplicate conflict key to collapse to 1 row (2 total), got %d: %+v", len(got), got)
+	}
+	var dupeRow *PluginChecksumRow
+	for i := range got {
+		if got[i].Path == "woocommerce.php" {
+			dupeRow = &got[i]
+		}
+	}
+	if dupeRow == nil {
+		t.Fatal("expected the deduplicated woocommerce.php row to still be present")
+	}
+	if dupeRow.SHA256 != "sha-second" {
+		t.Errorf("expected last-write-wins (sha-second), got %q", dupeRow.SHA256)
 	}
 }
 
@@ -1037,20 +1232,24 @@ func (c *testPluginHTTPClient) Do(req *http.Request) (*http.Response, error) {
 // cache miss, but accepts explicit repo and slug arguments so tests can drive
 // it without needing a full DB-backed Repo.
 func (p *ChecksumProvider) pluginFetchDirect(ctx context.Context, repo *fakePluginRepo, slug, version string) (map[string][]string, error) {
-	checksums, err := p.fetchPluginFromWPOrg(ctx, slug, version)
+	variantsByPath, err := p.fetchPluginFromWPOrg(ctx, slug, version)
 	if err != nil {
 		return nil, err
 	}
-	if len(checksums) == 0 {
+	if len(variantsByPath) == 0 {
 		return map[string][]string{}, nil
 	}
+	checksums := make(map[string][]string, len(variantsByPath))
 	var dbRows []PluginChecksumRow
-	for path, variants := range checksums {
-		for _, md5val := range variants {
+	for path, variants := range variantsByPath {
+		md5s := make([]string, 0, len(variants))
+		for _, v := range variants {
+			md5s = append(md5s, v.MD5)
 			dbRows = append(dbRows, PluginChecksumRow{
-				Kind: "plugin", Slug: slug, Version: version, Path: path, MD5: md5val,
+				Kind: "plugin", Slug: slug, Version: version, Path: path, MD5: v.MD5, SHA256: v.SHA256,
 			})
 		}
+		checksums[path] = md5s
 	}
 	_ = repo.UpsertPluginChecksums(ctx, dbRows)
 	return checksums, nil

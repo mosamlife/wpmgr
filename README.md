@@ -16,7 +16,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
   <a href="https://wpmgr.app/docs/">API reference</a>
 </p>
 
-**v0.61.88** — open-source and production-usable for self-hosters.
+**v0.61.89** — open-source and production-usable for self-hosters.
 
 ---
 
@@ -313,15 +313,15 @@ Site screenshot cards then fall back to favicon/monogram and the Media Optimizer
 The control plane, dashboard, and media encoder are published on GitHub Container Registry as multi-arch (`linux/amd64` + `linux/arm64`) images, for wiring into your own compose, Kubernetes, or Swarm setup:
 
 ```bash
-docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.88
-docker pull ghcr.io/mosamlife/wpmgr-web:v0.61.88
-docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.61.88
+docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.89
+docker pull ghcr.io/mosamlife/wpmgr-web:v0.61.89
+docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.61.89
 ```
 
 Or bring up the whole stack from the published images (no local build) with the pull-only Compose overlay:
 
 ```bash
-export WPMGR_VERSION=v0.61.88   # omit to track :latest
+export WPMGR_VERSION=v0.61.89   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
@@ -351,7 +351,7 @@ The following are accepted architectural decisions with no implementation yet:
 - **Backup download** — No presigned-download endpoint or web UI; restore is the current recovery path.
 - **Scheduled update runs** — `scheduled_at` is stored and accepted; no deferred dispatcher yet (tasks enqueue immediately on create).
 - **CAPTCHA challenge on login block** — Login protection currently serves a static 403; no challenge/solve flow built.
-- **Plugin/theme content malware scanning** — The scan engine covers WordPress core checksums only; no signature or heuristic detection for wp-content files yet.
+- **Plugin/theme content malware scanning** — The scan engine already verifies plugin and theme files against wordpress.org checksums (flagging modified and unknown files alongside core); what is missing is signature or heuristic detection of malicious content itself.
 - **Automatic restore rollback UI** — The `.wpmgr-old-files-<id>/` rollback directory is preserved; no operator-initiated rollback endpoint exposed.
 - **Redis Sentinel / Cluster** — Object cache v1 supports single instance or unix socket with TLS; the config schema reserves fields for both topologies.
 - **Helm chart / Terraform provider** — Stubs exist under `infra/`; not implemented.

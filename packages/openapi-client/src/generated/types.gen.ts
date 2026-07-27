@@ -6452,6 +6452,10 @@ export type VulnFinding = {
   first_seen: string;
   last_seen: string;
   references: Array<string>;
+  /**
+   * Deterministic per-record Wordfence Intelligence vulnerability-database URL, built from vuln_id (https://www.wordfence.com/threat-intel/vulnerabilities/id/{vuln_id}). Satisfies the Defiant per-record attribution requirement independently of the references[] array's contents.
+   */
+  wordfence_link: string;
 };
 
 export type SiteVulnerabilitiesResponse = {
