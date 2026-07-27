@@ -694,7 +694,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// is configured (the cmdSigner == nil / disabled-commander case, guarded
 	// exactly like the media block does).
 	updateApplyCmd := buildUpdateApplyCommander(commander, cmdSigner, cfg.Update.ApplyHTTPTimeout)
-	updateWorker := update.NewWorker(updateRepo, sitesLookup, updateApplyCmd, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism)
+	// The update-task River job otherwise inherits River's own 60s default
+	// (river.Config.JobTimeout is unset below), which is shorter than
+	// cfg.Update.ApplyHTTPTimeout (5m) alone, let alone the apply call PLUS the
+	// GH #291 Phase 4 post-update health check that runs after it in the same
+	// job. Mirror the backup worker's jobTimeout pattern (backupJobTimeout,
+	// below): derive a job-level budget that genuinely covers the worst case
+	// instead of relying on the 60s default. See DeriveApplyJobTimeout's doc
+	// comment for the full arithmetic.
+	updateJobTimeout := update.DeriveApplyJobTimeout(cfg.Update.ApplyHTTPTimeout, cfg.Update.HTTPTimeout)
+	updateWorker := update.NewWorker(updateRepo, sitesLookup, updateApplyCmd, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism, updateJobTimeout)
 	// #131 follow-up — periodic reaper for update_tasks stuck in pending/running
 	// past staleTaskThreshold (a worker crash mid-task, or a failed enqueue that
 	// leaves a task pending). Without this, such a task permanently occupies its

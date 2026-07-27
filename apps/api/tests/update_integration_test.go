@@ -37,6 +37,7 @@ type fakeAgent struct {
 	mu            sync.Mutex
 	updateCalls   int32
 	rollbackCalls int32
+	homepageCalls int32
 	dryRunSeen    bool
 	snapshotSeen  bool
 	// expectAud is the enrollment site_id the agent verifies the JWT aud against
@@ -51,6 +52,28 @@ type fakeAgent struct {
 	// homepageStatus is returned for GET / (the health probe). 0 ⇒ 200.
 	homepageStatus int
 	homepageBody   string
+	// pingStatus/pingBody override the signed ping-command response (GH #291
+	// Phase 4 agent-first check) INDEPENDENTLY of homepageStatus/homepageBody.
+	// pingConfigured=false (the default) mirrors homepageStatus/homepageBody
+	// exactly, matching this fake agent's behaviour before the ping route
+	// existed here (an unmatched path fell through to the "/" handler), so
+	// every test that never calls setPing is unaffected. A test calls setPing
+	// to decouple the two, e.g. to simulate a page-cached homepage (stale 200)
+	// sitting in front of a genuinely fatal backend (ping 500), which is the
+	// exact scenario this phase fixes.
+	pingConfigured bool
+	pingStatus     int
+	pingBody       string
+	// pingFailRemaining, when > 0, overrides pingStatus/pingBody for exactly
+	// that many remaining ping calls (each call decrements it by one), then
+	// the agent answers a plain healthy 200. Used to simulate a TRANSIENT
+	// agent-side failure (e.g. the synchronous DB-migration-on-activation
+	// window GH #127 documents) that clears within a few requests, as opposed
+	// to setPing's persistent override.
+	pingFailRemaining int32
+	pingFailStatus    int
+	pingFailBody      string
+	pingCalls         int32
 	// updateResp/rollbackResp override the command responses.
 	updateResp   agentcmd.UpdateResponse
 	rollbackResp agentcmd.RollbackResponse
@@ -101,7 +124,40 @@ func newFakeAgent(t *testing.T) *fakeAgent {
 		}
 		writeJSON(w, resp)
 	})
+	mux.HandleFunc("/wp-json/wpmgr/v1/command/ping", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fa.pingCalls, 1)
+		fa.mu.Lock()
+		status, body := fa.pingStatus, fa.pingBody
+		if !fa.pingConfigured {
+			status, body = fa.homepageStatus, fa.homepageBody
+		}
+		if fa.pingFailRemaining > 0 {
+			// A transient failure overrides everything else above for exactly
+			// this many remaining calls, then clears (see setPingTransientFailure).
+			fa.pingFailRemaining--
+			status, body = fa.pingFailStatus, fa.pingFailBody
+		}
+		expect := fa.expectAud
+		fa.mu.Unlock()
+		aud, cmd := bearerAudCmd(r)
+		if r.Header.Get("Authorization") == "" || (expect != "" && aud != expect) || cmd != "ping" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+		if body != "" {
+			_, _ = w.Write([]byte(body))
+		} else if status >= 200 && status < 300 {
+			// A plain 200 with no body override IS a valid, agent-shaped OK
+			// ping response, matching the real agent's ping command handler.
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fa.homepageCalls, 1)
 		fa.mu.Lock()
 		status := fa.homepageStatus
 		body := fa.homepageBody
@@ -125,6 +181,31 @@ func (fa *fakeAgent) setHomepage(status int, body string) {
 	fa.mu.Lock()
 	fa.homepageStatus = status
 	fa.homepageBody = body
+	fa.mu.Unlock()
+}
+
+// setPing decouples the signed ping-command response from the public
+// homepage response (GH #291 Phase 4). Until called, ping mirrors
+// homepageStatus/homepageBody exactly.
+func (fa *fakeAgent) setPing(status int, body string) {
+	fa.mu.Lock()
+	fa.pingConfigured = true
+	fa.pingStatus = status
+	fa.pingBody = body
+	fa.mu.Unlock()
+}
+
+// setPingTransientFailure makes the next n ping calls answer with status/body,
+// then reverts to a plain healthy 200 for every call after that. Used to
+// simulate a transient agent-side failure (e.g. a synchronous DB migration
+// on activation, GH #127) that clears within the retry window, as opposed to
+// setPing's persistent override.
+func (fa *fakeAgent) setPingTransientFailure(n int, status int, body string) {
+	fa.mu.Lock()
+	fa.pingConfigured = true
+	fa.pingFailRemaining = int32(n)
+	fa.pingFailStatus = status
+	fa.pingFailBody = body
 	fa.mu.Unlock()
 }
 
@@ -363,7 +444,7 @@ func buildHarness(t *testing.T, pool *db.Pool, commander update.Commander, probe
 	siteSvc := site.NewService(site.NewRepo(pool), domain.NewValidator(), domain.SystemClock{})
 	rec := audit.NewRecorder(pool, domain.SystemClock{})
 	lookup := &svcSiteLookup{svc: siteSvc}
-	worker := update.NewWorker(repo, lookup, commander, prober, hub, rec, nil, 5)
+	worker := update.NewWorker(repo, lookup, commander, prober, hub, rec, nil, 5, 0)
 	client := startUpdateRiver(t, pool, worker)
 	svc := update.NewService(repo, lookup, update.NewRiverEnqueuer(client), domain.NewValidator(), domain.SystemClock{})
 	return &updateTestHarness{pool: pool, repo: repo, hub: hub, svc: svc, worker: worker, client: client, siteSvc: siteSvc}
@@ -483,6 +564,117 @@ func TestUpdateAutoRollback(t *testing.T) {
 	}
 	if rbCmd != "rollback" {
 		t.Fatalf("rollback JWT cmd = %q, want rollback", rbCmd)
+	}
+}
+
+// TestUpdateAutoRollback_CachedHomepageMaskedFatal_StillRollsBack reproduces
+// THE BUG this phase fixes end-to-end, over a real agentcmd.Client and a real
+// River-driven worker: a page cache serves a stale pre-update 200 for the
+// public homepage (what the old code alone would have read as "healthy"),
+// while the SAME broken plugin update has made PHP fatal on EVERY request,
+// including the agent's own signed ping route, which a cache can never serve
+// stale because it is a fresh, uncacheable, signed round trip. The task must
+// still roll back, and it must do so WITHOUT ever consulting the (misleading)
+// public homepage probe at all.
+//
+// The fake agent's ping response here is persistently 500 (it never clears),
+// so this also doubles as the end-to-end pin for fix 1's "persistent" half: a
+// rollback is reached only after the agent-first check has been retried
+// across its full window, not on the first observation. A tiny probe-retry
+// schedule is installed on the worker so the test does not actually wait out
+// the production ~21s window.
+func TestUpdateAutoRollback_CachedHomepageMaskedFatal_StillRollsBack(t *testing.T) {
+	pool := startPostgres(t)
+	tenant := seedTenant(t, pool, "upd-cache-mask")
+	fa := newFakeAgent(t)
+	// The public homepage: a page cache serving the stale pre-update 200.
+	fa.setHomepage(http.StatusOK, "<html>looks fine (stale cache)</html>")
+	// The signed ping route: PHP is actually fatal-ing on every request, and
+	// stays that way for the whole test (a persistent, not transient, fatal).
+	fa.setPing(http.StatusInternalServerError, "")
+
+	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
+	// Fix 1 gives the agent-first check the same retry discipline as the
+	// public probe, reusing probeRetryDelays. Override it here with a tiny
+	// schedule so this test proves the retry-then-persist behavior without
+	// spending the real ~21s window.
+	h.worker.SetProbeRetryDelays([]time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond})
+	s := enrollFakeSite(t, pool, tenant, fa.url())
+	fa.setExpectAud(s.ID.String())
+	seedPendingPlugin(t, h, tenant, s, "broken-plugin", "1.0.0", "1.1.0")
+
+	run, _, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
+		TenantID: tenant,
+		SiteIDs:  []uuid.UUID{s.ID},
+		Items:    []update.Item{{Type: "plugin", Slug: "broken-plugin", Version: "latest"}},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	start := time.Now()
+	_, finalTasks := waitRunCompleted(t, h, tenant, run.ID)
+	elapsed := time.Since(start)
+
+	tk := finalTasks[0]
+	if tk.Status != update.TaskRolledBack {
+		t.Fatalf("task status = %s, want rolled_back (detail=%s); a cached-200 homepage must not mask a fatal backend", tk.Status, tk.Detail)
+	}
+	if atomic.LoadInt32(&fa.rollbackCalls) != 1 {
+		t.Fatalf("rollback called %d times, want 1", fa.rollbackCalls)
+	}
+	if atomic.LoadInt32(&fa.homepageCalls) != 0 {
+		t.Fatalf("the public homepage probe was called %d time(s); a PERSISTENT agent-confirmed fatal is conclusive and should have skipped it entirely", fa.homepageCalls)
+	}
+	// With the tiny test schedule installed above, the whole retry-then-persist
+	// sequence should finish in well under a second; a much larger bound is
+	// used here only to absorb CI scheduling jitter, not to allow the real
+	// production window to run.
+	if elapsed > 5*time.Second {
+		t.Fatalf("run took %s to complete using the tiny test retry schedule; the persistent-agent-fatal path should not take anywhere near that long", elapsed)
+	}
+}
+
+// TestUpdateNoRollback_TransientAgentPingRecovers is the end-to-end pin for
+// fix 1's "transient" half, over a real agentcmd.Client and a real
+// River-driven worker: the signed ping route returns a server error for the
+// FIRST couple of calls, then recovers, exactly like the synchronous
+// DB-migration-on-activation window GH #127 documents. The task must
+// succeed, not roll back, and the agent-first check must have been retried
+// (not just observed once) before it did.
+func TestUpdateNoRollback_TransientAgentPingRecovers(t *testing.T) {
+	pool := startPostgres(t)
+	tenant := seedTenant(t, pool, "upd-agent-transient")
+	fa := newFakeAgent(t)
+	fa.setHomepage(http.StatusOK, "<html>ok</html>")
+	// The signed ping route fails twice, then clears.
+	fa.setPingTransientFailure(2, http.StatusInternalServerError, "")
+
+	h := buildHarness(t, pool, newTestCommander(t), newTestProber(t))
+	h.worker.SetProbeRetryDelays([]time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond})
+	s := enrollFakeSite(t, pool, tenant, fa.url())
+	fa.setExpectAud(s.ID.String())
+	seedPendingPlugin(t, h, tenant, s, "migrating-plugin", "1.9.9", "2.0.0")
+
+	run, _, err := h.svc.CreateRun(context.Background(), update.CreateRunInput{
+		TenantID: tenant,
+		SiteIDs:  []uuid.UUID{s.ID},
+		Items:    []update.Item{{Type: "plugin", Slug: "migrating-plugin", Version: "latest"}},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	_, finalTasks := waitRunCompleted(t, h, tenant, run.ID)
+	tk := finalTasks[0]
+	if tk.Status != update.TaskSucceeded {
+		t.Fatalf("task status = %s, want succeeded (detail=%s); a transient agent-side failure that clears within the retry window must not roll back", tk.Status, tk.Detail)
+	}
+	if atomic.LoadInt32(&fa.rollbackCalls) != 0 {
+		t.Fatalf("rollback called %d times, want 0: the agent-first check recovered before the retry window was exhausted", fa.rollbackCalls)
+	}
+	if atomic.LoadInt32(&fa.pingCalls) < 3 {
+		t.Fatalf("expected at least 3 ping calls (2 transient failures + 1 recovery), got %d", fa.pingCalls)
 	}
 }
 

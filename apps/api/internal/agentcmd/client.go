@@ -950,12 +950,30 @@ type ProbeResult struct {
 	// Fatal is true when the response looks like a PHP fatal / WSOD even with a
 	// 200 status (WordPress sometimes returns 200 with a fatal-error body).
 	Fatal bool
+	// CacheHit is true when the response carries a header (or Age value) that
+	// identifies it as served from a page/edge cache rather than freshly
+	// rendered, even though Get() appended a cache-busting query parameter
+	// (see addCacheBuster). A cache that is keyed on path only, ignoring the
+	// query string entirely (Cloudflare's "Ignore Query String" page rule,
+	// Varnish configured that way, nginx keyed on $uri), defeats the buster
+	// with one click, so this is the honest backstop: a caller MUST NOT treat
+	// a CacheHit response as proof of anything about the current backend
+	// state (GH #291 Phase 4 Change 3).
+	CacheHit bool
 	// Detail is a short reason string for logging/audit.
 	Detail string
 }
 
 // Healthy reports whether the probe indicates a healthy site: a non-5xx status
-// and no fatal-error signature.
+// and no fatal-error signature. This is the ORIGINAL, unchanged reachability
+// check: 401/403/404/410 all count as healthy here, which is deliberately
+// lenient for a generic "did something answer" question. It is intentionally
+// NOT used for the post-update rollback decision (see
+// internal/update.classifyPostUpdateProbe), which needs a narrower rule (a
+// 404/410 on the site root after an update IS a broken-update signal, a
+// 401/403 is NOT). Adding that narrower rule as a separate, explicit
+// classification next to its one caller, rather than changing what Healthy()
+// means, keeps every other/future caller of this shared helper unaffected.
 func (r ProbeResult) Healthy() bool {
 	return r.StatusCode > 0 && r.StatusCode < 500 && !r.Fatal
 }
@@ -971,11 +989,84 @@ var fatalSignatures = []string{
 	"cannot redeclare",
 }
 
+// cacheBusterParam is the query parameter Get appends to every probed URL
+// (GH #291 Phase 4 Change 3). Deliberately NOT utm-adjacent: some managed
+// hosts (WP Engine among them) strip utm_* params server-side before PHP ever
+// sees them, which would silently neutralize a buster named that way.
+//
+// This IS a deliberate departure from the frozen 60s uptime reachability
+// probe (internal/uptime), which never busts its cache for good reasons (see
+// docs/security/uptime-app-health-design-2026-07-27.md section 2): a
+// recurring 60s probe with a buster would mint ~1,440 uncached full renders
+// per site per day and would corrupt the perf-timing numbers it also
+// collects. NEITHER objection applies here: this Probe fires at most a
+// handful of times, once, right after an update is applied, not on a
+// recurring schedule, and it collects no timing metrics. Do not remove this
+// on the assumption it is the same mistake the uptime probe design rejected.
+const cacheBusterParam = "wpmgr_hc"
+
+// addCacheBuster appends a fresh, unpredictable-enough query parameter to
+// targetURL so a query-string-keyed cache treats this request as a new
+// object. It is not a security token; it only needs to vary per call.
+func addCacheBuster(targetURL string) (string, error) {
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid probe url: %w", err)
+	}
+	q := u.Query()
+	q.Set(cacheBusterParam, strconv.FormatInt(time.Now().UnixNano(), 36))
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// cacheHitHeaders are the response headers various page/edge caches use to
+// report that a response was served from cache rather than freshly rendered.
+// Checked case-insensitively via http.Header.Get's own canonicalization.
+var cacheHitHeaders = []string{
+	"Cf-Cache-Status",   // Cloudflare
+	"X-Litespeed-Cache", // LiteSpeed / OpenLiteSpeed built-in page cache
+	"X-Kinsta-Cache",    // Kinsta
+	"X-Proxy-Cache",     // common nginx/Varnish proxy_cache naming
+	"X-Cache",           // Varnish, Fastly, many generic reverse proxies
+	"X-Cache-Status",    // the standard nginx add_header X-Cache-Status $upstream_cache_status form
+}
+
+// detectCacheHit reports whether h carries a cache-status header (or an Age
+// value greater than zero) indicating the response was served from cache. A
+// cache that ignores query strings when computing its cache key defeats
+// addCacheBuster with one click of configuration (see cacheBusterParam), so
+// this is the honest backstop that turns a silently-stale 200 into a
+// detectable, reportable CacheHit instead of trusted proof of health.
+func detectCacheHit(h http.Header) (hit bool, detail string) {
+	for _, name := range cacheHitHeaders {
+		v := h.Get(name)
+		if v == "" {
+			continue
+		}
+		if strings.Contains(strings.ToUpper(v), "HIT") {
+			return true, fmt.Sprintf("cache hit (%s: %s)", name, v)
+		}
+	}
+	if age := strings.TrimSpace(h.Get("Age")); age != "" {
+		if n, err := strconv.Atoi(age); err == nil && n > 0 {
+			return true, fmt.Sprintf("cache hit (Age: %s)", age)
+		}
+	}
+	return false, ""
+}
+
 // Get probes targetURL and classifies the result. A transport error (including
 // an SSRF block) is returned as err; a reachable-but-broken site is a non-error
-// ProbeResult with Healthy()==false.
+// ProbeResult with Healthy()==false. The URL is cache-busted (see
+// cacheBusterParam) and the response headers are checked for a cache-status
+// signal (see detectCacheHit / ProbeResult.CacheHit) before the caller decides
+// what the result proves.
 func (p *Probe) Get(ctx context.Context, targetURL string) (ProbeResult, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	bustedURL, err := addCacheBuster(targetURL)
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, bustedURL, nil)
 	if err != nil {
 		return ProbeResult{}, fmt.Errorf("build probe request: %w", err)
 	}
@@ -987,11 +1078,13 @@ func (p *Probe) Get(ctx context.Context, targetURL string) (ProbeResult, error) 
 	}
 	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRespBody)); _ = resp.Body.Close() }()
 
+	cacheHit, cacheDetail := detectCacheHit(resp.Header)
+
 	// Read a bounded prefix to scan for fatal-error signatures.
 	const scanLimit = 64 << 10
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, scanLimit))
 	lower := strings.ToLower(string(body))
-	res := ProbeResult{StatusCode: resp.StatusCode}
+	res := ProbeResult{StatusCode: resp.StatusCode, CacheHit: cacheHit}
 	for _, sig := range fatalSignatures {
 		if strings.Contains(lower, sig) {
 			res.Fatal = true
@@ -1001,6 +1094,10 @@ func (p *Probe) Get(ctx context.Context, targetURL string) (ProbeResult, error) 
 	}
 	if resp.StatusCode >= 500 {
 		res.Detail = fmt.Sprintf("server returned status %d", resp.StatusCode)
+		return res, nil
+	}
+	if cacheHit {
+		res.Detail = cacheDetail
 	}
 	return res, nil
 }

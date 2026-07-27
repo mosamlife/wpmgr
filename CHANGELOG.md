@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.91] - 2026-07-27
+
+### Fixed
+
+- An update that broke a site could be reported as successful and never rolled back (GH #291). After applying an update WPMgr checks the site's homepage to decide whether to undo it, but on a site with page caching that check could be answered from the cache with the pre-update page, so an update that broke WordPress outright still looked healthy. WPMgr now asks the site agent directly first, over a signed request that cannot be served from a cache and only works if WordPress actually loaded, and it still checks the public homepage afterwards so that a theme or front-end problem the agent cannot see is caught too. A response that is identified as coming from a cache is now treated as inconclusive rather than as proof of success.
+- Updates are no longer at risk of being cut off partway through. The job running an update was bound by a one minute limit, while a single slow install was allowed up to five minutes, so a slow but successful update could be terminated mid-flight and left stuck. The limit is now derived from the time the work is actually allowed to take.
+- An update is only undone now when a failure is confirmed repeatedly, never on a single reading. A site that returns an error briefly while it finishes activating, restarts, or is momentarily behind a failing proxy is given time to recover first, so a good update is not reverted because of a passing blip.
+
 ## [0.61.90] - 2026-07-27
 
 ### Fixed
