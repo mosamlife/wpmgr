@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,6 +102,14 @@ type Worker struct {
 	// schedule (probeRetryDelays). Nil uses the default. Tests set this to a
 	// tiny schedule so the retry loop does not actually sleep ~21s.
 	probeDelays []time.Duration
+	// jobTimeout overrides River's default 60s per-job context deadline (see
+	// DeriveApplyJobTimeout, and NewBackupWorker's identical jobTimeout field for
+	// the same pattern applied to backups). runApply makes one apply/rollback
+	// command round trip plus the full GH #291 Phase 4 post-update health check
+	// (the agent-first reachability ladder and the public probe ladder, both of
+	// which can retry with backoff), all inside the same River job, comfortably
+	// longer than the 60s default. Zero falls back to river.Config.JobTimeout.
+	jobTimeout time.Duration
 }
 
 // probeRetryDelays is the backoff schedule between post-update health-probe
@@ -127,15 +136,86 @@ func (w *Worker) SetProbeRetryDelays(delays []time.Duration) {
 	w.probeDelays = delays
 }
 
-// NewWorker builds the update task worker.
-func NewWorker(repo Repo, sites SiteLookup, cmd Commander, prober HealthProber, hub *Hub, rec *audit.Recorder, logger *slog.Logger, perTenantLimit int) *Worker {
+// NewWorker builds the update task worker. jobTimeout overrides River's
+// default 60s per-job deadline; pass update.DeriveApplyJobTimeout(cfg.Update.
+// ApplyHTTPTimeout, cfg.Update.HTTPTimeout) (see that function's doc comment
+// for the arithmetic). Zero keeps River's default.
+func NewWorker(repo Repo, sites SiteLookup, cmd Commander, prober HealthProber, hub *Hub, rec *audit.Recorder, logger *slog.Logger, perTenantLimit int, jobTimeout time.Duration) *Worker {
 	if perTenantLimit <= 0 {
 		perTenantLimit = 5
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Worker{repo: repo, sites: sites, cmd: cmd, prober: prober, hub: hub, audit: rec, logger: logger, perTenantLimit: perTenantLimit}
+	return &Worker{repo: repo, sites: sites, cmd: cmd, prober: prober, hub: hub, audit: rec, logger: logger, perTenantLimit: perTenantLimit, jobTimeout: jobTimeout}
+}
+
+// Timeout overrides River's default per-job context deadline (60s) for the
+// update-task worker, the same way BackupWorker.Timeout does. Returning a
+// positive duration makes River use it instead of river.Config.JobTimeout;
+// returning 0 keeps the default (see cmp.Or in river's job executor, which
+// falls through to river.Config.JobTimeout, itself defaulting to River's own
+// 60s river.JobTimeoutDefault when that is also unset, exactly as it is in
+// this codebase's river.Config today). River documents that returning -1
+// disables the deadline entirely; we intentionally do NOT do that: a wedged
+// update task must eventually error out so River can retry/reap it.
+func (w *Worker) Timeout(*river.Job[TaskArgs]) time.Duration { return w.jobTimeout }
+
+// DeriveApplyJobTimeout computes the River job-level Timeout() budget for the
+// update-apply worker (see Worker.Timeout and NewWorker). It reads the actual
+// ladder schedules (probeRetryDelays, agentVerifyTimeout) rather than assuming
+// them, so this stays correct if either is ever tuned.
+//
+// runApply's worst-case wall-clock budget, in the order the work happens:
+//
+//  1. applyHTTPTimeout: the ONE apply/rollback command round trip
+//     (cfg.Update.ApplyHTTPTimeout; see UpdateConfig's doc comment in
+//     internal/config for how its 5m default was picked).
+//  2. the agent-first reachability ladder (verifyAgentHealthWithRetry, GH #291
+//     Phase 4): up to len(probeRetryDelays)+1 attempts, each hard-capped at
+//     agentVerifyTimeout via context.WithTimeout, plus the sleep between
+//     attempts:
+//     (len(probeRetryDelays)+1)*agentVerifyTimeout + sum(probeRetryDelays)
+//  3. the public homepage probe ladder (probeHealthWithRetry), which reuses
+//     the SAME probeRetryDelays schedule; each attempt is one prober.Get call
+//     capped at probeHTTPTimeout (cfg.Update.HTTPTimeout, the timeout the
+//     shared SSRF client that backs the prober is built with):
+//     (len(probeRetryDelays)+1)*probeHTTPTimeout + sum(probeRetryDelays)
+//  4. headroom, mirroring the backup worker's `+2*time.Minute` (see
+//     NewBackupWorker/backupJobTimeout in cmd/wpmgr/main.go) for scheduling
+//     jitter and the small per-attempt backoff the shared HTTP client's own
+//     retry-on-5xx layer can add on top of a single probeHTTPTimeout window
+//     (internal/httpclient.Client.Do; not separately itemized above to keep
+//     this arithmetic reviewable).
+//
+// With the production defaults (applyHTTPTimeout=5m, probeHTTPTimeout=30s,
+// agentVerifyTimeout=8s, probeRetryDelays summing to ~21s across 4 delays)
+// this computes to 5m + 61s + 171s + 2m = 10m52s, comfortably under
+// staleTaskThreshold (45m), so the periodic reaper still cannot terminalize a
+// task that is legitimately still running.
+//
+// Returns 0 (defer to river.Config.JobTimeout) when applyHTTPTimeout is not
+// positive, so a zero/misconfigured input never produces a misleadingly small
+// nonzero timeout that omits the apply round trip it is meant to cover.
+func DeriveApplyJobTimeout(applyHTTPTimeout, probeHTTPTimeout time.Duration) time.Duration {
+	if applyHTTPTimeout <= 0 {
+		return 0
+	}
+	if probeHTTPTimeout <= 0 {
+		probeHTTPTimeout = agentVerifyTimeout
+	}
+
+	attempts := time.Duration(len(probeRetryDelays) + 1)
+	var delaySum time.Duration
+	for _, d := range probeRetryDelays {
+		delaySum += d
+	}
+
+	agentLadder := attempts*agentVerifyTimeout + delaySum
+	probeLadder := attempts*probeHTTPTimeout + delaySum
+	const headroom = 2 * time.Minute
+
+	return applyHTTPTimeout + agentLadder + probeLadder + headroom
 }
 
 // SetRefreshEnqueuer wires the post-update inventory-refresh enqueuer + its
@@ -224,28 +304,261 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "already up to date", "")
 	}
 
-	// Post-update health probe of the site homepage, retried with backoff
-	// before declaring the update unhealthy (see probeHealthWithRetry): a
-	// normal DB-migration 503 immediately after activation must not trigger an
-	// unnecessary rollback of a site that in fact updated successfully.
+	// GH #291 Phase 4 (post-review fix): ask the agent FIRST, over a signed and
+	// therefore uncacheable round trip. The control plane has JUST spoken to
+	// this exact agent to apply the update; a fresh signed check is
+	// authoritative proof PHP booted and the plugin loaded (the signed command
+	// route does not exist otherwise), and no page cache can fake it. See
+	// verifyAgentHealth for the per-attempt decision table and
+	// verifyAgentHealthWithRetry for why a single unhealthy sample is never
+	// enough on its own (the same transient-migration window that can make the
+	// public homepage 503 for a few seconds can just as easily hit the agent's
+	// own PHP route, since it is served by the same stack). An inconclusive
+	// verdict (no signing key configured, the agent is absent/uninstalled, or
+	// the check timed out or hit a TLS/transport error) does NOT roll back on
+	// its own, because plenty of legitimate sites have no agent reachable this
+	// way; it falls through to the public probe below exactly like a healthy
+	// verdict does.
+	verdict, verifyDetail, agentAttempts := w.verifyAgentHealthWithRetry(ctx, task.SiteID, siteURL)
+	if verdict == agentHealthUnhealthy {
+		return w.rollback(ctx, task, siteURL, item, res, agentcmd.ProbeResult{}, true,
+			fmt.Sprintf("post-update agent reachability check failed after %d attempt(s): %s", agentAttempts, verifyDetail))
+	}
+
+	// The public homepage probe still runs even when the agent-first check
+	// came back healthy. The signed agent route only proves PHP booted and the
+	// WPMgr plugin loaded; it proves nothing about whether the site RENDERS. A
+	// theme update, or a plugin that only fatals on a front-end hook (e.g.
+	// wp_head or the_content), can leave the agent route perfectly healthy
+	// while the homepage is fatal, so an agent-healthy verdict must not by
+	// itself end the check for any target type, plugin included.
+	//
+	// Reusing probeHealthWithRetry here, rather than a bespoke single-shot
+	// check, keeps the added latency close to zero on the common path:
+	// probeHealthWithRetry only invokes its backoff schedule when the FIRST
+	// attempt is not already postUpdateHealthy, so an agent-confirmed-healthy
+	// update whose front end also renders fine (the overwhelming common case)
+	// costs exactly one extra request. Only a front end that is ALSO failing
+	// pays the bounded (about 21s worst case) retry cost, which is the same
+	// budget a broken update already paid before this phase existed, and which
+	// exists for the same reason as verifyAgentHealthWithRetry: a single failed
+	// sample right after activation must not be mistaken for a broken update.
 	probe, perr, attempts := w.probeHealthWithRetry(ctx, siteURL)
 	if perr != nil {
-		// Still unreachable after retrying — treat as unhealthy and roll back.
-		return w.rollback(ctx, task, siteURL, item, res, probe, fmt.Sprintf("post-update probe error after %d attempt(s): %v", attempts, perr))
+		// Still unreachable after retrying: treat as unhealthy and roll back.
+		return w.rollback(ctx, task, siteURL, item, res, probe, false, fmt.Sprintf("post-update probe error after %d attempt(s): %v", attempts, perr))
 	}
-	if !probe.Healthy() {
-		return w.rollback(ctx, task, siteURL, item, res, probe, fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail))
+	switch classifyPostUpdateProbe(probe) {
+	case postUpdateHealthy:
+		detail := "updated and healthy"
+		if verdict == agentHealthHealthy {
+			detail = "updated and healthy (signed agent check and public probe both confirmed)"
+		}
+		return w.finish(ctx, task, TaskSucceeded, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, detail, "")
+	case postUpdateInconclusive:
+		// A cached response (or, per the design doc's baseline note below, a
+		// 404/410 on the site root with no pre-update baseline to compare
+		// against) is NOT proof of health. Do not roll back on it alone, but
+		// record the uncertainty plainly rather than claiming "healthy".
+		detail := fmt.Sprintf("updated; post-update probe inconclusive after %d attempt(s): %s, so this could not confirm the update did not break the site", attempts, probe.Detail)
+		if verdict == agentHealthHealthy {
+			detail = fmt.Sprintf("updated; signed agent check confirmed the backend healthy, but the public probe was inconclusive after %d attempt(s): %s, so the front end could not be separately confirmed", attempts, probe.Detail)
+		}
+		return w.finish(ctx, task, TaskSucceeded, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, detail, "")
+	default: // postUpdateUnhealthy
+		reason := fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail)
+		if verdict == agentHealthHealthy {
+			reason = fmt.Sprintf("signed agent check reported healthy, but the public homepage failed after %d attempt(s): status=%d %s (a front-end-only failure the agent route cannot see)", attempts, probe.StatusCode, probe.Detail)
+		}
+		return w.rollback(ctx, task, siteURL, item, res, probe, false, reason)
 	}
-
-	return w.finish(ctx, task, TaskSucceeded, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "updated and healthy", "")
 }
 
-// probeHealthWithRetry probes siteURL and, if the site is unhealthy or
-// unreachable, retries with backoff (probeDelays, defaulting to
-// probeRetryDelays) before giving up. It returns as soon as any attempt
-// reports Healthy(); otherwise it returns the LAST probe result/error after
-// exhausting the schedule, plus the number of attempts made (folded into the
-// rollback reason so an operator can see the update was given a fair chance).
+// agentVerifyTimeout bounds ONE attempt of the agent-first post-update
+// reachability check (GH #291 Phase 4). Short and independent of the update
+// command's own (possibly multi-minute) timeout: this is a lightweight signed
+// ping/metadata round trip, not the heavy update operation itself. Applied
+// per attempt inside verifyAgentHealthWithRetry, not to the retry loop as a
+// whole.
+const agentVerifyTimeout = 8 * time.Second
+
+// agentHealthVerdict is the outcome of the agent-first post-update
+// reachability check (see Worker.verifyAgentHealth and
+// Worker.verifyAgentHealthWithRetry). The zero value is agentHealthInconclusive
+// so a mistakenly-unset verdict never triggers either a false "healthy" or a
+// false rollback.
+type agentHealthVerdict int
+
+const (
+	// agentHealthInconclusive covers both "the check could not be run at all"
+	// (no signing key configured, or a Commander test double that does not
+	// implement agentVerifier) and "the check ran but the result does not
+	// prove anything either way" (agent absent/uninstalled, a non-404/5xx
+	// HTTP status, a timeout, or a TLS/transport error). It deliberately does
+	// NOT roll back on its own: a great many legitimate sites will have no
+	// agent reachable from this specific check, and rolling back a good
+	// update on that basis alone would be its own outage. The caller falls
+	// through to the public probe, exactly like agentHealthHealthy does.
+	agentHealthInconclusive agentHealthVerdict = iota
+	// agentHealthHealthy means the signed command route answered: PHP booted
+	// and the plugin loaded. This is authoritative and cannot be a cache
+	// artifact (the route only exists once PHP has booted). It proves nothing
+	// about the front end, though, so the caller still runs the public probe
+	// (see runApply); it only proves the backend is alive, which lets that
+	// probe skip its own retry ladder on the common happy path.
+	agentHealthHealthy
+	// agentHealthUnhealthy means the signed command route itself returned a
+	// server error on EVERY attempt across verifyAgentHealthWithRetry's retry
+	// window, not merely once: PHP is persistently fatal-ing on every request,
+	// including the agent's own route. This is the strongest signal available
+	// short of total unreachability, and because it came back over a signed
+	// round trip rather than a cacheable public GET, it cannot be a stale
+	// cached read. A single unhealthy sample is deliberately NOT enough to
+	// reach this verdict (see verifyAgentHealthWithRetry): the agent's ping
+	// route is served by the same PHP and WordPress stack as the homepage, so
+	// it is exposed to the same transient migration-on-activation window,
+	// php-fpm restart, opcache reset, or WAF/CDN origin error that
+	// probeRetryDelays already exists to ride out for the public probe.
+	agentHealthUnhealthy
+)
+
+// agentVerifier is the subset of *agentcmd.Client used for the agent-first
+// post-update reachability check. Defined locally, matching the method
+// agentcmd.Client already exposes, so this package does not need to import
+// internal/site's identically-shaped AgentVerifier, and so any Commander test
+// double that does not implement it (most of worker_test.go's fakes) simply
+// fails the type assertion in verifyAgentHealth rather than needing a stub
+// method, which itself resolves to the correct agentHealthInconclusive
+// behaviour.
+type agentVerifier interface {
+	VerifyReachableWithReason(ctx context.Context, siteID uuid.UUID, siteURL string) (alive bool, fallbackUsed bool, reason agentcmd.ReachabilityReason, err error)
+}
+
+// verifyAgentHealth implements GH #291 Phase 4's per-attempt agent-first
+// decision table (see verifyAgentHealthWithRetry for the retry wrapper that
+// callers actually use). It never returns an error: any failure to even run
+// the check collapses to agentHealthInconclusive, exactly like an ambiguous
+// check result, so a caller can never mistake "we couldn't ask" for "we
+// asked and it's fine" or "we asked and it's broken".
+func (w *Worker) verifyAgentHealth(ctx context.Context, siteID uuid.UUID, siteURL string) (agentHealthVerdict, string) {
+	verifier, ok := w.cmd.(agentVerifier)
+	if !ok {
+		return agentHealthInconclusive, "agent reachability check unavailable (no signing key configured)"
+	}
+	verifyCtx, cancel := context.WithTimeout(ctx, agentVerifyTimeout)
+	defer cancel()
+	alive, _, reason, err := verifier.VerifyReachableWithReason(verifyCtx, siteID, siteURL)
+	if err != nil {
+		// An infrastructure failure minting/sending the check (e.g. a JWT-mint
+		// error) proves nothing about the site itself: ambiguous, not a signal.
+		return agentHealthInconclusive, fmt.Sprintf("agent reachability check error: %v", err)
+	}
+	if alive {
+		return agentHealthHealthy, "signed agent route reachable"
+	}
+	if reason == agentcmd.ReasonHTTP5xx {
+		return agentHealthUnhealthy, "signed agent route returned a server error (PHP fatal)"
+	}
+	return agentHealthInconclusive, fmt.Sprintf("agent reachability ambiguous (%s)", reason)
+}
+
+// verifyAgentHealthWithRetry retries the agent-first reachability check (see
+// verifyAgentHealth) using the SAME backoff schedule as the public probe
+// (probeRetryDelays, or w.probeDelays in tests), rather than a second bespoke
+// schedule. A single unhealthy sample must never conclude agentHealthUnhealthy
+// on its own: the agent's ping route is served by the same PHP and WordPress
+// stack as the homepage, so a transient DB-migration-on-activation window (or
+// a php-fpm restart, opcache reset, or WAF/CDN origin error) can make it 5xx
+// for a few seconds exactly like the public homepage. Only a verdict that
+// STAYS agentHealthUnhealthy across the whole retry window reaches that
+// conclusion here; a verdict that resolves to healthy or inconclusive at any
+// attempt returns immediately, mirroring probeHealthWithRetry's early return
+// on postUpdateHealthy.
+func (w *Worker) verifyAgentHealthWithRetry(ctx context.Context, siteID uuid.UUID, siteURL string) (verdict agentHealthVerdict, detail string, attempts int) {
+	delays := probeRetryDelays
+	if w.probeDelays != nil {
+		delays = w.probeDelays
+	}
+	for i := 0; ; i++ {
+		attempts = i + 1
+		verdict, detail = w.verifyAgentHealth(ctx, siteID, siteURL)
+		if verdict != agentHealthUnhealthy {
+			return verdict, detail, attempts
+		}
+		if i >= len(delays) {
+			return verdict, detail, attempts
+		}
+		select {
+		case <-ctx.Done():
+			return verdict, detail, attempts
+		case <-time.After(delays[i]):
+		}
+	}
+}
+
+// postUpdateVerdict classifies a public homepage ProbeResult specifically for
+// the post-update rollback decision. This is intentionally NOT the same rule
+// as ProbeResult.Healthy(): see classifyPostUpdateProbe's doc comment for why
+// a separate, explicit classification exists instead of changing Healthy()
+// itself.
+type postUpdateVerdict int
+
+const (
+	postUpdateUnhealthy postUpdateVerdict = iota
+	postUpdateHealthy
+	postUpdateInconclusive
+)
+
+// classifyPostUpdateProbe applies the post-update-specific health rule.
+//
+// A response flagged CacheHit is checked FIRST, before any status-code based
+// classification: a cached response proves nothing about the CURRENT backend
+// state, so evaluating Fatal/5xx/404 first would let a stale cached error (or
+// a stale cached 404) drive a rollback, or a stale cached 200 claim health,
+// for a site the update may never have touched. A CacheHit result is always
+// classified inconclusive, regardless of its status code.
+//
+// A 5xx status or a fatal-error body signature is unhealthy (unchanged from
+// Healthy()). A 401 or 403 is healthy, because those are common and
+// legitimate on the homepage (staging HTTP auth, a members-only site, a
+// security plugin) and rolling back a good update because of one would be its
+// own outage.
+//
+// A 404 or 410 on the site root is classified inconclusive, NOT unhealthy and
+// NOT healthy (see docs/security/uptime-app-health-design-2026-07-27.md
+// section 4 item 2, which explicitly forbids treating 4xx as a rollback
+// trigger). There is no pre-update baseline recorded for this task, so a site
+// that legitimately already returned 404 on its root BEFORE the update (a
+// headless install, a site whose root is intentionally empty, a redirect-only
+// domain) cannot be told apart from one broken BY the update; rolling back the
+// former would be its own outage. Classifying it inconclusive rather than
+// healthy still stops the caller from claiming the update was confirmed fine.
+// Follow-up: record a pre-update probe of the site root so a 404 that appears
+// ONLY after the update can be promoted to a real unhealthy signal.
+func classifyPostUpdateProbe(probe agentcmd.ProbeResult) postUpdateVerdict {
+	if probe.CacheHit {
+		return postUpdateInconclusive
+	}
+	if probe.StatusCode <= 0 || probe.Fatal || probe.StatusCode >= 500 {
+		return postUpdateUnhealthy
+	}
+	if probe.StatusCode == http.StatusNotFound || probe.StatusCode == http.StatusGone {
+		return postUpdateInconclusive
+	}
+	return postUpdateHealthy
+}
+
+// probeHealthWithRetry probes siteURL and, if the site is unhealthy,
+// inconclusive, or unreachable, retries with backoff (probeDelays, defaulting
+// to probeRetryDelays) before giving up. It returns as soon as any attempt
+// classifies postUpdateHealthy (see classifyPostUpdateProbe; NOT the same
+// rule as ProbeResult.Healthy(), see classifyPostUpdateProbe's doc comment for
+// why); otherwise it returns the LAST probe result/error after exhausting the
+// schedule, plus the number of attempts made (folded into the rollback reason
+// so an operator can see the update was given a fair chance). Retrying on an
+// inconclusive (cache-hit) result too, rather than exiting early on it, gives a
+// cache-busted retry a real chance to land on a genuine cache MISS within the
+// window.
 //
 // A transient transport error (perr != nil) is retried the same as an
 // unhealthy-but-reachable response: during a post-update migration window a
@@ -262,7 +575,7 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 	for i := 0; ; i++ {
 		attempts = i + 1
 		probe, perr = w.prober.Get(ctx, siteURL)
-		if perr == nil && probe.Healthy() {
+		if perr == nil && classifyPostUpdateProbe(probe) == postUpdateHealthy {
 			return probe, nil, attempts
 		}
 		if i >= len(delays) {
@@ -278,10 +591,16 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 
 // rollback issues the signed rollback command and records the rolled_back
 // state. probe is the ProbeResult that triggered the rollback decision (the
-// zero value when rollback was reached via a probe TRANSPORT error rather
-// than a reachable-but-unhealthy response) — it is used only to classify a
-// rollback-transport failure below (GH #210).
-func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, probe agentcmd.ProbeResult, reason string) error {
+// zero value when rollback was reached via a probe TRANSPORT error, or via
+// the GH #291 Phase 4 agent-first check, rather than a reachable-but-unhealthy
+// public-probe response), and is used, together with agentConfirmedFatal,
+// only to classify a rollback-transport failure below (GH #210).
+// agentConfirmedFatal is true when the rollback decision came from the
+// signed agent-first reachability check itself returning a server error
+// (agentHealthUnhealthy), which is exactly as strong a "site-wide PHP fatal"
+// signal as probe.Fatal or probe.StatusCode >= 500, but arrives with no
+// ProbeResult to carry it.
+func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, probe agentcmd.ProbeResult, agentConfirmedFatal bool, reason string) error {
 	from := fromOr(res.FromVersion, task.FromVersion)
 	_, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
 		Type:       item.Type,
@@ -293,16 +612,18 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 		// Rollback itself failed: this is the worst case. Record as failed with
 		// both the health reason and the rollback error so the operator is alerted.
 		detail := "rollback FAILED after unhealthy update: " + reason
-		// GH #210: when the post-update probe ITSELF detected a site-wide PHP
-		// fatal (a fatal-error body signature, or a 5xx response) AND the
-		// rollback command's transport also errored, the site is very likely
-		// serving a site-wide PHP fatal that makes the agent's own REST
-		// endpoint undeliverable — a distinct, more actionable failure mode
-		// than a generic "rollback failed" (which could also mean e.g. a
+		// GH #210: when the post-update health check ITSELF detected a
+		// site-wide PHP fatal (a fatal-error body signature, a 5xx probe
+		// response, or the GH #291 Phase 4 signed agent-first check itself
+		// getting a 5xx, agentConfirmedFatal) AND the rollback command's
+		// transport also errored, the site is very likely serving a
+		// site-wide PHP fatal that makes the agent's own REST endpoint
+		// undeliverable, a distinct, more actionable failure mode than a
+		// generic "rollback failed" (which could also mean e.g. a
 		// transient network blip unrelated to the update). Record a distinct
 		// detail so the operator knows the automatic filesystem-level
 		// recovery on the agent side is the remaining recovery path.
-		if probe.Fatal || probe.StatusCode >= 500 {
+		if probe.Fatal || probe.StatusCode >= 500 || agentConfirmedFatal {
 			detail = "site not responding: site-wide PHP fatal after update; rollback command undeliverable. " +
 				"The agent update watchdog will attempt automatic filesystem recovery; if it cannot, manual filesystem recovery is required."
 		}
@@ -473,13 +794,18 @@ func (ReapStaleTasksArgs) Kind() string { return "update_task_reaper" }
 
 // staleTaskThreshold is how long a task may sit in pending/running before the
 // reaper terminalizes it. Comfortably longer than any real update, including
-// the post-update health-probe retry window (worst case ~21s, see
-// probeRetryDelays) and the per-tenant parallelism snooze backoff: a worker
-// crash between MarkTaskRunning and finish(), or an EnqueueTask failure that
-// leaves a task pending (Service.CreateRun's best-effort enqueue after
-// CreateRunWithTasks), would otherwise permanently occupy the
+// the full apply + post-update health-check budget the River job itself is
+// now given (see Worker.Timeout / DeriveApplyJobTimeout, with production
+// defaults that budget is ~10m52s, itself already inclusive of both
+// post-update retry ladders) and the per-tenant parallelism snooze backoff: a
+// worker crash between MarkTaskRunning and finish(), or an EnqueueTask
+// failure that leaves a task pending (Service.CreateRun's best-effort enqueue
+// after CreateRunWithTasks), would otherwise permanently occupy the
 // update_tasks_inflight_target_idx slot for that (tenant, site, target) —
 // every future update attempt for it 409s targets_in_flight forever (m88).
+// If DeriveApplyJobTimeout's budget is ever tuned up near or past this value,
+// this threshold must grow with it: the reaper terminalizing a task that is
+// still legitimately within its own job deadline would itself be a bug.
 const staleTaskThreshold = 45 * time.Minute
 
 // staleTaskReapLimit bounds how many stale tasks one sweep reaps, so an
