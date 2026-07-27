@@ -1088,6 +1088,21 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	webhookPoster := uptime.NewSSRFWebhookPoster(ssrfClient)
 	uptimeDispatcher := uptime.NewDispatcher(uptimeMailer, webhookPoster, auditRec, logger)
 	uptimeWorker := uptime.NewProbeWorker(uptimeRepo, uptimeProber, metricsStore, uptimeDispatcher, uptimeSiteAdapter, logger, cfg.Uptime.ProbeConcurrency, cfg.Uptime.DownThreshold)
+	// GH #291 Phase 2 - application-health probe. Piggybacks onto the
+	// existing reachability sweep (uptimeWorker) rather than its own
+	// periodic job; see uptime.ProbeWorker.SetAppProber / appProbeDue.
+	// WPMGR_UPTIME_APP_PROBE_ENABLED=false leaves uptimeWorker exactly as it
+	// was before this feature existed (SetAppProber never called).
+	if cfg.Uptime.AppProbeEnabled {
+		appProber := uptime.NewAppProber(ssrfClient, cfg.Uptime.AppProbeTimeout)
+		uptimeWorker.SetAppProber(appProber, cfg.Uptime.ProbeInterval, cfg.Uptime.AppProbeInterval)
+		logger.Info("uptime app-health probe enabled (GH #291 Phase 2)",
+			slog.Duration("app_probe_interval", cfg.Uptime.AppProbeInterval),
+			slog.Duration("app_probe_timeout", cfg.Uptime.AppProbeTimeout),
+		)
+	} else {
+		logger.Info("uptime app-health probe disabled (WPMGR_UPTIME_APP_PROBE_ENABLED=false)")
+	}
 	uptimeSvc := uptime.NewService(uptimeRepo, metricsStore, uptimeSiteAdapter)
 	uptimeH := uptime.NewHandler(uptimeSvc, auditRec)
 	// Wire the metrics store into the site service so site-list uptime fields

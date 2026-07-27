@@ -30,6 +30,17 @@ type EnrolledSite struct {
 	TenantID     uuid.UUID
 	URL          string
 	HealthStatus string
+	// LastSeenAt is sites.last_seen_at (nil when the site has never
+	// heartbeated). GH #291 Phase 2's app prober reads this for B0 (agent
+	// ground truth): a fresh heartbeat already proves PHP booted and
+	// WordPress loaded, so the prober makes zero network requests. Ignored
+	// by the reachability prober and the cron-kicker.
+	LastSeenAt *time.Time
+	// AppProbePath is sites.app_probe_path (empty when unset). GH #291 Phase
+	// 2's app prober reads this for B3 (per-site override): when set, it
+	// replaces the default /wp-json/ (with ?rest_route=/ fallback) target
+	// entirely. Ignored by the reachability prober and the cron-kicker.
+	AppProbePath string
 }
 
 // AlertConfig is a tenant's default alert channel.
@@ -102,6 +113,15 @@ const (
 	// This state has no last-will path (see sweeperDisconnectReasons), so it
 	// needs no reason disambiguation.
 	FleetReasonAgentDegraded = "agent_degraded"
+	// FleetReasonAppDown (GH #291 Phase 2): the reachability probe reports
+	// up=true (visitors are being served, possibly a cached response) but
+	// the application-health probe conclusively found app_up=false - the
+	// literal incident this phase exists to catch: a page cache masking a
+	// completely dead PHP backend. The granular reason (rest_5xx,
+	// wp_fatal_error, unreachable, ...) is carried separately on
+	// FleetStatusItem.AppProbeReason; this constant is only the coarse
+	// status_reason, matching the shape of every other FleetReason*.
+	FleetReasonAppDown = "app_down"
 	// FleetReasonSlowResponse: the probe succeeded but total_ms exceeded
 	// slowThresholdMs.
 	FleetReasonSlowResponse = "slow_response"
@@ -163,6 +183,16 @@ type FleetStatusItem struct {
 	// InIncident is kept for internal use (summary counting) but not needed
 	// by the frontend contract — retained for the service-layer logic.
 	InIncident bool `json:"in_incident"`
+	// AppUp is the GH #291 Phase 2 application-health verdict from the most
+	// recent app probe: true, false, or nil (never probed, or the most
+	// recent probe was inconclusive - see AppProbeReason). Independent of
+	// Up: a cached 200 (Up=true) can coexist with AppUp=false when a page
+	// cache is masking a dead PHP backend. An additive, backend-only key - 	// see TestFleetStatusItemJSONContract.
+	AppUp *bool `json:"app_up"`
+	// AppProbeReason is the machine-readable reason for AppUp's most recent
+	// verdict (one of the AppProbeReason* constants - e.g. "agent_fresh",
+	// "rest_ok", "cache_hit"). Empty when no app probe has run yet.
+	AppProbeReason string `json:"app_probe_reason,omitempty"`
 }
 
 // FleetStatusResponse is the response body for GET /api/v1/fleet/status.

@@ -211,12 +211,16 @@ func (s *Service) GetFleetStatus(ctx context.Context, tenantID uuid.UUID, siteID
 				item.UptimePct7d = *um.UptimePct7d
 			}
 			item.AvgLatencyMs = um.AvgLatencyMs
+			// GH #291 Phase 2: surface the app-health verdict alongside the
+			// (unchanged) reachability fields above.
+			item.AppUp = um.AppUp
+			item.AppProbeReason = um.AppProbeReason
 			// Derive total_ms pointer for deriveFleetStatus threshold check.
 			var totalMsPtr *float64
 			if um.AvgLatencyMs != nil {
 				totalMsPtr = um.AvgLatencyMs
 			}
-			item.Status, item.StatusReason = deriveFleetStatus(um.Up, totalMsPtr, info.ConnectionState, info.DisconnectedReason)
+			item.Status, item.StatusReason = deriveFleetStatus(um.Up, totalMsPtr, info.ConnectionState, info.DisconnectedReason, um.AppUp)
 		} else {
 			item.Status = FleetStatusUnknown
 		}

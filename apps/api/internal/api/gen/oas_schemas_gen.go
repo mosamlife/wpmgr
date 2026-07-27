@@ -18719,7 +18719,7 @@ type FleetUptimeStatusItem struct {
 	SiteURL  string                      `json:"site_url"`
 	Status   FleetUptimeStatusItemStatus `json:"status"`
 	// Short machine-readable explanation for status, populated when
-	// status=degraded (agent_unreachable, agent_degraded, or
+	// status=degraded (agent_unreachable, agent_degraded, app_down, or
 	// slow_response). Empty/absent when the status needs no further
 	// explanation.
 	StatusReason    OptString   `json:"status_reason"`
@@ -18731,6 +18731,20 @@ type FleetUptimeStatusItem struct {
 	InIncident      bool        `json:"in_incident"`
 	ConnectionState string      `json:"connection_state"`
 	HealthStatus    string      `json:"health_status"`
+	// GH #291 Phase 2 application-health verdict from the most recent
+	// app probe: true (WordPress responded), false (conclusively
+	// down), or absent/null (never probed, or the most recent probe
+	// was inconclusive; see app_probe_reason). Independent of `up`
+	// (the reachability signal, unchanged forever): a cached 200
+	// (up=true) can coexist with app_up=false when a page cache is
+	// masking a dead PHP backend.
+	AppUp OptNilBool `json:"app_up"`
+	// Machine-readable reason for the most recent app-health verdict
+	// (agent_fresh, rest_ok, rest_5xx, wp_fatal_error, cache_hit,
+	// rest_forbidden, rest_absent, rest_4xx, rest_non_json,
+	// unreachable, rest_unexpected). Empty when no app probe has run
+	// yet.
+	AppProbeReason OptString `json:"app_probe_reason"`
 }
 
 // GetSiteID returns the value of SiteID.
@@ -18798,6 +18812,16 @@ func (s *FleetUptimeStatusItem) GetHealthStatus() string {
 	return s.HealthStatus
 }
 
+// GetAppUp returns the value of AppUp.
+func (s *FleetUptimeStatusItem) GetAppUp() OptNilBool {
+	return s.AppUp
+}
+
+// GetAppProbeReason returns the value of AppProbeReason.
+func (s *FleetUptimeStatusItem) GetAppProbeReason() OptString {
+	return s.AppProbeReason
+}
+
 // SetSiteID sets the value of SiteID.
 func (s *FleetUptimeStatusItem) SetSiteID(val uuid.UUID) {
 	s.SiteID = val
@@ -18861,6 +18885,16 @@ func (s *FleetUptimeStatusItem) SetConnectionState(val string) {
 // SetHealthStatus sets the value of HealthStatus.
 func (s *FleetUptimeStatusItem) SetHealthStatus(val string) {
 	s.HealthStatus = val
+}
+
+// SetAppUp sets the value of AppUp.
+func (s *FleetUptimeStatusItem) SetAppUp(val OptNilBool) {
+	s.AppUp = val
+}
+
+// SetAppProbeReason sets the value of AppProbeReason.
+func (s *FleetUptimeStatusItem) SetAppProbeReason(val OptString) {
+	s.AppProbeReason = val
 }
 
 type FleetUptimeStatusItemStatus string

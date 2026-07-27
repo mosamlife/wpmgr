@@ -2231,7 +2231,7 @@ export type FleetUptimeStatusItem = {
   status: "up" | "degraded" | "down" | "unknown";
   /**
    * Short machine-readable explanation for status, populated when
-   * status=degraded (agent_unreachable, agent_degraded, or
+   * status=degraded (agent_unreachable, agent_degraded, app_down, or
    * slow_response). Empty/absent when the status needs no further
    * explanation.
    *
@@ -2245,6 +2245,26 @@ export type FleetUptimeStatusItem = {
   in_incident: boolean;
   connection_state: string;
   health_status: string;
+  /**
+   * GH #291 Phase 2 application-health verdict from the most recent
+   * app probe: true (WordPress responded), false (conclusively
+   * down), or absent/null (never probed, or the most recent probe
+   * was inconclusive; see app_probe_reason). Independent of `up`
+   * (the reachability signal, unchanged forever): a cached 200
+   * (up=true) can coexist with app_up=false when a page cache is
+   * masking a dead PHP backend.
+   *
+   */
+  app_up?: boolean;
+  /**
+   * Machine-readable reason for the most recent app-health verdict
+   * (agent_fresh, rest_ok, rest_5xx, wp_fatal_error, cache_hit,
+   * rest_forbidden, rest_absent, rest_4xx, rest_non_json,
+   * unreachable, rest_unexpected). Empty when no app probe has run
+   * yet.
+   *
+   */
+  app_probe_reason?: string;
 };
 
 export type FleetUptimeStatus = {

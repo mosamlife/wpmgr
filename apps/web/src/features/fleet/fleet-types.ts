@@ -26,13 +26,30 @@ export interface FleetStatusItem {
    * `degraded` status (GH #291), e.g. a page-cached site whose PHP backend
    * is unreachable. Optional so an older control-plane response (which
    * never sent this field) cannot break the UI. Known values today:
-   * "agent_unreachable" | "agent_degraded" | "slow_response" — but this is
-   * intentionally typed as `string`, not a union, so a future reason code
-   * the control plane adds is never a type error here; unrecognised codes
-   * are handled by the copy map (see `uptime-status.ts`), not by widening
-   * this type.
+   * "agent_unreachable" | "agent_degraded" | "app_down" | "slow_response" —
+   * but this is intentionally typed as `string`, not a union, so a future
+   * reason code the control plane adds is never a type error here;
+   * unrecognised codes are handled by the copy map (see `uptime-status.ts`),
+   * not by widening this type.
    */
   status_reason?: string;
+  /**
+   * GH #291 Phase 2 application-health verdict from the most recent app
+   * probe: `true` (WordPress responded), `false` (conclusively down), or
+   * absent/null (never probed, or the most recent probe was inconclusive
+   * — see `app_probe_reason`). Independent of `up` (the reachability
+   * signal): a cached 200 (`up=true`) can coexist with `app_up=false` when
+   * a page cache is masking a dead PHP backend. Not currently rendered
+   * directly; `status_reason: "app_down"` already carries the
+   * user-facing explanation for this case (see `uptime-status.ts`).
+   */
+  app_up?: boolean | null;
+  /**
+   * Machine-readable reason for the most recent app-health verdict (e.g.
+   * "rest_5xx", "wp_fatal_error", "rest_forbidden"). Diagnostic only — not
+   * mapped to user-facing copy, so it is intentionally not rendered.
+   */
+  app_probe_reason?: string;
 }
 
 export interface FleetStatusSummary {

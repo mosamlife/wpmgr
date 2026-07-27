@@ -57,8 +57,8 @@ func (s *pgStore) InsertChecks(ctx context.Context, checks []Check) error {
 		for _, c := range checks {
 			batch.Queue(`INSERT INTO site_uptime_probes
 (tenant_id, site_id, probed_at, up, http_status, dns_ms, connect_ms, tls_ms, ttfb_ms, total_ms,
- tls_expiry, tls_issuer, tls_subject, error_text)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+ tls_expiry, tls_issuer, tls_subject, error_text, app_up, app_probe_reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 				c.TenantID,
 				c.SiteID,
 				ifZeroNow(c.CheckedAt),
@@ -73,6 +73,11 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 				c.TLSIssuer,
 				c.TLSSubject,
 				c.Error,
+				// GH #291 Phase 2: nil/empty on every check the app probe did
+				// not attempt this row - see the Check.AppUp/AppProbeReason
+				// doc comments.
+				c.AppUp,
+				nullableString(c.AppProbeReason),
 			)
 		}
 		br := tx.SendBatch(ctx, batch)
@@ -117,6 +122,30 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 // doc comment describes for alert state, applied here to the status stamp.
 // site_uptime_daily's counters need no such guard: addition is commutative,
 // so two overlapping sweeps' increments land correctly regardless of order.
+//
+// GH #291 Phase 2 (app health) rides the SAME two upserts as separate
+// columns - never a second row/statement - guarded independently of the
+// reachability fields above:
+//
+//   - site_uptime_daily.app_up_checks / app_total_checks are additive, same
+//     as up_checks/total_checks, but COALESCE(existing, 0) on the LEFT side
+//     of the addition: these columns are nullable with no default (m107), so
+//     a pre-migration or never-app-probed row reads NULL, and NULL + n is
+//     NULL in SQL, not n.
+//   - site_uptime_status.latest_app_up / app_probe_reason / last_app_probed_at
+//     are POINT-IN-TIME snapshots, not additive, so they need a different
+//     guard: the app probe runs on a slower cadence than the reachability
+//     probe (default 300s vs 60s), so ~4 of every 5 calls into this function
+//     carry a Check with AppProbeReason == "" (no app probe attempted this
+//     row). A plain "latest_app_up = EXCLUDED.latest_app_up" would clobber a
+//     known value with NULL on those calls. The guard is keyed on
+//     app_probe_reason being NON-NULL (i.e. THIS check actually attempted an
+//     app probe, including a conclusive "unknown" verdict), not on
+//     latest_app_up being non-NULL - latest_app_up is NULL both when "not
+//     attempted this check" AND when "attempted, verdict unknown", and only
+//     the reason-is-non-null test can tell those apart. This is why
+//     AppProbeReason's "" sentinel exists and why nullableString is used
+//     instead of always writing a string.
 func (s *pgStore) UpsertRollup(ctx context.Context, checks []Check) error {
 	if len(checks) == 0 {
 		return nil
@@ -138,29 +167,47 @@ func (s *pgStore) UpsertRollup(ctx context.Context, checks []Check) error {
 				latencySample = 1
 			}
 
+			// appTotalInc counts every app-probe ATTEMPT this check made
+			// (including an inconclusive "unknown" verdict); appUpInc counts
+			// only a conclusive true verdict. Both are 0 when AppProbeReason
+			// is empty (no attempt this check).
+			var appTotalInc, appUpInc int32
+			if c.AppProbeReason != "" {
+				appTotalInc = 1
+				if c.AppUp != nil && *c.AppUp {
+					appUpInc = 1
+				}
+			}
+
 			batch.Queue(`INSERT INTO site_uptime_daily
-(tenant_id, site_id, day, up_checks, total_checks, sum_latency_ms, latency_samples)
-VALUES ($1, $2, $3, $4, 1, $5, $6)
+(tenant_id, site_id, day, up_checks, total_checks, sum_latency_ms, latency_samples, app_up_checks, app_total_checks)
+VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)
 ON CONFLICT (site_id, day) DO UPDATE SET
-    up_checks       = site_uptime_daily.up_checks + EXCLUDED.up_checks,
-    total_checks    = site_uptime_daily.total_checks + EXCLUDED.total_checks,
-    sum_latency_ms  = site_uptime_daily.sum_latency_ms + EXCLUDED.sum_latency_ms,
-    latency_samples = site_uptime_daily.latency_samples + EXCLUDED.latency_samples,
-    updated_at      = now()`,
-				c.TenantID, c.SiteID, day, upInc, latencyMs, latencySample,
+    up_checks        = site_uptime_daily.up_checks + EXCLUDED.up_checks,
+    total_checks     = site_uptime_daily.total_checks + EXCLUDED.total_checks,
+    sum_latency_ms   = site_uptime_daily.sum_latency_ms + EXCLUDED.sum_latency_ms,
+    latency_samples  = site_uptime_daily.latency_samples + EXCLUDED.latency_samples,
+    app_up_checks    = COALESCE(site_uptime_daily.app_up_checks, 0) + EXCLUDED.app_up_checks,
+    app_total_checks = COALESCE(site_uptime_daily.app_total_checks, 0) + EXCLUDED.app_total_checks,
+    updated_at       = now()`,
+				c.TenantID, c.SiteID, day, upInc, latencyMs, latencySample, appUpInc, appTotalInc,
 			)
 
 			batch.Queue(`INSERT INTO site_uptime_status
-(site_id, tenant_id, latest_up, last_probed_at, tls_expiry, updated_at)
-VALUES ($1, $2, $3, $4, $5, now())
+(site_id, tenant_id, latest_up, last_probed_at, tls_expiry, latest_app_up, app_probe_reason, last_app_probed_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
 ON CONFLICT (site_id) DO UPDATE SET
-    tenant_id      = EXCLUDED.tenant_id,
-    latest_up      = EXCLUDED.latest_up,
-    last_probed_at = EXCLUDED.last_probed_at,
-    tls_expiry     = EXCLUDED.tls_expiry,
-    updated_at     = now()
+    tenant_id          = EXCLUDED.tenant_id,
+    latest_up          = EXCLUDED.latest_up,
+    last_probed_at     = EXCLUDED.last_probed_at,
+    tls_expiry         = EXCLUDED.tls_expiry,
+    latest_app_up      = CASE WHEN EXCLUDED.app_probe_reason IS NOT NULL THEN EXCLUDED.latest_app_up ELSE site_uptime_status.latest_app_up END,
+    app_probe_reason   = CASE WHEN EXCLUDED.app_probe_reason IS NOT NULL THEN EXCLUDED.app_probe_reason ELSE site_uptime_status.app_probe_reason END,
+    last_app_probed_at = CASE WHEN EXCLUDED.app_probe_reason IS NOT NULL THEN EXCLUDED.last_app_probed_at ELSE site_uptime_status.last_app_probed_at END,
+    updated_at         = now()
 WHERE EXCLUDED.last_probed_at >= site_uptime_status.last_probed_at`,
 				c.SiteID, c.TenantID, c.Up, checkedAt, nullableTime(c.TLSExpiry),
+				c.AppUp, nullableString(c.AppProbeReason), appProbedAt(checkedAt, c.AppProbeReason),
 			)
 		}
 		br := tx.SendBatch(ctx, batch)
@@ -176,6 +223,18 @@ WHERE EXCLUDED.last_probed_at >= site_uptime_status.last_probed_at`,
 		}
 		return nil
 	})
+}
+
+// appProbedAt returns checkedAt when reason is non-empty (this check
+// attempted an app probe, so last_app_probed_at should advance to this
+// check's timestamp) or nil otherwise (no attempt this check - the
+// site_uptime_status upsert's CASE guard then leaves the stored
+// last_app_probed_at untouched rather than writing a meaningless value).
+func appProbedAt(checkedAt time.Time, reason string) any {
+	if reason == "" {
+		return nil
+	}
+	return checkedAt
 }
 
 var _ RollupWriter = (*pgStore)(nil)
@@ -316,6 +375,19 @@ LIMIT 1`, tenantID, siteID)
 // aged past uptime probe retention (probeRetention, shared with
 // UptimeProbeGCWorker) reads as "no data" — exactly like the old query,
 // where a GC'd site's last raw probe row would already be gone.
+//
+// GH #291 Phase 2 (review follow-up): st.latest_app_up and st.app_probe_reason
+// are selected alongside the reachability columns above - NO extra JOIN is
+// needed, unlike the ClickHouse read path (metrics.chStore.QueryFleetUptime),
+// which has to LEFT JOIN a separate app-probe-only subquery because
+// uptime_checks is a flat per-probe table with no rollup-status row. Here the
+// m99 rollup already carries both signals on the SAME site_uptime_status row
+// (see pgStore.UpsertRollup's doc comment), so reading them costs nothing
+// extra. This was the CRITICAL gap this comment's own review closed: these
+// two columns were written by every sweep but never selected here, so the
+// entire application-health feature was invisible on Postgres - the default
+// metrics backend and the one hosted production actually runs - even though
+// it worked correctly on ClickHouse.
 const fleetUptimeQuery = `
 SELECT
     s.id AS site_id,
@@ -325,7 +397,9 @@ SELECT
     agg.up_checks,
     agg.total_checks,
     agg.sum_latency_ms,
-    agg.latency_samples
+    agg.latency_samples,
+    st.latest_app_up,
+    st.app_probe_reason
 FROM unnest($2::uuid[]) AS s(id)
 LEFT JOIN site_uptime_status st
     ON st.site_id = s.id
@@ -448,8 +522,10 @@ func (s *pgStore) QueryFleetUptime(ctx context.Context, tenantID uuid.UUID, site
 				totalChecks    int64
 				sumLatencyMs   float64
 				latencySamples int64
+				latestAppUp    *bool
+				appProbeReason *string
 			)
-			if err := rows.Scan(&siteID, &latestUp, &latestAt, &latestTLS, &upChecks, &totalChecks, &sumLatencyMs, &latencySamples); err != nil {
+			if err := rows.Scan(&siteID, &latestUp, &latestAt, &latestTLS, &upChecks, &totalChecks, &sumLatencyMs, &latencySamples, &latestAppUp, &appProbeReason); err != nil {
 				return fmt.Errorf("postgres fleet uptime scan: %w", err)
 			}
 			// Site has no status row at all (never probed, or its only
@@ -470,6 +546,16 @@ func (s *pgStore) QueryFleetUptime(ctx context.Context, tenantID uuid.UUID, site
 			if latencySamples > 0 {
 				avg := sumLatencyMs / float64(latencySamples)
 				row.AvgLatencyMs = &avg
+			}
+			// GH #291 Phase 2: app_probe_reason is the sentinel (NULL means
+			// "no app probe has ever completed for this site", mirroring the
+			// ClickHouse read path's identical guard) - latest_app_up alone
+			// cannot distinguish "never attempted" from "attempted, verdict
+			// unknown", since both store NULL there (see
+			// pgStore.UpsertRollup's doc comment).
+			if appProbeReason != nil && *appProbeReason != "" {
+				row.AppProbeReason = *appProbeReason
+				row.AppUp = latestAppUp
 			}
 			out[siteID] = row
 		}
@@ -589,4 +675,17 @@ func nullableTime(t time.Time) any {
 		return nil
 	}
 	return t
+}
+
+// nullableString maps an empty string to a Postgres NULL. Used for
+// Check.AppProbeReason (GH #291 Phase 2): "" is the sentinel for "no app
+// probe was attempted on this check" and must round-trip as SQL NULL, not
+// the literal empty string, so a not-empty-string SQL predicate on that
+// column (see the ClickHouse fleet-uptime join for the equivalent idea)
+// behaves the same way on both backends.
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

@@ -43,6 +43,21 @@ describe("StatusChip", () => {
     expect(screen.getByText("Responding slowly.")).toBeInTheDocument();
   });
 
+  // GH #291 — app_down is the reason the explanation feature exists: a
+  // page-cached site whose WordPress backend is completely dead. The copy
+  // must not imply an outage (visitors ARE being served) and must not
+  // imply everything is fine (WordPress is not responding).
+  it("renders the app_down explanation for a degraded item", () => {
+    renderWithProviders(<StatusChip status="degraded" reason="app_down" />);
+
+    expect(screen.getByText("Degraded")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Serving visitors from cache, but WordPress is not responding. Logins, forms and the admin area are likely already broken.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("renders no explanation for a degraded item with no reason", () => {
     renderWithProviders(<StatusChip status="degraded" />);
 

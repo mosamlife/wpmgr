@@ -38,7 +38,10 @@ func TestDeriveFleetStatus_ConnectionStateMatrix(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotStatus, gotReason := deriveFleetStatus(&up, &fast, tc.connectionState, tc.disconnectedReason)
+			// appUp=nil throughout: this test pins the PRE-Phase-2 behavior,
+			// and "no app-health signal available" must never change it
+			// (see TestDeriveFleetStatus_AppDown for the new branch).
+			gotStatus, gotReason := deriveFleetStatus(&up, &fast, tc.connectionState, tc.disconnectedReason, nil)
 			if gotStatus != tc.wantStatus {
 				t.Errorf("status = %q, want %q", gotStatus, tc.wantStatus)
 			}
@@ -85,7 +88,7 @@ func TestDeriveFleetStatus_DisconnectedReasonDisambiguation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotStatus, gotReason := deriveFleetStatus(&up, &fast, "disconnected", tc.disconnectedReason)
+			gotStatus, gotReason := deriveFleetStatus(&up, &fast, "disconnected", tc.disconnectedReason, nil)
 			if gotStatus != tc.wantStatus {
 				t.Errorf("disconnected_reason=%q: status = %q, want %q", tc.disconnectedReason, gotStatus, tc.wantStatus)
 			}
@@ -104,8 +107,12 @@ func TestDeriveFleetStatus_DownAndUnknownIgnoreConnectionState(t *testing.T) {
 	down := false
 	fast := 100.0
 
+	appDown := false
+
 	for _, cs := range []string{"connected", "degraded", "disconnected", "revoked", "archived", ""} {
-		status, reason := deriveFleetStatus(&down, &fast, cs, "agent_unreachable")
+		// Even a conclusive appUp=false must not override a down reachability
+		// probe - up=false already means "down", the strongest signal.
+		status, reason := deriveFleetStatus(&down, &fast, cs, "agent_unreachable", &appDown)
 		if status != FleetStatusDown {
 			t.Errorf("connection_state=%q: status = %q, want down", cs, status)
 		}
@@ -115,7 +122,7 @@ func TestDeriveFleetStatus_DownAndUnknownIgnoreConnectionState(t *testing.T) {
 	}
 
 	for _, cs := range []string{"connected", "degraded", "disconnected", "revoked", "archived", ""} {
-		status, reason := deriveFleetStatus(nil, nil, cs, "agent_unreachable")
+		status, reason := deriveFleetStatus(nil, nil, cs, "agent_unreachable", &appDown)
 		if status != FleetStatusUnknown {
 			t.Errorf("connection_state=%q: status = %q, want unknown", cs, status)
 		}
@@ -132,11 +139,83 @@ func TestDeriveFleetStatus_SlowResponseReason(t *testing.T) {
 	up := true
 	slow := slowThresholdMs + 1
 
-	status, reason := deriveFleetStatus(&up, &slow, "connected", "")
+	status, reason := deriveFleetStatus(&up, &slow, "connected", "", nil)
 	if status != FleetStatusDegraded {
 		t.Fatalf("status = %q, want degraded", status)
 	}
 	if reason != FleetReasonSlowResponse {
 		t.Fatalf("reason = %q, want %q", reason, FleetReasonSlowResponse)
+	}
+}
+
+// TestDeriveFleetStatus_AppDown is the GH #291 Phase 2 headline test: a
+// cached 200 (up=true, connection healthy, fast response) whose application
+// probe conclusively found app_up=false must derive Degraded with
+// FleetReasonAppDown - the exact scenario the design doc's incident
+// describes (a page cache masking a completely dead PHP backend).
+func TestDeriveFleetStatus_AppDown(t *testing.T) {
+	up := true
+	fast := 100.0
+	appDown := false
+	appUnknown := (*bool)(nil)
+	appUp := true
+
+	cases := []struct {
+		name       string
+		appUp      *bool
+		wantStatus FleetSiteStatus
+		wantReason string
+	}{
+		{"conclusive app_up=false derives degraded (headline case)", &appDown, FleetStatusDegraded, FleetReasonAppDown},
+		{"app_up=nil (unknown) never dressed up as broken - falls through to up", appUnknown, FleetStatusUp, ""},
+		{"conclusive app_up=true stays up", &appUp, FleetStatusUp, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, reason := deriveFleetStatus(&up, &fast, "connected", "", tc.appUp)
+			if status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", status, tc.wantStatus)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestDeriveFleetStatus_AppDownTakesPriorityOverSlowResponse proves app_down
+// is checked (and reported) before the pre-existing slow-response threshold,
+// so a site that is BOTH app-down AND slow reports the more specific,
+// more actionable reason.
+func TestDeriveFleetStatus_AppDownTakesPriorityOverSlowResponse(t *testing.T) {
+	up := true
+	slow := slowThresholdMs + 1
+	appDown := false
+
+	status, reason := deriveFleetStatus(&up, &slow, "connected", "", &appDown)
+	if status != FleetStatusDegraded {
+		t.Fatalf("status = %q, want degraded", status)
+	}
+	if reason != FleetReasonAppDown {
+		t.Fatalf("reason = %q, want %q (app_down must take priority over slow_response)", reason, FleetReasonAppDown)
+	}
+}
+
+// TestDeriveFleetStatus_AgentSignalsTakePriorityOverAppDown proves the
+// existing agent-side signals (Phase 1) are checked BEFORE app_down: a
+// disconnected/degraded agent is a stronger, more specific signal than an
+// app probe that may itself be unable to reach the site for the same
+// underlying reason.
+func TestDeriveFleetStatus_AgentSignalsTakePriorityOverAppDown(t *testing.T) {
+	up := true
+	fast := 100.0
+	appDown := false
+
+	status, reason := deriveFleetStatus(&up, &fast, "degraded", "", &appDown)
+	if status != FleetStatusDegraded {
+		t.Fatalf("status = %q, want degraded", status)
+	}
+	if reason != FleetReasonAgentDegraded {
+		t.Fatalf("reason = %q, want %q (agent signal must take priority over app_down)", reason, FleetReasonAgentDegraded)
 	}
 }

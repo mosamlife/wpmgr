@@ -61,6 +61,27 @@ func TestFleetUptimeQuery_ReferencesRollupAndBoundedRawEdges(t *testing.T) {
 	}
 }
 
+// TestFleetUptimeQuery_SelectsAppHealthColumns is the static regression guard
+// for the GH #291 Phase 2 review finding: the Postgres fleet-uptime read
+// never selected st.latest_app_up / st.app_probe_reason, so every sweep wrote
+// the application-health verdict and QueryFleetUptime silently never
+// surfaced it on Postgres - the default metrics backend and the one hosted
+// production runs. This inspects the fleetUptimeQuery constant directly (no
+// DB needed), the same style as
+// TestFleetUptimeQuery_ReferencesRollupAndBoundedRawEdges above, so a future
+// edit that drops these two columns from the SELECT list fails a fast,
+// DB-less test rather than only a real-Postgres one. See
+// TestQueryFleetUptime_SurfacesAppHealthColumns in postgres_explain_test.go
+// for the real-Postgres, read-path-specific proof.
+func TestFleetUptimeQuery_SelectsAppHealthColumns(t *testing.T) {
+	if !strings.Contains(fleetUptimeQuery, "st.latest_app_up") {
+		t.Fatal("fleetUptimeQuery no longer selects st.latest_app_up - the application-health verdict would be invisible on Postgres again")
+	}
+	if !strings.Contains(fleetUptimeQuery, "st.app_probe_reason") {
+		t.Fatal("fleetUptimeQuery no longer selects st.app_probe_reason - QueryFleetUptime cannot distinguish \"never app-probed\" from \"probed, verdict unknown\" without it")
+	}
+}
+
 // TestFleetUptimeParams_DecomposesWithNoGapNoOverlap is a pure (no DB) unit
 // test of the window decomposition math: for a range of windows and "now"
 // instants (including degenerate sub-day windows and windows that land

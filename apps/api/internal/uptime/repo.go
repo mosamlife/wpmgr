@@ -96,7 +96,15 @@ func (r *pgRepo) ListEnrolledForProbe(ctx context.Context) ([]EnrolledSite, erro
 		}
 		out = make([]EnrolledSite, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, EnrolledSite{ID: row.ID, TenantID: row.TenantID, URL: row.Url, HealthStatus: row.HealthStatus})
+			s := EnrolledSite{ID: row.ID, TenantID: row.TenantID, URL: row.Url, HealthStatus: row.HealthStatus}
+			if row.LastSeenAt.Valid {
+				t := row.LastSeenAt.Time
+				s.LastSeenAt = &t
+			}
+			if row.AppProbePath != nil {
+				s.AppProbePath = *row.AppProbePath
+			}
+			out = append(out, s)
 		}
 		return nil
 	})
@@ -427,7 +435,19 @@ ORDER BY s.name ASC
 // `up` itself, sites.health_status, uptime percentages and everything else
 // probe A feeds are UNCHANGED by this function. Only the derived display
 // status moves.
-func deriveFleetStatus(up *bool, totalMs *float64, connectionState, disconnectedReason string) (FleetSiteStatus, string) {
+//
+// appUp is the GH #291 Phase 2 signal (metrics.FleetUptimeRow.AppUp): the
+// application-health probe's most recent verdict, tri-state (true/false/nil
+// =unknown). A conclusive false - the app probe positively determined
+// WordPress is not responding, independent of and possibly disagreeing with
+// `up` - derives Degraded with FleetReasonAppDown. This is the phase's
+// headline case: a page cache can keep `up` reporting true (visitors ARE
+// being served a cached page) while the app probe proves the backend is
+// dead. appUp==nil (never probed, or the most recent probe was
+// inconclusive - cache-hit-defeated, 4xx, etc.) makes NO difference here;
+// unknown is never dressed up as broken, so it simply falls through to
+// whatever this site would have derived before Phase 2 existed.
+func deriveFleetStatus(up *bool, totalMs *float64, connectionState, disconnectedReason string, appUp *bool) (FleetSiteStatus, string) {
 	if up == nil {
 		return FleetStatusUnknown, ""
 	}
@@ -444,6 +464,9 @@ func deriveFleetStatus(up *bool, totalMs *float64, connectionState, disconnected
 		// healthy "connected" site gets, below.
 	case "degraded":
 		return FleetStatusDegraded, FleetReasonAgentDegraded
+	}
+	if appUp != nil && !*appUp {
+		return FleetStatusDegraded, FleetReasonAppDown
 	}
 	if totalMs != nil && *totalMs > slowThresholdMs {
 		return FleetStatusDegraded, FleetReasonSlowResponse

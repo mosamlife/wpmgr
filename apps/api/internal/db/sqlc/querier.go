@@ -1314,6 +1314,10 @@ type Querier interface {
 	// Cross-tenant enumeration of enrolled sites WITH their URL for the M5 uptime
 	// probe job. Runs under the app.agent GUC (sites_agent policy) since it spans
 	// tenants. Only enrolled sites have an agent URL worth probing.
+	// last_seen_at and app_probe_path (m107, GH #291 Phase 2) are carried for the
+	// application-health prober: B0 (agent ground truth) reads last_seen_at, B3
+	// (per-site override) reads app_probe_path. The reachability probe and the
+	// cron-kicker ignore both.
 	ListEnrolledSitesForProbe(ctx context.Context) ([]ListEnrolledSitesForProbeRow, error)
 	// Completed snapshots older than the cutoff that are NOT archive-retained, in a
 	// single tenant scope. The GC job decrements chunk refcounts for each then
