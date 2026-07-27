@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.96] - 2026-07-28
+
+### Security
+
+- Updated the gRPC library the control plane depends on, from 1.81.1 to 1.82.1, to pick up fixes for GO-2026-6061 (GHSA-hrxh-6v49-42gf), which covers issues in that library's authorization engine and its HTTP/2 server transport. The library reaches WPMgr indirectly, through the OpenTelemetry trace exporter, and the affected code was reachable from database connection pool shutdown, so the update is worth taking even though WPMgr does not use the authorization engine itself. Official container images already build against a patched Go release; this update closes the remaining path.
+
 ## [0.61.95] - 2026-07-27
 
 ### Fixed
