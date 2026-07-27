@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.95] - 2026-07-27
+
+### Fixed
+
+- A failed backup left its working files on the site instead of cleaning up after itself (GH #256). When a backup gave up, the control plane deleted its record, but the site kept the half-finished working directory: upload parts, copied plugins and themes, and the database dump. One reported site was left with roughly 1.4 GB spread across seven part files of about 198 MB each. There were four separate paths in the agent's backup watchdog that could give up on a backup (a hard time ceiling, a late-phase stall, running out of resume attempts, and a stale-task guard), and none of them cleaned up the working directory. All four now reclaim it, but only after taking the same run-lock a live backup holds before deleting anything: a backup that is merely slow and still running keeps its working directory untouched, and cleanup is left for a later sweep.
+- The routine cleanup that reclaims old backup working directories, and the separate one that clears leftover files after a restore, both depended entirely on WP-Cron, so on a site where WP-Cron is disabled, unreliable, or simply has no visitors to trigger it, neither ever ran and nothing was ever reclaimed. Both now also run on an ordinary page load, throttled to once an hour for backup working directories and once every fifteen minutes for restore leftovers, so a busy site pays effectively nothing for them. The restore cleanup also had a way to wedge itself permanently: it scheduled itself as a one-shot event, and once its scheduled time passed without firing, WordPress still counted it as "already scheduled", so every later restore skipped scheduling a new one and cleanup never ran again. An overdue event is now detected and replaced with a fresh one.
+- The backup delete dialog said deleting a backup "reclaims its storage", but the site's own temporary files stayed on the host regardless. The wording now says what actually happens, and notes that the site cleans up its own temporary files separately.
+- The Sites grid could show a green "Backups" indicator next to a red "Failed" badge for the same site. The indicator lit up whenever a site had any backup status at all, including a failed one, so a failed backup still looked healthy at a glance. It has been removed; the backup chip beside it already shows the real status.
+- Two other backup failures visible in the original report were already fixed in earlier releases: the "runner already in flight" refusal (0.61.84) and the missing local chunk on upload after an interrupted backup (0.61.87).
+
 ## [0.61.94] - 2026-07-27
 
 ### Fixed

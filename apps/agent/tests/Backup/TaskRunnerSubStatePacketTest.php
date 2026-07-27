@@ -226,6 +226,59 @@ final class TaskRunnerSubStatePacketTest extends TestCase
         $this->assertCount(3000, $sub['files']['tombstones'], 'all 3000 tombstone entries must reload intact from sidecar');
     }
 
+    /**
+     * GH #256 finding 5: TaskRunner::decodeSubStateColumn() is the shared,
+     * public helper loadTask() itself uses, and the ONLY correct way to
+     * decode a raw sub_state column value once it may have spilled to the
+     * sidecar. A bare json_decode() of the column (the pre-fix behavior in
+     * Watchdog::decodeSubState()) returns only the small
+     * `{"_sidecar":true,"file":"..."}` pointer for a spilled row, never the
+     * real payload underneath, including `params`. Asserted directly here,
+     * independent of loadTask()/Watchdog, so a future caller of this shared
+     * helper gets the same guarantee.
+     */
+    public function test_decode_sub_state_column_follows_the_sidecar_pointer(): void
+    {
+        $wpdb = new PacketLimitedWpdb(1024 * 1024);
+        $GLOBALS['wpdb'] = $wpdb;
+
+        $snapshotId = '99999999-aaaa-4bbb-8ccc-dddddddddddd';
+        $params     = $this->params($snapshotId);
+        $wpdb->seedRow($snapshotId, 'full', $params);
+
+        $runner = new TaskRunner($params);
+        $ref    = new ReflectionClass($runner);
+        $save   = $ref->getMethod('saveTaskState');
+
+        $bigTombstones = [];
+        for ($i = 0; $i < 3000; $i++) {
+            $bigTombstones[] = 'plugins/some-plugin/file-' . $i . '.php';
+        }
+        $subState = [
+            'params' => $params,
+            'files'  => [
+                'done'       => true,
+                'tombstones' => $bigTombstones,
+            ],
+        ];
+        $save->invoke($runner, TaskRunner::PHASE_ENCRYPTING_UPLOADING, $subState);
+
+        $rawColumn = (string) ($wpdb->rows[$snapshotId]['sub_state'] ?? '');
+        $this->assertStringContainsString('_sidecar', $rawColumn, 'sanity: the fixture must actually have spilled to the sidecar');
+
+        // A bare json_decode() (the pre-fix behavior) would stop here.
+        $bareDecode = json_decode($rawColumn, true);
+        $this->assertIsArray($bareDecode);
+        $this->assertArrayNotHasKey('params', $bareDecode, 'sanity: the raw column alone never carries params once spilled');
+
+        // The shared helper must follow the pointer and recover the full payload.
+        $decoded = TaskRunner::decodeSubStateColumn($rawColumn);
+        $this->assertArrayHasKey('params', $decoded, 'decodeSubStateColumn() must rehydrate params from the sidecar');
+        $this->assertSame($snapshotId, $decoded['params']['snapshot_id'] ?? null);
+        $this->assertArrayHasKey('files', $decoded);
+        $this->assertCount(3000, $decoded['files']['tombstones'] ?? []);
+    }
+
     /** @return array<string,mixed> */
     private function params(string $snapshotId): array
     {

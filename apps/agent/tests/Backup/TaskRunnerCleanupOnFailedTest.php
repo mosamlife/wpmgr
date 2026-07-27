@@ -128,6 +128,25 @@ final class TaskRunnerCleanupOnFailedTest extends TestCase
     }
 
     /**
+     * GH #256: reclaimScratch() is the public wrapper Watchdog's terminal
+     * give-up paths use to reach cleanupOnFailed() from OUTSIDE run()'s own
+     * try/catch. Proves it delegates to the exact same sweep (no second,
+     * independently-duplicated implementation) without going through
+     * reflection.
+     */
+    public function test_reclaim_scratch_delegates_to_the_same_sweep_as_cleanup_on_failed(): void
+    {
+        $dir = $this->scratchDir;
+        file_put_contents($dir . '/database.sql.gz', 'gz-bytes');
+        file_put_contents($dir . '/chunks-aaaa1111.age', 'ciphertext');
+
+        $runner = $this->buildRunner(['scratch_dir' => $dir]);
+        $runner->reclaimScratch();
+
+        self::assertDirectoryDoesNotExist($dir, 'reclaimScratch() must remove the now-empty scratch dir via the same sweep cleanupOnFailed() runs');
+    }
+
+    /**
      * Build a TaskRunner with a minimal, syntactically-valid params payload.
      * Mirrors TaskRunnerTest::buildRunner().
      *

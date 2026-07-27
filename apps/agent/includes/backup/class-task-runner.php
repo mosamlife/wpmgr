@@ -515,6 +515,113 @@ final class TaskRunner
     // ==================================================================
 
     /**
+     * GH #256 (post-ship review, finding 1, TOCTOU): acquire run()'s own two
+     * mutual-exclusion guards (GET_LOCK then flock, the exact same order and
+     * the exact same per-snapshot names run() itself uses), invoke
+     * $callback while BOTH are held, and release both in a `finally`,
+     * regardless of whether $callback returns normally or throws.
+     *
+     * This exists so a caller entirely OUTSIDE run() (Watchdog's terminal
+     * give-up paths and BackupJanitor::gcRuns(), both of which construct a
+     * throwaway TaskRunner purely to reclaim a snapshot's scratch directory
+     * once its task row/age is judged dead) can perform that reclaim using
+     * the same locks run() relies on for correctness, instead of a second,
+     * independently maintained liveness heuristic that could disagree with
+     * the real one. Making the lock itself the liveness signal, held for
+     * the FULL duration of the reclaim rather than merely probed beforehand,
+     * is what closes the race where a live runner is still writing chunks
+     * into the scratch directory while a give-up path deletes it out from
+     * under the process.
+     *
+     * The earlier shape of this guard (a bool-returning `isRunLockFree()`
+     * probe, checked by the caller, which then did its own file deletion
+     * AFTER this method had already released both locks) left exactly the
+     * TOCTOU window this method exists to close: on a multi-hour backup with
+     * thousands of chunk files, the caller's own glob-and-unlink sweep could
+     * easily still be running tens of milliseconds after the probe reported
+     * "free", by which time a resumed/re-entered runner could have started
+     * writing into the same directory again. Folding the actual reclaim work
+     * INTO the locked critical section, never a separate probe-then-act pair
+     * of calls, removes that window entirely.
+     *
+     * GH #256 finding 2 (fail-open): unlike run()'s own inline guard (left
+     * intentionally unchanged, see its doc), this method treats a flock
+     * guard that could not even be ATTEMPTED (acquireFileLock() returning
+     * `['handle' => null, 'contended' => false]`, meaning an unresolvable
+     * lock path, a wp_mkdir_p() failure, or a fopen() failure from
+     * permissions / open_basedir / a read-only filesystem) as NOT provably
+     * free, and never invokes $callback. That degraded outcome is a
+     * legitimate reason for run() to forge ahead without a flock guard
+     * (worst case: a wasted duplicate run, the phase machine is idempotent),
+     * but here the consequence of proceeding is a DELETE: absence of proof
+     * that no one else is running is not proof of absence, so this path
+     * refuses rather than gambles.
+     *
+     * @param callable(): void $callback Invoked only when BOTH guards were
+     *                                    acquired free of contention AND the
+     *                                    flock guard was genuinely attempted
+     *                                    (not degraded). Runs with both
+     *                                    guards held for its entire
+     *                                    duration.
+     * @return bool True when $callback ran. False when GET_LOCK reported
+     *              contention, the flock reported contention, or the flock
+     *              guard degraded to "could not be attempted"; in every
+     *              false case $callback was never invoked and the caller
+     *              must leave the snapshot's files untouched this pass.
+     */
+    public function withRunLock(callable $callback): bool
+    {
+        $lockToken = $this->getLock();
+        if ($lockToken === '0') {
+            return false;
+        }
+        $lockHeld = ($lockToken === '1');
+
+        $fileLock = $this->acquireFileLock();
+
+        // GH #256 finding 2: a degraded (unattemptable) flock guard is NOT
+        // "free" on this reclaim-only path; see this method's doc.
+        if ($fileLock['handle'] === null && $fileLock['contended'] === false) {
+            if ($lockHeld) {
+                $this->releaseLock();
+            }
+            return false;
+        }
+
+        if ($fileLock['contended']) {
+            if ($lockHeld) {
+                $this->releaseLock();
+            }
+            return false;
+        }
+
+        /** @var resource $fileLockHandle */
+        $fileLockHandle = $fileLock['handle'];
+
+        try {
+            $callback();
+        } finally {
+            if ($lockHeld) {
+                $this->releaseLock();
+            }
+            // Release the flock FIRST (LOCK_UN + fclose); only THEN, with
+            // the fd closed, unlink the lock file itself (same ordering
+            // run()'s own `finally` uses; see cleanupFileLock()'s doc).
+            // $callback ran, which means this snapshot's scratch state is
+            // being reclaimed regardless of $callback's own outcome, and
+            // there is no future resume left to protect. The coordination
+            // file this call opened (or found already orphaned) is always
+            // reclaimed here rather than left behind as a fresh zero-byte
+            // file for BackupJanitor::gcRuns()'s own age-gated sweep to find
+            // later.
+            $this->releaseFileLock($fileLockHandle);
+            $this->cleanupFileLock();
+        }
+
+        return true;
+    }
+
+    /**
      * MySQL advisory-lock name for this snapshot's run. 9 + 36 = 45 chars,
      * well under MySQL's 64-character GET_LOCK() name limit.
      */
@@ -1559,6 +1666,55 @@ final class TaskRunner
     // ==================================================================
 
     /**
+     * Decode a raw `sub_state` DB column value, following the sidecar-spill
+     * pointer to disk when present (see SUBSTATE_SIDECAR_THRESHOLD /
+     * saveTaskState()). This is the SAME rehydration loadTask() applies to
+     * its own read, factored out as a shared static helper so any other
+     * caller that only has the raw column value from an already-SELECTed
+     * row (Watchdog's give-up paths, none of which go through loadTask()
+     * because they must read sub_state.params BEFORE deciding whether to
+     * re-enter run() at all) gets the exact same sidecar-aware behavior
+     * instead of a second, independently duplicated (and, until GH #256
+     * finding 5, silently sidecar-blind) decode.
+     *
+     * @param mixed $raw Raw `sub_state` column value.
+     * @return array<string,mixed> Decoded sub_state, or [] on any failure
+     *                             (missing column, invalid JSON, unreadable
+     *                             sidecar file).
+     */
+    public static function decodeSubStateColumn($raw): array
+    {
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        // Sidecar rehydration: when the DB column holds a pointer (written
+        // by saveTaskState() when sub_state exceeded
+        // SUBSTATE_SIDECAR_THRESHOLD), read the full cursor from disk. This
+        // is exactly the case that matters most for a scratch reclaim: the
+        // biggest runs (the most scratch to reclaim) are the ones most
+        // likely to have spilled.
+        if (!empty($decoded[self::SUBSTATE_SIDECAR_KEY]) && isset($decoded['file']) && is_string($decoded['file'])) {
+            $sidecarPath = (string) $decoded['file'];
+            if (is_file($sidecarPath)) {
+                $sidecarRaw = @file_get_contents($sidecarPath);
+                if ($sidecarRaw !== false && $sidecarRaw !== '') {
+                    $full = json_decode($sidecarRaw, true);
+                    if (is_array($full)) {
+                        $decoded = $full;
+                    }
+                }
+            }
+        }
+
+        return $decoded;
+    }
+
+    /**
      * Load the task row by snapshot_id. Returns null if the row doesn't exist.
      *
      * @return array{phase:string,kind:string,sub_state:array<string,mixed>,resume_count:int,max_resumes:int}|null
@@ -1585,28 +1741,7 @@ final class TaskRunner
             return null;
         }
 
-        $sub = [];
-        if (isset($row['sub_state']) && is_string($row['sub_state']) && $row['sub_state'] !== '') {
-            $decoded = json_decode($row['sub_state'], true);
-            if (is_array($decoded)) {
-                // Sidecar rehydration: when the DB column holds a pointer
-                // (written by saveTaskState when sub_state exceeded the
-                // SUBSTATE_SIDECAR_THRESHOLD), read the full cursor from disk.
-                if (!empty($decoded[self::SUBSTATE_SIDECAR_KEY]) && isset($decoded['file']) && is_string($decoded['file'])) {
-                    $sidecarPath = (string) $decoded['file'];
-                    if (is_file($sidecarPath)) {
-                        $raw = @file_get_contents($sidecarPath);
-                        if ($raw !== false && $raw !== '') {
-                            $full = json_decode($raw, true);
-                            if (is_array($full)) {
-                                $decoded = $full;
-                            }
-                        }
-                    }
-                }
-                $sub = $decoded;
-            }
-        }
+        $sub = self::decodeSubStateColumn($row['sub_state'] ?? null);
 
         return [
             'phase'        => (string) ($row['phase'] ?? self::PHASE_QUEUED),
@@ -1992,7 +2127,9 @@ final class TaskRunner
      *
      * Called from inside the top-level catch in run(); failures here are
      * swallowed by the caller so a second exception never masks the
-     * original failure.
+     * original failure. ALSO called via the public reclaimScratch()
+     * wrapper below (GH #256) by callers outside run() entirely; see that
+     * method's doc.
      */
     private function cleanupOnFailed(): void
     {
@@ -2058,6 +2195,45 @@ final class TaskRunner
         // fine; BackupJanitor::gcRuns() is still the age-gated backstop for
         // any artifact this best-effort sweep missed).
         @rmdir($scratch); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removes an empty server-derived scratch dir; WP_Filesystem not initialized
+    }
+
+    /**
+     * GH #256: public wrapper around cleanupOnFailed() so a caller OUTSIDE
+     * this instance's own run() (specifically, Watchdog's terminal give-up
+     * paths: the 7200s hard-ceiling guard, the late-phase stale guard, the
+     * max-resumes exhaustion, and dispatch()'s stale-task guard, every path
+     * that discards a task row without ever entering run()'s own try/catch)
+     * can reclaim this run's scratch directory through the EXACT same,
+     * already-tested file-level sweep run() itself uses on a caught failure,
+     * instead of a second, independently-duplicated implementation.
+     *
+     * Constructing a TaskRunner purely to call this has no I/O side effect
+     * of its own. The constructor builds an OPTIONAL ProgressClient when
+     * `progress_endpoint` is a non-empty string in $params; the caller here
+     * (Watchdog::reclaimRunScratch()) reconstructs `$params` from
+     * sub_state.params, the same array BackupCommand originally seeded, so
+     * `progress_endpoint` is normally PRESENT and a ProgressClient IS built.
+     * That construction is still side-effect free: ProgressClient's own
+     * constructor only assigns properties, and this method never calls
+     * postProgress()/the client's post() method, touches $wpdb, or touches
+     * the task row; it is a pure filesystem sweep keyed off
+     * $params['scratch_dir']. The caller (Watchdog::reclaimRunScratch(), and
+     * BackupJanitor::gcRuns() for its own run-directory sweep) invokes this
+     * method from INSIDE the callback it hands to withRunLock() on the SAME
+     * constructed instance, never a separate probe-then-call, so this
+     * runs only while both run-lock guards are held for the caller, closing
+     * the TOCTOU window a standalone probe would otherwise leave open.
+     *
+     * Never touches the wpmgr_backup_tasks / wpmgr_backup_runs rows (same
+     * contract as cleanupOnFailed()). The caller owns discarding the row
+     * and must read whatever it needs from it BEFORE calling this, since
+     * this reads only $this->params, never the row.
+     *
+     * @return void
+     */
+    public function reclaimScratch(): void
+    {
+        $this->cleanupOnFailed();
     }
 
     // ==================================================================

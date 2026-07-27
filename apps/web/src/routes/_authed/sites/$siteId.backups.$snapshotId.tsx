@@ -420,11 +420,13 @@ function SnapshotDetailView({
             title="Delete backup"
             consequencesBody={
               <p>
-                This permanently deletes this snapshot and reclaims its storage.
+                This permanently deletes this snapshot and its stored data.
                 Unique chunks are removed; chunks still used by other snapshots
-                are kept. If this backup anchors an incremental chain with newer
-                increments, deletion is refused until those are removed first.
-                This cannot be undone.
+                are kept. Any temporary files the site left on the host are
+                cleaned up separately by the site itself. If this backup
+                anchors an incremental chain with newer increments, deletion
+                is refused until those are removed first. This cannot be
+                undone.
               </p>
             }
             resourceName={snapshot.id.slice(0, 8)}

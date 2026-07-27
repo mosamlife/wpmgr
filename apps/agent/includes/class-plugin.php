@@ -170,6 +170,57 @@ final class Plugin
      */
     private const BACKUP_SWEEP_THROTTLE_SECONDS = 60;
 
+    /**
+     * GitHub issue #256: Unix timestamp of the last WP-Cron-independent
+     * backup-scratch GC sweep (BackupJanitor::gcRuns()), stamped BEFORE the
+     * sweep runs. Read by maybeGcBackupRuns() to throttle the sweep to once
+     * per BACKUP_JANITOR_THROTTLE_SECONDS. Mirrors
+     * SnapshotManager::OPTION_GC_LAST / OPTION_BACKUP_SWEEP_LAST's throttle
+     * pattern exactly. Owned by the agent, removed on uninstall via
+     * Lifecycle::ownedOptions().
+     */
+    public const OPTION_BACKUP_JANITOR_LAST = 'wpmgr_backup_janitor_gc_last';
+
+    /**
+     * Throttle window for maybeGcBackupRuns(): gcRuns() itself is cheap per
+     * invocation (GH #256: a constant read plus one is_dir() on a site with
+     * no backups, one scandir() on a tidy one; BackupJanitor::RUNS_GC_AGE_SECONDS
+     * (6h) already bounds each top-level entry to single digits), so this
+     * does not need the 60s cadence maybeSweepStalledBackups() uses to
+     * recover an ACTIVELY stalled, still-time-sensitive run. It also does not
+     * need to run every request: gcRuns() only ever reclaims directories that
+     * are already at least RUNS_GC_AGE_SECONDS (6h) stale, so an hourly
+     * cadence adds at most ~1h of extra opportunistic-reclaim delay on top of
+     * that 6h floor, negligible relative to the leak this closes (which was
+     * previously "never", not "up to 7h"). Matches
+     * SnapshotManager::maybeGc()'s hourly throttle exactly, since both are
+     * opportunistic backstops for the same class of job (a daily cron GC that
+     * a quiet/DISABLE_WP_CRON site may never fire).
+     */
+    private const BACKUP_JANITOR_THROTTLE_SECONDS = 3600;
+
+    /**
+     * GitHub issue #256: Unix timestamp of the last WP-Cron-independent
+     * restore-rollback-material GC sweep (FilesRestorer::gcOldFiles() +
+     * RestoreRunner::gcPreRestoreDumps()), stamped BEFORE the sweep runs.
+     * Read by maybeGcRestoreArtifacts() to throttle the sweep to once per
+     * RESTORE_GC_THROTTLE_SECONDS. Owned by the agent, removed on uninstall
+     * via Lifecycle::ownedOptions().
+     */
+    public const OPTION_RESTORE_GC_LAST = 'wpmgr_restore_gc_last';
+
+    /**
+     * Throttle window for maybeGcRestoreArtifacts(). FilesRestorer's default
+     * retention window (OLDFILES_GC_AGE_SECONDS, 1h) is 6x shorter than
+     * BackupJanitor::RUNS_GC_AGE_SECONDS (6h), so this uses a shorter
+     * throttle than BACKUP_JANITOR_THROTTLE_SECONDS to keep the worst-case
+     * extra opportunistic-reclaim delay proportionate to that shorter
+     * window, while remaining cheap even at that cadence (both sweeps are a
+     * handful of glob() calls against directories that typically match
+     * nothing).
+     */
+    private const RESTORE_GC_THROTTLE_SECONDS = 900;
+
     private static ?Plugin $instance = null;
 
     private Keystore $keystore;
@@ -562,6 +613,38 @@ final class Plugin
         // option (stamped BEFORE the sweep runs), so this costs one cheap
         // get_option() read on every other request.
         add_action('plugins_loaded', [$this, 'maybeSweepStalledBackups']);
+
+        // GitHub issue #256: WP-Cron-INDEPENDENT, throttled reclaim trigger
+        // for BackupJanitor::gcRuns() (the backup pipeline's
+        // wpmgr-agent/runs/ scratch-dir GC backstop). Root cause: gcRuns()
+        // was bound ONLY to its daily wpmgr_backup_runs_gc cron event, the
+        // exact same WP-Cron-dependency gap that maybeGcSnapshots() and
+        // maybeSweepStalledBackups() (both immediately above) already close
+        // for their own stores. A quiet/low-traffic site, or one with
+        // DISABLE_WP_CRON set, could delete a failed backup from the
+        // dashboard and never again see a request that fires this event, so
+        // the on-host scratch (DB dump, zip parts, chunk files) leaked
+        // forever regardless of the age gate. Mirrors maybeGcSnapshots() /
+        // maybeSweepStalledBackups() exactly; see maybeGcBackupRuns()'s own
+        // doc for the full gating/throttle/safety contract.
+        add_action('plugins_loaded', [$this, 'maybeGcBackupRuns']);
+
+        // GitHub issue #256: WP-Cron-INDEPENDENT, throttled reclaim trigger
+        // for the restore pipeline's deferred rollback material:
+        // FilesRestorer::gcOldFiles() (`.wpmgr-old-*` / `.wpmgr-staging-*`
+        // trees) and RestoreRunner::gcPreRestoreDumps() (the pre-restore DB
+        // dump), both previously reachable ONLY via a wp_schedule_single_event
+        // ONE-SHOT scheduled at the end of a successful RestoreRunner::runCleanup(),
+        // worse than a recurring cron gap: a crashed/aborted restore never
+        // schedules the event at all, and even a scheduled-but-unfired event
+        // (WP-Cron never ticked) stays in the cron array and silently
+        // suppresses every later restore's attempt to schedule a replacement
+        // (see the one-shot fix in RestoreRunner::runCleanup() for that half).
+        // Both GC targets are gated by their own on-disk `.expires` markers
+        // (written well after the live swap completes), so calling them from
+        // every request is safe by construction; see maybeGcRestoreArtifacts()'s
+        // own doc.
+        add_action('plugins_loaded', [$this, 'maybeGcRestoreArtifacts']);
 
         // M14: Guard against Performance Lab disabling our object-cache drop-in.
         // When the OC is configured (config file exists), register the filter so
@@ -1485,6 +1568,149 @@ final class Plugin
             // A reaper sweep failure must never break the caller (a request
             // handler bound to plugins_loaded); the next throttled attempt
             // 60s from now gets a fresh try.
+        }
+    }
+
+    /**
+     * GitHub issue #256: WP-Cron-independent GC trigger for
+     * BackupJanitor::gcRuns() (the backup pipeline's wpmgr-agent/runs/
+     * scratch-dir GC backstop). See registerHooks()'s binding comment for
+     * the root cause this closes.
+     *
+     * Mirrors maybeGcSnapshots() / maybeSweepStalledBackups() exactly:
+     *   - Gated on isEnrolled(): a not-yet-enrolled site has never had a
+     *     backup run (and therefore never a leaked run directory) to reap.
+     *   - Throttled to once per BACKUP_JANITOR_THROTTLE_SECONDS (1h) via a
+     *     stored option, stamped BEFORE the sweep runs: a slow or failing
+     *     sweep can never be retried on every single request within the
+     *     window; the next throttled attempt gets a fresh try regardless of
+     *     whether this one succeeded.
+     *   - BackupJanitor::gcRuns() is wrapped in try/catch: a GC sweep is
+     *     best-effort disk-hygiene housekeeping, never a condition that may
+     *     break the request (or hook) that happened to trigger it.
+     *
+     * SAFETY: gcRuns() itself already enforces the two guards that make this
+     * safe to call opportunistically (the RUNS_GC_AGE_SECONDS (6h) mtime
+     * gate and the isActiveRun() task-row veto, see BackupJanitor's own
+     * design notes); this method adds NEITHER new deletion logic NOR a
+     * weaker gate. It only adds a cron-independent trigger for the exact
+     * same, already-guarded sweep the daily cron already ran.
+     *
+     * @return void
+     */
+    public function maybeGcBackupRuns(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        if (!function_exists('get_option') || !function_exists('update_option')) {
+            return;
+        }
+
+        $now  = time();
+        $last = (int) get_option(self::OPTION_BACKUP_JANITOR_LAST, 0);
+        if ($now - $last < self::BACKUP_JANITOR_THROTTLE_SECONDS) {
+            return;
+        }
+
+        // Stamp BEFORE running, see this method's doc for why.
+        update_option(self::OPTION_BACKUP_JANITOR_LAST, $now, true);
+
+        try {
+            BackupJanitor::gcRuns();
+        } catch (\Throwable $e) {
+            // A GC sweep failure must never break the caller (a request
+            // handler bound to plugins_loaded); the next throttled attempt
+            // gets a fresh try.
+        }
+    }
+
+    /**
+     * GitHub issue #256: WP-Cron-independent GC trigger for the restore
+     * pipeline's deferred rollback material: FilesRestorer::gcOldFiles()
+     * (`.wpmgr-old-*` / `.wpmgr-staging-*` trees) and
+     * RestoreRunner::gcPreRestoreDumps() (the pre-restore DB dump). See
+     * registerHooks()'s binding comment for the root cause this closes.
+     *
+     * Mirrors maybeGcBackupRuns() / maybeGcSnapshots() / maybeSweepStalledBackups():
+     *   - Gated on isEnrolled(): a not-yet-enrolled site has never run a
+     *     restore (and therefore never has rollback material to reap).
+     *   - Throttled to once per RESTORE_GC_THROTTLE_SECONDS (15 min) via a
+     *     stored option, stamped BEFORE the sweep runs.
+     *   - Each GC call is independently wrapped in try/catch so a failure in
+     *     one (e.g. gcOldFiles()) can never suppress the other
+     *     (gcPreRestoreDumps()), and neither can ever break the caller.
+     *
+     * SAFETY (corrected, GH #256 post-ship review: the prior wording here
+     * overstated this): RestoreRunner::gcPreRestoreDumps() IS gated
+     * entirely by its own on-disk `<path>.expires` sidecar markers; it
+     * skips any per-restore directory that has none at all. RestoreRunner
+     * writes each marker with a future unix timestamp only once the live
+     * swap has already completed and the restore has moved past the point
+     * that material is needed for an in-flight rollback, and the method
+     * itself refuses to touch anything whose marker has not yet expired.
+     *
+     * FilesRestorer::gcOldFiles() is marker-gated for the same `.expires`
+     * paths, but it ALSO carries a separate legacy/crash-only fallback
+     * (gcByMtimeLongThreshold(), FilesRestorer::OLDFILES_GC_AGE_SECONDS_LONG,
+     * 24h) for `.wpmgr-old-*` directories written before the marker scheme
+     * existed and for `.wpmgr-staging-*` directories left behind by a
+     * restore that crashed before ever reaching runCleanup() (and therefore
+     * never wrote a marker at all). That fallback is NOT marker-gated; its
+     * only gate is the directory's own mtime (via `filemtime($dir)` on the
+     * directory itself) being more than 24h stale, and the prior wording
+     * here should not have described both GC targets as "gated entirely by
+     * their own on-disk markers."
+     *
+     * SAFETY (corrected AGAIN, GH #256 post-ship re-review: the wording that
+     * replaced the sentence above was itself still wrong): this fallback can
+     * race a restore that is still actively writing into its own staging
+     * directory. A directory's mtime advances only when an entry is added,
+     * removed, or renamed within it, never when an existing file's
+     * CONTENTS are written, and never when a change happens only in a
+     * nested subdirectory several levels down. A restore stage that is deep
+     * into copying large files (overwriting existing paths in place) or
+     * working several directories below the staged root can leave the
+     * staged root's own mtime unchanged well past the 24h threshold while
+     * still genuinely in progress. This fallback is a real,
+     * marker-independent deletion path with a gap the mtime check alone
+     * does not close; it is documented here rather than silently trusted.
+     * Calling both sweeps opportunistically from every request still adds
+     * no new deletion condition beyond what the daily cron already runs; it
+     * only adds a cron-independent trigger for the same conditions.
+     *
+     * @return void
+     */
+    public function maybeGcRestoreArtifacts(): void
+    {
+        if (!$this->settings->isEnrolled()) {
+            return;
+        }
+        if (!function_exists('get_option') || !function_exists('update_option')) {
+            return;
+        }
+
+        $now  = time();
+        $last = (int) get_option(self::OPTION_RESTORE_GC_LAST, 0);
+        if ($now - $last < self::RESTORE_GC_THROTTLE_SECONDS) {
+            return;
+        }
+
+        // Stamp BEFORE running, see this method's doc for why.
+        update_option(self::OPTION_RESTORE_GC_LAST, $now, true);
+
+        try {
+            FilesRestorer::gcOldFiles();
+        } catch (\Throwable $e) {
+            // A GC sweep failure must never break the caller; the next
+            // throttled attempt gets a fresh try. Independent of the
+            // gcPreRestoreDumps() call below so one failing target can never
+            // suppress the other.
+        }
+        try {
+            RestoreRunner::gcPreRestoreDumps();
+        } catch (\Throwable $e) {
+            // See above.
         }
     }
 

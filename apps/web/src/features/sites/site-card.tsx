@@ -10,7 +10,7 @@
  *   2. Header row         — site name link + SiteRowActions menu
  *   3. Status rail        — ConnectionStateBadge + hostname (mono, reserved slot)
  *   4. Capability group   — labeled 2-col grid: Page Cache / Object Cache /
- *                           HTTPS / Backups / Multisite — always visible
+ *                           HTTPS / Multisite — always visible
  *   5. Chip flow          — UpdateChip / calm "Up to date" | BackupChip / calm
  *                           "No backups yet" | SslChip (when tls_expires_at)
  *   6. Uptime row         — pct + latency + StatusDot, reserved slot
@@ -34,7 +34,6 @@ import {
   HardDrive,
   Lock,
   Plus,
-  RefreshCcw,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Site } from "@wpmgr/api";
@@ -92,7 +91,6 @@ function buildCapabilityItems(site: Site): CapabilityItem[] {
   const hasObjectCache = site.object_cache_enabled;
 
   const isHttps = site.url.startsWith("https://");
-  const hasBackups = site.last_backup_status != null;
   const isMultisite = site.multisite;
 
   return [
@@ -110,11 +108,6 @@ function buildCapabilityItems(site: Site): CapabilityItem[] {
       icon: Lock,
       label: "HTTPS",
       enabled: isHttps,
-    },
-    {
-      icon: RefreshCcw,
-      label: "Backups",
-      enabled: hasBackups,
     },
     {
       icon: Globe,
