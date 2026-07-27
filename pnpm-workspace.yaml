@@ -9,6 +9,13 @@ packages:
 # for gray-matter and js-yaml 4.3.0 for eslint tooling (GHSA-52cp-r559-cp3m).
 overrides:
   brace-expansion@1: 1.1.16
+  # brace-expansion 5.x <=5.0.7 is a DoS via unbounded expansion length
+  # (GHSA-mh99-v99m-4gvg). Patched in 5.0.8. The advisory collapses every major
+  # into one range, so 1.1.16 is nominally flagged too, but there is no 1.x
+  # backport and forcing 5.0.8 onto the 1.x consumers breaks eslint at runtime
+  # (@eslint/config-array pathMatches). The 1.x chain is eslint only, which never
+  # ships in any deployed artifact, so it is pinned to the newest 1.x instead.
+  brace-expansion@5: 5.0.8
   js-yaml@3: 3.15.0
   js-yaml@4: 4.3.0
   # sharp <0.35.0 bundles a vulnerable libvips (GHSA-f88m-g3jw-g9cj). Patched in
@@ -20,6 +27,22 @@ overrides:
   # 8.5.18). Next pulls postcss transitively; these are same-major bug fixes, so
   # no API change. Verified the marketing build.
   postcss: 8.5.18
+# Documented audit exceptions. Every entry must state WHY the advisory cannot be
+# fixed by pinning and WHAT would let us drop the exception, so this list stays
+# short and reviewable rather than becoming a place to silence real findings.
+auditConfig:
+  ignoreGhsas:
+    # brace-expansion DoS via unbounded expansion length. Reached ONLY through
+    # eslint (eslint > minimatch@3 > brace-expansion@1), which is developer and
+    # CI tooling: it is absent from the Go binary, the built web bundle, and the
+    # marketing standalone output, so it is not a production attack surface.
+    # The advisory collapses every major into a single "<=5.0.7" range whose only
+    # patched release is 5.0.8, and there is no 1.x backport to pin to. Forcing
+    # 5.0.8 onto the 1.x consumers was tested and breaks eslint at runtime
+    # (@eslint/config-array pathMatches). The 5.x line IS pinned to 5.0.8 above.
+    # DROP THIS when the monorepo moves to eslint 10, which no longer pulls the
+    # minimatch@3 chain.
+    - GHSA-mh99-v99m-4gvg
 allowBuilds:
   esbuild: true
   # Puppeteer's postinstall downloads ~100 MB of Chromium. Disabled because
