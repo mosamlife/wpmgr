@@ -216,7 +216,7 @@ func (s *Service) GetFleetStatus(ctx context.Context, tenantID uuid.UUID, siteID
 			if um.AvgLatencyMs != nil {
 				totalMsPtr = um.AvgLatencyMs
 			}
-			item.Status = deriveFleetStatus(um.Up, totalMsPtr, info.ConnectionState)
+			item.Status, item.StatusReason = deriveFleetStatus(um.Up, totalMsPtr, info.ConnectionState, info.DisconnectedReason)
 		} else {
 			item.Status = FleetStatusUnknown
 		}

@@ -36,3 +36,35 @@ export const STATUS_COLOR_CLASS: Record<UptimeStatusKind, string> = {
   down: "text-[var(--color-destructive-subtle-fg)]",
   unknown: "text-[var(--color-muted-foreground)]",
 };
+
+// ---------------------------------------------------------------------------
+// status_reason (GH #291) — a page-cached site whose PHP backend is
+// completely dead used to render a clean green "Up"; the control plane now
+// correctly derives "degraded" for it AND sends a reason code explaining
+// why. A bare "Degraded" chip is not actionable on its own, so every reason
+// code we know about maps to a short, calm, plain-language explanation.
+//
+// Deliberately a plain Record (not keyed by a union of the reason codes):
+// the control plane can add a new code at any time, and a code missing from
+// this map must fall back to "no explanation" rather than a type error or a
+// broken render — see `statusReasonCopy` below.
+// ---------------------------------------------------------------------------
+
+export const STATUS_REASON_COPY: Record<string, string> = {
+  agent_unreachable:
+    "Serving visitors, but the site agent is not responding. Cached pages may be masking a broken backend.",
+  agent_degraded: "Serving visitors, but the site agent is late checking in.",
+  slow_response: "Responding slowly.",
+};
+
+/**
+ * Resolve a `FleetStatusItem.status_reason` code to its plain-language copy.
+ * Returns `null` for an absent OR unrecognised reason so callers render the
+ * status chip exactly as they always have, with no extra text — a future
+ * control-plane reason code this map does not yet know about can never
+ * break the UI.
+ */
+export function statusReasonCopy(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  return STATUS_REASON_COPY[reason] ?? null;
+}

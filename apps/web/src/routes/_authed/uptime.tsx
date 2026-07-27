@@ -31,6 +31,7 @@ import {
   type TileDefinition,
 } from "@/features/fleet/ExceptionSummaryTiles";
 import { StatusMatrix, type MatrixCell } from "@/features/fleet/StatusMatrix";
+import { StatusChip } from "@/features/fleet/StatusChip";
 import { FleetTable } from "@/features/fleet/FleetTable";
 import {
   DayBarStrip,
@@ -46,11 +47,6 @@ import {
   isIncidentOngoing,
   formatIncidentDuration,
 } from "@/features/fleet/incident-format";
-import {
-  STATUS_ICON,
-  STATUS_LABEL,
-  STATUS_COLOR_CLASS,
-} from "@/features/fleet/uptime-status";
 import { IncidentDetailDialog } from "@/features/fleet/incident-detail-dialog";
 import type {
   FleetStatusItem,
@@ -202,22 +198,13 @@ function buildColumns(): ColumnDef<FleetStatusItem>[] {
       id: "status",
       header: "Status",
       accessorFn: (row) => row.status,
-      meta: { width: "10%" },
-      cell: ({ row }) => {
-        const s = row.original.status;
-        const Icon = STATUS_ICON[s];
-        return (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 text-xs",
-              STATUS_COLOR_CLASS[s],
-            )}
-          >
-            <Icon aria-hidden="true" className="size-3.5 shrink-0" />
-            {STATUS_LABEL[s]}
-          </span>
-        );
-      },
+      meta: { width: "14%" },
+      cell: ({ row }) => (
+        <StatusChip
+          status={row.original.status}
+          reason={row.original.status_reason}
+        />
+      ),
     },
     {
       id: "uptime_pct_7d",
@@ -540,6 +527,7 @@ function UptimePage() {
           item.avg_latency_ms !== null
             ? `${Math.round(item.avg_latency_ms)} ms`
             : undefined,
+        statusReason: item.status_reason,
       })),
     [allItems],
   );

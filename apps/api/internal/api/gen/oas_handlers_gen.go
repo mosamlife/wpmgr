@@ -23595,8 +23595,13 @@ func (s *Server) handleGetFleetRumAggregateRequest(args [0]string, argsEscaped b
 // Returns summary counts {up, degraded, down, unknown} and a per-site list
 // with the latest probe result, 7-day uptime %, and in-incident flag.
 // Status derivation: down=latest probe up=false; degraded=up but latency
-// >2000ms or connection_state=degraded; up=probe up+fast; unknown=no probe.
-// Requires viewer+.
+// >2000ms, or connection_state=degraded (status_reason=agent_degraded),
+// or connection_state=disconnected (status_reason=agent_unreachable, GH
+// #291: a cached response can stay up=true while the agent side already
+// proved the site unreachable); up=probe up+fast; unknown=no probe.
+// connection_state=revoked/archived does not affect status derivation
+// (the operator deliberately stopped managing the site). Requires
+// viewer+.
 //
 // GET /api/v1/fleet/status
 func (s *Server) handleGetFleetUptimeStatusRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {

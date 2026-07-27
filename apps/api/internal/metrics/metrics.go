@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -177,6 +178,36 @@ type chStore struct {
 // retentionDays is the uptime_checks TTL window (~90d).
 const retentionDays = 90
 
+// uptimeChecksColumn is one column of the uptime_checks table: its name and
+// its ClickHouse type.
+type uptimeChecksColumn struct {
+	name string
+	typ  string
+}
+
+// uptimeChecksColumns is the single declared source of truth for the
+// uptime_checks table shape. Both ensureSchema (CREATE TABLE and the
+// per-column ADD COLUMN IF NOT EXISTS convergence) and InsertChecks (the
+// column-explicit INSERT column list and the matching Append order) are
+// driven from this one list, so the DDL, the migration path and the insert
+// path cannot drift apart. Adding a column here is the only step required to
+// both create it on a fresh table and backfill it onto an existing one; see
+// ensureSchema.
+var uptimeChecksColumns = []uptimeChecksColumn{
+	{"checked_at", "DateTime"},
+	{"tenant_id", "UUID"},
+	{"site_id", "UUID"},
+	{"up", "UInt8"},
+	{"http_status", "UInt16"},
+	{"dns_ms", "Float64"},
+	{"connect_ms", "Float64"},
+	{"tls_ms", "Float64"},
+	{"ttfb_ms", "Float64"},
+	{"total_ms", "Float64"},
+	{"tls_expiry", "DateTime"},
+	{"error", "String"},
+}
+
 // New connects to ClickHouse and ensures the schema exists. When cfg.Addr is
 // empty it returns a disabled Store (Enabled()==false) that no-ops, so the
 // stack runs without ClickHouse. A configured-but-unreachable ClickHouse is a
@@ -239,34 +270,116 @@ func (s *chStore) Close() error {
 	return s.conn.Close()
 }
 
-// ensureSchema creates the database and the uptime_checks table if absent. The
-// table is a MergeTree ordered by (tenant_id, site_id, checked_at) — the exact
-// prefix every tenant-scoped per-site query filters on — with a 90-day TTL on
-// checked_at so old rows are reclaimed automatically.
+// ensureSchema creates the database and the uptime_checks table if absent,
+// then converges an already-existing table's COLUMN SET to the currently
+// declared uptimeChecksColumns. The table is created as a MergeTree ordered
+// by (tenant_id, site_id, checked_at), the exact prefix every tenant-scoped
+// per-site query filters on, with a 90-day TTL on checked_at so old rows are
+// reclaimed automatically, but that only applies to a fresh CREATE TABLE.
+// ONLY the column set converges on every boot. The engine, the ORDER BY, the
+// TTL clause, and the declared TYPE of an already-existing column do NOT
+// converge. An operator who hand-alters uptime_checks (a different ORDER BY,
+// a wider or narrower column type, TTL removed) will find that drift persists
+// across restarts; this function never re-issues CREATE TABLE and never runs
+// an ALTER ... MODIFY on an existing table, it only ADDs a COLUMN for a name
+// it cannot find.
+//
+// CREATE TABLE IF NOT EXISTS is a no-op against a table that already exists,
+// so a column appended to uptimeChecksColumns after a deployment's table was
+// first created would never land there on its own: InsertChecks would then
+// try to write more values than the physical table has columns and fail
+// outright. To make new columns safe to add in a later phase, every boot
+// reads the table's actual column names from system.columns ONCE and issues
+// an idempotent ALTER TABLE ... ADD COLUMN IF NOT EXISTS only for declared
+// columns that read is missing, so a table that has already converged costs
+// one cheap read and zero DDL, instead of 12 unconditional round trips every
+// boot. Both the CREATE TABLE column list and the convergence loop are driven
+// from the same uptimeChecksColumns list, so the create path and the
+// migration path cannot drift apart.
+//
+// Every ALTER in the convergence loop is NON-FATAL. An older ClickHouse that
+// rejects this ALTER syntax, or a role without ALTER privilege on this table,
+// must not prevent the control plane from starting over an uptime-metrics
+// nicety. This follows the same precedent as the vulnerability feed, which
+// degrades to a clean no-op instead of blocking boot when it cannot run (see
+// internal/admin/vuln_feed.go). Failures are logged at error level with the
+// column name so the gap is loud rather than silent, and if any declared
+// column is still missing once the loop finishes, one summary error names all
+// of them: InsertChecks will fail on this table until that is resolved, and
+// that must be visible in the logs even though it did not stop boot. If the
+// system.columns read itself fails (e.g. no SELECT grant on system tables),
+// convergence falls back to attempting every declared column unconditionally,
+// same as before this fix, still non-fatal, just without the zero-DDL fast
+// path for a table that was already converged.
 func (s *chStore) ensureSchema(ctx context.Context) error {
 	if err := s.conn.Exec(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", s.db)); err != nil {
 		return fmt.Errorf("clickhouse create database: %w", err)
 	}
+
+	columnDefs := make([]string, len(uptimeChecksColumns))
+	for i, c := range uptimeChecksColumns {
+		columnDefs[i] = fmt.Sprintf("    %s %s", c.name, c.typ)
+	}
 	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.uptime_checks (
-    checked_at  DateTime,
-    tenant_id   UUID,
-    site_id     UUID,
-    up          UInt8,
-    http_status UInt16,
-    dns_ms      Float64,
-    connect_ms  Float64,
-    tls_ms      Float64,
-    ttfb_ms     Float64,
-    total_ms    Float64,
-    tls_expiry  DateTime,
-    error       String
+%s
 ) ENGINE = MergeTree()
 ORDER BY (tenant_id, site_id, checked_at)
-TTL checked_at + INTERVAL %d DAY`, s.db, retentionDays)
+TTL checked_at + INTERVAL %d DAY`, s.db, strings.Join(columnDefs, ",\n"), retentionDays)
 	if err := s.conn.Exec(ctx, ddl); err != nil {
 		return fmt.Errorf("clickhouse create uptime_checks: %w", err)
 	}
+
+	existing, err := s.existingUptimeChecksColumns(ctx)
+	if err != nil {
+		s.logger.Error("clickhouse read existing uptime_checks columns failed; falling back to attempting every declared column",
+			slog.String("clickhouse_db", s.db), slog.Any("error", err))
+		existing = map[string]bool{}
+	}
+
+	var stillMissing []string
+	for _, c := range uptimeChecksColumns {
+		if existing[c.name] {
+			continue
+		}
+		alter := fmt.Sprintf("ALTER TABLE %s.uptime_checks ADD COLUMN IF NOT EXISTS %s %s", s.db, c.name, c.typ)
+		if err := s.conn.Exec(ctx, alter); err != nil {
+			s.logger.Error("clickhouse add column failed; boot continues, but this column will not be available until resolved",
+				slog.String("clickhouse_db", s.db), slog.String("column", c.name), slog.Any("error", err))
+			stillMissing = append(stillMissing, c.name)
+		}
+	}
+	if len(stillMissing) > 0 {
+		s.logger.Error("uptime_checks is missing columns InsertChecks requires; probe inserts will fail until this is resolved",
+			slog.String("clickhouse_db", s.db), slog.Any("missing_columns", stillMissing))
+	}
 	return nil
+}
+
+// existingUptimeChecksColumns reads the actual column names of
+// <db>.uptime_checks from system.columns, so ensureSchema's convergence loop
+// can skip ADD COLUMN for names that already exist instead of issuing all 12
+// unconditionally on every boot.
+func (s *chStore) existingUptimeChecksColumns(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.conn.Query(ctx,
+		"SELECT name FROM system.columns WHERE database = ? AND table = ?",
+		s.db, "uptime_checks")
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse read system.columns: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("clickhouse scan system.columns row: %w", err)
+		}
+		out[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("clickhouse iterate system.columns: %w", err)
+	}
+	return out, nil
 }
 
 // chTime keeps a DateTime value within ClickHouse's representable range and at
@@ -280,11 +393,23 @@ func chTime(t time.Time) time.Time {
 
 // InsertChecks batch-inserts probe results via PrepareBatch. No-ops (returns
 // nil) when the store is disabled or the batch is empty.
+//
+// The INSERT statement names every column explicitly (from
+// uptimeChecksColumns) instead of relying on the table's physical column
+// order. The ClickHouse driver resorts the batch to the named column order,
+// so batch.Append below must supply values in that exact order too; a
+// positional-only insert is what turns a schema drift (an ALTER that adds or
+// reorders a column) into a silent value-shift or a column-count mismatch.
 func (s *chStore) InsertChecks(ctx context.Context, checks []Check) error {
 	if !s.Enabled() || len(checks) == 0 {
 		return nil
 	}
-	batch, err := s.conn.PrepareBatch(ctx, fmt.Sprintf("INSERT INTO %s.uptime_checks", s.db))
+	columnNames := make([]string, len(uptimeChecksColumns))
+	for i, c := range uptimeChecksColumns {
+		columnNames[i] = c.name
+	}
+	insertSQL := fmt.Sprintf("INSERT INTO %s.uptime_checks (%s)", s.db, strings.Join(columnNames, ", "))
+	batch, err := s.conn.PrepareBatch(ctx, insertSQL)
 	if err != nil {
 		return fmt.Errorf("clickhouse prepare batch: %w", err)
 	}
@@ -293,6 +418,9 @@ func (s *chStore) InsertChecks(ctx context.Context, checks []Check) error {
 		if c.Up {
 			up = 1
 		}
+		// Append order must match uptimeChecksColumns / columnNames above
+		// exactly: checked_at, tenant_id, site_id, up, http_status, dns_ms,
+		// connect_ms, tls_ms, ttfb_ms, total_ms, tls_expiry, error.
 		if err := batch.Append(
 			chTime(c.CheckedAt),
 			c.TenantID,

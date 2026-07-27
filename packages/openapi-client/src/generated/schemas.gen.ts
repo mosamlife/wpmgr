@@ -4376,6 +4376,11 @@ export const FleetUptimeStatusItemSchema = {
       type: "string",
       enum: ["up", "degraded", "down", "unknown"],
     },
+    status_reason: {
+      type: "string",
+      description:
+        "Short machine-readable explanation for status, populated when\nstatus=degraded (agent_unreachable, agent_degraded, or\nslow_response). Empty/absent when the status needs no further\nexplanation.\n",
+    },
     uptime_pct_7d: {
       type: "number",
       format: "double",

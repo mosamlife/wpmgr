@@ -304,3 +304,137 @@ func TestGetFleetStatus_PostgresModeParity(t *testing.T) {
 		t.Errorf("Status = %q, want %q", it.Status, FleetStatusUp)
 	}
 }
+
+// TestGetFleetStatus_DisconnectedCachedUpStaysUpDisplayOnlyChanges is the GH
+// #291 golden no-regression test (Task 4). It pins the phase's core promise:
+// a site whose latest probe is up=true (what a page cache keeps serving even
+// while the backend is fatal-ing) MUST still report up=true, with an
+// unchanged 7-day uptime percentage, unchanged latency, and unchanged
+// Postgres-resident health_status. The ONLY thing allowed to move is the
+// DERIVED display status, from Up to Degraded, once sites.connection_state
+// has been marked "disconnected" by the connection sweeper's independent,
+// signed, uncacheable active-verify.
+//
+// Two sites are compared side by side with IDENTICAL probe/store data and
+// IDENTICAL Postgres health_status; the only difference is connection_state.
+// If this test ever fails because up/uptime_pct_7d/avg_latency_ms/
+// health_status differ between the two sites, this phase has stopped being
+// display-only and started rewriting what "up" means, which is the one thing
+// explicitly forbidden by the design.
+func TestGetFleetStatus_DisconnectedCachedUpStaysUpDisplayOnlyChanges(t *testing.T) {
+	tenantID := uuid.New()
+	healthySite := uuid.New() // connection_state=connected
+	brokenSite := uuid.New()  // connection_state=disconnected, same probe data
+
+	probedAt := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	up := true
+	const pct = 100.0    // a fully page-cached site answers every probe
+	const latency = 45.0 // cached responses are fast
+
+	repo := &stubRepo{
+		infos: []FleetSiteInfo{
+			{
+				SiteID:          healthySite,
+				Name:            "healthy-site",
+				URL:             "https://healthy.example.com",
+				ConnectionState: "connected",
+				HealthStatus:    "healthy",
+				InIncident:      false,
+			},
+			{
+				SiteID:          brokenSite,
+				Name:            "broken-site",
+				URL:             "https://broken.example.com",
+				ConnectionState: "disconnected",
+				// health_status is written ONLY by the M5 reachability probe
+				// worker (SetSiteHealthStatus), which this phase does not
+				// touch. It stays "healthy" here on purpose, exactly like
+				// the reported incident, to prove this function does not
+				// derive or overwrite it.
+				HealthStatus: "healthy",
+				InIncident:   false,
+				// disconnected_reason names the sweeper's own active-verify
+				// failure (internal/site/sweeper.go Sweep), matching the
+				// reported incident: the sweeper's signed POST to the agent
+				// failed, not an operator-initiated last-will disconnect. See
+				// TestDeriveFleetStatus_DisconnectedReasonDisambiguation for
+				// the last-will side of this distinction.
+				DisconnectedReason: "agent_unreachable",
+			},
+		},
+	}
+	// Identical store-sourced probe data for both sites: same up, same
+	// uptime %, same latency, same last-probe timestamp. Only Postgres
+	// connection_state differs between the two repo infos above.
+	store := &stubStore{
+		uptimeMap: map[uuid.UUID]metrics.FleetUptimeRow{
+			healthySite: {Up: &up, LastProbeAt: &probedAt, UptimePct7d: ptrF64(pct), AvgLatencyMs: ptrF64(latency)},
+			brokenSite:  {Up: &up, LastProbeAt: &probedAt, UptimePct7d: ptrF64(pct), AvgLatencyMs: ptrF64(latency)},
+		},
+	}
+
+	svc := NewService(repo, store, nil)
+	resp, err := svc.GetFleetStatus(context.Background(), tenantID, []uuid.UUID{healthySite, brokenSite})
+	if err != nil {
+		t.Fatalf("GetFleetStatus: %v", err)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(resp.Items))
+	}
+
+	var healthy, broken FleetStatusItem
+	for _, it := range resp.Items {
+		switch it.SiteID {
+		case healthySite:
+			healthy = it
+		case brokenSite:
+			broken = it
+		}
+	}
+
+	// FROZEN: up, uptime_pct_7d, avg_latency_ms, health_status must be
+	// bit-identical between the two sites. connection_state must not leak
+	// into any of them.
+	if broken.Up == nil || !*broken.Up {
+		t.Fatalf("broken site Up = %v, want true (a cached 200 is still up=true)", broken.Up)
+	}
+	if healthy.Up == nil || *healthy.Up != *broken.Up {
+		t.Fatalf("Up mismatch: healthy=%v broken=%v, want identical", healthy.Up, broken.Up)
+	}
+	if broken.UptimePct7d != pct || healthy.UptimePct7d != broken.UptimePct7d {
+		t.Fatalf("UptimePct7d mismatch: healthy=%v broken=%v, want both %v", healthy.UptimePct7d, broken.UptimePct7d, pct)
+	}
+	if broken.AvgLatencyMs == nil || *broken.AvgLatencyMs != latency {
+		t.Fatalf("broken site AvgLatencyMs = %v, want %v", broken.AvgLatencyMs, latency)
+	}
+	if healthy.AvgLatencyMs == nil || *healthy.AvgLatencyMs != *broken.AvgLatencyMs {
+		t.Fatalf("AvgLatencyMs mismatch: healthy=%v broken=%v, want identical", healthy.AvgLatencyMs, broken.AvgLatencyMs)
+	}
+	if broken.HealthStatus != "healthy" || healthy.HealthStatus != broken.HealthStatus {
+		t.Fatalf("HealthStatus mismatch: healthy=%q broken=%q, want both %q", healthy.HealthStatus, broken.HealthStatus, "healthy")
+	}
+
+	// The ONLY thing allowed to move: the derived display status.
+	if healthy.Status != FleetStatusUp {
+		t.Errorf("healthy site Status = %q, want %q (unaffected by this fix)", healthy.Status, FleetStatusUp)
+	}
+	if healthy.StatusReason != "" {
+		t.Errorf("healthy site StatusReason = %q, want empty", healthy.StatusReason)
+	}
+	if broken.Status != FleetStatusDegraded {
+		t.Errorf("broken site Status = %q, want %q (GH #291: was Up before this fix)", broken.Status, FleetStatusDegraded)
+	}
+	if broken.StatusReason != FleetReasonAgentUnreachable {
+		t.Errorf("broken site StatusReason = %q, want %q", broken.StatusReason, FleetReasonAgentUnreachable)
+	}
+
+	// Summary counts must reflect exactly one Up and one Degraded, not two Up.
+	if resp.Summary.Up != 1 {
+		t.Errorf("Summary.Up = %d, want 1", resp.Summary.Up)
+	}
+	if resp.Summary.Degraded != 1 {
+		t.Errorf("Summary.Degraded = %d, want 1", resp.Summary.Degraded)
+	}
+}
+
+func ptrF64(f float64) *float64 { return &f }
