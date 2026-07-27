@@ -35,9 +35,11 @@ import { SiteTagPickerPopover } from "@/features/sites/tag-picker";
 import { useTagColorMap } from "@/features/tags/use-tag-color-map";
 import { fadeUp } from "@/lib/motion-presets";
 import {
+  AgentStatusChip,
   BackupChip,
   ConnectionStateBadge,
   UpdateChip,
+  type AgentStatus,
   type BackupChipStatus,
 } from "@/components/status";
 import {
@@ -104,6 +106,14 @@ export interface SitesTableProps {
   selection?: SitesSelection;
   /** Optional pre-lifted density tuple. Same rationale as `selection`. */
   densityState?: [SitesDensity, (next: SitesDensity) => void];
+  /**
+   * Per-site agent-freshness classification from the fleet-wide agent
+   * rollup (GET /api/v1/fleet/agents), keyed by site id. Omit while the
+   * rollup is loading or unavailable (e.g. a site-scoped collaborator with
+   * no org-level access), the Agent column falls back to the raw version
+   * text instead of guessing a classification.
+   */
+  agentStatusById?: ReadonlyMap<string, AgentStatus>;
   /** Optional click handler for the inline "Log in" (Zap) action. */
   onOpenAutoLogin?: (site: Site) => void;
   /** Optional click handler for the three-dot "More" item entries. */
@@ -136,6 +146,12 @@ interface SiteRow {
   readonly phpVersionEol: boolean;
   /** Current WPMgr agent plugin version (M27); "" until the site re-syncs. */
   readonly agentVersion: string;
+  /**
+   * Agent-freshness classification from the fleet agent rollup; `undefined`
+   * while the rollup is loading/unavailable, in which case the Agent column
+   * renders the raw version text instead of a chip.
+   */
+  readonly agentStatus?: AgentStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +168,10 @@ function hostnameFromUrl(url: string): string {
   }
 }
 
-function rowOf(site: Site): SiteRow {
+function rowOf(
+  site: Site,
+  agentStatusById?: ReadonlyMap<string, AgentStatus>,
+): SiteRow {
   return {
     site,
     hostname: hostnameFromUrl(site.url),
@@ -168,6 +187,12 @@ function rowOf(site: Site): SiteRow {
     wpVersionEol: false,
     phpVersionEol: false,
     agentVersion: site.agent_version ?? "",
+    // A missing map entry (the site is not in the rollup at all, e.g. an
+    // archived site, which the rollup excludes) still resolves to "unknown"
+    // once the rollup has loaded; a wholly absent map (still loading, or the
+    // caller never wired one) leaves this undefined so the cell falls back
+    // to plain version text.
+    agentStatus: agentStatusById?.get(site.id) ?? (agentStatusById ? "unknown" : undefined),
   };
 }
 
@@ -465,14 +490,19 @@ function buildColumns(
       enableSorting: true,
       size: COL_AGENT_PX,
       cell: ({ row }) => {
-        const v = row.original.agentVersion;
-        if (!v)
-          return (
-            <span className="font-mono text-xs text-[var(--color-muted-foreground)]">
-              —
-            </span>
-          );
-        return <span className="font-mono text-sm tabular-nums">{v}</span>;
+        const { agentVersion: v, agentStatus } = row.original;
+        // The rollup hasn't loaded (or is unavailable) yet: fall back to
+        // the raw version text rather than guess a classification.
+        if (!agentStatus) {
+          if (!v)
+            return (
+              <span className="font-mono text-xs text-[var(--color-muted-foreground)]">
+                —
+              </span>
+            );
+          return <span className="font-mono text-sm tabular-nums">{v}</span>;
+        }
+        return <AgentStatusChip status={agentStatus} version={v || null} />;
       },
     },
     {
@@ -638,6 +668,7 @@ export function SitesTable({
   density: densityProp,
   selection: externalSelection,
   densityState: externalDensityState,
+  agentStatusById,
   onOpenAutoLogin,
   onOpenDetail,
   onDisconnect,
@@ -650,7 +681,10 @@ export function SitesTable({
   const internalDensityState = useSitesDensity(densityProp);
   const [density, setDensity] = externalDensityState ?? internalDensityState;
 
-  const rows = useMemo<SiteRow[]>(() => sites.map(rowOf), [sites]);
+  const rows = useMemo<SiteRow[]>(
+    () => sites.map((s) => rowOf(s, agentStatusById)),
+    [sites, agentStatusById],
+  );
   const visibleIds = useMemo(() => sites.map((s) => s.id), [sites]);
 
   const [sorting, setSorting] = useState<SortingState>([]);

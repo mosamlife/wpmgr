@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.96
+  version: 0.61.97
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -116,6 +116,11 @@ tags:
     description: Per-site object (Redis/Memcached) cache management — config, test, enable/disable, flush, and stats history.
   - name: settings
     description: Instance-wide operator settings (currently outgoing SMTP configuration).
+  - name: agent-releases
+    description: >-
+      Operator-facing, read-only visibility into the currently published
+      WPMgr agent release version and each site's update freshness. Distinct
+      from the agent tag, which covers agent-to-control-plane endpoints.
 paths:
   /healthz:
     get:
@@ -6759,6 +6764,61 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/agent/latest:
+    get:
+      operationId: getAgentLatestVersion
+      summary: Currently published WPMgr agent release version
+      description: |
+        Reads the published agent-releases/latest.json pointer manifest (the
+        same object internal/agent/update_handler.go serves to agents)
+        through a cached, best-effort reader. version is "unknown" when no
+        release has ever been published, object storage is not configured,
+        or the manifest cannot currently be read; this never surfaces as an
+        error.
+      tags: [agent-releases]
+      responses:
+        "200":
+          description: The currently published agent version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLatestVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/fleet/agents:
+    get:
+      operationId: getFleetAgentVersions
+      summary: Tenant-wide agent-version rollup across all sites
+      description: |
+        Per-site {site_id, site_name, agent_version, status} plus fleet-wide
+        counts, classified against the currently published agent version.
+        status is one of current | outdated | unknown | ineligible.
+        "unknown" covers a site that has never reported agent_version, a
+        malformed/unparseable version on either side of the comparison, or a
+        currently-unreadable published-version manifest; never a false
+        "outdated". "ineligible" is a site that cannot self-update at all:
+        today that is the public plugin-directory build, which ships without
+        the self-updater and is upgraded by the plugin directory instead.
+        Such a site is identified from its own plugin inventory and is
+        reported "ineligible" whatever its version, because comparing it
+        against a release channel it cannot consume would be a permanent
+        false "outdated". Org-scoped only
+        (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
+        a site-scoped collaborator has no cross-site rollup.
+      tags: [agent-releases]
+      responses:
+        "200":
+          description: Fleet agent-version rollup
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetAgentVersions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/perf/rum/fleet:
     get:
       operationId: getFleetRumAggregate
@@ -20538,6 +20598,49 @@ components:
           type: boolean
           description: True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of feed_ok (which tracks Scanner-driven detection freshness).
         last_enrichment_at: { type: string, format: date-time }
+
+    # ---------------------------------------------------------------------------
+    # Read-only agent-freshness dashboard (internal/agentrelease)
+    # ---------------------------------------------------------------------------
+    AgentLatestVersion:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+          description: The currently published WPMgr agent version, or "unknown" when it cannot be determined right now.
+    FleetAgentCounts:
+      type: object
+      required: [current, outdated, unknown, ineligible]
+      properties:
+        current: { type: integer }
+        outdated: { type: integer }
+        unknown: { type: integer }
+        ineligible: { type: integer }
+    FleetAgentSite:
+      type: object
+      required: [site_id, site_name, agent_version, status]
+      properties:
+        site_id: { type: string, format: uuid }
+        site_name: { type: string }
+        agent_version:
+          type: string
+          description: The site's last-reported agent_version, verbatim. Empty when the agent has never reported one; distinct from status="unknown", which also covers a malformed version string.
+        status:
+          type: string
+          enum: [current, outdated, unknown, ineligible]
+    FleetAgentVersions:
+      type: object
+      required: [latest_version, counts, sites]
+      properties:
+        latest_version:
+          type: string
+          description: The currently published agent version, or "unknown" when it cannot be determined right now.
+        counts: { $ref: "#/components/schemas/FleetAgentCounts" }
+        sites:
+          type: array
+          items:
+            $ref: "#/components/schemas/FleetAgentSite"
 
     # ---------------------------------------------------------------------------
     # ADR-045 instance SMTP settings

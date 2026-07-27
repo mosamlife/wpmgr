@@ -213,6 +213,9 @@ export {
   getFleetEmailDeliverability,
   // screenshots (M72)
   refreshSiteScreenshot,
+  // agent release freshness (agent-releases)
+  getAgentLatestVersion,
+  getFleetAgentVersions,
   // file manager (P1 read-only browser)
   getSiteFilesSettings,
   updateSiteFilesSettings,
@@ -761,6 +764,13 @@ export type {
   // screenshots (M72)
   RefreshSiteScreenshotData,
   RefreshSiteScreenshotResponse,
+  // agent release freshness (agent-releases)
+  AgentLatestVersion,
+  FleetAgentCounts,
+  FleetAgentSite,
+  FleetAgentVersions,
+  GetAgentLatestVersionResponse,
+  GetFleetAgentVersionsResponse,
   // file manager (P1 read-only browser)
   FileEntry,
   FileListResult,

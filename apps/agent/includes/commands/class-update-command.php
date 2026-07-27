@@ -134,6 +134,18 @@
  *     would misreport an item that was never even attempted as a successful
  *     update: worse than the bug being fixed here.
  *
+ *   - Self-target refusal (agent-only hardening): an item that resolves to
+ *     the agent's own plugin is refused outright, before any detection,
+ *     download, staging or write, and reported with the existing `skipped`
+ *     status. Applying an update to the agent from inside a control-plane
+ *     command means deleting and re-copying the very directory that is
+ *     running the request and still has to serialize its response, with the
+ *     rollback watchdog unavailable by design (see UpdateWatchdogMarker::arm()),
+ *     so success and a bricked site become indistinguishable to the control
+ *     plane. The agent's own updates travel over its dedicated update channel.
+ *     See isSelfTarget() for how a renamed, symlinked or differently-cased
+ *     install directory is matched as well as the stock plugin key.
+ *
  * Every input is treated as untrusted: type is whitelisted, slug is sanitized to
  * reject path traversal, and snapshot paths are bounded to wp-content.
  *
@@ -159,6 +171,19 @@ final class UpdateCommand implements CommandInterface
 {
     /** Valid item types. */
     private const TYPES = ['plugin', 'theme', 'core'];
+
+    /**
+     * The agent's own plugin FOLDER name in a stock install. Deliberately a
+     * self-contained literal rather than a reference to UpdateChecker (the
+     * wp.org build ships without that class entirely), so the self-target
+     * refusal below is present in every build. An install whose directory was
+     * renamed is covered by the WPMGR_AGENT_DIR resolution in isSelfTarget(),
+     * not by this constant.
+     */
+    private const SELF_PLUGIN_FOLDER = 'wpmgr-agent';
+
+    /** The agent's own plugin key ("folder/main-file.php") in a stock install. */
+    private const SELF_PLUGIN_KEY = self::SELF_PLUGIN_FOLDER . '/' . self::SELF_PLUGIN_FOLDER . '.php';
 
     /**
      * S4 (issue #131 adversarial review) — bounded-but-generous apply time
@@ -317,6 +342,34 @@ final class UpdateCommand implements CommandInterface
             if ($slug === '' || $slug !== $rawSlug) {
                 return $this->result($type, $rawSlug, '', '', 'failed', '', 'Invalid or unsafe slug.');
             }
+        }
+
+        // --- Self-target refusal (agent-only hardening) ------------------
+        // A control-plane update task may never point at the agent's own
+        // plugin. WordPress applies an update by clearing and re-copying the
+        // target directory, so an update aimed here would delete the code
+        // that is still running this request and still has to serialize its
+        // own response: the control plane could not tell a finished update
+        // apart from a bricked site, and no rollback would be deliverable
+        // because the receiver is the thing that broke. That is also why
+        // UpdateWatchdogMarker::arm() refuses to arm the rollback watchdog
+        // against this directory at all, leaving such an apply unprotected on
+        // top of everything else. Refused HERE, before installed/availability
+        // detection and long before anything is downloaded, staged or
+        // written, and on every item path including dry runs. Reported with
+        // the existing `skipped` status (never a new one) so the control
+        // plane records "nothing to do" rather than a failure. The agent's
+        // own updates travel over its dedicated update channel instead.
+        if (self::isSelfTarget($type, $slug)) {
+            return $this->result(
+                $type,
+                $slug,
+                '',
+                '',
+                'skipped',
+                '',
+                'Refused: this target is the management agent itself. The agent updates through its own update channel, not through a plugin update task.'
+            );
         }
 
         // Declared here (rather than inside the inner try below) so the
@@ -831,5 +884,201 @@ final class UpdateCommand implements CommandInterface
         }
 
         return $slug;
+    }
+
+    /**
+     * Does this item resolve to the running agent's own plugin?
+     *
+     * Matches on BOTH signals, because either one alone leaves a hole:
+     *   - the stock plugin key ("folder/main-file.php") and its folder, which
+     *     still identify the agent on a site whose WP_PLUGIN_DIR/
+     *     WP_CONTENT_DIR constants are unavailable in this runtime;
+     *   - any slug whose directory resolves (through realpath(), so a
+     *     symlinked or renamed install directory resolves too) to
+     *     WPMGR_AGENT_DIR, which is what identifies the agent when it is
+     *     installed under a different directory name than the stock one.
+     *
+     * Every one of those comparisons is case-INSENSITIVE (see sameName()), so
+     * a renamed, symlinked or differently-cased install is matched as well as
+     * the stock plugin key, and the control plane's own matcher
+     * (apps/api/internal/agentplugin) and this last line of defence agree.
+     *
+     * Read-only: it inspects constants and resolves paths, and never creates,
+     * moves or writes anything. Public and static so RollbackCommand shares
+     * exactly this definition rather than growing a second, drifting one.
+     * `core` is never a self-target.
+     *
+     * @param string $type 'plugin'|'theme'|'core'.
+     * @param string $slug Sanitized slug (see sanitizeSlug()).
+     * @return bool
+     */
+    public static function isSelfTarget(string $type, string $slug): bool
+    {
+        if ($slug === '' || ($type !== 'plugin' && $type !== 'theme')) {
+            return false;
+        }
+
+        $folder = self::slugFolder($slug);
+        if ($folder === '') {
+            return false;
+        }
+
+        $selfDirs = self::selfDirVariants();
+
+        if ($type === 'plugin') {
+            if (self::sameName($slug, self::SELF_PLUGIN_KEY) || self::sameName($folder, self::SELF_PLUGIN_FOLDER)) {
+                return true;
+            }
+
+            // The agent's actual directory NAME, for an install renamed off
+            // the stock folder above. Covers the case where the plugin-root
+            // constants needed by the path comparison below are missing.
+            foreach ($selfDirs as $selfDir) {
+                if (self::sameName(basename($selfDir), $folder)) {
+                    return true;
+                }
+            }
+        }
+
+        foreach (self::itemDirVariants($type, $folder) as $candidate) {
+            foreach ($selfDirs as $selfDir) {
+                if (self::sameName($candidate, $selfDir)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Case-insensitive equality for a slug, folder name or path.
+     *
+     * Nothing here is a secret, so this is an identity test and not a
+     * constant-time one: a timing-safe compare would buy nothing and cannot
+     * fold case anyway. Case must fold because a hand-built or replayed
+     * command can carry any casing it likes, and because a case-insensitive
+     * filesystem (macOS, Windows, a casefolded or SMB/NFS-backed wp-content)
+     * resolves "WPMgr-Agent" and "wpmgr-agent" to the SAME directory: a
+     * byte-exact match would let exactly that payload through to an apply
+     * that overwrites the running agent. The control plane's matcher folds
+     * case for the same reason; the agent is the only guard left once a
+     * signed command has been forged or replayed, so it must not be the
+     * weaker of the two.
+     *
+     * Comparison is ASCII-only, which is all sanitizeSlug() can produce. The
+     * cost of folding case is at worst refusing a third-party plugin whose
+     * directory differs from the agent's by letter case alone, which is the
+     * safe direction to be wrong in.
+     *
+     * @param string $a First value.
+     * @param string $b Second value.
+     * @return bool
+     */
+    private static function sameName(string $a, string $b): bool
+    {
+        return strcasecmp($a, $b) === 0;
+    }
+
+    /**
+     * The folder component of a slug that may be a bare folder ("akismet") or
+     * a full "folder/main-file.php" plugin basename.
+     *
+     * @param string $slug Sanitized slug.
+     * @return string Folder name (never contains a '/').
+     */
+    private static function slugFolder(string $slug): string
+    {
+        $pos = strpos($slug, '/');
+
+        return $pos === false ? $slug : substr($slug, 0, $pos);
+    }
+
+    /**
+     * Normalize a path for comparison: forward slashes, no trailing slash.
+     *
+     * @param string $path Raw path.
+     * @return string Normalized path ('' when there is nothing to compare).
+     */
+    private static function normalizePath(string $path): string
+    {
+        return rtrim(str_replace('\\', '/', trim($path)), '/');
+    }
+
+    /**
+     * Comparable forms of a path: as written, plus its realpath() when that
+     * resolves to something different (a symlinked plugins tree, a relocated
+     * wp-content). Never throws; an unresolvable path simply yields fewer
+     * forms.
+     *
+     * @param string $path Raw path.
+     * @return array<int,string>
+     */
+    private static function pathVariants(string $path): array
+    {
+        $normalized = self::normalizePath($path);
+        if ($normalized === '') {
+            return [];
+        }
+
+        $variants = [$normalized];
+
+        $resolved = realpath($normalized);
+        if (is_string($resolved) && $resolved !== '') {
+            $resolved = self::normalizePath($resolved);
+            if ($resolved !== '' && $resolved !== $normalized) {
+                $variants[] = $resolved;
+            }
+        }
+
+        return $variants;
+    }
+
+    /**
+     * Comparable forms of the running agent's own directory.
+     *
+     * @return array<int,string>
+     */
+    private static function selfDirVariants(): array
+    {
+        if (!defined('WPMGR_AGENT_DIR')) {
+            return [];
+        }
+
+        return self::pathVariants((string) constant('WPMGR_AGENT_DIR'));
+    }
+
+    /**
+     * Comparable forms of the directory an update item would be applied to.
+     *
+     * @param string $type   'plugin'|'theme'.
+     * @param string $folder Folder component of the item's slug.
+     * @return array<int,string>
+     */
+    private static function itemDirVariants(string $type, string $folder): array
+    {
+        $roots = [];
+        if ($type === 'plugin') {
+            if (defined('WP_PLUGIN_DIR')) {
+                $roots[] = (string) constant('WP_PLUGIN_DIR');
+            } elseif (defined('WP_CONTENT_DIR')) {
+                $roots[] = (string) constant('WP_CONTENT_DIR') . '/plugins';
+            }
+        } elseif (defined('WP_CONTENT_DIR')) {
+            $roots[] = (string) constant('WP_CONTENT_DIR') . '/themes';
+        }
+
+        $variants = [];
+        foreach ($roots as $root) {
+            $root = self::normalizePath($root);
+            if ($root === '') {
+                continue;
+            }
+            foreach (self::pathVariants($root . '/' . $folder) as $variant) {
+                $variants[] = $variant;
+            }
+        }
+
+        return $variants;
     }
 }

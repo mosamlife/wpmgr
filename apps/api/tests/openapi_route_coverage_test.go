@@ -38,6 +38,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
@@ -299,6 +300,9 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	scanH := scan.NewHandler(scan.NewService(scan.NewRepo(pool), auditRec))
 	vulnH := vuln.NewHandler(vuln.NewService(vuln.NewRepo(pool), pool, nil, nil, nil, logger), nil, auditRec)
 
+	// --- agent-freshness dashboard (read-only) ---------------------------------
+	agentReleaseH := agentrelease.NewHandler(agentrelease.NewService(agentrelease.NewRepo(pool), agentrelease.NewReader(nil, 0)))
+
 	// --- updates ---------------------------------------------------------------
 	updateHub := update.NewHub()
 	updateSvc := update.NewService(update.NewRepo(pool), nil, nil, validator, clock)
@@ -417,6 +421,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		LoginBrandH:            loginBrandH,
 		ScanH:                  scanH,
 		VulnH:                  vulnH,
+		AgentReleaseH:          agentReleaseH,
 		RestoreRunH:            restoreRunH,
 		ScheduleRunH:           scheduleRunH,
 		OrgH:                   orgH,

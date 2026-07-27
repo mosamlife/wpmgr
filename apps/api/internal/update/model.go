@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -107,10 +108,27 @@ var slugPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$`)
 // and slug AFTER normalization, returning a KindValidation (HTTP 422) domain
 // error on the first offending value. This is the control-plane guard against
 // argument injection into the agent's WP-CLI; the agent validates again.
+//
+// It is also the planning boundary's refusal point for the agent's own plugin:
+// the control plane never offers that target (see site.actionableUpdate), so an
+// item naming it can only come from a stale advisory persisted by an older
+// agent, a hand-built request, or a replayed payload. It is rejected outright
+// rather than dispatched, because applying it would have the agent overwrite
+// its own running code with no deliverable rollback.
+//
+// An item is a bare (type, slug, version) triple with no inventory entry behind
+// it, so this check can only use agentplugin's slug form. An agent installed
+// under an unexpected directory name is therefore NOT refused here; it is
+// stopped one step later by indexPending, which sees the site's inventory and
+// matches the plugin-header name, and again by the worker before dispatch.
 func validateItems(items []Item) error {
 	for _, it := range items {
 		if len(it.Slug) > 200 || !slugPattern.MatchString(it.Slug) {
 			return domain.Validation("invalid_slug", "update item slug contains an unsafe value: "+it.Slug)
+		}
+		if it.Type == TargetPlugin && agentplugin.Is(it.Slug) {
+			return domain.Validation("agent_self_update_forbidden",
+				"the site agent cannot be updated through an update run: it upgrades itself over its own signed channel")
 		}
 		if it.Version != "" && !versionPattern.MatchString(it.Version) {
 			return domain.Validation("invalid_version", "update item version contains an unsafe value: "+it.Version)

@@ -255,6 +255,17 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	find release/fleet-agent-site-manager -name "*.php" -print0 | \
 		xargs -0 sed -i.bak "s/'wpmgr-agent'/'fleet-agent-site-manager'/g"
 	find release/fleet-agent-site-manager -name "*.php.bak" -delete
+	# ASSERT the rewrite above reached the self-target guard's own constant.
+	# tests/ is excluded from the staged tree, so nothing else checks that the
+	# wp.org build recognises its OWN slug as the agent; a refactor of that
+	# constant to double quotes or string concatenation would silently leave the
+	# wp.org build guarding the self-hosted slug only.
+	@if ! grep -q "SELF_PLUGIN_FOLDER = 'fleet-agent-site-manager';" \
+		release/fleet-agent-site-manager/includes/commands/class-update-command.php; then \
+		echo "agent-zip-wporg: FAILED. SELF_PLUGIN_FOLDER in the staged tree is not 'fleet-agent-site-manager', so the self-target guard would not recognise the wp.org slug. Check the 'wpmgr-agent' rewrite above and the constant in apps/agent/includes/commands/class-update-command.php" >&2; \
+		exit 1; \
+	fi
+	@echo "agent-zip-wporg: self-target guard constant OK (SELF_PLUGIN_FOLDER = 'fleet-agent-site-manager')"
 	cd release && zip -r fleet-agent-site-manager.zip fleet-agent-site-manager
 	rm -rf release/fleet-agent-site-manager
 	@echo "agent wporg zip: $$(du -sh release/fleet-agent-site-manager.zip | cut -f1)"

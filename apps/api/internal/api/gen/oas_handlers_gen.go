@@ -19987,6 +19987,135 @@ func (s *Server) handleGetAdminVulnFeedStatusRequest(args [0]string, argsEscaped
 	}
 }
 
+// handleGetAgentLatestVersionRequest handles getAgentLatestVersion operation.
+//
+// Reads the published agent-releases/latest.json pointer manifest (the
+// same object internal/agent/update_handler.go serves to agents)
+// through a cached, best-effort reader. version is "unknown" when no
+// release has ever been published, object storage is not configured,
+// or the manifest cannot currently be read; this never surfaces as an
+// error.
+//
+// GET /api/v1/agent/latest
+func (s *Server) handleGetAgentLatestVersionRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAgentLatestVersion"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.HTTPRouteKey.String("/api/v1/agent/latest"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), GetAgentLatestVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err error
+	)
+
+	var rawBody []byte
+
+	var response GetAgentLatestVersionRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    GetAgentLatestVersionOperation,
+			OperationSummary: "Currently published WPMgr agent release version",
+			OperationID:      "getAgentLatestVersion",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params:           middleware.Parameters{},
+			Raw:              r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = struct{}
+			Response = GetAgentLatestVersionRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			nil,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.GetAgentLatestVersion(ctx)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.GetAgentLatestVersion(ctx)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeGetAgentLatestVersionResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleGetAlertConfigRequest handles getAlertConfig operation.
 //
 // Returns the tenant's downtime/recovery alert channel: email recipients,
@@ -22546,6 +22675,144 @@ func (s *Server) handleGetEmailNotifySettingsRequest(args [0]string, argsEscaped
 	}
 
 	if err := encodeGetEmailNotifySettingsResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
+// handleGetFleetAgentVersionsRequest handles getFleetAgentVersions operation.
+//
+// Per-site {site_id, site_name, agent_version, status} plus fleet-wide
+// counts, classified against the currently published agent version.
+// status is one of current | outdated | unknown | ineligible.
+// "unknown" covers a site that has never reported agent_version, a
+// malformed/unparseable version on either side of the comparison, or a
+// currently-unreadable published-version manifest; never a false
+// "outdated". "ineligible" is a site that cannot self-update at all:
+// today that is the public plugin-directory build, which ships without
+// the self-updater and is upgraded by the plugin directory instead.
+// Such a site is identified from its own plugin inventory and is
+// reported "ineligible" whatever its version, because comparing it
+// against a release channel it cannot consume would be a permanent
+// false "outdated". Org-scoped only
+// (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
+// a site-scoped collaborator has no cross-site rollup.
+//
+// GET /api/v1/fleet/agents
+func (s *Server) handleGetFleetAgentVersionsRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getFleetAgentVersions"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.HTTPRouteKey.String("/api/v1/fleet/agents"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), GetFleetAgentVersionsOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err error
+	)
+
+	var rawBody []byte
+
+	var response GetFleetAgentVersionsRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    GetFleetAgentVersionsOperation,
+			OperationSummary: "Tenant-wide agent-version rollup across all sites",
+			OperationID:      "getFleetAgentVersions",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params:           middleware.Parameters{},
+			Raw:              r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = struct{}
+			Response = GetFleetAgentVersionsRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			nil,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.GetFleetAgentVersions(ctx)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.GetFleetAgentVersions(ctx)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeGetFleetAgentVersionsResponse(response, w, span); err != nil {
 		defer recordError("EncodeResponse", err)
 		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
 			s.cfg.ErrorHandler(ctx, w, r, err)
@@ -26691,7 +26958,7 @@ func (s *Server) handleGetSiteRequest(args [1]string, argsEscaped bool, w http.R
 // Returns the per-site application-health settings (GH #291 Phase 3):
 // the B3 override path for the application-health probe, and the
 // per-site app-health alerting opt-out. Every site has these settings
-// (empty path / alerts not disabled are the defaults) — this never
+// (empty path / alerts not disabled are the defaults) - this never
 // auto-creates a row, it reads the `sites` columns directly.
 //
 // GET /api/v1/sites/{siteId}/app-health-settings
@@ -41939,7 +42206,7 @@ func (s *Server) handlePutPerfConfigRequest(args [1]string, argsEscaped bool, w 
 //
 // Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
 // Phase 3). `app_probe_path` must be a site-relative path (starts with
-// `/`, no scheme, no host, no `..` traversal) — validation failures
+// `/`, no scheme, no host, no `..` traversal) - validation failures
 // return 422. An empty `app_probe_path` clears the override back to
 // auto-detect. `app_alerts_disabled` excludes the site from app-health
 // alerting entirely (both the individual alert and the fleet circuit

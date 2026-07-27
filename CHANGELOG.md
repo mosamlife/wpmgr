@@ -8,6 +8,19 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.97] - 2026-07-28
+
+### Fixed
+
+- A control-plane update task could target the WPMgr agent's own plugin (GH #255). The agent reports itself in the plugin inventory it pushes like every other plugin, WordPress advertises an available update for it the same way, and neither the control plane nor the agent refused it, so an operator could select the agent in a bulk update run across many sites at once. That is worth avoiding: updating the agent this way means its own code is what performs the update, overwriting its own files from inside the very request that has to report back whether the update succeeded, so if anything goes wrong partway through, the site has no working code left to report it with. Every other plugin update is protected by a snapshot and an automatic rollback, but that protection deliberately does not arm for the agent's own directory, because the thing that would perform the rollback is the thing being replaced, and recovery would mean per-site filesystem access.
+- The agent now refuses any update task that targets its own directory, identifying itself by its plugin header name as well as its folder so an install in a renamed directory is still recognized (a different plugin whose name merely resembles the agent's is deliberately not affected). The control plane independently stops offering the agent as an updatable component and no longer counts it toward a site's pending updates. Both sides refuse on purpose, so a site running an older agent is still protected by the control plane's refusal. The agent stays visible in the inventory with its version; only the actionable update is withheld, and the agent's normal one-click update inside wp-admin is unchanged.
+
+### Added
+
+- Fleet-wide agent version visibility (GH #255, phase 1 of two), which answers a question WPMgr could not answer before: how many sites are running an outdated agent. The Sites list shows each site's agent version as a status, current, outdated, unknown, or not self-updating, and it is also a filter. The Updates page gains a summary of how many sites are on the current version and how many are behind.
+- Sites running the WordPress.org build are reported as "not self-updating" rather than "outdated", because that build ships without the self-updater and can never take an update from this channel; reporting them as outdated would be telling the operator to fix something they cannot fix.
+- Actually triggering an agent update across the fleet is phase two of this work, and is not part of this release.
+
 ## [0.61.96] - 2026-07-28
 
 ### Security

@@ -31,6 +31,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
@@ -2313,6 +2314,33 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.Warn("ADR-042 self-update disabled: object storage or WPMGR_AGENT_SIGNING_PRIVATE_KEY not configured")
 	}
 
+	// Read-only agent-freshness dashboard (additive, GET-only; see
+	// internal/agentrelease). Reads the SAME published agent-releases/
+	// latest.json object the ADR-042 self-update handler above reads, but
+	// needs only object storage (no signing key), since it never mints
+	// anything. A nil store degrades every LatestVersion() read to "unknown"
+	// rather than disabling the routes, so an unconfigured instance still
+	// answers /api/v1/fleet/agents (every site reported "unknown") instead
+	// of 404ing.
+	var agentReleaseReader *agentrelease.Reader
+	if cfg.S3.Enabled() {
+		agentReleaseStore, arerr := blobstore.New(blobstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			Region:         cfg.S3.Region,
+			Bucket:         cfg.S3.Bucket,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			ForcePathStyle: cfg.S3.ForcePathStyle,
+		})
+		if arerr != nil {
+			return fmt.Errorf("agent release store: %w", arerr)
+		}
+		agentReleaseReader = agentrelease.NewReader(agentReleaseStore, 0)
+	} else {
+		agentReleaseReader = agentrelease.NewReader(nil, 0)
+	}
+	agentReleaseH := agentrelease.NewHandler(agentrelease.NewService(agentrelease.NewRepo(pool), agentReleaseReader))
+
 	// ADR-056 Phase 3 — wire two-factor authentication into the auth handler.
 	// TOTPFactor and WebAuthnFactor are stateless and shared across goroutines.
 	// The same siteDestAgeID (age X25519) used for SMTP credential encryption
@@ -2422,6 +2450,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		HIBPAgentH: hibpAgentH,
 		// m79 — vulnerability scanner: fleet rollup + per-site finding management.
 		VulnH: vulnH,
+		// Read-only agent-freshness dashboard: GET /agent/latest + GET /fleet/agents.
+		AgentReleaseH: agentReleaseH,
 		// M16 Phase B — hosted billing. Both nil unless WPMGR_HOSTED is
 		// enabled: this is the routes-contract 404-when-unhosted guarantee
 		// (the webhook path 404s the same way — ProcessWebhook would also

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
@@ -528,12 +529,18 @@ func toSiteInfo(s site.Site) update.SiteInfo {
 }
 
 func toUpdateComponent(typ string, c site.Component) update.Component {
-	out := update.Component{Type: typ, Slug: c.Slug, Version: c.Version}
+	out := update.Component{Type: typ, Slug: c.Slug, Name: c.Name, Version: c.Version}
 	// GH #211: a same-version advisory (new_version == the component's own
 	// installed Version) must never surface as UpdateAvailable, or planTasks
-	// would plan a doomed/no-op update task for it.
+	// would plan a doomed/no-op update task for it. The agent's own plugin is
+	// excluded for the same reason and a stronger one: it is never an
+	// actionable update target (see agentplugin), matched on its plugin-header
+	// name as well as its slug so a renamed plugin directory cannot slip past.
+	// The component itself still carries its installed version through, so
+	// from_version seeding is unaffected; only the pending signal is withheld.
 	if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" &&
-		!wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) {
+		!wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) &&
+		!agentplugin.IsComponent(c.Slug, c.Name) {
 		out.UpdateAvailable = true
 		out.NewVersion = c.AvailableUpdate.NewVersion
 	}

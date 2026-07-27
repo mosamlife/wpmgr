@@ -12,6 +12,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 )
 
@@ -241,6 +242,16 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 		return nil // already finished (retry/dup); nothing to do.
 	}
 
+	// Last line of defense before anything is sent to a site: a task targeting
+	// the agent's own plugin is never dispatched. validateItems refuses the
+	// target at the planning boundary, so a row can only reach here if it was
+	// created before that guard existed. This first pass matches the recognized
+	// slug forms and needs no site lookup; the inventory-aware pass below runs
+	// once the site has been resolved.
+	if task.TargetType == TargetPlugin && agentplugin.Is(task.TargetSlug) {
+		return w.refuseAgentSelfUpdate(ctx, task)
+	}
+
 	// Per-tenant parallelism guard: if too many of this tenant's tasks are
 	// already running, snooze and let River retry shortly. Best-effort (a small
 	// race window is acceptable; the queue sharding is the primary bound).
@@ -256,6 +267,15 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "site unresolved", err.Error())
 	}
 
+	// The guard above sees only a slug, which is the directory the agent's
+	// archive happened to be unpacked into. Now that the site's own inventory
+	// is in hand, re-check the target against it: the plugin-header name
+	// identifies the agent whatever its folder is called. This runs before
+	// MarkTaskRunning, so nothing has been sent to the site yet.
+	if targetsAgentPlugin(site.Components, task.TargetType, task.TargetSlug) {
+		return w.refuseAgentSelfUpdate(ctx, task)
+	}
+
 	running, err := w.repo.MarkTaskRunning(ctx, a.TenantID, a.TaskID)
 	if err != nil {
 		return err
@@ -269,6 +289,34 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 		return w.runDry(ctx, task, site.URL, item)
 	}
 	return w.runApply(ctx, task, site.URL, item)
+}
+
+// targetsAgentPlugin reports whether a task's target resolves, in the site's
+// OWN inventory, to the agent's plugin. It is the name-aware companion to the
+// slug-only pre-check: the inventory entry carries the plugin-header name,
+// which the agent's archive supplies and a rename of the plugin directory
+// cannot change. An entry the site does not list at all is not the agent.
+func targetsAgentPlugin(components []Component, targetType, targetSlug string) bool {
+	if targetType != TargetPlugin {
+		return false
+	}
+	for _, c := range components {
+		if c.Type == TargetPlugin && c.Slug == targetSlug && agentplugin.IsComponent(c.Slug, c.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// refuseAgentSelfUpdate finishes a task that names the agent as skipped, never
+// failed: the operator asked for something the control plane will not do, which
+// is not a site error.
+func (w *Worker) refuseAgentSelfUpdate(ctx context.Context, task Task) error {
+	w.logger.Warn("update task targets the agent's own plugin; refusing to dispatch",
+		slog.String("task_id", task.ID.String()),
+		slog.String("site_id", task.SiteID.String()),
+		slog.String("target_slug", task.TargetSlug))
+	return w.finish(ctx, task, TaskSkipped, task.FromVersion, "", "the site agent updates itself over its own signed channel", "")
 }
 
 // runDry asks the agent what WOULD change without mutating the site.

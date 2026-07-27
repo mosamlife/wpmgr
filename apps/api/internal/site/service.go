@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	agentpkg "github.com/mosamlife/wpmgr/apps/api/internal/agent"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
@@ -488,7 +489,23 @@ func sanitizeComponents(cs []Component, maxLen int) []Component {
 			Version: truncateRunes(c.Version, maxVersionLen),
 			Active:  c.Active,
 		}
-		if c.AvailableUpdate != nil {
+		// The agent's own plugin is never an actionable update target: applying
+		// a plugin update to it is an in-process self-overwrite whose rollback
+		// is structurally undeliverable, so the advisory is dropped here (the
+		// universal write chokepoint) and the operator can never select it. The
+		// COMPONENT itself is kept, with its installed version, so the agent
+		// stays visible in the inventory; the agent upgrades itself over the
+		// signed ADR-042 channel. The agent refuses the same target on its side
+		// as well (defense in depth, not redundancy).
+		//
+		// Identity is taken from the entry's plugin-header NAME as well as its
+		// slug: the slug is the directory the archive happened to be unpacked
+		// into (a host uploader or an operator can leave it as
+		// "wpmgr-agent-0.61.88"), while the header travels inside the archive.
+		// This is the fleet's only guard until every site has self-updated past
+		// the release that adds the agent's own refusal, so it must not depend
+		// on a folder name we do not control.
+		if c.AvailableUpdate != nil && !agentplugin.IsComponent(comp.Slug, comp.Name) {
 			nv := strings.TrimSpace(c.AvailableUpdate.NewVersion)
 			// GH #211: a WordPress update transient can report new_version ==
 			// the already-installed Version (observed with Kadence, e.g.

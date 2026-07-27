@@ -5238,6 +5238,24 @@ type AgentIngestRucssUnprocessableEntity Error
 
 func (*AgentIngestRucssUnprocessableEntity) agentIngestRucssRes() {}
 
+// Ref: #/components/schemas/AgentLatestVersion
+type AgentLatestVersion struct {
+	// The currently published WPMgr agent version, or "unknown" when it cannot be determined right now.
+	Version string `json:"version"`
+}
+
+// GetVersion returns the value of Version.
+func (s *AgentLatestVersion) GetVersion() string {
+	return s.Version
+}
+
+// SetVersion sets the value of Version.
+func (s *AgentLatestVersion) SetVersion(val string) {
+	s.Version = val
+}
+
+func (*AgentLatestVersion) getAgentLatestVersionRes() {}
+
 // Ref: #/components/schemas/AgentLoginEventBatch
 type AgentLoginEventBatch struct {
 	LoginEvents []AgentLoginEventBatchLoginEventsItem `json:"login_events"`
@@ -6831,10 +6849,10 @@ type AlertConfig struct {
 	VulnIncludeInDigest bool `json:"vuln_include_in_digest"`
 	// Whether the application-health alert kind (GH #291 Phase 3) is
 	// allowed to dispatch for this tenant, independent of `enabled`
-	// (the reachability channel) — a tenant that already has downtime
+	// (the reachability channel) - a tenant that already has downtime
 	// alerts on does not silently start receiving app-health alerts
 	// too. Defaults to false on any deployment that already had sites
-	// when app-health alerting shipped, and true on a fresh install —
+	// when app-health alerting shipped, and true on a fresh install -
 	// decided once, deterministically, by migration (never re-decided
 	// at runtime).
 	AppAlertsEnabled bool `json:"app_alerts_enabled"`
@@ -6951,7 +6969,7 @@ type AlertConfigUpdate struct {
 	VulnIncludeInDigest OptBool `json:"vuln_include_in_digest"`
 	// Omitted preserves the tenant's currently-stored value (or, for a
 	// tenant with no alert config saved yet, the deployment's rollout
-	// default — see AlertConfig.app_alerts_enabled).
+	// default - see AlertConfig.app_alerts_enabled).
 	AppAlertsEnabled OptBool `json:"app_alerts_enabled"`
 }
 
@@ -18154,6 +18172,199 @@ type FinishWebAuthnEnrollmentUnprocessableEntity Error
 
 func (*FinishWebAuthnEnrollmentUnprocessableEntity) finishWebAuthnEnrollmentRes() {}
 
+// Ref: #/components/schemas/FleetAgentCounts
+type FleetAgentCounts struct {
+	Current    int `json:"current"`
+	Outdated   int `json:"outdated"`
+	Unknown    int `json:"unknown"`
+	Ineligible int `json:"ineligible"`
+}
+
+// GetCurrent returns the value of Current.
+func (s *FleetAgentCounts) GetCurrent() int {
+	return s.Current
+}
+
+// GetOutdated returns the value of Outdated.
+func (s *FleetAgentCounts) GetOutdated() int {
+	return s.Outdated
+}
+
+// GetUnknown returns the value of Unknown.
+func (s *FleetAgentCounts) GetUnknown() int {
+	return s.Unknown
+}
+
+// GetIneligible returns the value of Ineligible.
+func (s *FleetAgentCounts) GetIneligible() int {
+	return s.Ineligible
+}
+
+// SetCurrent sets the value of Current.
+func (s *FleetAgentCounts) SetCurrent(val int) {
+	s.Current = val
+}
+
+// SetOutdated sets the value of Outdated.
+func (s *FleetAgentCounts) SetOutdated(val int) {
+	s.Outdated = val
+}
+
+// SetUnknown sets the value of Unknown.
+func (s *FleetAgentCounts) SetUnknown(val int) {
+	s.Unknown = val
+}
+
+// SetIneligible sets the value of Ineligible.
+func (s *FleetAgentCounts) SetIneligible(val int) {
+	s.Ineligible = val
+}
+
+// Ref: #/components/schemas/FleetAgentSite
+type FleetAgentSite struct {
+	SiteID   uuid.UUID `json:"site_id"`
+	SiteName string    `json:"site_name"`
+	// The site's last-reported agent_version, verbatim. Empty when the agent has never reported one;
+	// distinct from status="unknown", which also covers a malformed version string.
+	AgentVersion string               `json:"agent_version"`
+	Status       FleetAgentSiteStatus `json:"status"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *FleetAgentSite) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetSiteName returns the value of SiteName.
+func (s *FleetAgentSite) GetSiteName() string {
+	return s.SiteName
+}
+
+// GetAgentVersion returns the value of AgentVersion.
+func (s *FleetAgentSite) GetAgentVersion() string {
+	return s.AgentVersion
+}
+
+// GetStatus returns the value of Status.
+func (s *FleetAgentSite) GetStatus() FleetAgentSiteStatus {
+	return s.Status
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *FleetAgentSite) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetSiteName sets the value of SiteName.
+func (s *FleetAgentSite) SetSiteName(val string) {
+	s.SiteName = val
+}
+
+// SetAgentVersion sets the value of AgentVersion.
+func (s *FleetAgentSite) SetAgentVersion(val string) {
+	s.AgentVersion = val
+}
+
+// SetStatus sets the value of Status.
+func (s *FleetAgentSite) SetStatus(val FleetAgentSiteStatus) {
+	s.Status = val
+}
+
+type FleetAgentSiteStatus string
+
+const (
+	FleetAgentSiteStatusCurrent    FleetAgentSiteStatus = "current"
+	FleetAgentSiteStatusOutdated   FleetAgentSiteStatus = "outdated"
+	FleetAgentSiteStatusUnknown    FleetAgentSiteStatus = "unknown"
+	FleetAgentSiteStatusIneligible FleetAgentSiteStatus = "ineligible"
+)
+
+// AllValues returns all FleetAgentSiteStatus values.
+func (FleetAgentSiteStatus) AllValues() []FleetAgentSiteStatus {
+	return []FleetAgentSiteStatus{
+		FleetAgentSiteStatusCurrent,
+		FleetAgentSiteStatusOutdated,
+		FleetAgentSiteStatusUnknown,
+		FleetAgentSiteStatusIneligible,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s FleetAgentSiteStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case FleetAgentSiteStatusCurrent:
+		return []byte(s), nil
+	case FleetAgentSiteStatusOutdated:
+		return []byte(s), nil
+	case FleetAgentSiteStatusUnknown:
+		return []byte(s), nil
+	case FleetAgentSiteStatusIneligible:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *FleetAgentSiteStatus) UnmarshalText(data []byte) error {
+	switch FleetAgentSiteStatus(data) {
+	case FleetAgentSiteStatusCurrent:
+		*s = FleetAgentSiteStatusCurrent
+		return nil
+	case FleetAgentSiteStatusOutdated:
+		*s = FleetAgentSiteStatusOutdated
+		return nil
+	case FleetAgentSiteStatusUnknown:
+		*s = FleetAgentSiteStatusUnknown
+		return nil
+	case FleetAgentSiteStatusIneligible:
+		*s = FleetAgentSiteStatusIneligible
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/FleetAgentVersions
+type FleetAgentVersions struct {
+	// The currently published agent version, or "unknown" when it cannot be determined right now.
+	LatestVersion string           `json:"latest_version"`
+	Counts        FleetAgentCounts `json:"counts"`
+	Sites         []FleetAgentSite `json:"sites"`
+}
+
+// GetLatestVersion returns the value of LatestVersion.
+func (s *FleetAgentVersions) GetLatestVersion() string {
+	return s.LatestVersion
+}
+
+// GetCounts returns the value of Counts.
+func (s *FleetAgentVersions) GetCounts() FleetAgentCounts {
+	return s.Counts
+}
+
+// GetSites returns the value of Sites.
+func (s *FleetAgentVersions) GetSites() []FleetAgentSite {
+	return s.Sites
+}
+
+// SetLatestVersion sets the value of LatestVersion.
+func (s *FleetAgentVersions) SetLatestVersion(val string) {
+	s.LatestVersion = val
+}
+
+// SetCounts sets the value of Counts.
+func (s *FleetAgentVersions) SetCounts(val FleetAgentCounts) {
+	s.Counts = val
+}
+
+// SetSites sets the value of Sites.
+func (s *FleetAgentVersions) SetSites(val []FleetAgentSite) {
+	s.Sites = val
+}
+
+func (*FleetAgentVersions) getFleetAgentVersionsRes() {}
+
 // Ref: #/components/schemas/FleetIncidentDetail
 type FleetIncidentDetail struct {
 	ID               uuid.UUID                       `json:"id"`
@@ -19904,6 +20115,14 @@ type GetAdminVulnFeedStatusUnauthorized Error
 
 func (*GetAdminVulnFeedStatusUnauthorized) getAdminVulnFeedStatusRes() {}
 
+type GetAgentLatestVersionForbidden Error
+
+func (*GetAgentLatestVersionForbidden) getAgentLatestVersionRes() {}
+
+type GetAgentLatestVersionUnauthorized Error
+
+func (*GetAgentLatestVersionUnauthorized) getAgentLatestVersionRes() {}
+
 type GetBackupEnvironmentNotFound Error
 
 func (*GetBackupEnvironmentNotFound) getBackupEnvironmentRes() {}
@@ -20043,6 +20262,14 @@ func (*GetEmailNotifySettingsForbidden) getEmailNotifySettingsRes() {}
 type GetEmailNotifySettingsUnauthorized Error
 
 func (*GetEmailNotifySettingsUnauthorized) getEmailNotifySettingsRes() {}
+
+type GetFleetAgentVersionsForbidden Error
+
+func (*GetFleetAgentVersionsForbidden) getFleetAgentVersionsRes() {}
+
+type GetFleetAgentVersionsUnauthorized Error
+
+func (*GetFleetAgentVersionsUnauthorized) getFleetAgentVersionsRes() {}
 
 // Fleet DB health aggregate (shape matches FleetDbHealth Go model).
 type GetFleetDbHealthOK struct {

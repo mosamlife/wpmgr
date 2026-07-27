@@ -890,6 +890,75 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSit
 	return items, nil
 }
 
+const listSitesAgentVersions = `-- name: ListSitesAgentVersions :many
+SELECT
+    s.id,
+    s.name,
+    s.agent_version,
+    COALESCE((
+        SELECT jsonb_agg(jsonb_build_object('slug', p ->> 'slug', 'name', p ->> 'name'))
+        FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(s.components -> 'plugins') = 'array'
+                 THEN s.components -> 'plugins'
+                 ELSE '[]'::jsonb
+            END
+        ) AS p
+    ), '[]'::jsonb)::jsonb AS plugin_identities
+FROM sites s
+WHERE s.tenant_id = $1
+  AND s.connection_state <> 'archived'
+ORDER BY s.name
+`
+
+type ListSitesAgentVersionsRow struct {
+	ID               uuid.UUID `json:"id"`
+	Name             string    `json:"name"`
+	AgentVersion     string    `json:"agent_version"`
+	PluginIdentities []byte    `json:"plugin_identities"`
+}
+
+// Tenant-scoped site_id/name/agent_version rollup for the read-only agent
+// fleet-version dashboard (internal/agentrelease): "how many of my sites are
+// running an outdated agent?". Excludes archived sites, matching the
+// ListSites/ListAllSiteIDs default (ADR-041). Classification against the
+// currently published version happens in Go (internal/agentrelease.Classify);
+// this query only returns the raw per-site facts.
+//
+// plugin_identities is a narrow {slug,name} projection of the site's plugin
+// inventory, carrying just enough for Go to recognize which build of the agent
+// the site runs (internal/agentplugin.DistributionOf): the plugin-directory
+// build cannot self-update, so its sites are classified ineligible instead of
+// being reported outdated forever against a channel they cannot consume.
+// The projection is deliberate: shipping the whole components document would
+// move megabytes per dashboard load on a large fleet, and matching the agent's
+// identity in SQL would duplicate literals that must live in exactly one place.
+// The CASE guards a components document whose "plugins" key is absent or is not
+// an array, which jsonb_array_elements would otherwise error on.
+func (q *Queries) ListSitesAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]ListSitesAgentVersionsRow, error) {
+	rows, err := q.db.Query(ctx, listSitesAgentVersions, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSitesAgentVersionsRow
+	for rows.Next() {
+		var i ListSitesAgentVersionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.AgentVersion,
+			&i.PluginIdentities,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSiteUnreachable = `-- name: MarkSiteUnreachable :execrows
 UPDATE sites
 SET health_status = 'unreachable', updated_at = now()

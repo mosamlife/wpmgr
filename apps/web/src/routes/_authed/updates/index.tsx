@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StatusChip } from "@/components/status/status-chip";
 import type { StatusTone } from "@/components/status/status-dot";
 import { useUpdateRuns } from "@/features/updates/use-updates";
+import { AgentFleetSummaryCard } from "@/features/fleet/AgentFleetSummaryCard";
 import { relativeTime } from "@/lib/utils";
 import type { UpdateRun } from "@wpmgr/api";
 
@@ -44,6 +45,8 @@ function UpdatesPage() {
         title="Update runs"
         subline="Start a run from the Sites page by selecting sites or filtering by tag."
       />
+
+      <AgentFleetSummaryCard />
 
       {isPending ? (
         <p role="status" className="text-[var(--color-muted-foreground)]">

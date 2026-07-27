@@ -15,6 +15,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -132,6 +133,11 @@ type Deps struct {
 	// GET /api/v1/vulnerabilities and per-site finding management under
 	// /api/v1/sites/{siteId}/vulnerabilities/... nil ⇒ routes not mounted.
 	VulnH *vuln.Handler
+	// AgentReleaseH serves the read-only agent-freshness dashboard routes:
+	// GET /api/v1/agent/latest (currently published agent version) and
+	// GET /api/v1/fleet/agents (tenant-scoped per-site agent-version
+	// rollup + counts). nil ⇒ routes not mounted.
+	AgentReleaseH *agentrelease.Handler
 	// m16 — Restore Runs + Logs. RestoreRunH serves the per-site restore
 	// history and the by-id detail + phase-log endpoints.
 	RestoreRunH *backup.RestoreRunHandler
@@ -499,6 +505,11 @@ func New(deps Deps) *Server {
 	// m79 — vulnerability scanner: fleet rollup + per-site finding management.
 	if deps.VulnH != nil {
 		deps.VulnH.Register(v1)
+	}
+	// Read-only agent-freshness dashboard: GET /agent/latest (published
+	// version) + GET /fleet/agents (tenant-scoped per-site rollup).
+	if deps.AgentReleaseH != nil {
+		deps.AgentReleaseH.Register(v1)
 	}
 
 	// m82 — P1 read-only File Manager (list dir / read content / presigned download).

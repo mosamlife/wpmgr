@@ -1163,6 +1163,17 @@ type Handler interface {
 	//
 	// GET /api/v1/admin/vuln-feed/status
 	GetAdminVulnFeedStatus(ctx context.Context) (GetAdminVulnFeedStatusRes, error)
+	// GetAgentLatestVersion implements getAgentLatestVersion operation.
+	//
+	// Reads the published agent-releases/latest.json pointer manifest (the
+	// same object internal/agent/update_handler.go serves to agents)
+	// through a cached, best-effort reader. version is "unknown" when no
+	// release has ever been published, object storage is not configured,
+	// or the manifest cannot currently be read; this never surfaces as an
+	// error.
+	//
+	// GET /api/v1/agent/latest
+	GetAgentLatestVersion(ctx context.Context) (GetAgentLatestVersionRes, error)
 	// GetAlertConfig implements getAlertConfig operation.
 	//
 	// Returns the tenant's downtime/recovery alert channel: email recipients,
@@ -1309,6 +1320,26 @@ type Handler interface {
 	//
 	// GET /api/v1/email/notify-settings
 	GetEmailNotifySettings(ctx context.Context) (GetEmailNotifySettingsRes, error)
+	// GetFleetAgentVersions implements getFleetAgentVersions operation.
+	//
+	// Per-site {site_id, site_name, agent_version, status} plus fleet-wide
+	// counts, classified against the currently published agent version.
+	// status is one of current | outdated | unknown | ineligible.
+	// "unknown" covers a site that has never reported agent_version, a
+	// malformed/unparseable version on either side of the comparison, or a
+	// currently-unreadable published-version manifest; never a false
+	// "outdated". "ineligible" is a site that cannot self-update at all:
+	// today that is the public plugin-directory build, which ships without
+	// the self-updater and is upgraded by the plugin directory instead.
+	// Such a site is identified from its own plugin inventory and is
+	// reported "ineligible" whatever its version, because comparing it
+	// against a release channel it cannot consume would be a permanent
+	// false "outdated". Org-scoped only
+	// (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
+	// a site-scoped collaborator has no cross-site rollup.
+	//
+	// GET /api/v1/fleet/agents
+	GetFleetAgentVersions(ctx context.Context) (GetFleetAgentVersionsRes, error)
 	// GetFleetBackupHealth implements getFleetBackupHealth operation.
 	//
 	// Returns one health item per requested site with a server-derived status:
@@ -1562,7 +1593,7 @@ type Handler interface {
 	// Returns the per-site application-health settings (GH #291 Phase 3):
 	// the B3 override path for the application-health probe, and the
 	// per-site app-health alerting opt-out. Every site has these settings
-	// (empty path / alerts not disabled are the defaults) — this never
+	// (empty path / alerts not disabled are the defaults) - this never
 	// auto-creates a row, it reads the `sites` columns directly.
 	//
 	// GET /api/v1/sites/{siteId}/app-health-settings
@@ -2447,7 +2478,7 @@ type Handler interface {
 	//
 	// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
 	// Phase 3). `app_probe_path` must be a site-relative path (starts with
-	// `/`, no scheme, no host, no `..` traversal) — validation failures
+	// `/`, no scheme, no host, no `..` traversal) - validation failures
 	// return 422. An empty `app_probe_path` clears the override back to
 	// auto-detect. `app_alerts_disabled` excludes the site from app-health
 	// alerting entirely (both the individual alert and the fleet circuit

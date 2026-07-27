@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
@@ -44,8 +45,10 @@ const updateManifestKey = "agent-releases/latest.json"
 const updatePackagePrefix = "agent-releases/"
 
 // expectedAgentSlug pins the plugin this channel serves. A latest.json with any
-// other slug is rejected (defense against a mis-uploaded manifest).
-const expectedAgentSlug = "wpmgr-agent"
+// other slug is rejected (defense against a mis-uploaded manifest). The slug
+// itself lives in agentplugin, the one place the agent's own plugin identity is
+// defined.
+const expectedAgentSlug = agentplugin.SlugSelfHosted
 
 // maxLatestJSONBytes caps how much of latest.json we read (it is tiny).
 const maxLatestJSONBytes = 64 << 10
@@ -232,7 +235,7 @@ func (h *UpdateHandler) readLatest(ctx context.Context) (releaseManifest, error)
 	// agent-releases/<version>/wpmgr-agent.zip, never any other object that
 	// happens to share the agent-releases/ prefix. A latest.json naming a
 	// different in-prefix key (stale zip, latest.json itself, …) is rejected.
-	if rel.PackageObjectKey != updatePackagePrefix+rel.Version+"/wpmgr-agent.zip" {
+	if rel.PackageObjectKey != updatePackagePrefix+rel.Version+"/"+expectedAgentSlug+".zip" {
 		return releaseManifest{}, errInvalidManifest
 	}
 	if rel.MinVersion == "" {
