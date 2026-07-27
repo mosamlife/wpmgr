@@ -251,6 +251,18 @@ type UptimeConfig struct {
 	// B3 override - each gets its own timeout, not a combined one). Default
 	// 10s. Env: WPMGR_UPTIME_APP_PROBE_TIMEOUT.
 	AppProbeTimeout time.Duration `koanf:"app_probe_timeout"`
+
+	// AppAlertThreshold (GH #291 Phase 3) is the number of consecutive
+	// CONCLUSIVE-false app-probe verdicts that fires an app-down alert.
+	// Default 5 (~25 minutes at the documented 300s app-probe cadence).
+	// Env: WPMGR_UPTIME_APP_ALERT_THRESHOLD.
+	AppAlertThreshold int `koanf:"app_alert_threshold"`
+	// AppAlertBreakerRatio (GH #291 Phase 3) is the fleet circuit breaker's
+	// trip ratio: when MORE than this fraction of a tenant's alert-eligible
+	// sites are simultaneously app-down, individual per-site alerts collapse
+	// into one aggregate notification. Default 0.25 (25%).
+	// Env: WPMGR_UPTIME_APP_ALERT_BREAKER_RATIO.
+	AppAlertBreakerRatio float64 `koanf:"app_alert_breaker_ratio"`
 }
 
 // S3Config holds the S3-compatible object-storage configuration (ADR-010).
@@ -585,6 +597,8 @@ func defaults() map[string]any {
 		"uptime.app_probe_enabled":          true,
 		"uptime.app_probe_interval":         "300s",
 		"uptime.app_probe_timeout":          "10s",
+		"uptime.app_alert_threshold":        5,
+		"uptime.app_alert_breaker_ratio":    0.25,
 		"river.media_schema":                "media_encoder",
 		"autologin.require_2fa_step_up":     false,
 		"conn.degrade_after":                "300s",

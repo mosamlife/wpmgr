@@ -149,6 +149,8 @@ export function usePutAlertConfig(): UseMutationResult<
             body.email_recipients ?? previous.email_recipients,
           webhook_url: body.webhook_url ?? previous.webhook_url,
           notify_security: body.notify_security ?? previous.notify_security,
+          app_alerts_enabled:
+            body.app_alerts_enabled ?? previous.app_alerts_enabled,
           notify_vulns: body.notify_vulns ?? previous.notify_vulns,
           vuln_min_severity:
             body.vuln_min_severity ?? previous.vuln_min_severity,

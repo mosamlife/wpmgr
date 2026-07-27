@@ -119,7 +119,7 @@ type WebhookPoster interface {
 
 // WebhookPayload is the JSON body POSTed to an alert webhook.
 type WebhookPayload struct {
-	Event      string    `json:"event"` // "uptime.down" | "uptime.recovery"
+	Event      string    `json:"event"` // "uptime.down" | "uptime.recovery" | "uptime.app_down" | "uptime.app_recovery" | "uptime.app_down_aggregate" | "uptime.app_down_aggregate_update" | "uptime.app_recovery_aggregate"
 	TenantID   string    `json:"tenant_id"`
 	SiteID     string    `json:"site_id"`
 	SiteURL    string    `json:"site_url"`
@@ -127,6 +127,14 @@ type WebhookPayload struct {
 	HTTPStatus int       `json:"http_status,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	FiredAt    time.Time `json:"fired_at"`
+	// AppDownCount / AppEligibleCount / AppSuppressedSites (m108, GH #291
+	// Phase 3) are populated ONLY on the fleet circuit-breaker's aggregate
+	// events (uptime.app_down_aggregate / uptime.app_recovery_aggregate) -
+	// see Dispatcher.FireAppAggregate. SiteID/SiteURL/SiteName are empty on
+	// those events: the aggregate is tenant-wide, not attributable to one site.
+	AppDownCount       int      `json:"app_down_count,omitempty"`
+	AppEligibleCount   int      `json:"app_eligible_count,omitempty"`
+	AppSuppressedSites []string `json:"app_suppressed_sites,omitempty"`
 }
 
 // SSRFWebhookPoster posts the signed payload over the SSRF-hardened client (the

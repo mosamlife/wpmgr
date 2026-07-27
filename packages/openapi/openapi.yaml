@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.92
+  version: 0.61.93
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -4328,6 +4328,77 @@ paths:
             Validation failed (`default_wp_user_login_too_long`,
             `default_wp_user_login_invalid`, or an unknown field such as
             `allowed_wp_roles`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/app-health-settings:
+    get:
+      operationId: getSiteAppHealthSettings
+      summary: Get a site's application-health settings
+      description: |
+        Returns the per-site application-health settings (GH #291 Phase 3):
+        the B3 override path for the application-health probe, and the
+        per-site app-health alerting opt-out. Every site has these settings
+        (empty path / alerts not disabled are the defaults) - this never
+        auto-creates a row, it reads the `sites` columns directly.
+      tags: [uptime]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Current app-health settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppHealthSettings"
+        "404":
+          description: |
+            Site not found, or `siteId` does not belong to the caller's
+            tenant (`site_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      operationId: putSiteAppHealthSettings
+      summary: Save a site's application-health settings
+      description: |
+        Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
+        Phase 3). `app_probe_path` must be a site-relative path (starts with
+        `/`, no scheme, no host, no `..` traversal) - validation failures
+        return 422. An empty `app_probe_path` clears the override back to
+        auto-detect. `app_alerts_disabled` excludes the site from app-health
+        alerting entirely (both the individual alert and the fleet circuit
+        breaker's eligible-site count) while the probe keeps running.
+      tags: [uptime]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppHealthSettingsUpdate"
+      responses:
+        "200":
+          description: Saved app-health settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppHealthSettings"
+        "404":
+          description: |
+            Site not found, or `siteId` does not belong to the caller's
+            tenant (`site_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: |
+            Validation failed (`app_probe_path_invalid`,
+            `app_probe_path_too_long`).
           content:
             application/json:
               schema:
@@ -15355,6 +15426,7 @@ components:
           notify_vulns,
           vuln_min_severity,
           vuln_include_in_digest,
+          app_alerts_enabled,
         ]
       properties:
         email_recipients:
@@ -15390,6 +15462,17 @@ components:
           description: |
             Whether open vulnerabilities appear in the periodic email digest
             (see EmailNotifySettings). Default true.
+        app_alerts_enabled:
+          type: boolean
+          description: |
+            Whether the application-health alert kind (GH #291 Phase 3) is
+            allowed to dispatch for this tenant, independent of `enabled`
+            (the reachability channel) - a tenant that already has downtime
+            alerts on does not silently start receiving app-health alerts
+            too. Defaults to false on any deployment that already had sites
+            when app-health alerting shipped, and true on a fresh install -
+            decided once, deterministically, by migration (never re-decided
+            at runtime).
     AlertConfigUpdate:
       type: object
       description: Create or update the tenant's alert channel.
@@ -15422,6 +15505,50 @@ components:
         vuln_include_in_digest:
           type: boolean
           description: Omitted preserves the tenant's currently-stored value.
+        app_alerts_enabled:
+          type: boolean
+          description: |
+            Omitted preserves the tenant's currently-stored value (or, for a
+            tenant with no alert config saved yet, the deployment's rollout
+            default - see AlertConfig.app_alerts_enabled).
+    AppHealthSettings:
+      type: object
+      description: |
+        A site's application-health settings (GH #291 Phase 3): the B3
+        override path for the application-health probe, and a per-site
+        switch to disable app-health ALERTING for this site without
+        disabling the probe itself (the dashboard stays accurate either
+        way).
+      required: [app_probe_path, app_alerts_disabled]
+      properties:
+        app_probe_path:
+          type: string
+          maxLength: 512
+          description: |
+            A site-relative path (must start with `/`; no scheme, no host,
+            no `..` traversal) the application-health probe requests instead
+            of auto-detecting `/wp-json/` (falling back to
+            `/?rest_route=/`). Empty means auto-detect. Set this when the
+            default probe reports `unknown` for this site (e.g. a WAF blocks
+            the default REST route but a different health-check path is
+            reachable).
+        app_alerts_disabled:
+          type: boolean
+          description: |
+            When true, this site is excluded from app-health alerting
+            entirely (both the individual per-site alert and the fleet
+            circuit breaker's eligible-site count) while the probe keeps
+            running and the dashboard stays accurate.
+    AppHealthSettingsUpdate:
+      type: object
+      description: Save a site's application-health settings.
+      required: [app_probe_path, app_alerts_disabled]
+      properties:
+        app_probe_path:
+          type: string
+          maxLength: 512
+        app_alerts_disabled:
+          type: boolean
     AutologinCreate:
       type: object
       description: |

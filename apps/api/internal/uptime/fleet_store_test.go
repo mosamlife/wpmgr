@@ -31,7 +31,20 @@ func (r *stubRepo) GetAlertState(_ context.Context, _ uuid.UUID) (AlertState, bo
 	panic("not called")
 }
 func (r *stubRepo) UpsertAlertState(_ context.Context, _ AlertState) error { panic("not called") }
-func (r *stubRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time, _ int, _ string) (Transition, error) {
+func (r *stubRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time, _ int, _ string,
+	_ bool, _ *bool, _ string, _ int) (Transition, AppTransition, error) {
+	panic("not called")
+}
+func (r *stubRepo) GetTenantAppAlertRatio(_ context.Context, _ uuid.UUID) (int, int, error) {
+	panic("not called")
+}
+func (r *stubRepo) TransitionAppAlertBreaker(_ context.Context, _ uuid.UUID, _ bool, _ int, _ time.Time) (AppBreakerTransition, error) {
+	panic("not called")
+}
+func (r *stubRepo) ListTrippedAppAlertBreakerTenants(_ context.Context) ([]uuid.UUID, error) {
+	panic("not called")
+}
+func (r *stubRepo) ListTenantAppDownSites(_ context.Context, _ uuid.UUID, _ int) ([]string, error) {
 	panic("not called")
 }
 func (r *stubRepo) ListAlertConfigsAllTenants(_ context.Context) ([]AlertConfig, error) {
@@ -41,6 +54,15 @@ func (r *stubRepo) GetAlertConfig(_ context.Context, _ uuid.UUID) (AlertConfig, 
 	panic("not called")
 }
 func (r *stubRepo) UpsertAlertConfig(_ context.Context, _ AlertConfig) (AlertConfig, error) {
+	panic("not called")
+}
+func (r *stubRepo) GetAppAlertRolloutDefault(_ context.Context) (bool, error) {
+	panic("not called")
+}
+func (r *stubRepo) GetAppHealthSettings(_ context.Context, _, _ uuid.UUID) (AppHealthSettings, bool, error) {
+	panic("not called")
+}
+func (r *stubRepo) UpdateAppHealthSettings(_ context.Context, _, _ uuid.UUID, _ string, _ bool) (AppHealthSettings, bool, error) {
 	panic("not called")
 }
 func (r *stubRepo) GetFleetSiteInfo(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]FleetSiteInfo, error) {

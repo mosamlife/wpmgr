@@ -11,6 +11,7 @@ import { useSaveDefaultLoginUser } from "@/features/sites/use-autologin-policy";
 import { LoginBrandPanel } from "@/features/sites/login-brand-panel";
 import { useSite } from "@/features/sites/use-sites";
 import { useMe, canOperate } from "@/features/auth/use-auth";
+import { AppHealthAlertingNotice } from "@/features/monitoring/app-health-alerting-notice";
 import type { Site } from "@wpmgr/api";
 
 // `/sites/$siteId/settings` — Identity + Tags + Components + Access.
@@ -169,6 +170,10 @@ function SettingsCard({
           Customise the logo, logo link, and message shown on wp-login.php.
         </p>
         <LoginBrandPanel siteId={site.id} />
+      </div>
+      <hr className="border-border" aria-hidden="true" />
+      <div className="p-6">
+        <AppHealthAlertingNotice scope="site" />
       </div>
     </div>
   );

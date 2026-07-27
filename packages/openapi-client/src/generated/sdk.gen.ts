@@ -493,6 +493,9 @@ import type {
   GetScheduleRunData,
   GetScheduleRunErrors,
   GetScheduleRunResponses,
+  GetSiteAppHealthSettingsData,
+  GetSiteAppHealthSettingsErrors,
+  GetSiteAppHealthSettingsResponses,
   GetSiteAutologinPolicyData,
   GetSiteAutologinPolicyErrors,
   GetSiteAutologinPolicyResponses,
@@ -776,6 +779,9 @@ import type {
   PutPerfConfigData,
   PutPerfConfigErrors,
   PutPerfConfigResponses,
+  PutSiteAppHealthSettingsData,
+  PutSiteAppHealthSettingsErrors,
+  PutSiteAppHealthSettingsResponses,
   PutSiteAutologinPolicyData,
   PutSiteAutologinPolicyErrors,
   PutSiteAutologinPolicyResponses,
@@ -3485,6 +3491,53 @@ export const putSiteAutologinPolicy = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/sites/{siteId}/autologin-policy",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Get a site's application-health settings
+ *
+ * Returns the per-site application-health settings (GH #291 Phase 3):
+ * the B3 override path for the application-health probe, and the
+ * per-site app-health alerting opt-out. Every site has these settings
+ * (empty path / alerts not disabled are the defaults) — this never
+ * auto-creates a row, it reads the `sites` columns directly.
+ *
+ */
+export const getSiteAppHealthSettings = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteAppHealthSettingsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteAppHealthSettingsResponses,
+    GetSiteAppHealthSettingsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/app-health-settings", ...options });
+
+/**
+ * Save a site's application-health settings
+ *
+ * Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
+ * Phase 3). `app_probe_path` must be a site-relative path (starts with
+ * `/`, no scheme, no host, no `..` traversal) — validation failures
+ * return 422. An empty `app_probe_path` clears the override back to
+ * auto-detect. `app_alerts_disabled` excludes the site from app-health
+ * alerting entirely (both the individual alert and the fleet circuit
+ * breaker's eligible-site count) while the probe keeps running.
+ *
+ */
+export const putSiteAppHealthSettings = <ThrowOnError extends boolean = false>(
+  options: Options<PutSiteAppHealthSettingsData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    PutSiteAppHealthSettingsResponses,
+    PutSiteAppHealthSettingsErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/app-health-settings",
     ...options,
     headers: {
       "Content-Type": "application/json",

@@ -8,6 +8,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.93] - 2026-07-27
+
+### Added
+
+- Alerts for a site whose WordPress has failed while its cache keeps serving visitors (GH #291, completing the work started in 0.61.90). This is deliberately off by default on any existing install, because switching it on may surface sites that have been quietly broken for a while, and nobody should be woken by an upgrade. A one-time prompt in the dashboard offers to turn it on and explains what to expect, and there is a permanent switch under alert settings.
+- An alert only fires on a genuine WordPress failure that has persisted for several checks in a row, and only for a site WPMgr has seen working at least once, so a site whose health check is simply blocked can never raise a false alarm. Uncertain results, such as a cached response or a site in maintenance during an update, are reported as unknown and never alert.
+- If a large share of one organisation's sites report a failure at the same time, WPMgr sends a single summary naming every affected site instead of one alert per site, since a fleet-wide reading is far more likely to be a shared host problem or a monitoring fault than many unrelated sites breaking at once. If the situation gets materially worse it sends an update, and it sends a single recovery notice at the end.
+- A custom health-check path can be set per site for installs where the default check cannot reach WordPress, and alerts can be muted for one site without turning off its monitoring.
+
 ## [0.61.92] - 2026-07-27
 
 ### Added

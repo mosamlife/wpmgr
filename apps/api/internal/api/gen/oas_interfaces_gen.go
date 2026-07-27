@@ -573,6 +573,10 @@ type GetScheduleRunRes interface {
 	getScheduleRunRes()
 }
 
+type GetSiteAppHealthSettingsRes interface {
+	getSiteAppHealthSettingsRes()
+}
+
 type GetSiteAutologinPolicyRes interface {
 	getSiteAutologinPolicyRes()
 }
@@ -891,6 +895,10 @@ type PutOrgEmailWebhookConfigRes interface {
 
 type PutPerfConfigRes interface {
 	putPerfConfigRes()
+}
+
+type PutSiteAppHealthSettingsRes interface {
+	putSiteAppHealthSettingsRes()
 }
 
 type PutSiteAutologinPolicyRes interface {

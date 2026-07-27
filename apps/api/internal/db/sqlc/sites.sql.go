@@ -24,7 +24,7 @@ SET agent_public_key = $3,
     php_version = $5,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
 `
 
 type AttachAgentToSiteParams struct {
@@ -78,6 +78,7 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -87,7 +88,7 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 const createSite = `-- name: CreateSite :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
 `
 
 type CreateSiteParams struct {
@@ -144,6 +145,7 @@ func (q *Queries) CreateSite(ctx context.Context, arg CreateSiteParams) (Site, e
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -154,7 +156,7 @@ const createSiteForEnroll = `-- name: CreateSiteForEnroll :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
                    agent_public_key, enrolled_at, last_seen_at, health_status, tags)
 VALUES ($1, $2, $3, 'active', $4, $5, $6, now(), now(), 'healthy', $7)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
 `
 
 type CreateSiteForEnrollParams struct {
@@ -211,6 +213,7 @@ func (q *Queries) CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnro
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -236,7 +239,7 @@ func (q *Queries) DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, 
 }
 
 const getSite = `-- name: GetSite :one
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -285,6 +288,7 @@ type GetSiteRow struct {
 	MissedHeartbeats      int32              `json:"missed_heartbeats"`
 	ClientID              pgtype.UUID        `json:"client_id"`
 	AppProbePath          *string            `json:"app_probe_path"`
+	AppAlertsDisabled     bool               `json:"app_alerts_disabled"`
 	CreatedAt             time.Time          `json:"created_at"`
 	UpdatedAt             time.Time          `json:"updated_at"`
 	PageCacheEnabled      bool               `json:"page_cache_enabled"`
@@ -335,6 +339,7 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, e
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PageCacheEnabled,
@@ -343,9 +348,33 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, e
 	return i, err
 }
 
+const getSiteAppHealthSettings = `-- name: GetSiteAppHealthSettings :one
+SELECT app_probe_path, app_alerts_disabled FROM sites
+WHERE id = $1 AND tenant_id = $2
+`
+
+type GetSiteAppHealthSettingsParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+type GetSiteAppHealthSettingsRow struct {
+	AppProbePath      *string `json:"app_probe_path"`
+	AppAlertsDisabled bool    `json:"app_alerts_disabled"`
+}
+
+// Tenant-scoped read of a site's app-health settings (GH #291 Phase 3):
+// the B3 override path and the per-site alerting opt-out.
+func (q *Queries) GetSiteAppHealthSettings(ctx context.Context, arg GetSiteAppHealthSettingsParams) (GetSiteAppHealthSettingsRow, error) {
+	row := q.db.QueryRow(ctx, getSiteAppHealthSettings, arg.ID, arg.TenantID)
+	var i GetSiteAppHealthSettingsRow
+	err := row.Scan(&i.AppProbePath, &i.AppAlertsDisabled)
+	return i, err
+}
+
 const getSiteByAgentKey = `-- name: GetSiteByAgentKey :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at FROM sites
 WHERE agent_public_key = $1 AND agent_public_key <> ''
 `
 
@@ -388,6 +417,7 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -396,7 +426,7 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 
 const getSiteByURLForEnroll = `-- name: GetSiteByURLForEnroll :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at FROM sites
 WHERE tenant_id = $1 AND url = $2
 `
 
@@ -444,6 +474,7 @@ func (q *Queries) GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLFor
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -603,17 +634,19 @@ func (q *Queries) ListEnrolledSitesAllTenants(ctx context.Context) ([]ListEnroll
 }
 
 const listEnrolledSitesForProbe = `-- name: ListEnrolledSitesForProbe :many
-SELECT id, tenant_id, url, health_status, last_seen_at, app_probe_path FROM sites
+SELECT id, tenant_id, url, health_status, last_seen_at, app_probe_path, app_alerts_disabled, connection_state FROM sites
 WHERE enrolled_at IS NOT NULL
 `
 
 type ListEnrolledSitesForProbeRow struct {
-	ID           uuid.UUID          `json:"id"`
-	TenantID     uuid.UUID          `json:"tenant_id"`
-	Url          string             `json:"url"`
-	HealthStatus string             `json:"health_status"`
-	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
-	AppProbePath *string            `json:"app_probe_path"`
+	ID                uuid.UUID          `json:"id"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	Url               string             `json:"url"`
+	HealthStatus      string             `json:"health_status"`
+	LastSeenAt        pgtype.Timestamptz `json:"last_seen_at"`
+	AppProbePath      *string            `json:"app_probe_path"`
+	AppAlertsDisabled bool               `json:"app_alerts_disabled"`
+	ConnectionState   string             `json:"connection_state"`
 }
 
 // Cross-tenant enumeration of enrolled sites WITH their URL for the M5 uptime
@@ -621,8 +654,15 @@ type ListEnrolledSitesForProbeRow struct {
 // tenants. Only enrolled sites have an agent URL worth probing.
 // last_seen_at and app_probe_path (m107, GH #291 Phase 2) are carried for the
 // application-health prober: B0 (agent ground truth) reads last_seen_at, B3
-// (per-site override) reads app_probe_path. The reachability probe and the
-// cron-kicker ignore both.
+// (per-site override) reads app_probe_path. app_alerts_disabled (m108, GH
+// #291 Phase 3) is carried so the app-alert transition step can skip a site
+// whose operator disabled app ALERTING (the probe itself still runs).
+// connection_state (GH #291 Phase 3 Fix 2) is carried for the SAME app-alert
+// transition step, so it can exclude a revoked/archived site using the
+// IDENTICAL predicate GetTenantAppAlertRatio's WHERE clause enforces
+// server-side (see uptime.appAlertEligible) - the fire path and the fleet
+// circuit breaker's ratio must never disagree about which sites count. The
+// reachability probe and the cron-kicker ignore all four.
 func (q *Queries) ListEnrolledSitesForProbe(ctx context.Context) ([]ListEnrolledSitesForProbeRow, error) {
 	rows, err := q.db.Query(ctx, listEnrolledSitesForProbe)
 	if err != nil {
@@ -639,6 +679,8 @@ func (q *Queries) ListEnrolledSitesForProbe(ctx context.Context) ([]ListEnrolled
 			&i.HealthStatus,
 			&i.LastSeenAt,
 			&i.AppProbePath,
+			&i.AppAlertsDisabled,
+			&i.ConnectionState,
 		); err != nil {
 			return nil, err
 		}
@@ -700,7 +742,7 @@ func (q *Queries) ListLatestBackupsForSites(ctx context.Context, arg ListLatestB
 }
 
 const listSites = `-- name: ListSites :many
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -763,6 +805,7 @@ type ListSitesRow struct {
 	MissedHeartbeats      int32              `json:"missed_heartbeats"`
 	ClientID              pgtype.UUID        `json:"client_id"`
 	AppProbePath          *string            `json:"app_probe_path"`
+	AppAlertsDisabled     bool               `json:"app_alerts_disabled"`
 	CreatedAt             time.Time          `json:"created_at"`
 	UpdatedAt             time.Time          `json:"updated_at"`
 	PageCacheEnabled      bool               `json:"page_cache_enabled"`
@@ -831,6 +874,7 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSit
 			&i.MissedHeartbeats,
 			&i.ClientID,
 			&i.AppProbePath,
+			&i.AppAlertsDisabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PageCacheEnabled,
@@ -865,7 +909,7 @@ const setSiteAgeRecipient = `-- name: SetSiteAgeRecipient :one
 UPDATE sites
 SET age_recipient = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
 `
 
 type SetSiteAgeRecipientParams struct {
@@ -912,6 +956,7 @@ func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipie
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -943,7 +988,7 @@ const setSiteTags = `-- name: SetSiteTags :one
 UPDATE sites
 SET tags = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
 `
 
 type SetSiteTagsParams struct {
@@ -988,6 +1033,7 @@ func (q *Queries) SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site,
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1000,7 +1046,7 @@ SET last_seen_at = now(),
     health_status = 'healthy',
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
 `
 
 type TouchSiteSeenParams struct {
@@ -1044,9 +1090,47 @@ func (q *Queries) TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (S
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
+	return i, err
+}
+
+const updateSiteAppHealthSettings = `-- name: UpdateSiteAppHealthSettings :one
+UPDATE sites
+SET app_probe_path = $1,
+    app_alerts_disabled = $2,
+    updated_at = now()
+WHERE id = $3 AND tenant_id = $4
+RETURNING app_probe_path, app_alerts_disabled
+`
+
+type UpdateSiteAppHealthSettingsParams struct {
+	AppProbePath      *string   `json:"app_probe_path"`
+	AppAlertsDisabled bool      `json:"app_alerts_disabled"`
+	ID                uuid.UUID `json:"id"`
+	TenantID          uuid.UUID `json:"tenant_id"`
+}
+
+type UpdateSiteAppHealthSettingsRow struct {
+	AppProbePath      *string `json:"app_probe_path"`
+	AppAlertsDisabled bool    `json:"app_alerts_disabled"`
+}
+
+// Tenant-scoped write of a site's app-health settings (GH #291 Phase 3).
+// app_probe_path is sqlc.narg so an empty override clears back to
+// auto-detect (NULL); the service layer is responsible for path validation
+// (site-relative, no scheme/host/traversal - see uptime.ValidateAppProbePath).
+func (q *Queries) UpdateSiteAppHealthSettings(ctx context.Context, arg UpdateSiteAppHealthSettingsParams) (UpdateSiteAppHealthSettingsRow, error) {
+	row := q.db.QueryRow(ctx, updateSiteAppHealthSettings,
+		arg.AppProbePath,
+		arg.AppAlertsDisabled,
+		arg.ID,
+		arg.TenantID,
+	)
+	var i UpdateSiteAppHealthSettingsRow
+	err := row.Scan(&i.AppProbePath, &i.AppAlertsDisabled)
 	return i, err
 }
 
@@ -1063,7 +1147,7 @@ SET wp_version   = $3,
     health_status = 'healthy',
     updated_at   = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
 `
 
 type UpdateSiteMetadataParams struct {
@@ -1126,6 +1210,7 @@ func (q *Queries) UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadata
 		&i.MissedHeartbeats,
 		&i.ClientID,
 		&i.AppProbePath,
+		&i.AppAlertsDisabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

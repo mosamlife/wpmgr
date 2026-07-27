@@ -57,7 +57,7 @@ func (q *Queries) CountRecentIncidents(ctx context.Context, arg CountRecentIncid
 
 const getAlertConfig = `-- name: GetAlertConfig :one
 
-SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, created_at, updated_at FROM alert_configs
+SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, app_alerts_enabled, created_at, updated_at FROM alert_configs
 WHERE tenant_id = $1
 `
 
@@ -77,10 +77,30 @@ func (q *Queries) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (Alert
 		&i.NotifyVulns,
 		&i.VulnMinSeverity,
 		&i.VulnIncludeInDigest,
+		&i.AppAlertsEnabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getAppAlertRolloutDefault = `-- name: GetAppAlertRolloutDefault :one
+SELECT fresh_install FROM app_alert_rollout WHERE singleton = true
+`
+
+// The m108 deployment-fresh decision. app_alert_rollout carries no tenant
+// dimension and no RLS at all (see its schema.sql doc comment), so this is
+// safe to run under ANY transaction context - callers use whichever
+// tx wrapper they already hold open (uptime.Repo.GetAlertConfig runs it
+// inside the same InTenantTx as its alert_configs read) rather than opening
+// a second transaction. Read by the synthesized zero-value AlertConfig
+// default for a tenant with no persisted alert_configs row yet, so that path
+// and the persisted column's own DEFAULT never disagree.
+func (q *Queries) GetAppAlertRolloutDefault(ctx context.Context) (bool, error) {
+	row := q.db.QueryRow(ctx, getAppAlertRolloutDefault)
+	var fresh_install bool
+	err := row.Scan(&fresh_install)
+	return fresh_install, err
 }
 
 const getIncidentByID = `-- name: GetIncidentByID :one
@@ -188,8 +208,98 @@ func (q *Queries) GetSiteAlertStateForUpdate(ctx context.Context, siteID uuid.UU
 	return i, err
 }
 
+const getSiteAppAlertStateForUpdate = `-- name: GetSiteAppAlertStateForUpdate :one
+
+SELECT site_id, tenant_id, last_status, consecutive_down, in_incident, ever_app_up, last_alert_at, updated_at FROM site_app_alert_state
+WHERE site_id = $1
+FOR UPDATE
+`
+
+// ---------------------------------------------------------------------------
+// site_app_alert_state (m108 - GH #291 Phase 3: app-health alert state,
+// written alongside site_alert_state inside the SAME TransitionAlertState
+// transaction - never a separate round-trip).
+// ---------------------------------------------------------------------------
+// Cross-tenant read-and-LOCK of one site's app-health alert state
+// (app.agent GUC). Mirrors GetSiteAlertStateForUpdate exactly - same
+// overlapping-sweep race the FOR UPDATE lock closes.
+func (q *Queries) GetSiteAppAlertStateForUpdate(ctx context.Context, siteID uuid.UUID) (SiteAppAlertState, error) {
+	row := q.db.QueryRow(ctx, getSiteAppAlertStateForUpdate, siteID)
+	var i SiteAppAlertState
+	err := row.Scan(
+		&i.SiteID,
+		&i.TenantID,
+		&i.LastStatus,
+		&i.ConsecutiveDown,
+		&i.InIncident,
+		&i.EverAppUp,
+		&i.LastAlertAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTenantAppAlertBreakerForUpdate = `-- name: GetTenantAppAlertBreakerForUpdate :one
+SELECT tenant_id, tripped, tripped_at, last_alert_at, last_down_count, updated_at FROM tenant_app_alert_breaker
+WHERE tenant_id = $1
+FOR UPDATE
+`
+
+// Cross-tenant read-and-LOCK of one tenant's circuit-breaker state
+// (app.agent GUC). A missing row reads as pgx.ErrNoRows (never tripped yet).
+func (q *Queries) GetTenantAppAlertBreakerForUpdate(ctx context.Context, tenantID uuid.UUID) (TenantAppAlertBreaker, error) {
+	row := q.db.QueryRow(ctx, getTenantAppAlertBreakerForUpdate, tenantID)
+	var i TenantAppAlertBreaker
+	err := row.Scan(
+		&i.TenantID,
+		&i.Tripped,
+		&i.TrippedAt,
+		&i.LastAlertAt,
+		&i.LastDownCount,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTenantAppAlertRatio = `-- name: GetTenantAppAlertRatio :one
+SELECT
+    count(*) AS eligible,
+    count(*) FILTER (WHERE sas.in_incident) AS down
+FROM site_app_alert_state sas
+JOIN sites s ON s.id = sas.site_id AND s.tenant_id = sas.tenant_id
+WHERE sas.tenant_id = $1
+  AND sas.ever_app_up = true
+  AND s.app_alerts_disabled = false
+  AND s.connection_state NOT IN ('revoked', 'archived')
+`
+
+type GetTenantAppAlertRatioRow struct {
+	Eligible int64 `json:"eligible"`
+	Down     int64 `json:"down"`
+}
+
+// The fleet circuit breaker's denominator/numerator (app.agent GUC), scoped
+// to ONE tenant at a time and evaluated once per sweep tick (not per site).
+// Denominator (eligible): sites that could EVER contribute an app alert -
+// ever_app_up = true (the same gate EvaluateApp enforces before firing),
+// app alerting not individually disabled for the site, and not revoked/
+// archived (an operator-initiated "stop managing this site", not a
+// connectivity problem - mirrors deriveFleetStatus's identical exclusion).
+// Numerator (down): the subset of those currently in an open app incident.
+// A site with ever_app_up=false is excluded from BOTH sides: it can never
+// reach the numerator (the same gate), and counting it in the denominator
+// would dilute the ratio and mask a real "every site we can actually watch
+// just went down together" event behind a large population of sites nobody
+// can alert on anyway (e.g. every site with REST permanently blocked).
+func (q *Queries) GetTenantAppAlertRatio(ctx context.Context, tenantID uuid.UUID) (GetTenantAppAlertRatioRow, error) {
+	row := q.db.QueryRow(ctx, getTenantAppAlertRatio, tenantID)
+	var i GetTenantAppAlertRatioRow
+	err := row.Scan(&i.Eligible, &i.Down)
+	return i, err
+}
+
 const listAlertConfigsAllTenants = `-- name: ListAlertConfigsAllTenants :many
-SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, created_at, updated_at FROM alert_configs
+SELECT id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, app_alerts_enabled, created_at, updated_at FROM alert_configs
 WHERE enabled = true
 `
 
@@ -215,12 +325,98 @@ func (q *Queries) ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig
 			&i.NotifyVulns,
 			&i.VulnMinSeverity,
 			&i.VulnIncludeInDigest,
+			&i.AppAlertsEnabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTenantAppDownSites = `-- name: ListTenantAppDownSites :many
+SELECT COALESCE(NULLIF(s.name, ''), s.url)::text AS display_name
+FROM site_app_alert_state sas
+JOIN sites s ON s.id = sas.site_id AND s.tenant_id = sas.tenant_id
+WHERE sas.tenant_id = $1
+  AND sas.ever_app_up = true
+  AND sas.in_incident = true
+  AND s.app_alerts_disabled = false
+  AND s.connection_state NOT IN ('revoked', 'archived')
+ORDER BY s.name ASC, s.url ASC
+LIMIT $2
+`
+
+type ListTenantAppDownSitesParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	RowLimit int32     `json:"row_limit"`
+}
+
+// Cross-tenant (app.agent GUC) listing of every site CURRENTLY counted in
+// GetTenantAppAlertRatio's "down" numerator for one tenant - the IDENTICAL
+// eligibility predicate, joined to sites for a human-readable display name.
+// Used ONLY for the fleet circuit breaker's "updated" aggregate notification
+// (GH #291 Phase 3 Fix 3), which can fire several sweep ticks after the
+// sites it describes actually went down (the update min-interval throttle
+// delays it) - so "this tick's pending transitions" is the WRONG data
+// source for "what is currently affected"; this query reads the live,
+// current truth instead, so the notification never names a stale or
+// incomplete set. row_limit bounds the list for a large tenant; the
+// notification's DownCount/EligibleCount (not this list) are always the
+// authoritative, complete counts.
+func (q *Queries) ListTenantAppDownSites(ctx context.Context, arg ListTenantAppDownSitesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listTenantAppDownSites, arg.TenantID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var display_name string
+		if err := rows.Scan(&display_name); err != nil {
+			return nil, err
+		}
+		items = append(items, display_name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTrippedAppAlertBreakerTenants = `-- name: ListTrippedAppAlertBreakerTenants :many
+SELECT tenant_id FROM tenant_app_alert_breaker WHERE tripped = true
+`
+
+// Cross-tenant enumeration (app.agent GUC) of every tenant whose fleet
+// circuit breaker is CURRENTLY tripped - GH #291 Phase 3 Fix 4. Called ONCE
+// per sweep tick (never per-tenant): a tenant whose down sites simply stop
+// transitioning (already down and staying down - no new FireDown/
+// FireRecovery ever lands in `pending` for it again) would otherwise never
+// get its breaker re-evaluated, and the ratio CAN move for reasons that
+// never touch an individual site's app-alert state at all (a down site gets
+// archived/revoked, or per-site alerting gets disabled, shrinking the
+// eligible/down counts with no AppTransition). The tripped set is small by
+// definition (a breaker only trips when a meaningful fraction of a tenant's
+// sites are simultaneously down), so this stays one cheap, bounded query.
+func (q *Queries) ListTrippedAppAlertBreakerTenants(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listTrippedAppAlertBreakerTenants)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var tenant_id uuid.UUID
+		if err := rows.Scan(&tenant_id); err != nil {
+			return nil, err
+		}
+		items = append(items, tenant_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -270,9 +466,10 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) erro
 const upsertAlertConfig = `-- name: UpsertAlertConfig :one
 INSERT INTO alert_configs (
     tenant_id, email_recipients, webhook_url, webhook_secret, enabled,
-    notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest
+    notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest,
+    app_alerts_enabled
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (tenant_id) DO UPDATE
 SET email_recipients       = EXCLUDED.email_recipients,
     webhook_url             = EXCLUDED.webhook_url,
@@ -282,8 +479,9 @@ SET email_recipients       = EXCLUDED.email_recipients,
     notify_vulns            = EXCLUDED.notify_vulns,
     vuln_min_severity       = EXCLUDED.vuln_min_severity,
     vuln_include_in_digest  = EXCLUDED.vuln_include_in_digest,
+    app_alerts_enabled      = EXCLUDED.app_alerts_enabled,
     updated_at              = now()
-RETURNING id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, created_at, updated_at
+RETURNING id, tenant_id, email_recipients, webhook_url, webhook_secret, enabled, notify_security, notify_vulns, vuln_min_severity, vuln_include_in_digest, app_alerts_enabled, created_at, updated_at
 `
 
 type UpsertAlertConfigParams struct {
@@ -296,15 +494,22 @@ type UpsertAlertConfigParams struct {
 	NotifyVulns         bool      `json:"notify_vulns"`
 	VulnMinSeverity     string    `json:"vuln_min_severity"`
 	VulnIncludeInDigest bool      `json:"vuln_include_in_digest"`
+	AppAlertsEnabled    bool      `json:"app_alerts_enabled"`
 }
 
 // Tenant-scoped create-or-update of the tenant's default alert channel.
 // m103 (GH #247): notify_vulns/vuln_min_severity/vuln_include_in_digest are
-// the vulnerability-alerting fields — the service layer (uptime.Service.
-// SaveAlertConfig) is responsible for merging omitted-on-PUT fields from the
-// existing row before calling this query (see the mergeAlertConfigUpdate /
-// Or(existing.X) pattern in handler.go); this query always writes exactly
-// what it is given.
+// the vulnerability-alerting fields. m108 (GH #291 Phase 3): app_alerts_enabled
+// is the FOURTH signal on this row - independent of `enabled` (the existing
+// reachability channel). The service layer (uptime.Service.SaveAlertConfig)
+// is responsible for merging omitted-on-PUT fields from the existing row
+// before calling this query (see the mergeAlertConfigUpdate / Or(existing.X)
+// pattern in handler.go); this query always writes exactly what it is given,
+// INCLUDING app_alerts_enabled - the caller (uptime.Service.SaveAlertConfig,
+// via the same merge) is responsible for resolving the deployment-fresh
+// default (uptime.Service.GetAlertConfig reads app_alert_rollout for a
+// tenant with no existing row) before this query ever runs, so the column's
+// own DEFAULT only backstops rows written outside the application layer.
 func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error) {
 	row := q.db.QueryRow(ctx, upsertAlertConfig,
 		arg.TenantID,
@@ -316,6 +521,7 @@ func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigPa
 		arg.NotifyVulns,
 		arg.VulnMinSeverity,
 		arg.VulnIncludeInDigest,
+		arg.AppAlertsEnabled,
 	)
 	var i AlertConfig
 	err := row.Scan(
@@ -329,6 +535,7 @@ func (q *Queries) UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigPa
 		&i.NotifyVulns,
 		&i.VulnMinSeverity,
 		&i.VulnIncludeInDigest,
+		&i.AppAlertsEnabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -376,6 +583,100 @@ func (q *Queries) UpsertSiteAlertState(ctx context.Context, arg UpsertSiteAlertS
 		&i.ConsecutiveDown,
 		&i.InIncident,
 		&i.LastAlertAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertSiteAppAlertState = `-- name: UpsertSiteAppAlertState :one
+INSERT INTO site_app_alert_state (site_id, tenant_id, last_status, consecutive_down, in_incident, ever_app_up, last_alert_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+ON CONFLICT (site_id) DO UPDATE
+SET tenant_id        = EXCLUDED.tenant_id,
+    last_status      = EXCLUDED.last_status,
+    consecutive_down = EXCLUDED.consecutive_down,
+    in_incident      = EXCLUDED.in_incident,
+    ever_app_up      = EXCLUDED.ever_app_up,
+    last_alert_at    = EXCLUDED.last_alert_at,
+    updated_at       = now()
+RETURNING site_id, tenant_id, last_status, consecutive_down, in_incident, ever_app_up, last_alert_at, updated_at
+`
+
+type UpsertSiteAppAlertStateParams struct {
+	SiteID          uuid.UUID          `json:"site_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	LastStatus      string             `json:"last_status"`
+	ConsecutiveDown int32              `json:"consecutive_down"`
+	InIncident      bool               `json:"in_incident"`
+	EverAppUp       bool               `json:"ever_app_up"`
+	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
+}
+
+// Cross-tenant upsert of a site's app-health alert state (app.agent GUC).
+func (q *Queries) UpsertSiteAppAlertState(ctx context.Context, arg UpsertSiteAppAlertStateParams) (SiteAppAlertState, error) {
+	row := q.db.QueryRow(ctx, upsertSiteAppAlertState,
+		arg.SiteID,
+		arg.TenantID,
+		arg.LastStatus,
+		arg.ConsecutiveDown,
+		arg.InIncident,
+		arg.EverAppUp,
+		arg.LastAlertAt,
+	)
+	var i SiteAppAlertState
+	err := row.Scan(
+		&i.SiteID,
+		&i.TenantID,
+		&i.LastStatus,
+		&i.ConsecutiveDown,
+		&i.InIncident,
+		&i.EverAppUp,
+		&i.LastAlertAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertTenantAppAlertBreaker = `-- name: UpsertTenantAppAlertBreaker :one
+INSERT INTO tenant_app_alert_breaker (tenant_id, tripped, tripped_at, last_alert_at, last_down_count, updated_at)
+VALUES ($1, $2, $3, $4, $5, now())
+ON CONFLICT (tenant_id) DO UPDATE
+SET tripped         = EXCLUDED.tripped,
+    tripped_at      = EXCLUDED.tripped_at,
+    last_alert_at   = EXCLUDED.last_alert_at,
+    last_down_count = EXCLUDED.last_down_count,
+    updated_at      = now()
+RETURNING tenant_id, tripped, tripped_at, last_alert_at, last_down_count, updated_at
+`
+
+type UpsertTenantAppAlertBreakerParams struct {
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	Tripped       bool               `json:"tripped"`
+	TrippedAt     pgtype.Timestamptz `json:"tripped_at"`
+	LastAlertAt   pgtype.Timestamptz `json:"last_alert_at"`
+	LastDownCount int32              `json:"last_down_count"`
+}
+
+// Cross-tenant upsert of a tenant's circuit-breaker state (app.agent GUC).
+// last_down_count (GH #291 Phase 3 Fix 3) is the down count AT THE TIME OF
+// THE LAST NOTIFICATION (trip, update, or recovery) - never bumped on a
+// silent steady-state tick - so the caller can detect "materially worse
+// since we last said anything" without a second table.
+func (q *Queries) UpsertTenantAppAlertBreaker(ctx context.Context, arg UpsertTenantAppAlertBreakerParams) (TenantAppAlertBreaker, error) {
+	row := q.db.QueryRow(ctx, upsertTenantAppAlertBreaker,
+		arg.TenantID,
+		arg.Tripped,
+		arg.TrippedAt,
+		arg.LastAlertAt,
+		arg.LastDownCount,
+	)
+	var i TenantAppAlertBreaker
+	err := row.Scan(
+		&i.TenantID,
+		&i.Tripped,
+		&i.TrippedAt,
+		&i.LastAlertAt,
+		&i.LastDownCount,
 		&i.UpdatedAt,
 	)
 	return i, err

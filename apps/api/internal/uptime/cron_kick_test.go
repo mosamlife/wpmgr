@@ -33,8 +33,21 @@ func (r *fakeCronRepo) GetAlertState(_ context.Context, _ uuid.UUID) (AlertState
 func (r *fakeCronRepo) UpsertAlertState(_ context.Context, _ AlertState) error {
 	panic("CronKicker must not call UpsertAlertState")
 }
-func (r *fakeCronRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time, _ int, _ string) (Transition, error) {
+func (r *fakeCronRepo) TransitionAlertState(_ context.Context, _, _ uuid.UUID, _ bool, _ int, _ time.Time, _ int, _ string,
+	_ bool, _ *bool, _ string, _ int) (Transition, AppTransition, error) {
 	panic("CronKicker must not call TransitionAlertState")
+}
+func (r *fakeCronRepo) GetTenantAppAlertRatio(_ context.Context, _ uuid.UUID) (int, int, error) {
+	panic("CronKicker must not call GetTenantAppAlertRatio")
+}
+func (r *fakeCronRepo) TransitionAppAlertBreaker(_ context.Context, _ uuid.UUID, _ bool, _ int, _ time.Time) (AppBreakerTransition, error) {
+	panic("CronKicker must not call TransitionAppAlertBreaker")
+}
+func (r *fakeCronRepo) ListTrippedAppAlertBreakerTenants(_ context.Context) ([]uuid.UUID, error) {
+	panic("CronKicker must not call ListTrippedAppAlertBreakerTenants")
+}
+func (r *fakeCronRepo) ListTenantAppDownSites(_ context.Context, _ uuid.UUID, _ int) ([]string, error) {
+	panic("CronKicker must not call ListTenantAppDownSites")
 }
 func (r *fakeCronRepo) ListAlertConfigsAllTenants(_ context.Context) ([]AlertConfig, error) {
 	panic("CronKicker must not call ListAlertConfigsAllTenants")
@@ -44,6 +57,15 @@ func (r *fakeCronRepo) GetAlertConfig(_ context.Context, _ uuid.UUID) (AlertConf
 }
 func (r *fakeCronRepo) UpsertAlertConfig(_ context.Context, _ AlertConfig) (AlertConfig, error) {
 	panic("CronKicker must not call UpsertAlertConfig")
+}
+func (r *fakeCronRepo) GetAppAlertRolloutDefault(_ context.Context) (bool, error) {
+	panic("CronKicker must not call GetAppAlertRolloutDefault")
+}
+func (r *fakeCronRepo) GetAppHealthSettings(_ context.Context, _, _ uuid.UUID) (AppHealthSettings, bool, error) {
+	panic("CronKicker must not call GetAppHealthSettings")
+}
+func (r *fakeCronRepo) UpdateAppHealthSettings(_ context.Context, _, _ uuid.UUID, _ string, _ bool) (AppHealthSettings, bool, error) {
+	panic("CronKicker must not call UpdateAppHealthSettings")
 }
 func (r *fakeCronRepo) GetFleetSiteInfo(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]FleetSiteInfo, error) {
 	panic("CronKicker must not call GetFleetSiteInfo")

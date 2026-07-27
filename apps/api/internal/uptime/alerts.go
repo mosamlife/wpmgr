@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -13,6 +14,9 @@ import (
 const (
 	ActionAlertSent          = "uptime.alert.sent"
 	ActionAlertConfigChanged = "alert.config.changed"
+	// ActionAppHealthSettingsChanged (m108, GH #291 Phase 3) - a site's
+	// app-health settings (app_probe_path / app_alerts_disabled) were saved.
+	ActionAppHealthSettingsChanged = "site.app_health_settings.changed"
 )
 
 // Transition is the decision the alert state machine makes for one probe result
@@ -297,6 +301,22 @@ func renderEmail(a Alert) (subject, body string) {
 	if name == "" {
 		name = a.SiteURL
 	}
+	// m108 (GH #291 Phase 3): the app-health kinds get their own copy -
+	// deliberately worded to never say the site is "down" (reachability's
+	// word), since a page cache can keep visitors served while the
+	// application itself fails its health check.
+	switch a.Kind {
+	case AlertAppRecovery:
+		subject = fmt.Sprintf("[WPMgr] APP RECOVERED: %s is responding again", name)
+		body = fmt.Sprintf("Your site %s (%s) failed its application-health check and has now recovered, as of %s.\n\nThis is a SEPARATE signal from ordinary uptime: visitors may have kept seeing a cached page throughout the incident.",
+			name, a.SiteURL, a.FiredAt.UTC().Format(time.RFC3339))
+		return subject, body
+	case AlertAppDown:
+		subject = fmt.Sprintf("[WPMgr] APP DOWN: %s's application is not responding (the site may still LOOK up)", name)
+		body = fmt.Sprintf("Your site %s (%s) is failing its application-health check as of %s.\nDetail: %s\n\nThis is independent of ordinary uptime: a page cache can keep serving visitors a stale copy while WordPress itself is not responding. wp-admin, logins, forms and checkout are likely already broken.",
+			name, a.SiteURL, a.FiredAt.UTC().Format(time.RFC3339), appProbeReasonCopy(a.Error))
+		return subject, body
+	}
 	if a.Kind == AlertRecovery {
 		subject = fmt.Sprintf("[WPMgr] RECOVERED: %s is back up", name)
 		body = fmt.Sprintf("Your site %s (%s) has recovered and is responding again as of %s.",
@@ -323,5 +343,129 @@ func renderEmail(a Alert) (subject, body string) {
 	}
 	body = fmt.Sprintf("Your site %s (%s) appears to be DOWN as of %s.\nDetail: %s",
 		name, a.SiteURL, a.FiredAt.UTC().Format(time.RFC3339), detail)
+	return subject, body
+}
+
+// appProbeReasonCopy maps an AppProbeReason* value (app_probe.go) carried on
+// Alert.Error for an AlertAppDown alert onto human copy. Only the two
+// CONCLUSIVE-false reasons (AppProbeReasonRest5xx, AppProbeReasonWPFatalError)
+// can ever reach here - EvaluateApp only fires on AppVerdictDown, which
+// app_probe.go only ever classifies from those two - but the default branch
+// stays defensive rather than assuming that invariant holds forever.
+func appProbeReasonCopy(reason string) string {
+	switch reason {
+	case AppProbeReasonRest5xx:
+		return "the application-health check returned HTTP 500 (PHP itself returned an error)"
+	case AppProbeReasonWPFatalError:
+		return "the application-health check received a WordPress critical-error page (HTTP 200 with a fatal-error screen)"
+	case "":
+		return "application-health check failed"
+	default:
+		return "application-health check failed (" + reason + ")"
+	}
+}
+
+// FireAppAggregate delivers the fleet circuit breaker's aggregate
+// notification (m108, GH #291 Phase 3 section 2) to the tenant's configured
+// channels and records the SAME kind of audit trail as Fire, keyed on the
+// tenant itself (there is no single site to attribute this to). Reuses the
+// SAME email/webhook/audit machinery as every other alert this dispatcher
+// sends - no parallel notification system.
+func (d *Dispatcher) FireAppAggregate(ctx context.Context, cfg AlertConfig, alert AppAggregateAlert) {
+	subject, body := renderAppAggregateEmail(alert)
+	emailResult, emailErr := d.sendEmail(ctx, cfg.EmailRecipients, subject, body)
+	if emailErr != nil {
+		d.logger.Warn("uptime app aggregate alert email failed",
+			slog.String("tenant_id", alert.TenantID.String()),
+			slog.Bool("recovered", alert.Recovered),
+			slog.Any("error", emailErr))
+	}
+
+	event := "uptime.app_down_aggregate"
+	switch {
+	case alert.Recovered:
+		event = "uptime.app_recovery_aggregate"
+	case alert.Updated:
+		event = "uptime.app_down_aggregate_update"
+	}
+	payload := WebhookPayload{
+		Event:              event,
+		TenantID:           alert.TenantID.String(),
+		Error:              fmt.Sprintf("%d/%d alert-eligible sites app-down", alert.DownCount, alert.EligibleCount),
+		FiredAt:            alert.FiredAt,
+		AppDownCount:       alert.DownCount,
+		AppEligibleCount:   alert.EligibleCount,
+		AppSuppressedSites: alert.SuppressedSites,
+	}
+	webhookResult, webhookErr := d.sendWebhook(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload)
+	if webhookErr != nil {
+		d.logger.Warn("uptime app aggregate alert webhook failed",
+			slog.String("tenant_id", alert.TenantID.String()),
+			slog.Bool("recovered", alert.Recovered),
+			slog.Any("error", webhookErr))
+	}
+
+	if d.audit == nil {
+		return
+	}
+	meta := channelMetadata(emailResult, webhookResult)
+	meta["kind"] = event
+	meta["down_count"] = alert.DownCount
+	meta["eligible_count"] = alert.EligibleCount
+	meta["suppressed_sites"] = alert.SuppressedSites
+	_, _ = d.audit.Record(ctx, audit.Event{
+		TenantID:   alert.TenantID,
+		ActorType:  audit.ActorSystem,
+		Action:     ActionAlertSent,
+		TargetType: "tenant",
+		TargetID:   alert.TenantID.String(),
+		Metadata:   meta,
+	})
+}
+
+// renderAppAggregateEmail renders the circuit-breaker's own notification.
+// The body ALWAYS states the exact count and names what was suppressed (GH
+// #291 Phase 3 section 2: "so nothing is silently swallowed") - never a bare
+// "something is wrong" message.
+func renderAppAggregateEmail(a AppAggregateAlert) (subject, body string) {
+	if a.Recovered {
+		subject = fmt.Sprintf("[WPMgr] APP ALERTS RESUMED: fleet-wide app-health issue has cleared (%d/%d sites)", a.DownCount, a.EligibleCount)
+		body = fmt.Sprintf("The fleet-wide application-health issue detected across your account has cleared as of %s.\n\n%d of %d alert-eligible sites are currently app-down (below the alert ratio). Individual per-site app-health alerts have resumed.",
+			a.FiredAt.UTC().Format(time.RFC3339), a.DownCount, a.EligibleCount)
+		return subject, body
+	}
+	if a.Updated {
+		// Fix 3: still tripped, but materially worse than the original trip
+		// notification - deliberately DIFFERENT subject/copy from the
+		// initial SUPPRESSED notification below, so an operator scanning
+		// their inbox can tell this is an update, not a duplicate.
+		// SuppressedSites here is the LIVE, currently-down set (see the
+		// AppAggregateAlert.SuppressedSites doc comment) - "currently
+		// affected", not "newly affected since last time".
+		subject = fmt.Sprintf("[WPMgr] APP ALERTS STILL SUPPRESSED: now %d/%d sites are simultaneously app-down", a.DownCount, a.EligibleCount)
+		affected := "none named"
+		if len(a.SuppressedSites) > 0 {
+			affected = strings.Join(a.SuppressedSites, ", ")
+		}
+		body = fmt.Sprintf(
+			"The fleet-wide application-health issue detected on your account has WORSENED: %d of %d alert-eligible sites are now simultaneously failing their application-health check, as of %s (up from the count in the last notification).\n\n"+
+				"Currently affected sites: %s\n\n"+
+				"Individual per-site app-down alerts remain SUPPRESSED and collapsed into this single notification. You will get exactly one more notification when this clears.",
+			a.DownCount, a.EligibleCount, a.FiredAt.UTC().Format(time.RFC3339), affected,
+		)
+		return subject, body
+	}
+	subject = fmt.Sprintf("[WPMgr] APP ALERTS SUPPRESSED: %d/%d sites are simultaneously app-down", a.DownCount, a.EligibleCount)
+	suppressed := "none named"
+	if len(a.SuppressedSites) > 0 {
+		suppressed = strings.Join(a.SuppressedSites, ", ")
+	}
+	body = fmt.Sprintf(
+		"%d of %d alert-eligible sites on your account are simultaneously failing their application-health check, as of %s.\n\n"+
+			"This many sites breaking at the same time is far more likely to be a shared host/network issue, or this monitoring feature itself, than %d unrelated sites breaking independently - so individual per-site app-down alerts have been SUPPRESSED and collapsed into this single notification instead.\n\n"+
+			"Suppressed sites: %s\n\n"+
+			"You will get exactly one more notification when this clears.",
+		a.DownCount, a.EligibleCount, a.FiredAt.UTC().Format(time.RFC3339), a.DownCount, suppressed,
+	)
 	return subject, body
 }

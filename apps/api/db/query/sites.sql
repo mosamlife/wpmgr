@@ -178,10 +178,35 @@ WHERE id = $1 AND health_status <> 'unreachable';
 -- tenants. Only enrolled sites have an agent URL worth probing.
 -- last_seen_at and app_probe_path (m107, GH #291 Phase 2) are carried for the
 -- application-health prober: B0 (agent ground truth) reads last_seen_at, B3
--- (per-site override) reads app_probe_path. The reachability probe and the
--- cron-kicker ignore both.
-SELECT id, tenant_id, url, health_status, last_seen_at, app_probe_path FROM sites
+-- (per-site override) reads app_probe_path. app_alerts_disabled (m108, GH
+-- #291 Phase 3) is carried so the app-alert transition step can skip a site
+-- whose operator disabled app ALERTING (the probe itself still runs).
+-- connection_state (GH #291 Phase 3 Fix 2) is carried for the SAME app-alert
+-- transition step, so it can exclude a revoked/archived site using the
+-- IDENTICAL predicate GetTenantAppAlertRatio's WHERE clause enforces
+-- server-side (see uptime.appAlertEligible) - the fire path and the fleet
+-- circuit breaker's ratio must never disagree about which sites count. The
+-- reachability probe and the cron-kicker ignore all four.
+SELECT id, tenant_id, url, health_status, last_seen_at, app_probe_path, app_alerts_disabled, connection_state FROM sites
 WHERE enrolled_at IS NOT NULL;
+
+-- name: GetSiteAppHealthSettings :one
+-- Tenant-scoped read of a site's app-health settings (GH #291 Phase 3):
+-- the B3 override path and the per-site alerting opt-out.
+SELECT app_probe_path, app_alerts_disabled FROM sites
+WHERE id = @id AND tenant_id = @tenant_id;
+
+-- name: UpdateSiteAppHealthSettings :one
+-- Tenant-scoped write of a site's app-health settings (GH #291 Phase 3).
+-- app_probe_path is sqlc.narg so an empty override clears back to
+-- auto-detect (NULL); the service layer is responsible for path validation
+-- (site-relative, no scheme/host/traversal - see uptime.ValidateAppProbePath).
+UPDATE sites
+SET app_probe_path = sqlc.narg('app_probe_path'),
+    app_alerts_disabled = @app_alerts_disabled,
+    updated_at = now()
+WHERE id = @id AND tenant_id = @tenant_id
+RETURNING app_probe_path, app_alerts_disabled;
 
 -- name: SetSiteHealthStatus :execrows
 -- Sets a site's health_status from an M5 probe result (cross-tenant probe job,

@@ -52,6 +52,12 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// site-scoped principal's access is checked explicitly inside the handler
 	// (see incidentDetail) once the incident's site is known.
 	r.GET("/fleet/incidents/:incidentId", authz.RequirePermission(authz.PermSiteRead), h.incidentDetail)
+	// Per-site app-health settings (GH #291 Phase 3 section 3): PermSiteWrite
+	// mirrors the floor used for other per-site settings writes (e.g.
+	// PUT /sites/:siteId/tags) - this is an operational setting, not a
+	// credential/security-sensitive one like autologin.
+	r.GET("/sites/:siteId/app-health-settings", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.getAppHealthSettings)
+	r.PUT("/sites/:siteId/app-health-settings", authz.RequirePermission(authz.PermSiteWrite), authz.RequireSiteAccess("siteId"), h.putAppHealthSettings)
 }
 
 func windowDuration(w string) (time.Duration, gen.UptimeStatusWindow) {
@@ -203,6 +209,7 @@ func (h *Handler) putAlertConfig(c *gin.Context) {
 		"notify_vulns":           saved.NotifyVulns,
 		"vuln_min_severity":      saved.VulnMinSeverity,
 		"vuln_include_in_digest": saved.VulnIncludeInDigest,
+		"app_alerts_enabled":     saved.AppAlertsEnabled,
 	})
 	c.JSON(http.StatusOK, alertConfigToAPI(saved))
 }
@@ -229,6 +236,7 @@ func mergeAlertConfigUpdate(tenantID uuid.UUID, existing AlertConfig, req gen.Al
 		NotifyVulns:         req.NotifyVulns.Or(existing.NotifyVulns),
 		VulnMinSeverity:     string(req.VulnMinSeverity.Or(gen.AlertConfigUpdateVulnMinSeverity(existing.VulnMinSeverity))),
 		VulnIncludeInDigest: req.VulnIncludeInDigest.Or(existing.VulnIncludeInDigest),
+		AppAlertsEnabled:    req.AppAlertsEnabled.Or(existing.AppAlertsEnabled),
 	}
 	if req.WebhookSecret.Set {
 		cfg.WebhookSecret = req.WebhookSecret.Value
@@ -236,7 +244,16 @@ func mergeAlertConfigUpdate(tenantID uuid.UUID, existing AlertConfig, req gen.Al
 	return cfg
 }
 
+// record audits an alert-config change (ActionAlertConfigChanged, targeting
+// the tenant's alert_config row).
 func (h *Handler) record(c *gin.Context, tenantID uuid.UUID, meta map[string]any) {
+	h.recordAction(c, tenantID, ActionAlertConfigChanged, "alert_config", tenantID.String(), meta)
+}
+
+// recordAction is the general audit-record helper shared by every uptime
+// handler mutation - record (above) is the alert-config-specific caller;
+// putAppHealthSettings (GH #291 Phase 3) is the other.
+func (h *Handler) recordAction(c *gin.Context, tenantID uuid.UUID, action, targetType, targetID string, meta map[string]any) {
 	if h.audit == nil {
 		return
 	}
@@ -253,9 +270,9 @@ func (h *Handler) record(c *gin.Context, tenantID uuid.UUID, meta map[string]any
 		TenantID:   tenantID,
 		ActorType:  actorType,
 		ActorID:    actorID,
-		Action:     ActionAlertConfigChanged,
-		TargetType: "alert_config",
-		TargetID:   tenantID.String(),
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
 		Metadata:   meta,
 	})
 }
@@ -385,6 +402,66 @@ func (h *Handler) incidentDetail(c *gin.Context) {
 	c.JSON(http.StatusOK, detail)
 }
 
+// ---------------------------------------------------------------------------
+// Per-site app-health settings (GH #291 Phase 3 section 3)
+// ---------------------------------------------------------------------------
+
+func (h *Handler) getAppHealthSettings(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	siteID, err := uuid.Parse(c.Param("siteId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_site_id", "siteId is not a valid UUID"))
+		return
+	}
+	settings, err := h.svc.GetAppHealthSettings(c.Request.Context(), tenantID, siteID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, appHealthSettingsToAPI(settings))
+}
+
+func (h *Handler) putAppHealthSettings(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	siteID, err := uuid.Parse(c.Param("siteId"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_site_id", "siteId is not a valid UUID"))
+		return
+	}
+	var req gen.AppHealthSettingsUpdate
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+	saved, err := h.svc.UpdateAppHealthSettings(c.Request.Context(), tenantID, siteID, req.AppProbePath, req.AppAlertsDisabled)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	h.recordAction(c, tenantID, ActionAppHealthSettingsChanged, "site", siteID.String(), map[string]any{
+		"app_probe_path_set":  saved.AppProbePath != "",
+		"app_alerts_disabled": saved.AppAlertsDisabled,
+	})
+	c.JSON(http.StatusOK, appHealthSettingsToAPI(saved))
+}
+
+// appHealthSettingsToAPI maps an AppHealthSettings to its OpenAPI
+// representation.
+func appHealthSettingsToAPI(s AppHealthSettings) *gen.AppHealthSettings {
+	return &gen.AppHealthSettings{
+		AppProbePath:      s.AppProbePath,
+		AppAlertsDisabled: s.AppAlertsDisabled,
+	}
+}
+
 // parseInt is a minimal helper for query-param int parsing in handler methods
 // that don't have access to the backup package's parseInt32.
 func parseInt(s string) (int, error) {
@@ -408,6 +485,7 @@ func alertConfigToAPI(cfg AlertConfig) *gen.AlertConfig {
 		NotifyVulns:         cfg.NotifyVulns,
 		VulnMinSeverity:     gen.AlertConfigVulnMinSeverity(cfg.VulnMinSeverity),
 		VulnIncludeInDigest: cfg.VulnIncludeInDigest,
+		AppAlertsEnabled:    cfg.AppAlertsEnabled,
 	}
 	if cfg.WebhookURL != "" {
 		out.WebhookURL = gen.NewOptString(cfg.WebhookURL)

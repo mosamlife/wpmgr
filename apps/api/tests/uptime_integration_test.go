@@ -205,7 +205,7 @@ func TestUptimeAlertStateTransitionRace(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			defer wg.Done()
-			tr, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500")
+			tr, _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500", false, nil, "", 0)
 			if err != nil {
 				t.Errorf("transition: %v", err)
 				return
@@ -263,7 +263,7 @@ func TestUptimeAlertStateTransitionRaceDeterministic(t *testing.T) {
 	// racing transactions increment an EXISTING row — the case a bare read +
 	// separate write can lose (the very-first insert is already race-safe via
 	// plain ON CONFLICT DO UPDATE).
-	if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, 100, time.Now(), 500, "http status 500"); err != nil {
+	if _, _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, 100, time.Now(), 500, "http status 500", false, nil, "", 0); err != nil {
 		t.Fatalf("seed transition: %v", err)
 	}
 
@@ -476,13 +476,13 @@ func TestSiteIncidentsOneOpenPerSite(t *testing.T) {
 	repo := uptime.NewRepo(pool)
 	const threshold = 1 // fire the down alert immediately
 
-	if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500"); err != nil {
+	if _, _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500", false, nil, "", 0); err != nil {
 		t.Fatalf("opening transition: %v", err)
 	}
 	// Several more down probes while already in incident: the "adopt" branch
 	// runs OpenIncident again each time; it must stay a no-op.
 	for i := 0; i < 3; i++ {
-		if _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500"); err != nil {
+		if _, _, err := repo.TransitionAlertState(ctx, s.ID, tenant, false, threshold, time.Now(), 500, "http status 500", false, nil, "", 0); err != nil {
 			t.Fatalf("steady-down transition %d: %v", i, err)
 		}
 	}
@@ -535,7 +535,7 @@ func TestIncidentByIDTenantIsolation(t *testing.T) {
 	s := enrollFakeSite(t, pool, tenantA, srv.URL)
 
 	repo := uptime.NewRepo(pool)
-	if _, err := repo.TransitionAlertState(ctx, s.ID, tenantA, false, 1, time.Now(), 500, "http status 500"); err != nil {
+	if _, _, err := repo.TransitionAlertState(ctx, s.ID, tenantA, false, 1, time.Now(), 500, "http status 500", false, nil, "", 0); err != nil {
 		t.Fatalf("opening transition: %v", err)
 	}
 
@@ -594,7 +594,7 @@ func TestIncidentSiteScopeRestrictivePolicy(t *testing.T) {
 	siteB := enrollFakeSite(t, pool, tenant, srv.URL+"/site-b") // same tenant, a DIFFERENT site
 
 	repo := uptime.NewRepo(pool)
-	if _, err := repo.TransitionAlertState(ctx, siteA.ID, tenant, false, 1, time.Now(), 500, "http status 500"); err != nil {
+	if _, _, err := repo.TransitionAlertState(ctx, siteA.ID, tenant, false, 1, time.Now(), 500, "http status 500", false, nil, "", 0); err != nil {
 		t.Fatalf("opening transition: %v", err)
 	}
 

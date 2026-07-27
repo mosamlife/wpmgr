@@ -4630,6 +4630,7 @@ export const AlertConfigSchema = {
     "notify_vulns",
     "vuln_min_severity",
     "vuln_include_in_digest",
+    "app_alerts_enabled",
   ],
   properties: {
     email_recipients: {
@@ -4668,6 +4669,11 @@ export const AlertConfigSchema = {
       type: "boolean",
       description:
         "Whether open vulnerabilities appear in the periodic email digest\n(see EmailNotifySettings). Default true.\n",
+    },
+    app_alerts_enabled: {
+      type: "boolean",
+      description:
+        "Whether the application-health alert kind (GH #291 Phase 3) is\nallowed to dispatch for this tenant, independent of `enabled`\n(the reachability channel) — a tenant that already has downtime\nalerts on does not silently start receiving app-health alerts\ntoo. Defaults to false on any deployment that already had sites\nwhen app-health alerting shipped, and true on a fresh install —\ndecided once, deterministically, by migration (never re-decided\nat runtime).\n",
     },
   },
 } as const;
@@ -4711,6 +4717,46 @@ export const AlertConfigUpdateSchema = {
     vuln_include_in_digest: {
       type: "boolean",
       description: "Omitted preserves the tenant's currently-stored value.",
+    },
+    app_alerts_enabled: {
+      type: "boolean",
+      description:
+        "Omitted preserves the tenant's currently-stored value (or, for a\ntenant with no alert config saved yet, the deployment's rollout\ndefault — see AlertConfig.app_alerts_enabled).\n",
+    },
+  },
+} as const;
+
+export const AppHealthSettingsSchema = {
+  type: "object",
+  description:
+    "A site's application-health settings (GH #291 Phase 3): the B3\noverride path for the application-health probe, and a per-site\nswitch to disable app-health ALERTING for this site without\ndisabling the probe itself (the dashboard stays accurate either\nway).\n",
+  required: ["app_probe_path", "app_alerts_disabled"],
+  properties: {
+    app_probe_path: {
+      type: "string",
+      maxLength: 512,
+      description:
+        "A site-relative path (must start with `/`; no scheme, no host,\nno `..` traversal) the application-health probe requests instead\nof auto-detecting `/wp-json/` (falling back to\n`/?rest_route=/`). Empty means auto-detect. Set this when the\ndefault probe reports `unknown` for this site (e.g. a WAF blocks\nthe default REST route but a different health-check path is\nreachable).\n",
+    },
+    app_alerts_disabled: {
+      type: "boolean",
+      description:
+        "When true, this site is excluded from app-health alerting\nentirely (both the individual per-site alert and the fleet\ncircuit breaker's eligible-site count) while the probe keeps\nrunning and the dashboard stays accurate.\n",
+    },
+  },
+} as const;
+
+export const AppHealthSettingsUpdateSchema = {
+  type: "object",
+  description: "Save a site's application-health settings.",
+  required: ["app_probe_path", "app_alerts_disabled"],
+  properties: {
+    app_probe_path: {
+      type: "string",
+      maxLength: 512,
+    },
+    app_alerts_disabled: {
+      type: "boolean",
     },
   },
 } as const;

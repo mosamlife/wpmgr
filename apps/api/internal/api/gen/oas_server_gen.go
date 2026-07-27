@@ -1557,6 +1557,16 @@ type Handler interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteAppHealthSettings implements getSiteAppHealthSettings operation.
+	//
+	// Returns the per-site application-health settings (GH #291 Phase 3):
+	// the B3 override path for the application-health probe, and the
+	// per-site app-health alerting opt-out. Every site has these settings
+	// (empty path / alerts not disabled are the defaults) — this never
+	// auto-creates a row, it reads the `sites` columns directly.
+	//
+	// GET /api/v1/sites/{siteId}/app-health-settings
+	GetSiteAppHealthSettings(ctx context.Context, params GetSiteAppHealthSettingsParams) (GetSiteAppHealthSettingsRes, error)
 	// GetSiteAutologinPolicy implements getSiteAutologinPolicy operation.
 	//
 	// Returns the per-site autologin policy (GH #286), auto-creating the
@@ -2433,6 +2443,18 @@ type Handler interface {
 	//
 	// PUT /api/v1/sites/{siteId}/perf/config
 	PutPerfConfig(ctx context.Context, req *PerfConfig, params PutPerfConfigParams) (PutPerfConfigRes, error)
+	// PutSiteAppHealthSettings implements putSiteAppHealthSettings operation.
+	//
+	// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
+	// Phase 3). `app_probe_path` must be a site-relative path (starts with
+	// `/`, no scheme, no host, no `..` traversal) — validation failures
+	// return 422. An empty `app_probe_path` clears the override back to
+	// auto-detect. `app_alerts_disabled` excludes the site from app-health
+	// alerting entirely (both the individual alert and the fleet circuit
+	// breaker's eligible-site count) while the probe keeps running.
+	//
+	// PUT /api/v1/sites/{siteId}/app-health-settings
+	PutSiteAppHealthSettings(ctx context.Context, req *AppHealthSettingsUpdate, params PutSiteAppHealthSettingsParams) (PutSiteAppHealthSettingsRes, error)
 	// PutSiteAutologinPolicy implements putSiteAutologinPolicy operation.
 	//
 	// Stores `{enabled, default_wp_user_login}` for the site (GH #286).

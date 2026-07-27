@@ -41,6 +41,21 @@ type EnrolledSite struct {
 	// replaces the default /wp-json/ (with ?rest_route=/ fallback) target
 	// entirely. Ignored by the reachability prober and the cron-kicker.
 	AppProbePath string
+	// AppAlertsDisabled is sites.app_alerts_disabled (m108, GH #291 Phase 3):
+	// the per-site opt-out for app-health ALERTING only. The app probe still
+	// runs and the dashboard stays accurate; ProbeWorker skips the app-alert
+	// transition step entirely for a site with this set (see processSite).
+	// Ignored by the reachability prober, the app prober itself, and the
+	// cron-kicker.
+	AppAlertsDisabled bool
+	// ConnectionState is sites.connection_state (GH #291 Phase 3 Fix 2).
+	// Carried so processSite's app-alert eligibility gate (appAlertEligible)
+	// can exclude a revoked/archived site using the IDENTICAL predicate
+	// GetTenantAppAlertRatio's WHERE clause enforces server-side - the fire
+	// path and the fleet circuit breaker's ratio must never disagree about
+	// which sites count. Ignored by the reachability prober, the app prober
+	// itself, and the cron-kicker.
+	ConnectionState string
 }
 
 // AlertConfig is a tenant's default alert channel.
@@ -65,7 +80,16 @@ type AlertConfig struct {
 	// VulnIncludeInDigest gates a "new vulnerabilities" section on the existing
 	// email digest. Default true.
 	VulnIncludeInDigest bool
-	UpdatedAt           time.Time
+	// AppAlertsEnabled (m108, GH #291 Phase 3) is the FOURTH signal on this
+	// same channel: whether the NEW app-health alert kind (down/recovery, and
+	// the fleet circuit-breaker's aggregate) is allowed to dispatch for this
+	// tenant. Deliberately independent of Enabled (the existing reachability
+	// channel) so a tenant that already has downtime alerts on does not
+	// silently start receiving app-health alerts too. Its default is decided
+	// ONCE, deterministically, by migration m108 - see
+	// Service.GetAlertConfig's zero-value path and app_alert_rollout.
+	AppAlertsEnabled bool
+	UpdatedAt        time.Time
 }
 
 // AlertState is a site's durable alert transition memory.
@@ -342,6 +366,15 @@ const (
 	// AlertSecurity is a high-severity ADR-037 activity-log event routed into
 	// this alert channel (when the tenant has notify_security enabled).
 	AlertSecurity AlertKind = "security"
+	// AlertAppDown / AlertAppRecovery (m108, GH #291 Phase 3) are the NEW,
+	// independent app-health alert kind - see EvaluateApp. Delivered through
+	// the SAME Dispatcher.Fire path as AlertDown/AlertRecovery (same
+	// channel, same audit trail), but gated separately by
+	// AlertConfig.AppAlertsEnabled instead of Enabled (see
+	// ProbeWorker.fireApp) so a tenant with reachability alerts already on
+	// does not silently start receiving app-health alerts too.
+	AlertAppDown     AlertKind = "app_down"
+	AlertAppRecovery AlertKind = "app_recovery"
 )
 
 // SecurityEvent is a high-severity activity-log event handed to the Dispatcher
@@ -366,8 +399,49 @@ type Alert struct {
 	SiteID   uuid.UUID
 	SiteURL  string
 	SiteName string
-	// HTTPStatus / Error describe the probe that triggered the alert (down only).
+	// HTTPStatus / Error describe the probe that triggered the alert (down
+	// only). For AlertAppDown, Error carries the AppProbeReason* value
+	// instead of a reachability error string (there is no HTTPStatus to
+	// report for an app-health verdict derived from B0/B3, so it stays 0).
 	HTTPStatus int
 	Error      string
 	FiredAt    time.Time
+}
+
+// AppAggregateAlert is the fleet circuit breaker's own aggregate
+// notification (m108, GH #291 Phase 3 section 2): fired ONCE when more than
+// a configurable ratio of a tenant's alert-eligible sites are simultaneously
+// app-down, collapsing what would otherwise be one alert per site into a
+// single notification, and ONCE when the ratio recovers below threshold.
+// Never carries a single SiteID/SiteURL - see Dispatcher.FireAppAggregate.
+type AppAggregateAlert struct {
+	// Recovered distinguishes the open vs recovery notification (the
+	// tenant-wide sibling of AlertKind's down/recovery pair).
+	Recovered bool
+	// Updated (GH #291 Phase 3 Fix 3) marks a THIRD kind of notification:
+	// the breaker is still tripped, but the down count has materially
+	// worsened since the last notification. Mutually exclusive with
+	// Recovered - both false means the original trip notification.
+	Updated  bool
+	TenantID uuid.UUID
+	// DownCount / EligibleCount are the counts AT THE MOMENT the breaker
+	// transitioned (GetTenantAppAlertRatio) - the authoritative numbers for
+	// "how bad is this", not merely the sites that changed on this tick.
+	DownCount     int
+	EligibleCount int
+	// SuppressedSites names sites whose individual app-down notification
+	// this breaker is collapsing, so the notification body says what was
+	// suppressed instead of leaving the operator to guess ("Include the
+	// count and a clear statement of what was suppressed so nothing is
+	// silently swallowed"). On the initial trip this is exactly this tick's
+	// fires (nothing was suppressed before). On an Updated notification
+	// (Fix 3) this is instead the LIVE, currently-down set read fresh via
+	// ListTenantAppDownSites - never merely the tick that happened to
+	// trigger the update - because an update can fire several ticks after
+	// the sites it should describe actually went down (the min-interval
+	// throttle delays it). DownCount/EligibleCount are always the true,
+	// complete counts regardless of how many names this list holds
+	// (bounded, for a large tenant).
+	SuppressedSites []string
+	FiredAt         time.Time
 }

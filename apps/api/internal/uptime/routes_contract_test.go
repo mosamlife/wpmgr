@@ -23,6 +23,9 @@ var canonicalUptimeRoutes = []string{
 	"GET    /api/v1/fleet/status",
 	"GET    /api/v1/fleet/incidents",
 	"GET    /api/v1/fleet/incidents/:incidentId",
+	// Per-site app-health settings (GH #291 Phase 3).
+	"GET    /api/v1/sites/:siteId/app-health-settings",
+	"PUT    /api/v1/sites/:siteId/app-health-settings",
 }
 
 func TestUptimeRoutesContract(t *testing.T) {
