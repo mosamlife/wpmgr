@@ -1103,6 +1103,42 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		logger.Info("uptime app-health probe disabled (WPMGR_UPTIME_APP_PROBE_ENABLED=false)")
 	}
+	// The uptime_probe River job otherwise inherits River's own 60s default
+	// (river.Config.JobTimeout is unset below), which only covers the
+	// reachability pass up to ~40 sites at the production defaults
+	// (ProbeConcurrency=10, ProbeTimeout=15s); past that, and further
+	// reduced once the GH #291 Phase 2 app-health pass adds its own work
+	// inside the same job, River silently cancels the sweep mid-flight: some
+	// sites get probed and recorded, the rest simply are not, with no error
+	// explaining the gap. Mirror the update/backup worker jobTimeout pattern
+	// (updateJobTimeout / backupJobTimeout, above): derive a job-level budget
+	// that genuinely covers the worst case for cfg.Uptime.MaxFleetSize sites
+	// instead of relying on the 60s default. See DeriveProbeJobTimeout's doc
+	// comment for the full arithmetic. appProbeTimeoutForBudget is 0 (the app
+	// pass contributes nothing to the budget) unless the app probe was
+	// actually wired above; the budget must match what Sweep can actually do
+	// this deployment, not what it could theoretically do if the feature were
+	// enabled.
+	appProbeTimeoutForBudget := time.Duration(0)
+	if cfg.Uptime.AppProbeEnabled {
+		appProbeTimeoutForBudget = cfg.Uptime.AppProbeTimeout
+	}
+	uptimeJobTimeout := uptime.DeriveProbeJobTimeout(
+		cfg.Uptime.ProbeConcurrency,
+		cfg.Uptime.ProbeTimeout,
+		cfg.Uptime.ProbeInterval,
+		cfg.Uptime.AppProbeInterval,
+		appProbeTimeoutForBudget,
+		cfg.Uptime.MaxFleetSize,
+	)
+	uptimeWorker.SetJobTimeout(uptimeJobTimeout)
+	resolvedMaxFleetSize := cfg.Uptime.MaxFleetSize
+	if resolvedMaxFleetSize <= 0 {
+		resolvedMaxFleetSize = uptime.DefaultMaxFleetSizeForProbeTimeout
+	}
+	logger.Info("uptime probe sweep job timeout configured",
+		slog.Duration("job_timeout", uptimeJobTimeout),
+		slog.Int("max_fleet_size", resolvedMaxFleetSize))
 	// GH #291 Phase 3 - app-health ALERTING numeric knobs. Safe to wire
 	// unconditionally: whenever the app probe is disabled (or a site never
 	// gets a conclusive verdict), ProbeWorker's app-alert transition step is

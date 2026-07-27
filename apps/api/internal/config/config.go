@@ -263,6 +263,21 @@ type UptimeConfig struct {
 	// into one aggregate notification. Default 0.25 (25%).
 	// Env: WPMGR_UPTIME_APP_ALERT_BREAKER_RATIO.
 	AppAlertBreakerRatio float64 `koanf:"app_alert_breaker_ratio"`
+
+	// MaxFleetSize is the fleet size the probe sweep's River job-level
+	// Timeout() budget is sized against (see uptime.DeriveProbeJobTimeout).
+	// It is deliberately NOT "however many sites are enrolled right now", a
+	// live count would go stale as the fleet grows and could silently
+	// reintroduce the exact job-timeout mismatch this budget exists to fix.
+	// Default 2000 (uptime.DefaultMaxFleetSizeForProbeTimeout), which
+	// comfortably exceeds any fleet this deployment has been operated
+	// against to date; raise it only if a single deployment's enrolled site
+	// count genuinely approaches that ceiling. A fleet that outgrows this
+	// value is still not silently broken: the sweep's own admission-control
+	// backstop degrades it to a partial-but-recorded result instead of an
+	// abrupt cancellation (see uptime.ProbeWorker.Sweep). <= 0 falls back to
+	// the default. Env: WPMGR_UPTIME_MAX_FLEET_SIZE.
+	MaxFleetSize int `koanf:"max_fleet_size"`
 }
 
 // S3Config holds the S3-compatible object-storage configuration (ADR-010).
@@ -599,6 +614,7 @@ func defaults() map[string]any {
 		"uptime.app_probe_timeout":          "10s",
 		"uptime.app_alert_threshold":        5,
 		"uptime.app_alert_breaker_ratio":    0.25,
+		"uptime.max_fleet_size":             2000,
 		"river.media_schema":                "media_encoder",
 		"autologin.require_2fa_step_up":     false,
 		"conn.degrade_after":                "300s",

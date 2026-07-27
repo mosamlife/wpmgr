@@ -60,6 +60,18 @@ type ProbeWorker struct {
 	// DISPATCH is gated, per-tenant, on AlertConfig.AppAlertsEnabled.
 	appAlertThreshold    int
 	appAlertBreakerRatio float64
+
+	// jobTimeout overrides River's default 60s per-job context deadline (see
+	// Timeout, DeriveProbeJobTimeout, and the identical jobTimeout field on
+	// update.Worker / backup.BackupWorker for the same pattern applied to
+	// their own jobs). Sweep's worst-case wall-clock cost scales with the
+	// size of the fleet being probed (see DeriveProbeJobTimeout's doc
+	// comment), so the 60s default is only correct for a small fleet. Past
+	// that, River silently cancels the job mid-sweep: some sites get probed
+	// and recorded, the rest simply are not, with no error explaining the
+	// gap. Zero falls back to river.Config.JobTimeout, see Timeout's doc
+	// comment.
+	jobTimeout time.Duration
 }
 
 // defaultAppAlertThreshold is ~25 minutes at the documented 300s app-probe
@@ -122,6 +134,202 @@ func (w *ProbeWorker) SetAppAlertConfig(threshold int, breakerRatio float64) {
 	w.appAlertBreakerRatio = breakerRatio
 }
 
+// SetJobTimeout overrides River's default per-job context deadline for the
+// probe sweep (see Timeout). Call once at boot with
+// uptime.DeriveProbeJobTimeout(...), see that function's doc comment for the
+// arithmetic. Optional: a ProbeWorker this is never called on keeps
+// jobTimeout at its zero value, which Timeout reports back as 0 (defer to
+// river.Config.JobTimeout), so every existing caller/test is unaffected.
+func (w *ProbeWorker) SetJobTimeout(d time.Duration) {
+	w.jobTimeout = d
+}
+
+// Timeout overrides River's default per-job context deadline (60s) for the
+// uptime probe sweep, the same way update.Worker.Timeout and
+// backup.BackupWorker.Timeout do for their own jobs. Returning a positive
+// duration makes River use it instead of river.Config.JobTimeout; returning 0
+// keeps the default. River documents that returning -1 disables the deadline
+// entirely; we intentionally do NOT do that: a genuinely wedged sweep must
+// eventually error out so River can retry it. Sweep's own admission-control
+// backstop (see sweepBudgetExhausted) is meant to degrade a large-fleet sweep
+// gracefully well before this deadline is ever reached; Timeout is the last
+// resort behind it, not the primary mechanism.
+func (w *ProbeWorker) Timeout(*river.Job[ProbeArgs]) time.Duration { return w.jobTimeout }
+
+// DefaultMaxFleetSizeForProbeTimeout is the fleet size DeriveProbeJobTimeout
+// assumes when sizing the probe sweep's job-level Timeout() budget and no
+// more specific value is configured (see UptimeConfig.MaxFleetSize in
+// internal/config).
+//
+// The sweep's real worst case is not a fixed number: it scales with however
+// many sites ListEnrolledForProbe returns, which grows with the fleet and is
+// never a compile-time constant. Two ways to size a job Timeout() budget
+// against that moving target were considered:
+//
+//   - Derive it from the CURRENTLY enrolled site count (a live COUNT query at
+//     boot, or refreshed periodically). Rejected: the budget would then go
+//     stale as the fleet grows between boots/refreshes, silently
+//     reintroducing exactly the bug this function exists to fix, and a
+//     fleet-wide incident (the scenario that actually needs the larger
+//     budget) is also the scenario least likely to coincide with a recent
+//     redeploy.
+//   - A generous, deliberately FIXED ceiling, decoupled from the actual
+//     current fleet size and therefore immune to that staleness failure
+//     mode, configurable (WPMGR_UPTIME_MAX_FLEET_SIZE /
+//     UptimeConfig.MaxFleetSize) for an operator who legitimately runs a
+//     larger fleet than the default covers. This is what
+//     DefaultMaxFleetSizeForProbeTimeout does.
+//
+// 2000 is chosen to comfortably exceed any fleet size this deployment has
+// been operated against to date while still keeping the resulting Timeout()
+// (see DeriveProbeJobTimeout's worked example) under an hour, so a genuinely
+// wedged sweep is still caught in a reasonable window rather than only after
+// a multi-hour deadline. A fleet that outgrows this ceiling, configured or
+// default, is not silently broken by that: Sweep's own admission-control
+// backstop (sweepBudgetExhausted) stops admitting new sites once the job's
+// remaining budget can no longer safely cover another one, so the sweep still
+// finishes with a partial-but-recorded result and a logged skip count instead
+// of an abrupt River cancellation. Raising this value only widens the window
+// before that backstop would ever need to engage.
+const DefaultMaxFleetSizeForProbeTimeout = 2000
+
+// DeriveProbeJobTimeout computes the River job-level Timeout() budget for the
+// uptime probe sweep (see ProbeWorker.Timeout / SetJobTimeout). It reads the
+// actual sweep knobs (concurrency, both probe timeouts, and the app-probe
+// cadence ratio) rather than assuming them, so this stays correct if any of
+// them is ever tuned.
+//
+// Sweep's worst-case wall-clock budget, in the order the work happens (see
+// Sweep):
+//
+//  1. reachability pass: every one of maxFleetSize sites is probed under the
+//     `sem` semaphore (bounded to `concurrency` in flight at once), each
+//     probe hard-capped at probeTimeout:
+//     ceil(maxFleetSize / concurrency) * probeTimeout
+//     (this term alone reproduces the mismatch this function exists to fix:
+//     at the production defaults, concurrency=10 and probeTimeout=15s, a
+//     500-site fleet already costs ceil(500/10)*15s = 750s, twelve and a
+//     half times River's 60s default.)
+//  2. app-health pass (only when appProbeTimeout > 0, i.e. SetAppProber was
+//     called, see NewProbeWorker/SetAppProber's zero-value-safe doc
+//     comments): appProbeDue buckets sites into `ratio` = max(1,
+//     appProbeInterval / probeInterval) roughly-even groups keyed on site
+//     ID (mirroring appProbeDue's own defaults and integer arithmetic
+//     exactly, so this budget always matches what Sweep actually does at
+//     runtime), so AT MOST ceil(maxFleetSize / ratio) sites attempt an app
+//     probe on any single tick, each bounded by appProbeTimeout under the
+//     separate `appSem` semaphore (also sized `concurrency`):
+//     ceil(ceil(maxFleetSize / ratio) / concurrency) * appProbeTimeout
+//  3. headroom, mirroring update.DeriveApplyJobTimeout's `+2*time.Minute`:
+//     scheduling jitter, the sequential per-site TransitionAlertState /
+//     SetSiteHealth writes that run after wg.Wait() (cheap per site, but not
+//     exactly zero at fleet scale), and appProbeDue's bucketing being only
+//     APPROXIMATELY even (a real hash is not a perfectly balanced
+//     partition): a protective margin, not a separately itemized worst
+//     case.
+//
+// maxFleetSize is deliberately NOT "however many sites are enrolled right
+// now", see DefaultMaxFleetSizeForProbeTimeout's doc comment for why a live
+// count would be the wrong input here. A value <= 0 falls back to
+// DefaultMaxFleetSizeForProbeTimeout.
+//
+// With the production defaults (concurrency=10, probeTimeout=15s,
+// appProbeTimeout=10s, probeInterval=60s, appProbeInterval=300s so ratio=5,
+// maxFleetSize=DefaultMaxFleetSizeForProbeTimeout=2000) this computes to
+// 50m0s (reachability) + 6m40s (app) + 2m (headroom) = 58m40s.
+//
+// Returns 0 (defer to river.Config.JobTimeout) when concurrency or
+// probeTimeout is not positive, so a zero/misconfigured input never produces
+// a misleadingly small nonzero timeout that omits the reachability pass it is
+// meant to cover.
+func DeriveProbeJobTimeout(concurrency int, probeTimeout, probeInterval, appProbeInterval, appProbeTimeout time.Duration, maxFleetSize int) time.Duration {
+	if concurrency <= 0 || probeTimeout <= 0 {
+		return 0
+	}
+	if maxFleetSize <= 0 {
+		maxFleetSize = DefaultMaxFleetSizeForProbeTimeout
+	}
+
+	reachabilityPass := time.Duration(ceilDivInt(maxFleetSize, concurrency)) * probeTimeout
+
+	var appPass time.Duration
+	if appProbeTimeout > 0 {
+		// Mirror appProbeDue's own interval defaults and ratio arithmetic
+		// exactly (see its doc comment) so this budget always matches what
+		// Sweep will actually do at runtime.
+		pi := probeInterval
+		if pi <= 0 {
+			pi = time.Minute
+		}
+		api := appProbeInterval
+		if api <= 0 {
+			api = 5 * time.Minute
+		}
+		ratio := int(api / pi)
+		if ratio < 1 {
+			ratio = 1
+		}
+		appSites := ceilDivInt(maxFleetSize, ratio)
+		appPass = time.Duration(ceilDivInt(appSites, concurrency)) * appProbeTimeout
+	}
+
+	const headroom = 2 * time.Minute
+	return reachabilityPass + appPass + headroom
+}
+
+// ceilDivInt returns ceil(n/d) for n >= 0 and d >= 1, without floating point.
+// d <= 0 is treated as 1 (never divides by zero); n <= 0 returns 0.
+func ceilDivInt(n, d int) int {
+	if d <= 0 {
+		d = 1
+	}
+	if n <= 0 {
+		return 0
+	}
+	return (n + d - 1) / d
+}
+
+// probeAdmissionBudget is the worst-case wall-clock ONE already-admitted
+// site's goroutine can still take to finish (see Sweep): the reachability
+// probe (w.prober's own configured timeout) plus, when the app-health probe
+// is wired (SetAppProber), its own timeout too. These are additive rather
+// than overlapping for a single site because the app probe only starts AFTER
+// the reachability probe finishes and releases `sem` (see the release-order
+// comment in Sweep).
+func (w *ProbeWorker) probeAdmissionBudget() time.Duration {
+	if w.prober == nil {
+		return 0
+	}
+	budget := w.prober.timeout
+	if w.appProber != nil {
+		budget += w.appProber.timeout
+	}
+	return budget
+}
+
+// sweepBudgetExhausted reports whether the sweep's job context is close
+// enough to its own deadline that admitting one more site risks that site's
+// probe being abruptly cancelled mid-flight instead of completing and being
+// recorded. This is Sweep's graceful-degradation backstop for the case
+// DeriveProbeJobTimeout budgets for (see its doc comment): a fleet that has
+// grown past the configured/default ceiling. A context with no deadline
+// (context.Background(), every existing unit/integration test in this
+// package) never trips this: it is not a change to normal-sized-fleet
+// behavior, only a backstop for when the job's own deadline is genuinely
+// close. admissionBudget <= 0 (an unconfigured prober, never happens via
+// NewProbeWorker, but guarded defensively) also never trips this, since there
+// is then no meaningful worst case to compare against.
+func sweepBudgetExhausted(ctx context.Context, admissionBudget time.Duration) bool {
+	if admissionBudget <= 0 {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return false
+	}
+	return time.Until(deadline) < admissionBudget
+}
+
 // Work runs one sweep.
 func (w *ProbeWorker) Work(ctx context.Context, _ *river.Job[ProbeArgs]) error {
 	_, err := w.Sweep(ctx, time.Now())
@@ -154,7 +362,26 @@ func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
 		wg     sync.WaitGroup
 	)
 
-	for _, s := range sites {
+	// GH follow-up (job-timeout mismatch): stop ADMITTING new sites once the
+	// job's own remaining context budget can no longer safely cover one more
+	// site's worst case (see sweepBudgetExhausted / probeAdmissionBudget /
+	// DeriveProbeJobTimeout). Sites admitted before the cutoff are completely
+	// unaffected by this: they run to completion and are recorded exactly as
+	// before. `sites` is reassigned to the admitted prefix below so every
+	// later use in this function (InsertChecks/UpsertRollup already only ever
+	// see admitted results via `checks`; the alert-processing loop and the
+	// returned count both range over `sites` directly) automatically covers
+	// only what was actually probed. A skipped site is left completely
+	// untouched (no health_status write, no alert-state transition) rather
+	// than misread as "down", which reading its zero-value ProbeResult would
+	// otherwise produce.
+	admissionBudget := w.probeAdmissionBudget()
+	admitted := len(sites)
+	for i, s := range sites {
+		if sweepBudgetExhausted(ctx, admissionBudget) {
+			admitted = i
+			break
+		}
 		s := s
 		wg.Add(1)
 		sem <- struct{}{}
@@ -225,6 +452,22 @@ func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
 		}()
 	}
 	wg.Wait()
+
+	if admitted < len(sites) {
+		// The gap this closes: previously River would simply cancel the
+		// whole job at the Timeout() deadline, leaving no error and no
+		// record explaining which sites were skipped. This log line, plus
+		// the fact that `sites` below only covers what was actually
+		// admitted, is what turns that into a documented partial result
+		// instead of a silent hole in uptime history. The next periodic
+		// tick (ProbeInterval, ~60s) picks up every site regardless, so this
+		// sweep does not need to remember which ones it skipped.
+		w.logger.Warn("uptime sweep: job budget nearly exhausted; stopped admitting new sites mid-sweep",
+			slog.Int("sites_total", len(sites)),
+			slog.Int("sites_admitted", admitted),
+			slog.Int("sites_skipped", len(sites)-admitted))
+		sites = sites[:admitted]
+	}
 
 	// Batch-write the time-series (no-op when ClickHouse is disabled).
 	if err := w.store.InsertChecks(ctx, checks); err != nil {
