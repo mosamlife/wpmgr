@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.94] - 2026-07-27
+
+### Fixed
+
+- Uptime checks could be cut off partway through on a larger fleet, leaving gaps in uptime history with nothing to explain them. The job running a sweep was bound by a one minute limit, but a sweep of more than about forty sites can legitimately take longer when sites are slow to answer, which is exactly what happens during the fleet-wide problems the checks exist to catch. Some sites were then checked and recorded while the rest were quietly skipped, with no error. The limit is now derived from how long a sweep can actually take, and a sweep that still runs short of time now stops cleanly and records how many sites it managed rather than being cut off mid-flight.
+
 ## [0.61.93] - 2026-07-27
 
 ### Added
