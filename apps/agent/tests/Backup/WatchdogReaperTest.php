@@ -216,25 +216,43 @@ final class WatchdogReaperTest extends TestCase
     // Test 8: resume_count cap preserved.
     // ------------------------------------------------------------------
 
-    public function test_resume_count_at_cap_is_marked_failed_not_resumed(): void
+    /**
+     * GH #256: the resume-cap give-up branch used to mark the row
+     * phase=failed and leave it (and its scratch directory) in place
+     * forever, since sweepStalled()'s own query excludes terminal phases, so
+     * that row was never revisited again, and its scratch dir survived
+     * until the age-gated BackupJanitor::gcRuns() backstop eventually swept
+     * it. It now reclaims the scratch directory THEN deletes the row
+     * outright, mirroring every other give-up branch in this class.
+     */
+    public function test_resume_count_at_cap_reclaims_scratch_and_deletes_row(): void
     {
-        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb   = new FakeBackupTasksWpdb();
+        $params = $this->runnerParams(self::CAPPED_ID);
+        mkdir($params['scratch_dir'], 0700, true);
+        file_put_contents($params['scratch_dir'] . '/database.sql.gz', 'fixture-bytes');
+
         $wpdb->seedRow(self::CAPPED_ID, [
             'phase'            => TaskRunner::PHASE_QUEUED,
             'started_at'       => time() - 200,
             'last_progress_at' => time() - 200,
             'resume_count'     => 6,
             'max_resumes'      => 6,
-            'sub_state'        => (string) json_encode(['params' => $this->runnerParams(self::CAPPED_ID)]),
+            'sub_state'        => (string) json_encode(['params' => $params]),
         ]);
         $GLOBALS['wpdb'] = $wpdb;
 
         Watchdog::sweepStalled();
 
-        $row = $wpdb->rows[self::CAPPED_ID] ?? null;
-        $this->assertNotNull($row, 'a capped-out row is marked failed, not deleted, by this branch');
-        $this->assertSame(TaskRunner::PHASE_FAILED, $row['phase'], 'a row at resume_count>=max_resumes must be marked failed, never resumed again');
-        $this->assertSame(6, $row['resume_count'], 'resume_count must NOT be bumped past the cap');
+        $this->assertArrayNotHasKey(
+            self::CAPPED_ID,
+            $wpdb->rows,
+            'a row at resume_count>=max_resumes must be DELETEd, never left at phase=failed forever (sweepStalled() excludes terminal phases and would never revisit it again)'
+        );
+        $this->assertDirectoryDoesNotExist(
+            $params['scratch_dir'],
+            'GH #256: the scratch directory must be reclaimed before the row that names it is discarded'
+        );
     }
 
     /** Recursive delete used only for test fixture cleanup. */

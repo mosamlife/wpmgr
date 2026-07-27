@@ -39,6 +39,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.95",
+    date: "2026-07-27",
+    summary: "A failed backup no longer leaves its working files behind on the site.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A failed backup left its working directory (upload parts, copied plugins and themes, the database dump) on the site instead of cleaning up after itself (GH #256). One reported site was left with about 1.4 GB behind. Four separate give-up paths in the agent's backup watchdog now all reclaim it, but only once the same run-lock a live backup holds confirms the backup is truly stopped, so a slow but still-running backup is never touched.",
+      },
+      {
+        tag: "Fixed",
+        text: "The routine cleanup for old backup working directories, and the separate one for restore leftovers, depended entirely on WP-Cron and so never ran at all on a site where WP-Cron is disabled, unreliable, or gets no visitors. Both now also run on an ordinary page load, throttled so a busy site pays almost nothing for them. A bug that could permanently wedge the restore cleanup after one missed run is also fixed.",
+      },
+      {
+        tag: "Fixed",
+        text: "The Sites grid could show a green \"Backups\" indicator next to a red \"Failed\" badge for the same site; the misleading indicator has been removed, and the backup chip beside it already shows the real status.",
+      },
+      {
+        tag: "Fixed",
+        text: "The backup delete dialog said deleting a backup reclaims the site's storage, which was not true since the site's own temporary files stayed on the host; the wording now says what actually happens.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+  },
+  {
     version: "0.61.93",
     date: "2026-07-27",
     summary: "Spot a site whose WordPress has failed even when its cache keeps serving visitors.",

@@ -1443,9 +1443,10 @@ function BackupRowActions({
         consequencesBody={
           <>
             <p>
-              This permanently deletes the snapshot and reclaims its storage.
-              Unique chunks are removed; chunks still used by other snapshots are
-              kept. This cannot be undone.
+              This permanently deletes the snapshot and its stored data.
+              Unique chunks are removed; chunks still used by other snapshots
+              are kept. Any temporary files the site left on the host are
+              cleaned up separately by the site itself. This cannot be undone.
             </p>
             {dependentsCount > 0 ? (
               <p className="text-warning-subtle-fg">

@@ -521,6 +521,195 @@ final class TaskRunnerLockTest extends TestCase
         wp_delete_file($lockPath);
     }
 
+    // ------------------------------------------------------------------
+    // GH #256 finding 1/2/3 (post-ship re-review): withRunLock(), the
+    // callback-taking replacement for the earlier bool-returning
+    // isRunLockFree() probe. Watchdog's give-up paths and
+    // BackupJanitor::gcRuns() both reclaim a snapshot's scratch directory
+    // from INSIDE the callback rather than probing-then-acting as two
+    // separate calls, closing the TOCTOU window a probe-then-release
+    // pattern leaves open. Mirrors run()'s own GET_LOCK-then-flock guard
+    // order exactly.
+    // ------------------------------------------------------------------
+
+    public function test_with_run_lock_invokes_callback_and_releases_both_guards_when_nothing_else_holds_them(): void
+    {
+        [$params] = $this->buildParams();
+
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = ['1'];
+        $GLOBALS['wpdb'] = $wpdb;
+
+        $runner       = new TaskRunner($params);
+        $invoked      = false;
+        $ran          = $runner->withRunLock(static function () use (&$invoked): void {
+            $invoked = true;
+        });
+
+        $this->assertTrue($ran, 'nothing else holds either guard, so withRunLock() must run the callback and report true');
+        $this->assertTrue($invoked, 'the callback must actually be invoked while both guards are held');
+        $this->assertSame(1, $wpdb->releaseCallCount, 'the GET_LOCK provisionally won must be released once the callback returns');
+
+        // Check the lock file is gone BEFORE assertFlockIsFree() below, which
+        // would itself recreate-then-delete the file as a side effect and so
+        // must not run first, or this assertion would be checking its own
+        // cleanup rather than withRunLock()'s.
+        $probe    = new TaskRunner($params);
+        $lockPath = (new \ReflectionMethod(TaskRunner::class, 'fileLockPath'))->invoke($probe);
+        $this->assertFileDoesNotExist($lockPath, 'a successful reclaim must delete its own lock coordination file, not leave a fresh zero-byte one behind for the janitor');
+
+        $this->assertFlockIsFree($params, 'the flock acquired for the callback must be released once it returns, so a real run() can still proceed afterward');
+    }
+
+    public function test_with_run_lock_does_not_invoke_callback_on_get_lock_contention_without_attempting_flock(): void
+    {
+        [$params] = $this->buildParams();
+
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = ['0']; // another session already holds GET_LOCK.
+        $GLOBALS['wpdb'] = $wpdb;
+
+        $runner  = new TaskRunner($params);
+        $invoked = false;
+        $ran     = $runner->withRunLock(static function () use (&$invoked): void {
+            $invoked = true;
+        });
+
+        $this->assertFalse($ran, 'a GET_LOCK contention must report the run-lock as held');
+        $this->assertFalse($invoked, 'the callback must never run when GET_LOCK is contended');
+        $this->assertSame(0, $wpdb->releaseCallCount, 'the probe never won GET_LOCK, so it must never call RELEASE_LOCK');
+    }
+
+    /**
+     * The exact scenario GH #256 finding 3 exists to close: GET_LOCK
+     * reports "free" (as it would if the live runner's own $wpdb
+     * connection had silently dropped mid-backup, see run()'s own doc),
+     * but the live runner's flock is still held. withRunLock() must defer
+     * to the authoritative flock, never invoke the callback, and report
+     * contention.
+     */
+    public function test_with_run_lock_does_not_invoke_callback_when_flock_is_held_even_if_get_lock_reports_free(): void
+    {
+        [$params] = $this->buildParams();
+
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = ['1']; // GET_LOCK reports "free".
+        $GLOBALS['wpdb'] = $wpdb;
+
+        [$lockHandle, $lockPath] = $this->externallyHoldTheFlock($params);
+
+        try {
+            $runner  = new TaskRunner($params);
+            $invoked = false;
+            $ran     = $runner->withRunLock(static function () use (&$invoked): void {
+                $invoked = true;
+            });
+
+            $this->assertFalse($ran, 'a live runner still holds the flock; withRunLock() must report the run-lock as held');
+            $this->assertFalse($invoked, 'the callback must never run while a live runner holds the flock');
+            $this->assertSame(1, $wpdb->releaseCallCount, 'the GET_LOCK provisionally won must be released once the flock rejects it');
+            $this->assertFileExists($lockPath, "a contended caller must never delete the winner's still-held lock file");
+        } finally {
+            flock($lockHandle, LOCK_UN);
+            fclose($lockHandle);
+        }
+    }
+
+    /**
+     * GH #256 finding 1 (TOCTOU): the core property this fix exists to
+     * establish: the callback runs WHILE both guards are still held, not
+     * after they have already been released and re-acquired by someone
+     * else. Proven directly by attempting a second, independent, exclusive,
+     * non-blocking flock() on the exact same lock-file path from a SEPARATE
+     * file handle from INSIDE the callback: it must fail (the outer guard
+     * is still held), and succeed again once withRunLock() has returned
+     * (the outer guard has been released). A probe-then-release-then-act
+     * implementation (the pre-fix shape: isRunLockFree() released both
+     * guards before the caller ever touched a file) would let this second
+     * acquisition SUCCEED while "inside" the outer call, because by that
+     * point there would be nothing left holding it.
+     */
+    public function test_with_run_lock_holds_both_guards_for_the_full_duration_of_the_callback(): void
+    {
+        [$params] = $this->buildParams();
+
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = ['1'];
+        $GLOBALS['wpdb'] = $wpdb;
+
+        $probe    = new TaskRunner($params);
+        $lockPath = (new \ReflectionMethod(TaskRunner::class, 'fileLockPath'))->invoke($probe);
+
+        $runner              = new TaskRunner($params);
+        $lockWasHeldInside   = null;
+        $ran                 = $runner->withRunLock(function () use (&$lockWasHeldInside, $lockPath): void {
+            $second = fopen($lockPath, 'c'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- test-only: a second independent handle proving the outer flock is still held
+            $this->assertNotFalse($second, 'sanity: the lock file must be openable from a second handle');
+            $lockWasHeldInside = !flock($second, LOCK_EX | LOCK_NB);
+            fclose($second); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- test-only fixture cleanup
+        });
+
+        $this->assertTrue($ran, 'sanity: nothing else holds either guard, so the callback must run');
+        $this->assertTrue(
+            $lockWasHeldInside,
+            'a second, independent flock attempt on the exact same lock file must FAIL while inside the callback: this proves withRunLock() holds the lock across the callback rather than probing-then-releasing beforehand'
+        );
+
+        // After withRunLock() returns, the guard must be free again.
+        $after = fopen($lockPath, 'c'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- test-only fixture
+        $this->assertNotFalse($after, 'sanity: the lock file must be openable after withRunLock() returns');
+        $this->assertTrue(flock($after, LOCK_EX | LOCK_NB), 'the guard must be released once withRunLock() returns');
+        flock($after, LOCK_UN);
+        fclose($after); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- test-only fixture cleanup
+        wp_delete_file($lockPath);
+    }
+
+    /**
+     * GH #256 finding 2 (fail-open): a flock guard that could not even be
+     * ATTEMPTED (acquireFileLock() returning `['handle' => null, 'contended'
+     * => false]`, here forced via a lock-file directory with no write
+     * permission, the same class of failure as open_basedir or a
+     * read-only filesystem) must be treated as NOT provably free on this
+     * reclaim-only path, unlike run()'s own inline guard (unchanged, and
+     * correct for its own purpose: proceeding without a flock guard there
+     * costs at most a wasted duplicate run). The callback must never run.
+     */
+    public function test_with_run_lock_treats_a_degraded_flock_guard_as_not_free(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            self::markTestSkipped('running as root bypasses filesystem permission checks');
+        }
+
+        $restrictedBase = sys_get_temp_dir() . '/wpmgr-lock-degraded-test-' . bin2hex(random_bytes(6));
+        mkdir($restrictedBase, 0755, true);
+        $runsDir = $restrictedBase . '/runs';
+        mkdir($runsDir, 0755, true);
+        chmod($runsDir, 0500); // read + execute only: fopen('c') for a NEW file inside must fail.
+
+        try {
+            [$params] = $this->buildParams();
+            $params['scratch_dir'] = $runsDir . '/' . self::SNAPSHOT_ID;
+
+            $wpdb = new FakeBackupTasksWpdb();
+            $wpdb->lockResponses = ['1'];
+            $GLOBALS['wpdb'] = $wpdb;
+
+            $runner  = new TaskRunner($params);
+            $invoked = false;
+            $ran     = $runner->withRunLock(static function () use (&$invoked): void {
+                $invoked = true;
+            });
+
+            $this->assertFalse($ran, 'a flock guard that could not even be attempted must be treated as NOT free on the reclaim path');
+            $this->assertFalse($invoked, 'the callback must never run when the flock guard is degraded');
+            $this->assertSame(1, $wpdb->releaseCallCount, 'the GET_LOCK provisionally won must still be released once the degraded flock guard refuses');
+        } finally {
+            chmod($runsDir, 0755);
+            @rmdir($runsDir); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- test-only fixture cleanup
+            @rmdir($restrictedBase); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- test-only fixture cleanup
+        }
+    }
+
     /** Recursive delete used only for test fixture cleanup. */
     private function rrmdir(string $dir): void
     {

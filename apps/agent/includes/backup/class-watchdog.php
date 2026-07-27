@@ -144,6 +144,18 @@ final class Watchdog
         $startedAt = (int) ($row['started_at'] ?? 0);
         $age       = time() - $startedAt;
         if ($startedAt > 0 && $age > 7200) {
+            // GH #256: reclaim this run's scratch directory BEFORE the row
+            // (the only record of where that scratch lives) is deleted
+            // below. A row "running" for over 2h with no completion is a
+            // strong signal by itself, but not a certain one: an unusually
+            // large site can legitimately take that long, so
+            // reclaimRunScratch() does not treat this age alone as proof
+            // the run is dead. It reclaims the file only from INSIDE
+            // TaskRunner's own run-lock (TaskRunner::withRunLock()), and
+            // skips the file reclaim entirely (deferring to
+            // BackupJanitor::gcRuns()) if a live runner still holds it. See
+            // reclaimRunScratch()'s own doc for the full rationale.
+            self::reclaimRunScratch($row);
             // DELETE the row (not just mark failed) so the next watchdog
             // tick finds nothing and immediately returns. We DON'T touch
             // the CP — the snapshot's CP-side status is whatever the
@@ -161,12 +173,32 @@ final class Watchdog
 
         // SAFETY 2 (Bug 2 fix): refuse to re-enter a task whose phase has
         // been stuck at `encrypting_uploading` or `submitting_manifest` for
-        // more than 5 minutes. These are the LATE phases of the pipeline —
+        // more than 5 minutes. These are the LATE phases of the pipeline;
         // if we got that far the artifacts are already uploaded and the
         // manifest is either submitted or about to be. Re-entering would
         // re-issue presignChunks calls the CP would 422-reject (the
-        // observed bug). Strong signal: dead/stale row regardless of
-        // started_at age.
+        // observed bug).
+        //
+        // GH #256 finding 4 (post-ship review): this 300s figure is NOT a
+        // reliable dead-run signal on its own. The GH #279 heartbeat is
+        // emitted BETWEEN chunks, so a single large chunk upload on a slow
+        // link can legitimately exceed 300s of database silence while the
+        // runner is completely alive. Kept at 300s deliberately, for two
+        // separate reasons rather than one:
+        //   - As the trigger for the ROW discard below, 300s is fine: the
+        //     row is only bookkeeping, and every other give-up branch in
+        //     this method already accepts that a live runner can lose its
+        //     row (see the class doc's re-entry contract) without harming
+        //     the in-flight run itself.
+        //   - As the trigger for the FILE reclaim, the number itself no
+        //     longer needs to be conservative, because reclaimRunScratch()
+        //     no longer trusts this threshold as proof of death: it
+        //     reclaims files only from inside TaskRunner's own run-lock
+        //     (TaskRunner::withRunLock()) and skips deleting any file
+        //     when a live runner still holds it, deferring to
+        //     BackupJanitor::gcRuns() instead. A slow-but-alive upload that
+        //     trips this 300s gate simply has its reclaim attempt safely
+        //     no-op.
         $lastProgress = (int) ($row['last_progress_at'] ?? 0);
         $stalledFor   = time() - $lastProgress;
         if (
@@ -174,6 +206,14 @@ final class Watchdog
                 || $phase === TaskRunner::PHASE_SUBMITTING_MANIFEST)
             && $stalledFor > 300
         ) {
+            // GH #256: reclaim scratch BEFORE discarding the row. This is
+            // the LARGEST leak this fix closes: at this late phase every
+            // zip part and every encrypted chunk file is already on disk
+            // (see the class doc's "reporter's screenshot shape" note).
+            // See reclaimRunScratch()'s own doc and the SAFETY 2 note above
+            // for why this is now gated on the run-lock rather than on
+            // $stalledFor alone.
+            self::reclaimRunScratch($row);
             // @phpstan-ignore-next-line — dynamic wpdb.
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; late-phase stale-row cleanup
             DebugLog::write(sprintf(
@@ -194,27 +234,49 @@ final class Watchdog
         $resumeCount = (int) ($row['resume_count'] ?? 0);
         $maxResumes  = (int) ($row['max_resumes'] ?? 6);
         if ($resumeCount >= $maxResumes) {
-            // Give up — too many resume attempts. Mark failed so the CP
-            // and UI see a terminal state. The TaskRunner's own
-            // bookkeeping does this normally; doing it here too is
-            // defensive (the runner might be wedged in a way we can't
-            // re-enter).
+            // Give up: too many resume attempts. The runner might be
+            // wedged in a way we can't re-enter.
             //
             // If the task never left the `queued` phase (phase=queued AND
             // resume_count already at max), the runner was never dispatched
-            // at all — strong signal that both the spawn_cron loopback and
+            // at all: strong signal that both the spawn_cron loopback and
             // the in-process fallback failed to start the runner. Detect the
             // loopback-gate scenario and surface a clear, actionable reason.
             $failureReason = self::detectQueuedStallReason($phase, $snapshotId);
+
+            // GH #256: reclaim scratch BEFORE discarding the row. This
+            // branch is only reached after $resumeCount >= $maxResumes
+            // (default 6) SEPARATE stall detections, each already requiring
+            // STALL_THRESHOLD_SECONDS (180s) of silence, a stronger dead-run
+            // signal than either single-stall guard above, but still not a
+            // certain one on its own for the reason explained in
+            // reclaimRunScratch()'s own doc: the file reclaim inside that
+            // call only ever runs from inside TaskRunner's own run-lock
+            // (TaskRunner::withRunLock()) and skips deleting any file
+            // when a live runner still holds it.
+            //
+            // DELETE the row rather than marking it failed (the pre-#256
+            // behavior): a row left at phase=failed here was never revisited
+            // by anything else in the agent (sweepStalled()'s own query
+            // excludes terminal phases, so the row leaked forever), and
+            // WORSE, a later re-entry into TaskRunner::run() for this exact
+            // snapshot_id (e.g. a CP retry reusing the same id) would find
+            // phase=failed and short-circuit at the "terminal? no-op" check
+            // BEFORE ever reaching the catch block that calls
+            // cleanupOnFailed(), so the scratch could never be reclaimed for
+            // that snapshot again. Deleting the row here, mirroring every
+            // other give-up branch in this method, closes both gaps at
+            // once and matches BackupJanitor::isActiveRun()'s own existing
+            // assumption that no row for a snapshot means "not active,
+            // defer to the age gate" (never a live run). Nothing else in the
+            // agent reads wpmgr_backup_tasks once a snapshot is terminal;
+            // the failure reason is still captured below via DebugLog for
+            // local troubleshooting, and the CP's own progress-watchdog
+            // independently times the snapshot out on its side regardless.
+            self::reclaimRunScratch($row);
             // @phpstan-ignore-next-line
-            @$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; correctness requires a live write
-                $table,
-                ['phase' => TaskRunner::PHASE_FAILED, 'last_progress_at' => time(), 'sub_state' => (string) wp_json_encode(['reason_code' => 'stalled', 'phase_detail' => ['message' => $failureReason]])],
-                ['snapshot_id' => $snapshotId],
-                ['%s', '%d', '%s'],
-                ['%s']
-            );
-            DebugLog::write(sprintf('WPMgr Backup: snapshot %s exhausted %d resume attempts; marked failed. %s', $snapshotId, $maxResumes, $failureReason));
+            @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal give-up, no further recovery is ever attempted for this row
+            DebugLog::write(sprintf('WPMgr Backup: snapshot %s exhausted %d resume attempts; reclaimed scratch and deleted row. %s', $snapshotId, $maxResumes, $failureReason));
             return;
         }
 
@@ -244,6 +306,97 @@ final class Watchdog
         // runner reads phase + sub_state and dispatches.
         $runner = new TaskRunner($params);
         $runner->run();
+    }
+
+    /**
+     * GH #256: reclaim a give-up path's scratch directory BEFORE the task
+     * row that names it is discarded (deleted, in every branch that calls
+     * this). Reuses TaskRunner::reclaimScratch() (itself a thin wrapper
+     * around the existing, already-tested cleanupOnFailed() file-level
+     * sweep) rather than a second, independently-duplicated implementation.
+     *
+     * Every give-up path that calls this already holds the freshly-SELECTed
+     * $row in memory: this decodes sub_state.params from THAT row (never
+     * issues a second query) and reads everything it needs before the
+     * caller's own row DELETE runs.
+     *
+     * SAFETY (post-ship review, ship blocker, findings 1/2/3): a task row
+     * reaching one of this method's four call sites (resumeIfStalled()'s
+     * 7200s hard-ceiling guard, its late-phase 300s stale guard, its
+     * max-resumes exhaustion, and dispatch()'s 7200s stale-task guard) is
+     * judged "dead" purely from DB-column signals: started_at age,
+     * last_progress_at age, resume_count. None of those signals can
+     * distinguish a genuinely abandoned run from one that is still alive
+     * and simply has not posted progress recently (for example, a single
+     * large chunk upload on a slow link legitimately blocking for minutes
+     * with no callback in between). A large site's backup can legitimately
+     * run for hours. Deleting a LIVE runner's scratch directory out from
+     * under it while it is actively writing chunks is far worse than the
+     * disk leak this method exists to close.
+     *
+     * GH #256 finding 1 (TOCTOU, post-ship re-review): this used to acquire
+     * the EXACT SAME run-lock guards TaskRunner::run() itself takes for this
+     * snapshot via a standalone probe (TaskRunner::isRunLockFree()),
+     * release them immediately, and only THEN call reclaimScratch() as a
+     * separate step. That left a window between "the probe reported free"
+     * and "the glob-and-unlink sweep actually finished" spanning the whole
+     * cleanup (globs plus N unlinks, tens of milliseconds on a run with
+     * thousands of chunk files) during which a resumed/re-entered runner
+     * could start writing into the same directory again. This now calls
+     * TaskRunner::withRunLock(), which acquires the exact same guards
+     * (GET_LOCK then flock) and invokes the reclaim callback WHILE holding
+     * both, releasing them only once the callback returns, so there is no
+     * gap between "checked" and "used":
+     *   - Lock acquired: no live runner is working this snapshot right now
+     *     (run() itself would also be free to proceed), so the reclaim
+     *     callback runs and the scratch directory is removed before the
+     *     lock is ever released.
+     *   - Lock held by someone else (or the flock guard could not even be
+     *     attempted, GH #256 finding 2, see TaskRunner::withRunLock()'s
+     *     doc): the scratch directory is left untouched.
+     *     BackupJanitor::gcRuns() (its own 6h age gate, isActiveRun() veto,
+     *     and, GH #256 finding 3, the same run-lock gate) remains the
+     *     safe backstop that reclaims it once the run genuinely finishes or
+     *     is abandoned.
+     * The lock is the liveness signal here, not a second, independently
+     * maintained heuristic that could disagree with the one run() itself
+     * relies on for correctness. This does not change the caller's row
+     * DELETE, which proceeds regardless: only the file reclaim is gated.
+     *
+     * Best-effort and defensive: sub_state.params (or its scratch_dir) may
+     * be absent (a row seeded by something other than BackupCommand, or a
+     * corrupt sub_state), in which case there is no scratch_dir to resolve
+     * and this is a silent no-op, exactly like every other best-effort
+     * cleanup in this class. A thrown reclaim failure is swallowed so it can
+     * never mask (or block) the give-up path's own row discard.
+     *
+     * @param array<string,mixed> $row Task row already loaded by the caller.
+     * @return void
+     */
+    private static function reclaimRunScratch(array $row): void
+    {
+        $subState = self::decodeSubState($row['sub_state'] ?? '');
+        $params   = is_array($subState['params'] ?? null) ? $subState['params'] : null;
+        if (!is_array($params) || !isset($params['scratch_dir']) || !is_string($params['scratch_dir']) || $params['scratch_dir'] === '') {
+            return;
+        }
+
+        $snapshotId = isset($row['snapshot_id']) && is_string($row['snapshot_id']) ? $row['snapshot_id'] : '';
+
+        try {
+            $runner   = new TaskRunner($params);
+            $reclaimed = $runner->withRunLock(static function () use ($runner): void {
+                $runner->reclaimScratch();
+            });
+            if (!$reclaimed) {
+                DebugLog::write(sprintf(
+                    'WPMgr Backup: watchdog declined to reclaim scratch for snapshot %s: the run-lock is held by a live runner (or could not be proven free); leaving the scratch directory for BackupJanitor::gcRuns()',
+                    $snapshotId
+                ));
+            }
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Backup: watchdog scratch reclaim failed: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -311,6 +464,17 @@ final class Watchdog
         // (observed in M5.6 ADR-034 live QA, mid-restore).
         $startedAt = (int) ($row['started_at'] ?? 0);
         if ($startedAt > 0 && (time() - $startedAt) > 7200 && $phase !== TaskRunner::PHASE_QUEUED) {
+            // GH #256: reclaim scratch BEFORE the row (the only record of
+            // where it lives) is deleted below. Same 7200s dead-run premise
+            // as resumeIfStalled()'s own hard-ceiling guard above, and the
+            // same caveat: an unusually large site can legitimately still
+            // be running at this age, so the file reclaim inside
+            // reclaimRunScratch() does not rely on this age check alone. It
+            // only ever reclaims files from inside TaskRunner's own
+            // run-lock (TaskRunner::withRunLock()) and skips deleting any
+            // file when a live runner still holds it, deferring to
+            // BackupJanitor::gcRuns(). See reclaimRunScratch()'s own doc.
+            self::reclaimRunScratch($row);
             // @phpstan-ignore-next-line — dynamic wpdb.
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; stale dispatch cleanup
             DebugLog::write(sprintf(
@@ -566,13 +730,26 @@ final class Watchdog
         return $generic;
     }
 
-    /** Best-effort JSON decode. Returns [] on any failure. */
+    /**
+     * Best-effort JSON decode of a raw `sub_state` column value. Delegates
+     * to TaskRunner::decodeSubStateColumn() (rather than a second,
+     * independently maintained decode) so this class follows the exact
+     * same sidecar-spill rehydration TaskRunner::loadTask() applies.
+     *
+     * GH #256 finding 5: a bare json_decode() here (the pre-fix behavior)
+     * returned only the small `{"_sidecar":true,...}` pointer object for
+     * any task whose cursor had spilled to the sidecar file, which
+     * silently dropped `sub_state.params` for every caller of this method,
+     * including reclaimRunScratch()'s own read of `scratch_dir`, on
+     * exactly the largest runs (the ones with the most scratch to
+     * reclaim, and the ones most likely to trip TaskRunner's
+     * SUBSTATE_SIDECAR_THRESHOLD in the first place).
+     *
+     * Returns [] on any failure (missing column, invalid JSON, unreadable
+     * sidecar file).
+     */
     private static function decodeSubState($raw): array
     {
-        if (!is_string($raw) || $raw === '') {
-            return [];
-        }
-        $decoded = json_decode($raw, true);
-        return is_array($decoded) ? $decoded : [];
+        return TaskRunner::decodeSubStateColumn($raw);
     }
 }

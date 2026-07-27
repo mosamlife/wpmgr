@@ -23,6 +23,10 @@
  *     phase is NOT swept, even though it is past the age threshold — the
  *     task-row veto is a belt-and-suspenders guard layered on top of, never
  *     a substitute for, the age gate.
+ *   - GH #256 finding 3: a stale run dir with no task row (so the
+ *     isActiveRun() veto does not fire) whose TaskRunner run-lock is still
+ *     held by a live runner is NOT swept, since the age gate and the
+ *     task-row veto alone are not proof of death; see TaskRunner::withRunLock().
  *   - A fresh run dir (under the age threshold) is kept regardless of the
  *     task row.
  *   - A non-run entry (neither a UUID-shaped file nor directory) is never
@@ -230,6 +234,55 @@ final class BackupJanitorTest extends TestCase
             is_dir($dir),
             'a run dir past RUNS_GC_AGE_SECONDS with no task row must be swept — this is the #151 failed-backup scratch leak'
         );
+    }
+
+    /**
+     * GH #256 finding 3 (post-ship re-review): isActiveRun()'s "no row"
+     * case cannot distinguish a genuinely dead run from one every Watchdog
+     * give-up branch already discarded the row for while the run itself is
+     * still alive. A run directory's own mtime also does not advance while
+     * an existing file's CONTENTS are being written (e.g. a long single-file
+     * database dump), so a live run can look exactly like the just-failed
+     * case this class exists to sweep. Simulated here by holding the exact
+     * same lock file TaskRunner::run() itself would hold for this snapshot
+     * (see TaskRunner::fileLockPath()), sitting alongside, never inside,
+     * the run directory, before invoking the sweep.
+     *
+     * FAILS against the pre-fix code: before this fix, gcRuns() deleted a
+     * run directory once it passed the age gate and the isActiveRun() veto,
+     * with no further check, so it would delete this directory even while a
+     * live runner (simulated below) still owns it.
+     */
+    public function test_stale_run_with_a_live_run_lock_held_survives_the_sweep(): void
+    {
+        $id  = $this->newSnapshotId();
+        $dir = $this->seedRunDir($id);
+        touch($dir, time() - (7 * 3600)); // past RUNS_GC_AGE_SECONDS (6h)
+        clearstatcache(true, $dir);
+
+        // No wpmgr_backup_tasks row: this passes the isActiveRun() veto
+        // exactly like the just-failed-backup case above, but a live
+        // runner is still genuinely writing this run's files.
+        $GLOBALS['wpdb'] = $this->fakeWpdb(null);
+
+        $lockPath = $this->runsBase . '/' . $id . '.lock';
+        $handle   = fopen($lockPath, 'c'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- test-only fixture simulating a live runner's own flock handle
+        $this->assertNotFalse($handle, 'test fixture must be able to open the lock file');
+        $this->assertTrue(flock($handle, LOCK_EX | LOCK_NB), 'test fixture must be able to acquire the lock before the sweep attempts it');
+
+        try {
+            $class = $this->janitorClassWithBase($this->runsBase);
+            $class::gcRuns();
+
+            $this->assertTrue(
+                is_dir($dir),
+                'a directory past RUNS_GC_AGE_SECONDS whose run-lock is still held by a live runner must survive gcRuns(): age plus isActiveRun() alone are not proof of death'
+            );
+            $this->assertFileExists($dir . '/database.sql.gz', 'the live runner\'s in-flight artifact must survive the sweep');
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- test-only fixture cleanup
+        }
     }
 
     public function test_active_run_is_not_swept_even_when_old(): void

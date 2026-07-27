@@ -152,7 +152,40 @@ class BackupJanitor
                 continue; // Belt-and-suspenders: the task row says it's still live.
             }
 
-            $j->deleteDir($dir);
+            // GH #256 finding 3 (post-ship re-review): isActiveRun() above
+            // is itself derived purely from DB-column signals (phase +
+            // last_progress_at staleness) that cannot distinguish a
+            // genuinely abandoned run from one that is simply quiet on
+            // last_progress_at while still alive and writing. Every
+            // give-up branch in Watchdog::resumeIfStalled()/dispatch()
+            // deliberately DELETEs the task row without gating on liveness,
+            // so "no row" (isActiveRun()'s other "not active" case) is
+            // exactly the state EVERY one of those give-up branches leaves
+            // behind, live run or not. Worse, this directory's own mtime
+            // does not advance when a file's CONTENTS are written (only
+            // when an entry is added/removed within it), so a long
+            // single-file database dump can leave a live run's directory
+            // looking untouched for well past RUNS_GC_AGE_SECONDS. Before
+            // deleting, take the exact same run-lock TaskRunner::run()
+            // itself relies on for correctness (TaskRunner::withRunLock(),
+            // GH #256 finding 1) and run the delete from inside it, so a
+            // live runner's flock (held for as long as its process is
+            // alive, independent of any DB row or directory mtime) is the
+            // final word. Deliberately attempted only here, AFTER both the
+            // age gate and the isActiveRun() veto already passed, so a tidy
+            // site, nothing old enough to even consider, never pays the
+            // cost of constructing a TaskRunner or touching a lock file.
+            try {
+                $runner = new TaskRunner(['snapshot_id' => $item, 'scratch_dir' => $dir]);
+                $runner->withRunLock(function () use ($j, $dir): void {
+                    $j->deleteDir($dir);
+                });
+            } catch (\Throwable $e) {
+                // A lock-gate failure for one directory must never abort the
+                // sweep for the rest of this pass; the next scheduled tick
+                // gets a fresh try at this same directory.
+                continue;
+            }
         }
     }
 
@@ -312,7 +345,23 @@ class BackupJanitor
  * in-flight window: 3x Watchdog::STALL_THRESHOLD_SECONDS's sibling hard
  * re-entry ceiling (class-watchdog.php's 7200s/2h "refuse to re-enter an
  * implausibly long-running task" guard) and roughly 12x the ~30-minute
- * longest legitimate backup observed on a real WP host. No sweepable
- * directory can therefore ever host a run that is still legitimately
- * running.
+ * longest legitimate backup observed on a real WP host.
+ *
+ * GH #256 finding 3 (post-ship re-review) corrected an overstatement that
+ * used to sit here: the age gate alone does NOT prove a sweepable directory
+ * can never host a still-running run. A directory's mtime only advances when
+ * an entry is added, removed, or renamed within it, never when an existing
+ * file's CONTENTS are written, so a single large database dump streaming
+ * into `database.sql.gz` for hours can leave the run directory's own mtime
+ * unchanged the entire time, and every Watchdog give-up branch deliberately
+ * DELETEs the task row regardless of whether the run is actually still
+ * alive, which is exactly the state isActiveRun()'s "no row" case cannot
+ * distinguish from a genuinely dead run. gcRuns() therefore takes one more
+ * step before deleting a run directory that has passed both the age gate and
+ * the isActiveRun() veto: it acquires the run-lock TaskRunner::run() itself
+ * relies on for correctness (TaskRunner::withRunLock(); see that method's
+ * doc, and GH #256 finding 1) and performs the delete only from inside it.
+ * That lock, held by the OS for as long as the owning process is alive and
+ * independent of any DB row or directory mtime, is what actually closes the
+ * gap the age gate and the task-row veto alone cannot.
  */

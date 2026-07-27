@@ -2287,8 +2287,31 @@ final class RestoreRunner
         }
 
         if (function_exists('wp_next_scheduled') && function_exists('wp_schedule_single_event')) {
-            if (!wp_next_scheduled('wpmgr_restore_oldfiles_gc')) {
-                wp_schedule_single_event($expiresAt + 60, 'wpmgr_restore_oldfiles_gc');
+            $gcHook           = 'wpmgr_restore_oldfiles_gc';
+            $existingSchedule = wp_next_scheduled($gcHook);
+            // GH #256: a one-shot event that is scheduled but OVERDUE (i.e.
+            // WP-Cron never ticked past its timestamp, on a quiet site or one
+            // with DISABLE_WP_CRON set) stays in the cron array forever, so
+            // wp_next_scheduled() keeps returning it as truthy and every
+            // LATER restore's runCleanup() would otherwise decline to
+            // schedule a replacement here: one missed tick permanently
+            // poisons this trigger for every restore that follows. Treat an
+            // overdue timestamp as "nothing usefully scheduled": clear it
+            // and fall through to scheduling a fresh one, rather than
+            // leaving a self-poisoning no-op event in place. (The
+            // Plugin::maybeGcRestoreArtifacts() plugins_loaded trigger now
+            // drives both GC sweeps independently of this cron event too,
+            // so this hook is a backstop rather than the only trigger, but
+            // a trigger that can permanently disable itself should not be
+            // left in place regardless.)
+            if ($existingSchedule !== false && $existingSchedule < time()) {
+                if (function_exists('wp_unschedule_event')) {
+                    wp_unschedule_event($existingSchedule, $gcHook);
+                }
+                $existingSchedule = false;
+            }
+            if ($existingSchedule === false) {
+                wp_schedule_single_event($expiresAt + 60, $gcHook);
             }
         }
 

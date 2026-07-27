@@ -107,7 +107,6 @@ interface CapabilityFlags {
   hasPageCache: boolean;
   hasObjectCache: boolean;
   isHttps: boolean;
-  hasBackups: boolean;
   isMultisite: boolean;
 }
 
@@ -115,9 +114,8 @@ function deriveCapabilityFlags(site: Partial<Site>): CapabilityFlags {
   const hasPageCache = site.page_cache_enabled ?? false;
   const hasObjectCache = site.object_cache_enabled ?? false;
   const isHttps = (site.url ?? "").startsWith("https://");
-  const hasBackups = site.last_backup_status != null;
   const isMultisite = site.multisite ?? false;
-  return { hasPageCache, hasObjectCache, isHttps, hasBackups, isMultisite };
+  return { hasPageCache, hasObjectCache, isHttps, isMultisite };
 }
 
 describe("CapabilityStrip — lit glyphs (enabled=true)", () => {
@@ -125,7 +123,6 @@ describe("CapabilityStrip — lit glyphs (enabled=true)", () => {
     const site: Partial<Site> = {
       url: "https://example.com",
       multisite: false,
-      last_backup_status: undefined,
       page_cache_enabled: true,
       object_cache_enabled: false,
     };
@@ -137,7 +134,6 @@ describe("CapabilityStrip — lit glyphs (enabled=true)", () => {
     const site: Partial<Site> = {
       url: "https://example.com",
       multisite: false,
-      last_backup_status: undefined,
       page_cache_enabled: false,
       object_cache_enabled: true,
     };
@@ -147,15 +143,6 @@ describe("CapabilityStrip — lit glyphs (enabled=true)", () => {
   it("HTTPS is lit when url starts with https://", () => {
     const flags = deriveCapabilityFlags({ url: "https://example.com", multisite: false });
     expect(flags.isHttps).toBe(true);
-  });
-
-  it("backups are lit when last_backup_status is non-null", () => {
-    const flags = deriveCapabilityFlags({
-      url: "https://example.com",
-      multisite: false,
-      last_backup_status: "success",
-    });
-    expect(flags.hasBackups).toBe(true);
   });
 
   it("multisite is lit when multisite flag is true", () => {
@@ -203,15 +190,6 @@ describe("CapabilityStrip — dim glyphs (enabled=false)", () => {
   it("HTTPS is dim for http:// sites", () => {
     const flags = deriveCapabilityFlags({ url: "http://example.com", multisite: false });
     expect(flags.isHttps).toBe(false);
-  });
-
-  it("backups are dim when last_backup_status is null/undefined", () => {
-    const flags = deriveCapabilityFlags({
-      url: "https://example.com",
-      multisite: false,
-      last_backup_status: undefined,
-    });
-    expect(flags.hasBackups).toBe(false);
   });
 
   it("multisite is dim when flag is false", () => {
