@@ -3,6 +3,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { PageHeader } from "@/components/shared/page-header";
 import { useMe, canOperate } from "@/features/auth/use-auth";
 import { AlertConfigForm } from "@/features/monitoring/alert-config-form";
+import { AppHealthAlertUpgradePrompt } from "@/features/monitoring/app-health-alert-prompt";
+import { AppHealthAlertingNotice } from "@/features/monitoring/app-health-alerting-notice";
 
 export const Route = createFileRoute("/_authed/alerts")({
   component: AlertSettingsPage,
@@ -20,7 +22,15 @@ function AlertSettingsPage() {
       />
 
       {operate ? (
-        <AlertConfigForm />
+        <>
+          {/* GH #291 Phase 3: the tenant's app-health alerting flag is now
+              live (AlertConfig.app_alerts_enabled). This renders a one-time
+              prompt only while it is off for the tenant and not yet
+              dismissed. See use-app-health-alerting-availability.ts. */}
+          <AppHealthAlertUpgradePrompt />
+          <AlertConfigForm />
+          <AppHealthAlertingNotice scope="tenant" />
+        </>
       ) : (
         <p
           role="alert"

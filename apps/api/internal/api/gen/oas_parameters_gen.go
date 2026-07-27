@@ -8853,6 +8853,71 @@ func decodeGetSiteParams(args [1]string, argsEscaped bool, r *http.Request) (par
 	return params, nil
 }
 
+// GetSiteAppHealthSettingsParams is parameters of getSiteAppHealthSettings operation.
+type GetSiteAppHealthSettingsParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackGetSiteAppHealthSettingsParams(packed middleware.Parameters) (params GetSiteAppHealthSettingsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeGetSiteAppHealthSettingsParams(args [1]string, argsEscaped bool, r *http.Request) (params GetSiteAppHealthSettingsParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetSiteAutologinPolicyParams is parameters of getSiteAutologinPolicy operation.
 type GetSiteAutologinPolicyParams struct {
 	SiteId uuid.UUID
@@ -20634,6 +20699,71 @@ func unpackPutPerfConfigParams(packed middleware.Parameters) (params PutPerfConf
 }
 
 func decodePutPerfConfigParams(args [1]string, argsEscaped bool, r *http.Request) (params PutPerfConfigParams, _ error) {
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
+// PutSiteAppHealthSettingsParams is parameters of putSiteAppHealthSettings operation.
+type PutSiteAppHealthSettingsParams struct {
+	SiteId uuid.UUID
+}
+
+func unpackPutSiteAppHealthSettingsParams(packed middleware.Parameters) (params PutSiteAppHealthSettingsParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodePutSiteAppHealthSettingsParams(args [1]string, argsEscaped bool, r *http.Request) (params PutSiteAppHealthSettingsParams, _ error) {
 	// Decode path: siteId.
 	if err := func() error {
 		param := args[0]

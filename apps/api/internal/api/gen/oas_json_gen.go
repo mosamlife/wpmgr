@@ -19508,9 +19508,13 @@ func (s *AlertConfig) encodeFields(e *jx.Encoder) {
 		e.FieldStart("vuln_include_in_digest")
 		e.Bool(s.VulnIncludeInDigest)
 	}
+	{
+		e.FieldStart("app_alerts_enabled")
+		e.Bool(s.AppAlertsEnabled)
+	}
 }
 
-var jsonFieldsNameOfAlertConfig = [8]string{
+var jsonFieldsNameOfAlertConfig = [9]string{
 	0: "email_recipients",
 	1: "webhook_url",
 	2: "webhook_configured",
@@ -19519,6 +19523,7 @@ var jsonFieldsNameOfAlertConfig = [8]string{
 	5: "notify_vulns",
 	6: "vuln_min_severity",
 	7: "vuln_include_in_digest",
+	8: "app_alerts_enabled",
 }
 
 // Decode decodes AlertConfig from json.
@@ -19526,7 +19531,7 @@ func (s *AlertConfig) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode AlertConfig to nil")
 	}
-	var requiredBitSet [1]uint8
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -19630,6 +19635,18 @@ func (s *AlertConfig) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"vuln_include_in_digest\"")
 			}
+		case "app_alerts_enabled":
+			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				v, err := d.Bool()
+				s.AppAlertsEnabled = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_alerts_enabled\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -19639,8 +19656,9 @@ func (s *AlertConfig) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [1]uint8{
+	for i, mask := range [2]uint8{
 		0b11111101,
+		0b00000001,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -19747,9 +19765,15 @@ func (s *AlertConfigUpdate) encodeFields(e *jx.Encoder) {
 			s.VulnIncludeInDigest.Encode(e)
 		}
 	}
+	{
+		if s.AppAlertsEnabled.Set {
+			e.FieldStart("app_alerts_enabled")
+			s.AppAlertsEnabled.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAlertConfigUpdate = [8]string{
+var jsonFieldsNameOfAlertConfigUpdate = [9]string{
 	0: "email_recipients",
 	1: "webhook_url",
 	2: "webhook_secret",
@@ -19758,6 +19782,7 @@ var jsonFieldsNameOfAlertConfigUpdate = [8]string{
 	5: "notify_vulns",
 	6: "vuln_min_severity",
 	7: "vuln_include_in_digest",
+	8: "app_alerts_enabled",
 }
 
 // Decode decodes AlertConfigUpdate from json.
@@ -19857,6 +19882,16 @@ func (s *AlertConfigUpdate) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"vuln_include_in_digest\"")
+			}
+		case "app_alerts_enabled":
+			if err := func() error {
+				s.AppAlertsEnabled.Reset()
+				if err := s.AppAlertsEnabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_alerts_enabled\"")
 			}
 		default:
 			return d.Skip()
@@ -20509,6 +20544,232 @@ func (s *ApiKeyList) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *ApiKeyList) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AppHealthSettings) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AppHealthSettings) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("app_probe_path")
+		e.Str(s.AppProbePath)
+	}
+	{
+		e.FieldStart("app_alerts_disabled")
+		e.Bool(s.AppAlertsDisabled)
+	}
+}
+
+var jsonFieldsNameOfAppHealthSettings = [2]string{
+	0: "app_probe_path",
+	1: "app_alerts_disabled",
+}
+
+// Decode decodes AppHealthSettings from json.
+func (s *AppHealthSettings) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AppHealthSettings to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "app_probe_path":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.AppProbePath = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_probe_path\"")
+			}
+		case "app_alerts_disabled":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Bool()
+				s.AppAlertsDisabled = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_alerts_disabled\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AppHealthSettings")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAppHealthSettings) {
+					name = jsonFieldsNameOfAppHealthSettings[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AppHealthSettings) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AppHealthSettings) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AppHealthSettingsUpdate) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AppHealthSettingsUpdate) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("app_probe_path")
+		e.Str(s.AppProbePath)
+	}
+	{
+		e.FieldStart("app_alerts_disabled")
+		e.Bool(s.AppAlertsDisabled)
+	}
+}
+
+var jsonFieldsNameOfAppHealthSettingsUpdate = [2]string{
+	0: "app_probe_path",
+	1: "app_alerts_disabled",
+}
+
+// Decode decodes AppHealthSettingsUpdate from json.
+func (s *AppHealthSettingsUpdate) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AppHealthSettingsUpdate to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "app_probe_path":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.AppProbePath = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_probe_path\"")
+			}
+		case "app_alerts_disabled":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Bool()
+				s.AppAlertsDisabled = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"app_alerts_disabled\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AppHealthSettingsUpdate")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAppHealthSettingsUpdate) {
+					name = jsonFieldsNameOfAppHealthSettingsUpdate[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AppHealthSettingsUpdate) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AppHealthSettingsUpdate) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -85477,6 +85738,82 @@ func (s *PutOrgEmailWebhookConfigUnauthorized) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *PutOrgEmailWebhookConfigUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAppHealthSettingsNotFound as json.
+func (s *PutSiteAppHealthSettingsNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAppHealthSettingsNotFound from json.
+func (s *PutSiteAppHealthSettingsNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAppHealthSettingsNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAppHealthSettingsNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAppHealthSettingsNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAppHealthSettingsNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAppHealthSettingsUnprocessableEntity as json.
+func (s *PutSiteAppHealthSettingsUnprocessableEntity) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAppHealthSettingsUnprocessableEntity from json.
+func (s *PutSiteAppHealthSettingsUnprocessableEntity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAppHealthSettingsUnprocessableEntity to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAppHealthSettingsUnprocessableEntity(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAppHealthSettingsUnprocessableEntity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAppHealthSettingsUnprocessableEntity) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

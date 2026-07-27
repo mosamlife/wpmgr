@@ -284,6 +284,11 @@ CREATE TABLE sites (
     -- 3's per-site override UI); the column and probe support exist now so
     -- Phase 3 needs no further schema change.
     app_probe_path text,
+    -- m108 (GH #291 Phase 3): per-site opt-out for app-health ALERTING only.
+    -- The app probe keeps running (the dashboard stays accurate) and this
+    -- flag never touches app_probe_path. Operator-settable via
+    -- GET/PUT /sites/{siteId}/app-health-settings.
+    app_alerts_disabled boolean NOT NULL DEFAULT false,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
@@ -1287,6 +1292,25 @@ CREATE POLICY backup_schedule_runs_agent ON backup_schedule_runs
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
+-- app_alert_rollout  (m108 - GH #291 Phase 3: app-health alerting rollout)
+-- ---------------------------------------------------------------------------
+-- A single global row recording whether this deployment already had sites at
+-- the moment m108 ran (the "fresh install vs upgrade" decision that gates the
+-- app-health alerting default - see alert_configs.app_alerts_enabled below
+-- and the design doc's "measure first, alert later" rollout section).
+-- Deliberately NOT RLS-scoped: it carries one global, non-tenant,
+-- non-sensitive fact, mirroring the `tenants` table's own no-RLS rationale.
+-- A schema built from THIS file (rather than replayed from the migrations)
+-- has no history to consult, so fresh_install defaults true here - exactly
+-- what a from-scratch build represents.
+CREATE TABLE app_alert_rollout (
+    singleton     boolean     PRIMARY KEY DEFAULT true,
+    fresh_install boolean     NOT NULL DEFAULT true,
+    decided_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT app_alert_rollout_singleton_chk CHECK (singleton)
+);
+
+-- ---------------------------------------------------------------------------
 -- alert_configs  (M5 — uptime downtime/recovery alerting)
 -- ---------------------------------------------------------------------------
 -- A per-tenant default alert channel (V0): the email recipients and webhook URL
@@ -1321,6 +1345,15 @@ CREATE TABLE alert_configs (
         CONSTRAINT alert_configs_vuln_min_severity_chk
         CHECK (vuln_min_severity IN ('critical', 'high', 'medium', 'low')),
     vuln_include_in_digest boolean NOT NULL DEFAULT true,
+    -- m108 (GH #291 Phase 3) - app-health alerting is the FOURTH signal on
+    -- this same per-tenant channel, independent of `enabled` (the existing
+    -- reachability channel) so a tenant that already has downtime alerts on
+    -- does not silently start receiving app-health alerts too. The literal
+    -- DEFAULT here (true) matches a from-scratch build of this file (see
+    -- app_alert_rollout above); a REAL upgrade deployment gets this column's
+    -- default computed dynamically by m108 from whether it already had
+    -- sites, per the design's "measure first, alert later" rollout rule.
+    app_alerts_enabled boolean NOT NULL DEFAULT true,
     created_at       timestamptz NOT NULL DEFAULT now(),
     updated_at       timestamptz NOT NULL DEFAULT now()
 );
@@ -1371,6 +1404,81 @@ CREATE POLICY site_alert_state_tenant_isolation ON site_alert_state
 -- sites under app.agent, like the health job). Permit the full upsert lifecycle
 -- when the app.agent GUC is 'on'.
 CREATE POLICY site_alert_state_agent ON site_alert_state
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- site_app_alert_state  (m108 - GH #291 Phase 3: app-health alert state)
+-- ---------------------------------------------------------------------------
+-- Per-site application-health alert state machine - mirrors site_alert_state
+-- above exactly, plus ever_app_up: a STICKY flag (set once on the first
+-- conclusive app_up=true verdict, never reset false again) gating whether
+-- this site may EVER fire an app alert. A site that has never cleared that
+-- bar is almost always one whose REST route is blocked/disabled, not one
+-- that broke - see internal/uptime/app_alerts.go EvaluateApp. Written inside
+-- the SAME TransitionAlertState transaction as site_alert_state (never a
+-- separate round-trip), so the two stay consistent and race-free.
+CREATE TABLE site_app_alert_state (
+    site_id          uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    last_status      text        NOT NULL DEFAULT 'unknown',
+    consecutive_down integer     NOT NULL DEFAULT 0,
+    in_incident      boolean     NOT NULL DEFAULT false,
+    ever_app_up      boolean     NOT NULL DEFAULT false,
+    last_alert_at    timestamptz,
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_app_alert_state_tenant_id_idx ON site_app_alert_state (tenant_id);
+
+ALTER TABLE site_app_alert_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_app_alert_state FORCE ROW LEVEL SECURITY;
+CREATE POLICY site_app_alert_state_tenant_isolation ON site_app_alert_state
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The probe worker updates this state cross-tenant, exactly like
+-- site_alert_state_agent.
+CREATE POLICY site_app_alert_state_agent ON site_app_alert_state
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- tenant_app_alert_breaker  (m108 - GH #291 Phase 3: fleet circuit breaker)
+-- ---------------------------------------------------------------------------
+-- One row per tenant: the fleet circuit-breaker's own transition memory.
+-- When more than a configurable ratio of a tenant's alert-eligible sites are
+-- simultaneously app-down, individual per-site alerts collapse into ONE
+-- aggregate notification instead of a page-per-site storm - far more likely
+-- to be our own monitoring, or a shared host/network, having a bad day than
+-- N unrelated clients breaking at once. tripped is transition-only, exactly
+-- like site_alert_state.in_incident: one aggregate alert when it trips, one
+-- when it recovers, never a repeating flood - EXCEPT while it stays tripped
+-- across many sweeps, an "updated" aggregate CAN fire when the suppressed
+-- population materially worsens (see last_down_count below and
+-- internal/uptime/app_alerts.go EvaluateAppBreaker's FireUpdate, GH #291
+-- Phase 3 Fix 3), so an operator is never left with only the stale count
+-- from the moment the breaker first tripped while things get worse.
+CREATE TABLE tenant_app_alert_breaker (
+    tenant_id       uuid        PRIMARY KEY REFERENCES tenants (id) ON DELETE CASCADE,
+    tripped         boolean     NOT NULL DEFAULT false,
+    tripped_at      timestamptz,
+    last_alert_at   timestamptz,
+    -- last_down_count is the down count AT THE TIME OF THE LAST
+    -- notification (trip, update, or recovery) - never bumped on a silent
+    -- steady-state tick - so a later tick can tell "materially worse since
+    -- we last said anything" without a second table.
+    last_down_count integer     NOT NULL DEFAULT 0,
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE tenant_app_alert_breaker ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenant_app_alert_breaker FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_app_alert_breaker_tenant_isolation ON tenant_app_alert_breaker
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY tenant_app_alert_breaker_agent ON tenant_app_alert_breaker
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 

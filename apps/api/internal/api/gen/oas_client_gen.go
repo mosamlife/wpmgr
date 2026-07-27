@@ -1577,6 +1577,16 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteAppHealthSettings invokes getSiteAppHealthSettings operation.
+	//
+	// Returns the per-site application-health settings (GH #291 Phase 3):
+	// the B3 override path for the application-health probe, and the
+	// per-site app-health alerting opt-out. Every site has these settings
+	// (empty path / alerts not disabled are the defaults) — this never
+	// auto-creates a row, it reads the `sites` columns directly.
+	//
+	// GET /api/v1/sites/{siteId}/app-health-settings
+	GetSiteAppHealthSettings(ctx context.Context, params GetSiteAppHealthSettingsParams) (GetSiteAppHealthSettingsRes, error)
 	// GetSiteAutologinPolicy invokes getSiteAutologinPolicy operation.
 	//
 	// Returns the per-site autologin policy (GH #286), auto-creating the
@@ -2453,6 +2463,18 @@ type Invoker interface {
 	//
 	// PUT /api/v1/sites/{siteId}/perf/config
 	PutPerfConfig(ctx context.Context, request *PerfConfig, params PutPerfConfigParams) (PutPerfConfigRes, error)
+	// PutSiteAppHealthSettings invokes putSiteAppHealthSettings operation.
+	//
+	// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
+	// Phase 3). `app_probe_path` must be a site-relative path (starts with
+	// `/`, no scheme, no host, no `..` traversal) — validation failures
+	// return 422. An empty `app_probe_path` clears the override back to
+	// auto-detect. `app_alerts_disabled` excludes the site from app-health
+	// alerting entirely (both the individual alert and the fleet circuit
+	// breaker's eligible-site count) while the probe keeps running.
+	//
+	// PUT /api/v1/sites/{siteId}/app-health-settings
+	PutSiteAppHealthSettings(ctx context.Context, request *AppHealthSettingsUpdate, params PutSiteAppHealthSettingsParams) (PutSiteAppHealthSettingsRes, error)
 	// PutSiteAutologinPolicy invokes putSiteAutologinPolicy operation.
 	//
 	// Stores `{enabled, default_wp_user_login}` for the site (GH #286).
@@ -20308,6 +20330,103 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 	return result, nil
 }
 
+// GetSiteAppHealthSettings invokes getSiteAppHealthSettings operation.
+//
+// Returns the per-site application-health settings (GH #291 Phase 3):
+// the B3 override path for the application-health probe, and the
+// per-site app-health alerting opt-out. Every site has these settings
+// (empty path / alerts not disabled are the defaults) — this never
+// auto-creates a row, it reads the `sites` columns directly.
+//
+// GET /api/v1/sites/{siteId}/app-health-settings
+func (c *Client) GetSiteAppHealthSettings(ctx context.Context, params GetSiteAppHealthSettingsParams) (GetSiteAppHealthSettingsRes, error) {
+	res, err := c.sendGetSiteAppHealthSettings(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteAppHealthSettings(ctx context.Context, params GetSiteAppHealthSettingsParams) (res GetSiteAppHealthSettingsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteAppHealthSettings"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/app-health-settings"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteAppHealthSettingsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/app-health-settings"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteAppHealthSettingsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSiteAutologinPolicy invokes getSiteAutologinPolicy operation.
 //
 // Returns the per-site autologin policy (GH #286), auto-creating the
@@ -31462,6 +31581,108 @@ func (c *Client) sendPutPerfConfig(ctx context.Context, request *PerfConfig, par
 
 	stage = "DecodeResponse"
 	result, err := decodePutPerfConfigResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PutSiteAppHealthSettings invokes putSiteAppHealthSettings operation.
+//
+// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
+// Phase 3). `app_probe_path` must be a site-relative path (starts with
+// `/`, no scheme, no host, no `..` traversal) — validation failures
+// return 422. An empty `app_probe_path` clears the override back to
+// auto-detect. `app_alerts_disabled` excludes the site from app-health
+// alerting entirely (both the individual alert and the fleet circuit
+// breaker's eligible-site count) while the probe keeps running.
+//
+// PUT /api/v1/sites/{siteId}/app-health-settings
+func (c *Client) PutSiteAppHealthSettings(ctx context.Context, request *AppHealthSettingsUpdate, params PutSiteAppHealthSettingsParams) (PutSiteAppHealthSettingsRes, error) {
+	res, err := c.sendPutSiteAppHealthSettings(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPutSiteAppHealthSettings(ctx context.Context, request *AppHealthSettingsUpdate, params PutSiteAppHealthSettingsParams) (res PutSiteAppHealthSettingsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("putSiteAppHealthSettings"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/app-health-settings"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PutSiteAppHealthSettingsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/app-health-settings"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePutSiteAppHealthSettingsRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodePutSiteAppHealthSettingsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

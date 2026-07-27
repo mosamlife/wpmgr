@@ -43,7 +43,46 @@ type Repo interface {
 	// "adopts" (idempotently opens, a no-op if already open) an incident row
 	// in case one was somehow missed. httpStatus/reason carry the triggering
 	// probe's HTTP status and error text onto the incident row.
-	TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time, httpStatus int, reason string) (Transition, error)
+	//
+	// m108 (GH #291 Phase 3): ALSO evaluates and persists the app-health
+	// alert transition (site_app_alert_state) inside this SAME transaction,
+	// so the two state machines stay consistent and race-free - never a
+	// second round-trip. appAttempted is false on ticks where the app probe
+	// did not run for this site at all (see appProbeDue); when true, appUp
+	// is the tri-state verdict (nil=unknown) and appReason is the triggering
+	// AppProbeReason*. The reachability logic above this doc comment is
+	// COMPLETELY UNCHANGED by this addition - see EvaluateApp for the
+	// app-health rules.
+	TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time, httpStatus int, reason string,
+		appAttempted bool, appUp *bool, appReason string, appThreshold int) (Transition, AppTransition, error)
+
+	// GetTenantAppAlertRatio returns the fleet circuit breaker's eligible/down
+	// counts for one tenant (app.agent GUC), evaluated once per sweep tick
+	// (not per site) - see db/query/alerts.sql GetTenantAppAlertRatio.
+	GetTenantAppAlertRatio(ctx context.Context, tenantID uuid.UUID) (eligible, down int, err error)
+
+	// TransitionAppAlertBreaker atomically reads (locked), evaluates, and
+	// persists the tenant-level circuit-breaker transition - the tenant-wide
+	// sibling of TransitionAlertState's own SELECT FOR UPDATE + upsert shape.
+	// down is the CURRENT down count (GetTenantAppAlertRatio) - threaded
+	// through to EvaluateAppBreaker for its Fix 3 FireUpdate decision.
+	TransitionAppAlertBreaker(ctx context.Context, tenantID uuid.UUID, wantTrip bool, down int, now time.Time) (AppBreakerTransition, error)
+
+	// ListTrippedAppAlertBreakerTenants returns every tenant whose fleet
+	// circuit breaker is CURRENTLY tripped (app.agent GUC) - GH #291 Phase 3
+	// Fix 4. Called ONCE per sweep tick (never per-tenant) so a tripped
+	// tenant with no pending transition this tick still gets its breaker
+	// re-evaluated and can converge - see ProbeWorker.resolveAppAlerts.
+	ListTrippedAppAlertBreakerTenants(ctx context.Context) ([]uuid.UUID, error)
+
+	// ListTenantAppDownSites returns display names for the sites CURRENTLY
+	// counted in GetTenantAppAlertRatio's "down" numerator for one tenant
+	// (app.agent GUC), bounded by limit - GH #291 Phase 3 Fix 3. Used ONLY
+	// for the circuit breaker's "updated" (still tripped, materially worse)
+	// aggregate notification, which can fire several ticks after the
+	// sites it names actually went down - see the query's own doc comment
+	// for why this must read live state rather than this tick's fires.
+	ListTenantAppDownSites(ctx context.Context, tenantID uuid.UUID, limit int) ([]string, error)
 
 	// Evaluator path (app.agent GUC, cross-tenant).
 	ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error)
@@ -51,6 +90,19 @@ type Repo interface {
 	// Tenant-scoped config CRUD (RLS).
 	GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (AlertConfig, bool, error)
 	UpsertAlertConfig(ctx context.Context, cfg AlertConfig) (AlertConfig, error)
+
+	// GetAppAlertRolloutDefault reads the m108 deployment-fresh decision (no
+	// RLS/tenant dimension - see app_alert_rollout's schema.sql doc comment).
+	// Used by GetAlertConfig's synthesized zero-value default so it never
+	// disagrees with the persisted column's own DEFAULT.
+	GetAppAlertRolloutDefault(ctx context.Context) (bool, error)
+
+	// GetAppHealthSettings / UpdateAppHealthSettings (InTenantTx, RLS) serve
+	// GET/PUT /sites/{siteId}/app-health-settings (GH #291 Phase 3 section
+	// 3). found=false when siteID does not exist or belongs to another
+	// tenant (RLS + the explicit tenant_id predicate both enforce this).
+	GetAppHealthSettings(ctx context.Context, tenantID, siteID uuid.UUID) (AppHealthSettings, bool, error)
+	UpdateAppHealthSettings(ctx context.Context, tenantID, siteID uuid.UUID, appProbePath string, appAlertsDisabled bool) (AppHealthSettings, bool, error)
 
 	// Fleet uptime queries (tenant-scoped, InTenantTx). Implemented via raw SQL
 	// because sqlc generates non-nullable types for nullable columns.
@@ -104,6 +156,8 @@ func (r *pgRepo) ListEnrolledForProbe(ctx context.Context) ([]EnrolledSite, erro
 			if row.AppProbePath != nil {
 				s.AppProbePath = *row.AppProbePath
 			}
+			s.AppAlertsDisabled = row.AppAlertsDisabled
+			s.ConnectionState = row.ConnectionState
 			out = append(out, s)
 		}
 		return nil
@@ -166,8 +220,10 @@ func (r *pgRepo) UpsertAlertState(ctx context.Context, st AlertState) error {
 // transaction — so an overlapping sweep for the same site blocks on the SELECT
 // FOR UPDATE until this one commits, then observes the fresh state instead of
 // a stale one.
-func (r *pgRepo) TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time, httpStatus int, reason string) (Transition, error) {
+func (r *pgRepo) TransitionAlertState(ctx context.Context, siteID, tenantID uuid.UUID, up bool, threshold int, now time.Time, httpStatus int, reason string,
+	appAttempted bool, appUp *bool, appReason string, appThreshold int) (Transition, AppTransition, error) {
 	var tr Transition
+	var appTr AppTransition
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		var prev AlertState
@@ -247,9 +303,222 @@ func (r *pgRepo) TransitionAlertState(ctx context.Context, siteID, tenantID uuid
 				return domain.Internal("uptime_adopt_incident_failed", "failed to adopt open incident").WithCause(err)
 			}
 		}
+
+		// m108 (GH #291 Phase 3): the app-health transition, inside this SAME
+		// transaction (never a second round-trip). Skipped entirely when the
+		// app probe did not attempt a verdict this tick (appAttempted=false -
+		// the common case, since the app probe runs on a slower cadence than
+		// the reachability probe): no state change, no write, mirroring
+		// EvaluateApp's own "no observation, no change" rule for an unknown
+		// verdict. This is the ONLY new code path added to this method; the
+		// reachability logic above is completely untouched.
+		if appAttempted {
+			var appPrev AppAlertState
+			appRow, err := q.GetSiteAppAlertStateForUpdate(ctx, siteID)
+			if err != nil {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					return domain.Internal("uptime_get_app_state_failed", "failed to read site app alert state").WithCause(err)
+				}
+			} else {
+				appPrev = appAlertStateFromRow(appRow)
+			}
+			appPrev.SiteID = siteID
+			appPrev.TenantID = tenantID
+			if appPrev.LastStatus == "" {
+				appPrev.LastStatus = StatusUnknown
+			}
+
+			appTr = EvaluateApp(appPrev, ClassifyAppVerdict(appUp), appThreshold, now)
+
+			if _, err := q.UpsertSiteAppAlertState(ctx, sqlc.UpsertSiteAppAlertStateParams{
+				SiteID:          appTr.NewState.SiteID,
+				TenantID:        appTr.NewState.TenantID,
+				LastStatus:      appTr.NewState.LastStatus,
+				ConsecutiveDown: appTr.NewState.ConsecutiveDown,
+				InIncident:      appTr.NewState.InIncident,
+				EverAppUp:       appTr.NewState.EverAppUp,
+				LastAlertAt:     toTimestamptz(appTr.NewState.LastAlertAt),
+			}); err != nil {
+				return domain.Internal("uptime_upsert_app_state_failed", "failed to upsert site app alert state").WithCause(err)
+			}
+		}
+		return nil
+	})
+	return tr, appTr, err
+}
+
+// GetTenantAppAlertRatio returns the fleet circuit breaker's eligible/down
+// counts for one tenant (app.agent GUC).
+func (r *pgRepo) GetTenantAppAlertRatio(ctx context.Context, tenantID uuid.UUID) (int, int, error) {
+	var eligible, down int
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).GetTenantAppAlertRatio(ctx, tenantID)
+		if err != nil {
+			return domain.Internal("uptime_app_alert_ratio_failed", "failed to query tenant app alert ratio").WithCause(err)
+		}
+		eligible = int(row.Eligible)
+		down = int(row.Down)
+		return nil
+	})
+	return eligible, down, err
+}
+
+// TransitionAppAlertBreaker atomically reads (locked), evaluates, and
+// persists the tenant-level circuit-breaker transition - the tenant-wide
+// sibling of TransitionAlertState's own SELECT FOR UPDATE + upsert shape, so
+// two overlapping sweeps for the same tenant cannot race on this row either.
+func (r *pgRepo) TransitionAppAlertBreaker(ctx context.Context, tenantID uuid.UUID, wantTrip bool, down int, now time.Time) (AppBreakerTransition, error) {
+	var tr AppBreakerTransition
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		var prev AppBreakerState
+		row, err := q.GetTenantAppAlertBreakerForUpdate(ctx, tenantID)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return domain.Internal("uptime_get_breaker_failed", "failed to read tenant app alert breaker state").WithCause(err)
+			}
+		} else {
+			prev = appBreakerStateFromRow(row)
+		}
+		prev.TenantID = tenantID
+
+		tr = EvaluateAppBreaker(prev, wantTrip, down, now)
+
+		if _, err := q.UpsertTenantAppAlertBreaker(ctx, sqlc.UpsertTenantAppAlertBreakerParams{
+			TenantID:      tenantID,
+			Tripped:       tr.NewState.Tripped,
+			TrippedAt:     toTimestamptz(tr.NewState.TrippedAt),
+			LastAlertAt:   toTimestamptz(tr.NewState.LastAlertAt),
+			LastDownCount: int32(tr.NewState.LastDownCount),
+		}); err != nil {
+			return domain.Internal("uptime_upsert_breaker_failed", "failed to upsert tenant app alert breaker state").WithCause(err)
+		}
 		return nil
 	})
 	return tr, err
+}
+
+// ListTrippedAppAlertBreakerTenants returns every tenant whose fleet circuit
+// breaker is CURRENTLY tripped (app.agent GUC) - GH #291 Phase 3 Fix 4. See
+// the Repo interface doc comment for why this is safe to call once per sweep
+// tick regardless of tenant count.
+func (r *pgRepo) ListTrippedAppAlertBreakerTenants(ctx context.Context) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListTrippedAppAlertBreakerTenants(ctx)
+		if err != nil {
+			return domain.Internal("uptime_list_tripped_breakers_failed", "failed to list tripped app alert breaker tenants").WithCause(err)
+		}
+		out = rows
+		return nil
+	})
+	return out, err
+}
+
+// ListTenantAppDownSites returns display names for the sites CURRENTLY
+// counted as "down" for tenantID (app.agent GUC), bounded by limit - GH #291
+// Phase 3 Fix 3. See the Repo interface doc comment for why this reads live
+// state rather than a single sweep tick's transitions.
+func (r *pgRepo) ListTenantAppDownSites(ctx context.Context, tenantID uuid.UUID, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	var out []string
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListTenantAppDownSites(ctx, sqlc.ListTenantAppDownSitesParams{
+			TenantID: tenantID,
+			RowLimit: int32(limit),
+		})
+		if err != nil {
+			return domain.Internal("uptime_list_app_down_sites_failed", "failed to list tenant app down sites").WithCause(err)
+		}
+		out = rows
+		return nil
+	})
+	if out == nil {
+		out = []string{}
+	}
+	return out, err
+}
+
+// GetAppAlertRolloutDefault reads the m108 deployment-fresh decision. No RLS
+// on app_alert_rollout (see its schema.sql doc comment), so any tx wrapper
+// works; InAgentTx is used simply because every other cross-cutting uptime
+// read in this file already opens one.
+func (r *pgRepo) GetAppAlertRolloutDefault(ctx context.Context) (bool, error) {
+	var fresh bool
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		v, err := sqlc.New(tx).GetAppAlertRolloutDefault(ctx)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Defensive only: m108 always seeds exactly one row. Default
+				// to false (never opt a deployment into alerting it never
+				// asked for) if this is somehow missing.
+				return nil
+			}
+			return domain.Internal("uptime_app_alert_rollout_failed", "failed to read app alert rollout default").WithCause(err)
+		}
+		fresh = v
+		return nil
+	})
+	return fresh, err
+}
+
+// GetAppHealthSettings is the tenant-scoped read behind
+// GET /sites/{siteId}/app-health-settings.
+func (r *pgRepo) GetAppHealthSettings(ctx context.Context, tenantID, siteID uuid.UUID) (AppHealthSettings, bool, error) {
+	var out AppHealthSettings
+	var found bool
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).GetSiteAppHealthSettings(ctx, sqlc.GetSiteAppHealthSettingsParams{ID: siteID, TenantID: tenantID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return domain.Internal("uptime_get_app_health_settings_failed", "failed to read site app-health settings").WithCause(err)
+		}
+		out = AppHealthSettings{SiteID: siteID, TenantID: tenantID, AppAlertsDisabled: row.AppAlertsDisabled}
+		if row.AppProbePath != nil {
+			out.AppProbePath = *row.AppProbePath
+		}
+		found = true
+		return nil
+	})
+	return out, found, err
+}
+
+// UpdateAppHealthSettings is the tenant-scoped write behind
+// PUT /sites/{siteId}/app-health-settings. appProbePath must already be
+// validated (uptime.ValidateAppProbePath) by the service layer; an empty
+// string clears the override back to auto-detect (NULL).
+func (r *pgRepo) UpdateAppHealthSettings(ctx context.Context, tenantID, siteID uuid.UUID, appProbePath string, appAlertsDisabled bool) (AppHealthSettings, bool, error) {
+	var out AppHealthSettings
+	var found bool
+	var pathParam *string
+	if appProbePath != "" {
+		pathParam = &appProbePath
+	}
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).UpdateSiteAppHealthSettings(ctx, sqlc.UpdateSiteAppHealthSettingsParams{
+			AppProbePath:      pathParam,
+			AppAlertsDisabled: appAlertsDisabled,
+			ID:                siteID,
+			TenantID:          tenantID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return domain.Internal("uptime_update_app_health_settings_failed", "failed to save site app-health settings").WithCause(err)
+		}
+		out = AppHealthSettings{SiteID: siteID, TenantID: tenantID, AppAlertsDisabled: row.AppAlertsDisabled}
+		if row.AppProbePath != nil {
+			out.AppProbePath = *row.AppProbePath
+		}
+		found = true
+		return nil
+	})
+	return out, found, err
 }
 
 func (r *pgRepo) ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error) {
@@ -303,6 +572,7 @@ func (r *pgRepo) UpsertAlertConfig(ctx context.Context, cfg AlertConfig) (AlertC
 			NotifyVulns:         cfg.NotifyVulns,
 			VulnMinSeverity:     cfg.VulnMinSeverity,
 			VulnIncludeInDigest: cfg.VulnIncludeInDigest,
+			AppAlertsEnabled:    cfg.AppAlertsEnabled,
 		})
 		if err != nil {
 			return domain.Internal("uptime_upsert_config_failed", "failed to save alert config").WithCause(err)
@@ -630,6 +900,7 @@ func alertConfigFromRow(row sqlc.AlertConfig) AlertConfig {
 		NotifyVulns:         row.NotifyVulns,
 		VulnMinSeverity:     row.VulnMinSeverity,
 		VulnIncludeInDigest: row.VulnIncludeInDigest,
+		AppAlertsEnabled:    row.AppAlertsEnabled,
 		UpdatedAt:           row.UpdatedAt,
 	}
 }
@@ -641,6 +912,42 @@ func alertStateFromRow(row sqlc.SiteAlertState) AlertState {
 		LastStatus:      row.LastStatus,
 		ConsecutiveDown: row.ConsecutiveDown,
 		InIncident:      row.InIncident,
+	}
+	if row.LastAlertAt.Valid {
+		t := row.LastAlertAt.Time
+		st.LastAlertAt = &t
+	}
+	return st
+}
+
+// appAlertStateFromRow maps the sqlc row to the domain AppAlertState - the
+// app-health sibling of alertStateFromRow.
+func appAlertStateFromRow(row sqlc.SiteAppAlertState) AppAlertState {
+	st := AppAlertState{
+		SiteID:          row.SiteID,
+		TenantID:        row.TenantID,
+		LastStatus:      row.LastStatus,
+		ConsecutiveDown: row.ConsecutiveDown,
+		InIncident:      row.InIncident,
+		EverAppUp:       row.EverAppUp,
+	}
+	if row.LastAlertAt.Valid {
+		t := row.LastAlertAt.Time
+		st.LastAlertAt = &t
+	}
+	return st
+}
+
+// appBreakerStateFromRow maps the sqlc row to the domain AppBreakerState.
+func appBreakerStateFromRow(row sqlc.TenantAppAlertBreaker) AppBreakerState {
+	st := AppBreakerState{
+		TenantID:      row.TenantID,
+		Tripped:       row.Tripped,
+		LastDownCount: int(row.LastDownCount),
+	}
+	if row.TrippedAt.Valid {
+		t := row.TrippedAt.Time
+		st.TrippedAt = &t
 	}
 	if row.LastAlertAt.Valid {
 		t := row.LastAlertAt.Time

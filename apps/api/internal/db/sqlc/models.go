@@ -30,6 +30,7 @@ type AlertConfig struct {
 	NotifyVulns         bool      `json:"notify_vulns"`
 	VulnMinSeverity     string    `json:"vuln_min_severity"`
 	VulnIncludeInDigest bool      `json:"vuln_include_in_digest"`
+	AppAlertsEnabled    bool      `json:"app_alerts_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -44,6 +45,12 @@ type ApiKey struct {
 	CreatedAt  time.Time          `json:"created_at"`
 	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
 	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+}
+
+type AppAlertRollout struct {
+	Singleton    bool      `json:"singleton"`
+	FreshInstall bool      `json:"fresh_install"`
+	DecidedAt    time.Time `json:"decided_at"`
 }
 
 type AuditIntegrityBaseline struct {
@@ -597,6 +604,7 @@ type Site struct {
 	MissedHeartbeats      int32              `json:"missed_heartbeats"`
 	ClientID              pgtype.UUID        `json:"client_id"`
 	AppProbePath          *string            `json:"app_probe_path"`
+	AppAlertsDisabled     bool               `json:"app_alerts_disabled"`
 	CreatedAt             time.Time          `json:"created_at"`
 	UpdatedAt             time.Time          `json:"updated_at"`
 }
@@ -607,6 +615,17 @@ type SiteAlertState struct {
 	LastStatus      string             `json:"last_status"`
 	ConsecutiveDown int32              `json:"consecutive_down"`
 	InIncident      bool               `json:"in_incident"`
+	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+type SiteAppAlertState struct {
+	SiteID          uuid.UUID          `json:"site_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	LastStatus      string             `json:"last_status"`
+	ConsecutiveDown int32              `json:"consecutive_down"`
+	InIncident      bool               `json:"in_incident"`
+	EverAppUp       bool               `json:"ever_app_up"`
 	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
 }
@@ -1132,6 +1151,15 @@ type Tenant struct {
 	PurgeStartedAt         pgtype.Timestamptz `json:"purge_started_at"`
 	CreatedAt              time.Time          `json:"created_at"`
 	UpdatedAt              time.Time          `json:"updated_at"`
+}
+
+type TenantAppAlertBreaker struct {
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	Tripped       bool               `json:"tripped"`
+	TrippedAt     pgtype.Timestamptz `json:"tripped_at"`
+	LastAlertAt   pgtype.Timestamptz `json:"last_alert_at"`
+	LastDownCount int32              `json:"last_down_count"`
+	UpdatedAt     time.Time          `json:"updated_at"`
 }
 
 type TrustedDevice struct {

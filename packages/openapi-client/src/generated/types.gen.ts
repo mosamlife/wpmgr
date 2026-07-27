@@ -2373,6 +2373,18 @@ export type AlertConfig = {
    *
    */
   vuln_include_in_digest: boolean;
+  /**
+   * Whether the application-health alert kind (GH #291 Phase 3) is
+   * allowed to dispatch for this tenant, independent of `enabled`
+   * (the reachability channel) — a tenant that already has downtime
+   * alerts on does not silently start receiving app-health alerts
+   * too. Defaults to false on any deployment that already had sites
+   * when app-health alerting shipped, and true on a fresh install —
+   * decided once, deterministically, by migration (never re-decided
+   * at runtime).
+   *
+   */
+  app_alerts_enabled: boolean;
 };
 
 /**
@@ -2404,6 +2416,51 @@ export type AlertConfigUpdate = {
    * Omitted preserves the tenant's currently-stored value.
    */
   vuln_include_in_digest?: boolean;
+  /**
+   * Omitted preserves the tenant's currently-stored value (or, for a
+   * tenant with no alert config saved yet, the deployment's rollout
+   * default — see AlertConfig.app_alerts_enabled).
+   *
+   */
+  app_alerts_enabled?: boolean;
+};
+
+/**
+ * A site's application-health settings (GH #291 Phase 3): the B3
+ * override path for the application-health probe, and a per-site
+ * switch to disable app-health ALERTING for this site without
+ * disabling the probe itself (the dashboard stays accurate either
+ * way).
+ *
+ */
+export type AppHealthSettings = {
+  /**
+   * A site-relative path (must start with `/`; no scheme, no host,
+   * no `..` traversal) the application-health probe requests instead
+   * of auto-detecting `/wp-json/` (falling back to
+   * `/?rest_route=/`). Empty means auto-detect. Set this when the
+   * default probe reports `unknown` for this site (e.g. a WAF blocks
+   * the default REST route but a different health-check path is
+   * reachable).
+   *
+   */
+  app_probe_path: string;
+  /**
+   * When true, this site is excluded from app-health alerting
+   * entirely (both the individual per-site alert and the fleet
+   * circuit breaker's eligible-site count) while the probe keeps
+   * running and the dashboard stays accurate.
+   *
+   */
+  app_alerts_disabled: boolean;
+};
+
+/**
+ * Save a site's application-health settings.
+ */
+export type AppHealthSettingsUpdate = {
+  app_probe_path: string;
+  app_alerts_disabled: boolean;
 };
 
 /**
@@ -11580,6 +11637,74 @@ export type PutSiteAutologinPolicyResponses = {
 
 export type PutSiteAutologinPolicyResponse =
   PutSiteAutologinPolicyResponses[keyof PutSiteAutologinPolicyResponses];
+
+export type GetSiteAppHealthSettingsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/app-health-settings";
+};
+
+export type GetSiteAppHealthSettingsErrors = {
+  /**
+   * Site not found, or `siteId` does not belong to the caller's
+   * tenant (`site_not_found`).
+   *
+   */
+  404: Error;
+};
+
+export type GetSiteAppHealthSettingsError =
+  GetSiteAppHealthSettingsErrors[keyof GetSiteAppHealthSettingsErrors];
+
+export type GetSiteAppHealthSettingsResponses = {
+  /**
+   * Current app-health settings
+   */
+  200: AppHealthSettings;
+};
+
+export type GetSiteAppHealthSettingsResponse =
+  GetSiteAppHealthSettingsResponses[keyof GetSiteAppHealthSettingsResponses];
+
+export type PutSiteAppHealthSettingsData = {
+  body: AppHealthSettingsUpdate;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/app-health-settings";
+};
+
+export type PutSiteAppHealthSettingsErrors = {
+  /**
+   * Site not found, or `siteId` does not belong to the caller's
+   * tenant (`site_not_found`).
+   *
+   */
+  404: Error;
+  /**
+   * Validation failed (`app_probe_path_invalid`,
+   * `app_probe_path_too_long`).
+   *
+   */
+  422: Error;
+};
+
+export type PutSiteAppHealthSettingsError =
+  PutSiteAppHealthSettingsErrors[keyof PutSiteAppHealthSettingsErrors];
+
+export type PutSiteAppHealthSettingsResponses = {
+  /**
+   * Saved app-health settings
+   */
+  200: AppHealthSettings;
+};
+
+export type PutSiteAppHealthSettingsResponse =
+  PutSiteAppHealthSettingsResponses[keyof PutSiteAppHealthSettingsResponses];
 
 export type AgentAutologinConsumeData = {
   body: AutologinConsumeRequest;

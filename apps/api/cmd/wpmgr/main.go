@@ -1103,6 +1103,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		logger.Info("uptime app-health probe disabled (WPMGR_UPTIME_APP_PROBE_ENABLED=false)")
 	}
+	// GH #291 Phase 3 - app-health ALERTING numeric knobs. Safe to wire
+	// unconditionally: whenever the app probe is disabled (or a site never
+	// gets a conclusive verdict), ProbeWorker's app-alert transition step is
+	// a no-op regardless of these values (see processSite's appAttempted
+	// gate) - dispatch is additionally gated per-tenant by AlertConfig.
+	// AppAlertsEnabled, whose own default m108 decided at migration time.
+	uptimeWorker.SetAppAlertConfig(cfg.Uptime.AppAlertThreshold, cfg.Uptime.AppAlertBreakerRatio)
 	uptimeSvc := uptime.NewService(uptimeRepo, metricsStore, uptimeSiteAdapter)
 	uptimeH := uptime.NewHandler(uptimeSvc, auditRec)
 	// Wire the metrics store into the site service so site-list uptime fields

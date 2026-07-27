@@ -1562,6 +1562,20 @@ func encodePutPerfConfigRequest(
 	return nil
 }
 
+func encodePutSiteAppHealthSettingsRequest(
+	req *AppHealthSettingsUpdate,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodePutSiteAutologinPolicyRequest(
 	req *SiteAutologinPolicyUpdate,
 	r *http.Request,

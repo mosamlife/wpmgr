@@ -27,20 +27,28 @@ import {
 import { useEmailNotifySettings } from "@/features/email/use-email";
 import type { AlertConfigUpdate } from "@wpmgr/api";
 
-// Tenant alert-channel editor (operator+). One shared channel — email
-// recipients plus an optional webhook — feeds three signals: uptime
-// downtime/recovery, high-severity activity-log security events, and
-// vulnerability alerting (GH #247). GETs the current config (or null when
-// none) and PUTs changes via react-hook-form + Zod, with an optimistic cache
-// update in the mutation hook.
+// Tenant alert-channel editor (operator+). One shared channel, email
+// recipients plus an optional webhook, feeds four signals: uptime
+// downtime/recovery, application-health alerting (GH #291 Phase 3),
+// high-severity activity-log security events, and vulnerability alerting
+// (GH #247). GETs the current config (or null when none) and PUTs changes
+// via react-hook-form + Zod, with an optimistic cache update in the
+// mutation hook.
 //
 // Sprint 4 (forms): per-section "Save" button removed in favor of a global
 // `StickySaveBar`. Validation runs on blur and surfaces through `FieldError`
 // in the what/why/how shape from DESIGN.md.
 //
 // Recipients & webhook is the FIRST section (unchanged from the pre-#247
-// layout) precisely so the Downtime / Security events / Vulnerability alerts
-// sections below it can each say "the recipients above" and mean it.
+// layout) precisely so the Downtime / Application health / Security events /
+// Vulnerability alerts sections below it can each say "the recipients above"
+// and mean it.
+//
+// Application health is this form's only permanent home for
+// `app_alerts_enabled`. The one-time upgrade prompt
+// (`app-health-alert-prompt.tsx`) also writes this same field through
+// `usePutAlertConfig`, but dismissing that prompt must never be the only way
+// to turn the setting on, so it lives here too.
 
 const VULN_SEVERITY_VALUES = ["critical", "high", "medium", "low"] as const;
 
@@ -73,6 +81,7 @@ const formSchema = z.object({
     .union([z.literal(""), z.string().url("Invalid URL")])
     .optional(),
   notify_security: z.boolean(),
+  app_alerts_enabled: z.boolean(),
   notify_vulns: z.boolean(),
   vuln_min_severity: z.enum(VULN_SEVERITY_VALUES),
   vuln_include_in_digest: z.boolean(),
@@ -113,6 +122,7 @@ export function AlertConfigForm() {
       recipients: "",
       webhook_url: "",
       notify_security: false,
+      app_alerts_enabled: false,
       notify_vulns: false,
       vuln_min_severity: "high",
       vuln_include_in_digest: true,
@@ -129,6 +139,7 @@ export function AlertConfigForm() {
       recipients: config ? config.email_recipients.join("\n") : "",
       webhook_url: config?.webhook_url ?? "",
       notify_security: config?.notify_security ?? false,
+      app_alerts_enabled: config?.app_alerts_enabled ?? false,
       notify_vulns: config?.notify_vulns ?? false,
       vuln_min_severity: config?.vuln_min_severity ?? "high",
       vuln_include_in_digest: config?.vuln_include_in_digest ?? true,
@@ -142,6 +153,7 @@ export function AlertConfigForm() {
       // Always sent explicitly (never omitted) so a save never silently
       // drops a signal the operator didn't touch this time around.
       notify_security: values.notify_security,
+      app_alerts_enabled: values.app_alerts_enabled,
       notify_vulns: values.notify_vulns,
       vuln_min_severity: values.vuln_min_severity,
       vuln_include_in_digest: values.vuln_include_in_digest,
@@ -160,8 +172,8 @@ export function AlertConfigForm() {
       <CardHeader>
         <CardTitle>Alert channel</CardTitle>
         <CardDescription>
-          One shared channel for downtime, security events, and vulnerability
-          alerts across every site in this tenant.
+          One shared channel for downtime, application health, security
+          events, and vulnerability alerts across every site in this tenant.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -274,6 +286,43 @@ export function AlertConfigForm() {
                   Uses the recipients and webhook above. There is no separate
                   switch for downtime alerts.
                 </p>
+              </FormSection>
+
+              <FormSection
+                title="Application health"
+                description="Alert when a site's own WordPress backend fails, not when the site is merely unreachable. Uses the recipients and webhook above."
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <Controller
+                      control={control}
+                      name="app_alerts_enabled"
+                      render={({ field }) => (
+                        <Switch
+                          id="app-alerts-enabled"
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <Label htmlFor="app-alerts-enabled" className="cursor-pointer">
+                      Enable application health alerts
+                    </Label>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    This alerts on WordPress itself failing, not on the site
+                    being unreachable. Only a genuine WordPress error, such
+                    as an HTTP 500 response or a page carrying WordPress's
+                    own fatal-error signature, triggers an alert. Uncertain
+                    results, such as a cached response or a site in
+                    maintenance, are reported as unknown and never alert.
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Off by default on an existing install. Turning this on
+                    may surface sites that have been quietly broken for a
+                    while.
+                  </p>
+                </div>
               </FormSection>
 
               <FormSection

@@ -100,6 +100,12 @@ function buildAlertConfig(overrides: Partial<AlertConfig> = {}): AlertConfig {
     notify_vulns: false,
     vuln_min_severity: "high",
     vuln_include_in_digest: true,
+    // GH #291 Phase 3: required on the generated `AlertConfig` type. Most
+    // tests in this file don't touch it, so a fixed default is fine; the
+    // "application health alerts toggle" describe block below overrides it
+    // directly, and `app-health-alert-prompt.test.tsx` covers the field's
+    // other write path (the one-time upgrade prompt).
+    app_alerts_enabled: false,
     ...overrides,
   };
 }
@@ -192,6 +198,53 @@ describe("AlertConfigForm — save always sends every signal field", () => {
     await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
     expect(mutateMock).toHaveBeenCalledWith(
       expect.objectContaining({ notify_security: true }),
+      expect.anything(),
+    );
+  });
+});
+
+describe("AlertConfigForm - application health alerts toggle", () => {
+  // GH #291 Phase 3: a dismissible one-time prompt (`app-health-alert-
+  // prompt.tsx`) must never be the only way to turn this on, so this is the
+  // toggle's permanent home, matching the same Controller + Switch pattern
+  // as `notify_security` above.
+  it("renders the Application health switch reflecting the current app_alerts_enabled value", async () => {
+    const config = buildAlertConfig({ app_alerts_enabled: true });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: config }),
+    );
+    mockPutAlertConfig();
+
+    renderForm(<AlertConfigForm />);
+
+    const appHealthSwitch = await screen.findByLabelText(
+      "Enable application health alerts",
+    );
+    expect(appHealthSwitch).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("sends the flipped app_alerts_enabled value when the Application health switch is toggled and saved", async () => {
+    const config = buildAlertConfig({ app_alerts_enabled: false });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: config }),
+    );
+    const mutateMock = vi.fn();
+    mockPutAlertConfig({ mutate: mutateMock });
+
+    renderForm(<AlertConfigForm />);
+
+    const appHealthSwitch = await screen.findByLabelText(
+      "Enable application health alerts",
+    );
+    expect(appHealthSwitch).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(appHealthSwitch);
+    expect(appHealthSwitch).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ app_alerts_enabled: true }),
       expect.anything(),
     );
   });

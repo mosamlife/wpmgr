@@ -530,6 +530,15 @@ type Querier interface {
 	// M5 uptime alerting: per-tenant alert config + per-site alert state.
 	// Tenant-scoped read of the tenant's default alert channel.
 	GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (AlertConfig, error)
+	// The m108 deployment-fresh decision. app_alert_rollout carries no tenant
+	// dimension and no RLS at all (see its schema.sql doc comment), so this is
+	// safe to run under ANY transaction context - callers use whichever
+	// tx wrapper they already hold open (uptime.Repo.GetAlertConfig runs it
+	// inside the same InTenantTx as its alert_configs read) rather than opening
+	// a second transaction. Read by the synthesized zero-value AlertConfig
+	// default for a tenant with no persisted alert_configs row yet, so that path
+	// and the persisted column's own DEFAULT never disagree.
+	GetAppAlertRolloutDefault(ctx context.Context) (bool, error)
 	// Returns the tenant's current re-baseline anchor, if one has ever been set.
 	// Callers must handle pgx.ErrNoRows as "no baseline" (Verify walks the full
 	// chain from genesis in that case).
@@ -832,6 +841,18 @@ type Querier interface {
 	// alert threshold under overlapping sweeps.
 	GetSiteAlertStateForUpdate(ctx context.Context, siteID uuid.UUID) (SiteAlertState, error)
 	// ---------------------------------------------------------------------------
+	// site_app_alert_state (m108 - GH #291 Phase 3: app-health alert state,
+	// written alongside site_alert_state inside the SAME TransitionAlertState
+	// transaction - never a separate round-trip).
+	// ---------------------------------------------------------------------------
+	// Cross-tenant read-and-LOCK of one site's app-health alert state
+	// (app.agent GUC). Mirrors GetSiteAlertStateForUpdate exactly - same
+	// overlapping-sweep race the FOR UPDATE lock closes.
+	GetSiteAppAlertStateForUpdate(ctx context.Context, siteID uuid.UUID) (SiteAppAlertState, error)
+	// Tenant-scoped read of a site's app-health settings (GH #291 Phase 3):
+	// the B3 override path and the per-site alerting opt-out.
+	GetSiteAppHealthSettings(ctx context.Context, arg GetSiteAppHealthSettingsParams) (GetSiteAppHealthSettingsRow, error)
+	// ---------------------------------------------------------------------------
 	// Agent-auth path (app.agent GUC). Resolve a site by its agent public key.
 	// ---------------------------------------------------------------------------
 	GetSiteByAgentKey(ctx context.Context, agentPublicKey string) (Site, error)
@@ -901,6 +922,23 @@ type Querier interface {
 	// collides with an existing name.
 	GetTagByName(ctx context.Context, arg GetTagByNameParams) (SiteTag, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
+	// Cross-tenant read-and-LOCK of one tenant's circuit-breaker state
+	// (app.agent GUC). A missing row reads as pgx.ErrNoRows (never tripped yet).
+	GetTenantAppAlertBreakerForUpdate(ctx context.Context, tenantID uuid.UUID) (TenantAppAlertBreaker, error)
+	// The fleet circuit breaker's denominator/numerator (app.agent GUC), scoped
+	// to ONE tenant at a time and evaluated once per sweep tick (not per site).
+	// Denominator (eligible): sites that could EVER contribute an app alert -
+	// ever_app_up = true (the same gate EvaluateApp enforces before firing),
+	// app alerting not individually disabled for the site, and not revoked/
+	// archived (an operator-initiated "stop managing this site", not a
+	// connectivity problem - mirrors deriveFleetStatus's identical exclusion).
+	// Numerator (down): the subset of those currently in an open app incident.
+	// A site with ever_app_up=false is excluded from BOTH sides: it can never
+	// reach the numerator (the same gate), and counting it in the denominator
+	// would dilute the ratio and mask a real "every site we can actually watch
+	// just went down together" event behind a large population of sites nobody
+	// can alert on anyway (e.g. every site with REST permanently blocked).
+	GetTenantAppAlertRatio(ctx context.Context, tenantID uuid.UUID) (GetTenantAppAlertRatioRow, error)
 	// Returns the M16 Phase A billing/plan fields used by internal/billing's
 	// entitlement resolution. tenants carries no RLS (see schema.sql); every
 	// caller already holds a tenant_id it is entitled to query — either the
@@ -1316,8 +1354,15 @@ type Querier interface {
 	// tenants. Only enrolled sites have an agent URL worth probing.
 	// last_seen_at and app_probe_path (m107, GH #291 Phase 2) are carried for the
 	// application-health prober: B0 (agent ground truth) reads last_seen_at, B3
-	// (per-site override) reads app_probe_path. The reachability probe and the
-	// cron-kicker ignore both.
+	// (per-site override) reads app_probe_path. app_alerts_disabled (m108, GH
+	// #291 Phase 3) is carried so the app-alert transition step can skip a site
+	// whose operator disabled app ALERTING (the probe itself still runs).
+	// connection_state (GH #291 Phase 3 Fix 2) is carried for the SAME app-alert
+	// transition step, so it can exclude a revoked/archived site using the
+	// IDENTICAL predicate GetTenantAppAlertRatio's WHERE clause enforces
+	// server-side (see uptime.appAlertEligible) - the fire path and the fleet
+	// circuit breaker's ratio must never disagree about which sites count. The
+	// reachability probe and the cron-kicker ignore all four.
 	ListEnrolledSitesForProbe(ctx context.Context) ([]ListEnrolledSitesForProbeRow, error)
 	// Completed snapshots older than the cutoff that are NOT archive-retained, in a
 	// single tenant scope. The GC job decrements chunk refcounts for each then
@@ -1497,6 +1542,19 @@ type Querier interface {
 	// number of sites (in this tenant) currently carrying the tag, computed live
 	// rather than stored so it can never drift from sites.tags.
 	ListTagsWithUsage(ctx context.Context, tenantID uuid.UUID) ([]ListTagsWithUsageRow, error)
+	// Cross-tenant (app.agent GUC) listing of every site CURRENTLY counted in
+	// GetTenantAppAlertRatio's "down" numerator for one tenant - the IDENTICAL
+	// eligibility predicate, joined to sites for a human-readable display name.
+	// Used ONLY for the fleet circuit breaker's "updated" aggregate notification
+	// (GH #291 Phase 3 Fix 3), which can fire several sweep ticks after the
+	// sites it describes actually went down (the update min-interval throttle
+	// delays it) - so "this tick's pending transitions" is the WRONG data
+	// source for "what is currently affected"; this query reads the live,
+	// current truth instead, so the notification never names a stale or
+	// incomplete set. row_limit bounds the list for a large tenant; the
+	// notification's DownCount/EligibleCount (not this list) are always the
+	// authoritative, complete counts.
+	ListTenantAppDownSites(ctx context.Context, arg ListTenantAppDownSitesParams) ([]string, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
 	// ListTenantsForUser returns only the tenants the given user is a member of.
 	// It joins memberships under the memberships_self_read policy (app.user_id GUC),
@@ -1521,6 +1579,18 @@ type Querier interface {
 	// this early-stage feature is small; a future pass can add keyset pagination
 	// (ORDER BY id already supports it) without changing this query's shape.
 	ListTenantsWithProviderSubscription(ctx context.Context) ([]ListTenantsWithProviderSubscriptionRow, error)
+	// Cross-tenant enumeration (app.agent GUC) of every tenant whose fleet
+	// circuit breaker is CURRENTLY tripped - GH #291 Phase 3 Fix 4. Called ONCE
+	// per sweep tick (never per-tenant): a tenant whose down sites simply stop
+	// transitioning (already down and staying down - no new FireDown/
+	// FireRecovery ever lands in `pending` for it again) would otherwise never
+	// get its breaker re-evaluated, and the ratio CAN move for reasons that
+	// never touch an individual site's app-alert state at all (a down site gets
+	// archived/revoked, or per-site alerting gets disabled, shrinking the
+	// eligible/down counts with no AppTransition). The tripped set is small by
+	// definition (a breaker only trips when a meaningful fraction of a tenant's
+	// sites are simultaneously down), so this stays one cheap, bounded query.
+	ListTrippedAppAlertBreakerTenants(ctx context.Context) ([]uuid.UUID, error)
 	// All active trusted devices for the Security settings UI.
 	// Ordered by created_at DESC, id DESC.
 	ListTrustedDevicesForUser(ctx context.Context, userID uuid.UUID) ([]TrustedDevice, error)
@@ -1867,6 +1937,11 @@ type Querier interface {
 	// (to now()) only when @done is true; result_id/error_reason are passed through
 	// as the terminal state dictates.
 	UpdateRucssJobState(ctx context.Context, arg UpdateRucssJobStateParams) (RucssJob, error)
+	// Tenant-scoped write of a site's app-health settings (GH #291 Phase 3).
+	// app_probe_path is sqlc.narg so an empty override clears back to
+	// auto-detect (NULL); the service layer is responsible for path validation
+	// (site-relative, no scheme/host/traversal - see uptime.ValidateAppProbePath).
+	UpdateSiteAppHealthSettings(ctx context.Context, arg UpdateSiteAppHealthSettingsParams) (UpdateSiteAppHealthSettingsRow, error)
 	// Tenant-scoped metadata update (used by the agent path inside the resolved
 	// site's own tenant scope).
 	UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadataParams) (Site, error)
@@ -1883,11 +1958,17 @@ type Querier interface {
 	UpdateWooThemeFragmentsSupported(ctx context.Context, arg UpdateWooThemeFragmentsSupportedParams) (int64, error)
 	// Tenant-scoped create-or-update of the tenant's default alert channel.
 	// m103 (GH #247): notify_vulns/vuln_min_severity/vuln_include_in_digest are
-	// the vulnerability-alerting fields — the service layer (uptime.Service.
-	// SaveAlertConfig) is responsible for merging omitted-on-PUT fields from the
-	// existing row before calling this query (see the mergeAlertConfigUpdate /
-	// Or(existing.X) pattern in handler.go); this query always writes exactly
-	// what it is given.
+	// the vulnerability-alerting fields. m108 (GH #291 Phase 3): app_alerts_enabled
+	// is the FOURTH signal on this row - independent of `enabled` (the existing
+	// reachability channel). The service layer (uptime.Service.SaveAlertConfig)
+	// is responsible for merging omitted-on-PUT fields from the existing row
+	// before calling this query (see the mergeAlertConfigUpdate / Or(existing.X)
+	// pattern in handler.go); this query always writes exactly what it is given,
+	// INCLUDING app_alerts_enabled - the caller (uptime.Service.SaveAlertConfig,
+	// via the same merge) is responsible for resolving the deployment-fresh
+	// default (uptime.Service.GetAlertConfig reads app_alert_rollout for a
+	// tenant with no existing row) before this query ever runs, so the column's
+	// own DEFAULT only backstops rows written outside the application layer.
 	UpsertAlertConfig(ctx context.Context, arg UpsertAlertConfigParams) (AlertConfig, error)
 	// Moves the tenant's integrity anchor to the given chain-head snapshot. At
 	// most one row per tenant (PRIMARY KEY tenant_id) — a second re-baseline
@@ -2014,6 +2095,8 @@ type Querier interface {
 	// Cross-tenant upsert of a site's alert state (app.agent GUC). The probe worker
 	// writes the new transition memory after each probe.
 	UpsertSiteAlertState(ctx context.Context, arg UpsertSiteAlertStateParams) (SiteAlertState, error)
+	// Cross-tenant upsert of a site's app-health alert state (app.agent GUC).
+	UpsertSiteAppAlertState(ctx context.Context, arg UpsertSiteAppAlertStateParams) (SiteAppAlertState, error)
 	// Insert-or-update a per-site config row. provider_secret_encrypted uses a
 	// nil-sentinel: when @set_secret is false the existing ciphertext is preserved,
 	// so editing non-secret fields without re-entering the password keeps the stored
@@ -2036,6 +2119,12 @@ type Querier interface {
 	// `add` list — always in the SAME transaction as that write (binding
 	// invariant, m100).
 	UpsertTagNames(ctx context.Context, arg UpsertTagNamesParams) error
+	// Cross-tenant upsert of a tenant's circuit-breaker state (app.agent GUC).
+	// last_down_count (GH #291 Phase 3 Fix 3) is the down count AT THE TIME OF
+	// THE LAST NOTIFICATION (trip, update, or recovery) - never bumped on a
+	// silent steady-state tick - so the caller can detect "materially worse
+	// since we last said anything" without a second table.
+	UpsertTenantAppAlertBreaker(ctx context.Context, arg UpsertTenantAppAlertBreakerParams) (TenantAppAlertBreaker, error)
 }
 
 var _ Querier = (*Queries)(nil)

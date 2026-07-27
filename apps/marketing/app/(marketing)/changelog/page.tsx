@@ -39,6 +39,33 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.93",
+    date: "2026-07-27",
+    summary: "Spot a site whose WordPress has failed even when its cache keeps serving visitors.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A site whose WordPress had completely failed could still show as fully up (GH #291). Uptime checks request the homepage, and on a site with page caching that page can be served straight from the cache without WordPress running at all, so a broken site kept returning a healthy response for hours. WPMgr now also checks whether WordPress itself is actually running, using a request a cache does not answer, and shows a site that is serving cached pages while WordPress is down as degraded with an explanation of what is likely broken.",
+      },
+      {
+        tag: "Fixed",
+        text: "An update that broke a site could be reported as successful and never rolled back. The check that decides whether to undo an update could be answered from the cache with the pre-update page. WPMgr now asks the site agent directly first, over a request that cannot be cached and only works if WordPress actually loaded, and still checks the public homepage afterwards so a front-end problem is caught too.",
+      },
+      {
+        tag: "Added",
+        text: "Optional alerts for application health, off by default on existing installs so an upgrade cannot wake anyone. An alert only fires on a genuine, repeated WordPress failure, never on an uncertain result such as a cached response or a site in maintenance. If many sites report a failure at once, WPMgr sends one summary instead of an alert per site.",
+      },
+      {
+        tag: "Fixed",
+        text: "Plugin vulnerabilities are now detected. The scanner compared the plugin identifier WordPress reports internally against the slug the vulnerability feed publishes, so the two never matched and no plugin vulnerability was ever reported. Themes and WordPress core were unaffected.",
+      },
+      {
+        tag: "Added",
+        text: "A per-site default account for one-click wp-admin sign in, so a site with several administrators always signs you in as the account you picked, and the audit trail records which one.",
+      },
+    ],
+  },
+  {
     version: "0.61.88",
     date: "2026-07-24",
     summary: "Choose which account one-click wp-admin login uses, per site.",

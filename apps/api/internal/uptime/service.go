@@ -138,18 +138,34 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID) ([]SummaryIte
 
 // GetAlertConfig returns the tenant's alert config. When none exists yet it
 // returns a zero-value enabled config (the tenant simply hasn't set recipients).
+//
+// m108 (GH #291 Phase 3): AppAlertsEnabled on this synthesized default reads
+// the SAME deployment-fresh decision migration m108 computed once (via
+// app_alert_rollout), rather than a second, independently-guessed default -
+// the persisted alert_configs.app_alerts_enabled column's own DEFAULT and
+// this zero-value path must never disagree, or a tenant's FIRST-ever PUT
+// (which round-trips through this exact struct - see handler.go's
+// mergeAlertConfigUpdate) could silently flip the deployment's rollout
+// decision. A rollout-default query failure degrades to false (never opt a
+// tenant into alerting it never asked for) rather than failing the whole
+// request - this field alone is not worth turning a read into a 500.
 func (s *Service) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (AlertConfig, error) {
 	cfg, found, err := s.repo.GetAlertConfig(ctx, tenantID)
 	if err != nil {
 		return AlertConfig{}, err
 	}
 	if !found {
+		appAlertsEnabled, rerr := s.repo.GetAppAlertRolloutDefault(ctx)
+		if rerr != nil {
+			appAlertsEnabled = false
+		}
 		return AlertConfig{
 			TenantID:            tenantID,
 			EmailRecipients:     []string{},
 			Enabled:             true,
 			VulnMinSeverity:     VulnSeverityHigh,
 			VulnIncludeInDigest: true,
+			AppAlertsEnabled:    appAlertsEnabled,
 		}, nil
 	}
 	return cfg, nil
@@ -333,6 +349,39 @@ func (s *Service) GetIncidentDetail(ctx context.Context, tenantID uuid.UUID, sum
 		})
 	}
 	return det, nil
+}
+
+// GetAppHealthSettings returns a site's app-health settings (GH #291 Phase 3
+// section 3): the B3 override path and the per-site alerting opt-out. A site
+// with no settings row yet (every site, until the first PUT) is not an
+// error - sites.app_probe_path/app_alerts_disabled always exist with their
+// column defaults, so GetAppHealthSettings returns the zero-value settings
+// {"", false} rather than a not-found error for a siteID the tenant owns.
+func (s *Service) GetAppHealthSettings(ctx context.Context, tenantID, siteID uuid.UUID) (AppHealthSettings, error) {
+	settings, found, err := s.repo.GetAppHealthSettings(ctx, tenantID, siteID)
+	if err != nil {
+		return AppHealthSettings{}, err
+	}
+	if !found {
+		return AppHealthSettings{}, domain.NotFound("site_not_found", "site not found")
+	}
+	return settings, nil
+}
+
+// UpdateAppHealthSettings validates and saves a site's app-health settings.
+func (s *Service) UpdateAppHealthSettings(ctx context.Context, tenantID, siteID uuid.UUID, rawProbePath string, alertsDisabled bool) (AppHealthSettings, error) {
+	probePath, err := ValidateAppProbePath(rawProbePath)
+	if err != nil {
+		return AppHealthSettings{}, err
+	}
+	settings, found, err := s.repo.UpdateAppHealthSettings(ctx, tenantID, siteID, probePath, alertsDisabled)
+	if err != nil {
+		return AppHealthSettings{}, err
+	}
+	if !found {
+		return AppHealthSettings{}, domain.NotFound("site_not_found", "site not found")
+	}
+	return settings, nil
 }
 
 // SaveAlertConfig validates and upserts the tenant's alert config.

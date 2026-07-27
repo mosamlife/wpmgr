@@ -6829,6 +6829,15 @@ type AlertConfig struct {
 	// Whether open vulnerabilities appear in the periodic email digest
 	// (see EmailNotifySettings). Default true.
 	VulnIncludeInDigest bool `json:"vuln_include_in_digest"`
+	// Whether the application-health alert kind (GH #291 Phase 3) is
+	// allowed to dispatch for this tenant, independent of `enabled`
+	// (the reachability channel) — a tenant that already has downtime
+	// alerts on does not silently start receiving app-health alerts
+	// too. Defaults to false on any deployment that already had sites
+	// when app-health alerting shipped, and true on a fresh install —
+	// decided once, deterministically, by migration (never re-decided
+	// at runtime).
+	AppAlertsEnabled bool `json:"app_alerts_enabled"`
 }
 
 // GetEmailRecipients returns the value of EmailRecipients.
@@ -6871,6 +6880,11 @@ func (s *AlertConfig) GetVulnIncludeInDigest() bool {
 	return s.VulnIncludeInDigest
 }
 
+// GetAppAlertsEnabled returns the value of AppAlertsEnabled.
+func (s *AlertConfig) GetAppAlertsEnabled() bool {
+	return s.AppAlertsEnabled
+}
+
 // SetEmailRecipients sets the value of EmailRecipients.
 func (s *AlertConfig) SetEmailRecipients(val []string) {
 	s.EmailRecipients = val
@@ -6911,6 +6925,11 @@ func (s *AlertConfig) SetVulnIncludeInDigest(val bool) {
 	s.VulnIncludeInDigest = val
 }
 
+// SetAppAlertsEnabled sets the value of AppAlertsEnabled.
+func (s *AlertConfig) SetAppAlertsEnabled(val bool) {
+	s.AppAlertsEnabled = val
+}
+
 func (*AlertConfig) putAlertConfigRes() {}
 
 // Create or update the tenant's alert channel.
@@ -6930,6 +6949,10 @@ type AlertConfigUpdate struct {
 	VulnMinSeverity OptAlertConfigUpdateVulnMinSeverity `json:"vuln_min_severity"`
 	// Omitted preserves the tenant's currently-stored value.
 	VulnIncludeInDigest OptBool `json:"vuln_include_in_digest"`
+	// Omitted preserves the tenant's currently-stored value (or, for a
+	// tenant with no alert config saved yet, the deployment's rollout
+	// default — see AlertConfig.app_alerts_enabled).
+	AppAlertsEnabled OptBool `json:"app_alerts_enabled"`
 }
 
 // GetEmailRecipients returns the value of EmailRecipients.
@@ -6972,6 +6995,11 @@ func (s *AlertConfigUpdate) GetVulnIncludeInDigest() OptBool {
 	return s.VulnIncludeInDigest
 }
 
+// GetAppAlertsEnabled returns the value of AppAlertsEnabled.
+func (s *AlertConfigUpdate) GetAppAlertsEnabled() OptBool {
+	return s.AppAlertsEnabled
+}
+
 // SetEmailRecipients sets the value of EmailRecipients.
 func (s *AlertConfigUpdate) SetEmailRecipients(val []string) {
 	s.EmailRecipients = val
@@ -7010,6 +7038,11 @@ func (s *AlertConfigUpdate) SetVulnMinSeverity(val OptAlertConfigUpdateVulnMinSe
 // SetVulnIncludeInDigest sets the value of VulnIncludeInDigest.
 func (s *AlertConfigUpdate) SetVulnIncludeInDigest(val OptBool) {
 	s.VulnIncludeInDigest = val
+}
+
+// SetAppAlertsEnabled sets the value of AppAlertsEnabled.
+func (s *AlertConfigUpdate) SetAppAlertsEnabled(val OptBool) {
+	s.AppAlertsEnabled = val
 }
 
 // Omitted preserves the tenant's currently-stored value.
@@ -7289,6 +7322,78 @@ func (s *ApiKeyList) SetItems(val []ApiKey) {
 }
 
 func (*ApiKeyList) listApiKeysRes() {}
+
+// A site's application-health settings (GH #291 Phase 3): the B3
+// override path for the application-health probe, and a per-site
+// switch to disable app-health ALERTING for this site without
+// disabling the probe itself (the dashboard stays accurate either
+// way).
+// Ref: #/components/schemas/AppHealthSettings
+type AppHealthSettings struct {
+	// A site-relative path (must start with `/`; no scheme, no host,
+	// no `..` traversal) the application-health probe requests instead
+	// of auto-detecting `/wp-json/` (falling back to
+	// `/?rest_route=/`). Empty means auto-detect. Set this when the
+	// default probe reports `unknown` for this site (e.g. a WAF blocks
+	// the default REST route but a different health-check path is
+	// reachable).
+	AppProbePath string `json:"app_probe_path"`
+	// When true, this site is excluded from app-health alerting
+	// entirely (both the individual per-site alert and the fleet
+	// circuit breaker's eligible-site count) while the probe keeps
+	// running and the dashboard stays accurate.
+	AppAlertsDisabled bool `json:"app_alerts_disabled"`
+}
+
+// GetAppProbePath returns the value of AppProbePath.
+func (s *AppHealthSettings) GetAppProbePath() string {
+	return s.AppProbePath
+}
+
+// GetAppAlertsDisabled returns the value of AppAlertsDisabled.
+func (s *AppHealthSettings) GetAppAlertsDisabled() bool {
+	return s.AppAlertsDisabled
+}
+
+// SetAppProbePath sets the value of AppProbePath.
+func (s *AppHealthSettings) SetAppProbePath(val string) {
+	s.AppProbePath = val
+}
+
+// SetAppAlertsDisabled sets the value of AppAlertsDisabled.
+func (s *AppHealthSettings) SetAppAlertsDisabled(val bool) {
+	s.AppAlertsDisabled = val
+}
+
+func (*AppHealthSettings) getSiteAppHealthSettingsRes() {}
+func (*AppHealthSettings) putSiteAppHealthSettingsRes() {}
+
+// Save a site's application-health settings.
+// Ref: #/components/schemas/AppHealthSettingsUpdate
+type AppHealthSettingsUpdate struct {
+	AppProbePath      string `json:"app_probe_path"`
+	AppAlertsDisabled bool   `json:"app_alerts_disabled"`
+}
+
+// GetAppProbePath returns the value of AppProbePath.
+func (s *AppHealthSettingsUpdate) GetAppProbePath() string {
+	return s.AppProbePath
+}
+
+// GetAppAlertsDisabled returns the value of AppAlertsDisabled.
+func (s *AppHealthSettingsUpdate) GetAppAlertsDisabled() bool {
+	return s.AppAlertsDisabled
+}
+
+// SetAppProbePath sets the value of AppProbePath.
+func (s *AppHealthSettingsUpdate) SetAppProbePath(val string) {
+	s.AppProbePath = val
+}
+
+// SetAppAlertsDisabled sets the value of AppAlertsDisabled.
+func (s *AppHealthSettingsUpdate) SetAppAlertsDisabled(val bool) {
+	s.AppAlertsDisabled = val
+}
 
 type ApplySiteFileUploadBadRequest Error
 
@@ -16610,6 +16715,7 @@ func (*Error) getBackupSettingsContentsRes()      {}
 func (*Error) getBackupSettingsNotificationsRes() {}
 func (*Error) getBackupSqlInspectionRes()         {}
 func (*Error) getMeRes()                          {}
+func (*Error) getSiteAppHealthSettingsRes()       {}
 func (*Error) getSiteAvailableUpdatesRes()        {}
 func (*Error) getSiteDiagnosticsRes()             {}
 func (*Error) getSiteErrorConfigRes()             {}
@@ -35814,6 +35920,14 @@ func (*PutOrgEmailWebhookConfigServiceUnavailable) putOrgEmailWebhookConfigRes()
 type PutOrgEmailWebhookConfigUnauthorized Error
 
 func (*PutOrgEmailWebhookConfigUnauthorized) putOrgEmailWebhookConfigRes() {}
+
+type PutSiteAppHealthSettingsNotFound Error
+
+func (*PutSiteAppHealthSettingsNotFound) putSiteAppHealthSettingsRes() {}
+
+type PutSiteAppHealthSettingsUnprocessableEntity Error
+
+func (*PutSiteAppHealthSettingsUnprocessableEntity) putSiteAppHealthSettingsRes() {}
 
 type PutSiteAutologinPolicyForbidden Error
 
