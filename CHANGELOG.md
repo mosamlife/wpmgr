@@ -8,6 +8,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.90] - 2026-07-27
+
+### Fixed
+
+- A site whose WordPress had stopped working could still show as fully "Up" on the fleet view (GH #291). The uptime check requests the site's homepage, and on a site with page caching that page can be served straight from the cache without WordPress running at all, so a completely broken site kept returning a healthy response. WPMgr already knew better: when the site agent stops answering, the control plane verifies it over a signed request that cannot be cached, and marks the site disconnected. That signal was being ignored when deciding what to show. A site that is serving cached pages while its agent is unreachable is now shown as degraded, with a plain explanation of what that means and what is likely broken, instead of a reassuring green tick. Sites where the agent was deliberately deactivated or uninstalled are unaffected and still show as normal.
+- Uptime figures themselves are unchanged by this release. A cached page that loads is still counted as up, because visitors really are being served; what changed is only what the dashboard tells you about the state behind it.
+
+### Changed
+
+- For self-hosted installs using the optional ClickHouse metrics backend, the uptime table now adds any missing columns on startup instead of silently keeping an outdated shape. A failure to do so is logged and no longer prevents the control plane from starting, since metrics should never block site management.
+
 ## [0.61.89] - 2026-07-27
 
 ### Fixed

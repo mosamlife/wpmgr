@@ -86,6 +86,51 @@ const (
 	FleetStatusUnknown  FleetSiteStatus = "unknown"
 )
 
+// Fleet status reason strings (GH #291 Task 2): a short, machine-readable
+// explanation for WHY deriveFleetStatus picked FleetStatusDegraded, so the API
+// and UI can say which degraded it is instead of rendering a bare chip. Empty
+// string means the status needs no further explanation (up/down/unknown).
+const (
+	// FleetReasonAgentUnreachable: sites.connection_state = "disconnected" AND
+	// sites.disconnected_reason names one of the sweeper's own transitions
+	// (see sweeperDisconnectReasons below). The connection sweeper's signed,
+	// uncacheable active-verify already failed against the agent, or the agent
+	// stopped heartbeating outright (GH #291).
+	FleetReasonAgentUnreachable = "agent_unreachable"
+	// FleetReasonAgentDegraded: sites.connection_state = "degraded", meaning
+	// the agent heartbeat is stale but not yet past the disconnect threshold.
+	// This state has no last-will path (see sweeperDisconnectReasons), so it
+	// needs no reason disambiguation.
+	FleetReasonAgentDegraded = "agent_degraded"
+	// FleetReasonSlowResponse: the probe succeeded but total_ms exceeded
+	// slowThresholdMs.
+	FleetReasonSlowResponse = "slow_response"
+)
+
+// sweeperDisconnectReasons are the exact sites.disconnected_reason values the
+// connection sweeper itself writes when it drives connected/degraded ->
+// disconnected (internal/site/sweeper.go Sweep): "agent_unreachable" from the
+// active-verify path, "heartbeat_timeout" from the passive fallback path used
+// when active verify is disabled. Both mean the CP independently observed the
+// agent going silent or refusing a signed probe, i.e. a real outage.
+//
+// Every OTHER disconnected site reached that state via a SIGNED agent
+// last-will (ADR-040, connService.RecordLastWillTenant): the operator
+// deactivated or uninstalled the plugin, or some other agent-supplied reason.
+// The agent controls that reason string (bounded to 64 bytes, defaults to
+// "user_initiated", see internal/agent/handler.go disconnect()), so it is
+// deliberately NOT trusted as a positive signal; only the two CP-authored
+// strings below are ever treated as evidence of an unhealthy site. Anything
+// else (a known last-will reason, an unrecognized string, or an empty/legacy
+// row predating this column) is treated as healthy: deriveFleetStatus must
+// never raise an alarming Degraded chip on a site the operator cleanly took
+// offline, and a value it cannot positively attribute to the sweeper is not
+// proof of an outage.
+var sweeperDisconnectReasons = map[string]bool{
+	"agent_unreachable": true,
+	"heartbeat_timeout": true,
+}
+
 // FleetStatusCounts is the summary count header in the fleet status response.
 type FleetStatusCounts struct {
 	Up       int `json:"up"`
@@ -99,18 +144,22 @@ type FleetStatusCounts struct {
 // apps/web/src/features/fleet/fleet-types.ts — do not rename without
 // updating both sides.
 type FleetStatusItem struct {
-	SiteID           uuid.UUID       `json:"site_id"`
-	Name             string          `json:"name"`
-	URL              string          `json:"url"`
-	ConnectionState  string          `json:"connection_state"`
-	HealthStatus     string          `json:"health_status"`
-	Status           FleetSiteStatus `json:"status"`
-	Up               *bool           `json:"up"`
-	LastProbeAt      *time.Time      `json:"last_probe_at"`
-	UptimePct7d      float64         `json:"uptime_pct_7d"`
-	AvgLatencyMs     *float64        `json:"avg_latency_ms"`
-	TLSExpiry        *time.Time      `json:"tls_expiry"`
-	LatencySparkline []float64       `json:"latency_sparkline"`
+	SiteID          uuid.UUID       `json:"site_id"`
+	Name            string          `json:"name"`
+	URL             string          `json:"url"`
+	ConnectionState string          `json:"connection_state"`
+	HealthStatus    string          `json:"health_status"`
+	Status          FleetSiteStatus `json:"status"`
+	// StatusReason explains WHY Status is what it is when that is not
+	// self-evident (currently only populated for FleetStatusDegraded, one of
+	// the FleetReason* constants). Empty for up/down/unknown.
+	StatusReason     string     `json:"status_reason,omitempty"`
+	Up               *bool      `json:"up"`
+	LastProbeAt      *time.Time `json:"last_probe_at"`
+	UptimePct7d      float64    `json:"uptime_pct_7d"`
+	AvgLatencyMs     *float64   `json:"avg_latency_ms"`
+	TLSExpiry        *time.Time `json:"tls_expiry"`
+	LatencySparkline []float64  `json:"latency_sparkline"`
 	// InIncident is kept for internal use (summary counting) but not needed
 	// by the frontend contract — retained for the service-layer logic.
 	InIncident bool `json:"in_incident"`
@@ -132,6 +181,12 @@ type FleetSiteInfo struct {
 	ConnectionState string
 	HealthStatus    string
 	InIncident      bool
+	// DisconnectedReason is sites.disconnected_reason (empty when NULL or when
+	// ConnectionState is not "disconnected"). deriveFleetStatus reads this to
+	// tell a sweeper-detected outage apart from an operator-initiated last-will
+	// disconnect (GH #291 follow-up). See the FleetReasonAgentUnreachable doc
+	// comment for the full set of values this can hold.
+	DisconnectedReason string
 }
 
 // FleetIncidentItem is one open or recently-started incident for the fleet

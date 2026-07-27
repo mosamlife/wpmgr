@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.89
+  version: 0.61.90
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -6614,8 +6614,13 @@ paths:
         Returns summary counts {up, degraded, down, unknown} and a per-site list
         with the latest probe result, 7-day uptime %, and in-incident flag.
         Status derivation: down=latest probe up=false; degraded=up but latency
-        >2000ms or connection_state=degraded; up=probe up+fast; unknown=no probe.
-        Requires viewer+.
+        >2000ms, or connection_state=degraded (status_reason=agent_degraded),
+        or connection_state=disconnected (status_reason=agent_unreachable, GH
+        #291: a cached response can stay up=true while the agent side already
+        proved the site unreachable); up=probe up+fast; unknown=no probe.
+        connection_state=revoked/archived does not affect status derivation
+        (the operator deliberately stopped managing the site). Requires
+        viewer+.
       tags: [uptime]
       responses:
         "200":
@@ -15163,6 +15168,13 @@ components:
         status:
           type: string
           enum: [up, degraded, down, unknown]
+        status_reason:
+          type: string
+          description: |
+            Short machine-readable explanation for status, populated when
+            status=degraded (agent_unreachable, agent_degraded, or
+            slow_response). Empty/absent when the status needs no further
+            explanation.
         uptime_pct_7d:
           type: number
           format: double

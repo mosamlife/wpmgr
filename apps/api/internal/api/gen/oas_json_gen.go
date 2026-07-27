@@ -52817,6 +52817,12 @@ func (s *FleetUptimeStatusItem) encodeFields(e *jx.Encoder) {
 		s.Status.Encode(e)
 	}
 	{
+		if s.StatusReason.Set {
+			e.FieldStart("status_reason")
+			s.StatusReason.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("uptime_pct_7d")
 		e.Float64(s.UptimePct7d)
 	}
@@ -52856,19 +52862,20 @@ func (s *FleetUptimeStatusItem) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfFleetUptimeStatusItem = [12]string{
+var jsonFieldsNameOfFleetUptimeStatusItem = [13]string{
 	0:  "site_id",
 	1:  "site_name",
 	2:  "site_url",
 	3:  "status",
-	4:  "uptime_pct_7d",
-	5:  "avg_latency_ms_7d",
-	6:  "latest_total_ms",
-	7:  "last_probe_at",
-	8:  "tls_expiry",
-	9:  "in_incident",
-	10: "connection_state",
-	11: "health_status",
+	4:  "status_reason",
+	5:  "uptime_pct_7d",
+	6:  "avg_latency_ms_7d",
+	7:  "latest_total_ms",
+	8:  "last_probe_at",
+	9:  "tls_expiry",
+	10: "in_incident",
+	11: "connection_state",
+	12: "health_status",
 }
 
 // Decode decodes FleetUptimeStatusItem from json.
@@ -52926,8 +52933,18 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"status\"")
 			}
+		case "status_reason":
+			if err := func() error {
+				s.StatusReason.Reset()
+				if err := s.StatusReason.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"status_reason\"")
+			}
 		case "uptime_pct_7d":
-			requiredBitSet[0] |= 1 << 4
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
 				v, err := d.Float64()
 				s.UptimePct7d = float64(v)
@@ -52939,7 +52956,7 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"uptime_pct_7d\"")
 			}
 		case "avg_latency_ms_7d":
-			requiredBitSet[0] |= 1 << 5
+			requiredBitSet[0] |= 1 << 6
 			if err := func() error {
 				v, err := d.Float64()
 				s.AvgLatencyMs7d = float64(v)
@@ -52981,7 +52998,7 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"tls_expiry\"")
 			}
 		case "in_incident":
-			requiredBitSet[1] |= 1 << 1
+			requiredBitSet[1] |= 1 << 2
 			if err := func() error {
 				v, err := d.Bool()
 				s.InIncident = bool(v)
@@ -52993,7 +53010,7 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"in_incident\"")
 			}
 		case "connection_state":
-			requiredBitSet[1] |= 1 << 2
+			requiredBitSet[1] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.ConnectionState = string(v)
@@ -53005,7 +53022,7 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"connection_state\"")
 			}
 		case "health_status":
-			requiredBitSet[1] |= 1 << 3
+			requiredBitSet[1] |= 1 << 4
 			if err := func() error {
 				v, err := d.Str()
 				s.HealthStatus = string(v)
@@ -53026,8 +53043,8 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
-		0b00111111,
-		0b00001110,
+		0b01101111,
+		0b00011100,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

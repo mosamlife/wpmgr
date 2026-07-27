@@ -18714,18 +18714,23 @@ func (s *FleetUptimeStatus) SetItems(val []FleetUptimeStatusItem) {
 
 // Ref: #/components/schemas/FleetUptimeStatusItem
 type FleetUptimeStatusItem struct {
-	SiteID          uuid.UUID                   `json:"site_id"`
-	SiteName        string                      `json:"site_name"`
-	SiteURL         string                      `json:"site_url"`
-	Status          FleetUptimeStatusItemStatus `json:"status"`
-	UptimePct7d     float64                     `json:"uptime_pct_7d"`
-	AvgLatencyMs7d  float64                     `json:"avg_latency_ms_7d"`
-	LatestTotalMs   OptFloat64                  `json:"latest_total_ms"`
-	LastProbeAt     OptDateTime                 `json:"last_probe_at"`
-	TLSExpiry       OptDateTime                 `json:"tls_expiry"`
-	InIncident      bool                        `json:"in_incident"`
-	ConnectionState string                      `json:"connection_state"`
-	HealthStatus    string                      `json:"health_status"`
+	SiteID   uuid.UUID                   `json:"site_id"`
+	SiteName string                      `json:"site_name"`
+	SiteURL  string                      `json:"site_url"`
+	Status   FleetUptimeStatusItemStatus `json:"status"`
+	// Short machine-readable explanation for status, populated when
+	// status=degraded (agent_unreachable, agent_degraded, or
+	// slow_response). Empty/absent when the status needs no further
+	// explanation.
+	StatusReason    OptString   `json:"status_reason"`
+	UptimePct7d     float64     `json:"uptime_pct_7d"`
+	AvgLatencyMs7d  float64     `json:"avg_latency_ms_7d"`
+	LatestTotalMs   OptFloat64  `json:"latest_total_ms"`
+	LastProbeAt     OptDateTime `json:"last_probe_at"`
+	TLSExpiry       OptDateTime `json:"tls_expiry"`
+	InIncident      bool        `json:"in_incident"`
+	ConnectionState string      `json:"connection_state"`
+	HealthStatus    string      `json:"health_status"`
 }
 
 // GetSiteID returns the value of SiteID.
@@ -18746,6 +18751,11 @@ func (s *FleetUptimeStatusItem) GetSiteURL() string {
 // GetStatus returns the value of Status.
 func (s *FleetUptimeStatusItem) GetStatus() FleetUptimeStatusItemStatus {
 	return s.Status
+}
+
+// GetStatusReason returns the value of StatusReason.
+func (s *FleetUptimeStatusItem) GetStatusReason() OptString {
+	return s.StatusReason
 }
 
 // GetUptimePct7d returns the value of UptimePct7d.
@@ -18806,6 +18816,11 @@ func (s *FleetUptimeStatusItem) SetSiteURL(val string) {
 // SetStatus sets the value of Status.
 func (s *FleetUptimeStatusItem) SetStatus(val FleetUptimeStatusItemStatus) {
 	s.Status = val
+}
+
+// SetStatusReason sets the value of StatusReason.
+func (s *FleetUptimeStatusItem) SetStatusReason(val OptString) {
+	s.StatusReason = val
 }
 
 // SetUptimePct7d sets the value of UptimePct7d.

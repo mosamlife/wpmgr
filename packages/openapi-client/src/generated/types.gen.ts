@@ -2229,6 +2229,14 @@ export type FleetUptimeStatusItem = {
   site_name: string;
   site_url: string;
   status: "up" | "degraded" | "down" | "unknown";
+  /**
+   * Short machine-readable explanation for status, populated when
+   * status=degraded (agent_unreachable, agent_degraded, or
+   * slow_response). Empty/absent when the status needs no further
+   * explanation.
+   *
+   */
+  status_reason?: string;
   uptime_pct_7d: number;
   avg_latency_ms_7d: number;
   latest_total_ms?: number;

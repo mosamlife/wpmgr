@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
+import { statusReasonCopy } from "./uptime-status";
 import type { UptimeStatusKind } from "./fleet-types";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,12 @@ export interface MatrixCell {
   status: UptimeStatusKind;
   /** Optional secondary metric shown in the tooltip (e.g. "24 ms"). */
   metricLabel?: string;
+  /**
+   * `FleetStatusItem.status_reason` (GH #291) — only surfaced when `status`
+   * is `degraded` and the code is one this UI recognises; otherwise the
+   * cell renders exactly as it always has.
+   */
+  statusReason?: string | null;
 }
 
 export interface StatusMatrixProps {
@@ -98,6 +105,10 @@ export function StatusMatrix({
       >
         {cells.map((cell) => {
           const isSelected = cell.siteId === selectedSiteId;
+          const note =
+            cell.status === "degraded"
+              ? statusReasonCopy(cell.statusReason)
+              : null;
           const tooltipContent = (
             <span className="space-y-0.5">
               <span className="block font-medium">{cell.name}</span>
@@ -106,6 +117,11 @@ export function StatusMatrix({
                 {STATUS_LABEL[cell.status]}
                 {cell.metricLabel ? ` · ${cell.metricLabel}` : ""}
               </span>
+              {note && (
+                <span className="block max-w-[220px] text-[10px] opacity-80">
+                  {note}
+                </span>
+              )}
             </span>
           );
           return (
@@ -114,7 +130,7 @@ export function StatusMatrix({
                 <button
                   type="button"
                   role="gridcell"
-                  aria-label={`${cell.name}: ${STATUS_LABEL[cell.status]}${cell.metricLabel ? ", " + cell.metricLabel : ""}`}
+                  aria-label={`${cell.name}: ${STATUS_LABEL[cell.status]}${cell.metricLabel ? ", " + cell.metricLabel : ""}${note ? ". " + note : ""}`}
                   aria-pressed={isSelected}
                   onClick={() => onSelect?.(cell.siteId)}
                   style={{ width: cellSize, height: cellSize }}

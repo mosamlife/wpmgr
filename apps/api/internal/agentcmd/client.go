@@ -3,11 +3,17 @@ package agentcmd
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -298,6 +304,47 @@ func (c *Client) Ping(ctx context.Context, siteID uuid.UUID, siteURL string) (Pi
 	return out, nil
 }
 
+// ReachabilityReason classifies WHY VerifyReachableWithReason concluded alive
+// or not-alive (GH #291 Task 3). Under the old bool-only contract an agent
+// that is merely UNINSTALLED (nothing answers the wpmgr routes at all) looked
+// identical to one whose SITE IS BROKEN (the plugin is there but PHP is
+// fatal-ing), both collapsed to alive=false with no way to tell them apart.
+// That ambiguity would produce false alarms in a later alerting phase, so the
+// reason is classified here, up front, even though this phase does not yet
+// act on it.
+type ReachabilityReason string
+
+const (
+	// ReasonAlive: a check succeeded (ping 2xx ok=true, or the metadata
+	// fallback returned a recognizably agent-shaped 2xx).
+	ReasonAlive ReachabilityReason = "alive"
+	// ReasonAgentAbsent404: ping AND the metadata fallback both 404'd,
+	// meaning nothing that looks like the plugin is installed at this URL at
+	// all, as opposed to an installed-but-broken agent.
+	ReasonAgentAbsent404 ReachabilityReason = "agent_absent_404"
+	// ReasonHTTP4xx: the agent (or something at the URL) answered with a
+	// non-404 client error (400/401/403/etc). The server responded, so
+	// something booted, but the request was rejected.
+	ReasonHTTP4xx ReachabilityReason = "http_4xx"
+	// ReasonHTTP5xx: the agent responded but with a server error, the
+	// strongest "installed but broken" signal short of a hard transport
+	// failure, and the case GH #291 needs to be able to name.
+	ReasonHTTP5xx ReachabilityReason = "http_5xx"
+	// ReasonTimeout: the dial or read exceeded the caller's deadline.
+	ReasonTimeout ReachabilityReason = "timeout"
+	// ReasonTLSError: the TLS handshake failed (expired/mismatched/untrusted
+	// certificate, or a non-TLS response on an https port).
+	ReasonTLSError ReachabilityReason = "tls_error"
+	// ReasonNotAgentShaped: something answered 2xx but the body was not
+	// agent-shaped JSON (captive portal, generic maintenance splash), so the
+	// URL is reachable, but not by our agent.
+	ReasonNotAgentShaped ReachabilityReason = "not_agent_shaped"
+	// ReasonUnreachable is the catch-all transport failure (connection
+	// refused, DNS failure, SSRF-blocked, JWT-mint failure, etc) that does
+	// not match any of the more specific classifications above.
+	ReasonUnreachable ReachabilityReason = "unreachable"
+)
+
 // VerifyReachable implements the 0.44.0 liveness-fallback contract:
 //
 //  1. Try the `ping` command (new agents).  A 2xx response means alive.
@@ -310,14 +357,30 @@ func (c *Client) Ping(ctx context.Context, siteID uuid.UUID, siteURL string) (Pi
 // (e.g. JWT-mint failure). Response bodies are discarded beyond the minimal
 // decode needed to detect the error; nothing is logged by this function —
 // callers should emit structured log lines with the returned outcome.
+//
+// This is a thin wrapper around VerifyReachableWithReason that discards the
+// classified reason, so the two implementations can never drift and every
+// existing caller (the connection Sweeper's AgentVerifier interface, and its
+// tests) is unaffected by the addition of the reason.
 func (c *Client) VerifyReachable(ctx context.Context, siteID uuid.UUID, siteURL string) (alive bool, fallbackUsed bool, err error) {
+	alive, fallbackUsed, _, err = c.VerifyReachableWithReason(ctx, siteID, siteURL)
+	return alive, fallbackUsed, err
+}
+
+// VerifyReachableWithReason is VerifyReachable's typed-reason superset (GH
+// #291 Task 3): identical alive/fallbackUsed/err outcomes for every case
+// VerifyReachable already handles, plus a ReachabilityReason classification
+// of WHY. Persisting or alerting on the reason is intentionally out of scope
+// for this phase; it is classified here so a later phase does not have to
+// re-derive it from scratch.
+func (c *Client) VerifyReachableWithReason(ctx context.Context, siteID uuid.UUID, siteURL string) (alive bool, fallbackUsed bool, reason ReachabilityReason, err error) {
 	out, pingErr := c.Ping(ctx, siteID, siteURL)
 	if pingErr == nil && out.OK {
-		return true, false, nil
+		return true, false, ReasonAlive, nil
 	}
 
 	// Fall back to the metadata command when ping looks like an old agent
-	// (404/400 unknown command) — or when something answered 2xx without the
+	// (404/400 unknown command) or when something answered 2xx without the
 	// agent-shaped ok field (captive portal, generic maintenance page): the
 	// metadata shape check below settles whether a real agent is behind it.
 	fallback := pingErr == nil && !out.OK
@@ -329,16 +392,110 @@ func (c *Client) VerifyReachable(ctx context.Context, siteID uuid.UUID, siteURL 
 	if fallback {
 		raw, metaErr := c.MetadataRaw(ctx, siteID, siteURL)
 		if metaErr == nil && looksLikeAgentMetadata(raw) {
-			return true, true, nil
+			return true, true, ReasonAlive, nil
 		}
-		// Both ping and shape-checked metadata failed — not alive.
-		return false, true, nil
+		// Both ping and shape-checked metadata failed, so not alive. Classify
+		// using whichever error is available: a hard 404 on ping means
+		// "nothing here at all", while a 2xx-but-wrong-shape ping means
+		// something answered, just not our agent.
+		if pingErr != nil {
+			if status, ok := extractHTTPStatus(pingErr); ok && status == http.StatusNotFound {
+				return false, true, ReasonAgentAbsent404, nil
+			}
+			return false, true, classifyTransportErr(pingErr), nil
+		}
+		return false, true, ReasonNotAgentShaped, nil
 	}
 
-	// Hard transport / 5xx failure on ping — not alive.  The JWT-mint path
+	// Hard transport / 5xx failure on ping, so not alive. The JWT-mint path
 	// returns a format error (no status code), so it falls here too: treat it
 	// as not alive rather than an infra error, to avoid blocking the sweeper.
-	return false, false, nil
+	return false, false, classifyTransportErr(pingErr), nil
+}
+
+// httpStatusPattern extracts the numeric status code from the canonical
+// "…rejected by agent: status NNN body=…" error format built by postRaw, and
+// from the "…transport: %w" wrapping used for lower-level failures (which
+// never contains a "status NNN" substring, so the pattern simply does not
+// match there).
+var httpStatusPattern = regexp.MustCompile(`status (\d{3})\b`)
+
+// extractHTTPStatus pulls the HTTP status code out of an agentcmd error, when
+// present. ok=false means the error is a transport-level failure with no HTTP
+// status at all (connection refused, DNS failure, timeout, TLS error, etc).
+func extractHTTPStatus(err error) (status int, ok bool) {
+	if err == nil {
+		return 0, false
+	}
+	m := httpStatusPattern.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0, false
+	}
+	n, cerr := strconv.Atoi(m[1])
+	if cerr != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// classifyTransportErr classifies a non-nil VerifyReachable failure (from
+// either the ping attempt directly, or after a failed metadata fallback) into
+// a ReachabilityReason. It never returns ReasonAlive.
+func classifyTransportErr(err error) ReachabilityReason {
+	if err == nil {
+		return ReasonUnreachable
+	}
+	if status, ok := extractHTTPStatus(err); ok {
+		switch {
+		case status == http.StatusNotFound:
+			return ReasonAgentAbsent404
+		case status >= 500:
+			return ReasonHTTP5xx
+		case status >= 400:
+			return ReasonHTTP4xx
+		}
+	}
+	if isTimeoutErr(err) {
+		return ReasonTimeout
+	}
+	if isTLSErr(err) {
+		return ReasonTLSError
+	}
+	return ReasonUnreachable
+}
+
+// isTimeoutErr reports whether err is (or wraps) a deadline/timeout failure,
+// either the net.Error Timeout() signal from the transport, or the context
+// package's own deadline-exceeded error.
+func isTimeoutErr(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// isTLSErr reports whether err is (or wraps) a TLS handshake failure: an
+// invalid, hostname-mismatched, or untrusted certificate, or a malformed TLS
+// record (e.g. a plaintext response on an https port).
+func isTLSErr(err error) bool {
+	var certErr x509.CertificateInvalidError
+	if errors.As(err, &certErr) {
+		return true
+	}
+	var hostErr x509.HostnameError
+	if errors.As(err, &hostErr) {
+		return true
+	}
+	var authErr x509.UnknownAuthorityError
+	if errors.As(err, &authErr) {
+		return true
+	}
+	var recErr tls.RecordHeaderError
+	if errors.As(err, &recErr) {
+		return true
+	}
+	return false
 }
 
 // looksLikeAgentMetadata is the liveness shape check for the metadata

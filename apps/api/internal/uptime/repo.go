@@ -56,9 +56,10 @@ type Repo interface {
 	// because sqlc generates non-nullable types for nullable columns.
 
 	// GetFleetSiteInfo returns the Postgres-resident fields for the requested
-	// sites: name, url, connection_state, health_status, in_incident. Probe /
-	// uptime metrics are NOT included — the service layer merges those from the
-	// metrics.Store so both ClickHouse and Postgres deployments work correctly.
+	// sites: name, url, connection_state, health_status, in_incident,
+	// disconnected_reason. Probe / uptime metrics are NOT included: the
+	// service layer merges those from the metrics.Store so both ClickHouse and
+	// Postgres deployments work correctly.
 	GetFleetSiteInfo(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID) ([]FleetSiteInfo, error)
 
 	// GetFleetIncidents returns open incidents and incidents that started at or
@@ -309,11 +310,11 @@ func (r *pgRepo) UpsertAlertConfig(ctx context.Context, cfg AlertConfig) (AlertC
 // ---------------------------------------------------------------------------
 
 // GetFleetSiteInfo returns the Postgres-resident fields for each requested
-// site: name, url, connection_state, health_status, in_incident. Probe /
-// uptime metrics are intentionally excluded — the service merges those from
-// the metrics.Store so the endpoint works on both ClickHouse and Postgres
-// deployments (previously these were read directly from site_uptime_probes,
-// which is empty on ClickHouse installs).
+// site: name, url, connection_state, health_status, in_incident,
+// disconnected_reason. Probe / uptime metrics are intentionally excluded:
+// the service merges those from the metrics.Store so the endpoint works on
+// both ClickHouse and Postgres deployments (previously these were read
+// directly from site_uptime_probes, which is empty on ClickHouse installs).
 func (r *pgRepo) GetFleetSiteInfo(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID) ([]FleetSiteInfo, error) {
 	const q = `
 SELECT
@@ -322,7 +323,8 @@ SELECT
     s.url,
     s.connection_state,
     s.health_status,
-    COALESCE(ast.in_incident, false) AS in_incident
+    COALESCE(ast.in_incident, false) AS in_incident,
+    s.disconnected_reason
 FROM sites s
 LEFT JOIN site_alert_state ast ON ast.site_id = s.id
 WHERE s.tenant_id = $1
@@ -338,11 +340,16 @@ ORDER BY s.name ASC
 		defer rows.Close()
 		for rows.Next() {
 			var info FleetSiteInfo
+			var disconnectedReason *string
 			if err := rows.Scan(
 				&info.SiteID, &info.Name, &info.URL,
 				&info.ConnectionState, &info.HealthStatus, &info.InIncident,
+				&disconnectedReason,
 			); err != nil {
 				return domain.Internal("fleet_site_info_scan_failed", "failed to scan fleet site info row").WithCause(err)
+			}
+			if disconnectedReason != nil {
+				info.DisconnectedReason = *disconnectedReason
 			}
 			out = append(out, info)
 		}
@@ -357,22 +364,91 @@ ORDER BY s.name ASC
 	return out, nil
 }
 
-// deriveFleetStatus computes the FleetSiteStatus from the latest probe result.
-func deriveFleetStatus(up *bool, totalMs *float64, connectionState string) FleetSiteStatus {
+// deriveFleetStatus computes the FleetSiteStatus from the latest probe result,
+// plus a short machine-readable reason (FleetReason*, empty when the status is
+// self-explanatory) so the API/UI can say WHICH degraded it is instead of
+// rendering a bare chip.
+//
+// GH #291: a page cache in front of a fatal-on-every-request site keeps
+// answering probe A (the reachability probe, frozen, see the design doc) with
+// a cached 200, so `up` alone cannot see past the cache. It does not need to:
+// the control plane already has a stronger, independent signal from the agent
+// side. ADR-039's connection sweeper sends a SIGNED, UNCACHEABLE POST straight
+// to the agent and tracks the outcome in sites.connection_state, completely
+// out of band from the cached probe. Two of its states now flip the derived
+// fleet status to Degraded even though the cached probe reported up=true:
+//
+//   - "degraded": the heartbeat is stale (missed >= 300s) but not yet stale
+//     enough to disconnect. This is the weaker of the two signals.
+//   - "disconnected": the sweeper's active-verify already tried the signed
+//     POST and got a failure (5xx/timeout/conn-error), OR the passive
+//     heartbeat-timeout fallback fired. This is the strongest signal short of
+//     `up` itself going false, and it is the literal GH #291 case: previously
+//     this state fell through to a clean FleetStatusUp.
+//
+// GH #291 follow-up (false Degraded on a clean deactivation): "disconnected"
+// is NOT reached only by the sweeper. A SIGNED agent last-will
+// (ADR-040, connService.RecordLastWillTenant) drives the exact same
+// connected/degraded -> disconnected transition when an operator deactivates
+// or uninstalls the plugin, and that site is a perfectly healthy site that
+// chose to stop heartbeating, not an outage. Both paths land on
+// connection_state "disconnected" with no other distinguishing column on the
+// read side except sites.disconnected_reason (threaded through as
+// disconnectedReason here). The two are DISTINGUISHABLE: the sweeper always
+// writes one of exactly two CP-authored strings (see
+// sweeperDisconnectReasons), while a last-will disconnect is either the
+// agent's own fixed reasons ("deactivated", "uninstalled") or the handler's
+// "user_initiated" default, never one of the sweeper's strings. Because the
+// agent controls its last-will reason text (bounded, not enum-validated),
+// this function does NOT try to enumerate every last-will value; it does the
+// reverse and requires a positive match against the small, CP-authored
+// sweeper set before it will raise the alarming Degraded chip. Any value it
+// cannot positively attribute to the sweeper (a known last-will reason, an
+// unrecognized string, or an empty/legacy row that predates this column) is
+// treated as healthy, per the conservative rule: never show an alarming
+// Degraded when the data cannot prove the site is unhealthy.
+//
+// "revoked" and "archived" are deliberately EXCLUDED from this check. Both
+// mean the OPERATOR chose to stop managing the site (see GH #282, which
+// excludes the same two states from backup scheduling for the identical
+// reason), not a connectivity problem. Flagging them Degraded would raise a
+// false alarm on a site nobody is watching. FleetStatusUnknown is not a
+// substitute: it already means "no probe recorded yet", and reusing it here
+// would make an operator unable to tell "never probed" apart from
+// "deliberately archived". None of the four existing FleetSiteStatus values
+// expresses "deliberately unmanaged" without being misleading in one
+// direction or the other, and adding a fifth would break the API enum and
+// every FE consumer (out of scope for this phase, per the design doc's "no
+// new enum value" rule). So revoked/archived sites keep exactly today's
+// behavior: their derived status depends only on `up` and latency, same as
+// before this fix. A distinct non-alarming "unmanaged" indicator is a
+// candidate for a future phase, not squeezed in here.
+//
+// `up` itself, sites.health_status, uptime percentages and everything else
+// probe A feeds are UNCHANGED by this function. Only the derived display
+// status moves.
+func deriveFleetStatus(up *bool, totalMs *float64, connectionState, disconnectedReason string) (FleetSiteStatus, string) {
 	if up == nil {
-		return FleetStatusUnknown
+		return FleetStatusUnknown, ""
 	}
 	if !*up {
-		return FleetStatusDown
+		return FleetStatusDown, ""
 	}
-	// Site is up — check for degraded: slow response OR degraded connection state.
-	if connectionState == "degraded" {
-		return FleetStatusDegraded
+	switch connectionState {
+	case "disconnected":
+		if sweeperDisconnectReasons[disconnectedReason] {
+			return FleetStatusDegraded, FleetReasonAgentUnreachable
+		}
+		// A clean last-will disconnect (or a reason we cannot positively
+		// attribute to the sweeper): fall through to the same derivation a
+		// healthy "connected" site gets, below.
+	case "degraded":
+		return FleetStatusDegraded, FleetReasonAgentDegraded
 	}
 	if totalMs != nil && *totalMs > slowThresholdMs {
-		return FleetStatusDegraded
+		return FleetStatusDegraded, FleetReasonSlowResponse
 	}
-	return FleetStatusUp
+	return FleetStatusUp, ""
 }
 
 // GetFleetIncidents returns open incidents (ended_at IS NULL) and incidents

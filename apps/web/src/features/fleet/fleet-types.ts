@@ -21,6 +21,18 @@ export interface FleetStatusItem {
   avg_latency_ms: number | null;
   tls_expiry: string | null;
   latency_sparkline: number[];
+  /**
+   * Plain-language reason code for why the control plane derived a
+   * `degraded` status (GH #291), e.g. a page-cached site whose PHP backend
+   * is unreachable. Optional so an older control-plane response (which
+   * never sent this field) cannot break the UI. Known values today:
+   * "agent_unreachable" | "agent_degraded" | "slow_response" — but this is
+   * intentionally typed as `string`, not a union, so a future reason code
+   * the control plane adds is never a type error here; unrecognised codes
+   * are handled by the copy map (see `uptime-status.ts`), not by widening
+   * this type.
+   */
+  status_reason?: string;
 }
 
 export interface FleetStatusSummary {
