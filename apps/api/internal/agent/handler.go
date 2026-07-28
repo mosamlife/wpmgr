@@ -108,6 +108,32 @@ type metadataDTO struct {
 	Disk       *diskDTO      `json:"disk,omitempty"`
 	UserCount  *int          `json:"user_count,omitempty"`
 	AdminCount *int          `json:"admin_count,omitempty"`
+
+	// AgentSelfUpdate is the agent's own account of its last self-update APPLY
+	// beat. Optional; only ever present on a site that actually staged one, and
+	// never sent by an agent old enough to predate the channel.
+	//
+	// It is the only way a FAILED apply reaches the control plane at all: the
+	// apply runs inside a cron request that has no CP response to ride on, so
+	// if it fails, expires, or finds itself already applied, the next metadata
+	// push is the sole carrier of that fact. Without it a confirmation timeout
+	// is indistinguishable between "the cron run never happened" and "the cron
+	// run happened and the upgrade failed", which are different incidents with
+	// different fixes.
+	AgentSelfUpdate *agentSelfUpdateResultDTO `json:"agent_self_update,omitempty"`
+}
+
+// agentSelfUpdateResultDTO is the apply-beat outcome the agent records on disk
+// and replays on its next metadata push. Every field is flex-decoded and
+// optional except the status, which is what makes the record meaningful at all.
+type agentSelfUpdateResultDTO struct {
+	Status      flexString `json:"status"`
+	FromVersion flexString `json:"from_version"`
+	ToVersion   flexString `json:"to_version"`
+	Detail      flexString `json:"detail"`
+	// At is the unix timestamp the agent stamped the record with. Decoded into
+	// a pointer so a missing field stays distinguishable from a zero one.
+	At *int64 `json:"at,omitempty"`
 }
 
 // hostFlagsDTO mirrors the defined()-based hosting fingerprint the agent
@@ -244,6 +270,17 @@ func (d metadataDTO) toMetadata() Metadata {
 	if d.AdminCount != nil {
 		m.AdminCount = *d.AdminCount
 	}
+	// The agent's account of its last apply beat. A record with no status says
+	// nothing, so it is dropped here rather than persisted as an empty shell.
+	if d.AgentSelfUpdate != nil && strings.TrimSpace(string(d.AgentSelfUpdate.Status)) != "" {
+		m.AgentSelfUpdate = &AgentSelfUpdateResult{
+			Status:      string(d.AgentSelfUpdate.Status),
+			FromVersion: string(d.AgentSelfUpdate.FromVersion),
+			ToVersion:   string(d.AgentSelfUpdate.ToVersion),
+			Detail:      string(d.AgentSelfUpdate.Detail),
+			At:          int64PtrOrZero(d.AgentSelfUpdate.At),
+		}
+	}
 	return m
 }
 
@@ -300,6 +337,25 @@ type Metadata struct {
 	Disk       *Disk
 	UserCount  int
 	AdminCount int
+	// AgentSelfUpdate is the agent's own account of its last self-update apply
+	// beat. nil when the site never staged one, or when the agent predates the
+	// channel entirely.
+	AgentSelfUpdate *AgentSelfUpdateResult
+}
+
+// AgentSelfUpdateResult is the apply-beat outcome an agent replays on its next
+// metadata push. Status is one of applied|failed|expired|already_applied; it is
+// carried as a plain string rather than an enum so a status a newer agent
+// introduces reaches an operator verbatim instead of being silently dropped by
+// an older control plane.
+type AgentSelfUpdateResult struct {
+	Status      string
+	FromVersion string
+	ToVersion   string
+	Detail      string
+	// At is the unix timestamp the agent stamped the record with; 0 when it did
+	// not say.
+	At int64
 }
 
 // Component is one installed plugin/theme. AvailableUpdate is set when the
@@ -467,8 +523,7 @@ func (h *Handler) metadata(c *gin.Context) {
 // connected, and returns {ok, instructions?} (e.g. ["revoke"] for a revoked
 // site). Without the lifecycle sink it falls back to the legacy liveness-only
 // Heartbeat (204). The light metadata body is accepted and decoded best-effort;
-// it is currently not persisted (the M21 migration added no column for it) —
-// see the note in the brief; the heartbeat never fails over the payload.
+// it is currently not persisted (the M21 migration added no column for it), // see the note in the brief; the heartbeat never fails over the payload.
 func (h *Handler) heartbeat(c *gin.Context) {
 	id, ok := IdentityFromContext(c.Request.Context())
 	if !ok {

@@ -18,6 +18,8 @@ import {
   type ApiError,
 } from "@wpmgr/api";
 
+import { isTerminalRunStatus } from "./summarize";
+
 // Server-state hooks for the Updates (bulk update runs) domain. Built on the
 // generated @wpmgr/api SDK; each call returns `{ data, error, response }` which
 // we unwrap so TanStack Query manages loading/error/success.
@@ -80,9 +82,11 @@ export function useUpdateRun(
       return data;
     },
     enabled: enabled && runId !== "",
-    // Poll every 2s while enabled AND the run is not yet completed.
+    // Poll every 2s while enabled AND the run has not reached a terminal
+    // state. `halted` (GH #255 Phase 2) is terminal exactly like `completed`;
+    // see isTerminalRunStatus.
     refetchInterval: (query) =>
-      poll && query.state.data?.status !== "completed" ? 2000 : false,
+      poll && !isTerminalRunStatus(query.state.data?.status) ? 2000 : false,
   });
 }
 
@@ -227,7 +231,11 @@ export function useRunEventStream(
         return; // ignore heartbeats / malformed frames
       }
       patchEvent(queryClient, runId, event);
-      if (event.run_status === "completed") {
+      // `halted` (GH #255 Phase 2) is terminal exactly like `completed`: no
+      // further deltas will arrive for this run once the wave gate has
+      // cancelled everything left, so keeping the stream open would just
+      // wait for events that are never coming.
+      if (isTerminalRunStatus(event.run_status)) {
         closed = true;
         source.close();
         onStateRef.current?.("closed");

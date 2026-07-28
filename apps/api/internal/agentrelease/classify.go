@@ -50,6 +50,15 @@ func isWellFormedVersion(v string) bool {
 	return versionPattern.MatchString(strings.TrimSpace(v))
 }
 
+// WellFormed reports whether v is a version string this package is willing to
+// order. Exported for callers that must distinguish "this particular version is
+// missing or garbage" from "these two versions compare thus": Classify collapses
+// both unreadable sides into a single StatusUnknown, which cannot say WHICH one
+// was unreadable. The agent self-update channel needs that distinction, because
+// "the run recorded no target" and "the site reported no version" are different
+// facts an operator has to act on differently.
+func WellFormed(v string) bool { return isWellFormedVersion(v) }
+
 // Classify compares a site's reported agent_version against the currently
 // published latestVersion and returns the fleet-rollup status. Either side
 // being empty or not well-formed (isWellFormedVersion) always yields

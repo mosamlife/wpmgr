@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { drawerUp, fade } from "@/lib/motion-presets";
 import { useSites } from "@/features/sites/use-sites";
 import { useUpdateRun, useRunEventStream } from "@/features/updates/use-updates";
+import { isTerminalRunStatus } from "@/features/updates/summarize";
 import type { UpdateTask, BulkResult, Site, SiteTag } from "@wpmgr/api";
 
 import { TagPicker, type TagPickerState } from "@/features/sites/tag-picker";
@@ -47,8 +48,7 @@ import {
 //
 // Phase 5: the panel + scrim are driven by the shared `drawerUp` and `fade`
 // presets via motion/react so timing matches the dialog/save-bar/toolbar.
-// We keep AnimatePresence around so exit transforms run before unmount —
-// the previous hand-rolled "mounted" state machine is no longer needed.
+// We keep AnimatePresence around so exit transforms run before unmount, // the previous hand-rolled "mounted" state machine is no longer needed.
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -342,7 +342,10 @@ export function BulkActionDrawer({
   const settledRef = useRef<string | null>(null);
   useEffect(() => {
     if (!run || !runId) return;
-    if (run.status !== "completed") return;
+    // `halted` (GH #255 Phase 2) is terminal exactly like `completed`: an
+    // agent self-update run that a wave gate stopped early still needs to
+    // settle, or its bell badge count would never clear.
+    if (!isTerminalRunStatus(run.status)) return;
     if (settledRef.current === runId) return;
     settledRef.current = runId;
     onSettled?.(runId);
@@ -571,8 +574,11 @@ function priority(status: UpdateTask["status"]): number {
       return 4;
     case "skipped":
       return 5;
-    default:
+    // GH #255 Phase 2: never dispatched because its run halted first.
+    case "cancelled":
       return 6;
+    default:
+      return 7;
   }
 }
 
@@ -583,6 +589,10 @@ function rollupStatus(tasks: UpdateTask[]): UpdateTask["status"] {
   if (tasks.some((t) => t.status === "failed")) return "failed";
   if (tasks.some((t) => t.status === "rolled_back")) return "rolled_back";
   if (tasks.every((t) => t.status === "skipped")) return "skipped";
+  // A halted run cancels every task it had not already dispatched, so this
+  // must never fall through to the "succeeded" default below, which would
+  // show an untouched site as done.
+  if (tasks.every((t) => t.status === "cancelled")) return "cancelled";
   return "succeeded";
 }
 
@@ -597,6 +607,7 @@ function toneFor(status: UpdateTask["status"]): StatusTone {
     case "rolled_back":
       return "destructive";
     case "skipped":
+    case "cancelled":
       return "muted";
     default:
       return "muted";
@@ -617,6 +628,8 @@ function statusLabel(status: UpdateTask["status"]): string {
       return "Rolled back";
     case "skipped":
       return "Skipped";
+    case "cancelled":
+      return "Cancelled";
     default:
       return "Unknown";
   }
@@ -637,6 +650,13 @@ function detailFor(task: UpdateTask | undefined): string {
   if (!task) return "";
   if (task.error) return task.error;
   if (task.detail) return task.detail;
+  // GH #255 Phase 2: an armed agent task has no detail text until beat 3
+  // resolves it; the generic target/version synthesis below would read
+  // "Updating {slug}", which is misleading for a task that is only waiting
+  // on the site's own cron.
+  if (task.target_type === "agent" && task.status === "running") {
+    return "Waiting for the upgraded agent to report back";
+  }
   // Synthesize a reasonable progress string from target + versions when
   // the agent has not yet pushed a detail field.
   const target =

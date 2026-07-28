@@ -13,6 +13,59 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cancelPendingUpdateTask = `-- name: CancelPendingUpdateTask :one
+UPDATE update_tasks
+SET status = 'cancelled',
+    detail = $3,
+    finished_at = now(),
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+  AND status = 'pending'
+RETURNING id, run_id, tenant_id, site_id, target_type, target_slug, desired_version, from_version, to_version, status, detail, error, started_at, finished_at, created_at, updated_at
+`
+
+type CancelPendingUpdateTaskParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	Detail   string    `json:"detail"`
+}
+
+// Cancels ONE not-yet-dispatched task as part of halting its run.
+//
+// The 'pending' precondition is the whole point, and it is enforced here rather
+// than in Go so it is atomic against a worker claiming the same row. A halt may
+// only cancel tasks nothing was ever sent for: update_tasks.status='cancelled'
+// means exactly "nothing was ever sent to this site". A RUNNING task has
+// already had its command delivered and (for an agent self-update) a cron event
+// spawned on the site, so cancelling it would both record a falsehood and make
+// the control plane stop listening for the outcome, at the exact moment an
+// operator hit the kill switch and most needs to know. Running tasks are left
+// to be resolved by their own confirmation job; the run is halted, so no
+// further wave can open behind them.
+func (q *Queries) CancelPendingUpdateTask(ctx context.Context, arg CancelPendingUpdateTaskParams) (UpdateTask, error) {
+	row := q.db.QueryRow(ctx, cancelPendingUpdateTask, arg.ID, arg.TenantID, arg.Detail)
+	var i UpdateTask
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TenantID,
+		&i.SiteID,
+		&i.TargetType,
+		&i.TargetSlug,
+		&i.DesiredVersion,
+		&i.FromVersion,
+		&i.ToVersion,
+		&i.Status,
+		&i.Detail,
+		&i.Error,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const countRunningTasksForTenant = `-- name: CountRunningTasksForTenant :one
 SELECT count(*) FROM update_tasks
 WHERE tenant_id = $1 AND status = 'running'
@@ -158,6 +211,7 @@ SET status = $3,
     finished_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
+  AND status IN ('pending', 'running')
 RETURNING id, run_id, tenant_id, site_id, target_type, target_slug, desired_version, from_version, to_version, status, detail, error, started_at, finished_at, created_at, updated_at
 `
 
@@ -171,8 +225,17 @@ type FinishUpdateTaskParams struct {
 	Error       string    `json:"error"`
 }
 
-// Records a terminal task state (succeeded|failed|rolled_back|skipped) with the
-// resolved versions and any detail/error. Tenant-scoped by id+tenant_id.
+// Records a terminal task state (succeeded|failed|rolled_back|skipped|cancelled)
+// with the resolved versions and any detail/error. Tenant-scoped by
+// id+tenant_id.
+//
+// The status precondition is what makes a terminal state FINAL. Without it, a
+// worker that was already in flight when its run was halted comes back later
+// and overwrites 'cancelled' with 'succeeded', so the kill switch appears to
+// have stopped a rollout that in fact reported itself as a success. Only a task
+// still open (pending|running) may be finished; a caller that matches no row
+// must read the row back and leave the recorded outcome alone (see
+// pgRepo.FinishTask / ErrTaskNotOpen).
 func (q *Queries) FinishUpdateTask(ctx context.Context, arg FinishUpdateTaskParams) (UpdateTask, error) {
 	row := q.db.QueryRow(ctx, finishUpdateTask,
 		arg.ID,

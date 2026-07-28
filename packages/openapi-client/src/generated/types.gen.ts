@@ -429,8 +429,7 @@ export type AgentHeartbeatResult = {
   /**
    * Present with a `["revoke"]` instruction: a short-lived signed Ed25519
    * JWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP
-   * public key before any self-teardown (ADR-040 addendum). Fail-closed —
-   * an absent/invalid token must be a no-op.
+   * public key before any self-teardown (ADR-040 addendum). Fail-closed, an absent/invalid token must be a no-op.
    *
    */
   revoke_token?: string;
@@ -945,7 +944,7 @@ export type BillingMeters = {
 
 export type BillingSummary = {
   /**
-   * The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free" (non-destructive downgrade — see plan_status).
+   * The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free" (non-destructive downgrade, see plan_status).
    */
   plan: "free" | "starter" | "agency" | "scale";
   plan_status:
@@ -1026,7 +1025,7 @@ export type AdminAccountListItem = {
   sites_used: number;
   sites_cap: number;
   /**
-   * A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant) — does not yet distinguish CP-managed from BYO-storage destinations.
+   * A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant), does not yet distinguish CP-managed from BYO-storage destinations.
    */
   storage_used_bytes_approx: number;
   /**
@@ -1290,13 +1289,27 @@ export type AdminForceStateRequest = {
  * One thing to update on a site.
  */
 export type UpdateItem = {
-  type: "plugin" | "theme" | "core";
   /**
-   * Plugin/theme slug. Ignored (forced to "core") when type is core.
+   * What to update. `agent` upgrades the WPMgr agent itself over its own
+   * dedicated signed channel and behaves differently from the others: it
+   * must be the ONLY item in its run (its staged-wave rollout is defined
+   * over the whole run), it takes no slug and no version pin, and it has
+   * no dry run. Success is established only when the upgraded agent
+   * reports its new version back; a scheduled acknowledgement is not
+   * success. The channel is off unless the control plane enables it.
+   *
+   */
+  type: "plugin" | "theme" | "core" | "agent";
+  /**
+   * Plugin/theme slug. Ignored (forced to "core") when type is core; must be omitted when type is agent.
    */
   slug?: string;
   /**
    * Desired version, "latest" or an explicit pin. Defaults to latest.
+   * A pin is REJECTED when type is agent: the agent's release manifest
+   * only ever points at the published build and the agent refuses to
+   * install an older one, so a pin could not be honoured.
+   *
    */
   version?: string;
 };
@@ -1331,18 +1344,25 @@ export type UpdateTask = {
   run_id: string;
   tenant_id: string;
   site_id: string;
-  target_type: "plugin" | "theme" | "core";
+  target_type: "plugin" | "theme" | "core" | "agent";
   target_slug: string;
   desired_version?: string;
   from_version?: string;
   to_version?: string;
+  /**
+   * `cancelled` means the task was never dispatched because its run was
+   * halted first; nothing was sent to the site. Only agent self-update
+   * runs can halt.
+   *
+   */
   status:
     | "pending"
     | "running"
     | "succeeded"
     | "failed"
     | "rolled_back"
-    | "skipped";
+    | "skipped"
+    | "cancelled";
   detail?: string;
   error?: string;
   started_at?: string;
@@ -1355,7 +1375,14 @@ export type UpdateRun = {
   id: string;
   tenant_id: string;
   created_by?: string;
-  status: "pending" | "running" | "completed";
+  /**
+   * `halted` is terminal and specific to an agent self-update run: a
+   * staged-rollout wave failed to prove itself, so every task the run
+   * had not already dispatched was cancelled. It is distinct from
+   * `completed`, which would hide the fact that the run was stopped.
+   *
+   */
+  status: "pending" | "running" | "completed" | "halted";
   dry_run: boolean;
   scheduled_at?: string;
   created_at: string;
@@ -1390,7 +1417,7 @@ export type UpdateEvent = {
   run_id: string;
   task_id: string;
   site_id: string;
-  target_type: "plugin" | "theme" | "core";
+  target_type: "plugin" | "theme" | "core" | "agent";
   target_slug: string;
   status:
     | "pending"
@@ -1398,11 +1425,12 @@ export type UpdateEvent = {
     | "succeeded"
     | "failed"
     | "rolled_back"
-    | "skipped";
+    | "skipped"
+    | "cancelled";
   from_version?: string;
   to_version?: string;
   detail?: string;
-  run_status: "pending" | "running" | "completed";
+  run_status: "pending" | "running" | "completed" | "halted";
 };
 
 /**
@@ -3076,8 +3104,7 @@ export type ActivateOrgResponse = {
 };
 
 /**
- * Role a site collaborator holds. Subset of the full org Role enum —
- * site shares cannot be owner.
+ * Role a site collaborator holds. Subset of the full org Role enum, site shares cannot be owner.
  *
  */
 export const SiteShareRole = {
@@ -3087,8 +3114,7 @@ export const SiteShareRole = {
 } as const;
 
 /**
- * Role a site collaborator holds. Subset of the full org Role enum —
- * site shares cannot be owner.
+ * Role a site collaborator holds. Subset of the full org Role enum, site shares cannot be owner.
  *
  */
 export type SiteShareRole = (typeof SiteShareRole)[keyof typeof SiteShareRole];
@@ -6612,6 +6638,11 @@ export type FleetAgentVersions = {
   latest_version: string;
   counts: FleetAgentCounts;
   sites: Array<FleetAgentSite>;
+  /**
+   * Whether the control plane's agent self-update channel (the fleet-wide WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED kill switch) is currently turned on for this instance. Absent or false while the channel ships dark. The frontend uses this, together with the operator's role, to decide whether the "Update WPMgr agent" bulk action is shown at all, rather than let an operator arm a run the control plane will only refuse.
+   *
+   */
+  self_update_enabled?: boolean;
 };
 
 export type SmtpSettings = {
@@ -7022,7 +7053,7 @@ export type AgentActivityIngestRequest = {
     actor_ip?: string;
     summary?: string;
     /**
-     * Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never re-serialized.
+     * Verbatim wire bytes as emitted by the agent's wp_json_encode, hashed exactly as sent, never re-serialized.
      */
     meta?: {
       [key: string]: unknown;
@@ -8573,7 +8604,7 @@ export type DeleteOrgErrors = {
    */
   404: Error;
   /**
-   * org_already_deleted | billing_active | restore_in_progress — see the error `code` for which precondition failed
+   * org_already_deleted | billing_active | restore_in_progress, see the error `code` for which precondition failed
    */
   409: Error;
   /**
@@ -19157,7 +19188,7 @@ export type ExtractSiteFileArchiveErrors = {
    */
   404: Error;
   /**
-   * Archive is structurally valid but contains unsafe entries (`zip_slip` — path traversal outside destination, or `zip_bomb` — exceeds uncompressed-size / entry-count guard).
+   * Archive is structurally valid but contains unsafe entries (`zip_slip`, path traversal outside destination, or `zip_bomb`, exceeds uncompressed-size / entry-count guard).
    *
    */
   422: Error;

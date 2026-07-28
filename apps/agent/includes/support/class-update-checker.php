@@ -38,6 +38,12 @@
  *   - WP_Error is returned on any download/sha failure (aborts the update
  *     visibly; temp file is unlinked before returning).
  *
+ * This file also carries the CP-commanded three-beat self-update (ARM in the
+ * signed command request, APPLY in a separate cron bootstrap, CONFIRM by the
+ * new code phoning home). It lives HERE, and not in a new file, because
+ * `make agent-zip-wporg` physically excludes this one path from the wp.org
+ * distribution build; see the block comment above stageSelfUpdate().
+ *
  * @package WPMgr\Agent\Support
  */
 
@@ -45,6 +51,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Support;
 
+use WPMgr\Agent\Commands\AgentSelfUpdateCommand;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\ReplayCache;
 use WPMgr\Agent\Settings;
@@ -105,6 +112,50 @@ final class UpdateChecker
     public const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 
     /**
+     * Cron hook that runs beat 2 (APPLY) of the three-beat self-update
+     * protocol, in its own WordPress bootstrap. Bound in Plugin::registerHooks()
+     * behind the same updateChecker-not-null guard that skips this whole class
+     * on the wp.org distribution build, so the event can never fire into a
+     * missing class there.
+     */
+    public const HOOK_APPLY = 'wpmgr_agent_self_update_apply';
+
+    /**
+     * wp-option holding the single staged self-update record written by beat 1
+     * (ARM). Non-autoloaded: read only by the apply cron. Shape:
+     *   ['from_version'=>string,'to_version'=>string,'staged_at'=>int,
+     *    'expires_at'=>int,'token'=>string]
+     */
+    public const OPTION_STAGED = 'wpmgr_agent_self_update_staged';
+
+    /**
+     * Seconds a staged record stays claimable. Beat 2 discards (never retries)
+     * an expired record: a site whose loopback cron is broken simply never
+     * reaches beat 2, which is safe because ARM moved nothing on disk.
+     *
+     * COUPLED TO THE CONTROL PLANE'S CONFIRM DEADLINE. Read this before
+     * changing either number.
+     *
+     * The CP waits for beat 3 (the new build phoning home) for a bounded
+     * window that depends on the cron_mode this agent reported in beat 1:
+     *
+     *   cron_mode "loopback" : 20 minutes  (agentConfirmDeadline)
+     *   cron_mode "external" : 90 minutes  (agentConfirmDeadlineExternalCron)
+     *
+     * Both live in apps/api/internal/update/agent_worker.go. The stage MUST
+     * outlive the CP's LONGEST patience, otherwise a site whose system cron
+     * runs hourly expires its own staged record before the cron tick that
+     * would have applied it, and the CP records a confirm timeout for a build
+     * that was never given a chance to install. On a fleet that is not an edge
+     * case, it is a coin flip, and it halts canary rollouts for no reason.
+     *
+     * 7200s (2 hours) sits 30 minutes clear of the 90-minute external-cron
+     * deadline. If the CP window is ever raised, raise this FIRST and keep the
+     * headroom. This value must never fall below agentConfirmDeadlineExternalCron.
+     */
+    public const STAGED_TTL_SECONDS = 7200;
+
+    /**
      * Clock-skew grace for the exp field (seconds). The agent rejects a manifest
      * whose exp is in the past, but allows up to this many seconds of clock drift
      * between the CP and the agent host. We apply NO grace on the exp upper bound
@@ -130,6 +181,24 @@ final class UpdateChecker
     private Keystore $keystore;
 
     private ReplayCache $replayCache;
+
+    /**
+     * Why the most recent fetchManifest()/verifyManifest() pair returned null.
+     *
+     * fetchManifest() collapses "the CP published nothing" and "the manifest
+     * failed verification" into the same null return, which is exactly the
+     * right shape for the transient-injection path but not for beat 1 of the
+     * self-update protocol: the control plane has to be able to tell
+     * "up_to_date" (benign, nothing to do) apart from "error" (worth surfacing).
+     * Every terminal path of the two methods tags itself here so
+     * stageSelfUpdate() can classify a null without re-running any check.
+     *
+     * Values: '' (never run), 'ok', 'no_update' (HTTP 204), 'up_to_date'
+     * (signed manifest verified but not newer than on-disk), 'unavailable'
+     * (transport/config), 'invalid' (unparseable body), 'rejected' (any other
+     * verification-chain failure).
+     */
+    private string $lastManifestOutcome = '';
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -205,6 +274,10 @@ final class UpdateChecker
      */
     public function fetchManifest(): ?array
     {
+        // Default tag for every transport/config bail-out below; the parse and
+        // verification steps overwrite it with a more specific value.
+        $this->lastManifestOutcome = 'unavailable';
+
         $base = $this->settings->controlPlaneUrl();
         if ($base === '') {
             return null;
@@ -248,6 +321,7 @@ final class UpdateChecker
 
         if ($status === 204) {
             // No update published — this is normal, not an error.
+            $this->lastManifestOutcome = 'no_update';
             return null;
         }
 
@@ -266,12 +340,14 @@ final class UpdateChecker
 
         if ($rawBody === '') {
             error_log('wpmgr-agent: UpdateChecker manifest response body is empty.');
+            $this->lastManifestOutcome = 'invalid';
             return null;
         }
 
         $envelope = json_decode($rawBody, true);
         if (!is_array($envelope)) {
             error_log('wpmgr-agent: UpdateChecker manifest response is not valid JSON.');
+            $this->lastManifestOutcome = 'invalid';
             return null;
         }
 
@@ -298,6 +374,11 @@ final class UpdateChecker
      */
     public function verifyManifest(array $envelope): ?array
     {
+        // Default tag for every rejection below; step 8 narrows the benign
+        // "verified but not newer" case to 'up_to_date' and the success path
+        // tags 'ok'. See $lastManifestOutcome for why this distinction exists.
+        $this->lastManifestOutcome = 'rejected';
+
         // ---- Step 1: base64url-decode manifest + signature ------------------
         $manifestB64 = isset($envelope['manifest']) && is_string($envelope['manifest'])
             ? $envelope['manifest']
@@ -481,6 +562,10 @@ final class UpdateChecker
                 $claimedVersion,
                 $onDisk
             ));
+            // A correctly signed manifest that simply is not newer is the
+            // steady state, not a failure. Tag it so beat 1 can answer
+            // "up_to_date" instead of "error".
+            $this->lastManifestOutcome = 'up_to_date';
             return null;
         }
         // min_version is mandatory (the CP always sets at least 0.0.0). An empty
@@ -551,6 +636,8 @@ final class UpdateChecker
         // All checks passed. Return the full verified claims.
         // Note: package_url IS included here so verifyDownload can use it.
         // injectUpdate() strips it before caching.
+        $this->lastManifestOutcome = 'ok';
+
         /** @var array<string,mixed> $claims */
         return $claims;
     }
@@ -609,8 +696,16 @@ final class UpdateChecker
 
         $onDisk = $this->onDiskVersion();
 
+        // Normalize BOTH sides, exactly as the verifyManifest() downgrade guard
+        // does. This comparison used to be made on the raw strings, which meant
+        // the two gates could disagree: PHP version_compare() reads
+        // '0.10.5-cron-selfheal' as a PRE-RELEASE of (lower than) '0.10.5', so a
+        // manifest 'version: 0.10.5' was refused by verifyManifest() but still
+        // offered here whenever a cached claims array reached injectUpdate(),
+        // surfacing a dashboard update entry for a build that the security chain
+        // would then refuse to install. One normalization rule, both gates.
         if (is_array($claims) && isset($claims['version']) && is_string($claims['version'])
-            && version_compare($claims['version'], $onDisk, '>')
+            && version_compare($this->normalizeVersion($claims['version']), $this->normalizeVersion($onDisk), '>')
         ) {
             // Inject the update entry. Package is the SENTINEL (not a presigned
             // URL): the real URL is fetched fresh inside verifyDownload().
@@ -991,6 +1086,438 @@ final class UpdateChecker
         if (function_exists('delete_site_transient')) {
             delete_site_transient(self::TRANSIENT_MANIFEST);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Three-beat CP-commanded self-update
+    //
+    // A normal update command cannot be used on the agent's own directory: the
+    // plugin would overwrite its own files while its code is the code doing the
+    // overwriting, inside the request that has to report the outcome. If that
+    // request dies partway there is no working code left to report it, and the
+    // snapshot + automatic rollback that protects every other plugin update
+    // deliberately does NOT arm for the agent's own directory (whatever performs
+    // the rollback is what is being replaced). Recovery would need per-site
+    // filesystem access; across a fleet that is unrecoverable.
+    //
+    // So the CP-commanded path is split into three beats, each in its own
+    // request:
+    //   1. ARM    (stageSelfUpdate, inside the signed command request):
+    //             verify only. Nothing on disk moves.
+    //   2. APPLY  (applyStagedSelfUpdate, the cron request): a SEPARATE
+    //             WordPress bootstrap runs Plugin_Upgrader::upgrade(). No CP
+    //             response rides on this request, so a mid-copy death is not a
+    //             lost answer.
+    //   3. CONFIRM: the only trustworthy success signal is the NEW code
+    //             phoning home: the version-changed boot metadata push in
+    //             Plugin. A "scheduled" acknowledgement is NEVER success.
+    // -------------------------------------------------------------------------
+
+    /**
+     * BEAT 1 (ARM). Verify that a newer agent build is on offer and, if so,
+     * stage it for the apply cron. NOTHING on disk is moved, unpacked or
+     * overwritten here; the only writes are the staged wp-option record and
+     * the manifest site-transient.
+     *
+     * Runs the FULL existing verification chain by way of fetchManifest():
+     * Ed25519 signature, cmd/slug/aud binding, iat/exp window, jti replay,
+     * monotonic-iat anti-rollback, downgrade guard, https + exact-host
+     * allowlist and package size cap. Nothing new is trusted here that the
+     * one-click path does not already trust.
+     *
+     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int}
+     */
+    public function stageSelfUpdate(): array
+    {
+        $onDisk = $this->onDiskVersion();
+
+        // The wp.org distribution build ships without this file at all, so in
+        // practice the command shell answers not_eligible long before we get
+        // here. Kept as a belt-and-braces guard for a hand-assembled tree that
+        // defines the constant but still carries the source file.
+        if (defined('WPMGR_WPORG_BUILD') && constant('WPMGR_WPORG_BUILD')) {
+            return $this->stageAnswer('not_eligible', $onDisk, '', 'Self-update is not part of this distribution build.');
+        }
+
+        if (!$this->settings->isEnrolled()) {
+            return $this->stageAnswer('not_eligible', $onDisk, '', 'Site is not enrolled.');
+        }
+
+        if (!function_exists('update_option') || !function_exists('wp_schedule_single_event')) {
+            return $this->stageAnswer('not_eligible', $onDisk, '', 'WordPress option or cron API unavailable.');
+        }
+
+        // An unexpired record is already staged: never stage twice, and never
+        // re-schedule. The existing event owns this window.
+        $existing = $this->readStagedRecord();
+        if ($existing !== null && time() <= (int) $existing['expires_at']) {
+            $answer = $this->stageAnswer(
+                'already_scheduled',
+                (string) $existing['from_version'],
+                (string) $existing['to_version'],
+                'A self-update is already staged for this site.'
+            );
+            $answer['expires_at'] = (int) $existing['expires_at'];
+
+            return $answer;
+        }
+
+        $claims = $this->fetchManifest();
+        if (!is_array($claims)) {
+            if ($this->lastManifestOutcome === 'no_update' || $this->lastManifestOutcome === 'up_to_date') {
+                return $this->stageAnswer('up_to_date', $onDisk, '', 'No newer agent build is published for this site.');
+            }
+
+            // Deliberately reports only the coarse outcome tag. The manifest
+            // body carries a short-lived presigned package_url; nothing derived
+            // from it may reach a CP-visible string.
+            return $this->stageAnswer(
+                'error',
+                $onDisk,
+                '',
+                'Update manifest could not be fetched or verified (' . $this->lastManifestOutcome . ').'
+            );
+        }
+
+        $toVersion = isset($claims['version']) && is_string($claims['version']) ? $claims['version'] : '';
+        if ($toVersion === '') {
+            return $this->stageAnswer('error', $onDisk, '', 'Verified manifest carries no version.');
+        }
+
+        // Cache the verified claims (package_url stripped, since it is a bearer
+        // credential) so beat 2's injectUpdate() offers this exact build to
+        // Plugin_Upgrader without another CP round trip. Identical shape to the
+        // caching injectUpdate() already performs.
+        $toCache = $claims;
+        unset($toCache['package_url']);
+        if (function_exists('set_site_transient') && defined('HOUR_IN_SECONDS')) {
+            set_site_transient(self::TRANSIENT_MANIFEST, $toCache, 12 * HOUR_IN_SECONDS);
+        }
+
+        $now    = time();
+        $token  = bin2hex(random_bytes(16));
+        $record = [
+            'from_version' => $onDisk,
+            'to_version'   => $toVersion,
+            'staged_at'    => $now,
+            'expires_at'   => $now + self::STAGED_TTL_SECONDS,
+            'token'        => $token,
+        ];
+        update_option(self::OPTION_STAGED, $record, false);
+
+        // Drop any previous outcome so a stale 'failed' from an earlier run can
+        // never be read back as the result of THIS one.
+        if (function_exists('delete_option')) {
+            delete_option(AgentSelfUpdateCommand::OPTION_RESULT);
+        }
+
+        // The token rides in the event args for two reasons: it makes each
+        // stage a distinct event (WP silently drops a duplicate single event
+        // scheduled within 10 minutes of an identical one), and it lets beat 2
+        // ignore a stale event left over from an earlier stage.
+        wp_schedule_single_event($now, self::HOOK_APPLY, [$token]);
+
+        if (function_exists('spawn_cron')) {
+            @spawn_cron(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- spawn_cron may emit a harmless notice when DISABLE_WP_CRON is set; @-suppressed intentionally
+        }
+
+        $answer = $this->stageAnswer('scheduled', $onDisk, $toVersion, 'Self-update staged; apply runs in a separate request.');
+        $answer['expires_at'] = $record['expires_at'];
+
+        return $answer;
+    }
+
+    /**
+     * BEAT 2 (APPLY). Runs in the wp-cron request, a SEPARATE WordPress
+     * bootstrap from the one that answered the CP. No CP response rides on this
+     * request, so a death mid-copy is not a lost answer.
+     *
+     * Single-shot by construction: the staged record is CLAIMED (deleted)
+     * before any upgrade work begins, so a request that dies partway can never
+     * be retried by a later cron tick. An expired record is discarded, not
+     * retried. Nothing here schedules a follow-up event.
+     *
+     * Reuses the existing upgrader_pre_download / upgrader_source_selection
+     * chain unchanged; there is zero new download, verification or unzip code
+     * on this path.
+     *
+     * @param string $token Stage token carried in the cron event args.
+     * @return void
+     */
+    public function applyStagedSelfUpdate(string $token = ''): void
+    {
+        if (defined('WPMGR_WPORG_BUILD') && constant('WPMGR_WPORG_BUILD')) {
+            return;
+        }
+        if (!function_exists('get_option') || !function_exists('delete_option')) {
+            return;
+        }
+
+        $record = $this->readStagedRecord();
+        if ($record === null) {
+            // Nothing staged (or already claimed by an earlier tick). Silent
+            // no-op; this is the normal state on every site.
+            return;
+        }
+
+        $recordToken = (string) $record['token'];
+        if ($token !== '' && $recordToken !== '' && !hash_equals($recordToken, $token)) {
+            // A stale duplicate event from an earlier stage. Leave the current
+            // record alone so its own event can still claim it.
+            return;
+        }
+
+        // CLAIM. Everything below runs at most once per staged record.
+        delete_option(self::OPTION_STAGED);
+
+        $from      = (string) $record['from_version'];
+        $to        = (string) $record['to_version'];
+        $expiresAt = (int) $record['expires_at'];
+
+        if ($expiresAt > 0 && time() > $expiresAt) {
+            $this->recordSelfUpdateResult('expired', $from, $to, 'Staged self-update expired before the apply request ran.');
+            return;
+        }
+
+        $onDisk = $this->onDiskVersion();
+        if (!version_compare($this->normalizeVersion($to), $this->normalizeVersion($onDisk), '>')) {
+            // Already at (or past) the target: a second event for a build that
+            // landed some other way. Discard rather than reinstall.
+            $this->recordSelfUpdateResult('already_applied', $from, $to, 'On-disk version already at or past the staged target.');
+            return;
+        }
+
+        $this->runUpgrade($from, $to);
+    }
+
+    /**
+     * The Plugin_Upgrader half of beat 2, split out so applyStagedSelfUpdate()
+     * reads as the claim/discard state machine it is.
+     *
+     * Mirrors UpdateRunner's plugin branch: it captures active state BEFORE the
+     * upgrade (Plugin_Upgrader::upgrade() silently deactivates and never
+     * re-activates) and clears maintenance mode on EVERY terminal path, so a
+     * failed apply leaves a working, active site rather than a deactivated
+     * agent behind a maintenance page.
+     *
+     * @param string $from On-disk version at stage time.
+     * @param string $to   Verified target version.
+     * @return void
+     */
+    private function runUpgrade(string $from, string $to): void
+    {
+        if (!defined('ABSPATH')) {
+            $this->recordSelfUpdateResult('failed', $from, $to, 'ABSPATH is not defined; upgrader unavailable.');
+            return;
+        }
+
+        $adminDir = (string) constant('ABSPATH') . 'wp-admin/includes/';
+        foreach (['file.php', 'misc.php', 'plugin.php', 'class-wp-upgrader.php'] as $adminInclude) {
+            if (is_file($adminDir . $adminInclude)) {
+                require_once $adminDir . $adminInclude;
+            }
+        }
+
+        if (!class_exists('\Plugin_Upgrader') || !class_exists('\Automatic_Upgrader_Skin')) {
+            $this->recordSelfUpdateResult('failed', $from, $to, 'Upgrader API unavailable.');
+            return;
+        }
+
+        $wasActive        = function_exists('is_plugin_active')             ? \is_plugin_active(self::PLUGIN_KEY) : false;
+        $wasNetworkActive = function_exists('is_plugin_active_for_network') ? \is_plugin_active_for_network(self::PLUGIN_KEY) : false;
+
+        // Force WordPress to rebuild the plugin-update transient so the
+        // site_transient_update_plugins filter (injectUpdate) offers the build
+        // stage() just verified. Plugin_Upgrader::upgrade() reads that transient
+        // to find the package.
+        if (function_exists('delete_site_transient')) {
+            delete_site_transient('update_plugins');
+        }
+
+        $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
+        $result   = null;
+        $thrown   = '';
+
+        try {
+            $result = $upgrader->upgrade(self::PLUGIN_KEY);
+        } catch (\Throwable $e) {
+            $thrown = $e->getMessage();
+        } finally {
+            // GUARANTEE: maintenance mode is cleared on every terminal path of
+            // this upgrade, whether it succeeded, returned a WP_Error, or threw.
+            Maintenance::clear($upgrader);
+        }
+
+        if ($thrown !== '') {
+            $this->recordSelfUpdateResult('failed', $from, $to, 'Upgrader threw: ' . $thrown);
+            $this->restoreActiveState($wasActive, $wasNetworkActive);
+            return;
+        }
+
+        if (is_object($result) && method_exists($result, 'get_error_message')) {
+            $code    = method_exists($result, 'get_error_code') ? (string) $result->get_error_code() : '';
+            $message = (string) $result->get_error_message();
+            $this->recordSelfUpdateResult(
+                'failed',
+                $from,
+                $to,
+                'WP_Error' . ($code !== '' ? ' (' . $code . ')' : '') . ': ' . $message
+            );
+            $this->restoreActiveState($wasActive, $wasNetworkActive);
+            return;
+        }
+
+        if ($result === false || $result === null) {
+            $this->recordSelfUpdateResult('failed', $from, $to, 'Upgrader reported no result.');
+            $this->restoreActiveState($wasActive, $wasNetworkActive);
+            return;
+        }
+
+        // The new files are on disk, but THIS request is still running the old
+        // code, so it is in no position to declare success to anyone. It records
+        // a local outcome and stops. Beat 3, the version-changed boot metadata
+        // push from the NEW code, is the only success signal the CP trusts.
+        $this->restoreActiveState($wasActive, $wasNetworkActive);
+        $this->flushCache();
+        if (function_exists('delete_site_transient')) {
+            delete_site_transient('update_plugins');
+        }
+        $this->recordSelfUpdateResult('applied', $from, $to, '');
+    }
+
+    /**
+     * Re-activate the agent when Plugin_Upgrader::upgrade() left it deactivated.
+     *
+     * WordPress's upgrader registers an upgrader_pre_install hook that calls
+     * deactivate_plugins($plugin, silent=true) and does NOT re-activate
+     * afterwards. For any other plugin that is merely untidy; for the agent it
+     * would sever the control-plane connection, so restoring the pre-upgrade
+     * state is part of "leave the site working".
+     *
+     * @param bool $wasActive        Site-level active state before the upgrade.
+     * @param bool $wasNetworkActive Network active state before the upgrade.
+     * @return void
+     */
+    private function restoreActiveState(bool $wasActive, bool $wasNetworkActive): void
+    {
+        if (!$wasActive && !$wasNetworkActive) {
+            return;
+        }
+        if (!function_exists('activate_plugin')) {
+            return;
+        }
+
+        // Refresh the plugin cache first: the upgrade may have rewritten the
+        // main plugin file, so the cached header data is stale.
+        if (function_exists('wp_clean_plugins_cache')) {
+            \wp_clean_plugins_cache(true);
+        }
+
+        try {
+            $activated = \activate_plugin(self::PLUGIN_KEY, '', $wasNetworkActive, true);
+            if (function_exists('is_wp_error') && \is_wp_error($activated)) {
+                error_log('wpmgr-agent: UpdateChecker post-apply reactivation failed.');
+            }
+        } catch (\Throwable $e) {
+            error_log('wpmgr-agent: UpdateChecker post-apply reactivation threw: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Read and shape-validate the staged record. Returns null when absent or
+     * malformed (a malformed record is treated as "nothing staged").
+     *
+     * Does NOT apply the expiry; callers decide what an expired record means
+     * (beat 1 re-stages over it, beat 2 discards it and records the reason).
+     *
+     * @return array{from_version:string,to_version:string,staged_at:int,expires_at:int,token:string}|null
+     */
+    private function readStagedRecord(): ?array
+    {
+        if (!function_exists('get_option')) {
+            return null;
+        }
+
+        $stored = get_option(self::OPTION_STAGED, null);
+        if (!is_array($stored)) {
+            return null;
+        }
+
+        $to = isset($stored['to_version']) && is_string($stored['to_version']) ? $stored['to_version'] : '';
+        if ($to === '') {
+            return null;
+        }
+
+        return [
+            'from_version' => isset($stored['from_version']) && is_string($stored['from_version']) ? $stored['from_version'] : '',
+            'to_version'   => $to,
+            'staged_at'    => isset($stored['staged_at']) && is_numeric($stored['staged_at']) ? (int) $stored['staged_at'] : 0,
+            'expires_at'   => isset($stored['expires_at']) && is_numeric($stored['expires_at']) ? (int) $stored['expires_at'] : 0,
+            'token'        => isset($stored['token']) && is_string($stored['token']) ? $stored['token'] : '',
+        ];
+    }
+
+    /**
+     * Persist the apply outcome so the next metadata push carries it to the CP.
+     *
+     * The stored detail is scrubbed of anything URL-shaped: upgrader and skin
+     * messages can echo a package string back, and the manifest's package_url
+     * is a short-lived bearer credential that must never reach a CP-visible
+     * field or a log line.
+     *
+     * @param string $status One of applied|failed|expired|already_applied.
+     * @param string $from   On-disk version at stage time.
+     * @param string $to     Staged target version.
+     * @param string $detail Human-readable, non-secret detail (may be empty).
+     * @return void
+     */
+    private function recordSelfUpdateResult(string $status, string $from, string $to, string $detail): void
+    {
+        if (!function_exists('update_option')) {
+            return;
+        }
+
+        $scrubbed = (string) preg_replace('#https?://\S+#i', '[url]', $detail);
+        if (strlen($scrubbed) > 500) {
+            $scrubbed = substr($scrubbed, 0, 500);
+        }
+
+        update_option(
+            AgentSelfUpdateCommand::OPTION_RESULT,
+            [
+                'status'       => $status,
+                'from_version' => $from,
+                'to_version'   => $to,
+                'detail'       => $scrubbed,
+                'at'           => time(),
+            ],
+            false
+        );
+    }
+
+    /**
+     * Build a beat-1 answer in the single shape the control plane parses.
+     *
+     * @param string $status One of not_eligible|up_to_date|scheduled|already_scheduled|error.
+     * @param string $from   On-disk version.
+     * @param string $to     Target version ('' when there is none).
+     * @param string $detail Human-readable, non-secret detail.
+     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int}
+     */
+    private function stageAnswer(string $status, string $from, string $to, string $detail): array
+    {
+        return [
+            'status'       => $status,
+            // 'scheduled' is an ACKNOWLEDGEMENT, never a success: the update has
+            // not been applied and may never be. The CP treats it as unconfirmed
+            // until the new code phones home (beat 3).
+            'ok'           => $status !== 'error',
+            'from_version' => $from,
+            'to_version'   => $to,
+            'detail'       => $detail,
+            'cron_mode'    => (defined('DISABLE_WP_CRON') && constant('DISABLE_WP_CRON')) ? 'external' : 'loopback',
+            'expires_at'   => 0,
+        ];
     }
 
     // -------------------------------------------------------------------------

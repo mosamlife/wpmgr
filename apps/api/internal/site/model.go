@@ -235,6 +235,26 @@ func (s Site) ParsedCoreUpdate() *CoreUpdate {
 	return comp.CoreUpdate
 }
 
+// ParsedAgentSelfUpdate decodes the site's JSONB inventory and returns the
+// optional record of the agent's last self-update apply beat (nil when the site
+// never reported one, or the inventory is empty/malformed). A record with no
+// status is treated as absent: it says nothing.
+func (s Site) ParsedAgentSelfUpdate() *AgentSelfUpdateResult {
+	if len(s.Components) == 0 {
+		return nil
+	}
+	var comp struct {
+		AgentSelfUpdate *AgentSelfUpdateResult `json:"agent_self_update,omitempty"`
+	}
+	if json.Unmarshal(s.Components, &comp) != nil {
+		return nil
+	}
+	if comp.AgentSelfUpdate == nil || comp.AgentSelfUpdate.Status == "" {
+		return nil
+	}
+	return comp.AgentSelfUpdate
+}
+
 // Metadata is the site inventory an authenticated agent pushes.
 type Metadata struct {
 	WPVersion   string `json:"wp_version" validate:"max=32"`
@@ -256,6 +276,40 @@ type Metadata struct {
 	// agent reported none of the expansion fields — the sink does not
 	// overwrite previously-stored values in that case.
 	Extras *MetadataExtras `json:"-"`
+	// AgentSelfUpdate is the agent's own account of its last self-update apply
+	// beat. Optional and additive: nil for a site that never staged one and for
+	// every agent old enough to predate the channel.
+	AgentSelfUpdate *AgentSelfUpdateResult `json:"-"`
+}
+
+// AgentSelfUpdateResult is the agent's account of what happened on the apply
+// beat of its own upgrade, round-tripped through the JSONB inventory column
+// under the `agent_self_update` key (no migration: the column is JSONB).
+//
+// The apply runs inside a WordPress cron request that has no control-plane
+// response to ride on, so this record is the ONLY channel by which a failed,
+// expired or already-applied outcome ever reaches the control plane. Dropping it
+// leaves a confirmation timeout unable to distinguish "the cron run never
+// happened" (the site was never touched) from "the cron run happened and the
+// upgrade failed" (the site may need looking at), which are the two things an
+// operator most needs told apart.
+type AgentSelfUpdateResult struct {
+	// Status is one of applied|failed|expired|already_applied. Stored as a plain
+	// string, not an enum: a status a newer agent introduces must reach an
+	// operator verbatim rather than being dropped by an older control plane.
+	Status string `json:"status"`
+	// FromVersion is the on-disk version at stage time; ToVersion the staged
+	// target. Both best-effort.
+	FromVersion string `json:"from_version,omitempty"`
+	ToVersion   string `json:"to_version,omitempty"`
+	// Detail is the agent's own human-readable, non-secret sentence. The agent
+	// scrubs anything URL-shaped out of it before storing (the manifest's
+	// package URL is a short-lived bearer credential), and this side bounds its
+	// length like every other agent-supplied string.
+	Detail string `json:"detail,omitempty"`
+	// At is the unix timestamp the agent stamped the record with; 0 when it did
+	// not say.
+	At int64 `json:"at,omitempty"`
 }
 
 // MetadataExtras carries the ADR-037 Sprint 1 sparse-metadata expansion. The

@@ -38,3 +38,13 @@ func (e *RiverEnqueuer) EnqueueRefresh(ctx context.Context, args RefreshInventor
 	}
 	return nil
 }
+
+// EnqueueAgentConfirm inserts one agent self-update confirmation-poll job
+// (beat 3). The job's InsertOpts pin it to the tenant's queue shard. Satisfies
+// AgentConfirmEnqueuer.
+func (e *RiverEnqueuer) EnqueueAgentConfirm(ctx context.Context, args AgentConfirmArgs) error {
+	if _, err := e.client.Insert(ctx, args, nil); err != nil {
+		return fmt.Errorf("enqueue agent self-update confirmation: %w", err)
+	}
+	return nil
+}

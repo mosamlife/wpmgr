@@ -226,6 +226,19 @@ type Querier interface {
 	// generation counter and clears archived_at so the row leaves the archived list.
 	// The next consume increments nothing further — generation already advanced.
 	BeginSiteReEnrollment(ctx context.Context, arg BeginSiteReEnrollmentParams) (Site, error)
+	// Cancels ONE not-yet-dispatched task as part of halting its run.
+	//
+	// The 'pending' precondition is the whole point, and it is enforced here rather
+	// than in Go so it is atomic against a worker claiming the same row. A halt may
+	// only cancel tasks nothing was ever sent for: update_tasks.status='cancelled'
+	// means exactly "nothing was ever sent to this site". A RUNNING task has
+	// already had its command delivered and (for an agent self-update) a cron event
+	// spawned on the site, so cancelling it would both record a falsehood and make
+	// the control plane stop listening for the outcome, at the exact moment an
+	// operator hit the kill switch and most needs to know. Running tasks are left
+	// to be resolved by their own confirmation job; the run is halted, so no
+	// further wave can open behind them.
+	CancelPendingUpdateTask(ctx context.Context, arg CancelPendingUpdateTaskParams) (UpdateTask, error)
 	// Advance next_digest_at to the next period as a conditional claim.
 	// Returns the updated row if the claim succeeds (next_digest_at still <= now(),
 	// guard against double-claim by concurrent workers). Runs under InAgentTx.
@@ -473,8 +486,17 @@ type Querier interface {
 	// expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
 	// treats the event as "unknown customer" (record + warn, change nothing).
 	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
-	// Records a terminal task state (succeeded|failed|rolled_back|skipped) with the
-	// resolved versions and any detail/error. Tenant-scoped by id+tenant_id.
+	// Records a terminal task state (succeeded|failed|rolled_back|skipped|cancelled)
+	// with the resolved versions and any detail/error. Tenant-scoped by
+	// id+tenant_id.
+	//
+	// The status precondition is what makes a terminal state FINAL. Without it, a
+	// worker that was already in flight when its run was halted comes back later
+	// and overwrites 'cancelled' with 'succeeded', so the kill switch appears to
+	// have stopped a rollout that in fact reported itself as a success. Only a task
+	// still open (pending|running) may be finished; a caller that matches no row
+	// must read the row back and leave the recorded outcome alone (see
+	// pgRepo.FinishTask / ErrTaskNotOpen).
 	FinishUpdateTask(ctx context.Context, arg FinishUpdateTaskParams) (UpdateTask, error)
 	// Runs under InUserTx. Returns the tenant of the user's earliest ACTIVE
 	// client membership, used at login to resolve an active tenant for

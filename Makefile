@@ -266,6 +266,19 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 		exit 1; \
 	fi
 	@echo "agent-zip-wporg: self-target guard constant OK (SELF_PLUGIN_FOLDER = 'fleet-agent-site-manager')"
+	# ASSERT no staged file resolves the (now absent) self-updater class outside a
+	# guard. includes/class-plugin.php SURVIVES the rsync above and holds two hard
+	# class fetches, `new UpdateChecker(...)` and `UpdateChecker::HOOK_APPLY`, each
+	# safe only because it sits inside a guard. Both sit among a dozen visually
+	# identical unconditional calls, so dedenting one out is a plausible refactor,
+	# and it would raise
+	#   Fatal error: Uncaught Error: Class "WPMgr\Agent\Support\UpdateChecker" not found
+	# on every request of every wp.org install. `wp plugin check` is static analysis
+	# and never executes the plugin, so it cannot catch that. This assert runs
+	# against the artifact that actually ships. Mirrors the SELF_PLUGIN_FOLDER
+	# assertion above. tools/ is excluded from the staged tree, so the checker is
+	# invoked from the source tree.
+	php apps/agent/tools/assert-wporg-updatechecker-guard.php release/fleet-agent-site-manager
 	cd release && zip -r fleet-agent-site-manager.zip fleet-agent-site-manager
 	rm -rf release/fleet-agent-site-manager
 	@echo "agent wporg zip: $$(du -sh release/fleet-agent-site-manager.zip | cut -f1)"

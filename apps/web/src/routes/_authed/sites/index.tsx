@@ -41,7 +41,8 @@ import {
   UpdateWizard,
   type WizardTarget,
 } from "@/features/updates/update-wizard";
-import { useMe, canOperate } from "@/features/auth/use-auth";
+import { AgentSelfUpdateDialog } from "@/features/updates/agent-self-update-dialog";
+import { useMe, canOperate, canManage } from "@/features/auth/use-auth";
 import { useBulkBackup } from "@/features/backups/use-bulk-backup";
 import { useBulkAction } from "@/features/sites/use-bulk-action";
 import { toast } from "@/components/toast";
@@ -132,6 +133,9 @@ function SitesPage() {
   const { data: me } = useMe();
   const operate = canOperate(me);
   const autoLogin = canAutoLogin(me);
+  // GH #255 Phase 2: agent self-update is infrastructure, not content, so gate
+  // it to owner/admin (canManage), not the looser operator-capable canOperate.
+  const manageAgents = canManage(me);
 
   // ── URL search params (P1: all filter axes) ──────────────────────────────
   // Use navigate instead of useState so filters survive reload and are shareable.
@@ -211,10 +215,14 @@ function SitesPage() {
       fleetAgents.sites.map((s) => [s.site_id, s.status]),
     );
   }, [fleetAgents]);
+  // GH #255 Phase 2: the fleet-wide kill switch, read from the same
+  // already-loaded rollup rather than a separate request. Absent (older
+  // control plane, or the field not yet wired) reads as off, matching the
+  // channel's "ships dark by default" contract.
+  const agentSelfUpdateEnabled = fleetAgents?.self_update_enabled === true;
 
   // Active on any filter axis, including the (now server-side) tags filter.
-  // A tag filter that matches nothing legitimately returns `sites: []` —
-  // that must render as a filtered-empty state, never the onboarding empty
+  // A tag filter that matches nothing legitimately returns `sites: []`, // that must render as a filtered-empty state, never the onboarding empty
   // state (which means "this tenant has no sites at all").
   const hasActiveFilters =
     Boolean(search.q?.trim()) ||
@@ -247,6 +255,7 @@ function SitesPage() {
 
   const [wizardTarget, setWizardTarget] = useState<WizardTarget | null>(null);
   const [openAdminSites, setOpenAdminSites] = useState<Site[] | null>(null);
+  const [agentUpdateOpen, setAgentUpdateOpen] = useState(false);
 
   // ── Derived filter options ─────────────────────────────────────────────────
 
@@ -607,6 +616,15 @@ function SitesPage() {
     [selection],
   );
 
+  // GH #255 Phase 2: opens the agent self-update confirmation dialog for the
+  // current selection. The toolbar item itself is hidden unless manageAgents
+  // && agentSelfUpdateEnabled (see onUpdateAgent below), so reaching this
+  // handler already implies both.
+  const handleUpdateAgent = useCallback(() => {
+    if (selection.count === 0) return;
+    setAgentUpdateOpen(true);
+  }, [selection.count]);
+
   const handleBulkBackup = useCallback(async () => {
     const ids = Array.from(selection.selected);
     if (ids.length === 0) return;
@@ -874,6 +892,14 @@ function SitesPage() {
             onBulkSetClient={handleBulkSetClient}
             onBulkPauseMonitoring={handleBulkPauseMonitoring}
             onBulkDelete={handleBulkDelete}
+            // GH #255 Phase 2: undefined hides the menu item entirely; the
+            // action must not appear usable while the control-plane kill
+            // switch is off, and it is infrastructure (owner/admin only).
+            onUpdateAgent={
+              manageAgents && agentSelfUpdateEnabled
+                ? handleUpdateAgent
+                : undefined
+            }
             // GH #252: the primary "Add site" action lives in the PageHeader
             // only (top-right, matching every other list page's primary
             // action), so don't duplicate the trigger here. Non-operators
@@ -959,6 +985,15 @@ function SitesPage() {
               ? selectedSites
               : (sites ?? [])
           }
+        />
+      ) : null}
+
+      {manageAgents ? (
+        <AgentSelfUpdateDialog
+          open={agentUpdateOpen}
+          onClose={() => setAgentUpdateOpen(false)}
+          sites={selectedSites}
+          agentStatusById={agentStatusById}
         />
       ) : null}
 

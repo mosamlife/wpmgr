@@ -14,6 +14,16 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
+// ErrTaskNotOpen reports that a task could not be finished because it was no
+// longer open (pending|running): something else already recorded its terminal
+// state. The overwhelmingly common case is a run that was halted while this
+// worker was in flight, the halt cancelled the task, and the worker returning
+// afterwards must not overwrite 'cancelled' with 'succeeded', which would make
+// the kill switch look like it stopped a rollout that then reported itself a
+// success. It is not an error condition for the caller: the recorded outcome
+// stands and the job is done. See Worker.finish.
+var ErrTaskNotOpen = errors.New("update task is not open")
+
 // Repo is the tenant-scoped persistence interface for update runs/tasks. Every
 // method runs inside a tenant-scoped transaction so RLS enforces isolation even
 // if a query omitted its tenant filter.
@@ -30,6 +40,9 @@ type Repo interface {
 	GetTask(ctx context.Context, tenantID, taskID uuid.UUID) (Task, error)
 
 	MarkTaskRunning(ctx context.Context, tenantID, taskID uuid.UUID) (Task, error)
+	// FinishTask records a terminal state for a task that is still OPEN
+	// (pending|running). A task that already reached a terminal state is
+	// returned unchanged alongside ErrTaskNotOpen: its recorded outcome wins.
 	FinishTask(ctx context.Context, in FinishTaskInput) (Task, error)
 	SetRunStatus(ctx context.Context, tenantID, runID uuid.UUID, status string) (Run, error)
 	CountUnfinishedTasks(ctx context.Context, tenantID, runID uuid.UUID) (int64, error)
@@ -40,8 +53,7 @@ type Repo interface {
 	// a duplicate task for a target that already has an update in flight from
 	// another run (#131 hardening): without this, a scheduled auto-update, an
 	// operator bulk update, and a portal trigger can all create tasks for the
-	// SAME (site, plugin) within the same window, and several run concurrently —
-	// racing the agent's own rollback-snapshot pruning and running concurrent
+	// SAME (site, plugin) within the same window, and several run concurrently, // racing the agent's own rollback-snapshot pruning and running concurrent
 	// WordPress Plugin_Upgrader instances against the same plugin directory. The
 	// authoritative guard is the update_tasks_inflight_target_idx partial unique
 	// index (see CreateUpdateTask's ON CONFLICT); this pre-check just avoids
@@ -292,7 +304,8 @@ func (r *pgRepo) MarkTaskRunning(ctx context.Context, tenantID, taskID uuid.UUID
 func (r *pgRepo) FinishTask(ctx context.Context, in FinishTaskInput) (Task, error) {
 	var out Task
 	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).FinishUpdateTask(ctx, sqlc.FinishUpdateTaskParams{
+		q := sqlc.New(tx)
+		row, err := q.FinishUpdateTask(ctx, sqlc.FinishUpdateTaskParams{
 			ID:          in.TaskID,
 			TenantID:    in.TenantID,
 			Status:      in.Status,
@@ -302,10 +315,24 @@ func (r *pgRepo) FinishTask(ctx context.Context, in FinishTaskInput) (Task, erro
 			Error:       in.Error,
 		})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("update_task_not_found", "update task not found")
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return domain.Internal("update_task_finish_failed", "failed to finish task").WithCause(err)
 			}
-			return domain.Internal("update_task_finish_failed", "failed to finish task").WithCause(err)
+			// FinishUpdateTask only matches an OPEN task (pending|running), so
+			// no row means either the task does not exist or it already
+			// reached a terminal state, most importantly 'cancelled', written
+			// by a halt while this worker was still in flight. Read the row
+			// back to tell the two apart, and return the recorded outcome
+			// rather than overwriting it.
+			existing, gerr := q.GetUpdateTask(ctx, sqlc.GetUpdateTaskParams{ID: in.TaskID, TenantID: in.TenantID})
+			if gerr != nil {
+				if errors.Is(gerr, pgx.ErrNoRows) {
+					return domain.NotFound("update_task_not_found", "update task not found")
+				}
+				return domain.Internal("update_task_get_failed", "failed to load update task").WithCause(gerr)
+			}
+			out = toTask(existing)
+			return ErrTaskNotOpen
 		}
 		out = toTask(row)
 		return nil

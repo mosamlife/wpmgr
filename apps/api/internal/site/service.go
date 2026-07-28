@@ -358,6 +358,9 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 		// components.disk / components.user_count / components.admin_count
 		// path. Old agents send none of these and the fields stay absent.
 		Extras: fromAgentMetadataExtras(m),
+		// The agent's own account of its last self-update apply beat. Additive
+		// and tolerant of absence: old agents send nothing here.
+		AgentSelfUpdate: fromAgentSelfUpdateResult(m.AgentSelfUpdate),
 	})
 	if err != nil {
 		return gen.Site{}, err
@@ -435,6 +438,22 @@ func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
 	return x
 }
 
+// fromAgentSelfUpdateResult lifts the agent's apply-beat record from the agent
+// package DTO onto the site domain type. nil in, nil out: an agent that never
+// staged a self-update, and every agent predating the channel, sends nothing.
+func fromAgentSelfUpdateResult(r *agentpkg.AgentSelfUpdateResult) *AgentSelfUpdateResult {
+	if r == nil || r.Status == "" {
+		return nil
+	}
+	return &AgentSelfUpdateResult{
+		Status:      r.Status,
+		FromVersion: r.FromVersion,
+		ToVersion:   r.ToVersion,
+		Detail:      r.Detail,
+		At:          r.At,
+	}
+}
+
 func fromAgentCoreUpdate(cu *agentpkg.CoreUpdate) *CoreUpdate {
 	if cu == nil || cu.NewVersion == "" {
 		return nil
@@ -443,8 +462,7 @@ func fromAgentCoreUpdate(cu *agentpkg.CoreUpdate) *CoreUpdate {
 }
 
 // Metadata sanitization bounds. Metadata is best-effort telemetry from
-// arbitrary real-world sites, so we never reject a sync over field lengths —
-// we truncate (on rune boundaries) and cap slice sizes instead.
+// arbitrary real-world sites, so we never reject a sync over field lengths, // we truncate (on rune boundaries) and cap slice sizes instead.
 const (
 	maxWPVersion    = 32
 	maxPHPVersion   = 32
@@ -459,6 +477,13 @@ const (
 	maxPackageURL  = 2048
 	maxTestedLen   = 32
 	maxRequiresPHP = 32
+	// Agent self-update apply-record bounds. The agent already caps its own
+	// detail at 500 characters, but that is the agent's promise, not a bound
+	// this side may rely on: the record is agent-supplied telemetry like every
+	// other field here and is truncated on arrival. maxSelfUpdateStatus is
+	// generous enough for a status a newer agent introduces.
+	maxSelfUpdateStatus = 32
+	maxSelfUpdateDetail = 500
 )
 
 // truncateRunes returns s truncated to at most n runes, never splitting a
@@ -554,6 +579,30 @@ func sanitizeCoreUpdate(cu *CoreUpdate) *CoreUpdate {
 	}
 }
 
+// sanitizeAgentSelfUpdate bounds the agent's apply-beat record and drops it
+// entirely when it carries no status, which is the one field that makes it mean
+// anything. Everything else is best-effort and may be empty.
+func sanitizeAgentSelfUpdate(r *AgentSelfUpdateResult) *AgentSelfUpdateResult {
+	if r == nil {
+		return nil
+	}
+	status := truncateRunes(strings.TrimSpace(r.Status), maxSelfUpdateStatus)
+	if status == "" {
+		return nil
+	}
+	at := r.At
+	if at < 0 {
+		at = 0
+	}
+	return &AgentSelfUpdateResult{
+		Status:      status,
+		FromVersion: truncateRunes(strings.TrimSpace(r.FromVersion), maxVersionLen),
+		ToVersion:   truncateRunes(strings.TrimSpace(r.ToVersion), maxVersionLen),
+		Detail:      truncateRunes(r.Detail, maxSelfUpdateDetail),
+		At:          at,
+	}
+}
+
 // sanitizeMetadata coerces arbitrary agent-reported metadata into the stored
 // bounds without ever erroring: scalar fields are truncated on rune
 // boundaries, components with empty slugs are dropped, and the plugin/theme
@@ -572,7 +621,8 @@ func sanitizeMetadata(m Metadata) Metadata {
 		// ADR-037 Sprint 1, 1C — Extras pass through unchanged. The agent
 		// already bounds disk-usage walks to 2s; user/admin counts are tiny
 		// non-negative ints; host_flags is a fixed boolean enum.
-		Extras: m.Extras,
+		Extras:          m.Extras,
+		AgentSelfUpdate: sanitizeAgentSelfUpdate(m.AgentSelfUpdate),
 	}
 }
 
@@ -610,6 +660,13 @@ func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID,
 		if m.Extras.AdminCount > 0 {
 			payload["admin_count"] = m.Extras.AdminCount
 		}
+	}
+	// The agent's account of its last self-update apply beat, stored as a
+	// sibling key to plugins/themes. Absent when the agent sent nothing, exactly
+	// like core_update: the whole inventory blob is rewritten by every push, so
+	// a site that has never staged a self-update simply never carries the key.
+	if m.AgentSelfUpdate != nil {
+		payload["agent_self_update"] = m.AgentSelfUpdate
 	}
 	components, err := json.Marshal(payload)
 	if err != nil {

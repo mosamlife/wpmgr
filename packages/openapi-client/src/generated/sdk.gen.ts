@@ -1736,8 +1736,7 @@ export const activateOrg = <ThrowOnError extends boolean = false>(
  * grace-window purge worker runs. `confirm_name` must exactly match the
  * organisation's current name. When this is the caller's active org,
  * their session is reassigned to another live membership, or cleared
- * entirely (dropping to onboarding) if it was their last org —
- * `active_tenant_id` in the response reflects the post-delete state.
+ * entirely (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the post-delete state.
  * On a hosted instance an active paid subscription must be
  * cancelled/downgraded first (`billing_active` 409).
  *
@@ -2698,8 +2697,7 @@ export const forceAdminAccountState = <ThrowOnError extends boolean = false>(
 /**
  * Instance-wide revenue dashboard (superadmin)
  *
- * Local-state-only revenue view derived from tenants + billing_events —
- * zero payment-provider API calls. Requires is_superadmin=true.
+ * Local-state-only revenue view derived from tenants + billing_events, zero payment-provider API calls. Requires is_superadmin=true.
  *
  */
 export const getAdminRevenue = <ThrowOnError extends boolean = false>(
@@ -4490,8 +4488,7 @@ export const bulkDeleteBackups = <ThrowOnError extends boolean = false>(
  * CHAIN-SAFE: deleting a base or mid-chain increment that still has
  * dependent later-generation increments is refused with 422
  * (chain_has_dependents); delete the newer increments first. A
- * running/pending snapshot is refused with 422 (snapshot_in_progress) —
- * cancel it first. Requires operator+.
+ * running/pending snapshot is refused with 422 (snapshot_in_progress), cancel it first. Requires operator+.
  *
  */
 export const deleteBackup = <ThrowOnError extends boolean = false>(
@@ -8096,8 +8093,7 @@ export const readSiteFileContent = <ThrowOnError extends boolean = false>(
  * severity. The agent independently enforces its executable deny-list
  * regardless.
  *
- * **Sensitive-file gate (T6):** Same as above for `confirm_sensitive=true`
- * — requires owner (`site.files.write_code`) and is audited at elevated
+ * **Sensitive-file gate (T6):** Same as above for `confirm_sensitive=true`, requires owner (`site.files.write_code`) and is audited at elevated
  * severity on both success and denial.
  *
  * Requires `site.files.write` permission (admin+).
@@ -8337,8 +8333,7 @@ export const applySiteFileUpload = <ThrowOnError extends boolean = false>(
  *
  * A `file_transfers` row is persisted for audit and GC tracking.
  *
- * **Sensitive-path gate (T6):** same rules as `readSiteFileContent` —
- * owner-level permission required; the attempt is always audited.
+ * **Sensitive-path gate (T6):** same rules as `readSiteFileContent`, owner-level permission required; the attempt is always audited.
  *
  * Returns `503 storage_not_configured` when object storage is not
  * configured (self-hosted deployments without S3).

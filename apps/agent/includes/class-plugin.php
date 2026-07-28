@@ -17,6 +17,7 @@ use WPMgr\Agent\Backup\FilesRestorer;
 use WPMgr\Agent\Backup\RestoreRunner;
 use WPMgr\Agent\Backup\RestoreWatchdog;
 use WPMgr\Agent\Backup\Watchdog;
+use WPMgr\Agent\Commands\AgentSelfUpdateCommand;
 use WPMgr\Agent\Commands\AutologinCommand;
 use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Commands\CommandInterface;
@@ -117,6 +118,7 @@ use WPMgr\Agent\Media\Rename;
 use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ConnectionFinisher;
+use WPMgr\Agent\Support\DebugLog;
 use WPMgr\Agent\Support\ErrorMonitor;
 use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
@@ -139,6 +141,15 @@ final class Plugin
      * so admin pages can surface a fix-it notice and a lazy retry can run.
      */
     public const OPTION_KEYSTORE_ERROR = 'wpmgr_agent_keystore_error';
+
+    /**
+     * Highest agent version this site has already confirmed to the control
+     * plane by pushing metadata from it. Drives beat 3 of the CP-commanded
+     * self-update (see maybePushVersionChangedMetadata): a boot whose
+     * WPMGR_AGENT_VERSION differs from this value pushes once, then stamps.
+     * Non-autoloaded.
+     */
+    public const OPTION_REPORTED_VERSION = 'wpmgr_agent_reported_version';
 
     /**
      * v0.9.13 — Unix timestamp of the most recent SUCCESSFUL diagnostics push
@@ -938,8 +949,7 @@ final class Plugin
         // the site is enrolled (the only state in which UpdateCommand can
         // ever run at all, and therefore the only state in which its marker
         // could ever be armed). The mu-plugin itself is inert on every
-        // request until a marker actually exists (a single is_file() stat —
-        // see its own class doc), so no separate feature opt-in is needed
+        // request until a marker actually exists (a single is_file() stat, // see its own class doc), so no separate feature opt-in is needed
         // beyond enrollment. Remove a previously-installed copy on
         // un-enrollment so no executable mu-plugin lingers for a site the
         // control plane no longer manages.
@@ -973,8 +983,29 @@ final class Plugin
         // ADR-042 Phase 2 — bind the CP self-update hooks. Self-gates on
         // isEnrolled() inside UpdateChecker::install(); idempotent (static guard).
         // Skipped for the wp.org distribution build (WPMGR_WPORG_BUILD constant).
+        //
+        // The two bindings below belong to the CP-commanded three-beat
+        // self-update and are deliberately INSIDE this null guard: on the
+        // wp.org build $this->updateChecker is null and class-update-checker.php
+        // is not shipped at all, so no scheduled event and no boot hook may ever
+        // reference the missing class. (The agent_self_update COMMAND itself is
+        // registered unconditionally in commands(); it is null-tolerant by
+        // construction and answers "not_eligible" there, which is a better CP
+        // experience than an unknown-command 404.)
         if ($this->updateChecker !== null) {
             $this->updateChecker->install();
+
+            // BEAT 2 (APPLY): a separate WordPress bootstrap runs the upgrade,
+            // so no CP response rides on the request that copies the files.
+            // Single-shot: the staged record is claimed and deleted before any
+            // upgrade work starts, and nothing here schedules a follow-up.
+            add_action(UpdateChecker::HOOK_APPLY, [$this->updateChecker, 'applyStagedSelfUpdate'], 10, 1);
+
+            // BEAT 3 (CONFIRM): the only trustworthy success signal is the NEW
+            // code phoning home, so the freshly-installed build pushes metadata
+            // once on its first boot rather than waiting up to 30 minutes for
+            // the metadata cron.
+            add_action('plugins_loaded', [$this, 'maybePushVersionChangedMetadata']);
         }
 
         // Email (Phase 2) — register the pre_wp_mail interception hook.
@@ -1756,6 +1787,82 @@ final class Plugin
     }
 
     /**
+     * BEAT 3 (CONFIRM) of the CP-commanded self-update: push metadata once, on
+     * the first boot that runs a version this site has not yet reported.
+     *
+     * A "scheduled" acknowledgement from beat 1 is never success, and beat 2
+     * runs in a request that cannot be trusted to report its own outcome (it is
+     * replacing the code that would do the reporting). The only trustworthy
+     * signal is the NEW code phoning home, which is exactly what this is: the
+     * metadata payload already carries agent_version, so a push from the new
+     * build IS the confirmation. Without it the CP would wait up to 30 minutes
+     * for the metadata cron.
+     *
+     * Bound on plugins_loaded behind registerHooks()'s updateChecker-not-null
+     * guard, so the wp.org distribution build never registers it.
+     *
+     * Cheap on the hot path: one get_option() plus one constant read, and on
+     * every request after the first at the new version it returns at the
+     * version comparison. The push itself is deferred to 'shutdown' so the one
+     * request that happens to be the first boot never pays CP latency.
+     *
+     * The stamp is written BEFORE the push, not after (same reasoning as
+     * maybeRunRestoreGc): this is a network call, and a CP that is unreachable
+     * must not make every subsequent request re-attempt it. The 30-minute
+     * metadata cron is the backstop for a single missed confirmation.
+     *
+     * @return bool True when this call armed the confirmation push (at most
+     *              once per version), false when there was nothing to confirm.
+     *              Returned for testability; WordPress ignores an action
+     *              callback's return value.
+     */
+    public function maybePushVersionChangedMetadata(): bool
+    {
+        if (!function_exists('get_option') || !function_exists('update_option') || !function_exists('add_action')) {
+            return false;
+        }
+
+        // Nothing to confirm to a control plane this site is not talking to.
+        if (!$this->settings->isEnrolled()) {
+            return false;
+        }
+
+        $currentVersion = defined('WPMGR_AGENT_VERSION') ? (string) constant('WPMGR_AGENT_VERSION') : '';
+        if ($currentVersion === '') {
+            return false;
+        }
+
+        $reportedVersion = (string) get_option(self::OPTION_REPORTED_VERSION, '');
+        if ($reportedVersion === $currentVersion) {
+            return false;
+        }
+
+        update_option(self::OPTION_REPORTED_VERSION, $currentVersion, false);
+
+        add_action('shutdown', [$this, 'pushVersionChangedMetadata'], 9998);
+
+        return true;
+    }
+
+    /**
+     * Shutdown callback for the beat-3 confirmation push.
+     *
+     * Public so WordPress can call it as a named hook callback. Swallows every
+     * failure: a confirmation that cannot be delivered right now is picked up
+     * by the next metadata cron, and must never disturb the request it rides on.
+     *
+     * @return void
+     */
+    public function pushVersionChangedMetadata(): void
+    {
+        try {
+            $this->enrollment->pushMetadata();
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Agent: version-changed metadata confirmation failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Cron self-heal: re-arm the recurring reporting crons when they have gone
      * missing (the canonical case being an in-place plugin update — see the
      * plugins_loaded binding in registerHooks for the full failure mode).
@@ -1809,8 +1916,7 @@ final class Plugin
         // Phase 4b — suppression-cache pull — re-arm when missing.
         SuppressionCache::schedule_pull($now);
 
-        // M1 (issue #131 adversarial review) — snapshot-store GC backstop —
-        // re-arm when missing.
+        // M1 (issue #131 adversarial review), snapshot-store GC backstop, // re-arm when missing.
         SnapshotManager::scheduleGc($now);
 
         // S4 (issue #131 adversarial review) — update-in-flight reconcile
@@ -1862,6 +1968,17 @@ final class Plugin
             // FilesRestorer, DbRestorer) inside the cron worker.
             new RestoreCommand(),
             new UpdateCommand(),
+            // BEAT 1 (ARM) of the CP-commanded agent self-update. UpdateCommand
+            // above REFUSES any task that targets the agent's own directory
+            // (Phase 1) and keeps doing so; this is the separate, dedicated
+            // channel that replaces it. Verify-only: nothing on disk moves in
+            // the request that answers the CP.
+            //
+            // Registered UNCONDITIONALLY, including on the wp.org build where
+            // $this->updateChecker is null: the command is null-tolerant and
+            // answers "not_eligible" rather than fataling or 404ing. It names
+            // no self-updater symbol at file scope for exactly that reason.
+            new AgentSelfUpdateCommand($this->updateChecker),
             new RollbackCommand(),
             new ScanCommand(),
             // S3 — on-demand single-file fetch for scan findings inspection.
@@ -2326,8 +2443,7 @@ final class Plugin
      *
      * WordPress deletes only the files it tracks in _wp_attachment_metadata (the
      * in-place optimized file in REPLACE mode, the .avif/.webp in COEXIST mode).
-     * WPMgr additionally created UNTRACKED originals that WP knows nothing about —
-     * the *.wpmgr-original.<ext> archive (REPLACE) and the original-ext twin
+     * WPMgr additionally created UNTRACKED originals that WP knows nothing about, * the *.wpmgr-original.<ext> archive (REPLACE) and the original-ext twin
      * (COEXIST). This handler removes ONLY those untracked, blob-derived paths,
      * confined to the uploads basedir, then best-effort notifies the CP so the
      * site_media_assets row is reconciled.
@@ -2553,8 +2669,7 @@ final class Plugin
      *
      * Current implementation: bound to `wp_enqueue_scripts` (which WordPress
      * core itself fires from inside `wp_head` at priority 1), and RumInjector
-     * enqueues the collector via wp_enqueue_script()/wp_add_inline_script() —
-     * see {@see RumInjector::enqueue()}. Reads the perf config once and only
+     * enqueues the collector via wp_enqueue_script()/wp_add_inline_script(), * see {@see RumInjector::enqueue()}. Reads the perf config once and only
      * registers the hook when rumEnabled is on, so an inert site pays just a
      * single option read.
      *

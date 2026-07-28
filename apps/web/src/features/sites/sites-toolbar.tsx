@@ -159,6 +159,15 @@ export interface SitesToolbarProps {
   onBulkSetClient: () => void;
   onBulkPauseMonitoring: () => void;
   onBulkDelete: () => void;
+  /**
+   * GH #255 Phase 2: arms the agent self-update confirmation dialog for the
+   * current selection. Owner/admin only (gated by the caller via `canManage`,
+   * a stricter check than `canOperate` below: this is infrastructure, not
+   * content) AND only while the control-plane kill switch is on. Undefined
+   * hides the menu item entirely: nothing appears usable while the channel
+   * ships dark.
+   */
+  onUpdateAgent?: () => void;
 
   // ---- Idle-mode primary action ------------------------------------------
   addSiteSlot?: ReactNode;
@@ -966,6 +975,7 @@ function ActionMode({
   onBulkSetClient,
   onBulkPauseMonitoring,
   onBulkDelete,
+  onUpdateAgent,
 }: SitesToolbarProps) {
   const count = selection.count;
   const sitesNoun = useMemo(() => (count === 1 ? "site" : "sites"), [count]);
@@ -1048,6 +1058,7 @@ function ActionMode({
             onBulkSetClient={onBulkSetClient}
             onBulkPauseMonitoring={onBulkPauseMonitoring}
             onBulkDelete={onBulkDelete}
+            onUpdateAgent={onUpdateAgent}
             count={count}
             sitesNoun={sitesNoun}
           />
@@ -1109,6 +1120,7 @@ function MoreActions({
   onBulkSetClient,
   onBulkPauseMonitoring,
   onBulkDelete,
+  onUpdateAgent,
   count,
   sitesNoun,
 }: {
@@ -1116,6 +1128,7 @@ function MoreActions({
   onBulkSetClient: () => void;
   onBulkPauseMonitoring: () => void;
   onBulkDelete: () => void;
+  onUpdateAgent?: () => void;
   count: number;
   sitesNoun: string;
 }) {
@@ -1144,6 +1157,14 @@ function MoreActions({
         <DropdownMenuItem onSelect={onBulkPauseMonitoring}>
           Pause monitoring on {count} {sitesNoun}
         </DropdownMenuItem>
+        {onUpdateAgent ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onUpdateAgent}>
+              Update WPMgr agent on {count} {sitesNoun}...
+            </DropdownMenuItem>
+          </>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={onBulkDelete}

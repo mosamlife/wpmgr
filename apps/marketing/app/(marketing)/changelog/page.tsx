@@ -39,6 +39,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.98",
+    date: "2026-07-28",
+    summary: "Update the WPMgr agent across the fleet from the dashboard, rolled out in waves and shipped turned off.",
+    items: [
+      {
+        tag: "Added",
+        text: "Fleet-wide agent updates (GH #255, phase 2 of two). An owner or administrator can start an agent update across selected sites from the Sites list instead of visiting each site's wp-admin. This ships turned off behind a control-plane switch and will be turned on once it has been proven on real sites.",
+      },
+      {
+        tag: "Added",
+        text: "A rollout goes out in waves: one site, then a small percentage, then the rest of the fleet, and a wave only opens once every site in the one before it has confirmed by reporting its new agent version back. A failed wave stops the run and cancels what's left, and a stop control halts every agent update across the fleet at once.",
+      },
+      {
+        tag: "Added",
+        text: "The update itself runs in a background request rather than the one reporting the result, since the agent is what lets WPMgr reach the site in the first place; a site that can't complete that step is reported as unconfirmed, not failed. Sites on the WordPress.org build, and sites running an agent too old for this channel, are skipped with a reason instead of counted as failures.",
+      },
+      {
+        tag: "Fixed",
+        text: "A rollout whose target version stopped being published partway through now stops instead of reporting success.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.97",
     date: "2026-07-28",
     summary: "The agent can no longer update itself into a corner, and the dashboard now shows which sites are running an outdated agent.",

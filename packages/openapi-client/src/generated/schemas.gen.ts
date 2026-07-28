@@ -817,7 +817,7 @@ export const AgentHeartbeatResultSchema = {
     revoke_token: {
       type: "string",
       description:
-        'Present with a `["revoke"]` instruction: a short-lived signed Ed25519\nJWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP\npublic key before any self-teardown (ADR-040 addendum). Fail-closed —\nan absent/invalid token must be a no-op.\n',
+        'Present with a `["revoke"]` instruction: a short-lived signed Ed25519\nJWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP\npublic key before any self-teardown (ADR-040 addendum). Fail-closed, an absent/invalid token must be a no-op.\n',
     },
   },
 } as const;
@@ -1828,7 +1828,7 @@ export const BillingSummarySchema = {
       type: "string",
       enum: ["free", "starter", "agency", "scale"],
       description:
-        'The tenant\'s SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free" (non-destructive downgrade — see plan_status).',
+        'The tenant\'s SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free" (non-destructive downgrade, see plan_status).',
     },
     plan_status: {
       type: "string",
@@ -2000,7 +2000,7 @@ export const AdminAccountListItemSchema = {
       type: "integer",
       format: "int64",
       description:
-        "A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant) — does not yet distinguish CP-managed from BYO-storage destinations.",
+        "A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant), does not yet distinguish CP-managed from BYO-storage destinations.",
     },
     storage_cap_bytes: {
       type: "integer",
@@ -2661,19 +2661,21 @@ export const UpdateItemSchema = {
   properties: {
     type: {
       type: "string",
-      enum: ["plugin", "theme", "core"],
+      enum: ["plugin", "theme", "core", "agent"],
+      description:
+        "What to update. `agent` upgrades the WPMgr agent itself over its own\ndedicated signed channel and behaves differently from the others: it\nmust be the ONLY item in its run (its staged-wave rollout is defined\nover the whole run), it takes no slug and no version pin, and it has\nno dry run. Success is established only when the upgraded agent\nreports its new version back; a scheduled acknowledgement is not\nsuccess. The channel is off unless the control plane enables it.\n",
     },
     slug: {
       type: "string",
       maxLength: 200,
       description:
-        'Plugin/theme slug. Ignored (forced to "core") when type is core.',
+        'Plugin/theme slug. Ignored (forced to "core") when type is core; must be omitted when type is agent.',
     },
     version: {
       type: "string",
       maxLength: 64,
       description:
-        'Desired version, "latest" or an explicit pin. Defaults to latest.',
+        'Desired version, "latest" or an explicit pin. Defaults to latest.\nA pin is REJECTED when type is agent: the agent\'s release manifest\nonly ever points at the published build and the agent refuses to\ninstall an older one, so a pin could not be honoured.\n',
     },
   },
 } as const;
@@ -2750,7 +2752,7 @@ export const UpdateTaskSchema = {
     },
     target_type: {
       type: "string",
-      enum: ["plugin", "theme", "core"],
+      enum: ["plugin", "theme", "core", "agent"],
     },
     target_slug: {
       type: "string",
@@ -2773,7 +2775,10 @@ export const UpdateTaskSchema = {
         "failed",
         "rolled_back",
         "skipped",
+        "cancelled",
       ],
+      description:
+        "`cancelled` means the task was never dispatched because its run was\nhalted first; nothing was sent to the site. Only agent self-update\nruns can halt.\n",
     },
     detail: {
       type: "string",
@@ -2825,7 +2830,9 @@ export const UpdateRunSchema = {
     },
     status: {
       type: "string",
-      enum: ["pending", "running", "completed"],
+      enum: ["pending", "running", "completed", "halted"],
+      description:
+        "`halted` is terminal and specific to an agent self-update run: a\nstaged-rollout wave failed to prove itself, so every task the run\nhad not already dispatched was cancelled. It is distinct from\n`completed`, which would hide the fact that the run was stopped.\n",
     },
     dry_run: {
       type: "boolean",
@@ -2913,7 +2920,7 @@ export const UpdateEventSchema = {
     },
     target_type: {
       type: "string",
-      enum: ["plugin", "theme", "core"],
+      enum: ["plugin", "theme", "core", "agent"],
     },
     target_slug: {
       type: "string",
@@ -2927,6 +2934,7 @@ export const UpdateEventSchema = {
         "failed",
         "rolled_back",
         "skipped",
+        "cancelled",
       ],
     },
     from_version: {
@@ -2940,7 +2948,7 @@ export const UpdateEventSchema = {
     },
     run_status: {
       type: "string",
-      enum: ["pending", "running", "completed"],
+      enum: ["pending", "running", "completed", "halted"],
     },
   },
 } as const;
@@ -5680,7 +5688,7 @@ export const SiteShareRoleSchema = {
   type: "string",
   enum: ["viewer", "operator", "admin"],
   description:
-    "Role a site collaborator holds. Subset of the full org Role enum —\nsite shares cannot be owner.\n",
+    "Role a site collaborator holds. Subset of the full org Role enum, site shares cannot be owner.\n",
 } as const;
 
 export const SiteShareSchema = {
@@ -12077,6 +12085,11 @@ export const FleetAgentVersionsSchema = {
         $ref: "#/components/schemas/FleetAgentSite",
       },
     },
+    self_update_enabled: {
+      type: "boolean",
+      description:
+        "Whether the control plane's agent self-update channel (the fleet-wide WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED kill switch) is currently turned on for this instance. Absent or false while the channel ships dark. The frontend uses this, together with the operator's role, to decide whether the \"Update WPMgr agent\" bulk action is shown at all, rather than let an operator arm a run the control plane will only refuse.\n",
+    },
   },
 } as const;
 
@@ -13288,7 +13301,7 @@ export const AgentActivityIngestRequestSchema = {
           meta: {
             type: "object",
             description:
-              "Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never re-serialized.",
+              "Verbatim wire bytes as emitted by the agent's wp_json_encode, hashed exactly as sent, never re-serialized.",
           },
           prev_hash: {
             type: "string",

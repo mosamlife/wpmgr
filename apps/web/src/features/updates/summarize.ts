@@ -3,9 +3,10 @@
 // non-component values trip the react-refresh/only-export-components rule.
 // Surface agents import from here; the originals will remove their copies.
 
-import type { Site, UpdateTask } from "@wpmgr/api";
+import type { Site, UpdateRun, UpdateTask } from "@wpmgr/api";
 
 type TaskStatus = UpdateTask["status"];
+type RunStatus = UpdateRun["status"];
 
 /** Count task statuses and derive a 0..total "settled" progress figure. */
 export function summarizeTasks(tasks: UpdateTask[]): {
@@ -20,11 +21,87 @@ export function summarizeTasks(tasks: UpdateTask[]): {
     failed: 0,
     rolled_back: 0,
     skipped: 0,
+    // GH #255 Phase 2: a task the wave gate never dispatched because its run
+    // halted first. Distinct from `skipped` (the control plane declined this
+    // one target) and `failed` (the site was contacted and did not come
+    // back): nothing was ever sent here.
+    cancelled: 0,
   };
   for (const task of tasks) counts[task.status] += 1;
   const done =
-    counts.succeeded + counts.failed + counts.rolled_back + counts.skipped;
+    counts.succeeded +
+    counts.failed +
+    counts.rolled_back +
+    counts.skipped +
+    counts.cancelled;
   return { total: tasks.length, done, counts };
+}
+
+/**
+ * Terminal run states. `halted` (GH #255 Phase 2) is specific to the agent
+ * self-update channel: a staged-rollout wave failed to prove itself, so the
+ * run stopped early and every task not already dispatched was cancelled.
+ * Every surface that gates "is this run still going" (SSE close, poll
+ * interval, the bulk-action-drawer's settled flag, the run detail page's
+ * live indicator) must treat it as terminal exactly like `completed`, or a
+ * halted run reads as perpetually in progress.
+ */
+export function isTerminalRunStatus(status: RunStatus | undefined): boolean {
+  return status === "completed" || status === "halted";
+}
+
+// GH #255 Phase 2: the agent self-update channel's own outcome vocabulary.
+//
+// `planAgentTasks` (apps/api/internal/update/service.go) already excludes a
+// site the control plane's own inventory heuristic classifies as the
+// plugin-directory build before a task is ever created for it, but the AGENT
+// is the final authority on its own distribution: a task can still come back
+// `skipped` this way when the two disagree (e.g. a renamed plugin folder the
+// inventory heuristic could not identify). This is informational, never an
+// error: the site updates through its own channel, nothing went wrong, so
+// it must read distinctly from an ordinary skip.
+const AGENT_NOT_ELIGIBLE_PATTERN = /no self-updater|outside this channel/i;
+
+/** True for an agent-target task the agent itself declined as not able to
+ * self-update, as opposed to any other reason a task might be skipped. */
+export function isAgentNotEligible(
+  targetType: string,
+  status: string,
+  detail?: string,
+): boolean {
+  if (targetType !== "agent" || status !== "skipped") return false;
+  return AGENT_NOT_ELIGIBLE_PATTERN.test(detail ?? "");
+}
+
+/**
+ * Human-readable explanation for a halted agent self-update run, taken from
+ * the backend's own wording rather than re-derived client-side. Every task
+ * the wave gate cancels carries `detail = "cancelled: " + reason` (see
+ * apps/api/internal/update/agent_repo.go haltLocked), so any cancelled task
+ * in the run carries the same reason. A run can halt with zero cancelled
+ * tasks (e.g. a single-site canary already terminal when the gate re-judged
+ * it); in that case fall back to a summary built from the run's own counts,
+ * which is still grounded in real data even though it is not the backend's
+ * literal sentence. Returns null for a run that has not halted.
+ */
+export function haltReason(
+  run: Pick<UpdateRun, "status" | "tasks"> | undefined,
+): string | null {
+  if (!run || run.status !== "halted") return null;
+  const cancelledDetail = run.tasks?.find(
+    (t) => t.status === "cancelled" && t.detail,
+  )?.detail;
+  if (cancelledDetail) {
+    return cancelledDetail.startsWith("cancelled: ")
+      ? cancelledDetail.slice("cancelled: ".length)
+      : cancelledDetail;
+  }
+  const { counts } = summarizeTasks(run.tasks ?? []);
+  const contacted = counts.succeeded + counts.failed + counts.rolled_back;
+  if (contacted === 0) {
+    return "The rollout was halted before any site could be contacted.";
+  }
+  return `The rollout was halted after ${counts.failed} of ${contacted} contacted site${contacted === 1 ? "" : "s"} failed to confirm the upgrade.`;
 }
 
 /** Build a site id -> name lookup from the sites list cache. */
