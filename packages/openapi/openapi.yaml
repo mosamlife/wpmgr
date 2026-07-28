@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.98
+  version: 0.61.99
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -6789,11 +6789,16 @@ paths:
       summary: Tenant-wide agent-version rollup across all sites
       description: |
         Per-site {site_id, site_name, agent_version, status} plus fleet-wide
-        counts, classified against the currently published agent version.
-        status is one of current | outdated | unknown | ineligible.
+        counts, classified against a single reference version. That reference
+        is the published agent version when the release manifest can be read,
+        and otherwise the newest well-formed agent version present in this
+        tenant's own fleet, which is what a self-hosted install (whose object
+        storage never receives the release pipeline's manifest) gets.
+        reference_source names which of the two, or "none" when neither was
+        available. status is one of current | outdated | unknown | ineligible.
         "unknown" covers a site that has never reported agent_version, a
         malformed/unparseable version on either side of the comparison, or a
-        currently-unreadable published-version manifest; never a false
+        reference_source of "none"; never a false
         "outdated". "ineligible" is a site that cannot self-update at all:
         today that is the public plugin-directory build, which ships without
         the self-updater and is upgraded by the plugin directory instead.
@@ -20641,11 +20646,38 @@ components:
           enum: [current, outdated, unknown, ineligible]
     FleetAgentVersions:
       type: object
-      required: [latest_version, counts, sites]
+      required: [latest_version, reference_source, counts, sites]
       properties:
         latest_version:
           type: string
-          description: The currently published agent version, or "unknown" when it cannot be determined right now.
+          description: >
+            The single version every site in sites was classified against, or
+            "unknown" when there was none. Read it together with
+            reference_source, which says where it came from: under "fleet"
+            this is the newest agent version seen in THIS tenant's fleet, not
+            the newest agent that exists, and presenting it as the latter
+            would overclaim.
+        reference_source:
+          type: string
+          enum: [published, fleet, none]
+          description: >
+            Where latest_version came from. "published": the release channel
+            pointer manifest (agent-releases/latest.json), so "current" means
+            the site runs the newest agent that exists. "fleet": the manifest
+            could not be read, so the newest well-formed agent version present
+            in this tenant's own fleet was used instead; "current" then means
+            only that no newer agent has been seen in this fleet. A
+            self-hosted install has its own object storage and never receives
+            the release pipeline's manifest, so this is its normal steady
+            state. "none": nothing safe to compare against, so every site is
+            "unknown". That arises two ways, and they are deliberately not
+            distinguished in this field: an install that has never read a
+            manifest and has no well-formed agent version anywhere in its
+            fleet, or an install whose manifest WAS readable but has been
+            unreadable for longer than the staleness bound. The second case
+            does not fall back to "fleet", because "this install has a
+            channel and it is currently unreachable" must not be answered
+            with fleet-derived data.
         counts: { $ref: "#/components/schemas/FleetAgentCounts" }
         sites:
           type: array

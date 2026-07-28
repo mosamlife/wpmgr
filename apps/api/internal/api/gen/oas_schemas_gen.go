@@ -684,8 +684,8 @@ type AdminAccountListItem struct {
 	MrrCents     int64                          `json:"mrr_cents"`
 	SitesUsed    int                            `json:"sites_used"`
 	SitesCap     int                            `json:"sites_cap"`
-	// A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant) — does not yet distinguish
-	// CP-managed from BYO-storage destinations.
+	// A v1 APPROXIMATION (SUM of backup_chunks.size for the tenant), does not yet distinguish CP-managed
+	// from BYO-storage destinations.
 	StorageUsedBytesApprox int64 `json:"storage_used_bytes_approx"`
 	// 0 for the free tier (BYO-storage only; no CP-managed cap to approach).
 	StorageCapBytes int64       `json:"storage_cap_bytes"`
@@ -3495,7 +3495,7 @@ type AgentActivityIngestRequestEventsItem struct {
 	ActorLogin  OptString `json:"actor_login"`
 	ActorIP     OptString `json:"actor_ip"`
 	Summary     OptString `json:"summary"`
-	// Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never
+	// Verbatim wire bytes as emitted by the agent's wp_json_encode, hashed exactly as sent, never
 	// re-serialized.
 	Meta       *AgentActivityIngestRequestEventsItemMeta `json:"meta"`
 	PrevHash   string                                    `json:"prev_hash"`
@@ -3633,7 +3633,7 @@ func (s *AgentActivityIngestRequestEventsItem) SetOccurredAt(val time.Time) {
 	s.OccurredAt = val
 }
 
-// Verbatim wire bytes as emitted by the agent's wp_json_encode — hashed exactly as sent, never
+// Verbatim wire bytes as emitted by the agent's wp_json_encode, hashed exactly as sent, never
 // re-serialized.
 type AgentActivityIngestRequestEventsItemMeta struct{}
 
@@ -5064,7 +5064,8 @@ type AgentHeartbeatResult struct {
 	Instructions []string `json:"instructions"`
 	// Present with a `["revoke"]` instruction: a short-lived signed Ed25519
 	// JWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP
-	// public key before any self-teardown (ADR-040 addendum). Fail-closed, // an absent/invalid token must be a no-op.
+	// public key before any self-teardown (ADR-040 addendum). Fail-closed, an absent/invalid token must
+	// be a no-op.
 	RevokeToken OptString `json:"revoke_token"`
 }
 
@@ -9855,7 +9856,7 @@ func (s *BillingSiteMeter) SetLimit(val int) {
 // Ref: #/components/schemas/BillingSummary
 type BillingSummary struct {
 	// The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free"
-	// (non-destructive downgrade — see plan_status).
+	// (non-destructive downgrade, see plan_status).
 	Plan             BillingSummaryPlan       `json:"plan"`
 	PlanStatus       BillingSummaryPlanStatus `json:"plan_status"`
 	CurrentPeriodEnd OptDateTime              `json:"current_period_end"`
@@ -9943,7 +9944,7 @@ func (s *BillingSummary) SetPortalAvailable(val bool) {
 func (*BillingSummary) getBillingRes() {}
 
 // The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free"
-// (non-destructive downgrade — see plan_status).
+// (non-destructive downgrade, see plan_status).
 type BillingSummaryPlan string
 
 const (
@@ -18326,15 +18327,42 @@ func (s *FleetAgentSiteStatus) UnmarshalText(data []byte) error {
 
 // Ref: #/components/schemas/FleetAgentVersions
 type FleetAgentVersions struct {
-	// The currently published agent version, or "unknown" when it cannot be determined right now.
-	LatestVersion string           `json:"latest_version"`
-	Counts        FleetAgentCounts `json:"counts"`
-	Sites         []FleetAgentSite `json:"sites"`
+	// The single version every site in sites was classified against, or "unknown" when there was none.
+	// Read it together with reference_source, which says where it came from: under "fleet" this is the
+	// newest agent version seen in THIS tenant's fleet, not the newest agent that exists, and presenting
+	// it as the latter would overclaim.
+	LatestVersion string `json:"latest_version"`
+	// Where latest_version came from. "published": the release channel pointer manifest
+	// (agent-releases/latest.json), so "current" means the site runs the newest agent that exists.
+	// "fleet": the manifest could not be read, so the newest well-formed agent version present in this
+	// tenant's own fleet was used instead; "current" then means only that no newer agent has been seen
+	// in this fleet. A self-hosted install has its own object storage and never receives the release
+	// pipeline's manifest, so this is its normal steady state. "none": nothing safe to compare against,
+	// so every site is "unknown". That arises two ways, and they are deliberately not distinguished in
+	// this field: an install that has never read a manifest and has no well-formed agent version
+	// anywhere in its fleet, or an install whose manifest WAS readable but has been unreadable for
+	// longer than the staleness bound. The second case does not fall back to "fleet", because "this
+	// install has a channel and it is currently unreachable" must not be answered with fleet-derived
+	// data.
+	ReferenceSource FleetAgentVersionsReferenceSource `json:"reference_source"`
+	Counts          FleetAgentCounts                  `json:"counts"`
+	Sites           []FleetAgentSite                  `json:"sites"`
+	// Whether the control plane's agent self-update channel (the fleet-wide
+	// WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED kill switch) is currently turned on for this instance.
+	// Absent or false while the channel ships dark. The frontend uses this, together with the operator's
+	// role, to decide whether the "Update WPMgr agent" bulk action is shown at all, rather than let an
+	// operator arm a run the control plane will only refuse.
+	SelfUpdateEnabled OptBool `json:"self_update_enabled"`
 }
 
 // GetLatestVersion returns the value of LatestVersion.
 func (s *FleetAgentVersions) GetLatestVersion() string {
 	return s.LatestVersion
+}
+
+// GetReferenceSource returns the value of ReferenceSource.
+func (s *FleetAgentVersions) GetReferenceSource() FleetAgentVersionsReferenceSource {
+	return s.ReferenceSource
 }
 
 // GetCounts returns the value of Counts.
@@ -18347,9 +18375,19 @@ func (s *FleetAgentVersions) GetSites() []FleetAgentSite {
 	return s.Sites
 }
 
+// GetSelfUpdateEnabled returns the value of SelfUpdateEnabled.
+func (s *FleetAgentVersions) GetSelfUpdateEnabled() OptBool {
+	return s.SelfUpdateEnabled
+}
+
 // SetLatestVersion sets the value of LatestVersion.
 func (s *FleetAgentVersions) SetLatestVersion(val string) {
 	s.LatestVersion = val
+}
+
+// SetReferenceSource sets the value of ReferenceSource.
+func (s *FleetAgentVersions) SetReferenceSource(val FleetAgentVersionsReferenceSource) {
+	s.ReferenceSource = val
 }
 
 // SetCounts sets the value of Counts.
@@ -18362,7 +18400,72 @@ func (s *FleetAgentVersions) SetSites(val []FleetAgentSite) {
 	s.Sites = val
 }
 
+// SetSelfUpdateEnabled sets the value of SelfUpdateEnabled.
+func (s *FleetAgentVersions) SetSelfUpdateEnabled(val OptBool) {
+	s.SelfUpdateEnabled = val
+}
+
 func (*FleetAgentVersions) getFleetAgentVersionsRes() {}
+
+// Where latest_version came from. "published": the release channel pointer manifest
+// (agent-releases/latest.json), so "current" means the site runs the newest agent that exists.
+// "fleet": the manifest could not be read, so the newest well-formed agent version present in this
+// tenant's own fleet was used instead; "current" then means only that no newer agent has been seen
+// in this fleet. A self-hosted install has its own object storage and never receives the release
+// pipeline's manifest, so this is its normal steady state. "none": nothing safe to compare against,
+// so every site is "unknown". That arises two ways, and they are deliberately not distinguished in
+// this field: an install that has never read a manifest and has no well-formed agent version
+// anywhere in its fleet, or an install whose manifest WAS readable but has been unreadable for
+// longer than the staleness bound. The second case does not fall back to "fleet", because "this
+// install has a channel and it is currently unreachable" must not be answered with fleet-derived
+// data.
+type FleetAgentVersionsReferenceSource string
+
+const (
+	FleetAgentVersionsReferenceSourcePublished FleetAgentVersionsReferenceSource = "published"
+	FleetAgentVersionsReferenceSourceFleet     FleetAgentVersionsReferenceSource = "fleet"
+	FleetAgentVersionsReferenceSourceNone      FleetAgentVersionsReferenceSource = "none"
+)
+
+// AllValues returns all FleetAgentVersionsReferenceSource values.
+func (FleetAgentVersionsReferenceSource) AllValues() []FleetAgentVersionsReferenceSource {
+	return []FleetAgentVersionsReferenceSource{
+		FleetAgentVersionsReferenceSourcePublished,
+		FleetAgentVersionsReferenceSourceFleet,
+		FleetAgentVersionsReferenceSourceNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s FleetAgentVersionsReferenceSource) MarshalText() ([]byte, error) {
+	switch s {
+	case FleetAgentVersionsReferenceSourcePublished:
+		return []byte(s), nil
+	case FleetAgentVersionsReferenceSourceFleet:
+		return []byte(s), nil
+	case FleetAgentVersionsReferenceSourceNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *FleetAgentVersionsReferenceSource) UnmarshalText(data []byte) error {
+	switch FleetAgentVersionsReferenceSource(data) {
+	case FleetAgentVersionsReferenceSourcePublished:
+		*s = FleetAgentVersionsReferenceSourcePublished
+		return nil
+	case FleetAgentVersionsReferenceSourceFleet:
+		*s = FleetAgentVersionsReferenceSourceFleet
+		return nil
+	case FleetAgentVersionsReferenceSourceNone:
+		*s = FleetAgentVersionsReferenceSourceNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/FleetIncidentDetail
 type FleetIncidentDetail struct {
@@ -21922,7 +22025,8 @@ type Me struct {
 	ManagedStorageAllowed OptBool `json:"managed_storage_allowed"`
 	// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 	// single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
-	// just-consumed verification token) or the first-run bootstrap response of POST /auth/register, // never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
+	// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
+	// never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
 	// checkout right after the account is verified. Absent means no intent was captured (free signup,
 	// self-hosted instance, or a resend/login/OIDC path that never carries one).
 	DesiredPlan OptMeDesiredPlan `json:"desired_plan"`
@@ -22028,7 +22132,8 @@ func (*Me) verifyEmailRes()             {}
 
 // The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 // single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
-// just-consumed verification token) or the first-run bootstrap response of POST /auth/register, // never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
+// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
+// never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
 // checkout right after the account is verified. Absent means no intent was captured (free signup,
 // self-hosted instance, or a resend/login/OIDC path that never carries one).
 type MeDesiredPlan string
@@ -35788,7 +35893,8 @@ type PutEmailConnectionNotFound Error
 
 func (*PutEmailConnectionNotFound) putEmailConnectionRes() {}
 
-// Request body for PUT /sites/{siteId}/email/connections/{connKey}. All fields are optional, // omitted fields are unchanged (PATCH semantics within a PUT envelope). Omitting `secret` preserves
+// Request body for PUT /sites/{siteId}/email/connections/{connKey}. All fields are optional —
+// omitted fields are unchanged (PATCH semantics within a PUT envelope). Omitting `secret` preserves
 // the existing stored credential (nil-sentinel pattern).
 // Ref: #/components/schemas/PutEmailConnectionRequest
 type PutEmailConnectionRequest struct {
@@ -45239,7 +45345,7 @@ func (s *SiteShareList) SetItems(val []SiteShare) {
 func (*SiteShareList) listSharedWithMeRes() {}
 func (*SiteShareList) listSiteSharesRes()   {}
 
-// Role a site collaborator holds. Subset of the full org Role enum, // site shares cannot be owner.
+// Role a site collaborator holds. Subset of the full org Role enum, site shares cannot be owner.
 // Ref: #/components/schemas/SiteShareRole
 type SiteShareRole string
 

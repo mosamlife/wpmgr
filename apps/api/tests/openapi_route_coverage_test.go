@@ -301,7 +301,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	vulnH := vuln.NewHandler(vuln.NewService(vuln.NewRepo(pool), pool, nil, nil, nil, logger), nil, auditRec)
 
 	// --- agent-freshness dashboard (read-only) ---------------------------------
-	agentReleaseH := agentrelease.NewHandler(agentrelease.NewService(agentrelease.NewRepo(pool), agentrelease.NewReader(nil, 0)))
+	agentReleaseH := agentrelease.NewHandler(agentrelease.NewService(agentrelease.NewRepo(pool), agentrelease.NewReader(nil, 0)), false)
 
 	// --- updates ---------------------------------------------------------------
 	updateHub := update.NewHub()

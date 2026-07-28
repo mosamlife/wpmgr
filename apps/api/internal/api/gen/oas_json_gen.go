@@ -51787,6 +51787,10 @@ func (s *FleetAgentVersions) encodeFields(e *jx.Encoder) {
 		e.Str(s.LatestVersion)
 	}
 	{
+		e.FieldStart("reference_source")
+		s.ReferenceSource.Encode(e)
+	}
+	{
 		e.FieldStart("counts")
 		s.Counts.Encode(e)
 	}
@@ -51798,12 +51802,20 @@ func (s *FleetAgentVersions) encodeFields(e *jx.Encoder) {
 		}
 		e.ArrEnd()
 	}
+	{
+		if s.SelfUpdateEnabled.Set {
+			e.FieldStart("self_update_enabled")
+			s.SelfUpdateEnabled.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfFleetAgentVersions = [3]string{
+var jsonFieldsNameOfFleetAgentVersions = [5]string{
 	0: "latest_version",
-	1: "counts",
-	2: "sites",
+	1: "reference_source",
+	2: "counts",
+	3: "sites",
+	4: "self_update_enabled",
 }
 
 // Decode decodes FleetAgentVersions from json.
@@ -51827,8 +51839,18 @@ func (s *FleetAgentVersions) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"latest_version\"")
 			}
-		case "counts":
+		case "reference_source":
 			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.ReferenceSource.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"reference_source\"")
+			}
+		case "counts":
+			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
 				if err := s.Counts.Decode(d); err != nil {
 					return err
@@ -51838,7 +51860,7 @@ func (s *FleetAgentVersions) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"counts\"")
 			}
 		case "sites":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				s.Sites = make([]FleetAgentSite, 0)
 				if err := d.Arr(func(d *jx.Decoder) error {
@@ -51855,6 +51877,16 @@ func (s *FleetAgentVersions) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"sites\"")
 			}
+		case "self_update_enabled":
+			if err := func() error {
+				s.SelfUpdateEnabled.Reset()
+				if err := s.SelfUpdateEnabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"self_update_enabled\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -51865,7 +51897,7 @@ func (s *FleetAgentVersions) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000111,
+		0b00001111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -51907,6 +51939,48 @@ func (s *FleetAgentVersions) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *FleetAgentVersions) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes FleetAgentVersionsReferenceSource as json.
+func (s FleetAgentVersionsReferenceSource) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes FleetAgentVersionsReferenceSource from json.
+func (s *FleetAgentVersionsReferenceSource) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode FleetAgentVersionsReferenceSource to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch FleetAgentVersionsReferenceSource(v) {
+	case FleetAgentVersionsReferenceSourcePublished:
+		*s = FleetAgentVersionsReferenceSourcePublished
+	case FleetAgentVersionsReferenceSourceFleet:
+		*s = FleetAgentVersionsReferenceSourceFleet
+	case FleetAgentVersionsReferenceSourceNone:
+		*s = FleetAgentVersionsReferenceSourceNone
+	default:
+		*s = FleetAgentVersionsReferenceSource(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s FleetAgentVersionsReferenceSource) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *FleetAgentVersionsReferenceSource) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

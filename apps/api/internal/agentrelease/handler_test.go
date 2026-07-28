@@ -53,7 +53,7 @@ func doRequest(engine *gin.Engine, method, path string, p domain.Principal) *htt
 // with 403 before reaching the handler; an org-scoped member reaches it.
 func TestFleetAgents_RequiresOrgScope(t *testing.T) {
 	tenantID := uuid.New()
-	h := agentrelease.NewHandler(nil)
+	h := agentrelease.NewHandler(nil, false)
 	engine := newTestEngine(h)
 
 	sitePrincipal := domain.Principal{
@@ -98,7 +98,7 @@ func TestCrossTenantIsolation_FleetAgents(t *testing.T) {
 		tenantB: {{SiteID: siteB, SiteName: "tenant-b-site", AgentVersion: "0.61.95"}},
 	}}
 	svc := agentrelease.NewService(repo, &fakeVersionReader{version: "0.61.95"})
-	h := agentrelease.NewHandler(svc)
+	h := agentrelease.NewHandler(svc, false)
 	engine := newTestEngine(h)
 
 	principalFor := func(tenantID uuid.UUID) domain.Principal {
@@ -153,11 +153,50 @@ func TestCrossTenantIsolation_FleetAgents(t *testing.T) {
 	}
 }
 
+// TestFleetAgents_EmitsSelfUpdateEnabled pins the Phase 2 feature flag on the
+// wire. The field is specified and the UI gates the "Update WPMgr agent" bulk
+// action on it, so until the control plane actually emits it the action stays
+// hidden even on an instance where WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED is
+// on, i.e. the channel could not be turned on at all. It must be present in
+// BOTH states and track the same config the update worker gates dispatch on.
+func TestFleetAgents_EmitsSelfUpdateEnabled(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "disabled", true: "enabled"}[enabled], func(t *testing.T) {
+			tenantID := uuid.New()
+			repo := &fakeSiteLister{byTenant: map[uuid.UUID][]agentrelease.SiteAgentVersion{
+				tenantID: {{SiteID: uuid.New(), SiteName: "s", AgentVersion: "0.61.90"}},
+			}}
+			svc := agentrelease.NewService(repo, &fakeVersionReader{version: "0.61.95"})
+			engine := newTestEngine(agentrelease.NewHandler(svc, enabled))
+			p := domain.Principal{TenantID: tenantID, Type: domain.PrincipalUser, UserID: uuid.New(), Role: string(authz.RoleViewer)}
+
+			w := doRequest(engine, http.MethodGet, "/api/v1/fleet/agents", p)
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET /fleet/agents = %d; want 200, body=%s", w.Code, w.Body.String())
+			}
+			// Decoded into a pointer so "absent" is distinguishable from
+			// "false": absent is exactly the bug this test exists to catch.
+			var resp struct {
+				SelfUpdateEnabled *bool `json:"self_update_enabled"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.SelfUpdateEnabled == nil {
+				t.Fatalf("self_update_enabled absent from the response; the UI cannot reveal the action without it. body=%s", w.Body.String())
+			}
+			if *resp.SelfUpdateEnabled != enabled {
+				t.Errorf("self_update_enabled = %v; want %v (must track the config the worker checks)", *resp.SelfUpdateEnabled, enabled)
+			}
+		})
+	}
+}
+
 // TestAgentLatest_DegradesToUnknown proves GET /agent/latest never errors:
 // a nil service (object storage unconfigured / never wired) still returns
 // 200 with version="unknown".
 func TestAgentLatest_DegradesToUnknown(t *testing.T) {
-	h := agentrelease.NewHandler(nil)
+	h := agentrelease.NewHandler(nil, false)
 	engine := newTestEngine(h)
 	p := domain.Principal{TenantID: uuid.New(), Type: domain.PrincipalUser, UserID: uuid.New(), Role: string(authz.RoleViewer)}
 

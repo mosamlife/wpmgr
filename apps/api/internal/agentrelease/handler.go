@@ -21,13 +21,24 @@ const unknownVersion = "unknown"
 //	GET /fleet/agents: tenant-scoped per-site agent-version rollup
 type Handler struct {
 	svc *Service
+	// selfUpdateEnabled mirrors cfg.Update.AgentSelfUpdateEnabled
+	// (WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED), the SAME fleet-wide kill
+	// switch the update service and worker check before dispatching an agent
+	// self-update. It is reported on the fleet rollup so the UI reveals the
+	// "Update WPMgr agent" action exactly when the control plane would honour
+	// it, instead of offering an operator a run that is refused pre-dispatch.
+	// A boot-time snapshot is the whole truth here: the flag is process
+	// configuration (env/koanf), never a per-request or database value.
+	selfUpdateEnabled bool
 }
 
 // NewHandler builds the Handler. svc may be nil (see the routes' nil guards
 // below); Register still mounts the routes so a misconfiguration is a clean
 // 503, not a 404 (mirrors internal/vuln.Handler's enq-nil pattern).
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+// selfUpdateEnabled must be the same config value the update worker gates
+// dispatch on.
+func NewHandler(svc *Service, selfUpdateEnabled bool) *Handler {
+	return &Handler{svc: svc, selfUpdateEnabled: selfUpdateEnabled}
 }
 
 // Register mounts the routes on the authenticated /api/v1 group.
@@ -62,12 +73,22 @@ type agentLatestResponseDTO struct {
 //
 //	{
 //	  "latest_version": "0.61.95",
+//	  "reference_source": "published",
 //	  "counts": {"current": 10, "outdated": 3, "unknown": 1, "ineligible": 0},
 //	  "sites": [
 //	    {"site_id": "...", "site_name": "...", "agent_version": "0.61.90", "status": "outdated"},
 //	    ...
-//	  ]
+//	  ],
+//	  "self_update_enabled": false
 //	}
+//
+// latest_version is the version the counts were computed against, and
+// reference_source says where it came from: "published" (the release channel
+// manifest), "fleet" (the newest agent version in this tenant's own fleet,
+// used when the manifest cannot be read), or "none" (neither was available,
+// so every site is "unknown"). A caller must read the two together: under
+// "fleet", latest_version is the newest agent SEEN HERE, not the newest that
+// exists, and presenting it as the latter would overclaim.
 //
 // agent_version is the site's raw last-reported value verbatim (empty when
 // the agent has never reported one), distinct from status="unknown", which
@@ -86,10 +107,15 @@ type fleetAgentSiteDTO struct {
 	Status       string `json:"status"`
 }
 
+// self_update_enabled is always emitted, never omitted: a caller must be able
+// to read it as a settled false rather than have to treat "absent" and "off"
+// as the same undefined thing.
 type fleetAgentsResponseDTO struct {
-	LatestVersion string               `json:"latest_version"`
-	Counts        fleetAgentsCountsDTO `json:"counts"`
-	Sites         []fleetAgentSiteDTO  `json:"sites"`
+	LatestVersion     string               `json:"latest_version"`
+	ReferenceSource   string               `json:"reference_source"`
+	Counts            fleetAgentsCountsDTO `json:"counts"`
+	Sites             []fleetAgentSiteDTO  `json:"sites"`
+	SelfUpdateEnabled bool                 `json:"self_update_enabled"`
 }
 
 // ---------------------------------------------------------------------------
@@ -118,9 +144,15 @@ func (h *Handler) fleetAgents(c *gin.Context) {
 		return
 	}
 
-	latest := summary.LatestVersion
+	latest := summary.ReferenceVersion
 	if latest == "" {
 		latest = unknownVersion
+	}
+	// A zero ReferenceSource can only mean "nothing was available"; never emit
+	// an empty discriminator the caller would have to interpret.
+	source := summary.ReferenceSource
+	if source == "" {
+		source = ReferenceSourceNone
 	}
 
 	sites := make([]fleetAgentSiteDTO, 0, len(summary.Sites))
@@ -134,13 +166,15 @@ func (h *Handler) fleetAgents(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, fleetAgentsResponseDTO{
-		LatestVersion: latest,
+		LatestVersion:   latest,
+		ReferenceSource: string(source),
 		Counts: fleetAgentsCountsDTO{
 			Current:    summary.Counts.Current,
 			Outdated:   summary.Counts.Outdated,
 			Unknown:    summary.Counts.Unknown,
 			Ineligible: summary.Counts.Ineligible,
 		},
-		Sites: sites,
+		Sites:             sites,
+		SelfUpdateEnabled: h.selfUpdateEnabled,
 	})
 }

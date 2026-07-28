@@ -6633,9 +6633,15 @@ export type FleetAgentSite = {
 
 export type FleetAgentVersions = {
   /**
-   * The currently published agent version, or "unknown" when it cannot be determined right now.
+   * The single version every site in sites was classified against, or "unknown" when there was none. Read it together with reference_source, which says where it came from: under "fleet" this is the newest agent version seen in THIS tenant's fleet, not the newest agent that exists, and presenting it as the latter would overclaim.
+   *
    */
   latest_version: string;
+  /**
+   * Where latest_version came from. "published": the release channel pointer manifest (agent-releases/latest.json), so "current" means the site runs the newest agent that exists. "fleet": the manifest could not be read, so the newest well-formed agent version present in this tenant's own fleet was used instead; "current" then means only that no newer agent has been seen in this fleet. A self-hosted install has its own object storage and never receives the release pipeline's manifest, so this is its normal steady state. "none": nothing safe to compare against, so every site is "unknown". That arises two ways, and they are deliberately not distinguished in this field: an install that has never read a manifest and has no well-formed agent version anywhere in its fleet, or an install whose manifest WAS readable but has been unreadable for longer than the staleness bound. The second case does not fall back to "fleet", because "this install has a channel and it is currently unreachable" must not be answered with fleet-derived data.
+   *
+   */
+  reference_source: "published" | "fleet" | "none";
   counts: FleetAgentCounts;
   sites: Array<FleetAgentSite>;
   /**

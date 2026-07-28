@@ -39,6 +39,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.99",
+    date: "2026-07-28",
+    summary: "Self-hosted installs no longer show every site's agent version as an unreadable \"unknown\".",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Self-hosted installs could show the Agent version card as \"0 of 24 sites on unknown, 24 unknown\", with the status filter looking like it did nothing (GH #255). The fleet agent-version feature compares each site against the currently published version, which only the hosted service ever receives, so a self-hosted install had nothing to compare against and every site fell back to unknown. When there's no published version, self-hosted installs now compare against the newest agent version already running in that install's own fleet, clearly labeled as a fleet-relative comparison, and say so directly when there's genuinely nothing to compare against.",
+      },
+      {
+        tag: "Fixed",
+        text: "On the hosted service, a brief failure reading the published version used to get cached like a real one, which could briefly report every site as current when some were actually behind. The last known-good version is now kept across a brief failure, a failure retries quickly instead of sticking, and a version that has gone stale is no longer presented as current.",
+      },
+      {
+        tag: "Fixed",
+        text: "The switch that turns on the fleet-wide agent update from 0.61.98 wasn't reported to the dashboard, so the action stayed hidden even once an operator enabled it. It's now reported correctly; the feature still ships off by default.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.98",
     date: "2026-07-28",
     summary: "Update the WPMgr agent across the fleet from the dashboard, rolled out in waves and shipped turned off.",
