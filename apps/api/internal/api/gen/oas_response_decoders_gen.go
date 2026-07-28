@@ -14713,6 +14713,117 @@ func decodeGetAdminVulnFeedStatusResponse(resp *http.Response) (res GetAdminVuln
 	return res, validate.UnexpectedStatusCodeWithResponse(resp)
 }
 
+func decodeGetAgentLatestVersionResponse(resp *http.Response) (res GetAgentLatestVersionRes, _ error) {
+	switch resp.StatusCode {
+	case 200:
+		// Code 200.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response AgentLatestVersion
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 401:
+		// Code 401.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response GetAgentLatestVersionUnauthorized
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 403:
+		// Code 403.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response GetAgentLatestVersionForbidden
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	}
+	return res, validate.UnexpectedStatusCodeWithResponse(resp)
+}
+
 func decodeGetAlertConfigResponse(resp *http.Response) (res *AlertConfig, _ error) {
 	switch resp.StatusCode {
 	case 200:
@@ -16619,6 +16730,126 @@ func decodeGetEmailNotifySettingsResponse(resp *http.Response) (res GetEmailNoti
 			d := jx.DecodeBytes(buf)
 
 			var response GetEmailNotifySettingsForbidden
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	}
+	return res, validate.UnexpectedStatusCodeWithResponse(resp)
+}
+
+func decodeGetFleetAgentVersionsResponse(resp *http.Response) (res GetFleetAgentVersionsRes, _ error) {
+	switch resp.StatusCode {
+	case 200:
+		// Code 200.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response FleetAgentVersions
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			// Validate response.
+			if err := func() error {
+				if err := response.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return res, errors.Wrap(err, "validate")
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 401:
+		// Code 401.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response GetFleetAgentVersionsUnauthorized
+			if err := func() error {
+				if err := response.Decode(d); err != nil {
+					return err
+				}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body:        buf,
+					Err:         err,
+				}
+				return res, err
+			}
+			return &response, nil
+		default:
+			return res, validate.InvalidContentType(ct)
+		}
+	case 403:
+		// Code 403.
+		ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil {
+			return res, errors.Wrap(err, "parse media type")
+		}
+		switch {
+		case ct == "application/json":
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+
+			var response GetFleetAgentVersionsForbidden
 			if err := func() error {
 				if err := response.Decode(d); err != nil {
 					return err

@@ -445,6 +445,10 @@ type GetAdminVulnFeedStatusRes interface {
 	getAdminVulnFeedStatusRes()
 }
 
+type GetAgentLatestVersionRes interface {
+	getAgentLatestVersionRes()
+}
+
 type GetBackupEnvironmentRes interface {
 	getBackupEnvironmentRes()
 }
@@ -503,6 +507,10 @@ type GetDbOrphansReportRes interface {
 
 type GetEmailNotifySettingsRes interface {
 	getEmailNotifySettingsRes()
+}
+
+type GetFleetAgentVersionsRes interface {
+	getFleetAgentVersionsRes()
 }
 
 type GetFleetEmailDeliverabilityRes interface {

@@ -39,6 +39,25 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.97",
+    date: "2026-07-28",
+    summary: "The agent can no longer update itself into a corner, and the dashboard now shows which sites are running an outdated agent.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A bulk update run across the fleet could target the WPMgr agent's own plugin (GH #255). Nothing prevented it: the agent appears in the plugin inventory like any other plugin, and WordPress advertises an update for it the same way. Updating the agent this way meant its own code was overwriting its own files from inside the request that had to report the result, with none of the snapshot-and-rollback protection every other plugin update gets, since the thing that would perform the rollback is the thing being replaced.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent now refuses any update task aimed at its own directory, identifying itself by plugin name as well as folder so a renamed install is still recognized, and the control plane independently stops offering the agent as an updatable component. The agent stays visible in the inventory with its version; only the actionable update is withheld, and its normal one-click update inside wp-admin is unchanged.",
+      },
+      {
+        tag: "Added",
+        text: "Fleet-wide agent version visibility (GH #255, phase 1 of two). The Sites list shows and filters by each site's agent version (current, outdated, unknown, or not self-updating), and the Updates page summarizes how many sites are current and how many are behind. Sites on the WordPress.org build are marked \"not self-updating\" rather than \"outdated\", since that build has no self-updater to run. Triggering an agent update across the fleet is phase two.",
+      },
+    ],
+  },
+  {
     version: "0.61.95",
     date: "2026-07-27",
     summary: "A failed backup no longer leaves its working files behind on the site.",

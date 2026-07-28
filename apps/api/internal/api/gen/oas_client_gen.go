@@ -1183,6 +1183,17 @@ type Invoker interface {
 	//
 	// GET /api/v1/admin/vuln-feed/status
 	GetAdminVulnFeedStatus(ctx context.Context) (GetAdminVulnFeedStatusRes, error)
+	// GetAgentLatestVersion invokes getAgentLatestVersion operation.
+	//
+	// Reads the published agent-releases/latest.json pointer manifest (the
+	// same object internal/agent/update_handler.go serves to agents)
+	// through a cached, best-effort reader. version is "unknown" when no
+	// release has ever been published, object storage is not configured,
+	// or the manifest cannot currently be read; this never surfaces as an
+	// error.
+	//
+	// GET /api/v1/agent/latest
+	GetAgentLatestVersion(ctx context.Context) (GetAgentLatestVersionRes, error)
 	// GetAlertConfig invokes getAlertConfig operation.
 	//
 	// Returns the tenant's downtime/recovery alert channel: email recipients,
@@ -1329,6 +1340,26 @@ type Invoker interface {
 	//
 	// GET /api/v1/email/notify-settings
 	GetEmailNotifySettings(ctx context.Context) (GetEmailNotifySettingsRes, error)
+	// GetFleetAgentVersions invokes getFleetAgentVersions operation.
+	//
+	// Per-site {site_id, site_name, agent_version, status} plus fleet-wide
+	// counts, classified against the currently published agent version.
+	// status is one of current | outdated | unknown | ineligible.
+	// "unknown" covers a site that has never reported agent_version, a
+	// malformed/unparseable version on either side of the comparison, or a
+	// currently-unreadable published-version manifest; never a false
+	// "outdated". "ineligible" is a site that cannot self-update at all:
+	// today that is the public plugin-directory build, which ships without
+	// the self-updater and is upgraded by the plugin directory instead.
+	// Such a site is identified from its own plugin inventory and is
+	// reported "ineligible" whatever its version, because comparing it
+	// against a release channel it cannot consume would be a permanent
+	// false "outdated". Org-scoped only
+	// (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
+	// a site-scoped collaborator has no cross-site rollup.
+	//
+	// GET /api/v1/fleet/agents
+	GetFleetAgentVersions(ctx context.Context) (GetFleetAgentVersionsRes, error)
 	// GetFleetBackupHealth invokes getFleetBackupHealth operation.
 	//
 	// Returns one health item per requested site with a server-derived status:
@@ -1582,7 +1613,7 @@ type Invoker interface {
 	// Returns the per-site application-health settings (GH #291 Phase 3):
 	// the B3 override path for the application-health probe, and the
 	// per-site app-health alerting opt-out. Every site has these settings
-	// (empty path / alerts not disabled are the defaults) — this never
+	// (empty path / alerts not disabled are the defaults) - this never
 	// auto-creates a row, it reads the `sites` columns directly.
 	//
 	// GET /api/v1/sites/{siteId}/app-health-settings
@@ -2467,7 +2498,7 @@ type Invoker interface {
 	//
 	// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
 	// Phase 3). `app_probe_path` must be a site-relative path (starts with
-	// `/`, no scheme, no host, no `..` traversal) — validation failures
+	// `/`, no scheme, no host, no `..` traversal) - validation failures
 	// return 422. An empty `app_probe_path` clears the override back to
 	// auto-detect. `app_alerts_disabled` excludes the site from app-health
 	// alerting entirely (both the individual alert and the fleet circuit
@@ -15758,6 +15789,85 @@ func (c *Client) sendGetAdminVulnFeedStatus(ctx context.Context) (res GetAdminVu
 	return result, nil
 }
 
+// GetAgentLatestVersion invokes getAgentLatestVersion operation.
+//
+// Reads the published agent-releases/latest.json pointer manifest (the
+// same object internal/agent/update_handler.go serves to agents)
+// through a cached, best-effort reader. version is "unknown" when no
+// release has ever been published, object storage is not configured,
+// or the manifest cannot currently be read; this never surfaces as an
+// error.
+//
+// GET /api/v1/agent/latest
+func (c *Client) GetAgentLatestVersion(ctx context.Context) (GetAgentLatestVersionRes, error) {
+	res, err := c.sendGetAgentLatestVersion(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetAgentLatestVersion(ctx context.Context) (res GetAgentLatestVersionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAgentLatestVersion"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/agent/latest"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetAgentLatestVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/agent/latest"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetAgentLatestVersionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetAlertConfig invokes getAlertConfig operation.
 //
 // Returns the tenant's downtime/recovery alert channel: email recipients,
@@ -17464,6 +17574,94 @@ func (c *Client) sendGetEmailNotifySettings(ctx context.Context) (res GetEmailNo
 
 	stage = "DecodeResponse"
 	result, err := decodeGetEmailNotifySettingsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetFleetAgentVersions invokes getFleetAgentVersions operation.
+//
+// Per-site {site_id, site_name, agent_version, status} plus fleet-wide
+// counts, classified against the currently published agent version.
+// status is one of current | outdated | unknown | ineligible.
+// "unknown" covers a site that has never reported agent_version, a
+// malformed/unparseable version on either side of the comparison, or a
+// currently-unreadable published-version manifest; never a false
+// "outdated". "ineligible" is a site that cannot self-update at all:
+// today that is the public plugin-directory build, which ships without
+// the self-updater and is upgraded by the plugin directory instead.
+// Such a site is identified from its own plugin inventory and is
+// reported "ineligible" whatever its version, because comparing it
+// against a release channel it cannot consume would be a permanent
+// false "outdated". Org-scoped only
+// (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
+// a site-scoped collaborator has no cross-site rollup.
+//
+// GET /api/v1/fleet/agents
+func (c *Client) GetFleetAgentVersions(ctx context.Context) (GetFleetAgentVersionsRes, error) {
+	res, err := c.sendGetFleetAgentVersions(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetFleetAgentVersions(ctx context.Context) (res GetFleetAgentVersionsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getFleetAgentVersions"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/fleet/agents"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetFleetAgentVersionsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/fleet/agents"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetFleetAgentVersionsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -20335,7 +20533,7 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 // Returns the per-site application-health settings (GH #291 Phase 3):
 // the B3 override path for the application-health probe, and the
 // per-site app-health alerting opt-out. Every site has these settings
-// (empty path / alerts not disabled are the defaults) — this never
+// (empty path / alerts not disabled are the defaults) - this never
 // auto-creates a row, it reads the `sites` columns directly.
 //
 // GET /api/v1/sites/{siteId}/app-health-settings
@@ -31592,7 +31790,7 @@ func (c *Client) sendPutPerfConfig(ctx context.Context, request *PerfConfig, par
 //
 // Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
 // Phase 3). `app_probe_path` must be a site-relative path (starts with
-// `/`, no scheme, no host, no `..` traversal) — validation failures
+// `/`, no scheme, no host, no `..` traversal) - validation failures
 // return 422. An empty `app_probe_path` clears the override back to
 // auto-detect. `app_alerts_disabled` excludes the site from app-health
 // alerting entirely (both the individual alert and the fleet circuit

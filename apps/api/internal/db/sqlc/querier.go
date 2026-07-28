@@ -1500,6 +1500,24 @@ type Querier interface {
 	// page (an index-only nested-loop per row) and does not regress the
 	// optimized /sites path.
 	ListSites(ctx context.Context, arg ListSitesParams) ([]ListSitesRow, error)
+	// Tenant-scoped site_id/name/agent_version rollup for the read-only agent
+	// fleet-version dashboard (internal/agentrelease): "how many of my sites are
+	// running an outdated agent?". Excludes archived sites, matching the
+	// ListSites/ListAllSiteIDs default (ADR-041). Classification against the
+	// currently published version happens in Go (internal/agentrelease.Classify);
+	// this query only returns the raw per-site facts.
+	//
+	// plugin_identities is a narrow {slug,name} projection of the site's plugin
+	// inventory, carrying just enough for Go to recognize which build of the agent
+	// the site runs (internal/agentplugin.DistributionOf): the plugin-directory
+	// build cannot self-update, so its sites are classified ineligible instead of
+	// being reported outdated forever against a channel they cannot consume.
+	// The projection is deliberate: shipping the whole components document would
+	// move megabytes per dashboard load on a large fleet, and matching the agent's
+	// identity in SQL would duplicate literals that must live in exactly one place.
+	// The CASE guards a components document whose "plugins" key is absent or is not
+	// an array, which jsonb_array_elements would otherwise error on.
+	ListSitesAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]ListSitesAgentVersionsRow, error)
 	// connected sites whose last heartbeat is older than the degrade cutoff.
 	// url is included so the active-verify sweeper can dial the agent without a
 	// secondary tenant-scoped lookup.

@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
@@ -496,6 +497,31 @@ func (h *Handler) getAvailableUpdates(c *gin.Context) {
 	c.JSON(http.StatusOK, &out)
 }
 
+// actionableUpdate reports whether a component carries an update advisory the
+// operator can actually act on. It is the single read-side predicate shared by
+// the available-updates projection, the updates_available count, and the full
+// components inventory, so an already-persisted advisory self-heals on the next
+// read (no re-sync required) in all three at once:
+//
+//   - no advisory, or an advisory with an empty new_version: nothing to action.
+//   - GH #211: a same-version phantom (new_version == the component's own
+//     installed Version). wpversion.SameVersion fails open (false) when either
+//     side is empty, so an unknown installed version keeps its advisory.
+//   - the agent's own plugin: the control plane must never offer it as a
+//     selectable update (see agentplugin). Its component row still surfaces
+//     with its installed version; only this advisory is withheld. The
+//     component's plugin-header name is passed alongside its slug so an agent
+//     installed under an unexpected directory name is still recognized.
+func actionableUpdate(c Component) bool {
+	if c.AvailableUpdate == nil || c.AvailableUpdate.NewVersion == "" {
+		return false
+	}
+	if wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) {
+		return false
+	}
+	return !agentplugin.IsComponent(c.Slug, c.Name)
+}
+
 // buildAvailableUpdates projects a Site's JSONB inventory into the OpenAPI
 // SiteAvailableUpdates response: filters to components with an AvailableUpdate,
 // attaches the optional CoreUpdate, sorts core->plugins->themes (active before
@@ -505,17 +531,17 @@ func buildAvailableUpdates(s Site) gen.SiteAvailableUpdates {
 	core := s.ParsedCoreUpdate()
 	items := make([]gen.SiteAvailableUpdatesItemsItem, 0, len(plugins)+len(themes))
 	for _, p := range plugins {
-		// GH #211: drop a same-version phantom advisory here too, so a site
-		// whose inventory was persisted before the write-path fix (see
-		// sanitizeComponents) self-heals on its next read — no re-sync
-		// required.
-		if p.AvailableUpdate == nil || p.AvailableUpdate.NewVersion == "" || wpversion.SameVersion(p.Version, p.AvailableUpdate.NewVersion) {
+		// Non-actionable advisories (a GH #211 same-version phantom, or the
+		// agent's own plugin) are dropped here too, so a site whose inventory
+		// was persisted before the write-path fix (see sanitizeComponents)
+		// self-heals on its next read, with no re-sync required.
+		if !actionableUpdate(p) {
 			continue
 		}
 		items = append(items, toAvailableItem(gen.SiteAvailableUpdatesItemsItemTypePlugin, p))
 	}
 	for _, t := range themes {
-		if t.AvailableUpdate == nil || t.AvailableUpdate.NewVersion == "" || wpversion.SameVersion(t.Version, t.AvailableUpdate.NewVersion) {
+		if !actionableUpdate(t) {
 			continue
 		}
 		items = append(items, toAvailableItem(gen.SiteAvailableUpdatesItemsItemTypeTheme, t))
@@ -710,19 +736,19 @@ func toAPI(s Site) gen.Site {
 			CoreUpdate *CoreUpdate `json:"core_update,omitempty"`
 		}
 		if json.Unmarshal(s.Components, &comp) == nil {
-			// M27 — updates_available: same predicate as buildAvailableUpdates
-			// (a non-empty AvailableUpdate.NewVersion), +1 for a core update.
-			// GH #211: a same-version advisory (new_version == the component's
-			// own installed Version) is excluded here too, so an
-			// already-persisted phantom self-heals on the next read.
+			// M27 updates_available: the same actionableUpdate predicate as
+			// buildAvailableUpdates, +1 for a core update. The count and the
+			// list are deliberately one predicate: a component the operator can
+			// never action (a GH #211 same-version phantom, or the agent's own
+			// plugin) must not inflate "N updates available" either.
 			updates := 0
 			for _, p := range comp.Plugins {
-				if p.AvailableUpdate != nil && p.AvailableUpdate.NewVersion != "" && !wpversion.SameVersion(p.Version, p.AvailableUpdate.NewVersion) {
+				if actionableUpdate(p) {
 					updates++
 				}
 			}
 			for _, t := range comp.Themes {
-				if t.AvailableUpdate != nil && t.AvailableUpdate.NewVersion != "" && !wpversion.SameVersion(t.Version, t.AvailableUpdate.NewVersion) {
+				if actionableUpdate(t) {
 					updates++
 				}
 			}
@@ -760,10 +786,11 @@ func toAPIComponents(cs []Component) []gen.SiteComponent {
 		if c.Version != "" {
 			gc.Version = gen.NewOptString(c.Version)
 		}
-		// GH #211: a same-version advisory is dropped here too (the full
-		// components inventory shares the phantom-update defect with the
-		// available-updates projection above).
-		if c.AvailableUpdate != nil && c.AvailableUpdate.NewVersion != "" && !wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) {
+		// The full components inventory shares the available-updates
+		// projection's predicate: the component is always listed (slug, name,
+		// version), but a non-actionable advisory (a GH #211 same-version
+		// phantom, or the agent's own plugin) is withheld from it.
+		if actionableUpdate(c) {
 			au := gen.SiteComponentAvailableUpdate{NewVersion: c.AvailableUpdate.NewVersion}
 			if c.AvailableUpdate.Package != "" {
 				au.Package = gen.NewOptNilString(c.AvailableUpdate.Package)

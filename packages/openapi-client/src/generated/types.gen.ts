@@ -2376,10 +2376,10 @@ export type AlertConfig = {
   /**
    * Whether the application-health alert kind (GH #291 Phase 3) is
    * allowed to dispatch for this tenant, independent of `enabled`
-   * (the reachability channel) — a tenant that already has downtime
+   * (the reachability channel) - a tenant that already has downtime
    * alerts on does not silently start receiving app-health alerts
    * too. Defaults to false on any deployment that already had sites
-   * when app-health alerting shipped, and true on a fresh install —
+   * when app-health alerting shipped, and true on a fresh install -
    * decided once, deterministically, by migration (never re-decided
    * at runtime).
    *
@@ -2419,7 +2419,7 @@ export type AlertConfigUpdate = {
   /**
    * Omitted preserves the tenant's currently-stored value (or, for a
    * tenant with no alert config saved yet, the deployment's rollout
-   * default — see AlertConfig.app_alerts_enabled).
+   * default - see AlertConfig.app_alerts_enabled).
    *
    */
   app_alerts_enabled?: boolean;
@@ -6579,6 +6579,39 @@ export type FleetVulnerabilitiesResponse = {
    */
   enrichment_available: boolean;
   last_enrichment_at?: string;
+};
+
+export type AgentLatestVersion = {
+  /**
+   * The currently published WPMgr agent version, or "unknown" when it cannot be determined right now.
+   */
+  version: string;
+};
+
+export type FleetAgentCounts = {
+  current: number;
+  outdated: number;
+  unknown: number;
+  ineligible: number;
+};
+
+export type FleetAgentSite = {
+  site_id: string;
+  site_name: string;
+  /**
+   * The site's last-reported agent_version, verbatim. Empty when the agent has never reported one; distinct from status="unknown", which also covers a malformed version string.
+   */
+  agent_version: string;
+  status: "current" | "outdated" | "unknown" | "ineligible";
+};
+
+export type FleetAgentVersions = {
+  /**
+   * The currently published agent version, or "unknown" when it cannot be determined right now.
+   */
+  latest_version: string;
+  counts: FleetAgentCounts;
+  sites: Array<FleetAgentSite>;
 };
 
 export type SmtpSettings = {
@@ -13900,6 +13933,68 @@ export type GetFleetIncidentDetailResponses = {
 
 export type GetFleetIncidentDetailResponse =
   GetFleetIncidentDetailResponses[keyof GetFleetIncidentDetailResponses];
+
+export type GetAgentLatestVersionData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/agent/latest";
+};
+
+export type GetAgentLatestVersionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetAgentLatestVersionError =
+  GetAgentLatestVersionErrors[keyof GetAgentLatestVersionErrors];
+
+export type GetAgentLatestVersionResponses = {
+  /**
+   * The currently published agent version
+   */
+  200: AgentLatestVersion;
+};
+
+export type GetAgentLatestVersionResponse =
+  GetAgentLatestVersionResponses[keyof GetAgentLatestVersionResponses];
+
+export type GetFleetAgentVersionsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/fleet/agents";
+};
+
+export type GetFleetAgentVersionsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetFleetAgentVersionsError =
+  GetFleetAgentVersionsErrors[keyof GetFleetAgentVersionsErrors];
+
+export type GetFleetAgentVersionsResponses = {
+  /**
+   * Fleet agent-version rollup
+   */
+  200: FleetAgentVersions;
+};
+
+export type GetFleetAgentVersionsResponse =
+  GetFleetAgentVersionsResponses[keyof GetFleetAgentVersionsResponses];
 
 export type GetFleetRumAggregateData = {
   body?: never;

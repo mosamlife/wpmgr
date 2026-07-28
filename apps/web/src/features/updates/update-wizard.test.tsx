@@ -125,6 +125,81 @@ describe("UpdateWizard — GH #211 same-version phantom guard", () => {
   });
 });
 
+// Agent-version visibility (agent-releases): the WPMgr agent's own plugin
+// entry must never be offered as a selectable update target, in any of the
+// forms WordPress can report it under (directory/file, bare directory,
+// single file, a renamed main file, mixed case, either distribution slug).
+// The control plane already strips the advisory at the source; this pins
+// the client-side belt-and-braces gate so a stale cache or hand-built
+// payload still can never surface the agent here.
+describe("UpdateWizard: agent plugin exclusion", () => {
+  it("never lists the agent's own plugin entry as selectable, in any reported form", async () => {
+    const site = buildSite({
+      components: {
+        plugins: [
+          // The self-hosted distribution's real inventory key.
+          {
+            slug: "wpmgr-agent/wpmgr-agent.php",
+            name: "WPMgr Agent",
+            version: "0.61.90",
+            available_update: { new_version: "0.61.95" },
+          },
+          // The wordpress.org distribution's real inventory key.
+          {
+            slug: "fleet-agent-site-manager/fleet-agent-site-manager.php",
+            name: "Fleet Agent Site Manager",
+            version: "0.61.90",
+            available_update: { new_version: "0.61.95" },
+          },
+          // Bare directory, single file, mixed case, renamed main file.
+          {
+            slug: "wpmgr-agent",
+            name: "WPMgr Agent (bare dir)",
+            version: "0.61.90",
+            available_update: { new_version: "0.61.95" },
+          },
+          {
+            slug: "WPMGR-Agent/loader.php",
+            name: "WPMgr Agent (renamed file, mixed case)",
+            version: "0.61.90",
+            available_update: { new_version: "0.61.95" },
+          },
+          // A real, unrelated plugin update must still appear.
+          {
+            slug: "woocommerce",
+            name: "WooCommerce",
+            version: "8.0.0",
+            available_update: { new_version: "8.1.0" },
+          },
+        ],
+        themes: [],
+      },
+    });
+
+    renderWithProviders(
+      <UpdateWizard open target={TARGET} sites={[site]} onClose={() => {}} />,
+      { withRouter: true },
+    );
+
+    expect(await screen.findByText("WooCommerce")).toBeInTheDocument();
+
+    // None of the agent's own entries ever render, even after "Show all".
+    fireEvent.click(screen.getByRole("button", { name: /show all/i }));
+    expect(screen.queryByText("WPMgr Agent")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Fleet Agent Site Manager"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("WPMgr Agent (bare dir)")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("WPMgr Agent (renamed file, mixed case)"),
+    ).not.toBeInTheDocument();
+
+    // The Plugins tab count reflects only the one real, unrelated update.
+    const tab = screen.getByRole("tab", { name: /plugins/i });
+    expect(within(tab).getByText("1")).toBeInTheDocument();
+  });
+});
+
 // GH #217 — when a tab has components but NONE of them have a pending
 // update, the tab-strip badge used to fall back to the unfiltered distinct
 // component count (rendered in a muted style), contradicting the "Showing 0

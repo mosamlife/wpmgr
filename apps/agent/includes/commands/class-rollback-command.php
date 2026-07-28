@@ -14,7 +14,11 @@
  * the snapshot directory is removed.
  *
  * All input is untrusted: the type is whitelisted, the slug is sanitized to
- * reject path traversal, and the snapshot id is validated by the manager.
+ * reject path traversal, and the snapshot id is validated by the manager. A
+ * target that resolves to the agent's own plugin is refused outright, sharing
+ * UpdateCommand::isSelfTarget()'s definition; see the refusal's own comment in
+ * execute() for why a rollback aimed at the agent is the same hazard as an
+ * update aimed at it.
  *
  * @package WPMgr\Agent\Commands
  */
@@ -100,6 +104,21 @@ final class RollbackCommand implements CommandInterface
             }
             if ($snapshotId === '') {
                 return $this->fail('Missing snapshot_id.');
+            }
+
+            // Self-target refusal (agent-only hardening): restore() replaces
+            // the live directory wholesale, so a rollback aimed at the agent
+            // is the same self-destruction as an update aimed at it, from the
+            // same control-plane-driven direction. Refused with the identical
+            // definition UpdateCommand uses, before the snapshot store is
+            // touched. Nothing legitimate is lost: UpdateCommand refuses to
+            // snapshot or update the agent in the first place, so no
+            // control-plane snapshot of the agent can exist to restore, and
+            // the agent's own update channel does not use this command.
+            if (UpdateCommand::isSelfTarget($type, $slug)) {
+                return $this->fail(
+                    'Refused: this target is the management agent itself. The agent updates through its own update channel, not through a plugin update or rollback task.'
+                );
             }
 
             try {

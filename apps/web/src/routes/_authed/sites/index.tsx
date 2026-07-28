@@ -5,6 +5,8 @@ import { z } from "zod";
 
 import { useClients } from "@/features/clients/use-clients";
 import { SetClientDialog } from "@/features/clients/set-client-dialog";
+import { useFleetAgentVersions } from "@/features/fleet/use-fleet-agents";
+import { AGENT_STATUS_LABEL, type AgentStatus } from "@/components/status";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
@@ -70,6 +72,9 @@ const searchSchema = z.object({
   client: z.string().optional(),
   archived: z.boolean().optional(),
   view: z.enum(["list", "grid"]).optional(),
+  // Agent-freshness classification (agent-releases visibility). Stores
+  // display labels, matching the `status` axis above; see AGENT_STATUS_LABEL.
+  agentStatus: z.array(z.string()).optional(),
 });
 
 type SitesSearch = z.infer<typeof searchSchema>;
@@ -155,6 +160,10 @@ function SitesPage() {
   // new array reference each time when status/tags are absent from the URL).
   const selectedStatuses = useMemo(() => search.status ?? [], [search.status]);
   const selectedTags = useMemo(() => search.tags ?? [], [search.tags]);
+  const selectedAgentStatuses = useMemo(
+    () => search.agentStatus ?? [],
+    [search.agentStatus],
+  );
   const tagMode: TagMatchMode = search.tagMode ?? "any";
   const hasTagsFilter = selectedTags.length > 0;
   const appliedClientId = search.client ?? null;
@@ -190,6 +199,19 @@ function SitesPage() {
 
   const { data: tagsRegistry } = useTags();
 
+  // Agent-release freshness rollup (agent-releases visibility). Best-effort:
+  // a site-scoped collaborator (no org scope) gets a 403 here, which we treat
+  // the same as "still loading": the Agent column and filter both fall back
+  // to plain version text / no filter rather than surfacing a page-level error
+  // for a page whose primary content is the sites list.
+  const { data: fleetAgents } = useFleetAgentVersions();
+  const agentStatusById = useMemo(() => {
+    if (!fleetAgents) return undefined;
+    return new Map<string, AgentStatus>(
+      fleetAgents.sites.map((s) => [s.site_id, s.status]),
+    );
+  }, [fleetAgents]);
+
   // Active on any filter axis, including the (now server-side) tags filter.
   // A tag filter that matches nothing legitimately returns `sites: []` —
   // that must render as a filtered-empty state, never the onboarding empty
@@ -198,7 +220,8 @@ function SitesPage() {
     Boolean(search.q?.trim()) ||
     selectedStatuses.length > 0 ||
     hasTagsFilter ||
-    Boolean(appliedClientId);
+    Boolean(appliedClientId) ||
+    selectedAgentStatuses.length > 0;
 
   // When the active bucket is empty (and no filters are narrowing it), also
   // fetch archived so we can surface a "Disconnected sites" panel above the
@@ -244,6 +267,24 @@ function SitesPage() {
     return Array.from(set).sort();
   }, [sites]);
 
+  /**
+   * Agent-status options, same live-derivation rule as `statusOptions`: only
+   * show a value that actually appears in the loaded sites (so "Not
+   * self-updating" appears only once a wordpress.org-build site is in
+   * range). Falls back to no options at all while the rollup is
+   * still loading: the dropdown then simply shows "No options yet", same
+   * as any other axis before its data arrives.
+   */
+  const agentStatusOptions = useMemo(() => {
+    if (!agentStatusById) return [];
+    const set = new Set<string>();
+    for (const s of sites ?? []) {
+      const status = agentStatusById.get(s.id) ?? "unknown";
+      set.add(AGENT_STATUS_LABEL[status]);
+    }
+    return Array.from(set).sort();
+  }, [sites, agentStatusById]);
+
   // ── visibleSites — pure derive over the query cache ───────────────────────
   //
   // CRITICAL INVARIANTS (preserve and do not refactor without re-reading):
@@ -272,9 +313,10 @@ function SitesPage() {
     const q = (search.q ?? "").trim().toLowerCase();
     const hasQ = q.length > 0;
     const hasStatus = selectedStatuses.length > 0;
+    const hasAgentStatus = selectedAgentStatuses.length > 0;
 
     // Fast path: no active client-side filters.
-    if (!hasQ && !hasStatus) return sites;
+    if (!hasQ && !hasStatus && !hasAgentStatus) return sites;
 
     return sites.filter((s) => {
       // Text search — matches name, url, or any tag.
@@ -292,9 +334,19 @@ function SitesPage() {
         if (!selectedStatuses.includes(label)) return false;
       }
 
+      // Agent-status filter: same "compare against the display label"
+      // convention as the connection-status filter above. A site the
+      // rollup has not (yet) classified is treated as "Unknown", matching
+      // the Agent column's own fallback.
+      if (hasAgentStatus) {
+        const status = agentStatusById?.get(s.id) ?? "unknown";
+        if (!selectedAgentStatuses.includes(AGENT_STATUS_LABEL[status]))
+          return false;
+      }
+
       return true;
     });
-  }, [sites, search.q, selectedStatuses]);
+  }, [sites, search.q, selectedStatuses, selectedAgentStatuses, agentStatusById]);
 
   // INVARIANT: read from the FULL sites array, not visibleSites.
   const selectedSites: Site[] = (sites ?? []).filter((s) =>
@@ -315,8 +367,15 @@ function SitesPage() {
     if (selectedStatuses.length > 0) count++;
     if (selectedTags.length > 0) count++;
     if (appliedClientId) count++;
+    if (selectedAgentStatuses.length > 0) count++;
     return count;
-  }, [search.q, selectedStatuses, selectedTags, appliedClientId]);
+  }, [
+    search.q,
+    selectedStatuses,
+    selectedTags,
+    appliedClientId,
+    selectedAgentStatuses,
+  ]);
 
   const handleClearAllFilters = useCallback(() => {
     void navigate({
@@ -327,6 +386,7 @@ function SitesPage() {
         tags: undefined,
         tagMode: undefined,
         client: undefined,
+        agentStatus: undefined,
       }),
       replace: true,
     });
@@ -354,8 +414,17 @@ function SitesPage() {
       const client = clientOptions.find((c) => c.id === appliedClientId);
       if (client) parts.push(`client:${client.name}`);
     }
+    if (selectedAgentStatuses.length > 0)
+      parts.push(`agent:${selectedAgentStatuses.join(",")}`);
     return parts.join(" ");
-  }, [search.q, selectedStatuses, selectedTags, appliedClientId, clientOptions]);
+  }, [
+    search.q,
+    selectedStatuses,
+    selectedTags,
+    appliedClientId,
+    clientOptions,
+    selectedAgentStatuses,
+  ]);
 
   // GH #230: sites can legitimately be `[]` because the (server-side) tags
   // filter matched nothing, not just because client-side text/status
@@ -761,6 +830,26 @@ function SitesPage() {
                 replace: true,
               });
             }}
+            agentStatusOptions={agentStatusOptions}
+            selectedAgentStatuses={selectedAgentStatuses}
+            onAgentStatusToggle={(status) => {
+              const next = selectedAgentStatuses.includes(status)
+                ? selectedAgentStatuses.filter((s) => s !== status)
+                : [...selectedAgentStatuses, status];
+              void navigate({
+                search: (prev: SitesSearch) => ({
+                  ...prev,
+                  agentStatus: next.length ? next : undefined,
+                }),
+                replace: true,
+              });
+            }}
+            onAgentStatusesClear={() => {
+              void navigate({
+                search: (prev: SitesSearch) => ({ ...prev, agentStatus: undefined }),
+                replace: true,
+              });
+            }}
             clientOptions={clientOptions}
             appliedClientId={appliedClientId}
             onClientFilterChange={(clientId) => {
@@ -850,6 +939,7 @@ function SitesPage() {
               isLoading={isPending}
               selection={operate ? selection : undefined}
               densityState={densityState}
+              agentStatusById={agentStatusById}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}

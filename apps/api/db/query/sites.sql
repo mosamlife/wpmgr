@@ -56,6 +56,42 @@ WHERE s.tenant_id = $1
 ORDER BY s.created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListSitesAgentVersions :many
+-- Tenant-scoped site_id/name/agent_version rollup for the read-only agent
+-- fleet-version dashboard (internal/agentrelease): "how many of my sites are
+-- running an outdated agent?". Excludes archived sites, matching the
+-- ListSites/ListAllSiteIDs default (ADR-041). Classification against the
+-- currently published version happens in Go (internal/agentrelease.Classify);
+-- this query only returns the raw per-site facts.
+--
+-- plugin_identities is a narrow {slug,name} projection of the site's plugin
+-- inventory, carrying just enough for Go to recognize which build of the agent
+-- the site runs (internal/agentplugin.DistributionOf): the plugin-directory
+-- build cannot self-update, so its sites are classified ineligible instead of
+-- being reported outdated forever against a channel they cannot consume.
+-- The projection is deliberate: shipping the whole components document would
+-- move megabytes per dashboard load on a large fleet, and matching the agent's
+-- identity in SQL would duplicate literals that must live in exactly one place.
+-- The CASE guards a components document whose "plugins" key is absent or is not
+-- an array, which jsonb_array_elements would otherwise error on.
+SELECT
+    s.id,
+    s.name,
+    s.agent_version,
+    COALESCE((
+        SELECT jsonb_agg(jsonb_build_object('slug', p ->> 'slug', 'name', p ->> 'name'))
+        FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(s.components -> 'plugins') = 'array'
+                 THEN s.components -> 'plugins'
+                 ELSE '[]'::jsonb
+            END
+        ) AS p
+    ), '[]'::jsonb)::jsonb AS plugin_identities
+FROM sites s
+WHERE s.tenant_id = $1
+  AND s.connection_state <> 'archived'
+ORDER BY s.name;
+
 -- name: ListClientNamesForSites :many
 -- Returns the client id + name for sites that have a client_id set (m63).
 -- Used to enrich the sites-list DTO with client_name in a single batched join.

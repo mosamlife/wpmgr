@@ -118,6 +118,14 @@ export interface SitesToolbarProps {
   onStatusToggle?: (status: string) => void;
   /** Called to clear all status filters. */
   onStatusesClear?: () => void;
+  /** Available agent-freshness values for the Agent dropdown (agent-releases visibility). */
+  agentStatusOptions?: readonly string[];
+  /** Currently selected agent-freshness values (controlled multi-select). */
+  selectedAgentStatuses?: readonly string[];
+  /** Called when an agent-freshness value is toggled. */
+  onAgentStatusToggle?: (status: string) => void;
+  /** Called to clear all agent-freshness filters. */
+  onAgentStatusesClear?: () => void;
   /** Total count of active filter axes (for the "Clear filters" pill). */
   activeFilterCount?: number;
   /** Called to clear ALL filters across all axes. */
@@ -205,6 +213,10 @@ function IdleMode({
   selectedStatuses = [],
   onStatusToggle,
   onStatusesClear,
+  agentStatusOptions = [],
+  selectedAgentStatuses = [],
+  onAgentStatusToggle,
+  onAgentStatusesClear,
   activeFilterCount = 0,
   onClearAllFilters,
   densityState,
@@ -266,6 +278,16 @@ function IdleMode({
           onToggle={onStatusToggle ?? (() => {})}
           onClear={onStatusesClear ?? (() => {})}
           ariaLabel="Filter by status"
+        />
+
+        {/* Agent: freshness classification (agent-releases visibility) */}
+        <MultiSelectDropdown
+          label="Agent"
+          options={agentStatusOptions}
+          selected={selectedAgentStatuses}
+          onToggle={onAgentStatusToggle ?? (() => {})}
+          onClear={onAgentStatusesClear ?? (() => {})}
+          ariaLabel="Filter by agent status"
         />
 
         {/* Tags — registry-backed multi-select with a match-mode segmented

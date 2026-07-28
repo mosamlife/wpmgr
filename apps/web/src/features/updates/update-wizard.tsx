@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useCreateUpdateRun } from "@/features/updates/use-updates";
+import { isAgentPluginComponent } from "@/features/updates/agent-plugin";
 import type { Site, UpdateItem, UpdateRunCreate } from "@wpmgr/api";
 
 // Bulk update wizard (operator+). Opened from the sites list once the user has
@@ -83,6 +84,12 @@ function componentOptions(sites: Site[]): ComponentOption[] {
   const seen = new Map<string, ComponentOption>();
   for (const site of sites) {
     for (const plugin of site.components?.plugins ?? []) {
+      // Never offer the WPMgr agent's own plugin entry as an update target
+      // (see agent-plugin.ts for why). Belt-and-braces: the control plane
+      // already withholds the advisory at the source, so this should never
+      // actually trigger, but it means a stale cache or hand-built payload
+      // still can't get the agent into this list.
+      if (isAgentPluginComponent(plugin.slug, plugin.name)) continue;
       const key = `plugin:${plugin.slug}`;
       if (!seen.has(key)) {
         seen.set(key, {

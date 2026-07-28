@@ -16,4 +16,7 @@ export const fleetKeys = {
   // Performance
   rumFleet: (windowDays: number, device: string) =>
     [...fleetKeys.all, "rumFleet", windowDays, device] as const,
+  // Agent release freshness (agent-releases)
+  agentLatest: () => [...fleetKeys.all, "agentLatest"] as const,
+  agentVersions: () => [...fleetKeys.all, "agentVersions"] as const,
 } as const;

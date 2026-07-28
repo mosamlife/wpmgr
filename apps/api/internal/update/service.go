@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
@@ -38,8 +39,13 @@ type SiteInfo struct {
 // site in the run has it pending must not spawn a task on a site that does
 // not).
 type Component struct {
-	Type    string // "plugin" | "theme"
-	Slug    string
+	Type string // "plugin" | "theme"
+	Slug string
+	// Name is the component's plugin-header name, carried from the site
+	// inventory purely so the planner can identify the agent's own plugin by
+	// something the directory name cannot forge (see agentplugin). Empty when
+	// the source inventory did not record one.
+	Name    string
 	Version string
 
 	UpdateAvailable bool
@@ -258,6 +264,19 @@ func indexPending(site SiteInfo) map[string]string {
 		// must never be treated as pending here, defense-in-depth against a
 		// SiteLookup implementation that did not already filter it (see
 		// cmd/wpmgr's toUpdateComponent).
+		// The agent's own plugin is never pending from the planner's point of
+		// view: a SiteLookup fed by an inventory an older agent persisted may
+		// still carry the self-update advisory, and treating it as pending here
+		// would let a "latest" item plan the one task that cannot be rolled
+		// back. validateItems already refuses the target outright; this keeps
+		// the pending authority itself honest.
+		// Matched on the component's plugin-header name as well as its slug:
+		// validateItems only ever sees a bare slug, so this is the one planning
+		// step that can recognize an agent installed under a directory name no
+		// slug list predicts.
+		if c.Type == TargetPlugin && agentplugin.IsComponent(c.Slug, c.Name) {
+			continue
+		}
 		if c.UpdateAvailable && c.NewVersion != "" && !wpversion.SameVersion(c.Version, c.NewVersion) {
 			m[c.Type+"/"+c.Slug] = c.NewVersion
 		}

@@ -13390,6 +13390,102 @@ func (s *AgentIngestRucssUnprocessableEntity) UnmarshalJSON(data []byte) error {
 }
 
 // Encode implements json.Marshaler.
+func (s *AgentLatestVersion) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentLatestVersion) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("version")
+		e.Str(s.Version)
+	}
+}
+
+var jsonFieldsNameOfAgentLatestVersion = [1]string{
+	0: "version",
+}
+
+// Decode decodes AgentLatestVersion from json.
+func (s *AgentLatestVersion) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentLatestVersion to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "version":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.Version = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"version\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentLatestVersion")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAgentLatestVersion) {
+					name = jsonFieldsNameOfAgentLatestVersion[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentLatestVersion) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentLatestVersion) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AgentLoginEventBatch) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -51342,6 +51438,480 @@ func (s *FinishWebAuthnEnrollmentUnprocessableEntity) UnmarshalJSON(data []byte)
 }
 
 // Encode implements json.Marshaler.
+func (s *FleetAgentCounts) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *FleetAgentCounts) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("current")
+		e.Int(s.Current)
+	}
+	{
+		e.FieldStart("outdated")
+		e.Int(s.Outdated)
+	}
+	{
+		e.FieldStart("unknown")
+		e.Int(s.Unknown)
+	}
+	{
+		e.FieldStart("ineligible")
+		e.Int(s.Ineligible)
+	}
+}
+
+var jsonFieldsNameOfFleetAgentCounts = [4]string{
+	0: "current",
+	1: "outdated",
+	2: "unknown",
+	3: "ineligible",
+}
+
+// Decode decodes FleetAgentCounts from json.
+func (s *FleetAgentCounts) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode FleetAgentCounts to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "current":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int()
+				s.Current = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"current\"")
+			}
+		case "outdated":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int()
+				s.Outdated = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"outdated\"")
+			}
+		case "unknown":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Int()
+				s.Unknown = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"unknown\"")
+			}
+		case "ineligible":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Int()
+				s.Ineligible = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"ineligible\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode FleetAgentCounts")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfFleetAgentCounts) {
+					name = jsonFieldsNameOfFleetAgentCounts[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *FleetAgentCounts) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *FleetAgentCounts) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *FleetAgentSite) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *FleetAgentSite) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("site_id")
+		json.EncodeUUID(e, s.SiteID)
+	}
+	{
+		e.FieldStart("site_name")
+		e.Str(s.SiteName)
+	}
+	{
+		e.FieldStart("agent_version")
+		e.Str(s.AgentVersion)
+	}
+	{
+		e.FieldStart("status")
+		s.Status.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfFleetAgentSite = [4]string{
+	0: "site_id",
+	1: "site_name",
+	2: "agent_version",
+	3: "status",
+}
+
+// Decode decodes FleetAgentSite from json.
+func (s *FleetAgentSite) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode FleetAgentSite to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "site_id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := json.DecodeUUID(d)
+				s.SiteID = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_id\"")
+			}
+		case "site_name":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.SiteName = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_name\"")
+			}
+		case "agent_version":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Str()
+				s.AgentVersion = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"agent_version\"")
+			}
+		case "status":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				if err := s.Status.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"status\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode FleetAgentSite")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfFleetAgentSite) {
+					name = jsonFieldsNameOfFleetAgentSite[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *FleetAgentSite) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *FleetAgentSite) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes FleetAgentSiteStatus as json.
+func (s FleetAgentSiteStatus) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes FleetAgentSiteStatus from json.
+func (s *FleetAgentSiteStatus) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode FleetAgentSiteStatus to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch FleetAgentSiteStatus(v) {
+	case FleetAgentSiteStatusCurrent:
+		*s = FleetAgentSiteStatusCurrent
+	case FleetAgentSiteStatusOutdated:
+		*s = FleetAgentSiteStatusOutdated
+	case FleetAgentSiteStatusUnknown:
+		*s = FleetAgentSiteStatusUnknown
+	case FleetAgentSiteStatusIneligible:
+		*s = FleetAgentSiteStatusIneligible
+	default:
+		*s = FleetAgentSiteStatus(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s FleetAgentSiteStatus) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *FleetAgentSiteStatus) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *FleetAgentVersions) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *FleetAgentVersions) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("latest_version")
+		e.Str(s.LatestVersion)
+	}
+	{
+		e.FieldStart("counts")
+		s.Counts.Encode(e)
+	}
+	{
+		e.FieldStart("sites")
+		e.ArrStart()
+		for _, elem := range s.Sites {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+}
+
+var jsonFieldsNameOfFleetAgentVersions = [3]string{
+	0: "latest_version",
+	1: "counts",
+	2: "sites",
+}
+
+// Decode decodes FleetAgentVersions from json.
+func (s *FleetAgentVersions) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode FleetAgentVersions to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "latest_version":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.LatestVersion = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"latest_version\"")
+			}
+		case "counts":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Counts.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"counts\"")
+			}
+		case "sites":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				s.Sites = make([]FleetAgentSite, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem FleetAgentSite
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Sites = append(s.Sites, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"sites\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode FleetAgentVersions")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfFleetAgentVersions) {
+					name = jsonFieldsNameOfFleetAgentVersions[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *FleetAgentVersions) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *FleetAgentVersions) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *FleetIncidentDetail) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -55923,6 +56493,82 @@ func (s *GetAdminVulnFeedStatusUnauthorized) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes GetAgentLatestVersionForbidden as json.
+func (s *GetAgentLatestVersionForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetAgentLatestVersionForbidden from json.
+func (s *GetAgentLatestVersionForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetAgentLatestVersionForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetAgentLatestVersionForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetAgentLatestVersionForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetAgentLatestVersionForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetAgentLatestVersionUnauthorized as json.
+func (s *GetAgentLatestVersionUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetAgentLatestVersionUnauthorized from json.
+func (s *GetAgentLatestVersionUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetAgentLatestVersionUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetAgentLatestVersionUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetAgentLatestVersionUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetAgentLatestVersionUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes GetBackupEnvironmentNotFound as json.
 func (s *GetBackupEnvironmentNotFound) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
@@ -56952,6 +57598,82 @@ func (s *GetEmailNotifySettingsUnauthorized) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *GetEmailNotifySettingsUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetFleetAgentVersionsForbidden as json.
+func (s *GetFleetAgentVersionsForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetFleetAgentVersionsForbidden from json.
+func (s *GetFleetAgentVersionsForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetFleetAgentVersionsForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetFleetAgentVersionsForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetFleetAgentVersionsForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetFleetAgentVersionsForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetFleetAgentVersionsUnauthorized as json.
+func (s *GetFleetAgentVersionsUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetFleetAgentVersionsUnauthorized from json.
+func (s *GetFleetAgentVersionsUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetFleetAgentVersionsUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetFleetAgentVersionsUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetFleetAgentVersionsUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetFleetAgentVersionsUnauthorized) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

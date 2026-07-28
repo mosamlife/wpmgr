@@ -29,3 +29,8 @@ export type { ConnectionStateBadgeProps } from "./connection-state-badge";
 
 export { SslChip } from "./ssl-chip";
 export type { SslChipProps } from "./ssl-chip";
+
+export { AgentStatusChip } from "./agent-status-chip";
+export type { AgentStatusChipProps } from "./agent-status-chip";
+export { AGENT_STATUS_LABEL } from "./agent-status";
+export type { AgentStatus } from "./agent-status";

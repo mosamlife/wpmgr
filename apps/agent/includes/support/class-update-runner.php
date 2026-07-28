@@ -14,6 +14,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Support;
 
+use WPMgr\Agent\Commands\UpdateCommand;
+
 /**
  * Executes updates via WP-CLI or the WP upgrader APIs.
  */
@@ -228,6 +230,18 @@ class UpdateRunner
     {
         if (!self::isValidVersion($version)) {
             return ['ok' => false, 'log' => 'Rejected unsafe version string.'];
+        }
+
+        // Last-resort backstop for the self-target refusal that
+        // UpdateCommand::processItem() already applies at the command
+        // boundary (see UpdateCommand::isSelfTarget()). Today that boundary
+        // is the only caller that can reach here with a plugin/theme slug, so
+        // this never fires; it exists so a future apply origin cannot
+        // reintroduce the agent overwriting its own running code. Deliberately
+        // NOT the place the operator-facing `skipped` decision is made: this
+        // layer only reports an apply it will not perform.
+        if (UpdateCommand::isSelfTarget($type, $slug)) {
+            return ['ok' => false, 'log' => 'Refused: the management agent does not update itself through a plugin update task.'];
         }
 
         if ($this->wpCliAvailable()) {

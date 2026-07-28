@@ -4673,7 +4673,7 @@ export const AlertConfigSchema = {
     app_alerts_enabled: {
       type: "boolean",
       description:
-        "Whether the application-health alert kind (GH #291 Phase 3) is\nallowed to dispatch for this tenant, independent of `enabled`\n(the reachability channel) — a tenant that already has downtime\nalerts on does not silently start receiving app-health alerts\ntoo. Defaults to false on any deployment that already had sites\nwhen app-health alerting shipped, and true on a fresh install —\ndecided once, deterministically, by migration (never re-decided\nat runtime).\n",
+        "Whether the application-health alert kind (GH #291 Phase 3) is\nallowed to dispatch for this tenant, independent of `enabled`\n(the reachability channel) - a tenant that already has downtime\nalerts on does not silently start receiving app-health alerts\ntoo. Defaults to false on any deployment that already had sites\nwhen app-health alerting shipped, and true on a fresh install -\ndecided once, deterministically, by migration (never re-decided\nat runtime).\n",
     },
   },
 } as const;
@@ -4721,7 +4721,7 @@ export const AlertConfigUpdateSchema = {
     app_alerts_enabled: {
       type: "boolean",
       description:
-        "Omitted preserves the tenant's currently-stored value (or, for a\ntenant with no alert config saved yet, the deployment's rollout\ndefault — see AlertConfig.app_alerts_enabled).\n",
+        "Omitted preserves the tenant's currently-stored value (or, for a\ntenant with no alert config saved yet, the deployment's rollout\ndefault - see AlertConfig.app_alerts_enabled).\n",
     },
   },
 } as const;
@@ -12001,6 +12001,81 @@ export const FleetVulnerabilitiesResponseSchema = {
     last_enrichment_at: {
       type: "string",
       format: "date-time",
+    },
+  },
+} as const;
+
+export const AgentLatestVersionSchema = {
+  type: "object",
+  required: ["version"],
+  properties: {
+    version: {
+      type: "string",
+      description:
+        'The currently published WPMgr agent version, or "unknown" when it cannot be determined right now.',
+    },
+  },
+} as const;
+
+export const FleetAgentCountsSchema = {
+  type: "object",
+  required: ["current", "outdated", "unknown", "ineligible"],
+  properties: {
+    current: {
+      type: "integer",
+    },
+    outdated: {
+      type: "integer",
+    },
+    unknown: {
+      type: "integer",
+    },
+    ineligible: {
+      type: "integer",
+    },
+  },
+} as const;
+
+export const FleetAgentSiteSchema = {
+  type: "object",
+  required: ["site_id", "site_name", "agent_version", "status"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_name: {
+      type: "string",
+    },
+    agent_version: {
+      type: "string",
+      description:
+        'The site\'s last-reported agent_version, verbatim. Empty when the agent has never reported one; distinct from status="unknown", which also covers a malformed version string.',
+    },
+    status: {
+      type: "string",
+      enum: ["current", "outdated", "unknown", "ineligible"],
+    },
+  },
+} as const;
+
+export const FleetAgentVersionsSchema = {
+  type: "object",
+  required: ["latest_version", "counts", "sites"],
+  properties: {
+    latest_version: {
+      type: "string",
+      description:
+        'The currently published agent version, or "unknown" when it cannot be determined right now.',
+    },
+    counts: {
+      $ref: "#/components/schemas/FleetAgentCounts",
+    },
+    sites: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/FleetAgentSite",
+      },
     },
   },
 } as const;
