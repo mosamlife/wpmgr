@@ -6206,6 +6206,17 @@ func (s *FleetAgentVersions) Validate() error {
 
 	var failures []validate.FieldError
 	if err := func() error {
+		if err := s.ReferenceSource.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "reference_source",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if s.Sites == nil {
 			return errors.New("nil is invalid value")
 		}
@@ -6237,6 +6248,19 @@ func (s *FleetAgentVersions) Validate() error {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s FleetAgentVersionsReferenceSource) Validate() error {
+	switch s {
+	case "published":
+		return nil
+	case "fleet":
+		return nil
+	case "none":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s *FleetIncidentDetail) Validate() error {

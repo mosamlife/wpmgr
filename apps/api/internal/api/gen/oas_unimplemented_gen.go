@@ -1046,8 +1046,8 @@ func (UnimplementedHandler) DeleteAdminUser(ctx context.Context, params DeleteAd
 // CHAIN-SAFE: deleting a base or mid-chain increment that still has
 // dependent later-generation increments is refused with 422
 // (chain_has_dependents); delete the newer increments first. A
-// running/pending snapshot is refused with 422 (snapshot_in_progress) —
-// cancel it first. Requires operator+.
+// running/pending snapshot is refused with 422 (snapshot_in_progress), cancel it first. Requires
+// operator+.
 //
 // DELETE /api/v1/backups/{snapshotId}
 func (UnimplementedHandler) DeleteBackup(ctx context.Context, params DeleteBackupParams) (r DeleteBackupRes, _ error) {
@@ -1163,8 +1163,8 @@ func (UnimplementedHandler) DeleteMember(ctx context.Context, params DeleteMembe
 // grace-window purge worker runs. `confirm_name` must exactly match the
 // organisation's current name. When this is the caller's active org,
 // their session is reassigned to another live membership, or cleared
-// entirely (dropping to onboarding) if it was their last org —
-// `active_tenant_id` in the response reflects the post-delete state.
+// entirely (dropping to onboarding) if it was their last org, `active_tenant_id` in the response
+// reflects the post-delete state.
 // On a hosted instance an active paid subscription must be
 // cancelled/downgraded first (`billing_active` 409).
 //
@@ -1508,8 +1508,8 @@ func (UnimplementedHandler) GetAdminAccountsTenancy(ctx context.Context, params 
 
 // GetAdminRevenue implements getAdminRevenue operation.
 //
-// Local-state-only revenue view derived from tenants + billing_events —
-// zero payment-provider API calls. Requires is_superadmin=true.
+// Local-state-only revenue view derived from tenants + billing_events, zero payment-provider API
+// calls. Requires is_superadmin=true.
 //
 // GET /api/v1/admin/revenue
 func (UnimplementedHandler) GetAdminRevenue(ctx context.Context) (r GetAdminRevenueRes, _ error) {
@@ -1762,11 +1762,16 @@ func (UnimplementedHandler) GetEmailNotifySettings(ctx context.Context) (r GetEm
 // GetFleetAgentVersions implements getFleetAgentVersions operation.
 //
 // Per-site {site_id, site_name, agent_version, status} plus fleet-wide
-// counts, classified against the currently published agent version.
-// status is one of current | outdated | unknown | ineligible.
+// counts, classified against a single reference version. That reference
+// is the published agent version when the release manifest can be read,
+// and otherwise the newest well-formed agent version present in this
+// tenant's own fleet, which is what a self-hosted install (whose object
+// storage never receives the release pipeline's manifest) gets.
+// reference_source names which of the two, or "none" when neither was
+// available. status is one of current | outdated | unknown | ineligible.
 // "unknown" covers a site that has never reported agent_version, a
 // malformed/unparseable version on either side of the comparison, or a
-// currently-unreadable published-version manifest; never a false
+// reference_source of "none"; never a false
 // "outdated". "ineligible" is a site that cannot self-update at all:
 // today that is the public plugin-directory build, which ships without
 // the self-updater and is upgraded by the plugin directory instead.
@@ -3126,8 +3131,10 @@ func (UnimplementedHandler) PreloadCache(ctx context.Context, params PreloadCach
 // Large files bypass the CP's response path entirely — only the
 // presigned URL is returned in the 200 body.
 // A `file_transfers` row is persisted for audit and GC tracking.
-// **Sensitive-path gate (T6):** same rules as `readSiteFileContent` —
-// owner-level permission required; the attempt is always audited.
+// **Sensitive-path gate (T6):** same rules as `readSiteFileContent`, owner-level permission required;
+//
+//	the attempt is always audited.
+//
 // Returns `503 storage_not_configured` when object storage is not
 // configured (self-hosted deployments without S3).
 // The feature must be explicitly enabled per site. Returns
@@ -4344,8 +4351,8 @@ func (UnimplementedHandler) VerifySiteActivity(ctx context.Context, params Verif
 // `403 insufficient_permission` and the denial is audited at elevated
 // severity. The agent independently enforces its executable deny-list
 // regardless.
-// **Sensitive-file gate (T6):** Same as above for `confirm_sensitive=true`
-// — requires owner (`site.files.write_code`) and is audited at elevated
+// **Sensitive-file gate (T6):** Same as above for `confirm_sensitive=true`, requires owner (`site.
+// files.write_code`) and is audited at elevated
 // severity on both success and denial.
 // Requires `site.files.write` permission (admin+).
 //

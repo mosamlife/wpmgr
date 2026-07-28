@@ -2343,7 +2343,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		agentReleaseReader = agentrelease.NewReader(nil, 0)
 	}
-	agentReleaseH := agentrelease.NewHandler(agentrelease.NewService(agentrelease.NewRepo(pool), agentReleaseReader))
+	// The fleet rollup reports the self-update kill switch from the SAME config
+	// value the update service and worker gate dispatch on (see
+	// SetAgentSelfUpdate below), so the UI can only offer the action when this
+	// control plane would actually honour it.
+	agentReleaseH := agentrelease.NewHandler(
+		agentrelease.NewService(agentrelease.NewRepo(pool), agentReleaseReader),
+		cfg.Update.AgentSelfUpdateEnabled,
+	)
 
 	// The agent's OWN upgrade channel (three-beat arm/apply/confirm, staged in
 	// gated waves). SHIPS DARK: cfg.Update.AgentSelfUpdateEnabled defaults to

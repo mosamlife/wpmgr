@@ -27,7 +27,7 @@ import {
   Plus,
 } from "lucide-react";
 import { motion } from "motion/react";
-import type { Site } from "@wpmgr/api";
+import type { FleetAgentVersions, Site } from "@wpmgr/api";
 
 import { Checkbox } from "@/components/ui/checkbox";
 import { TagChip, TagOverflowChip } from "@/features/sites/tag-chip";
@@ -114,6 +114,15 @@ export interface SitesTableProps {
    * text instead of guessing a classification.
    */
   agentStatusById?: ReadonlyMap<string, AgentStatus>;
+  /**
+   * Where the `agentStatusById` classification's reference version came
+   * from (see FleetAgentVersions.reference_source). Threaded through to the
+   * Agent column's chip so a fleet-derived "current" never renders as an
+   * unqualified "Current" (GH #255 follow-up: a site can be "current"
+   * against the newest agent this fleet has seen while dozens of releases
+   * behind a real published build). Omit while the rollup is loading.
+   */
+  agentReferenceSource?: FleetAgentVersions["reference_source"];
   /** Optional click handler for the inline "Log in" (Zap) action. */
   onOpenAutoLogin?: (site: Site) => void;
   /** Optional click handler for the three-dot "More" item entries. */
@@ -320,6 +329,7 @@ function buildColumns(
   onDisconnect: ((site: Site) => void) | undefined,
   onReconnect: ((site: Site) => void) | undefined,
   onRemove: ((site: Site) => void) | undefined,
+  agentReferenceSource: FleetAgentVersions["reference_source"] | undefined,
 ): ColumnDef<SiteRow>[] {
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selection.selected.has(id));
@@ -502,7 +512,13 @@ function buildColumns(
             );
           return <span className="font-mono text-sm tabular-nums">{v}</span>;
         }
-        return <AgentStatusChip status={agentStatus} version={v || null} />;
+        return (
+          <AgentStatusChip
+            status={agentStatus}
+            version={v || null}
+            referenceSource={agentReferenceSource}
+          />
+        );
       },
     },
     {
@@ -669,6 +685,7 @@ export function SitesTable({
   selection: externalSelection,
   densityState: externalDensityState,
   agentStatusById,
+  agentReferenceSource,
   onOpenAutoLogin,
   onOpenDetail,
   onDisconnect,
@@ -699,6 +716,7 @@ export function SitesTable({
         onDisconnect,
         onReconnect,
         onRemove,
+        agentReferenceSource,
       ),
     [
       selection,
@@ -708,6 +726,7 @@ export function SitesTable({
       onDisconnect,
       onReconnect,
       onRemove,
+      agentReferenceSource,
     ],
   );
 

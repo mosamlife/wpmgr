@@ -11,9 +11,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AGENT_STATUS_LABEL, type AgentStatus } from "@/components/status";
+import { agentStatusDisplayLabel, type AgentStatus } from "@/components/status";
 import { useCreateUpdateRun } from "@/features/updates/use-updates";
-import type { Site } from "@wpmgr/api";
+import type { FleetAgentVersions, Site } from "@wpmgr/api";
 
 // GH #255 Phase 2: the confirmation dialog for the "Update WPMgr agent" bulk
 // action (sites toolbar > More). Reuses the fleet agent-version rollup
@@ -32,6 +32,7 @@ export function AgentSelfUpdateDialog({
   onClose,
   sites,
   agentStatusById,
+  agentReferenceSource,
 }: {
   open: boolean;
   onClose: () => void;
@@ -39,6 +40,8 @@ export function AgentSelfUpdateDialog({
   sites: Site[];
   /** Per-site agent-freshness classification from the fleet rollup. */
   agentStatusById: Map<string, AgentStatus> | undefined;
+  /** Where the classification's reference version came from; see FleetAgentVersions.reference_source. */
+  agentReferenceSource?: FleetAgentVersions["reference_source"];
 }) {
   return (
     <Dialog open={open} onClose={onClose}>
@@ -49,6 +52,7 @@ export function AgentSelfUpdateDialog({
           key={sites.map((s) => s.id).join(",")}
           sites={sites}
           agentStatusById={agentStatusById}
+          agentReferenceSource={agentReferenceSource}
           onClose={onClose}
         />
       ) : null}
@@ -59,10 +63,12 @@ export function AgentSelfUpdateDialog({
 function AgentSelfUpdateDialogBody({
   sites,
   agentStatusById,
+  agentReferenceSource,
   onClose,
 }: {
   sites: Site[];
   agentStatusById: Map<string, AgentStatus> | undefined;
+  agentReferenceSource?: FleetAgentVersions["reference_source"];
   onClose: () => void;
 }) {
   const navigate = useNavigate();
@@ -152,7 +158,7 @@ function AgentSelfUpdateDialogBody({
             {(Object.entries(excludedCounts) as [AgentStatus, number][])
               .map(
                 ([status, n]) =>
-                  `${n} ${AGENT_STATUS_LABEL[status].toLowerCase()}`,
+                  `${n} ${agentStatusDisplayLabel(status, agentReferenceSource).toLowerCase()}`,
               )
               .join(", ")}
             .

@@ -5074,11 +5074,16 @@ export const getAgentLatestVersion = <ThrowOnError extends boolean = false>(
  * Tenant-wide agent-version rollup across all sites
  *
  * Per-site {site_id, site_name, agent_version, status} plus fleet-wide
- * counts, classified against the currently published agent version.
- * status is one of current | outdated | unknown | ineligible.
+ * counts, classified against a single reference version. That reference
+ * is the published agent version when the release manifest can be read,
+ * and otherwise the newest well-formed agent version present in this
+ * tenant's own fleet, which is what a self-hosted install (whose object
+ * storage never receives the release pipeline's manifest) gets.
+ * reference_source names which of the two, or "none" when neither was
+ * available. status is one of current | outdated | unknown | ineligible.
  * "unknown" covers a site that has never reported agent_version, a
  * malformed/unparseable version on either side of the comparison, or a
- * currently-unreadable published-version manifest; never a false
+ * reference_source of "none"; never a false
  * "outdated". "ineligible" is a site that cannot self-update at all:
  * today that is the public plugin-directory build, which ships without
  * the self-updater and is upgraded by the plugin directory instead.

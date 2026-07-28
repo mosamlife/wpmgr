@@ -48,6 +48,7 @@ import { useBulkAction } from "@/features/sites/use-bulk-action";
 import { toast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 import { connectionStateOf } from "@/features/sites/connection-state";
+import { agentStatusFilterHint } from "@/features/sites/agent-status-hint";
 import type { Site } from "@wpmgr/api";
 
 // ---------------------------------------------------------------------------
@@ -293,6 +294,12 @@ function SitesPage() {
     }
     return Array.from(set).sort();
   }, [sites, agentStatusById]);
+
+  // GH #255: see agentStatusFilterHint's own doc for why this exists.
+  const agentStatusHint = useMemo(
+    () => agentStatusFilterHint(agentStatusOptions, fleetAgents?.reference_source),
+    [agentStatusOptions, fleetAgents],
+  );
 
   // ── visibleSites — pure derive over the query cache ───────────────────────
   //
@@ -850,6 +857,7 @@ function SitesPage() {
             }}
             agentStatusOptions={agentStatusOptions}
             selectedAgentStatuses={selectedAgentStatuses}
+            agentStatusHint={agentStatusHint}
             onAgentStatusToggle={(status) => {
               const next = selectedAgentStatuses.includes(status)
                 ? selectedAgentStatuses.filter((s) => s !== status)
@@ -966,6 +974,7 @@ function SitesPage() {
               selection={operate ? selection : undefined}
               densityState={densityState}
               agentStatusById={agentStatusById}
+              agentReferenceSource={fleetAgents?.reference_source}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
@@ -994,6 +1003,7 @@ function SitesPage() {
           onClose={() => setAgentUpdateOpen(false)}
           sites={selectedSites}
           agentStatusById={agentStatusById}
+          agentReferenceSource={fleetAgents?.reference_source}
         />
       ) : null}
 

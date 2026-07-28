@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.99] - 2026-07-28
+
+### Fixed
+
+- The Agent version card could read "0 of 24 sites on unknown, 24 unknown", with the agent-status filter on the Sites list appearing to do nothing (GH #255, reported on a self-hosted install running 24 sites immediately after 0.61.97). The fleet agent-version feature compares each site against the currently published agent version, which it reads from a pointer file the release process writes into the hosted service's object storage; a self-hosted install has its own object storage and never receives that file, so WPMgr had no version to compare against, and with no reference version every site necessarily fell back to unknown. The sites were reporting their versions correctly the whole time, and the filter was not broken either: it only offers values that actually appear, so with every site unknown there was a single option that matched everything, which looked like nothing happening.
+- When there is no published reference version, self-hosted installs now compare each site against the newest agent version present in that install's own fleet instead, so a site lagging behind the others shows up as behind. The interface says plainly when the comparison is against the fleet rather than a published release, so "current" is never mistaken for "up to date with the newest release that exists." When there is genuinely nothing to compare against, WPMgr now says so in plain language instead of printing "unknown" as though it were a version number.
+- On the hosted service, the published agent version is cached, and a brief object-storage failure used to be cached too, which could make the dashboard fall back to comparing against the fleet and briefly report every site as current when they were in fact behind. The last successfully read version is now kept and used across a brief failure, a failure is retried quickly rather than held, and a version that has gone stale beyond a bound is no longer presented as though it came from the published release. An install whose release channel exists but is temporarily unreachable now says it cannot determine a reference version, which is a different situation from an install that has no release channel at all.
+- The control-plane switch that enables the fleet-wide agent update introduced in 0.61.98 was not reported to the dashboard, so the action stayed hidden even when an operator turned the switch on. It is now reported, and the action appears exactly when the control plane would honor it. The feature still ships turned off.
+- Comments in generated API client code that had been reflowed incorrectly in 0.61.98 are restored by regenerating the client, with no behavior change.
+
 ## [0.61.98] - 2026-07-28
 
 ### Added

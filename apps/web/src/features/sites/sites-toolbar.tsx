@@ -126,6 +126,12 @@ export interface SitesToolbarProps {
   onAgentStatusToggle?: (status: string) => void;
   /** Called to clear all agent-freshness filters. */
   onAgentStatusesClear?: () => void;
+  /**
+   * Explanatory note for the Agent dropdown, set only when the axis has
+   * collapsed to a single "Unknown" bucket (GH #255) so the operator sees
+   * why picking it does not narrow the list.
+   */
+  agentStatusHint?: string;
   /** Total count of active filter axes (for the "Clear filters" pill). */
   activeFilterCount?: number;
   /** Called to clear ALL filters across all axes. */
@@ -226,6 +232,7 @@ function IdleMode({
   selectedAgentStatuses = [],
   onAgentStatusToggle,
   onAgentStatusesClear,
+  agentStatusHint,
   activeFilterCount = 0,
   onClearAllFilters,
   densityState,
@@ -297,6 +304,7 @@ function IdleMode({
           onToggle={onAgentStatusToggle ?? (() => {})}
           onClear={onAgentStatusesClear ?? (() => {})}
           ariaLabel="Filter by agent status"
+          hint={agentStatusHint}
         />
 
         {/* Tags — registry-backed multi-select with a match-mode segmented
@@ -432,6 +440,7 @@ function MultiSelectDropdown({
   onClear,
   ariaLabel,
   icon: Icon,
+  hint,
 }: {
   label: string;
   options: readonly string[];
@@ -440,6 +449,14 @@ function MultiSelectDropdown({
   onClear: () => void;
   ariaLabel: string;
   icon?: typeof Tag;
+  /**
+   * Explanatory note shown at the top of the menu. For an axis whose only
+   * value collapses to a single bucket (e.g. every site is "Unknown"
+   * because there is nothing to classify against, GH #255), toggling the
+   * lone checkbox matches every row and looks like the filter is a no-op.
+   * This says why up front instead of leaving the operator to guess.
+   */
+  hint?: string;
 }) {
   const [menuFilter, setMenuFilter] = useState("");
   const count = selected.length;
@@ -482,6 +499,12 @@ function MultiSelectDropdown({
         className="min-w-[14rem]"
         collisionPadding={8}
       >
+        {hint ? (
+          <div className="max-w-[18rem] px-2 pb-1.5 pt-1 text-xs text-muted-foreground">
+            {hint}
+          </div>
+        ) : null}
+
         {/* In-menu text filter for long lists */}
         {options.length > 6 ? (
           <div className="px-2 pb-1 pt-0.5">
