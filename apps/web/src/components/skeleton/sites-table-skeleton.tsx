@@ -1,6 +1,10 @@
 import type { CSSProperties } from "react";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  SITES_COLUMN_TRACKS,
+  SITES_TABLE_MIN_WIDTH_PX,
+} from "@/features/sites/sites-table-geometry";
 import { cn } from "@/lib/utils";
 
 // Surface 4.13 — Sites table skeleton.
@@ -30,19 +34,12 @@ export interface SitesTableSkeletonProps {
   className?: string;
 }
 
-// Keep these column widths in lockstep with sites-table.tsx (COL_*_PX). If
-// the real table's column geometry shifts, this constant moves with it.
-const COLUMNS = [
-  { id: "select", width: 40 },
-  { id: "url", width: 320 },
-  { id: "tags", width: 160 },
-  { id: "wp", width: 90 },
-  { id: "php", width: 90 },
-  { id: "updates", width: 130 },
-  { id: "backup", width: 180 },
-  { id: "uptime", width: 80 },
-  { id: "actions", width: 80 },
-] as const;
+// Column geometry is READ from the real table's track table rather than
+// duplicated here (GH #255 / GH #261). The hand-copied list this replaced had
+// silently drifted: it was missing the Client and Agent columns entirely and
+// every width was stale, so the crossfade from skeleton to table jumped every
+// column sideways.
+const COLUMNS = SITES_COLUMN_TRACKS.map((t) => ({ id: t.id, width: t.base }));
 
 const HEADER_HEIGHT_CLASS = "h-11";
 
@@ -74,13 +71,18 @@ export function SitesTableSkeleton({
       role="status"
       aria-label="Loading sites"
       aria-busy="true"
-      className={cn("flex w-full flex-col bg-background", className)}
+      className={cn(
+        "flex w-full flex-col overflow-x-auto bg-background",
+        className,
+      )}
     >
       <span className="sr-only">Loading sites…</span>
 
       <table
         className="w-full border-collapse"
-        style={{ tableLayout: "fixed" }}
+        // Same floor as the real table: narrow viewports scroll rather than
+        // crushing the columns, so the crossfade does not reflow.
+        style={{ tableLayout: "fixed", minWidth: SITES_TABLE_MIN_WIDTH_PX }}
       >
         <thead className="sticky top-0 z-10 bg-background">
           <tr className={cn(HEADER_HEIGHT_CLASS, "border-b border-border")}>
@@ -106,6 +108,9 @@ export function SitesTableSkeleton({
                 </th>
               );
             })}
+            {/* Trailing spacer track, mirroring the real table so an
+                ultrawide viewport does not stretch the columns. */}
+            <td aria-hidden="true" className="p-0" />
           </tr>
         </thead>
         <tbody>
@@ -128,6 +133,7 @@ export function SitesTableSkeleton({
                   </td>
                 );
               })}
+              <td aria-hidden="true" className="p-0" />
             </tr>
           ))}
         </tbody>
@@ -136,7 +142,8 @@ export function SitesTableSkeleton({
   );
 }
 
-function CellSkeleton({ column }: { column: (typeof COLUMNS)[number]["id"] }) {
+// Column ids are the real table's track ids (see sites-table-geometry.ts).
+function CellSkeleton({ column }: { column: string }) {
   switch (column) {
     case "select":
       return <Skeleton className="size-4 rounded" />;
@@ -148,18 +155,23 @@ function CellSkeleton({ column }: { column: (typeof COLUMNS)[number]["id"] }) {
           <Skeleton className="h-2 w-20" />
         </div>
       );
+    case "client":
+      return <Skeleton className="h-3 w-16" />;
     case "tags":
       // Single chip-shaped block (real cell may show up to 3 + overflow).
       return <Skeleton className="h-5 w-12 rounded-md" />;
-    case "wp":
-    case "php":
+    case "wp_version":
+    case "php_version":
       // Mono version placeholder.
       return <Skeleton className="h-3 w-10" />;
-    case "updates":
+    case "agent_version":
+      // Status icon + mono version.
+      return <Skeleton className="h-3 w-14" />;
+    case "updates_count":
       return <Skeleton className="h-5 w-20 rounded-md" />;
-    case "backup":
-      return <Skeleton className="h-5 w-28 rounded-md" />;
-    case "uptime":
+    case "backup_status":
+      return <Skeleton className="h-5 w-16 rounded-md" />;
+    case "uptime_sparkline":
       // Sparkline placeholder — keep it short, the real chart is small too.
       return <Skeleton className="h-3 w-12" />;
     case "actions":
@@ -170,5 +182,7 @@ function CellSkeleton({ column }: { column: (typeof COLUMNS)[number]["id"] }) {
           <Skeleton className="size-7 rounded" />
         </div>
       );
+    default:
+      return null;
   }
 }

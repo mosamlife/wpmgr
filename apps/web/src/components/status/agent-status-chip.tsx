@@ -2,7 +2,9 @@ import { cn } from "@/lib/utils";
 import type { FleetAgentVersions } from "@wpmgr/api";
 import {
   AGENT_STATUS_BG,
+  AGENT_STATUS_FG,
   AGENT_STATUS_ICON,
+  agentStatusAccessibleName,
   agentStatusDisplayLabel,
   isFleetDerivedCurrent,
   type AgentStatus,
@@ -20,6 +22,12 @@ export interface AgentStatusChipProps {
    * say without it.
    */
   referenceSource?: FleetAgentVersions["reference_source"];
+  /**
+   * Dense presentation for a fixed-width table track (GH #255): status icon
+   * plus the version, no status word and no pill. See the doc block below
+   * for why the word is dropped and where it goes instead.
+   */
+  compact?: boolean;
   className?: string;
 }
 
@@ -41,11 +49,21 @@ export interface AgentStatusChipProps {
  * and the title explains the reference. Every other status ("outdated",
  * "unknown", "ineligible") already reads the same regardless of source and
  * is left unchanged.
+ *
+ * `compact` (GH #255) drops the status word and the pill, leaving the icon
+ * and the version: in a 22-row fleet table the same word repeats on every
+ * row while stealing width from the Updates and Backup tracks next door,
+ * and the two-line "Current in fleet" wrap doubled the row height. The word
+ * is not lost, it moves: the classification is still carried by icon SHAPE
+ * plus colour, the full state is still announced through visually-hidden
+ * text (agentStatusAccessibleName), and the fleet-derived caveat is stated
+ * once on the column header instead of once per row.
  */
 export function AgentStatusChip({
   status,
   version,
   referenceSource,
+  compact = false,
   className,
 }: AgentStatusChipProps) {
   const Icon = AGENT_STATUS_ICON[status];
@@ -56,6 +74,38 @@ export function AgentStatusChip({
     : version
       ? `Agent ${version}`
       : undefined;
+
+  if (compact) {
+    return (
+      <span
+        title={title}
+        className={cn(
+          "inline-flex items-center gap-1.5 whitespace-nowrap",
+          AGENT_STATUS_FG[status],
+          className,
+        )}
+      >
+        <Icon aria-hidden="true" className="size-3.5 shrink-0" />
+        {/* The announced string. The visible digits below are decorative:
+            on their own they would read as a bare number with no state. */}
+        <span className="sr-only">
+          {agentStatusAccessibleName(status, version, referenceSource)}
+        </span>
+        <span
+          aria-hidden="true"
+          className={cn(
+            "font-mono text-xs tabular-nums",
+            version
+              ? "text-[var(--color-foreground)]"
+              : "text-[var(--color-muted-foreground)]",
+          )}
+        >
+          {version || "—"}
+        </span>
+      </span>
+    );
+  }
+
   return (
     <span
       title={title}
