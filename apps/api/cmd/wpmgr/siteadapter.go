@@ -88,6 +88,54 @@ func (l *siteLookup) GetSiteInfo(ctx context.Context, tenantID, siteID uuid.UUID
 	return toSiteInfo(s), nil
 }
 
+// AgentVersion returns the agent version the site last reported over its
+// signed metadata push. It is the ONLY signal the agent self-update channel
+// accepts as proof an upgrade landed (update.AgentConfirmWorker): the new code
+// speaking for itself, over a channel the old code cannot fake once it has
+// been replaced. A not-found site propagates as a domain.NotFound error so the
+// confirmation worker can tell "this site is gone" from "this site has not
+// reported yet".
+func (l *siteLookup) AgentVersion(ctx context.Context, tenantID, siteID uuid.UUID) (string, error) {
+	s, err := l.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return "", err
+	}
+	return s.AgentVersion, nil
+}
+
+// AgentSelfUpdateResult returns the agent's own account of its last self-update
+// apply beat, as replayed on the site's signed metadata push and stored in the
+// site's inventory blob. It satisfies update.AgentApplyResultLookup.
+//
+// The apply runs in a WordPress cron request that has no control-plane response
+// to ride on, so this record is the only way a FAILED or EXPIRED apply is ever
+// heard about. The confirmation worker uses it to explain a timeout: without it
+// "the cron run never happened" and "the cron run happened and the upgrade
+// failed" are the same silence.
+//
+// Best-effort throughout: a site that never staged an upgrade, and an agent old
+// enough not to send the record, both return false with no error.
+func (l *siteLookup) AgentSelfUpdateResult(ctx context.Context, tenantID, siteID uuid.UUID) (update.AgentApplyResult, bool, error) {
+	s, err := l.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return update.AgentApplyResult{}, false, err
+	}
+	r := s.ParsedAgentSelfUpdate()
+	if r == nil {
+		return update.AgentApplyResult{}, false, nil
+	}
+	out := update.AgentApplyResult{
+		Status:      r.Status,
+		FromVersion: r.FromVersion,
+		ToVersion:   r.ToVersion,
+		Detail:      r.Detail,
+	}
+	if r.At > 0 {
+		out.At = time.Unix(r.At, 0).UTC()
+	}
+	return out, true, nil
+}
+
 func (l *siteLookup) ListSiteInfoByTag(ctx context.Context, tenantID uuid.UUID, tag string) ([]update.SiteInfo, error) {
 	sites, err := l.svc.List(ctx, site.ListInput{TenantID: tenantID, AnyTags: []string{tag}, Limit: 200, Offset: 0})
 	if err != nil {
@@ -510,11 +558,16 @@ func toSiteInfo(s site.Site) update.SiteInfo {
 		comps = append(comps, toUpdateComponent(update.TargetTheme, t))
 	}
 	info := update.SiteInfo{
-		ID:         s.ID,
-		URL:        s.URL,
-		Name:       s.Name,
-		Enrolled:   s.EnrolledAt != nil,
-		Components: comps,
+		ID:       s.ID,
+		URL:      s.URL,
+		Name:     s.Name,
+		Enrolled: s.EnrolledAt != nil,
+		// Carried straight from the site row, NOT from the component
+		// inventory: the agent self-update planner compares this against the
+		// published release version and must not depend on the site's own
+		// (deliberately suppressed) self-update advisory.
+		AgentVersion: s.AgentVersion,
+		Components:   comps,
 	}
 	// GH #211: drop a same-version phantom core-update advisory here too
 	// (defense-in-depth; the update package's planTasks authority,

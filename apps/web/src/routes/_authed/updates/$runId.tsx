@@ -23,7 +23,12 @@ import {
   type RunStreamState,
 } from "@/features/updates/use-updates";
 import { UpdateTasksTable } from "@/features/updates/update-tasks-table";
-import { summarizeTasks, siteNameMap } from "@/features/updates/summarize";
+import {
+  summarizeTasks,
+  siteNameMap,
+  haltReason,
+  isTerminalRunStatus,
+} from "@/features/updates/summarize";
 import { useSites } from "@/features/sites/use-sites";
 import { relativeTime } from "@/lib/utils";
 import type { UpdateRun } from "@wpmgr/api";
@@ -54,9 +59,11 @@ function RunDetailPage() {
   );
 
   // Subscribe to the SSE stream; it patches the run-detail cache directly.
-  // Disabled once the run is completed (no more deltas to receive).
+  // Disabled once the run reaches a terminal state (no more deltas to
+  // receive). `halted` (GH #255 Phase 2) is terminal exactly like
+  // `completed`; see isTerminalRunStatus.
   useRunEventStream(runId, {
-    enabled: run?.status !== "completed",
+    enabled: !isTerminalRunStatus(run?.status),
     onState: setStreamState,
   });
 
@@ -108,12 +115,16 @@ const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   pending: "muted",
   running: "info",
   completed: "success",
+  // GH #255 Phase 2: a wave failed to prove itself; destructive tone flags
+  // it for immediate attention, matching the prominent banner below.
+  halted: "destructive",
 };
 
 const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   pending: "Pending",
   running: "Running",
   completed: "Completed",
+  halted: "Halted",
 };
 
 function RunDetail({
@@ -127,7 +138,10 @@ function RunDetail({
   const tasks = run.tasks ?? [];
   const summary = summarizeTasks(tasks);
   const created = relativeTime(run.created_at);
-  const live = run.status !== "completed";
+  // `halted` (GH #255 Phase 2) is terminal exactly like `completed`; see
+  // isTerminalRunStatus.
+  const live = !isTerminalRunStatus(run.status);
+  const halted = run.status === "halted";
 
   const liveState = toLiveState(streamState);
   const liveLabel = streamState === "polling" ? "Polling" : undefined;
@@ -166,6 +180,18 @@ function RunDetail({
         }
       />
 
+      {halted ? (
+        // GH #255 Phase 2: a halt means a bad agent build was caught before
+        // it could reach the rest of the fleet, which the operator needs to
+        // see immediately, with the reason. Reuses PageError (no retry: the
+        // run is terminal, not a failed fetch) so it reads with the same
+        // weight as every other "this needs your attention" surface.
+        <PageError
+          what="This rollout was halted"
+          why={haltReason(run) ?? undefined}
+        />
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Progress</CardTitle>
@@ -191,6 +217,7 @@ function RunDetail({
               { label: "Running", value: summary.counts.running, tabular: true },
               { label: "Pending", value: summary.counts.pending, tabular: true },
               { label: "Skipped", value: summary.counts.skipped, tabular: true },
+              { label: "Cancelled", value: summary.counts.cancelled, tabular: true },
             ]}
           />
         </CardContent>

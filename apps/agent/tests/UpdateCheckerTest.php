@@ -642,6 +642,71 @@ final class UpdateCheckerTest extends TestCase
         $this->assertArrayHasKey(UpdateChecker::PLUGIN_KEY, $result->no_update);
     }
 
+    /**
+     * REGRESSION LOCK: injectUpdate() and verifyManifest() must apply the SAME
+     * version-comparison rule.
+     *
+     * verifyManifest()'s downgrade guard (step 8) normalizes both sides before
+     * comparing; injectUpdate() used to compare the RAW strings. PHP
+     * version_compare() reads '0.10.5-cron-selfheal' as a PRE-RELEASE of (i.e.
+     * LOWER than) '0.10.5', so a cached manifest claiming version '0.10.5'
+     * satisfied the raw comparison and was offered in the dashboard as an
+     * available update, while the install path's verifyManifest() would then
+     * refuse the very same build as a sidegrade. One rule, both gates.
+     *
+     * Confirmed RED against the pre-change code: with the bare
+     * version_compare($claims['version'], $onDisk, '>') this test found the
+     * entry in $result->response and failed on the first assertion.
+     */
+    public function test_injectUpdate_does_not_offer_a_bare_numeric_sidegrade_of_a_dev_suffixed_build(): void
+    {
+        $this->onDiskVersion = '0.10.5-cron-selfheal';
+
+        $toCache = $this->makeClaims(['version' => '0.10.5']);
+        unset($toCache['package_url']);
+        $this->siteTransients[UpdateChecker::TRANSIENT_MANIFEST] = $toCache;
+
+        $transient = new \stdClass();
+        $transient->response  = [];
+        $transient->no_update = [];
+
+        $result = $this->makeChecker()->injectUpdate($transient);
+
+        $this->assertArrayNotHasKey(
+            UpdateChecker::PLUGIN_KEY,
+            $result->response,
+            'a bare-numeric sidegrade of a dev-suffixed on-disk build must never be offered as an update'
+        );
+        $this->assertArrayHasKey(
+            UpdateChecker::PLUGIN_KEY,
+            $result->no_update,
+            'the sidegrade case belongs in no_update[], exactly like any other up-to-date site'
+        );
+    }
+
+    /**
+     * The companion to the lock above: normalizing must not suppress a REAL
+     * update. A numeric-core bump is still offered even when both sides carry
+     * descriptive suffixes.
+     */
+    public function test_injectUpdate_still_offers_a_numeric_core_bump_over_a_dev_suffixed_build(): void
+    {
+        $this->onDiskVersion = '0.10.5-cron-selfheal';
+
+        $toCache = $this->makeClaims(['version' => '0.10.6-self-update']);
+        unset($toCache['package_url']);
+        $this->siteTransients[UpdateChecker::TRANSIENT_MANIFEST] = $toCache;
+
+        $transient = new \stdClass();
+        $transient->response  = [];
+        $transient->no_update = [];
+
+        $result = $this->makeChecker()->injectUpdate($transient);
+
+        $this->assertArrayHasKey(UpdateChecker::PLUGIN_KEY, $result->response);
+        $this->assertSame('0.10.6-self-update', $result->response[UpdateChecker::PLUGIN_KEY]->new_version);
+    }
+
     public function test_injectUpdate_uses_cached_manifest_without_second_fetch(): void
     {
         // Pre-populate the 12h cache.

@@ -13932,6 +13932,8 @@ func (s UpdateItemType) Validate() error {
 		return nil
 	case "core":
 		return nil
+	case "agent":
+		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}
@@ -14111,6 +14113,8 @@ func (s UpdateRunStatus) Validate() error {
 		return nil
 	case "completed":
 		return nil
+	case "halted":
+		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}
@@ -14164,6 +14168,8 @@ func (s UpdateTaskStatus) Validate() error {
 		return nil
 	case "skipped":
 		return nil
+	case "cancelled":
+		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}
@@ -14176,6 +14182,8 @@ func (s UpdateTaskTargetType) Validate() error {
 	case "theme":
 		return nil
 	case "core":
+		return nil
+	case "agent":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)

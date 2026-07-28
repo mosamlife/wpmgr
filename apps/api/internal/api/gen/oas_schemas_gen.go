@@ -5064,8 +5064,7 @@ type AgentHeartbeatResult struct {
 	Instructions []string `json:"instructions"`
 	// Present with a `["revoke"]` instruction: a short-lived signed Ed25519
 	// JWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP
-	// public key before any self-teardown (ADR-040 addendum). Fail-closed —
-	// an absent/invalid token must be a no-op.
+	// public key before any self-teardown (ADR-040 addendum). Fail-closed, // an absent/invalid token must be a no-op.
 	RevokeToken OptString `json:"revoke_token"`
 }
 
@@ -21923,8 +21922,7 @@ type Me struct {
 	ManagedStorageAllowed OptBool `json:"managed_storage_allowed"`
 	// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 	// single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
-	// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
-	// never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
+	// just-consumed verification token) or the first-run bootstrap response of POST /auth/register, // never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
 	// checkout right after the account is verified. Absent means no intent was captured (free signup,
 	// self-hosted instance, or a resend/login/OIDC path that never carries one).
 	DesiredPlan OptMeDesiredPlan `json:"desired_plan"`
@@ -22030,8 +22028,7 @@ func (*Me) verifyEmailRes()             {}
 
 // The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 // single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
-// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
-// never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
+// just-consumed verification token) or the first-run bootstrap response of POST /auth/register, // never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start
 // checkout right after the account is verified. Absent means no intent was captured (free signup,
 // self-hosted instance, or a resend/login/OIDC path that never carries one).
 type MeDesiredPlan string
@@ -35791,8 +35788,7 @@ type PutEmailConnectionNotFound Error
 
 func (*PutEmailConnectionNotFound) putEmailConnectionRes() {}
 
-// Request body for PUT /sites/{siteId}/email/connections/{connKey}. All fields are optional —
-// omitted fields are unchanged (PATCH semantics within a PUT envelope). Omitting `secret` preserves
+// Request body for PUT /sites/{siteId}/email/connections/{connKey}. All fields are optional, // omitted fields are unchanged (PATCH semantics within a PUT envelope). Omitting `secret` preserves
 // the existing stored credential (nil-sentinel pattern).
 // Ref: #/components/schemas/PutEmailConnectionRequest
 type PutEmailConnectionRequest struct {
@@ -45243,8 +45239,7 @@ func (s *SiteShareList) SetItems(val []SiteShare) {
 func (*SiteShareList) listSharedWithMeRes() {}
 func (*SiteShareList) listSiteSharesRes()   {}
 
-// Role a site collaborator holds. Subset of the full org Role enum —
-// site shares cannot be owner.
+// Role a site collaborator holds. Subset of the full org Role enum, // site shares cannot be owner.
 // Ref: #/components/schemas/SiteShareRole
 type SiteShareRole string
 
@@ -46899,10 +46894,21 @@ func (s *UpdateFileManagerSettingsRequest) SetWriteEnabled(val OptBool) {
 // One thing to update on a site.
 // Ref: #/components/schemas/UpdateItem
 type UpdateItem struct {
+	// What to update. `agent` upgrades the WPMgr agent itself over its own
+	// dedicated signed channel and behaves differently from the others: it
+	// must be the ONLY item in its run (its staged-wave rollout is defined
+	// over the whole run), it takes no slug and no version pin, and it has
+	// no dry run. Success is established only when the upgraded agent
+	// reports its new version back; a scheduled acknowledgement is not
+	// success. The channel is off unless the control plane enables it.
 	Type UpdateItemType `json:"type"`
-	// Plugin/theme slug. Ignored (forced to "core") when type is core.
+	// Plugin/theme slug. Ignored (forced to "core") when type is core; must be omitted when type is
+	// agent.
 	Slug OptString `json:"slug"`
 	// Desired version, "latest" or an explicit pin. Defaults to latest.
+	// A pin is REJECTED when type is agent: the agent's release manifest
+	// only ever points at the published build and the agent refuses to
+	// install an older one, so a pin could not be honoured.
 	Version OptString `json:"version"`
 }
 
@@ -46936,12 +46942,20 @@ func (s *UpdateItem) SetVersion(val OptString) {
 	s.Version = val
 }
 
+// What to update. `agent` upgrades the WPMgr agent itself over its own
+// dedicated signed channel and behaves differently from the others: it
+// must be the ONLY item in its run (its staged-wave rollout is defined
+// over the whole run), it takes no slug and no version pin, and it has
+// no dry run. Success is established only when the upgraded agent
+// reports its new version back; a scheduled acknowledgement is not
+// success. The channel is off unless the control plane enables it.
 type UpdateItemType string
 
 const (
 	UpdateItemTypePlugin UpdateItemType = "plugin"
 	UpdateItemTypeTheme  UpdateItemType = "theme"
 	UpdateItemTypeCore   UpdateItemType = "core"
+	UpdateItemTypeAgent  UpdateItemType = "agent"
 )
 
 // AllValues returns all UpdateItemType values.
@@ -46950,6 +46964,7 @@ func (UpdateItemType) AllValues() []UpdateItemType {
 		UpdateItemTypePlugin,
 		UpdateItemTypeTheme,
 		UpdateItemTypeCore,
+		UpdateItemTypeAgent,
 	}
 }
 
@@ -46961,6 +46976,8 @@ func (s UpdateItemType) MarshalText() ([]byte, error) {
 	case UpdateItemTypeTheme:
 		return []byte(s), nil
 	case UpdateItemTypeCore:
+		return []byte(s), nil
+	case UpdateItemTypeAgent:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -46978,6 +46995,9 @@ func (s *UpdateItemType) UnmarshalText(data []byte) error {
 		return nil
 	case UpdateItemTypeCore:
 		*s = UpdateItemTypeCore
+		return nil
+	case UpdateItemTypeAgent:
+		*s = UpdateItemTypeAgent
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -47020,9 +47040,13 @@ func (*UpdateMediaSettingsUnprocessableEntity) updateMediaSettingsRes() {}
 
 // Ref: #/components/schemas/UpdateRun
 type UpdateRun struct {
-	ID          uuid.UUID       `json:"id"`
-	TenantID    uuid.UUID       `json:"tenant_id"`
-	CreatedBy   OptUUID         `json:"created_by"`
+	ID        uuid.UUID `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	CreatedBy OptUUID   `json:"created_by"`
+	// `halted` is terminal and specific to an agent self-update run: a
+	// staged-rollout wave failed to prove itself, so every task the run
+	// had not already dispatched was cancelled. It is distinct from
+	// `completed`, which would hide the fact that the run was stopped.
 	Status      UpdateRunStatus `json:"status"`
 	DryRun      bool            `json:"dry_run"`
 	ScheduledAt OptDateTime     `json:"scheduled_at"`
@@ -47253,12 +47277,17 @@ func (s *UpdateRunList) SetItems(val []UpdateRun) {
 	s.Items = val
 }
 
+// `halted` is terminal and specific to an agent self-update run: a
+// staged-rollout wave failed to prove itself, so every task the run
+// had not already dispatched was cancelled. It is distinct from
+// `completed`, which would hide the fact that the run was stopped.
 type UpdateRunStatus string
 
 const (
 	UpdateRunStatusPending   UpdateRunStatus = "pending"
 	UpdateRunStatusRunning   UpdateRunStatus = "running"
 	UpdateRunStatusCompleted UpdateRunStatus = "completed"
+	UpdateRunStatusHalted    UpdateRunStatus = "halted"
 )
 
 // AllValues returns all UpdateRunStatus values.
@@ -47267,6 +47296,7 @@ func (UpdateRunStatus) AllValues() []UpdateRunStatus {
 		UpdateRunStatusPending,
 		UpdateRunStatusRunning,
 		UpdateRunStatusCompleted,
+		UpdateRunStatusHalted,
 	}
 }
 
@@ -47278,6 +47308,8 @@ func (s UpdateRunStatus) MarshalText() ([]byte, error) {
 	case UpdateRunStatusRunning:
 		return []byte(s), nil
 	case UpdateRunStatusCompleted:
+		return []byte(s), nil
+	case UpdateRunStatusHalted:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -47295,6 +47327,9 @@ func (s *UpdateRunStatus) UnmarshalText(data []byte) error {
 		return nil
 	case UpdateRunStatusCompleted:
 		*s = UpdateRunStatusCompleted
+		return nil
+	case UpdateRunStatusHalted:
+		*s = UpdateRunStatusHalted
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -47360,13 +47395,16 @@ type UpdateTask struct {
 	DesiredVersion OptString            `json:"desired_version"`
 	FromVersion    OptString            `json:"from_version"`
 	ToVersion      OptString            `json:"to_version"`
-	Status         UpdateTaskStatus     `json:"status"`
-	Detail         OptString            `json:"detail"`
-	Error          OptString            `json:"error"`
-	StartedAt      OptDateTime          `json:"started_at"`
-	FinishedAt     OptDateTime          `json:"finished_at"`
-	CreatedAt      time.Time            `json:"created_at"`
-	UpdatedAt      time.Time            `json:"updated_at"`
+	// `cancelled` means the task was never dispatched because its run was
+	// halted first; nothing was sent to the site. Only agent self-update
+	// runs can halt.
+	Status     UpdateTaskStatus `json:"status"`
+	Detail     OptString        `json:"detail"`
+	Error      OptString        `json:"error"`
+	StartedAt  OptDateTime      `json:"started_at"`
+	FinishedAt OptDateTime      `json:"finished_at"`
+	CreatedAt  time.Time        `json:"created_at"`
+	UpdatedAt  time.Time        `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -47529,6 +47567,9 @@ func (s *UpdateTask) SetUpdatedAt(val time.Time) {
 	s.UpdatedAt = val
 }
 
+// `cancelled` means the task was never dispatched because its run was
+// halted first; nothing was sent to the site. Only agent self-update
+// runs can halt.
 type UpdateTaskStatus string
 
 const (
@@ -47538,6 +47579,7 @@ const (
 	UpdateTaskStatusFailed     UpdateTaskStatus = "failed"
 	UpdateTaskStatusRolledBack UpdateTaskStatus = "rolled_back"
 	UpdateTaskStatusSkipped    UpdateTaskStatus = "skipped"
+	UpdateTaskStatusCancelled  UpdateTaskStatus = "cancelled"
 )
 
 // AllValues returns all UpdateTaskStatus values.
@@ -47549,6 +47591,7 @@ func (UpdateTaskStatus) AllValues() []UpdateTaskStatus {
 		UpdateTaskStatusFailed,
 		UpdateTaskStatusRolledBack,
 		UpdateTaskStatusSkipped,
+		UpdateTaskStatusCancelled,
 	}
 }
 
@@ -47566,6 +47609,8 @@ func (s UpdateTaskStatus) MarshalText() ([]byte, error) {
 	case UpdateTaskStatusRolledBack:
 		return []byte(s), nil
 	case UpdateTaskStatusSkipped:
+		return []byte(s), nil
+	case UpdateTaskStatusCancelled:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -47593,6 +47638,9 @@ func (s *UpdateTaskStatus) UnmarshalText(data []byte) error {
 	case UpdateTaskStatusSkipped:
 		*s = UpdateTaskStatusSkipped
 		return nil
+	case UpdateTaskStatusCancelled:
+		*s = UpdateTaskStatusCancelled
+		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
@@ -47604,6 +47652,7 @@ const (
 	UpdateTaskTargetTypePlugin UpdateTaskTargetType = "plugin"
 	UpdateTaskTargetTypeTheme  UpdateTaskTargetType = "theme"
 	UpdateTaskTargetTypeCore   UpdateTaskTargetType = "core"
+	UpdateTaskTargetTypeAgent  UpdateTaskTargetType = "agent"
 )
 
 // AllValues returns all UpdateTaskTargetType values.
@@ -47612,6 +47661,7 @@ func (UpdateTaskTargetType) AllValues() []UpdateTaskTargetType {
 		UpdateTaskTargetTypePlugin,
 		UpdateTaskTargetTypeTheme,
 		UpdateTaskTargetTypeCore,
+		UpdateTaskTargetTypeAgent,
 	}
 }
 
@@ -47623,6 +47673,8 @@ func (s UpdateTaskTargetType) MarshalText() ([]byte, error) {
 	case UpdateTaskTargetTypeTheme:
 		return []byte(s), nil
 	case UpdateTaskTargetTypeCore:
+		return []byte(s), nil
+	case UpdateTaskTargetTypeAgent:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -47640,6 +47692,9 @@ func (s *UpdateTaskTargetType) UnmarshalText(data []byte) error {
 		return nil
 	case UpdateTaskTargetTypeCore:
 		*s = UpdateTaskTargetTypeCore
+		return nil
+	case UpdateTaskTargetTypeAgent:
+		*s = UpdateTaskTargetTypeAgent
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)

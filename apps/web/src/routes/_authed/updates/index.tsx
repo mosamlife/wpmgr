@@ -28,12 +28,16 @@ const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   pending: "muted",
   running: "info",
   completed: "success",
+  // GH #255 Phase 2: a wave failed to prove itself; destructive tone flags
+  // it for immediate attention among an otherwise calm list of runs.
+  halted: "destructive",
 };
 
 const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   pending: "Pending",
   running: "Running",
   completed: "Completed",
+  halted: "Halted",
 };
 
 function UpdatesPage() {

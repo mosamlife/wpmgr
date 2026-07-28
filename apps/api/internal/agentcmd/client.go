@@ -131,6 +131,25 @@ func (c *Client) RefreshInventory(ctx context.Context, siteID uuid.UUID, siteURL
 	return out, nil
 }
 
+// AgentSelfUpdate sends the signed `agent_self_update` command to the site's
+// agent, beat 1 (ARM) of the three-beat self-update protocol (see
+// agent_self_update_contract.go). siteID is the target site's stable
+// enrollment UUID, bound into the JWT's aud claim.
+//
+// This call NEVER applies anything: a 200 with status "scheduled" only means
+// the agent verified a newer build and queued the cron event that will apply
+// it in a separate WordPress bootstrap. Success is established later and
+// elsewhere, by the NEW code reporting its version (see
+// update.AgentConfirmWorker); callers must never record a "scheduled" ack as a
+// successful upgrade.
+func (c *Client) AgentSelfUpdate(ctx context.Context, siteID uuid.UUID, siteURL string, req AgentSelfUpdateRequest) (AgentSelfUpdateResponse, error) {
+	var out AgentSelfUpdateResponse
+	if err := c.post(ctx, siteID, siteURL, "agent_self_update", req, &out); err != nil {
+		return AgentSelfUpdateResponse{}, err
+	}
+	return out, nil
+}
+
 // SyncErrorConfig sends the signed `sync_error_config` command to the site's
 // agent, pushing the per-site PHP error-level mask and ignore-list. siteID is
 // the target site's stable enrollment UUID, bound into the JWT's aud claim.
@@ -355,8 +374,7 @@ const (
 // The function returns (true, nil) when the site is reachable, (false, nil)
 // when it is not, and (false, err) only on unexpected infrastructure failures
 // (e.g. JWT-mint failure). Response bodies are discarded beyond the minimal
-// decode needed to detect the error; nothing is logged by this function —
-// callers should emit structured log lines with the returned outcome.
+// decode needed to detect the error; nothing is logged by this function, // callers should emit structured log lines with the returned outcome.
 //
 // This is a thin wrapper around VerifyReachableWithReason that discards the
 // classified reason, so the two implementations can never drift and every

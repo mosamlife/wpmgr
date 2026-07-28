@@ -358,8 +358,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// where org is a tenant slug or name. Recreates a deleted user (active +
 	// verified), attaches it to the EXISTING org as owner, and logs a one-time
 	// set-password link. Use this to recover an account whose org + sites are
-	// intact but whose user row was deleted. Idempotent. REMOVE the env after use —
-	// it re-mints a link on every boot otherwise.
+	// intact but whose user row was deleted. Idempotent. REMOVE the env after use, // it re-mints a link on every boot otherwise.
 	if raw := os.Getenv("WPMGR_RECOVER_ACCOUNTS"); raw != "" {
 		rcBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
 		for _, entry := range strings.Split(raw, ",") {
@@ -598,8 +597,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// it sees exactly the providers billingSvc itself would use) and the
 	// SAME session Redis pool as the entitlements cache (a distinct
 	// "pricing:" key prefix keeps them from colliding). Always CONSTRUCTED
-	// (cheap, stateless) but only MOUNTED when hosted billing is enabled —
-	// same nil/non-nil split as billingH/billingWebhookH below.
+	// (cheap, stateless) but only MOUNTED when hosted billing is enabled, // same nil/non-nil split as billingH/billingWebhookH below.
 	pricingSvc := pricing.NewService(billingRegistry, redisPool, logger)
 	pricingH := pricing.NewHandler(pricingSvc)
 
@@ -684,8 +682,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// GH #208 Bug 2: a real update is synchronous and heavy on the agent (a
 	// mandatory pre-update snapshot + download + extract + core/plugin/theme
 	// DB migration, all inline in one request) and routinely exceeds the
-	// snappy 30s Update.HTTPTimeout the shared `commander`/`ssrfClient` uses —
-	// driving a spurious CP-recorded Failed even though the agent actually
+	// snappy 30s Update.HTTPTimeout the shared `commander`/`ssrfClient` uses, // driving a spurious CP-recorded Failed even though the agent actually
 	// finished. Mirror the backup (:729-733) and media (:1219-1223) dedicated
 	// commander pattern via buildUpdateApplyCommander: build a SEPARATE
 	// SSRF-hardened client with a longer per-attempt cap
@@ -715,6 +712,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// signing key (it only reads/writes update_tasks), and reaping is itself the
 	// backstop for MF-1 (the m88 migration's pre-dedup) going forward.
 	updateReaperWorker := update.NewReaperWorker(updateWorker)
+	// Beat 3 of the agent self-update protocol: the poll that waits for the
+	// upgraded agent to report its new version. Always registered (it shares
+	// updateWorker's repo/hub/audit/logger and needs nothing of its own), but
+	// no job of this kind is ever inserted while the channel is disabled,
+	// because nothing dispatches beat 1.
+	updateAgentConfirmWorker := update.NewAgentConfirmWorker(updateWorker)
 	// Updates feature (Track B): the refresh-inventory worker dispatches signed
 	// CP->agent commands to re-pull a site's inventory. It satisfies River's
 	// JobArgs interface so the per-tenant queue shard bounds its concurrency
@@ -1665,25 +1668,26 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	vulnAlertDispatchWorker := vuln.NewAlertDispatchWorker(nil /*svc: wired below*/, logger)
 
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
-		healthChecker:          healthChecker,
-		healthInterval:         cfg.Agent.HealthInterval,
-		siteSweepWorker:        siteSweepWorker,
-		siteEventPruneWorker:   siteEventPruneWorker,
-		updateWorker:           updateWorker,
-		updateReaperWorker:     updateReaperWorker,
-		refreshWorker:          refreshWorker,
-		perTenantParallelism:   cfg.Update.PerTenantParallelism,
-		backupWorker:           backupWorker,
-		restoreWorker:          restoreWorker,
-		gcWorker:               gcWorker,
-		scheduleWorker:         scheduleWorker,
-		progressWatchdog:       progressWatchdog,
-		sqlInspectLegacyWorker: sqlInspectLegacyWorker,
-		scheduleInterval:       cfg.Backup.ScheduleInterval,
-		gcInterval:             cfg.Backup.GCInterval,
-		uptimeWorker:           uptimeWorker,
-		probeInterval:          cfg.Uptime.ProbeInterval,
-		phpErrorsGCWorker:      phpErrorsGCWorker,
+		healthChecker:            healthChecker,
+		healthInterval:           cfg.Agent.HealthInterval,
+		siteSweepWorker:          siteSweepWorker,
+		siteEventPruneWorker:     siteEventPruneWorker,
+		updateWorker:             updateWorker,
+		updateReaperWorker:       updateReaperWorker,
+		updateAgentConfirmWorker: updateAgentConfirmWorker,
+		refreshWorker:            refreshWorker,
+		perTenantParallelism:     cfg.Update.PerTenantParallelism,
+		backupWorker:             backupWorker,
+		restoreWorker:            restoreWorker,
+		gcWorker:                 gcWorker,
+		scheduleWorker:           scheduleWorker,
+		progressWatchdog:         progressWatchdog,
+		sqlInspectLegacyWorker:   sqlInspectLegacyWorker,
+		scheduleInterval:         cfg.Backup.ScheduleInterval,
+		gcInterval:               cfg.Backup.GCInterval,
+		uptimeWorker:             uptimeWorker,
+		probeInterval:            cfg.Uptime.ProbeInterval,
+		phpErrorsGCWorker:        phpErrorsGCWorker,
 		// S3 scan workers (nil when signing key is not configured).
 		scanRunWorker:    scanWorker,
 		scanHashGCWorker: scanHashGCWorker,
@@ -2341,6 +2345,45 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	agentReleaseH := agentrelease.NewHandler(agentrelease.NewService(agentrelease.NewRepo(pool), agentReleaseReader))
 
+	// The agent's OWN upgrade channel (three-beat arm/apply/confirm, staged in
+	// gated waves). SHIPS DARK: cfg.Update.AgentSelfUpdateEnabled defaults to
+	// false, so wiring it here changes nothing until an operator sets
+	// WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED. The flag is passed to BOTH the
+	// service (so an operator gets an immediate refusal instead of a run that
+	// halts on its first task) and the worker (which is the authoritative
+	// pre-dispatch check, and the only one that can stop a run already in
+	// flight). A missing signing key leaves selfUpdateCmd nil, which disables
+	// the channel exactly as the flag does, an unsigned self-update command
+	// must never be sent.
+	var selfUpdateCmd update.AgentSelfUpdateCommander
+	if suc, ok := commander.(update.AgentSelfUpdateCommander); ok {
+		selfUpdateCmd = suc
+	}
+	updateSvc.SetAgentSelfUpdate(cfg.Update.AgentSelfUpdateEnabled, agentReleaseReader)
+	updateWorker.SetAgentSelfUpdate(update.AgentSelfUpdateDeps{
+		Enabled:  cfg.Update.AgentSelfUpdateEnabled,
+		Cmd:      selfUpdateCmd,
+		Versions: sitesLookup,
+		Waves:    update.NewAgentWaveRepo(pool),
+		Tasks:    updateEnqueuer,
+		Confirms: updateEnqueuer,
+		// The SAME published-version reader the service plans against, so an
+		// agent answering "up_to_date" is checked against what this control
+		// plane actually publishes instead of being believed. A reverted or
+		// missing latest.json makes every site answer that way, and believing
+		// it would complete a fleet-wide rollout 100% green with not one agent
+		// moved (see update.Worker.upToDate).
+		Releases: agentReleaseReader,
+		// The agent's own account of its last apply beat, replayed on its
+		// signed metadata push. Used only to explain a confirmation TIMEOUT,
+		// where it is the single thing that separates "the cron run never
+		// happened" from "the cron run happened and the upgrade failed".
+		Results: sitesLookup,
+	})
+	if cfg.Update.AgentSelfUpdateEnabled {
+		logger.Warn("agent self-update channel is ENABLED: agent upgrades will be dispatched in gated waves")
+	}
+
 	// ADR-056 Phase 3 — wire two-factor authentication into the auth handler.
 	// TOTPFactor and WebAuthnFactor are stateless and shared across goroutines.
 	// The same siteDestAgeID (age X25519) used for SMTP credential encryption
@@ -2813,19 +2856,22 @@ type riverDeps struct {
 	updateWorker         *update.Worker
 	// #131 follow-up — periodic reaper for update_tasks stuck in
 	// pending/running past the stale-task threshold (always wired).
-	updateReaperWorker     *update.ReaperWorker
-	refreshWorker          *update.RefreshInventoryWorker
-	perTenantParallelism   int
-	backupWorker           *backup.BackupWorker
-	restoreWorker          *backup.RestoreWorker
-	gcWorker               *backup.GCWorker
-	scheduleWorker         *backup.ScheduleWorker
-	progressWatchdog       *backup.ProgressWatchdogWorker
-	sqlInspectLegacyWorker *backup.SqlInspectLegacyWorker
-	scheduleInterval       time.Duration
-	gcInterval             time.Duration
-	uptimeWorker           *uptime.ProbeWorker
-	probeInterval          time.Duration
+	updateReaperWorker *update.ReaperWorker
+	// Beat 3 of the agent self-update protocol (always registered; no job of
+	// this kind is inserted while the channel's kill switch is off).
+	updateAgentConfirmWorker *update.AgentConfirmWorker
+	refreshWorker            *update.RefreshInventoryWorker
+	perTenantParallelism     int
+	backupWorker             *backup.BackupWorker
+	restoreWorker            *backup.RestoreWorker
+	gcWorker                 *backup.GCWorker
+	scheduleWorker           *backup.ScheduleWorker
+	progressWatchdog         *backup.ProgressWatchdogWorker
+	sqlInspectLegacyWorker   *backup.SqlInspectLegacyWorker
+	scheduleInterval         time.Duration
+	gcInterval               time.Duration
+	uptimeWorker             *uptime.ProbeWorker
+	probeInterval            time.Duration
 	// S1.1 (D) — PHP-error retention GC. Always non-nil (wired unconditionally).
 	phpErrorsGCWorker *diagnostics.ErrorsGCWorker
 	// S3 — Malware / File-Integrity Scan workers (nil when signing key empty).
@@ -2913,6 +2959,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	river.AddWorker(workers, d.updateWorker)
 	if d.updateReaperWorker != nil {
 		river.AddWorker(workers, d.updateReaperWorker)
+	}
+	if d.updateAgentConfirmWorker != nil {
+		river.AddWorker(workers, d.updateAgentConfirmWorker)
 	}
 	if d.refreshWorker != nil {
 		river.AddWorker(workers, d.refreshWorker)
@@ -3386,8 +3435,7 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		))
 	}
 
-	// GH #152 part 2 — daily org grace-window purge sweep. RunOnStart: false —
-	// unlike the billing reconcile above, missing one day here has no user-
+	// GH #152 part 2, daily org grace-window purge sweep. RunOnStart: false, // unlike the billing reconcile above, missing one day here has no user-
 	// visible cost (the org is already fully hidden from every read path the
 	// instant it was soft-deleted; only the destructive purge is delayed by
 	// up to ~24h past the configured grace window), so there is no reason to

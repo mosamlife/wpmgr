@@ -109,7 +109,52 @@ final class MetadataCommand implements CommandInterface
                 // Swallow — telemetry must not fail the sync.
             }
         }
+
+        // Outcome of the last self-update APPLY beat, when there is one. The
+        // apply runs in a cron request that has no CP response to ride on, so
+        // the next metadata push is how a FAILED apply reaches the control
+        // plane at all. Only ever present on a site that actually staged one.
+        $selfUpdate = $this->selfUpdateResult();
+        if ($selfUpdate !== null) {
+            $payload['agent_self_update'] = $selfUpdate;
+        }
+
         return $payload;
+    }
+
+    /**
+     * Read the last self-update apply outcome, if any.
+     *
+     * Reads the plain wp-option by name rather than going through the
+     * self-updater: that class is not shipped in the wp.org distribution build,
+     * and this collector runs in both builds. The option key constant lives on
+     * AgentSelfUpdateCommand, which is present in both.
+     *
+     * @return array{status:string,from_version:string,to_version:string,detail:string,at:int}|null
+     */
+    private function selfUpdateResult(): ?array
+    {
+        if (!function_exists('get_option')) {
+            return null;
+        }
+
+        $stored = get_option(AgentSelfUpdateCommand::OPTION_RESULT, null);
+        if (!is_array($stored)) {
+            return null;
+        }
+
+        $status = isset($stored['status']) && is_string($stored['status']) ? $stored['status'] : '';
+        if ($status === '') {
+            return null;
+        }
+
+        return [
+            'status'       => $status,
+            'from_version' => isset($stored['from_version']) && is_string($stored['from_version']) ? $stored['from_version'] : '',
+            'to_version'   => isset($stored['to_version'])   && is_string($stored['to_version'])   ? $stored['to_version']   : '',
+            'detail'       => isset($stored['detail'])       && is_string($stored['detail'])       ? $stored['detail']       : '',
+            'at'           => isset($stored['at']) && is_numeric($stored['at']) ? (int) $stored['at'] : 0,
+        ];
     }
 
     /**
@@ -575,8 +620,7 @@ final class MetadataCommand implements CommandInterface
             }
 
             // GH #211 sibling guard: only surface a core update when the
-            // offered version is strictly newer than what's installed —
-            // mirrors normalizeAvailableUpdate()'s phantom-suppression so a
+            // offered version is strictly newer than what's installed, // mirrors normalizeAvailableUpdate()'s phantom-suppression so a
             // stale/duplicate 'upgrade' response entry does not report a
             // same-version "update". Fails OPEN (keeps the entry) when
             // $current is empty/unreadable.

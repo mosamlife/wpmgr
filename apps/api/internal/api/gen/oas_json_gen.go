@@ -114742,6 +114742,8 @@ func (s *UpdateItemType) Decode(d *jx.Decoder) error {
 		*s = UpdateItemTypeTheme
 	case UpdateItemTypeCore:
 		*s = UpdateItemTypeCore
+	case UpdateItemTypeAgent:
+		*s = UpdateItemTypeAgent
 	default:
 		*s = UpdateItemType(v)
 	}
@@ -115674,6 +115676,8 @@ func (s *UpdateRunStatus) Decode(d *jx.Decoder) error {
 		*s = UpdateRunStatusRunning
 	case UpdateRunStatusCompleted:
 		*s = UpdateRunStatusCompleted
+	case UpdateRunStatusHalted:
+		*s = UpdateRunStatusHalted
 	default:
 		*s = UpdateRunStatus(v)
 	}
@@ -116526,6 +116530,8 @@ func (s *UpdateTaskStatus) Decode(d *jx.Decoder) error {
 		*s = UpdateTaskStatusRolledBack
 	case UpdateTaskStatusSkipped:
 		*s = UpdateTaskStatusSkipped
+	case UpdateTaskStatusCancelled:
+		*s = UpdateTaskStatusCancelled
 	default:
 		*s = UpdateTaskStatus(v)
 	}
@@ -116568,6 +116574,8 @@ func (s *UpdateTaskTargetType) Decode(d *jx.Decoder) error {
 		*s = UpdateTaskTargetTypeTheme
 	case UpdateTaskTargetTypeCore:
 		*s = UpdateTaskTargetTypeCore
+	case UpdateTaskTargetTypeAgent:
+		*s = UpdateTaskTargetTypeAgent
 	default:
 		*s = UpdateTaskTargetType(v)
 	}

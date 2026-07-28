@@ -89,6 +89,12 @@ function UpdateTaskRow({
   const hasLog = Boolean(task.error && task.error.trim().length > 0);
   const logId = `update-task-log-${task.id}`;
   const siteDown = isSiteDownRecovery(task.status, task.detail, task.error);
+  // GH #255 Phase 2: an armed agent task has no detail text until beat 3
+  // resolves it (nothing has happened on the site yet beyond scheduling the
+  // cron event that will apply the upgrade), so the generic empty-cell
+  // fallback would read as a stall rather than the expected wait.
+  const awaitingConfirmation =
+    task.target_type === "agent" && task.status === "running";
 
   return (
     <>
@@ -142,7 +148,11 @@ function UpdateTaskRow({
                 title={task.detail}
               >
                 {task.detail ??
-                  (hasLog ? "See log for details" : <span aria-hidden="true">{"–"}</span>)}
+                  (awaitingConfirmation
+                    ? "Waiting for the upgraded agent to report back"
+                    : hasLog
+                      ? "See log for details"
+                      : <span aria-hidden="true">{","}</span>)}
               </span>
             )}
             {hasLog ? (

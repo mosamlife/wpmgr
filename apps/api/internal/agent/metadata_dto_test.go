@@ -181,3 +181,73 @@ func TestMetadataDTODropsSameVersionAvailableUpdate(t *testing.T) {
 		t.Fatalf("same-version phantom core_update must be dropped: %+v", m.CoreUpdate)
 	}
 }
+
+// TestMetadataDTODecodesTheAgentSelfUpdateAdvisory pins the wire shape of the
+// agent's own account of its last self-update apply beat, exactly as
+// class-metadata-command.php builds it.
+//
+// The apply runs in a cron request that has no control-plane response to ride
+// on, so this advisory is the ONLY way a failed or expired apply is ever heard
+// about. It rides the ordinary metadata push, which means it has to decode as
+// tolerantly as everything else here and stay absent for every agent that
+// predates it.
+func TestMetadataDTODecodesTheAgentSelfUpdateAdvisory(t *testing.T) {
+	body := []byte(`{
+		"wp_version":"6.4.3",
+		"agent_version":"0.61.80",
+		"plugins":[],
+		"themes":[],
+		"agent_self_update":{
+			"status":"failed",
+			"from_version":"0.61.80",
+			"to_version":"0.62.0",
+			"detail":"Upgrader threw: could not create directory",
+			"at":1785000000
+		}
+	}`)
+	var dto metadataDTO
+	if err := json.Unmarshal(body, &dto); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	m := dto.toMetadata()
+	if m.AgentSelfUpdate == nil {
+		t.Fatal("the agent's account of its apply beat was dropped")
+	}
+	got := *m.AgentSelfUpdate
+	if got.Status != "failed" || got.FromVersion != "0.61.80" || got.ToVersion != "0.62.0" {
+		t.Fatalf("advisory not decoded: %+v", got)
+	}
+	if got.Detail != "Upgrader threw: could not create directory" {
+		t.Fatalf("the agent's own reason is the whole value of the record, got %q", got.Detail)
+	}
+	if got.At != 1785000000 {
+		t.Fatalf("at = %d, want the agent's stamp", got.At)
+	}
+}
+
+// TestMetadataDTOToleratesAnAbsentOrEmptyAgentSelfUpdateAdvisory: the record is
+// additive. An agent that never staged a self-update, and every agent that
+// predates the channel, send nothing, and a record with no status says nothing
+// and must not be persisted as an empty shell.
+func TestMetadataDTOToleratesAnAbsentOrEmptyAgentSelfUpdateAdvisory(t *testing.T) {
+	for name, body := range map[string]string{
+		"absent":       `{"wp_version":"6.4.3","plugins":[],"themes":[]}`,
+		"null":         `{"wp_version":"6.4.3","agent_self_update":null}`,
+		"empty object": `{"wp_version":"6.4.3","agent_self_update":{}}`,
+		"blank status": `{"wp_version":"6.4.3","agent_self_update":{"status":"  ","to_version":"0.62.0"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var dto metadataDTO
+			if err := json.Unmarshal([]byte(body), &dto); err != nil {
+				t.Fatalf("decode failed: %v", err)
+			}
+			m := dto.toMetadata()
+			if m.AgentSelfUpdate != nil {
+				t.Fatalf("want no advisory, got %+v", *m.AgentSelfUpdate)
+			}
+			if m.WPVersion != "6.4.3" {
+				t.Fatalf("the rest of the push must still decode: %+v", m)
+			}
+		})
+	}
+}

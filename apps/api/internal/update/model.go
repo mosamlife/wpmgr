@@ -24,6 +24,11 @@ const (
 	RunPending   = "pending"
 	RunRunning   = "running"
 	RunCompleted = "completed"
+	// RunHalted is terminal and specific to an agent self-update run: a wave
+	// gate refused to advance, so every task the run had not already dispatched
+	// was cancelled. It is deliberately distinct from RunCompleted, which would
+	// erase the fact that the run was stopped rather than finished.
+	RunHalted = "halted"
 )
 
 // Task statuses.
@@ -34,14 +39,38 @@ const (
 	TaskFailed     = "failed"
 	TaskRolledBack = "rolled_back"
 	TaskSkipped    = "skipped"
+	// TaskCancelled is terminal: the task was never dispatched because its run
+	// halted first. Distinct from TaskSkipped (the control plane declined this
+	// particular target) and from TaskFailed (the site was contacted and did
+	// not come back): nothing was ever sent to this site.
+	TaskCancelled = "cancelled"
 )
 
-// Target types (mirror agentcmd.TargetPlugin/Theme/Core).
+// Target types. plugin/theme/core mirror agentcmd.TargetPlugin/Theme/Core.
 const (
 	TargetPlugin = "plugin"
 	TargetTheme  = "theme"
 	TargetCore   = "core"
+	// TargetAgent is the agent's OWN upgrade, shipped over the dedicated
+	// three-beat signed channel (agentcmd.AgentSelfUpdateRequest), never over
+	// the plugin update path. It is a separate target type rather than a
+	// plugin slug precisely so no code that handles a plugin update can ever
+	// reach it: the snapshot/rollback that guards every plugin update cannot be
+	// delivered by the process being replaced.
+	//
+	// update_tasks.target_type is plain text NOT NULL (m3), so this value needs
+	// no migration.
+	TargetAgent = "agent"
 )
+
+// AgentTargetSlug is the fixed target_slug every agent self-update task
+// carries. The agent target names exactly one thing, this control plane's own
+// plugin, so the operator never supplies a slug and the planner never derives
+// one from a site's inventory (which is what a renamed plugin directory or a
+// stale advisory could poison). It is pinned to the self-hosted distribution
+// slug because that is the build the release channel publishes for; the
+// plugin-directory build has no self-updater and is excluded at planning time.
+const AgentTargetSlug = agentplugin.SlugSelfHosted
 
 // Run is an update run: a tenant-scoped unit grouping per-(site,item) tasks.
 type Run struct {
@@ -87,7 +116,7 @@ type Task struct {
 
 // Item is one requested update target within a CreateRunInput.
 type Item struct {
-	Type    string `json:"type" validate:"required,oneof=plugin theme core"`
+	Type    string `json:"type" validate:"required,oneof=plugin theme core agent"`
 	Slug    string `json:"slug" validate:"max=200"`
 	Version string `json:"version" validate:"max=64"`
 }
@@ -123,6 +152,12 @@ var slugPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$`)
 // matches the plugin-header name, and again by the worker before dispatch.
 func validateItems(items []Item) error {
 	for _, it := range items {
+		if it.Type == TargetAgent {
+			if err := validateAgentItem(it, len(items)); err != nil {
+				return err
+			}
+			continue
+		}
 		if len(it.Slug) > 200 || !slugPattern.MatchString(it.Slug) {
 			return domain.Validation("invalid_slug", "update item slug contains an unsafe value: "+it.Slug)
 		}
@@ -133,6 +168,44 @@ func validateItems(items []Item) error {
 		if it.Version != "" && !versionPattern.MatchString(it.Version) {
 			return domain.Validation("invalid_version", "update item version contains an unsafe value: "+it.Version)
 		}
+	}
+	return nil
+}
+
+// validateAgentItem is the API boundary for the agent self-update target.
+//
+// A version pin is REJECTED rather than ignored. The release manifest the
+// agent verifies only ever points at the currently published build, and the
+// agent's own downgrade guard refuses anything older than what it is running,
+// so a pin cannot be honoured by construction. Accepting one and quietly
+// installing something else would tell the operator they pinned a version when
+// they did not; refusing is the only honest answer. "latest" (and the unset
+// default, which means the same thing) is accepted because it is what the
+// channel actually does.
+//
+// The slug is not operator-supplied either: this target names exactly one
+// thing. An empty slug is accepted and normalized to AgentTargetSlug; anything
+// else is refused rather than silently replaced, for the same reason.
+//
+// The agent target must also be the ONLY item in its run. The wave gate that
+// makes this channel safe is defined over "the run", wave 0 is one site, wave
+// 1 is 5% of the run, and a run also carrying plugin/theme/core tasks has no
+// well-defined denominator, no meaningful canary, and would let an unrelated
+// plugin failure halt an agent rollout (or an agent failure cancel unrelated
+// plugin work). Splitting them is one extra request and keeps both machines
+// honest.
+func validateAgentItem(it Item, itemCount int) error {
+	if itemCount != 1 {
+		return domain.Validation("agent_target_exclusive",
+			"the agent self-update target must be the only item in its run: its wave gate is defined over the whole run")
+	}
+	if it.Version != "" && it.Version != "latest" {
+		return domain.Validation("agent_version_pin_unsupported",
+			"the agent self-update channel cannot install a pinned version: the release manifest only ever points at the published build and the agent refuses to downgrade")
+	}
+	if it.Slug != "" && it.Slug != AgentTargetSlug {
+		return domain.Validation("agent_slug_unsupported",
+			"the agent self-update target takes no slug: it names this control plane's own agent plugin")
 	}
 	return nil
 }
@@ -152,7 +225,7 @@ type CreateRunInput struct {
 // terminal reports whether a task status is a final state.
 func terminal(status string) bool {
 	switch status {
-	case TaskSucceeded, TaskFailed, TaskRolledBack, TaskSkipped:
+	case TaskSucceeded, TaskFailed, TaskRolledBack, TaskSkipped, TaskCancelled:
 		return true
 	default:
 		return false

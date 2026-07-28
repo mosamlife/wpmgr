@@ -61,8 +61,7 @@ type StripeConfig struct {
 	// verify POST /webhooks/billing/stripe. Env: WPMGR_BILLING_STRIPE_WEBHOOK_SECRET.
 	WebhookSecret string `koanf:"webhook_secret"`
 	// PriceStarter/PriceAgency/PriceScale are the Stripe recurring Price ids
-	// for the three paid tiers (created once in the Stripe Dashboard/API —
-	// this control plane never creates prices itself). Env:
+	// for the three paid tiers (created once in the Stripe Dashboard/API, // this control plane never creates prices itself). Env:
 	// WPMGR_BILLING_STRIPE_PRICE_STARTER / _PRICE_AGENCY / _PRICE_SCALE.
 	PriceStarter string `koanf:"price_starter"`
 	PriceAgency  string `koanf:"price_agency"`
@@ -103,8 +102,7 @@ type RazorpayConfig struct {
 
 // HostedConfig gates the M16 Phase A hosted-billing entitlement substrate
 // (internal/billing). Enabled defaults to FALSE: self-host and current prod
-// see zero behavior change — every entitlement check no-ops (Unlimited()) —
-// until an operator explicitly sets WPMGR_HOSTED=true. There is no payment-
+// see zero behavior change, every entitlement check no-ops (Unlimited()), // until an operator explicitly sets WPMGR_HOSTED=true. There is no payment-
 // provider integration yet (Phase B); this phase is the plan/site-cap
 // substrate only.
 type HostedConfig struct {
@@ -148,8 +146,7 @@ type ConnConfig struct {
 // Require2FAStepUp is a GLOBAL kill-switch that masks the per-site policy's
 // require_2fa_step_up column: when FALSE (the V0 default), the service ignores
 // the per-site flag entirely because the 2FA enrollment system is not built
-// yet. Flipping it to TRUE after 2FA ships does NOT require a schema change —
-// the per-site column is already in place. Today the 409 "2fa_required" path
+// yet. Flipping it to TRUE after 2FA ships does NOT require a schema change, // the per-site column is already in place. Today the 409 "2fa_required" path
 // is unreachable; that is intentional and tested.
 type AutologinConfig struct {
 	Require2FAStepUp bool `koanf:"require_2fa_step_up"`
@@ -361,11 +358,24 @@ type BackupConfig struct {
 // leaves headroom under the agent's own apply script cap
 // (set_time_limit(900)) for network/transfer overhead on top of the agent's
 // own execution time.
+//
+// AgentSelfUpdateEnabled (WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED) is the
+// fleet-wide kill switch for the agent's OWN upgrade channel, and it DEFAULTS
+// TO FALSE. While false, no agent self-update command is sent to any site,
+// whatever runs already exist and whatever jobs are already enqueued: the
+// worker checks it immediately before dispatch, not merely at run creation.
+//
+// It has to stop DISPATCH rather than work through the release channel,
+// because repointing the published manifest at an older build does not
+// un-brick anyone, the agent's downgrade guard refuses to install anything
+// older than what it is already running. Turning this off is therefore the
+// only thing that actually stops an agent rollout in progress.
 type UpdateConfig struct {
-	PerTenantParallelism int           `koanf:"per_tenant_parallelism"`
-	HTTPTimeout          time.Duration `koanf:"http_timeout"`
-	HTTPRetries          int           `koanf:"http_retries"`
-	ApplyHTTPTimeout     time.Duration `koanf:"apply_http_timeout"`
+	PerTenantParallelism   int           `koanf:"per_tenant_parallelism"`
+	HTTPTimeout            time.Duration `koanf:"http_timeout"`
+	HTTPRetries            int           `koanf:"http_retries"`
+	ApplyHTTPTimeout       time.Duration `koanf:"apply_http_timeout"`
+	AgentSelfUpdateEnabled bool          `koanf:"agent_self_update_enabled"`
 }
 
 // AgentConfig holds the control-plane agent-protocol configuration.
@@ -557,25 +567,29 @@ func defaults() map[string]any {
 		"auth.absolute_expiry":     "720h", // 30 days hard cap
 		// ADR-056: WebAuthn relying party defaults (hosted instance).
 		// Self-hosted operators override via WPMGR_AUTH_WEBAUTHN_RPID etc.
-		"auth.webauthn_rpid":                "manage.wpmgr.app",
-		"auth.webauthn_rp_origins":          "https://manage.wpmgr.app",
-		"auth.webauthn_rp_display_name":     "WPMgr",
-		"oidc.issuer":                       "",
-		"oidc.client_id":                    "",
-		"oidc.client_secret":                "",
-		"oidc.redirect_url":                 "",
-		"otel.exporter_otlp_endpoint":       "",
-		"otel.service_name":                 "wpmgr-api",
-		"shutdown.timeout":                  "15s",
-		"agent.signing_private_key":         "",
-		"agent.signing_public_key":          "",
-		"agent.signature_skew":              "5m",
-		"agent.stale_after":                 "10m", // ~2 missed 5-min heartbeats
-		"agent.health_interval":             "5m",
-		"update.per_tenant_parallelism":     5,
-		"update.http_timeout":               "30s",
-		"update.http_retries":               2,
-		"update.apply_http_timeout":         "5m",
+		"auth.webauthn_rpid":            "manage.wpmgr.app",
+		"auth.webauthn_rp_origins":      "https://manage.wpmgr.app",
+		"auth.webauthn_rp_display_name": "WPMgr",
+		"oidc.issuer":                   "",
+		"oidc.client_id":                "",
+		"oidc.client_secret":            "",
+		"oidc.redirect_url":             "",
+		"otel.exporter_otlp_endpoint":   "",
+		"otel.service_name":             "wpmgr-api",
+		"shutdown.timeout":              "15s",
+		"agent.signing_private_key":     "",
+		"agent.signing_public_key":      "",
+		"agent.signature_skew":          "5m",
+		"agent.stale_after":             "10m", // ~2 missed 5-min heartbeats
+		"agent.health_interval":         "5m",
+		"update.per_tenant_parallelism": 5,
+		"update.http_timeout":           "30s",
+		"update.http_retries":           2,
+		"update.apply_http_timeout":     "5m",
+		// Fleet-wide kill switch for the agent's own upgrade channel. Ships
+		// DISABLED: merging the channel changes nothing until an operator
+		// explicitly turns it on. See UpdateConfig.AgentSelfUpdateEnabled.
+		"update.agent_self_update_enabled":  false,
 		"s3.endpoint":                       "",
 		"s3.region":                         "us-east-1",
 		"s3.bucket":                         "",

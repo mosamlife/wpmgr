@@ -2,6 +2,7 @@ package site
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -156,4 +157,115 @@ func TestAgentSelfUpdateExcludedFromReadProjections(t *testing.T) {
 	if !akismet {
 		t.Fatal("the ordinary plugin disappeared from the components inventory")
 	}
+}
+
+// TestAgentSelfUpdateApplyRecordIsPersistedAndReadBack covers the OTHER
+// agent_self_update payload: not the plugin-inventory advisory stripped above,
+// but the agent's own account of what happened on the apply beat of its own
+// upgrade.
+//
+// The two are easy to confuse and are opposites. The inventory advisory is a
+// WordPress-supplied claim that an update is AVAILABLE, and it is dropped
+// because acting on it would have the agent overwrite its running code. This
+// record is the agent's report of an upgrade it ALREADY attempted, and it is
+// kept because it is the only evidence of a failed apply that ever reaches the
+// control plane: the apply runs in a cron request with no CP response to ride
+// on.
+func TestAgentSelfUpdateApplyRecordIsPersistedAndReadBack(t *testing.T) {
+	m := sanitizeMetadata(Metadata{
+		AgentVersion: "0.61.80",
+		AgentSelfUpdate: &AgentSelfUpdateResult{
+			Status:      "failed",
+			FromVersion: "0.61.80",
+			ToVersion:   "0.62.0",
+			Detail:      "Upgrader threw: could not create directory",
+			At:          1785000000,
+		},
+	})
+	if m.AgentSelfUpdate == nil {
+		t.Fatal("the agent's account of its apply beat was dropped at the write chokepoint")
+	}
+
+	// Round-trip through the JSONB inventory exactly as ApplyMetadata stores it.
+	raw, err := json.Marshal(map[string]any{
+		"plugins":           []Component{},
+		"themes":            []Component{},
+		"agent_self_update": m.AgentSelfUpdate,
+	})
+	if err != nil {
+		t.Fatalf("marshal inventory: %v", err)
+	}
+	got := Site{ID: uuid.New(), Components: raw}.ParsedAgentSelfUpdate()
+	if got == nil {
+		t.Fatal("the stored record did not read back")
+	}
+	if got.Status != "failed" || got.ToVersion != "0.62.0" {
+		t.Fatalf("record did not round-trip: %+v", got)
+	}
+	if got.Detail != "Upgrader threw: could not create directory" {
+		t.Fatalf("the agent's own reason is the whole value of the record, got %q", got.Detail)
+	}
+	if got.At != 1785000000 {
+		t.Fatalf("at = %d, want the agent's stamp", got.At)
+	}
+}
+
+// TestAgentSelfUpdateApplyRecordIsBoundedAndOptional: the record is agent-
+// supplied telemetry like everything else here, so it is bounded on arrival
+// rather than trusted, and its absence is never an error.
+func TestAgentSelfUpdateApplyRecordIsBoundedAndOptional(t *testing.T) {
+	t.Run("absent stays absent", func(t *testing.T) {
+		if got := sanitizeMetadata(Metadata{AgentVersion: "0.61.80"}).AgentSelfUpdate; got != nil {
+			t.Fatalf("want no record for an agent that sent none, got %+v", got)
+		}
+	})
+
+	t.Run("a record with no status says nothing and is dropped", func(t *testing.T) {
+		got := sanitizeMetadata(Metadata{
+			AgentSelfUpdate: &AgentSelfUpdateResult{Status: "   ", ToVersion: "0.62.0"},
+		}).AgentSelfUpdate
+		if got != nil {
+			t.Fatalf("want the empty shell dropped, got %+v", got)
+		}
+	})
+
+	t.Run("oversized fields are truncated, not rejected", func(t *testing.T) {
+		got := sanitizeMetadata(Metadata{
+			AgentSelfUpdate: &AgentSelfUpdateResult{
+				Status:      strings.Repeat("s", 200),
+				FromVersion: strings.Repeat("1", 200),
+				ToVersion:   strings.Repeat("2", 200),
+				Detail:      strings.Repeat("d", 4000),
+				At:          -1,
+			},
+		}).AgentSelfUpdate
+		if got == nil {
+			t.Fatal("an oversized record must be bounded, never dropped: it may be the only account of a failure")
+		}
+		if len(got.Status) != maxSelfUpdateStatus {
+			t.Fatalf("status len = %d, want %d", len(got.Status), maxSelfUpdateStatus)
+		}
+		if len(got.Detail) != maxSelfUpdateDetail {
+			t.Fatalf("detail len = %d, want %d", len(got.Detail), maxSelfUpdateDetail)
+		}
+		if len(got.FromVersion) != maxVersionLen || len(got.ToVersion) != maxVersionLen {
+			t.Fatalf("versions not bounded: %+v", got)
+		}
+		if got.At != 0 {
+			t.Fatalf("a negative timestamp must normalize to unset, got %d", got.At)
+		}
+	})
+
+	t.Run("a site with no inventory reads back nothing", func(t *testing.T) {
+		for name, s := range map[string]Site{
+			"empty":       {},
+			"malformed":   {Components: []byte("{")},
+			"no such key": {Components: []byte(`{"plugins":[],"themes":[]}`)},
+			"no status":   {Components: []byte(`{"agent_self_update":{"to_version":"0.62.0"}}`)},
+		} {
+			if got := s.ParsedAgentSelfUpdate(); got != nil {
+				t.Fatalf("%s: want nil, got %+v", name, got)
+			}
+		}
+	})
 }

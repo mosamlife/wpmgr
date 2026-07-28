@@ -103,6 +103,11 @@ type Worker struct {
 	// schedule (probeRetryDelays). Nil uses the default. Tests set this to a
 	// tiny schedule so the retry loop does not actually sleep ~21s.
 	probeDelays []time.Duration
+	// agent holds the agent self-update channel's dependencies and its
+	// fleet-wide kill switch. The ZERO VALUE IS DISABLED: a deployment that
+	// never calls SetAgentSelfUpdate never sends an agent self-update command
+	// to any site.
+	agent AgentSelfUpdateDeps
 	// jobTimeout overrides River's default 60s per-job context deadline (see
 	// DeriveApplyJobTimeout, and NewBackupWorker's identical jobTimeout field for
 	// the same pattern applied to backups). runApply makes one apply/rollback
@@ -240,6 +245,16 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 	}
 	if terminal(task.Status) {
 		return nil // already finished (retry/dup); nothing to do.
+	}
+
+	// The agent's OWN upgrade travels a wholly separate branch: a wave-gated
+	// three-beat protocol with no health probe and no rollback (see
+	// runAgentSelfUpdate for why each of those is absent). It shares nothing
+	// with the plugin/theme/core path below except this dispatch point, so no
+	// code that snapshots, probes or rolls back a site can ever be reached
+	// with the agent as its target.
+	if task.TargetType == TargetAgent {
+		return w.runAgentSelfUpdate(ctx, a, task)
 	}
 
 	// Last line of defense before anything is sent to a site: a task targeting
@@ -694,7 +709,19 @@ func (w *Worker) finish(ctx context.Context, task Task, status, fromVersion, toV
 		Error:       errMsg,
 	})
 	if err != nil {
-		return err
+		if !errors.Is(err, ErrTaskNotOpen) {
+			return err
+		}
+		// The task already has a terminal state, typically 'cancelled',
+		// written by a halt while this worker was in flight. First outcome
+		// recorded wins: reporting this one would overwrite the halt with a
+		// success and hide the fact that the run was stopped. The job itself
+		// succeeded; there is simply nothing left to record.
+		w.logger.Info("update task already finished; leaving the recorded outcome alone",
+			slog.String("task_id", task.ID.String()),
+			slog.String("recorded_status", finished.Status),
+			slog.String("discarded_status", status))
+		return nil
 	}
 
 	runStatus := RunRunning
@@ -849,8 +876,7 @@ func (ReapStaleTasksArgs) Kind() string { return "update_task_reaper" }
 // worker crash between MarkTaskRunning and finish(), or an EnqueueTask
 // failure that leaves a task pending (Service.CreateRun's best-effort enqueue
 // after CreateRunWithTasks), would otherwise permanently occupy the
-// update_tasks_inflight_target_idx slot for that (tenant, site, target) —
-// every future update attempt for it 409s targets_in_flight forever (m88).
+// update_tasks_inflight_target_idx slot for that (tenant, site, target), // every future update attempt for it 409s targets_in_flight forever (m88).
 // If DeriveApplyJobTimeout's budget is ever tuned up near or past this value,
 // this threshold must grow with it: the reaper terminalizing a task that is
 // still legitimately within its own job deadline would itself be a bug.
@@ -861,6 +887,22 @@ const staleTaskThreshold = 45 * time.Minute
 // remainder is caught by the next sweep (see the periodic job interval, wired
 // in cmd/wpmgr/main.go).
 const staleTaskReapLimit = 500
+
+// agentStaleTaskThreshold is the reaper's threshold for an AGENT self-update
+// task. It is far longer than staleTaskThreshold because such a task is
+// legitimately slow in two ways the ordinary threshold never anticipates: a
+// task in a later wave sits pending until every earlier wave has confirmed
+// (which for a large fleet is several confirmation windows back to back), and
+// a task on a site with external cron waits up to
+// agentConfirmDeadlineExternalCron for beat 3 on its own. Reaping either as
+// "stale" would fail a task that is behaving exactly as designed, and, worse
+//, feed a false failure into the wave gate, halting a healthy rollout.
+//
+// It is still finite: a genuinely stuck agent task must eventually release its
+// (tenant, site, target_type, target_slug) slot in the
+// update_tasks_inflight_target_idx partial unique index (m88), or every future
+// agent upgrade for that site would 409 forever.
+const agentStaleTaskThreshold = 6 * time.Hour
 
 // ReaperWorker is the periodic River job that sweeps update_tasks for rows
 // stuck in pending/running past staleTaskThreshold and terminalizes them as
@@ -893,6 +935,13 @@ func (rw *ReaperWorker) Work(ctx context.Context, _ *river.Job[ReapStaleTasksArg
 		return nil
 	}
 	for _, task := range stale {
+		// An agent self-update task is legitimately slow (wave gating +
+		// external-cron confirmation windows); it gets its own, much longer
+		// threshold. The SQL sweep cannot express two thresholds, so the
+		// narrower one is applied here.
+		if task.TargetType == TargetAgent && time.Since(task.UpdatedAt) < agentStaleTaskThreshold {
+			continue
+		}
 		if ferr := rw.w.finish(ctx, task, TaskFailed, task.FromVersion, task.ToVersion,
 			"stale: task exceeded max runtime", "reaped by the periodic stale-task sweep after no progress within the threshold"); ferr != nil {
 			rw.w.logger.Warn("update task reaper: failed to terminalize stale task",

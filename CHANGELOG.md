@@ -8,6 +8,20 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.98] - 2026-07-28
+
+### Added
+
+- Fleet-wide agent updates (GH #255, phase 2 of two). An owner or administrator can now start an agent update across selected sites from the Sites list, instead of visiting each site's wp-admin one at a time to click the update the agent already offers there. Starting a rollout is restricted to those two roles.
+- This ships turned off. The capability sits behind a control-plane switch that defaults to off, so upgrading to this release changes nothing on its own. It will be turned on once it has been exercised against real sites.
+- A rollout proceeds in waves rather than hitting every selected site at once. The first wave is a single site, the second is a small percentage of the selection, and only once those have gone well does the rest of the fleet follow. A wave only opens after every site in the wave before it has confirmed, and confirmation means the updated agent itself reported back its new version, not that the update was merely scheduled or acknowledged. If the first wave fails, or too many sites in a later wave fail to confirm, the whole run stops and every remaining site is cancelled. A stop control halts every agent update in progress across the fleet.
+- Updating the agent works differently from updating any other plugin, because the agent is how WPMgr reaches a site at all. The update itself runs in a separate background request rather than the request that reports the result, and success is only ever recorded once the new agent version reports back in. A site that cannot complete that background step is left untouched and reported as unconfirmed, not failed.
+- Sites that cannot take an agent update from this channel are reported with a reason instead of being counted as a failed rollout: the WordPress.org build ships without the self-updater, and a site running an agent older than this release does not yet have the update channel this relies on. Both are skipped, not failed.
+
+### Fixed
+
+- A rollout whose target version stopped being published partway through used to carry on as though it had succeeded; it now stops the run instead, since a site that did not change is not a successful update.
+
 ## [0.61.97] - 2026-07-28
 
 ### Fixed
