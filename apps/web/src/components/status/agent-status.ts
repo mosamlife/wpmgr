@@ -38,6 +38,22 @@ export const AGENT_STATUS_ICON: Record<AgentStatus, typeof CheckCircle2> = {
 };
 
 /**
+ * Icon-only foreground tints, for the compact (dense table) presentation
+ * where there is no pill background to carry the tone. Pairs with
+ * AGENT_STATUS_ICON: every status is distinguished by icon SHAPE as well as
+ * colour, so the classification survives a monochrome display or a colour
+ * vision deficiency. "ineligible" stays muted rather than destructive on
+ * purpose: a build that cannot self-update is a fact about its distribution
+ * channel, not an error the operator can act on.
+ */
+export const AGENT_STATUS_FG: Record<AgentStatus, string> = {
+  current: "text-[var(--color-success)]",
+  outdated: "text-[var(--color-warning)]",
+  unknown: "text-[var(--color-muted-foreground)]",
+  ineligible: "text-[var(--color-muted-foreground)]",
+};
+
+/**
  * True only for the case that overclaims if left unlabeled: status
  * "current" classified against a reference that came from this tenant's own
  * fleet (the newest agent_version any of its sites has reported) rather than
@@ -69,4 +85,25 @@ export function agentStatusDisplayLabel(
 ): string {
   if (isFleetDerivedCurrent(status, referenceSource)) return "Current in fleet";
   return AGENT_STATUS_LABEL[status];
+}
+
+/**
+ * The full string assistive tech should announce for a compact (icon +
+ * version) agent cell, e.g. "Outdated, agent 0.61.96".
+ *
+ * The dense Sites table renders the status as an icon and the version as
+ * bare mono digits, which on its own would announce as a naked number. This
+ * is what the visually-hidden text in that cell says, so the state is never
+ * carried by colour/shape alone. The fleet-derived qualifier is preserved
+ * here even though the visible column moves it into the header: a screen
+ * reader user reading one row in isolation still needs to know the
+ * comparison is against this fleet, not a published release.
+ */
+export function agentStatusAccessibleName(
+  status: AgentStatus,
+  version: string | null | undefined,
+  referenceSource: FleetAgentVersions["reference_source"] | undefined,
+): string {
+  const label = agentStatusDisplayLabel(status, referenceSource);
+  return version ? `${label}, agent ${version}` : `${label}, agent version not reported`;
 }

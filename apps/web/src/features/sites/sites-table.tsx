@@ -1,9 +1,13 @@
 import {
+  createContext,
   forwardRef,
+  useContext,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type HTMLAttributes,
+  type RefObject,
   type TableHTMLAttributes,
 } from "react";
 import {
@@ -59,6 +63,12 @@ import {
 } from "@/features/sites/use-sites-selection";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
 import { siteUptimeBadge, siteUptimeTextClass } from "@/features/sites/uptime-badge";
+import { AgentColumnFleetNote } from "@/features/sites/agent-column-header";
+import {
+  computeSitesColumnWidths,
+  SITES_COLUMN_TRACKS,
+  SITES_TABLE_MIN_WIDTH_PX,
+} from "@/features/sites/sites-table-geometry";
 
 // Surface 4.5 — the Sites table.
 //
@@ -273,48 +283,50 @@ function TagsCell({ site }: { site: Site }) {
 // Column geometry
 // ---------------------------------------------------------------------------
 
-const COL_CHECKBOX_PX = 40;
-const COL_URL_MIN_PX = 280;
-const COL_CLIENT_PX = 120;
-const COL_TAGS_PX = 140;
-const COL_WP_PX = 80;
-const COL_PHP_PX = 80;
-const COL_AGENT_PX = 100;
-const COL_UPDATES_PX = 120;
-const COL_BACKUP_PX = 160;
-const COL_UPTIME_PX = 70;
-const COL_ACTIONS_PX = 80;
-
 // Single source of column geometry for BOTH the sticky header and the
 // virtualized body, rendered once as a <colgroup> on the table (matches
 // FleetTable). Putting widths only on the <th> cells let the header and the
 // virtualized rows drift out of alignment; the colgroup makes the column tracks
-// authoritative and shared. ORDER MUST MATCH buildColumns(). `undefined` marks
-// the flexible column (Site) that absorbs the remaining width.
-const COLUMN_WIDTHS_PX: ReadonlyArray<number | undefined> = [
-  COL_CHECKBOX_PX, // select
-  undefined, // url (Site) — flexible
-  COL_CLIENT_PX, // client
-  COL_TAGS_PX, // tags
-  COL_WP_PX, // wp_version
-  COL_PHP_PX, // php_version
-  COL_AGENT_PX, // agent_version
-  COL_UPDATES_PX, // updates_count
-  COL_BACKUP_PX, // backup_status
-  COL_UPTIME_PX, // uptime_sparkline
-  COL_ACTIONS_PX, // actions
-];
+// authoritative and shared.
+//
+// The NUMBERS now live in sites-table-geometry.ts (a pure, unit-tested
+// module) and are resolved against the measured container width, because a
+// single implicitly-flexible column is what produced both halves of this
+// bug: it clipped its neighbours when there was too little width (GH #255)
+// and swallowed ~2500px of slack on an ultrawide display (GH #261). Every
+// track is now explicit, the growable ones are capped, and the leftover is
+// parked in a trailing spacer track. ORDER MUST MATCH buildColumns() plus
+// the trailing spacer.
+const COL_CHECKBOX_PX = trackWidth("select");
+const COL_URL_MIN_PX = trackWidth("url");
+const COL_CLIENT_PX = trackWidth("client");
+const COL_TAGS_PX = trackWidth("tags");
+const COL_WP_PX = trackWidth("wp_version");
+const COL_PHP_PX = trackWidth("php_version");
+const COL_AGENT_PX = trackWidth("agent_version");
+const COL_UPDATES_PX = trackWidth("updates_count");
+const COL_BACKUP_PX = trackWidth("backup_status");
+const COL_UPTIME_PX = trackWidth("uptime_sparkline");
+const COL_ACTIONS_PX = trackWidth("actions");
 
-// Minimum table width = the sum of every column at its intended size (the
-// flexible Site column counted at a sensible minimum). When the viewport is
-// narrower than this (mobile), the table keeps these widths and the container
-// scrolls horizontally instead of squeezing the columns into each other — the
-// previous 860px floor was BELOW the fixed columns' total, so on mobile the
-// fixed-layout table compressed every column and the headers overlapped.
-const COL_SITE_MIN_PX = 260;
-const TABLE_MIN_WIDTH_PX = COLUMN_WIDTHS_PX.reduce<number>(
-  (sum, w) => sum + (w ?? COL_SITE_MIN_PX),
-  0,
+function trackWidth(id: string): number {
+  const track = SITES_COLUMN_TRACKS.find((t) => t.id === id);
+  // Unreachable for the ids above; the fallback keeps this total rather
+  // than throwing at module scope if a column is ever renamed.
+  return track?.base ?? 100;
+}
+
+const TABLE_MIN_WIDTH_PX = SITES_TABLE_MIN_WIDTH_PX;
+
+/**
+ * Resolved column widths (one per column, plus the trailing spacer) for the
+ * current container width. Read by the hoisted <VirtuosoTable> slot, which
+ * must keep a STABLE component identity across renders or Virtuoso remounts
+ * its scroller on every resize tick, so the widths reach it through
+ * context rather than through props.
+ */
+const ColumnWidthsContext = createContext<readonly number[]>(
+  computeSitesColumnWidths(0),
 );
 
 // ---------------------------------------------------------------------------
@@ -510,10 +522,20 @@ function buildColumns(
                 —
               </span>
             );
-          return <span className="font-mono text-sm tabular-nums">{v}</span>;
+          return (
+            <span className="whitespace-nowrap font-mono text-sm tabular-nums">
+              {v}
+            </span>
+          );
         }
+        // Compact: icon + version only. The status word repeated on every
+        // row (and the two-line "Current in fleet" wrap) is what clipped
+        // this column into its neighbours; the classification survives as
+        // icon shape + colour, is announced in full to assistive tech, and
+        // the fleet caveat is stated once on the column header.
         return (
           <AgentStatusChip
+            compact
             status={agentStatus}
             version={v || null}
             referenceSource={agentReferenceSource}
@@ -546,9 +568,13 @@ function buildColumns(
         if (!status) return <span aria-hidden="true" />;
         // GH #231 — relative label in the chip, exact timestamp on hover
         // (matches the /backups page's relativeTime + title convention).
+        // GH #255: `compact` drops the "Backed up" prefix the column header
+        // already says; the chip renders "10h ago" and still announces
+        // "Backed up 10h ago". Failures keep their word and their palette.
         const iso = row.original.backupTime;
         return (
           <BackupChip
+            compact
             status={status}
             time={relativeTime(iso) ?? undefined}
             title={iso ? new Date(iso).toLocaleString() : undefined}
@@ -642,6 +668,7 @@ function VirtuosoTable({
   children,
   ...rest
 }: TableHTMLAttributes<HTMLTableElement>) {
+  const widths = useContext(ColumnWidthsContext);
   return (
     <table
       {...rest}
@@ -650,15 +677,46 @@ function VirtuosoTable({
     >
       {/* Authoritative column geometry shared by the sticky header and the
           virtualized body. Without this, per-<th> widths do not propagate to
-          the body rows and the columns drift. */}
+          the body rows and the columns drift. The last track is the spacer
+          that soaks up ultrawide surplus (GH #261). It is zero-width at
+          and below the table's minimum width. */}
       <colgroup>
-        {COLUMN_WIDTHS_PX.map((w, i) => (
-          <col key={i} style={w != null ? { width: w } : undefined} />
+        {widths.map((w, i) => (
+          <col
+            key={i}
+            // The trailing spacer is left auto on purpose: as the ONLY
+            // auto track it absorbs the exact remainder, including the few
+            // pixels a vertical scrollbar takes off the measured width, so
+            // the surplus can never fall back onto the Site column.
+            style={i === widths.length - 1 ? undefined : { width: w }}
+          />
         ))}
       </colgroup>
       {children}
     </table>
   );
+}
+
+/**
+ * Width of `ref`'s element, tracked live. Returns 0 until first measured
+ * (and in any environment without ResizeObserver), which
+ * computeSitesColumnWidths resolves to the base widths.
+ */
+function useMeasuredWidth(ref: RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
 }
 
 const VirtuosoTableHead = forwardRef<
@@ -794,6 +852,17 @@ export function SitesTable({
   const firstMount = !hasMounted.current;
   hasMounted.current = true;
 
+  // Live container width -> resolved column tracks (GH #255 / GH #261).
+  // Measured on the scroll region (whose own width never changes when the
+  // inner scroller gains a scrollbar), so there is no measure/relayout
+  // feedback loop.
+  const regionRef = useRef<HTMLDivElement>(null);
+  const availableWidth = useMeasuredWidth(regionRef);
+  const columnWidths = useMemo(
+    () => computeSitesColumnWidths(availableWidth),
+    [availableWidth],
+  );
+
   return (
     <motion.div
       className="flex min-w-0 w-full flex-col bg-background"
@@ -804,20 +873,26 @@ export function SitesTable({
       animate="animate"
     >
       <div
+        ref={regionRef}
         role="region"
         aria-label="Sites table"
         aria-busy={isLoading ? "true" : undefined}
         className="relative h-[calc(100vh-12rem)] min-h-[400px] w-full overflow-x-auto"
       >
-        <TableVirtuoso<Row<SiteRow>, unknown>
-          data={sortedRows}
-          totalCount={sortedRows.length}
-          components={virtuosoComponents}
-          fixedHeaderContent={() => (
-            <TableHeaderRow headerGroups={table.getHeaderGroups()} />
-          )}
-          itemContent={(_, row) => <TableBodyCells row={row} />}
-        />
+        <ColumnWidthsContext.Provider value={columnWidths}>
+          <TableVirtuoso<Row<SiteRow>, unknown>
+            data={sortedRows}
+            totalCount={sortedRows.length}
+            components={virtuosoComponents}
+            fixedHeaderContent={() => (
+              <TableHeaderRow
+                headerGroups={table.getHeaderGroups()}
+                agentReferenceSource={agentReferenceSource}
+              />
+            )}
+            itemContent={(_, row) => <TableBodyCells row={row} />}
+          />
+        </ColumnWidthsContext.Provider>
       </div>
     </motion.div>
   );
@@ -830,10 +905,12 @@ export function SitesTable({
 
 function TableHeaderRow({
   headerGroups,
+  agentReferenceSource,
 }: {
   headerGroups: ReturnType<
     ReturnType<typeof useReactTable<SiteRow>>["getHeaderGroups"]
   >;
+  agentReferenceSource?: FleetAgentVersions["reference_source"];
 }) {
   return (
     <>
@@ -850,6 +927,29 @@ function TableHeaderRow({
             const canSort = header.column.getCanSort();
             const isFirst = header.column.id === "select";
             const isActions = header.column.id === "actions";
+            // The "compared against this fleet" caveat is a property of the
+            // whole Agent column, so it is stated once here rather than
+            // appended to every row. It sits OUTSIDE the sort button: a
+            // button nested in a button is invalid and unreachable.
+            const accessory =
+              header.column.id === "agent_version" ? (
+                <AgentColumnFleetNote referenceSource={agentReferenceSource} />
+              ) : null;
+            const content = header.isPlaceholder ? null : canSort ? (
+              <button
+                type="button"
+                onClick={header.column.getToggleSortingHandler()}
+                className="group inline-flex h-full items-center gap-1 text-xs font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {flexRender(
+                  header.column.columnDef.header,
+                  header.getContext(),
+                )}
+                <SortGlyph dir={sortDir} />
+              </button>
+            ) : (
+              flexRender(header.column.columnDef.header, header.getContext())
+            );
             return (
               <th
                 key={header.id}
@@ -860,27 +960,25 @@ function TableHeaderRow({
                   isActions && "pr-4 text-right",
                 )}
               >
-                {header.isPlaceholder ? null : canSort ? (
-                  <button
-                    type="button"
-                    onClick={header.column.getToggleSortingHandler()}
-                    className="group inline-flex h-full items-center gap-1 text-xs font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  >
-                    {flexRender(
-                      header.column.columnDef.header,
-                      header.getContext(),
-                    )}
-                    <SortGlyph dir={sortDir} />
-                  </button>
+                {accessory ? (
+                  // h-full so the wrapped sort button keeps resolving its
+                  // own h-full against the header cell, not against a
+                  // content-sized span.
+                  <span className="inline-flex h-full items-center gap-1">
+                    {content}
+                    {accessory}
+                  </span>
                 ) : (
-                  flexRender(
-                    header.column.columnDef.header,
-                    header.getContext(),
-                  )
+                  content
                 )}
               </th>
             );
           })}
+          {/* Trailing spacer track (GH #261). Present in every row so the
+              column exists in the table grid and the row rule runs the full
+              width; a <td> rather than a <th> so it adds no column name, and
+              aria-hidden so it is skipped by assistive tech. */}
+          <td aria-hidden="true" className="p-0" />
         </tr>
       ))}
     </>
@@ -924,6 +1022,9 @@ function TableBodyCells({ row }: { row: Row<SiteRow> }) {
           </td>
         );
       })}
+      {/* Trailing spacer track, see TableHeaderRow. Carries the row rule so
+          the border still runs to the table's right edge. */}
+      <td aria-hidden="true" className="border-b border-border p-0" />
     </>
   );
 }

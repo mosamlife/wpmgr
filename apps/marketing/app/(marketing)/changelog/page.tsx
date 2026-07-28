@@ -39,6 +39,29 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.100",
+    date: "2026-07-28",
+    summary: "The Sites table shares its width sensibly across every column now, on any screen size.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "On a wide monitor, the Sites table used to hand nearly all its width to the Site column and squeeze everything else into a sliver on the right (GH #261). On a 5120 pixel display, Site took about three quarters of the table; it now takes about eight percent, with the rest shared out and any true leftover left as empty space instead of stretched into one column.",
+      },
+      {
+        tag: "Fixed",
+        text: "At ordinary widths the opposite could happen: the Agent, Updates and Backup columns could overlap, with Uptime pushed off screen (reported on a 22 site fleet, GH #255). The header and the rows now share one definition of every column's width, and two columns were trimmed to fit: Backup no longer repeats its own heading, and Agent no longer repeats a status word on every row.",
+      },
+      {
+        tag: "Fixed",
+        text: "The Agent column's note about comparing against your own fleet rather than a published release, added in 0.61.99, moved from every row to the column heading, where it belongs.",
+      },
+      {
+        tag: "Fixed",
+        text: "The Sites table's loading placeholder was missing two columns and drifted out of step with the real table, so the table appeared to shift sideways once it finished loading. It is now built from the same column definitions as the table itself.",
+      },
+    ],
+  },
+  {
     version: "0.61.99",
     date: "2026-07-28",
     summary: "Self-hosted installs no longer show every site's agent version as an unreadable \"unknown\".",

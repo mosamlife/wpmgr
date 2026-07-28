@@ -8,6 +8,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.100] - 2026-07-28
+
+### Fixed
+
+- On a wide screen, the Sites table gave nearly all its spare width to the Site column and none to any other column (GH #261). On a 5120 pixel display the Site column took roughly three quarters of the table while every other column was squeezed into the right hand side. Every column now grows only up to a sensible limit, Tags and Backup share the extra space once Site reaches its own limit, and whatever is left over sits in empty space at the end of the table instead of stretching one column further. On that same 5120 pixel display the Site column now takes about eight percent of the table instead of about seventy five.
+- Columns could also clip into each other at ordinary widths (GH #255, reported on a 22 site fleet): the Agent, Updates and Backup columns overlapped, and the Uptime column was pushed off screen entirely. Two things caused it. The header and the table's rows sized each column independently, so the two could drift apart from each other, and some columns were shown more text than they had room for, so it ran into the next column instead of fitting. The header and the rows now share one definition of every column's width, and, as described below, the Agent and Backup columns show less text per row, so both problems go away together.
+- The Backup column repeated its own heading: it read "Backed up 10h ago" under a column already titled Backup, and wrapped onto two lines on most rows. It now shows just the time, with the same icon, and a failed backup is still called out clearly.
+- The Agent column repeated a status word on every row. On a healthy fleet nearly every row said the same thing, which pushed the version number into the next column. Each row now shows the version next to a status icon instead, and the icon's shape carries the meaning rather than color alone. Screen readers still announce the full state and version for every row.
+- The note about what a site's agent version is compared against has moved from every row to the Agent column's heading. Version 0.61.99 added a per row note saying when a site is compared against the newest agent in your own fleet rather than a published release, which matters on a self-hosted install. That is a fact about the comparison itself, not about each site, so it now appears once, on the column heading, instead of taking width from every row.
+- The loading placeholder shown while the Sites table is still loading had drifted out of step with the real table and was missing two columns, so the table appeared to shift sideways once it finished loading. It is now built from the same column definitions as the table itself.
+
 ## [0.61.99] - 2026-07-28
 
 ### Fixed

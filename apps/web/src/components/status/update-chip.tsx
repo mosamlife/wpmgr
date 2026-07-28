@@ -34,7 +34,11 @@ export function UpdateChip({
     <span
       title={description}
       className={cn(
-        "inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium",
+        // whitespace-nowrap: in the Sites table this pill sits in a fixed
+        // track between the Agent and Backup columns, where a wrapped
+        // "12 updates" doubled the row height and collided with both
+        // neighbours (GH #255).
+        "inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium",
         severityClasses[severity],
         className,
       )}
