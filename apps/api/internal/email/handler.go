@@ -64,8 +64,8 @@ func (h *Handler) SetPublicBase(publicBase string) {
 //	GET    /sites/:siteId/email/log/:logId            — single log entry detail
 //	GET    /sites/:siteId/email/stats                 — per-site email stats
 //	POST   /sites/:siteId/email/log/:logId/resend     — single resend (body_stored gate)
-//	POST   /sites/:siteId/email/log/resend            — bulk resend (body ids[])
-//	DELETE /sites/:siteId/email/log                   — bulk delete (ids[])
+//	POST   /sites/:siteId/email/log/resend            — bulk resend (body log_ids[])
+//	DELETE /sites/:siteId/email/log                   — bulk delete (log_ids[])
 //	GET    /sites/:siteId/email/suppression           — per-site suppression list
 //	POST   /sites/:siteId/email/suppression           — manual add
 //	DELETE /sites/:siteId/email/suppression/:id       — un-suppress
@@ -580,26 +580,72 @@ func (h *Handler) resendLog(c *gin.Context) {
 	})
 }
 
+// bulkLogIDsBody is the request body shared by bulk resend and bulk delete.
+//
+// GH #307: both handlers used to bind only "ids", but the OpenAPI schemas
+// (BulkResendRequest, BulkDeleteLogsRequest) declare the field as "log_ids",
+// which is what the generated @wpmgr/api client and the web app have always
+// sent. The field therefore never bound, the id list was empty, and both
+// endpoints returned 200 with a zero count while doing nothing.
+//
+// "log_ids" is the contract and wins. "ids" stays accepted because it is the
+// name the shipped handler read, so a hand-rolled caller written against the
+// handler source rather than the spec has been working all along and must not
+// break. log_ids takes precedence when both are present.
+type bulkLogIDsBody struct {
+	LogIDs []string `json:"log_ids"`
+	IDs    []string `json:"ids"` // legacy alias, see above
+}
+
+func (b bulkLogIDsBody) ids() []string {
+	if len(b.LogIDs) > 0 {
+		return b.LogIDs
+	}
+	return b.IDs
+}
+
+// errEmptyLogIDs is the rejection for a body that carries no ids at all: `{}`,
+// `{"log_ids": []}`, or a legacy `{"ids": []}`.
+//
+// GH #307 follow-up. log_ids is `required` in both schemas, but nothing
+// enforced that server-side: an empty list sailed through to the service,
+// deleted nothing, still wrote an audit row, and still answered 200
+// {"deleted": 0}. That is the exact "0 log entries deleted" success toast the
+// original bug produced, so the symptom stayed reachable for any caller that
+// is not the TypeScript client (which blocks it at compile time). A request
+// that asks for nothing is a caller mistake, not a successful no-op, and it
+// must not leave an audit trail claiming otherwise.
+func errEmptyLogIDs() error {
+	return domain.Validation("log_ids_required", "log_ids must contain at least one log entry id")
+}
+
 // bulkResendLog handles POST /sites/:siteId/email/log/resend.
-// Body: {"ids": ["uuid", ...]}
+// Body: {"log_ids": ["uuid", ...]}, the OpenAPI BulkResendRequest schema.
 func (h *Handler) bulkResendLog(c *gin.Context) {
 	p, _ := domain.PrincipalFromContext(c.Request.Context())
 	siteID, ok := parseSiteID(c)
 	if !ok {
 		return
 	}
-	var body struct {
-		IDs []string `json:"ids"`
-	}
+	var body bulkLogIDsBody
 	if err := bindJSON(c, &body); err != nil {
 		httpx.Error(c, err)
 		return
 	}
-	ids := make([]uuid.UUID, 0, len(body.IDs))
-	for _, s := range body.IDs {
+	raw := body.ids()
+	if len(raw) == 0 {
+		httpx.Error(c, errEmptyLogIDs())
+		return
+	}
+	if len(raw) > MaxBulkResend {
+		httpx.Error(c, domain.Validation("resend_bulk_too_large", "bulk resend maximum is 100 entries per request"))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(raw))
+	for _, s := range raw {
 		id, err := uuid.Parse(s)
 		if err != nil {
-			httpx.Error(c, domain.Validation("invalid_log_id", "ids contains an invalid UUID: "+s))
+			httpx.Error(c, domain.Validation("invalid_log_id", "log_ids contains an invalid UUID: "+s))
 			return
 		}
 		ids = append(ids, id)
@@ -622,25 +668,32 @@ func (h *Handler) bulkResendLog(c *gin.Context) {
 }
 
 // bulkDeleteLog handles DELETE /sites/:siteId/email/log.
-// Body: {"ids": ["uuid", ...]}
+// Body: {"log_ids": ["uuid", ...]}, the OpenAPI BulkDeleteLogsRequest schema.
 func (h *Handler) bulkDeleteLog(c *gin.Context) {
 	p, _ := domain.PrincipalFromContext(c.Request.Context())
 	siteID, ok := parseSiteID(c)
 	if !ok {
 		return
 	}
-	var body struct {
-		IDs []string `json:"ids"`
-	}
+	var body bulkLogIDsBody
 	if err := bindJSON(c, &body); err != nil {
 		httpx.Error(c, err)
 		return
 	}
-	ids := make([]uuid.UUID, 0, len(body.IDs))
-	for _, s := range body.IDs {
+	raw := body.ids()
+	if len(raw) == 0 {
+		httpx.Error(c, errEmptyLogIDs())
+		return
+	}
+	if len(raw) > MaxBulkDelete {
+		httpx.Error(c, domain.Validation("bulk_delete_too_large", "bulk delete maximum is 500 entries per request"))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(raw))
+	for _, s := range raw {
 		id, err := uuid.Parse(s)
 		if err != nil {
-			httpx.Error(c, domain.Validation("invalid_log_id", "ids contains an invalid UUID: "+s))
+			httpx.Error(c, domain.Validation("invalid_log_id", "log_ids contains an invalid UUID: "+s))
 			return
 		}
 		ids = append(ids, id)

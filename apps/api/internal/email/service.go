@@ -842,13 +842,22 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 	return ResendResult{OK: res.OK, Detail: res.Detail, MessageID: res.MessageID}, nil
 }
 
+// Bulk log-operation ceilings. These mirror the maxItems the OpenAPI schemas
+// BulkResendRequest and BulkDeleteLogsRequest declare for log_ids; the handler
+// rejects an oversized list before parsing it, and the checks below remain the
+// authoritative gate for any non-HTTP caller.
+const (
+	MaxBulkResend = 100
+	MaxBulkDelete = 500
+)
+
 // BulkResendEmail dispatches resend_email commands for multiple log entries.
 // Each entry is processed independently; per-entry body_stored gate is checked.
 func (s *Service) BulkResendEmail(ctx context.Context, tenantID, siteID uuid.UUID, logIDs []uuid.UUID) ([]BulkResendResult, error) {
 	if len(logIDs) == 0 {
 		return nil, nil
 	}
-	if len(logIDs) > 100 {
+	if len(logIDs) > MaxBulkResend {
 		return nil, domain.Validation("resend_bulk_too_large", "bulk resend maximum is 100 entries per request")
 	}
 	results := make([]BulkResendResult, 0, len(logIDs))
@@ -874,7 +883,7 @@ func (s *Service) BulkDeleteLogs(ctx context.Context, tenantID, siteID uuid.UUID
 	if len(logIDs) == 0 {
 		return 0, nil
 	}
-	if len(logIDs) > 500 {
+	if len(logIDs) > MaxBulkDelete {
 		return 0, domain.Validation("bulk_delete_too_large", "bulk delete maximum is 500 entries per request")
 	}
 	deleted, err := s.repo.DeleteEmailLogsBulk(ctx, tenantID, siteID, logIDs)

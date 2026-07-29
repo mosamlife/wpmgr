@@ -10881,9 +10881,38 @@ func (s *AgentDbOrphanDeleteProgressResultsItem) Encode(e *jx.Encoder) {
 
 // encodeFields encodes fields.
 func (s *AgentDbOrphanDeleteProgressResultsItem) encodeFields(e *jx.Encoder) {
+	{
+		if s.Kind.Set {
+			e.FieldStart("kind")
+			s.Kind.Encode(e)
+		}
+	}
+	{
+		if s.Name.Set {
+			e.FieldStart("name")
+			s.Name.Encode(e)
+		}
+	}
+	{
+		if s.Status.Set {
+			e.FieldStart("status")
+			s.Status.Encode(e)
+		}
+	}
+	{
+		if s.Detail.Set {
+			e.FieldStart("detail")
+			s.Detail.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAgentDbOrphanDeleteProgressResultsItem = [0]string{}
+var jsonFieldsNameOfAgentDbOrphanDeleteProgressResultsItem = [4]string{
+	0: "kind",
+	1: "name",
+	2: "status",
+	3: "detail",
+}
 
 // Decode decodes AgentDbOrphanDeleteProgressResultsItem from json.
 func (s *AgentDbOrphanDeleteProgressResultsItem) Decode(d *jx.Decoder) error {
@@ -10893,9 +10922,50 @@ func (s *AgentDbOrphanDeleteProgressResultsItem) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "kind":
+			if err := func() error {
+				s.Kind.Reset()
+				if err := s.Kind.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"kind\"")
+			}
+		case "name":
+			if err := func() error {
+				s.Name.Reset()
+				if err := s.Name.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"name\"")
+			}
+		case "status":
+			if err := func() error {
+				s.Status.Reset()
+				if err := s.Status.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"status\"")
+			}
+		case "detail":
+			if err := func() error {
+				s.Detail.Reset()
+				if err := s.Detail.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"detail\"")
+			}
 		default:
 			return d.Skip()
 		}
+		return nil
 	}); err != nil {
 		return errors.Wrap(err, "decode AgentDbOrphanDeleteProgressResultsItem")
 	}
@@ -14445,6 +14515,12 @@ func (s *AgentMediaJobStatus) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.SavedBytes.Set {
+			e.FieldStart("saved_bytes")
+			s.SavedBytes.Encode(e)
+		}
+	}
+	{
 		if s.CompressionLevel.Set {
 			e.FieldStart("compression_level")
 			s.CompressionLevel.Encode(e)
@@ -14470,7 +14546,7 @@ func (s *AgentMediaJobStatus) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAgentMediaJobStatus = [11]string{
+var jsonFieldsNameOfAgentMediaJobStatus = [12]string{
 	0:  "job_id",
 	1:  "applied_variants",
 	2:  "sizes_unoptimized",
@@ -14478,10 +14554,11 @@ var jsonFieldsNameOfAgentMediaJobStatus = [11]string{
 	4:  "current_size_bytes",
 	5:  "bytes_before",
 	6:  "bytes_after",
-	7:  "compression_level",
-	8:  "target_format",
-	9:  "rewrite_stats",
-	10: "error",
+	7:  "saved_bytes",
+	8:  "compression_level",
+	9:  "target_format",
+	10: "rewrite_stats",
+	11: "error",
 }
 
 // Decode decodes AgentMediaJobStatus from json.
@@ -14573,6 +14650,16 @@ func (s *AgentMediaJobStatus) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"bytes_after\"")
+			}
+		case "saved_bytes":
+			if err := func() error {
+				s.SavedBytes.Reset()
+				if err := s.SavedBytes.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"saved_bytes\"")
 			}
 		case "compression_level":
 			if err := func() error {
@@ -15560,9 +15647,21 @@ func (s *AgentMediaSyncBatchAttachmentsItem) encodeFields(e *jx.Encoder) {
 			s.OriginalSizeBytes.Encode(e)
 		}
 	}
+	{
+		if s.VariantCount.Set {
+			e.FieldStart("variant_count")
+			s.VariantCount.Encode(e)
+		}
+	}
+	{
+		if s.SavedBytes.Set {
+			e.FieldStart("saved_bytes")
+			s.SavedBytes.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAgentMediaSyncBatchAttachmentsItem = [8]string{
+var jsonFieldsNameOfAgentMediaSyncBatchAttachmentsItem = [10]string{
 	0: "wp_attachment_id",
 	1: "title",
 	2: "original_path",
@@ -15571,6 +15670,8 @@ var jsonFieldsNameOfAgentMediaSyncBatchAttachmentsItem = [8]string{
 	5: "original_width",
 	6: "original_height",
 	7: "original_size_bytes",
+	8: "variant_count",
+	9: "saved_bytes",
 }
 
 // Decode decodes AgentMediaSyncBatchAttachmentsItem from json.
@@ -15660,6 +15761,26 @@ func (s *AgentMediaSyncBatchAttachmentsItem) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"original_size_bytes\"")
+			}
+		case "variant_count":
+			if err := func() error {
+				s.VariantCount.Reset()
+				if err := s.VariantCount.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"variant_count\"")
+			}
+		case "saved_bytes":
+			if err := func() error {
+				s.SavedBytes.Reset()
+				if err := s.SavedBytes.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"saved_bytes\"")
 			}
 		default:
 			return d.Skip()
@@ -15947,6 +16068,54 @@ func (s *AgentMetadata) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.AgentVersion.Set {
+			e.FieldStart("agent_version")
+			s.AgentVersion.Encode(e)
+		}
+	}
+	{
+		if s.AgeRecipient.Set {
+			e.FieldStart("age_recipient")
+			s.AgeRecipient.Encode(e)
+		}
+	}
+	{
+		if s.UserCount.Set {
+			e.FieldStart("user_count")
+			s.UserCount.Encode(e)
+		}
+	}
+	{
+		if s.AdminCount.Set {
+			e.FieldStart("admin_count")
+			s.AdminCount.Encode(e)
+		}
+	}
+	{
+		if s.CoreUpdate.Set {
+			e.FieldStart("core_update")
+			s.CoreUpdate.Encode(e)
+		}
+	}
+	{
+		if s.HostFlags.Set {
+			e.FieldStart("host_flags")
+			s.HostFlags.Encode(e)
+		}
+	}
+	{
+		if s.Disk.Set {
+			e.FieldStart("disk")
+			s.Disk.Encode(e)
+		}
+	}
+	{
+		if s.AgentSelfUpdate.Set {
+			e.FieldStart("agent_self_update")
+			s.AgentSelfUpdate.Encode(e)
+		}
+	}
+	{
 		if s.Plugins != nil {
 			e.FieldStart("plugins")
 			e.ArrStart()
@@ -15968,14 +16137,22 @@ func (s *AgentMetadata) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAgentMetadata = [7]string{
-	0: "wp_version",
-	1: "php_version",
-	2: "server_info",
-	3: "multisite",
-	4: "active_theme",
-	5: "plugins",
-	6: "themes",
+var jsonFieldsNameOfAgentMetadata = [15]string{
+	0:  "wp_version",
+	1:  "php_version",
+	2:  "server_info",
+	3:  "multisite",
+	4:  "active_theme",
+	5:  "agent_version",
+	6:  "age_recipient",
+	7:  "user_count",
+	8:  "admin_count",
+	9:  "core_update",
+	10: "host_flags",
+	11: "disk",
+	12: "agent_self_update",
+	13: "plugins",
+	14: "themes",
 }
 
 // Decode decodes AgentMetadata from json.
@@ -16036,6 +16213,86 @@ func (s *AgentMetadata) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"active_theme\"")
 			}
+		case "agent_version":
+			if err := func() error {
+				s.AgentVersion.Reset()
+				if err := s.AgentVersion.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"agent_version\"")
+			}
+		case "age_recipient":
+			if err := func() error {
+				s.AgeRecipient.Reset()
+				if err := s.AgeRecipient.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"age_recipient\"")
+			}
+		case "user_count":
+			if err := func() error {
+				s.UserCount.Reset()
+				if err := s.UserCount.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"user_count\"")
+			}
+		case "admin_count":
+			if err := func() error {
+				s.AdminCount.Reset()
+				if err := s.AdminCount.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"admin_count\"")
+			}
+		case "core_update":
+			if err := func() error {
+				s.CoreUpdate.Reset()
+				if err := s.CoreUpdate.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"core_update\"")
+			}
+		case "host_flags":
+			if err := func() error {
+				s.HostFlags.Reset()
+				if err := s.HostFlags.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"host_flags\"")
+			}
+		case "disk":
+			if err := func() error {
+				s.Disk.Reset()
+				if err := s.Disk.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"disk\"")
+			}
+		case "agent_self_update":
+			if err := func() error {
+				s.AgentSelfUpdate.Reset()
+				if err := s.AgentSelfUpdate.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"agent_self_update\"")
+			}
 		case "plugins":
 			if err := func() error {
 				s.Plugins = make([]SiteComponent, 0)
@@ -16090,6 +16347,496 @@ func (s *AgentMetadata) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AgentMetadata) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AgentMetadataAgentSelfUpdate) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentMetadataAgentSelfUpdate) encodeFields(e *jx.Encoder) {
+	{
+		if s.Status.Set {
+			e.FieldStart("status")
+			s.Status.Encode(e)
+		}
+	}
+	{
+		if s.FromVersion.Set {
+			e.FieldStart("from_version")
+			s.FromVersion.Encode(e)
+		}
+	}
+	{
+		if s.ToVersion.Set {
+			e.FieldStart("to_version")
+			s.ToVersion.Encode(e)
+		}
+	}
+	{
+		if s.Detail.Set {
+			e.FieldStart("detail")
+			s.Detail.Encode(e)
+		}
+	}
+	{
+		if s.At.Set {
+			e.FieldStart("at")
+			s.At.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAgentMetadataAgentSelfUpdate = [5]string{
+	0: "status",
+	1: "from_version",
+	2: "to_version",
+	3: "detail",
+	4: "at",
+}
+
+// Decode decodes AgentMetadataAgentSelfUpdate from json.
+func (s *AgentMetadataAgentSelfUpdate) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMetadataAgentSelfUpdate to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "status":
+			if err := func() error {
+				s.Status.Reset()
+				if err := s.Status.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"status\"")
+			}
+		case "from_version":
+			if err := func() error {
+				s.FromVersion.Reset()
+				if err := s.FromVersion.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"from_version\"")
+			}
+		case "to_version":
+			if err := func() error {
+				s.ToVersion.Reset()
+				if err := s.ToVersion.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"to_version\"")
+			}
+		case "detail":
+			if err := func() error {
+				s.Detail.Reset()
+				if err := s.Detail.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"detail\"")
+			}
+		case "at":
+			if err := func() error {
+				s.At.Reset()
+				if err := s.At.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"at\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentMetadataAgentSelfUpdate")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentMetadataAgentSelfUpdate) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMetadataAgentSelfUpdate) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AgentMetadataCoreUpdate) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentMetadataCoreUpdate) encodeFields(e *jx.Encoder) {
+	{
+		if s.NewVersion.Set {
+			e.FieldStart("new_version")
+			s.NewVersion.Encode(e)
+		}
+	}
+	{
+		if s.CurrentVersion.Set {
+			e.FieldStart("current_version")
+			s.CurrentVersion.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAgentMetadataCoreUpdate = [2]string{
+	0: "new_version",
+	1: "current_version",
+}
+
+// Decode decodes AgentMetadataCoreUpdate from json.
+func (s *AgentMetadataCoreUpdate) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMetadataCoreUpdate to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "new_version":
+			if err := func() error {
+				s.NewVersion.Reset()
+				if err := s.NewVersion.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"new_version\"")
+			}
+		case "current_version":
+			if err := func() error {
+				s.CurrentVersion.Reset()
+				if err := s.CurrentVersion.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"current_version\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentMetadataCoreUpdate")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentMetadataCoreUpdate) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMetadataCoreUpdate) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AgentMetadataDisk) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentMetadataDisk) encodeFields(e *jx.Encoder) {
+	{
+		if s.WpContentBytes.Set {
+			e.FieldStart("wp_content_bytes")
+			s.WpContentBytes.Encode(e)
+		}
+	}
+	{
+		if s.UploadsBytes.Set {
+			e.FieldStart("uploads_bytes")
+			s.UploadsBytes.Encode(e)
+		}
+	}
+	{
+		if s.FreeBytes.Set {
+			e.FieldStart("free_bytes")
+			s.FreeBytes.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAgentMetadataDisk = [3]string{
+	0: "wp_content_bytes",
+	1: "uploads_bytes",
+	2: "free_bytes",
+}
+
+// Decode decodes AgentMetadataDisk from json.
+func (s *AgentMetadataDisk) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMetadataDisk to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "wp_content_bytes":
+			if err := func() error {
+				s.WpContentBytes.Reset()
+				if err := s.WpContentBytes.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"wp_content_bytes\"")
+			}
+		case "uploads_bytes":
+			if err := func() error {
+				s.UploadsBytes.Reset()
+				if err := s.UploadsBytes.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"uploads_bytes\"")
+			}
+		case "free_bytes":
+			if err := func() error {
+				s.FreeBytes.Reset()
+				if err := s.FreeBytes.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"free_bytes\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentMetadataDisk")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentMetadataDisk) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMetadataDisk) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AgentMetadataHostFlags) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentMetadataHostFlags) encodeFields(e *jx.Encoder) {
+	{
+		if s.IsPressable.Set {
+			e.FieldStart("is_pressable")
+			s.IsPressable.Encode(e)
+		}
+	}
+	{
+		if s.IsGridpane.Set {
+			e.FieldStart("is_gridpane")
+			s.IsGridpane.Encode(e)
+		}
+	}
+	{
+		if s.IsWpengine.Set {
+			e.FieldStart("is_wpengine")
+			s.IsWpengine.Encode(e)
+		}
+	}
+	{
+		if s.IsAtomic.Set {
+			e.FieldStart("is_atomic")
+			s.IsAtomic.Encode(e)
+		}
+	}
+	{
+		if s.IsKinsta.Set {
+			e.FieldStart("is_kinsta")
+			s.IsKinsta.Encode(e)
+		}
+	}
+	{
+		if s.IsFlywheel.Set {
+			e.FieldStart("is_flywheel")
+			s.IsFlywheel.Encode(e)
+		}
+	}
+	{
+		if s.IsRuncloud.Set {
+			e.FieldStart("is_runcloud")
+			s.IsRuncloud.Encode(e)
+		}
+	}
+	{
+		if s.IsCloudways.Set {
+			e.FieldStart("is_cloudways")
+			s.IsCloudways.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAgentMetadataHostFlags = [8]string{
+	0: "is_pressable",
+	1: "is_gridpane",
+	2: "is_wpengine",
+	3: "is_atomic",
+	4: "is_kinsta",
+	5: "is_flywheel",
+	6: "is_runcloud",
+	7: "is_cloudways",
+}
+
+// Decode decodes AgentMetadataHostFlags from json.
+func (s *AgentMetadataHostFlags) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMetadataHostFlags to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "is_pressable":
+			if err := func() error {
+				s.IsPressable.Reset()
+				if err := s.IsPressable.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_pressable\"")
+			}
+		case "is_gridpane":
+			if err := func() error {
+				s.IsGridpane.Reset()
+				if err := s.IsGridpane.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_gridpane\"")
+			}
+		case "is_wpengine":
+			if err := func() error {
+				s.IsWpengine.Reset()
+				if err := s.IsWpengine.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_wpengine\"")
+			}
+		case "is_atomic":
+			if err := func() error {
+				s.IsAtomic.Reset()
+				if err := s.IsAtomic.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_atomic\"")
+			}
+		case "is_kinsta":
+			if err := func() error {
+				s.IsKinsta.Reset()
+				if err := s.IsKinsta.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_kinsta\"")
+			}
+		case "is_flywheel":
+			if err := func() error {
+				s.IsFlywheel.Reset()
+				if err := s.IsFlywheel.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_flywheel\"")
+			}
+		case "is_runcloud":
+			if err := func() error {
+				s.IsRuncloud.Reset()
+				if err := s.IsRuncloud.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_runcloud\"")
+			}
+		case "is_cloudways":
+			if err := func() error {
+				s.IsCloudways.Reset()
+				if err := s.IsCloudways.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"is_cloudways\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentMetadataHostFlags")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentMetadataHostFlags) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMetadataHostFlags) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -26014,10 +26761,24 @@ func (s *BillingCheckoutRequest) encodeFields(e *jx.Encoder) {
 		e.FieldStart("tier")
 		s.Tier.Encode(e)
 	}
+	{
+		if s.Provider.Set {
+			e.FieldStart("provider")
+			s.Provider.Encode(e)
+		}
+	}
+	{
+		if s.Currency.Set {
+			e.FieldStart("currency")
+			s.Currency.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfBillingCheckoutRequest = [1]string{
+var jsonFieldsNameOfBillingCheckoutRequest = [3]string{
 	0: "tier",
+	1: "provider",
+	2: "currency",
 }
 
 // Decode decodes BillingCheckoutRequest from json.
@@ -26038,6 +26799,26 @@ func (s *BillingCheckoutRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"tier\"")
+			}
+		case "provider":
+			if err := func() error {
+				s.Provider.Reset()
+				if err := s.Provider.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"provider\"")
+			}
+		case "currency":
+			if err := func() error {
+				s.Currency.Reset()
+				if err := s.Currency.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"currency\"")
 			}
 		default:
 			return d.Skip()
@@ -32827,6 +33608,12 @@ func (s *ClientReportSectionFlags) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *ClientReportSectionFlags) encodeFields(e *jx.Encoder) {
 	{
+		if s.Overview.Set {
+			e.FieldStart("overview")
+			s.Overview.Encode(e)
+		}
+	}
+	{
 		if s.Uptime.Set {
 			e.FieldStart("uptime")
 			s.Uptime.Encode(e)
@@ -32858,12 +33645,13 @@ func (s *ClientReportSectionFlags) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfClientReportSectionFlags = [5]string{
-	0: "uptime",
-	1: "backups",
-	2: "updates",
-	3: "performance",
-	4: "email",
+var jsonFieldsNameOfClientReportSectionFlags = [6]string{
+	0: "overview",
+	1: "uptime",
+	2: "backups",
+	3: "updates",
+	4: "performance",
+	5: "email",
 }
 
 // Decode decodes ClientReportSectionFlags from json.
@@ -32875,6 +33663,16 @@ func (s *ClientReportSectionFlags) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "overview":
+			if err := func() error {
+				s.Overview.Reset()
+				if err := s.Overview.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"overview\"")
+			}
 		case "uptime":
 			if err := func() error {
 				s.Uptime.Reset()
@@ -73947,6 +74745,202 @@ func (s *OptMediaVariantResultState) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes AgentMetadataAgentSelfUpdate as json.
+func (o OptNilAgentMetadataAgentSelfUpdate) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AgentMetadataAgentSelfUpdate from json.
+func (o *OptNilAgentMetadataAgentSelfUpdate) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAgentMetadataAgentSelfUpdate to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AgentMetadataAgentSelfUpdate
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAgentMetadataAgentSelfUpdate) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAgentMetadataAgentSelfUpdate) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMetadataCoreUpdate as json.
+func (o OptNilAgentMetadataCoreUpdate) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AgentMetadataCoreUpdate from json.
+func (o *OptNilAgentMetadataCoreUpdate) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAgentMetadataCoreUpdate to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AgentMetadataCoreUpdate
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAgentMetadataCoreUpdate) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAgentMetadataCoreUpdate) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMetadataDisk as json.
+func (o OptNilAgentMetadataDisk) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AgentMetadataDisk from json.
+func (o *OptNilAgentMetadataDisk) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAgentMetadataDisk to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AgentMetadataDisk
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAgentMetadataDisk) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAgentMetadataDisk) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMetadataHostFlags as json.
+func (o OptNilAgentMetadataHostFlags) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AgentMetadataHostFlags from json.
+func (o *OptNilAgentMetadataHostFlags) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAgentMetadataHostFlags to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AgentMetadataHostFlags
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAgentMetadataHostFlags) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAgentMetadataHostFlags) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes bool as json.
 func (o OptNilBool) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -78569,6 +79563,42 @@ func (s *PerfConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.RumEnabled.Set {
+			e.FieldStart("rum_enabled")
+			s.RumEnabled.Encode(e)
+		}
+	}
+	{
+		if s.RumSampleRate.Set {
+			e.FieldStart("rum_sample_rate")
+			s.RumSampleRate.Encode(e)
+		}
+	}
+	{
+		if s.MinSampleCount.Set {
+			e.FieldStart("min_sample_count")
+			s.MinSampleCount.Encode(e)
+		}
+	}
+	{
+		if s.MaxDistinctCountries.Set {
+			e.FieldStart("max_distinct_countries")
+			s.MaxDistinctCountries.Encode(e)
+		}
+	}
+	{
+		if s.BeaconKeySet.Set {
+			e.FieldStart("beacon_key_set")
+			s.BeaconKeySet.Encode(e)
+		}
+	}
+	{
+		if s.BeaconKeyAckedPresent.Set {
+			e.FieldStart("beacon_key_acked_present")
+			s.BeaconKeyAckedPresent.Encode(e)
+		}
+	}
+	{
 		if s.ConfigVersion.Set {
 			e.FieldStart("config_version")
 			s.ConfigVersion.Encode(e)
@@ -78582,7 +79612,7 @@ func (s *PerfConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfPerfConfig = [68]string{
+var jsonFieldsNameOfPerfConfig = [74]string{
 	0:  "cache_enabled",
 	1:  "cache_logged_in",
 	2:  "cache_mobile",
@@ -78649,8 +79679,14 @@ var jsonFieldsNameOfPerfConfig = [68]string{
 	63: "woo_cacheable_session",
 	64: "woo_theme_fragments_supported",
 	65: "woo_fragments_probed_at",
-	66: "config_version",
-	67: "updated_at",
+	66: "rum_enabled",
+	67: "rum_sample_rate",
+	68: "min_sample_count",
+	69: "max_distinct_countries",
+	70: "beacon_key_set",
+	71: "beacon_key_acked_present",
+	72: "config_version",
+	73: "updated_at",
 }
 
 // Decode decodes PerfConfig from json.
@@ -79393,6 +80429,66 @@ func (s *PerfConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"woo_fragments_probed_at\"")
+			}
+		case "rum_enabled":
+			if err := func() error {
+				s.RumEnabled.Reset()
+				if err := s.RumEnabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rum_enabled\"")
+			}
+		case "rum_sample_rate":
+			if err := func() error {
+				s.RumSampleRate.Reset()
+				if err := s.RumSampleRate.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rum_sample_rate\"")
+			}
+		case "min_sample_count":
+			if err := func() error {
+				s.MinSampleCount.Reset()
+				if err := s.MinSampleCount.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"min_sample_count\"")
+			}
+		case "max_distinct_countries":
+			if err := func() error {
+				s.MaxDistinctCountries.Reset()
+				if err := s.MaxDistinctCountries.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"max_distinct_countries\"")
+			}
+		case "beacon_key_set":
+			if err := func() error {
+				s.BeaconKeySet.Reset()
+				if err := s.BeaconKeySet.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"beacon_key_set\"")
+			}
+		case "beacon_key_acked_present":
+			if err := func() error {
+				s.BeaconKeyAckedPresent.Reset()
+				if err := s.BeaconKeyAckedPresent.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"beacon_key_acked_present\"")
 			}
 		case "config_version":
 			if err := func() error {
@@ -102403,6 +103499,30 @@ func (s *SiteComponent) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.PluginURI.Set {
+			e.FieldStart("plugin_uri")
+			s.PluginURI.Encode(e)
+		}
+	}
+	{
+		if s.UpdateURI.Set {
+			e.FieldStart("update_uri")
+			s.UpdateURI.Encode(e)
+		}
+	}
+	{
+		if s.AuthorURI.Set {
+			e.FieldStart("author_uri")
+			s.AuthorURI.Encode(e)
+		}
+	}
+	{
+		if s.Network.Set {
+			e.FieldStart("network")
+			s.Network.Encode(e)
+		}
+	}
+	{
 		if s.AvailableUpdate.Set {
 			e.FieldStart("available_update")
 			s.AvailableUpdate.Encode(e)
@@ -102410,12 +103530,16 @@ func (s *SiteComponent) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfSiteComponent = [5]string{
+var jsonFieldsNameOfSiteComponent = [9]string{
 	0: "slug",
 	1: "name",
 	2: "version",
 	3: "active",
-	4: "available_update",
+	4: "plugin_uri",
+	5: "update_uri",
+	6: "author_uri",
+	7: "network",
+	8: "available_update",
 }
 
 // Decode decodes SiteComponent from json.
@@ -102423,7 +103547,7 @@ func (s *SiteComponent) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode SiteComponent to nil")
 	}
-	var requiredBitSet [1]uint8
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -102469,6 +103593,46 @@ func (s *SiteComponent) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"active\"")
 			}
+		case "plugin_uri":
+			if err := func() error {
+				s.PluginURI.Reset()
+				if err := s.PluginURI.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"plugin_uri\"")
+			}
+		case "update_uri":
+			if err := func() error {
+				s.UpdateURI.Reset()
+				if err := s.UpdateURI.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"update_uri\"")
+			}
+		case "author_uri":
+			if err := func() error {
+				s.AuthorURI.Reset()
+				if err := s.AuthorURI.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"author_uri\"")
+			}
+		case "network":
+			if err := func() error {
+				s.Network.Reset()
+				if err := s.Network.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"network\"")
+			}
 		case "available_update":
 			if err := func() error {
 				s.AvailableUpdate.Reset()
@@ -102488,8 +103652,9 @@ func (s *SiteComponent) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [1]uint8{
+	for i, mask := range [2]uint8{
 		0b00000001,
+		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -106305,6 +107470,12 @@ func (s *SiteErrorConfig) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *SiteErrorConfig) encodeFields(e *jx.Encoder) {
 	{
+		if s.Enabled.Set {
+			e.FieldStart("enabled")
+			s.Enabled.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("error_level")
 		e.Int32(s.ErrorLevel)
 	}
@@ -106318,9 +107489,10 @@ func (s *SiteErrorConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfSiteErrorConfig = [2]string{
-	0: "error_level",
-	1: "ignore_md5s",
+var jsonFieldsNameOfSiteErrorConfig = [3]string{
+	0: "enabled",
+	1: "error_level",
+	2: "ignore_md5s",
 }
 
 // Decode decodes SiteErrorConfig from json.
@@ -106332,8 +107504,18 @@ func (s *SiteErrorConfig) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "enabled":
+			if err := func() error {
+				s.Enabled.Reset()
+				if err := s.Enabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"enabled\"")
+			}
 		case "error_level":
-			requiredBitSet[0] |= 1 << 0
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
 				v, err := d.Int32()
 				s.ErrorLevel = int32(v)
@@ -106345,7 +107527,7 @@ func (s *SiteErrorConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"error_level\"")
 			}
 		case "ignore_md5s":
-			requiredBitSet[0] |= 1 << 1
+			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
 				s.IgnoreMd5s = make([]string, 0)
 				if err := d.Arr(func(d *jx.Decoder) error {
@@ -106374,7 +107556,7 @@ func (s *SiteErrorConfig) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000011,
+		0b00000110,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -106430,6 +107612,12 @@ func (s *SiteErrorConfigUpdate) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *SiteErrorConfigUpdate) encodeFields(e *jx.Encoder) {
 	{
+		if s.Enabled.Set {
+			e.FieldStart("enabled")
+			s.Enabled.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("error_level")
 		e.Int32(s.ErrorLevel)
 	}
@@ -106443,9 +107631,10 @@ func (s *SiteErrorConfigUpdate) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfSiteErrorConfigUpdate = [2]string{
-	0: "error_level",
-	1: "ignore_md5s",
+var jsonFieldsNameOfSiteErrorConfigUpdate = [3]string{
+	0: "enabled",
+	1: "error_level",
+	2: "ignore_md5s",
 }
 
 // Decode decodes SiteErrorConfigUpdate from json.
@@ -106457,8 +107646,18 @@ func (s *SiteErrorConfigUpdate) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "enabled":
+			if err := func() error {
+				s.Enabled.Reset()
+				if err := s.Enabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"enabled\"")
+			}
 		case "error_level":
-			requiredBitSet[0] |= 1 << 0
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
 				v, err := d.Int32()
 				s.ErrorLevel = int32(v)
@@ -106470,7 +107669,7 @@ func (s *SiteErrorConfigUpdate) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"error_level\"")
 			}
 		case "ignore_md5s":
-			requiredBitSet[0] |= 1 << 1
+			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
 				s.IgnoreMd5s = make([]string, 0)
 				if err := d.Arr(func(d *jx.Decoder) error {
@@ -106499,7 +107698,7 @@ func (s *SiteErrorConfigUpdate) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000011,
+		0b00000110,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

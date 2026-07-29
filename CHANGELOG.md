@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.101] - 2026-07-29
+
+### Fixed
+
+- On a site's Email > Log tab, selecting log entries and clicking Delete showed a success message reading "0 log entries deleted" and deleted nothing (GH #307, reported by MrMK0R on a self-hosted install). The dashboard and the control plane disagreed about the name of one field in the request: the dashboard sent the list of selected entries under one name, and the control plane looked for it under another, so it received an empty list, deleted nothing, and truthfully reported that it had deleted nothing. There was nothing wrong with deletion itself. The Resend button on the same screen was broken in exactly the same way and for the same reason, so selecting entries and clicking Resend also quietly did nothing. Both are fixed. A deletion that removed nothing was also being written into the audit log as though it had happened; that is corrected too.
+- Sending no entries at all, or an empty list, used to return success with a count of zero, which is the same confusing outcome the bug above produced. Both the delete and resend endpoints now reject that with a clear error instead of reporting a successful deletion of nothing.
+- WPMgr has an automated check that compares every API endpoint against its published specification. It was written, and it worked when run by hand, but it was never included in the automated checks that run on every change, so it had never actually run there. That is why a mismatch like the one above could reach a release. The check now runs on every change, and a second check that compares the fields of every request body against the specification runs alongside it; it also now looks at fields nested inside other fields, not only at the top level. Together the two checks cover 149 request bodies and 646 fields.
+
 ## [0.61.100] - 2026-07-28
 
 ### Fixed

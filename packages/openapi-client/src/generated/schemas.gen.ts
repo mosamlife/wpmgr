@@ -377,6 +377,26 @@ export const SiteComponentSchema = {
     active: {
       type: "boolean",
     },
+    plugin_uri: {
+      type: "string",
+      description:
+        "PluginURI from the plugin header. Optional; older agents omit it.",
+    },
+    update_uri: {
+      type: "string",
+      description:
+        "UpdateURI from the plugin header. Optional; older agents omit it.",
+    },
+    author_uri: {
+      type: "string",
+      description:
+        "AuthorURI from the plugin header. Optional; older agents omit it.",
+    },
+    network: {
+      type: "boolean",
+      description:
+        "Whether the plugin is network-activated. Optional; older agents omit it.",
+    },
     available_update: {
       type: "object",
       nullable: true,
@@ -882,6 +902,16 @@ export const AgentMediaSyncBatchSchema = {
             type: "integer",
             format: "int64",
           },
+          variant_count: {
+            type: "integer",
+            description: "1 (full) plus generated sub-sizes.",
+          },
+          saved_bytes: {
+            type: "integer",
+            format: "int64",
+            description:
+              "All-variant savings, re-reported at sync so already-optimized rows heal.",
+          },
         },
       },
     },
@@ -955,6 +985,13 @@ export const AgentMediaJobStatusSchema = {
       type: "integer",
       format: "int64",
       nullable: true,
+    },
+    saved_bytes: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+      description:
+        'All-variant savings (summed original-minus-optimized over every optimized variant). Drives the dashboard "Bytes saved" rollup.',
     },
     compression_level: {
       type: "string",
@@ -1080,6 +1117,8 @@ export const FontTranscodeResponseSchema = {
 
 export const AgentMetadataSchema = {
   type: "object",
+  description:
+    "The agent's metadata push. Every field is optional and tolerantly\ndecoded (booleans and numbers are accepted as strings), so an older\nagent that omits any of them still syncs successfully.\n",
   properties: {
     wp_version: {
       type: "string",
@@ -1099,6 +1138,110 @@ export const AgentMetadataSchema = {
     active_theme: {
       type: "string",
       maxLength: 200,
+    },
+    agent_version: {
+      type: "string",
+      description: "The WPMgr agent plugin version.",
+    },
+    age_recipient: {
+      type: "string",
+      description:
+        'The agent\'s per-site age PUBLIC recipient ("age1..."), stored so\nbackups can be triggered without a separate registration call.\nEmpty or missing leaves the stored recipient unchanged.\n',
+    },
+    user_count: {
+      type: "integer",
+    },
+    admin_count: {
+      type: "integer",
+    },
+    core_update: {
+      type: "object",
+      nullable: true,
+      description: "Present only when WordPress core has an update available.",
+      properties: {
+        new_version: {
+          type: "string",
+        },
+        current_version: {
+          type: "string",
+        },
+      },
+    },
+    host_flags: {
+      type: "object",
+      nullable: true,
+      description: "The agent's defined()-based hosting fingerprint.",
+      properties: {
+        is_pressable: {
+          type: "boolean",
+        },
+        is_gridpane: {
+          type: "boolean",
+        },
+        is_wpengine: {
+          type: "boolean",
+        },
+        is_atomic: {
+          type: "boolean",
+        },
+        is_kinsta: {
+          type: "boolean",
+        },
+        is_flywheel: {
+          type: "boolean",
+        },
+        is_runcloud: {
+          type: "boolean",
+        },
+        is_cloudways: {
+          type: "boolean",
+        },
+      },
+    },
+    disk: {
+      type: "object",
+      nullable: true,
+      description:
+        "Sampled disk usage in bytes. The wp-content and uploads walks are\ntime-capped, so a field may be absent on a very large tree.\n",
+      properties: {
+        wp_content_bytes: {
+          type: "integer",
+          format: "int64",
+        },
+        uploads_bytes: {
+          type: "integer",
+          format: "int64",
+        },
+        free_bytes: {
+          type: "integer",
+          format: "int64",
+        },
+      },
+    },
+    agent_self_update: {
+      type: "object",
+      nullable: true,
+      description:
+        "The outcome of the agent's last self-update apply, replayed on the\nnext metadata push. This is the only channel by which a FAILED\napply reaches the control plane: the apply runs inside a cron\nrequest with no response to ride on.\n",
+      properties: {
+        status: {
+          type: "string",
+        },
+        from_version: {
+          type: "string",
+        },
+        to_version: {
+          type: "string",
+        },
+        detail: {
+          type: "string",
+        },
+        at: {
+          type: "integer",
+          format: "int64",
+          description: "Unix timestamp the agent stamped the record with.",
+        },
+      },
     },
     plugins: {
       type: "array",
@@ -1876,7 +2019,17 @@ export const BillingCheckoutRequestSchema = {
       type: "string",
       enum: ["starter", "agency", "scale"],
       description:
-        "The ONLY caller-supplied selector. The server resolves this to a payment-provider price server-side; a request can never name a price directly.",
+        "The only caller-supplied PRICE selector. The server resolves this to a payment-provider price server-side; a request can never name a price directly.",
+    },
+    provider: {
+      type: "string",
+      description:
+        "Preferred payment provider. Consulted only on a tenant's first-ever checkout: once a tenant is pinned to a provider that pinning always wins, so a returning customer can never split a subscription across two providers. An unknown name is rejected. Omit to use the instance default.",
+    },
+    currency: {
+      type: "string",
+      description:
+        "Preferred billing currency, passed to the provider when it creates the checkout. Selects among the prices the server already knows for the requested tier; it can never set an amount. Omit for the provider default.",
     },
   },
 } as const;
@@ -5100,6 +5253,10 @@ export const SiteErrorConfigSchema = {
   type: "object",
   required: ["error_level", "ignore_md5s"],
   properties: {
+    enabled: {
+      type: "boolean",
+      description: "Whether PHP-error capture is active for this site.\n",
+    },
     error_level: {
       type: "integer",
       format: "int32",
@@ -5121,6 +5278,11 @@ export const SiteErrorConfigUpdateSchema = {
   type: "object",
   required: ["error_level", "ignore_md5s"],
   properties: {
+    enabled: {
+      type: "boolean",
+      description:
+        "Turns PHP-error capture on or off. OMITTING this field is treated as\ntrue: a client that does not know about the flag can never\naccidentally disable the mu-plugin trap, but that also means an\nupdate sent without it re-enables capture on a site where it was\nswitched off. Send false explicitly to keep capture disabled.\n",
+    },
     error_level: {
       type: "integer",
       format: "int32",
@@ -6428,6 +6590,37 @@ export const PerfConfigSchema = {
       readOnly: true,
       description:
         "RFC3339 timestamp of the last agent probe. Null when never probed.\n",
+    },
+    rum_enabled: {
+      type: "boolean",
+      description: "Enable Real User Monitoring collection for this site.\n",
+    },
+    rum_sample_rate: {
+      type: "number",
+      format: "float",
+      description: "Fraction of page views that emit a RUM beacon (0 to 1).\n",
+    },
+    min_sample_count: {
+      type: "integer",
+      description:
+        "Suppression floor: any RUM slice with fewer samples than this is\nreported as suppressed rather than shown, so a handful of visits\ncannot masquerade as a trend.\n",
+    },
+    max_distinct_countries: {
+      type: "integer",
+      description:
+        "Cap on the number of distinct countries kept in the per-country RUM\nbreakdown.\n",
+    },
+    beacon_key_set: {
+      type: "boolean",
+      readOnly: true,
+      description:
+        "Whether a RUM beacon key is provisioned. The plaintext key is never\nreturned; this boolean is how a client tells whether RUM is fully\nprovisioned. Ignored on write.\n",
+    },
+    beacon_key_acked_present: {
+      type: "boolean",
+      readOnly: true,
+      description:
+        "Whether the agent's most recent config-ack confirmed it holds the\nbeacon key. beacon_key_set true with this false means RUM is\nprovisioned control-plane side but the agent has not confirmed\nreceipt yet; the control plane retries automatically. Ignored on\nwrite.\n",
     },
     config_version: {
       type: "integer",
@@ -9032,6 +9225,10 @@ export const ClientReportSectionFlagsSchema = {
   type: "object",
   description: "Controls which data sections are included in a report.",
   properties: {
+    overview: {
+      type: "boolean",
+      default: true,
+    },
     uptime: {
       type: "boolean",
       default: true,
@@ -13609,10 +13806,25 @@ export const AgentDbOrphanDeleteProgressSchema = {
     },
     results: {
       type: "array",
+      description:
+        "Per-item result rows for the items processed in this batch.",
       items: {
         type: "object",
+        properties: {
+          kind: {
+            type: "string",
+          },
+          name: {
+            type: "string",
+          },
+          status: {
+            type: "string",
+          },
+          detail: {
+            type: "string",
+          },
+        },
       },
-      description: "Agent-defined per-item result rows.",
     },
     deleted_options: {
       type: "integer",
@@ -14190,6 +14402,25 @@ export const PerfConfigWritableSchema = {
       default: false,
       description:
         "When true the agent will cache the WooCommerce catalog shell for\nanonymous shoppers who have an active cart. The agent additionally\nhard-gates on its own theme probe (`woo_theme_fragments_supported`)\nbefore serving cached pages to cart-holding visitors, providing a\ndefense-in-depth layer independent of this flag.\nThe API accepts `woo_cacheable_session: true` even when\n`woo_theme_fragments_supported` is false — the agent will not act on\nit until its own probe passes. This allows operators to pre-enable the\nflag before the agent performs its first probe.\n",
+    },
+    rum_enabled: {
+      type: "boolean",
+      description: "Enable Real User Monitoring collection for this site.\n",
+    },
+    rum_sample_rate: {
+      type: "number",
+      format: "float",
+      description: "Fraction of page views that emit a RUM beacon (0 to 1).\n",
+    },
+    min_sample_count: {
+      type: "integer",
+      description:
+        "Suppression floor: any RUM slice with fewer samples than this is\nreported as suppressed rather than shown, so a handful of visits\ncannot masquerade as a trend.\n",
+    },
+    max_distinct_countries: {
+      type: "integer",
+      description:
+        "Cap on the number of distinct countries kept in the per-country RUM\nbreakdown.\n",
     },
   },
 } as const;

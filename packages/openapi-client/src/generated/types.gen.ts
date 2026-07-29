@@ -222,6 +222,22 @@ export type SiteComponent = {
   version?: string;
   active?: boolean;
   /**
+   * PluginURI from the plugin header. Optional; older agents omit it.
+   */
+  plugin_uri?: string;
+  /**
+   * UpdateURI from the plugin header. Optional; older agents omit it.
+   */
+  update_uri?: string;
+  /**
+   * AuthorURI from the plugin header. Optional; older agents omit it.
+   */
+  author_uri?: string;
+  /**
+   * Whether the plugin is network-activated. Optional; older agents omit it.
+   */
+  network?: boolean;
+  /**
    * When set, an update is available for this plugin/theme.
    */
   available_update?: {
@@ -467,6 +483,14 @@ export type AgentMediaSyncBatch = {
     original_width?: number;
     original_height?: number;
     original_size_bytes?: number;
+    /**
+     * 1 (full) plus generated sub-sizes.
+     */
+    variant_count?: number;
+    /**
+     * All-variant savings, re-reported at sync so already-optimized rows heal.
+     */
+    saved_bytes?: number;
   }>;
 };
 
@@ -495,6 +519,10 @@ export type AgentMediaJobStatus = {
   current_size_bytes?: number;
   bytes_before?: number;
   bytes_after?: number;
+  /**
+   * All-variant savings (summed original-minus-optimized over every optimized variant). Drives the dashboard "Bytes saved" rollup.
+   */
+  saved_bytes?: number;
   compression_level?: string;
   target_format?: string;
   rewrite_stats?: {
@@ -610,12 +638,78 @@ export type FontTranscodeResponse = {
   error_detail?: string;
 };
 
+/**
+ * The agent's metadata push. Every field is optional and tolerantly
+ * decoded (booleans and numbers are accepted as strings), so an older
+ * agent that omits any of them still syncs successfully.
+ *
+ */
 export type AgentMetadata = {
   wp_version?: string;
   php_version?: string;
   server_info?: string;
   multisite?: boolean;
   active_theme?: string;
+  /**
+   * The WPMgr agent plugin version.
+   */
+  agent_version?: string;
+  /**
+   * The agent's per-site age PUBLIC recipient ("age1..."), stored so
+   * backups can be triggered without a separate registration call.
+   * Empty or missing leaves the stored recipient unchanged.
+   *
+   */
+  age_recipient?: string;
+  user_count?: number;
+  admin_count?: number;
+  /**
+   * Present only when WordPress core has an update available.
+   */
+  core_update?: {
+    new_version?: string;
+    current_version?: string;
+  };
+  /**
+   * The agent's defined()-based hosting fingerprint.
+   */
+  host_flags?: {
+    is_pressable?: boolean;
+    is_gridpane?: boolean;
+    is_wpengine?: boolean;
+    is_atomic?: boolean;
+    is_kinsta?: boolean;
+    is_flywheel?: boolean;
+    is_runcloud?: boolean;
+    is_cloudways?: boolean;
+  };
+  /**
+   * Sampled disk usage in bytes. The wp-content and uploads walks are
+   * time-capped, so a field may be absent on a very large tree.
+   *
+   */
+  disk?: {
+    wp_content_bytes?: number;
+    uploads_bytes?: number;
+    free_bytes?: number;
+  };
+  /**
+   * The outcome of the agent's last self-update apply, replayed on the
+   * next metadata push. This is the only channel by which a FAILED
+   * apply reaches the control plane: the apply runs inside a cron
+   * request with no response to ride on.
+   *
+   */
+  agent_self_update?: {
+    status?: string;
+    from_version?: string;
+    to_version?: string;
+    detail?: string;
+    /**
+     * Unix timestamp the agent stamped the record with.
+     */
+    at?: number;
+  };
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;
 };
@@ -973,9 +1067,17 @@ export type BillingSummary = {
 
 export type BillingCheckoutRequest = {
   /**
-   * The ONLY caller-supplied selector. The server resolves this to a payment-provider price server-side; a request can never name a price directly.
+   * The only caller-supplied PRICE selector. The server resolves this to a payment-provider price server-side; a request can never name a price directly.
    */
   tier: "starter" | "agency" | "scale";
+  /**
+   * Preferred payment provider. Consulted only on a tenant's first-ever checkout: once a tenant is pinned to a provider that pinning always wins, so a returning customer can never split a subscription across two providers. An unknown name is rejected. Omit to use the instance default.
+   */
+  provider?: string;
+  /**
+   * Preferred billing currency, passed to the provider when it creates the checkout. Selects among the prices the server already knows for the requested tier; it can never set an amount. Omit for the provider default.
+   */
+  currency?: string;
 };
 
 export type BillingCheckoutResponse = {
@@ -2732,6 +2834,11 @@ export type PhpErrorSilence = {
 
 export type SiteErrorConfig = {
   /**
+   * Whether PHP-error capture is active for this site.
+   *
+   */
+  enabled?: boolean;
+  /**
    * PHP E_* bitmask the agent applies to wp_debug_log collection.
    * Default 6143 = E_ALL & ~E_STRICT (WordPress default).
    *
@@ -2747,6 +2854,15 @@ export type SiteErrorConfig = {
 };
 
 export type SiteErrorConfigUpdate = {
+  /**
+   * Turns PHP-error capture on or off. OMITTING this field is treated as
+   * true: a client that does not know about the flag can never
+   * accidentally disable the mu-plugin trap, but that also means an
+   * update sent without it re-enables capture on a site where it was
+   * switched off. Send false explicitly to keep capture disabled.
+   *
+   */
+  enabled?: boolean;
   /**
    * PHP E_* bitmask to apply. Must be >0 and fit in int32.
    *
@@ -3447,6 +3563,45 @@ export type PerfConfig = {
    *
    */
   readonly woo_fragments_probed_at?: string;
+  /**
+   * Enable Real User Monitoring collection for this site.
+   *
+   */
+  rum_enabled?: boolean;
+  /**
+   * Fraction of page views that emit a RUM beacon (0 to 1).
+   *
+   */
+  rum_sample_rate?: number;
+  /**
+   * Suppression floor: any RUM slice with fewer samples than this is
+   * reported as suppressed rather than shown, so a handful of visits
+   * cannot masquerade as a trend.
+   *
+   */
+  min_sample_count?: number;
+  /**
+   * Cap on the number of distinct countries kept in the per-country RUM
+   * breakdown.
+   *
+   */
+  max_distinct_countries?: number;
+  /**
+   * Whether a RUM beacon key is provisioned. The plaintext key is never
+   * returned; this boolean is how a client tells whether RUM is fully
+   * provisioned. Ignored on write.
+   *
+   */
+  readonly beacon_key_set?: boolean;
+  /**
+   * Whether the agent's most recent config-ack confirmed it holds the
+   * beacon key. beacon_key_set true with this false means RUM is
+   * provisioned control-plane side but the agent has not confirmed
+   * receipt yet; the control plane retries automatically. Ignored on
+   * write.
+   *
+   */
+  readonly beacon_key_acked_present?: boolean;
   readonly config_version?: number;
   readonly updated_at?: string;
 };
@@ -5112,6 +5267,7 @@ export type AssignSitesResponse = {
  * Controls which data sections are included in a report.
  */
 export type ClientReportSectionFlags = {
+  overview?: boolean;
   uptime?: boolean;
   backups?: boolean;
   updates?: boolean;
@@ -7167,10 +7323,13 @@ export type AgentDbCleanProgress = {
 export type AgentDbOrphanDeleteProgress = {
   job_id: string;
   /**
-   * Agent-defined per-item result rows.
+   * Per-item result rows for the items processed in this batch.
    */
   results?: Array<{
-    [key: string]: unknown;
+    kind?: string;
+    name?: string;
+    status?: string;
+    detail?: string;
   }>;
   deleted_options?: number;
   deleted_cron?: number;
@@ -7383,6 +7542,29 @@ export type PerfConfigWritable = {
    *
    */
   woo_cacheable_session?: boolean;
+  /**
+   * Enable Real User Monitoring collection for this site.
+   *
+   */
+  rum_enabled?: boolean;
+  /**
+   * Fraction of page views that emit a RUM beacon (0 to 1).
+   *
+   */
+  rum_sample_rate?: number;
+  /**
+   * Suppression floor: any RUM slice with fewer samples than this is
+   * reported as suppressed rather than shown, so a handful of visits
+   * cannot masquerade as a trend.
+   *
+   */
+  min_sample_count?: number;
+  /**
+   * Cap on the number of distinct countries kept in the per-country RUM
+   * breakdown.
+   *
+   */
+  max_distinct_countries?: number;
 };
 
 export type Limit = number;

@@ -70,6 +70,10 @@ func (s *BulkDeleteBackupsRequest) setDefaults() {
 func (s *ClientReportSectionFlags) setDefaults() {
 	{
 		val := bool(true)
+		s.Overview.SetTo(val)
+	}
+	{
+		val := bool(true)
 		s.Uptime.SetTo(val)
 	}
 	{

@@ -1,9 +1,9 @@
 // openapi_route_coverage_test.go — the P2-B docs-drift structural fix: a
 // full-engine contract test that builds the REAL production Gin engine
-// (server.New, the exact wiring internal/server/server.go's New performs)
-// against a real Postgres, enumerates engine.Routes(), normalises Gin's
-// :param syntax to OpenAPI's {param} syntax, and diffs it in BOTH directions
-// against packages/openapi/openapi.yaml:
+// (server.New, the exact wiring internal/server/server.go's New performs),
+// enumerates engine.Routes(), normalises Gin's :param syntax to OpenAPI's
+// {param} syntax, and diffs it in BOTH directions against
+// packages/openapi/openapi.yaml:
 //
 //   - a live route-method with no matching spec path+method fails the test
 //     (an undocumented route — the class this file exists to catch).
@@ -18,7 +18,7 @@
 // object-storage endpoint, a WebAuthn relying-party origin, a configured OIDC
 // issuer). Every allowlist entry carries a reason; the goal is an
 // EMPTY-ish list — grep the reasons below before adding to it.
-package tests
+package contract
 
 import (
 	"context"
@@ -178,8 +178,8 @@ func specRoutes(t *testing.T) map[routeKey]bool {
 
 func specPath(t *testing.T) string {
 	t.Helper()
-	// tests/ -> apps/api/ -> apps/ -> repo root -> packages/openapi/openapi.yaml
-	return "../../../packages/openapi/openapi.yaml"
+	// tests/contract/ -> tests/ -> apps/api/ -> apps/ -> repo root
+	return "../../../../packages/openapi/openapi.yaml"
 }
 
 // ---------------------------------------------------------------------------
@@ -187,8 +187,12 @@ func specPath(t *testing.T) string {
 // ---------------------------------------------------------------------------
 
 func TestOpenAPIRouteCoverage(t *testing.T) {
-	pool := startPostgres(t)
-	engine := buildFullEngine(t, pool)
+	// No Postgres: this test only reads engine.Routes(). The Register calls
+	// server.New makes inspect handler-nilness to decide what to mount and never
+	// touch the pool, so an empty *db.Pool yields the exact production route
+	// table. That is what keeps this gate containerless and able to run on every
+	// PR instead of only in the container lane.
+	engine := buildFullEngine(t, &db.Pool{})
 
 	live := liveRoutes(t, engine)
 	spec := specRoutes(t)
@@ -373,16 +377,16 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	// --- RUM (public) ------------------------------------------------------
 	rumH := rum.NewHandlerWithPublisher(rum.NewStorePostgres(pool), rum.NewBeaconKeyRepo(pool), nil, logger)
 
-	// --- billing / pricing (WPMGR_HOSTED path). Mounted with the tests
-	// package's existing fake payment provider (billing_webhook_integration_
-	// test.go's newTestBillingService/newFakeProvider) so every /billing and
-	// /api/v1/pricing route is real, exactly mirroring the hosted-enabled
-	// branch of cmd/wpmgr/main.go. ------------------------------------------
-	fp := newFakeProvider("fake")
-	billingSvc := newTestBillingService(pool, fp)
+	// --- billing / pricing (WPMGR_HOSTED path) -------------------------------
+	// enabled=true mirrors the hosted-enabled branch of cmd/wpmgr/main.go, so
+	// every /billing and /api/v1/pricing route mounts for real. No payment
+	// provider is registered: Register only inspects handler-nilness and this
+	// file never issues a request, so an empty Registry mounts the identical
+	// route set without pulling a provider test double into this package.
+	billingSvc := billing.New(pool, nil, true, clock, logger)
 	billingH := billing.NewHandler(billingSvc, nil, "https://cp.example.test")
 	billingWebhookH := billing.NewWebhookHandler(billingSvc, logger)
-	pricingSvc := pricing.NewService(billing.NewRegistry(fp), nil, logger)
+	pricingSvc := pricing.NewService(billing.NewRegistry(), nil, logger)
 	pricingH := pricing.NewHandler(pricingSvc)
 
 	deps := server.Deps{

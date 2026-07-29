@@ -39,6 +39,25 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.101",
+    date: "2026-07-29",
+    summary: "Deleting or resending selected entries on a site's Email Log actually works now.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "On a site's Email Log, selecting entries and clicking Delete showed \"0 log entries deleted\" and deleted nothing (GH #307). The dashboard and the control plane disagreed about the name of one field in the request, so the control plane received an empty list and truthfully reported deleting nothing. The Resend button had the same bug for the same reason and also did nothing. Both are fixed, and a deletion that removed nothing is no longer written into the audit log as though it had happened.",
+      },
+      {
+        tag: "Fixed",
+        text: "Sending an empty list to either endpoint used to return a confusing success with a count of zero; both now reject it with a clear error instead.",
+      },
+      {
+        tag: "Fixed",
+        text: "An automated check that compares every API endpoint against its published specification existed but was never wired into the checks that run on every change, which is how a mismatch like this reached a release. It runs on every change now, alongside a new check covering every request body field, including nested fields.",
+      },
+    ],
+  },
+  {
     version: "0.61.100",
     date: "2026-07-28",
     summary: "The Sites table shares its width sensibly across every column now, on any screen size.",
