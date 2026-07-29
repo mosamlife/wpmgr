@@ -41,12 +41,14 @@ jobs:
         env:
           GOWORK: "off"
           CGO_ENABLED: "0"
-        # apps/api/tests is excluded from BUILD specifically: its only non-test
-        # files are CGO-tagged, so under CGO_ENABLED=0 the package has no buildable
-        # non-test files and `go build` errors on it when named explicitly. Vet
-        # (below) keeps it — vet compiles the _test.go files, so it still
-        # compile-checks the integration tests.
-        run: go build $(go list ./... | grep -v -e /cmd/media-encoder -e /internal/media/encoder -e /apps/api/tests)
+        # apps/api/tests is excluded from BUILD specifically: every file in it is
+        # a _test.go file, so it has no buildable non-test files and `go build`
+        # errors on it when named explicitly. Vet (below) keeps it: vet compiles
+        # the _test.go files, so the integration tests still cannot silently rot.
+        #
+        # The pattern is anchored with $ so it excludes ONLY that package and not
+        # its subpackages. apps/api/tests/contract must keep building here.
+        run: go build $(go list ./... | grep -v -e /cmd/media-encoder -e /internal/media/encoder -e '/apps/api/tests$')
 
       - name: Vet
         env:
@@ -60,9 +62,18 @@ jobs:
           CGO_ENABLED: "0"
         # Also exclude apps/api/tests here: those are container-based integration
         # tests (testcontainers — postgres/redis/minio/clickhouse) that belong in a
-        # separate lane, not the fast unit CI. They are still COMPILE-checked above
-        # by Build + Vet, so they can't silently rot.
-        run: go test $(go list ./... | grep -v -e /cmd/media-encoder -e /internal/media/encoder -e /apps/api/tests)
+        # separate lane, not the fast unit CI. 262 of them stand up their own
+        # ephemeral Postgres, so the cost, not any missing Docker daemon, is why
+        # they sit out this lane. They are still COMPILE-checked above by
+        # Build + Vet, so they can't silently rot.
+        #
+        # The pattern is anchored with $ so it excludes ONLY that package.
+        # apps/api/tests/contract holds the containerless spec-versus-code gates
+        # (TestOpenAPIRouteCoverage and TestOpenAPIRequestBodyFieldCoverage);
+        # they run against an empty *db.Pool in about a second and MUST run on
+        # every PR, because they are what stops an undocumented route or a
+        # handler json tag that no longer matches its schema from merging.
+        run: go test $(go list ./... | grep -v -e /cmd/media-encoder -e /internal/media/encoder -e '/apps/api/tests$')
 
   # ---- JS / web ----
   js:

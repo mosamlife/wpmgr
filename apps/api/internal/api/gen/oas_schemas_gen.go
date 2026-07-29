@@ -4230,7 +4230,7 @@ func (s *AgentDbCleanProgress) SetDone(val bool) {
 // Ref: #/components/schemas/AgentDbOrphanDeleteProgress
 type AgentDbOrphanDeleteProgress struct {
 	JobID string `json:"job_id"`
-	// Agent-defined per-item result rows.
+	// Per-item result rows for the items processed in this batch.
 	Results        []AgentDbOrphanDeleteProgressResultsItem `json:"results"`
 	DeletedOptions OptInt                                   `json:"deleted_options"`
 	DeletedCron    OptInt                                   `json:"deleted_cron"`
@@ -4309,7 +4309,52 @@ func (s *AgentDbOrphanDeleteProgress) SetDone(val bool) {
 	s.Done = val
 }
 
-type AgentDbOrphanDeleteProgressResultsItem struct{}
+type AgentDbOrphanDeleteProgressResultsItem struct {
+	Kind   OptString `json:"kind"`
+	Name   OptString `json:"name"`
+	Status OptString `json:"status"`
+	Detail OptString `json:"detail"`
+}
+
+// GetKind returns the value of Kind.
+func (s *AgentDbOrphanDeleteProgressResultsItem) GetKind() OptString {
+	return s.Kind
+}
+
+// GetName returns the value of Name.
+func (s *AgentDbOrphanDeleteProgressResultsItem) GetName() OptString {
+	return s.Name
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentDbOrphanDeleteProgressResultsItem) GetStatus() OptString {
+	return s.Status
+}
+
+// GetDetail returns the value of Detail.
+func (s *AgentDbOrphanDeleteProgressResultsItem) GetDetail() OptString {
+	return s.Detail
+}
+
+// SetKind sets the value of Kind.
+func (s *AgentDbOrphanDeleteProgressResultsItem) SetKind(val OptString) {
+	s.Kind = val
+}
+
+// SetName sets the value of Name.
+func (s *AgentDbOrphanDeleteProgressResultsItem) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentDbOrphanDeleteProgressResultsItem) SetStatus(val OptString) {
+	s.Status = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *AgentDbOrphanDeleteProgressResultsItem) SetDetail(val OptString) {
+	s.Detail = val
+}
 
 // M21 — the signed last-will body.
 // Ref: #/components/schemas/AgentDisconnect
@@ -5521,10 +5566,13 @@ type AgentMediaJobStatus struct {
 	CurrentSizeBytes OptInt64                               `json:"current_size_bytes"`
 	BytesBefore      OptNilInt64                            `json:"bytes_before"`
 	BytesAfter       OptNilInt64                            `json:"bytes_after"`
-	CompressionLevel OptString                              `json:"compression_level"`
-	TargetFormat     OptString                              `json:"target_format"`
-	RewriteStats     OptAgentMediaJobStatusRewriteStats     `json:"rewrite_stats"`
-	Error            OptString                              `json:"error"`
+	// All-variant savings (summed original-minus-optimized over every optimized variant). Drives the
+	// dashboard "Bytes saved" rollup.
+	SavedBytes       OptNilInt64                        `json:"saved_bytes"`
+	CompressionLevel OptString                          `json:"compression_level"`
+	TargetFormat     OptString                          `json:"target_format"`
+	RewriteStats     OptAgentMediaJobStatusRewriteStats `json:"rewrite_stats"`
+	Error            OptString                          `json:"error"`
 }
 
 // GetJobID returns the value of JobID.
@@ -5560,6 +5608,11 @@ func (s *AgentMediaJobStatus) GetBytesBefore() OptNilInt64 {
 // GetBytesAfter returns the value of BytesAfter.
 func (s *AgentMediaJobStatus) GetBytesAfter() OptNilInt64 {
 	return s.BytesAfter
+}
+
+// GetSavedBytes returns the value of SavedBytes.
+func (s *AgentMediaJobStatus) GetSavedBytes() OptNilInt64 {
+	return s.SavedBytes
 }
 
 // GetCompressionLevel returns the value of CompressionLevel.
@@ -5615,6 +5668,11 @@ func (s *AgentMediaJobStatus) SetBytesBefore(val OptNilInt64) {
 // SetBytesAfter sets the value of BytesAfter.
 func (s *AgentMediaJobStatus) SetBytesAfter(val OptNilInt64) {
 	s.BytesAfter = val
+}
+
+// SetSavedBytes sets the value of SavedBytes.
+func (s *AgentMediaJobStatus) SetSavedBytes(val OptNilInt64) {
+	s.SavedBytes = val
 }
 
 // SetCompressionLevel sets the value of CompressionLevel.
@@ -5858,6 +5916,10 @@ type AgentMediaSyncBatchAttachmentsItem struct {
 	OriginalWidth     OptNilInt `json:"original_width"`
 	OriginalHeight    OptNilInt `json:"original_height"`
 	OriginalSizeBytes OptInt64  `json:"original_size_bytes"`
+	// 1 (full) plus generated sub-sizes.
+	VariantCount OptInt `json:"variant_count"`
+	// All-variant savings, re-reported at sync so already-optimized rows heal.
+	SavedBytes OptInt64 `json:"saved_bytes"`
 }
 
 // GetWpAttachmentID returns the value of WpAttachmentID.
@@ -5900,6 +5962,16 @@ func (s *AgentMediaSyncBatchAttachmentsItem) GetOriginalSizeBytes() OptInt64 {
 	return s.OriginalSizeBytes
 }
 
+// GetVariantCount returns the value of VariantCount.
+func (s *AgentMediaSyncBatchAttachmentsItem) GetVariantCount() OptInt {
+	return s.VariantCount
+}
+
+// GetSavedBytes returns the value of SavedBytes.
+func (s *AgentMediaSyncBatchAttachmentsItem) GetSavedBytes() OptInt64 {
+	return s.SavedBytes
+}
+
 // SetWpAttachmentID sets the value of WpAttachmentID.
 func (s *AgentMediaSyncBatchAttachmentsItem) SetWpAttachmentID(val OptInt64) {
 	s.WpAttachmentID = val
@@ -5938,6 +6010,16 @@ func (s *AgentMediaSyncBatchAttachmentsItem) SetOriginalHeight(val OptNilInt) {
 // SetOriginalSizeBytes sets the value of OriginalSizeBytes.
 func (s *AgentMediaSyncBatchAttachmentsItem) SetOriginalSizeBytes(val OptInt64) {
 	s.OriginalSizeBytes = val
+}
+
+// SetVariantCount sets the value of VariantCount.
+func (s *AgentMediaSyncBatchAttachmentsItem) SetVariantCount(val OptInt) {
+	s.VariantCount = val
+}
+
+// SetSavedBytes sets the value of SavedBytes.
+func (s *AgentMediaSyncBatchAttachmentsItem) SetSavedBytes(val OptInt64) {
+	s.SavedBytes = val
 }
 
 type AgentMediaSyncBatchOK struct {
@@ -5992,15 +6074,38 @@ func (s *AgentMediaSyncFinalizeOK) SetOk(val OptBool) {
 
 func (*AgentMediaSyncFinalizeOK) agentMediaSyncFinalizeRes() {}
 
+// The agent's metadata push. Every field is optional and tolerantly
+// decoded (booleans and numbers are accepted as strings), so an older
+// agent that omits any of them still syncs successfully.
 // Ref: #/components/schemas/AgentMetadata
 type AgentMetadata struct {
-	WpVersion   OptString       `json:"wp_version"`
-	PhpVersion  OptString       `json:"php_version"`
-	ServerInfo  OptString       `json:"server_info"`
-	Multisite   OptBool         `json:"multisite"`
-	ActiveTheme OptString       `json:"active_theme"`
-	Plugins     []SiteComponent `json:"plugins"`
-	Themes      []SiteComponent `json:"themes"`
+	WpVersion   OptString `json:"wp_version"`
+	PhpVersion  OptString `json:"php_version"`
+	ServerInfo  OptString `json:"server_info"`
+	Multisite   OptBool   `json:"multisite"`
+	ActiveTheme OptString `json:"active_theme"`
+	// The WPMgr agent plugin version.
+	AgentVersion OptString `json:"agent_version"`
+	// The agent's per-site age PUBLIC recipient ("age1..."), stored so
+	// backups can be triggered without a separate registration call.
+	// Empty or missing leaves the stored recipient unchanged.
+	AgeRecipient OptString `json:"age_recipient"`
+	UserCount    OptInt    `json:"user_count"`
+	AdminCount   OptInt    `json:"admin_count"`
+	// Present only when WordPress core has an update available.
+	CoreUpdate OptNilAgentMetadataCoreUpdate `json:"core_update"`
+	// The agent's defined()-based hosting fingerprint.
+	HostFlags OptNilAgentMetadataHostFlags `json:"host_flags"`
+	// Sampled disk usage in bytes. The wp-content and uploads walks are
+	// time-capped, so a field may be absent on a very large tree.
+	Disk OptNilAgentMetadataDisk `json:"disk"`
+	// The outcome of the agent's last self-update apply, replayed on the
+	// next metadata push. This is the only channel by which a FAILED
+	// apply reaches the control plane: the apply runs inside a cron
+	// request with no response to ride on.
+	AgentSelfUpdate OptNilAgentMetadataAgentSelfUpdate `json:"agent_self_update"`
+	Plugins         []SiteComponent                    `json:"plugins"`
+	Themes          []SiteComponent                    `json:"themes"`
 }
 
 // GetWpVersion returns the value of WpVersion.
@@ -6026,6 +6131,46 @@ func (s *AgentMetadata) GetMultisite() OptBool {
 // GetActiveTheme returns the value of ActiveTheme.
 func (s *AgentMetadata) GetActiveTheme() OptString {
 	return s.ActiveTheme
+}
+
+// GetAgentVersion returns the value of AgentVersion.
+func (s *AgentMetadata) GetAgentVersion() OptString {
+	return s.AgentVersion
+}
+
+// GetAgeRecipient returns the value of AgeRecipient.
+func (s *AgentMetadata) GetAgeRecipient() OptString {
+	return s.AgeRecipient
+}
+
+// GetUserCount returns the value of UserCount.
+func (s *AgentMetadata) GetUserCount() OptInt {
+	return s.UserCount
+}
+
+// GetAdminCount returns the value of AdminCount.
+func (s *AgentMetadata) GetAdminCount() OptInt {
+	return s.AdminCount
+}
+
+// GetCoreUpdate returns the value of CoreUpdate.
+func (s *AgentMetadata) GetCoreUpdate() OptNilAgentMetadataCoreUpdate {
+	return s.CoreUpdate
+}
+
+// GetHostFlags returns the value of HostFlags.
+func (s *AgentMetadata) GetHostFlags() OptNilAgentMetadataHostFlags {
+	return s.HostFlags
+}
+
+// GetDisk returns the value of Disk.
+func (s *AgentMetadata) GetDisk() OptNilAgentMetadataDisk {
+	return s.Disk
+}
+
+// GetAgentSelfUpdate returns the value of AgentSelfUpdate.
+func (s *AgentMetadata) GetAgentSelfUpdate() OptNilAgentMetadataAgentSelfUpdate {
+	return s.AgentSelfUpdate
 }
 
 // GetPlugins returns the value of Plugins.
@@ -6063,6 +6208,46 @@ func (s *AgentMetadata) SetActiveTheme(val OptString) {
 	s.ActiveTheme = val
 }
 
+// SetAgentVersion sets the value of AgentVersion.
+func (s *AgentMetadata) SetAgentVersion(val OptString) {
+	s.AgentVersion = val
+}
+
+// SetAgeRecipient sets the value of AgeRecipient.
+func (s *AgentMetadata) SetAgeRecipient(val OptString) {
+	s.AgeRecipient = val
+}
+
+// SetUserCount sets the value of UserCount.
+func (s *AgentMetadata) SetUserCount(val OptInt) {
+	s.UserCount = val
+}
+
+// SetAdminCount sets the value of AdminCount.
+func (s *AgentMetadata) SetAdminCount(val OptInt) {
+	s.AdminCount = val
+}
+
+// SetCoreUpdate sets the value of CoreUpdate.
+func (s *AgentMetadata) SetCoreUpdate(val OptNilAgentMetadataCoreUpdate) {
+	s.CoreUpdate = val
+}
+
+// SetHostFlags sets the value of HostFlags.
+func (s *AgentMetadata) SetHostFlags(val OptNilAgentMetadataHostFlags) {
+	s.HostFlags = val
+}
+
+// SetDisk sets the value of Disk.
+func (s *AgentMetadata) SetDisk(val OptNilAgentMetadataDisk) {
+	s.Disk = val
+}
+
+// SetAgentSelfUpdate sets the value of AgentSelfUpdate.
+func (s *AgentMetadata) SetAgentSelfUpdate(val OptNilAgentMetadataAgentSelfUpdate) {
+	s.AgentSelfUpdate = val
+}
+
 // SetPlugins sets the value of Plugins.
 func (s *AgentMetadata) SetPlugins(val []SiteComponent) {
 	s.Plugins = val
@@ -6071,6 +6256,225 @@ func (s *AgentMetadata) SetPlugins(val []SiteComponent) {
 // SetThemes sets the value of Themes.
 func (s *AgentMetadata) SetThemes(val []SiteComponent) {
 	s.Themes = val
+}
+
+// The outcome of the agent's last self-update apply, replayed on the
+// next metadata push. This is the only channel by which a FAILED
+// apply reaches the control plane: the apply runs inside a cron
+// request with no response to ride on.
+type AgentMetadataAgentSelfUpdate struct {
+	Status      OptString `json:"status"`
+	FromVersion OptString `json:"from_version"`
+	ToVersion   OptString `json:"to_version"`
+	Detail      OptString `json:"detail"`
+	// Unix timestamp the agent stamped the record with.
+	At OptInt64 `json:"at"`
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentMetadataAgentSelfUpdate) GetStatus() OptString {
+	return s.Status
+}
+
+// GetFromVersion returns the value of FromVersion.
+func (s *AgentMetadataAgentSelfUpdate) GetFromVersion() OptString {
+	return s.FromVersion
+}
+
+// GetToVersion returns the value of ToVersion.
+func (s *AgentMetadataAgentSelfUpdate) GetToVersion() OptString {
+	return s.ToVersion
+}
+
+// GetDetail returns the value of Detail.
+func (s *AgentMetadataAgentSelfUpdate) GetDetail() OptString {
+	return s.Detail
+}
+
+// GetAt returns the value of At.
+func (s *AgentMetadataAgentSelfUpdate) GetAt() OptInt64 {
+	return s.At
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentMetadataAgentSelfUpdate) SetStatus(val OptString) {
+	s.Status = val
+}
+
+// SetFromVersion sets the value of FromVersion.
+func (s *AgentMetadataAgentSelfUpdate) SetFromVersion(val OptString) {
+	s.FromVersion = val
+}
+
+// SetToVersion sets the value of ToVersion.
+func (s *AgentMetadataAgentSelfUpdate) SetToVersion(val OptString) {
+	s.ToVersion = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *AgentMetadataAgentSelfUpdate) SetDetail(val OptString) {
+	s.Detail = val
+}
+
+// SetAt sets the value of At.
+func (s *AgentMetadataAgentSelfUpdate) SetAt(val OptInt64) {
+	s.At = val
+}
+
+// Present only when WordPress core has an update available.
+type AgentMetadataCoreUpdate struct {
+	NewVersion     OptString `json:"new_version"`
+	CurrentVersion OptString `json:"current_version"`
+}
+
+// GetNewVersion returns the value of NewVersion.
+func (s *AgentMetadataCoreUpdate) GetNewVersion() OptString {
+	return s.NewVersion
+}
+
+// GetCurrentVersion returns the value of CurrentVersion.
+func (s *AgentMetadataCoreUpdate) GetCurrentVersion() OptString {
+	return s.CurrentVersion
+}
+
+// SetNewVersion sets the value of NewVersion.
+func (s *AgentMetadataCoreUpdate) SetNewVersion(val OptString) {
+	s.NewVersion = val
+}
+
+// SetCurrentVersion sets the value of CurrentVersion.
+func (s *AgentMetadataCoreUpdate) SetCurrentVersion(val OptString) {
+	s.CurrentVersion = val
+}
+
+// Sampled disk usage in bytes. The wp-content and uploads walks are
+// time-capped, so a field may be absent on a very large tree.
+type AgentMetadataDisk struct {
+	WpContentBytes OptInt64 `json:"wp_content_bytes"`
+	UploadsBytes   OptInt64 `json:"uploads_bytes"`
+	FreeBytes      OptInt64 `json:"free_bytes"`
+}
+
+// GetWpContentBytes returns the value of WpContentBytes.
+func (s *AgentMetadataDisk) GetWpContentBytes() OptInt64 {
+	return s.WpContentBytes
+}
+
+// GetUploadsBytes returns the value of UploadsBytes.
+func (s *AgentMetadataDisk) GetUploadsBytes() OptInt64 {
+	return s.UploadsBytes
+}
+
+// GetFreeBytes returns the value of FreeBytes.
+func (s *AgentMetadataDisk) GetFreeBytes() OptInt64 {
+	return s.FreeBytes
+}
+
+// SetWpContentBytes sets the value of WpContentBytes.
+func (s *AgentMetadataDisk) SetWpContentBytes(val OptInt64) {
+	s.WpContentBytes = val
+}
+
+// SetUploadsBytes sets the value of UploadsBytes.
+func (s *AgentMetadataDisk) SetUploadsBytes(val OptInt64) {
+	s.UploadsBytes = val
+}
+
+// SetFreeBytes sets the value of FreeBytes.
+func (s *AgentMetadataDisk) SetFreeBytes(val OptInt64) {
+	s.FreeBytes = val
+}
+
+// The agent's defined()-based hosting fingerprint.
+type AgentMetadataHostFlags struct {
+	IsPressable OptBool `json:"is_pressable"`
+	IsGridpane  OptBool `json:"is_gridpane"`
+	IsWpengine  OptBool `json:"is_wpengine"`
+	IsAtomic    OptBool `json:"is_atomic"`
+	IsKinsta    OptBool `json:"is_kinsta"`
+	IsFlywheel  OptBool `json:"is_flywheel"`
+	IsRuncloud  OptBool `json:"is_runcloud"`
+	IsCloudways OptBool `json:"is_cloudways"`
+}
+
+// GetIsPressable returns the value of IsPressable.
+func (s *AgentMetadataHostFlags) GetIsPressable() OptBool {
+	return s.IsPressable
+}
+
+// GetIsGridpane returns the value of IsGridpane.
+func (s *AgentMetadataHostFlags) GetIsGridpane() OptBool {
+	return s.IsGridpane
+}
+
+// GetIsWpengine returns the value of IsWpengine.
+func (s *AgentMetadataHostFlags) GetIsWpengine() OptBool {
+	return s.IsWpengine
+}
+
+// GetIsAtomic returns the value of IsAtomic.
+func (s *AgentMetadataHostFlags) GetIsAtomic() OptBool {
+	return s.IsAtomic
+}
+
+// GetIsKinsta returns the value of IsKinsta.
+func (s *AgentMetadataHostFlags) GetIsKinsta() OptBool {
+	return s.IsKinsta
+}
+
+// GetIsFlywheel returns the value of IsFlywheel.
+func (s *AgentMetadataHostFlags) GetIsFlywheel() OptBool {
+	return s.IsFlywheel
+}
+
+// GetIsRuncloud returns the value of IsRuncloud.
+func (s *AgentMetadataHostFlags) GetIsRuncloud() OptBool {
+	return s.IsRuncloud
+}
+
+// GetIsCloudways returns the value of IsCloudways.
+func (s *AgentMetadataHostFlags) GetIsCloudways() OptBool {
+	return s.IsCloudways
+}
+
+// SetIsPressable sets the value of IsPressable.
+func (s *AgentMetadataHostFlags) SetIsPressable(val OptBool) {
+	s.IsPressable = val
+}
+
+// SetIsGridpane sets the value of IsGridpane.
+func (s *AgentMetadataHostFlags) SetIsGridpane(val OptBool) {
+	s.IsGridpane = val
+}
+
+// SetIsWpengine sets the value of IsWpengine.
+func (s *AgentMetadataHostFlags) SetIsWpengine(val OptBool) {
+	s.IsWpengine = val
+}
+
+// SetIsAtomic sets the value of IsAtomic.
+func (s *AgentMetadataHostFlags) SetIsAtomic(val OptBool) {
+	s.IsAtomic = val
+}
+
+// SetIsKinsta sets the value of IsKinsta.
+func (s *AgentMetadataHostFlags) SetIsKinsta(val OptBool) {
+	s.IsKinsta = val
+}
+
+// SetIsFlywheel sets the value of IsFlywheel.
+func (s *AgentMetadataHostFlags) SetIsFlywheel(val OptBool) {
+	s.IsFlywheel = val
+}
+
+// SetIsRuncloud sets the value of IsRuncloud.
+func (s *AgentMetadataHostFlags) SetIsRuncloud(val OptBool) {
+	s.IsRuncloud = val
+}
+
+// SetIsCloudways sets the value of IsCloudways.
+func (s *AgentMetadataHostFlags) SetIsCloudways(val OptBool) {
+	s.IsCloudways = val
 }
 
 type AgentMetadataUnauthorized Error
@@ -9709,9 +10113,17 @@ func (*BeginWebAuthnEnrollmentOK) beginWebAuthnEnrollmentRes() {}
 
 // Ref: #/components/schemas/BillingCheckoutRequest
 type BillingCheckoutRequest struct {
-	// The ONLY caller-supplied selector. The server resolves this to a payment-provider price
+	// The only caller-supplied PRICE selector. The server resolves this to a payment-provider price
 	// server-side; a request can never name a price directly.
 	Tier BillingCheckoutRequestTier `json:"tier"`
+	// Preferred payment provider. Consulted only on a tenant's first-ever checkout: once a tenant is
+	// pinned to a provider that pinning always wins, so a returning customer can never split a
+	// subscription across two providers. An unknown name is rejected. Omit to use the instance default.
+	Provider OptString `json:"provider"`
+	// Preferred billing currency, passed to the provider when it creates the checkout. Selects among the
+	// prices the server already knows for the requested tier; it can never set an amount. Omit for the
+	// provider default.
+	Currency OptString `json:"currency"`
 }
 
 // GetTier returns the value of Tier.
@@ -9719,12 +10131,32 @@ func (s *BillingCheckoutRequest) GetTier() BillingCheckoutRequestTier {
 	return s.Tier
 }
 
+// GetProvider returns the value of Provider.
+func (s *BillingCheckoutRequest) GetProvider() OptString {
+	return s.Provider
+}
+
+// GetCurrency returns the value of Currency.
+func (s *BillingCheckoutRequest) GetCurrency() OptString {
+	return s.Currency
+}
+
 // SetTier sets the value of Tier.
 func (s *BillingCheckoutRequest) SetTier(val BillingCheckoutRequestTier) {
 	s.Tier = val
 }
 
-// The ONLY caller-supplied selector. The server resolves this to a payment-provider price
+// SetProvider sets the value of Provider.
+func (s *BillingCheckoutRequest) SetProvider(val OptString) {
+	s.Provider = val
+}
+
+// SetCurrency sets the value of Currency.
+func (s *BillingCheckoutRequest) SetCurrency(val OptString) {
+	s.Currency = val
+}
+
+// The only caller-supplied PRICE selector. The server resolves this to a payment-provider price
 // server-side; a request can never name a price directly.
 type BillingCheckoutRequestTier string
 
@@ -12171,11 +12603,17 @@ func (s *ClientReportScheduleUpdateCadence) UnmarshalText(data []byte) error {
 // Controls which data sections are included in a report.
 // Ref: #/components/schemas/ClientReportSectionFlags
 type ClientReportSectionFlags struct {
+	Overview    OptBool `json:"overview"`
 	Uptime      OptBool `json:"uptime"`
 	Backups     OptBool `json:"backups"`
 	Updates     OptBool `json:"updates"`
 	Performance OptBool `json:"performance"`
 	Email       OptBool `json:"email"`
+}
+
+// GetOverview returns the value of Overview.
+func (s *ClientReportSectionFlags) GetOverview() OptBool {
+	return s.Overview
 }
 
 // GetUptime returns the value of Uptime.
@@ -12201,6 +12639,11 @@ func (s *ClientReportSectionFlags) GetPerformance() OptBool {
 // GetEmail returns the value of Email.
 func (s *ClientReportSectionFlags) GetEmail() OptBool {
 	return s.Email
+}
+
+// SetOverview sets the value of Overview.
+func (s *ClientReportSectionFlags) SetOverview(val OptBool) {
+	s.Overview = val
 }
 
 // SetUptime sets the value of Uptime.
@@ -29199,6 +29642,258 @@ func (o OptMultipartFile) Or(d ht.MultipartFile) ht.MultipartFile {
 	return d
 }
 
+// NewOptNilAgentMetadataAgentSelfUpdate returns new OptNilAgentMetadataAgentSelfUpdate with value set to v.
+func NewOptNilAgentMetadataAgentSelfUpdate(v AgentMetadataAgentSelfUpdate) OptNilAgentMetadataAgentSelfUpdate {
+	return OptNilAgentMetadataAgentSelfUpdate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataAgentSelfUpdate is optional nullable AgentMetadataAgentSelfUpdate.
+type OptNilAgentMetadataAgentSelfUpdate struct {
+	Value AgentMetadataAgentSelfUpdate
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataAgentSelfUpdate was set.
+func (o OptNilAgentMetadataAgentSelfUpdate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataAgentSelfUpdate) Reset() {
+	var v AgentMetadataAgentSelfUpdate
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataAgentSelfUpdate) SetTo(v AgentMetadataAgentSelfUpdate) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataAgentSelfUpdate) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataAgentSelfUpdate) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataAgentSelfUpdate
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataAgentSelfUpdate) Get() (v AgentMetadataAgentSelfUpdate, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataAgentSelfUpdate) Or(d AgentMetadataAgentSelfUpdate) AgentMetadataAgentSelfUpdate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataCoreUpdate returns new OptNilAgentMetadataCoreUpdate with value set to v.
+func NewOptNilAgentMetadataCoreUpdate(v AgentMetadataCoreUpdate) OptNilAgentMetadataCoreUpdate {
+	return OptNilAgentMetadataCoreUpdate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataCoreUpdate is optional nullable AgentMetadataCoreUpdate.
+type OptNilAgentMetadataCoreUpdate struct {
+	Value AgentMetadataCoreUpdate
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataCoreUpdate was set.
+func (o OptNilAgentMetadataCoreUpdate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataCoreUpdate) Reset() {
+	var v AgentMetadataCoreUpdate
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataCoreUpdate) SetTo(v AgentMetadataCoreUpdate) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataCoreUpdate) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataCoreUpdate) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataCoreUpdate
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataCoreUpdate) Get() (v AgentMetadataCoreUpdate, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataCoreUpdate) Or(d AgentMetadataCoreUpdate) AgentMetadataCoreUpdate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataDisk returns new OptNilAgentMetadataDisk with value set to v.
+func NewOptNilAgentMetadataDisk(v AgentMetadataDisk) OptNilAgentMetadataDisk {
+	return OptNilAgentMetadataDisk{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataDisk is optional nullable AgentMetadataDisk.
+type OptNilAgentMetadataDisk struct {
+	Value AgentMetadataDisk
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataDisk was set.
+func (o OptNilAgentMetadataDisk) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataDisk) Reset() {
+	var v AgentMetadataDisk
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataDisk) SetTo(v AgentMetadataDisk) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataDisk) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataDisk) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataDisk
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataDisk) Get() (v AgentMetadataDisk, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataDisk) Or(d AgentMetadataDisk) AgentMetadataDisk {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataHostFlags returns new OptNilAgentMetadataHostFlags with value set to v.
+func NewOptNilAgentMetadataHostFlags(v AgentMetadataHostFlags) OptNilAgentMetadataHostFlags {
+	return OptNilAgentMetadataHostFlags{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataHostFlags is optional nullable AgentMetadataHostFlags.
+type OptNilAgentMetadataHostFlags struct {
+	Value AgentMetadataHostFlags
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataHostFlags was set.
+func (o OptNilAgentMetadataHostFlags) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataHostFlags) Reset() {
+	var v AgentMetadataHostFlags
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataHostFlags) SetTo(v AgentMetadataHostFlags) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataHostFlags) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataHostFlags) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataHostFlags
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataHostFlags) Get() (v AgentMetadataHostFlags, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataHostFlags) Or(d AgentMetadataHostFlags) AgentMetadataHostFlags {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilBool returns new OptNilBool with value set to v.
 func NewOptNilBool(v bool) OptNilBool {
 	return OptNilBool{
@@ -33040,8 +33735,29 @@ type PerfConfig struct {
 	WooThemeFragmentsSupported OptNilBool `json:"woo_theme_fragments_supported"`
 	// RFC3339 timestamp of the last agent probe. Null when never probed.
 	WooFragmentsProbedAt OptNilDateTime `json:"woo_fragments_probed_at"`
-	ConfigVersion        OptInt         `json:"config_version"`
-	UpdatedAt            OptDateTime    `json:"updated_at"`
+	// Enable Real User Monitoring collection for this site.
+	RumEnabled OptBool `json:"rum_enabled"`
+	// Fraction of page views that emit a RUM beacon (0 to 1).
+	RumSampleRate OptFloat32 `json:"rum_sample_rate"`
+	// Suppression floor: any RUM slice with fewer samples than this is
+	// reported as suppressed rather than shown, so a handful of visits
+	// cannot masquerade as a trend.
+	MinSampleCount OptInt `json:"min_sample_count"`
+	// Cap on the number of distinct countries kept in the per-country RUM
+	// breakdown.
+	MaxDistinctCountries OptInt `json:"max_distinct_countries"`
+	// Whether a RUM beacon key is provisioned. The plaintext key is never
+	// returned; this boolean is how a client tells whether RUM is fully
+	// provisioned. Ignored on write.
+	BeaconKeySet OptBool `json:"beacon_key_set"`
+	// Whether the agent's most recent config-ack confirmed it holds the
+	// beacon key. beacon_key_set true with this false means RUM is
+	// provisioned control-plane side but the agent has not confirmed
+	// receipt yet; the control plane retries automatically. Ignored on
+	// write.
+	BeaconKeyAckedPresent OptBool     `json:"beacon_key_acked_present"`
+	ConfigVersion         OptInt      `json:"config_version"`
+	UpdatedAt             OptDateTime `json:"updated_at"`
 }
 
 // GetCacheEnabled returns the value of CacheEnabled.
@@ -33372,6 +34088,36 @@ func (s *PerfConfig) GetWooThemeFragmentsSupported() OptNilBool {
 // GetWooFragmentsProbedAt returns the value of WooFragmentsProbedAt.
 func (s *PerfConfig) GetWooFragmentsProbedAt() OptNilDateTime {
 	return s.WooFragmentsProbedAt
+}
+
+// GetRumEnabled returns the value of RumEnabled.
+func (s *PerfConfig) GetRumEnabled() OptBool {
+	return s.RumEnabled
+}
+
+// GetRumSampleRate returns the value of RumSampleRate.
+func (s *PerfConfig) GetRumSampleRate() OptFloat32 {
+	return s.RumSampleRate
+}
+
+// GetMinSampleCount returns the value of MinSampleCount.
+func (s *PerfConfig) GetMinSampleCount() OptInt {
+	return s.MinSampleCount
+}
+
+// GetMaxDistinctCountries returns the value of MaxDistinctCountries.
+func (s *PerfConfig) GetMaxDistinctCountries() OptInt {
+	return s.MaxDistinctCountries
+}
+
+// GetBeaconKeySet returns the value of BeaconKeySet.
+func (s *PerfConfig) GetBeaconKeySet() OptBool {
+	return s.BeaconKeySet
+}
+
+// GetBeaconKeyAckedPresent returns the value of BeaconKeyAckedPresent.
+func (s *PerfConfig) GetBeaconKeyAckedPresent() OptBool {
+	return s.BeaconKeyAckedPresent
 }
 
 // GetConfigVersion returns the value of ConfigVersion.
@@ -33712,6 +34458,36 @@ func (s *PerfConfig) SetWooThemeFragmentsSupported(val OptNilBool) {
 // SetWooFragmentsProbedAt sets the value of WooFragmentsProbedAt.
 func (s *PerfConfig) SetWooFragmentsProbedAt(val OptNilDateTime) {
 	s.WooFragmentsProbedAt = val
+}
+
+// SetRumEnabled sets the value of RumEnabled.
+func (s *PerfConfig) SetRumEnabled(val OptBool) {
+	s.RumEnabled = val
+}
+
+// SetRumSampleRate sets the value of RumSampleRate.
+func (s *PerfConfig) SetRumSampleRate(val OptFloat32) {
+	s.RumSampleRate = val
+}
+
+// SetMinSampleCount sets the value of MinSampleCount.
+func (s *PerfConfig) SetMinSampleCount(val OptInt) {
+	s.MinSampleCount = val
+}
+
+// SetMaxDistinctCountries sets the value of MaxDistinctCountries.
+func (s *PerfConfig) SetMaxDistinctCountries(val OptInt) {
+	s.MaxDistinctCountries = val
+}
+
+// SetBeaconKeySet sets the value of BeaconKeySet.
+func (s *PerfConfig) SetBeaconKeySet(val OptBool) {
+	s.BeaconKeySet = val
+}
+
+// SetBeaconKeyAckedPresent sets the value of BeaconKeyAckedPresent.
+func (s *PerfConfig) SetBeaconKeyAckedPresent(val OptBool) {
+	s.BeaconKeyAckedPresent = val
 }
 
 // SetConfigVersion sets the value of ConfigVersion.
@@ -42058,6 +42834,14 @@ type SiteComponent struct {
 	Name    OptString `json:"name"`
 	Version OptString `json:"version"`
 	Active  OptBool   `json:"active"`
+	// PluginURI from the plugin header. Optional; older agents omit it.
+	PluginURI OptString `json:"plugin_uri"`
+	// UpdateURI from the plugin header. Optional; older agents omit it.
+	UpdateURI OptString `json:"update_uri"`
+	// AuthorURI from the plugin header. Optional; older agents omit it.
+	AuthorURI OptString `json:"author_uri"`
+	// Whether the plugin is network-activated. Optional; older agents omit it.
+	Network OptBool `json:"network"`
 	// When set, an update is available for this plugin/theme.
 	AvailableUpdate OptNilSiteComponentAvailableUpdate `json:"available_update"`
 }
@@ -42080,6 +42864,26 @@ func (s *SiteComponent) GetVersion() OptString {
 // GetActive returns the value of Active.
 func (s *SiteComponent) GetActive() OptBool {
 	return s.Active
+}
+
+// GetPluginURI returns the value of PluginURI.
+func (s *SiteComponent) GetPluginURI() OptString {
+	return s.PluginURI
+}
+
+// GetUpdateURI returns the value of UpdateURI.
+func (s *SiteComponent) GetUpdateURI() OptString {
+	return s.UpdateURI
+}
+
+// GetAuthorURI returns the value of AuthorURI.
+func (s *SiteComponent) GetAuthorURI() OptString {
+	return s.AuthorURI
+}
+
+// GetNetwork returns the value of Network.
+func (s *SiteComponent) GetNetwork() OptBool {
+	return s.Network
 }
 
 // GetAvailableUpdate returns the value of AvailableUpdate.
@@ -42105,6 +42909,26 @@ func (s *SiteComponent) SetVersion(val OptString) {
 // SetActive sets the value of Active.
 func (s *SiteComponent) SetActive(val OptBool) {
 	s.Active = val
+}
+
+// SetPluginURI sets the value of PluginURI.
+func (s *SiteComponent) SetPluginURI(val OptString) {
+	s.PluginURI = val
+}
+
+// SetUpdateURI sets the value of UpdateURI.
+func (s *SiteComponent) SetUpdateURI(val OptString) {
+	s.UpdateURI = val
+}
+
+// SetAuthorURI sets the value of AuthorURI.
+func (s *SiteComponent) SetAuthorURI(val OptString) {
+	s.AuthorURI = val
+}
+
+// SetNetwork sets the value of Network.
+func (s *SiteComponent) SetNetwork(val OptBool) {
+	s.Network = val
 }
 
 // SetAvailableUpdate sets the value of AvailableUpdate.
@@ -43890,6 +44714,8 @@ func (*SiteEnrollmentCode) createSiteRes()        {}
 
 // Ref: #/components/schemas/SiteErrorConfig
 type SiteErrorConfig struct {
+	// Whether PHP-error capture is active for this site.
+	Enabled OptBool `json:"enabled"`
 	// PHP E_* bitmask the agent applies to wp_debug_log collection.
 	// Default 6143 = E_ALL & ~E_STRICT (WordPress default).
 	ErrorLevel int32 `json:"error_level"`
@@ -43897,6 +44723,11 @@ type SiteErrorConfig struct {
 	// (md5(code:file:line:message)) the agent must suppress without
 	// counting or reporting. An empty list clears all suppression.
 	IgnoreMd5s []string `json:"ignore_md5s"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *SiteErrorConfig) GetEnabled() OptBool {
+	return s.Enabled
 }
 
 // GetErrorLevel returns the value of ErrorLevel.
@@ -43907,6 +44738,11 @@ func (s *SiteErrorConfig) GetErrorLevel() int32 {
 // GetIgnoreMd5s returns the value of IgnoreMd5s.
 func (s *SiteErrorConfig) GetIgnoreMd5s() []string {
 	return s.IgnoreMd5s
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *SiteErrorConfig) SetEnabled(val OptBool) {
+	s.Enabled = val
 }
 
 // SetErrorLevel sets the value of ErrorLevel.
@@ -43924,11 +44760,22 @@ func (*SiteErrorConfig) patchSiteErrorConfigRes() {}
 
 // Ref: #/components/schemas/SiteErrorConfigUpdate
 type SiteErrorConfigUpdate struct {
+	// Turns PHP-error capture on or off. OMITTING this field is treated as
+	// true: a client that does not know about the flag can never
+	// accidentally disable the mu-plugin trap, but that also means an
+	// update sent without it re-enables capture on a site where it was
+	// switched off. Send false explicitly to keep capture disabled.
+	Enabled OptBool `json:"enabled"`
 	// PHP E_* bitmask to apply. Must be >0 and fit in int32.
 	ErrorLevel int32 `json:"error_level"`
 	// Full canonical ignore-list (replaces the stored list atomically).
 	// Each entry must be exactly 32 lowercase hex characters.
 	IgnoreMd5s []string `json:"ignore_md5s"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *SiteErrorConfigUpdate) GetEnabled() OptBool {
+	return s.Enabled
 }
 
 // GetErrorLevel returns the value of ErrorLevel.
@@ -43939,6 +44786,11 @@ func (s *SiteErrorConfigUpdate) GetErrorLevel() int32 {
 // GetIgnoreMd5s returns the value of IgnoreMd5s.
 func (s *SiteErrorConfigUpdate) GetIgnoreMd5s() []string {
 	return s.IgnoreMd5s
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *SiteErrorConfigUpdate) SetEnabled(val OptBool) {
+	s.Enabled = val
 }
 
 // SetErrorLevel sets the value of ErrorLevel.
