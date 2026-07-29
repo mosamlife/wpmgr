@@ -245,6 +245,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The agent plugin carries its own WPMGR_AGENT_VERSION, which changes only
+      # when the agent changes. release.yml fires on EVERY tag, including the
+      # many that touch only the control plane or the dashboard, so stamping the
+      # release asset with the tag published identical agent code under a
+      # different number each time. The object-storage channel reads the source
+      # version instead, so the two channels drifted apart, and because the
+      # agent's downgrade guard refuses anything not strictly newer, a site that
+      # installed a tag-stamped asset would refuse every later real release.
+      # Passing VERSION here is what caused that, so it must not come back.
+      - name: Agent release asset must not be stamped from the git tag
+        working-directory: .
+        run: |
+          if grep -nE 'make +agent-zip[^\n]*VERSION=' .github/workflows/release.yml; then
+            echo "::error::release.yml passes VERSION to agent-zip. The published asset would carry the git tag instead of WPMGR_AGENT_VERSION, which desynchronises the GitHub and object-storage channels and can permanently strand sites behind the downgrade guard." >&2
+            exit 1
+          fi
+          echo "ok: release.yml lets the agent zip carry its own source version"
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:

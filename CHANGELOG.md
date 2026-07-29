@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.102] - 2026-07-29
+
+### Fixed
+
+- The WPMgr agent plugin is published through two channels: as an asset attached to each GitHub release, and to object storage for control-plane-driven updates. The two were labelling the same code with different version numbers. The agent plugin carries its own version, which only changes when the agent itself changes, but the GitHub release workflow runs on every release tag, including the many that only touch the control plane or the dashboard, and it was stamping the agent asset with the release tag instead of leaving the agent's own version in place. Identical agent code was published as several different version numbers; at the time of this fix the agent's own version was 0.61.98 while the newest GitHub asset was labelled 0.61.101.
+- The agent refuses to install anything that is not strictly newer than what it already runs, which is correct and protects against downgrades. A site that installed a tag-labelled asset would then refuse later genuine releases carrying the agent's own, lower number, so anyone who installed the agent from a GitHub release asset could end up unable to take further updates from the object-storage channel.
+- The GitHub release asset now carries the agent's own version, the same number the object-storage channel publishes, so both channels describe the same code identically. The agent version moves from 0.61.98 to 0.61.102, deliberately, to clear the numbers published by mistake, so any site that installed one of those assets can update normally again; no manual intervention is needed, the next update offer will simply work. A check now runs on every change that fails if the release workflow ever goes back to stamping the asset with the release tag.
+
 ## [0.61.101] - 2026-07-29
 
 ### Fixed

@@ -39,6 +39,17 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.102",
+    date: "2026-07-29",
+    summary: "Agent updates from GitHub release assets now agree with the built-in update channel on version numbers.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The agent plugin attached to each GitHub release and the one published to the built-in update channel could carry different version numbers, since the release workflow stamped the asset with the release tag instead of the agent's own version. Both channels now publish the same version. The agent version moves to 0.61.102, deliberately, to clear the numbers published by mistake; no action is needed on affected sites, and the next update offer will simply work.",
+      },
+    ],
+  },
+  {
     version: "0.61.101",
     date: "2026-07-29",
     summary: "Deleting or resending selected entries on a site's Email Log actually works now.",
