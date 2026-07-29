@@ -114,10 +114,21 @@ jobs:
 
       # make agent-zip builds vendor/ via a composer:2 container, then stages the
       # plugin under a stable wpmgr-agent/ folder (the WP slug) and zips it.
-      # VERSION is passed so the staged copy is stamped with the release tag
-      # (leading 'v' stripped inside agent-zip). The source file is not modified.
+      #
+      # VERSION is deliberately NOT passed. The agent plugin carries its own
+      # WPMGR_AGENT_VERSION, which only changes when the agent itself changes,
+      # while this workflow fires on EVERY release tag including the many that
+      # touch only the control plane or the dashboard. Stamping the staged copy
+      # with the tag therefore published the same agent code under a different
+      # number on every release, so this asset and the object-storage channel
+      # (scripts/release-agent.sh, which reads the source version) disagreed.
+      # That is not cosmetic: the agent's own downgrade guard refuses anything
+      # not strictly newer, so a site that installed a tag-stamped asset would
+      # refuse every later offer carrying the real, lower agent version.
+      # With VERSION unset, agent-zip leaves the staged copy at the source
+      # version and both channels publish the same number for the same code.
       - name: Build agent plugin zip
-        run: make agent-zip VERSION=${{ steps.vars.outputs.version }}
+        run: make agent-zip
 
       - name: Publish GitHub Release with the agent zip
         uses: softprops/action-gh-release@v2
