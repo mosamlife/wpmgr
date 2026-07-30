@@ -39,6 +39,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.106",
+    date: "2026-07-30",
+    summary: "Fleet agent updates no longer depend on WordPress's scheduler, plus clearer reporting when an update can't proceed.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The step that installs a new agent version used to run only from WordPress's own scheduled task system, so a site where that system was blocked, unreliable, or never triggered would never get the update, even though everything else about the site worked fine. WPMgr's other background work stopped depending on that scheduler releases ago for the same reason; this step now works the same way, running on an ordinary page request whenever an update is waiting. The install itself still happens in a separate request from the one that starts it, since the agent can't safely replace its own files while it's the one reporting the result.",
+      },
+      {
+        tag: "Fixed",
+        text: "A fleet agent update could report that a site had accepted the job and then go quiet, only for the run to report twenty minutes later that it couldn't be confirmed. The agent asks WordPress to schedule the actual work in a separate request, which WordPress can decline, and the agent wasn't checking whether it had. It now checks, and reports a clear error immediately instead of leaving the rollout waiting on something that was never going to happen.",
+      },
+      {
+        tag: "Fixed",
+        text: "Some situations where the install step decided not to proceed used to leave no record at all. Every outcome is now recorded and reported back, so the dashboard can say why, and only one install can ever run at a time even if two requests start together.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.105",
     date: "2026-07-30",
     summary: "Agent updates now complete on slower sites instead of failing forever.",
