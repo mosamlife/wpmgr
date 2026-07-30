@@ -1,10 +1,11 @@
 <?php
 /**
- * BEAT 3 (CONFIRM) of the CP-commanded agent self-update.
+ * The CONFIRM beat of the CP-commanded agent self-update.
  *
- * A "scheduled" acknowledgement from beat 1 is never success, and beat 2 runs
- * in a request that is busy replacing the very code that would report its own
- * outcome. The only trustworthy success signal is the NEW code phoning home, so
+ * A "scheduled" acknowledgement from the ARM is never success, and the apply
+ * that follows it is busy replacing the very code that would report its own
+ * outcome, on a connection it has already released. The only trustworthy
+ * success signal is the NEW code phoning home, so
  * the freshly-installed build pushes metadata once on its first boot rather
  * than leaving the control plane to wait out the 30-minute metadata cron.
  *

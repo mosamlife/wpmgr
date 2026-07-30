@@ -129,6 +129,7 @@ func (l *siteLookup) AgentSelfUpdateResult(ctx context.Context, tenantID, siteID
 		FromVersion: r.FromVersion,
 		ToVersion:   r.ToVersion,
 		Detail:      r.Detail,
+		ApplyID:     r.ApplyID,
 	}
 	if r.At > 0 {
 		out.At = time.Unix(r.At, 0).UTC()

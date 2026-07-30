@@ -202,7 +202,8 @@ func TestMetadataDTODecodesTheAgentSelfUpdateAdvisory(t *testing.T) {
 			"from_version":"0.61.80",
 			"to_version":"0.62.0",
 			"detail":"Upgrader threw: could not create directory",
-			"at":1785000000
+			"at":1785000000,
+			"apply_id":"9f1c2e3a4b5d6e7f"
 		}
 	}`)
 	var dto metadataDTO
@@ -222,6 +223,9 @@ func TestMetadataDTODecodesTheAgentSelfUpdateAdvisory(t *testing.T) {
 	}
 	if got.At != 1785000000 {
 		t.Fatalf("at = %d, want the agent's stamp", got.At)
+	}
+	if got.ApplyID != "9f1c2e3a4b5d6e7f" {
+		t.Fatalf("apply_id = %q: dropping this field silently defeats every attribution check downstream", got.ApplyID)
 	}
 }
 

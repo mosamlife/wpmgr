@@ -928,7 +928,7 @@ const staleTaskReapLimit = 500
 // task in a later wave sits pending until every earlier wave has confirmed
 // (which for a large fleet is several confirmation windows back to back), and
 // a task on a site with external cron waits up to
-// agentConfirmDeadlineExternalCron for beat 3 on its own. Reaping either as
+// agentConfirmDeadlineExternalCron for beat 2 on its own. Reaping either as
 // "stale" would fail a task that is behaving exactly as designed, and, worse
 //, feed a false failure into the wave gate, halting a healthy rollout.
 //

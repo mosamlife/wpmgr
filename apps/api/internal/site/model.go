@@ -310,6 +310,13 @@ type AgentSelfUpdateResult struct {
 	// At is the unix timestamp the agent stamped the record with; 0 when it did
 	// not say.
 	At int64 `json:"at,omitempty"`
+	// ApplyID is the opaque per-apply identifier the agent stamped this record
+	// with; empty for a record written by an agent that predates it. It is
+	// what the beat-3 confirmation worker compares against the apply id it
+	// carried on the arm it sent, so a version movement can only be credited
+	// to THIS run's own apply when the two match. Never treated as a version
+	// or a time, and never parsed: compared whole.
+	ApplyID string `json:"apply_id,omitempty"`
 }
 
 // MetadataExtras carries the ADR-037 Sprint 1 sparse-metadata expansion. The

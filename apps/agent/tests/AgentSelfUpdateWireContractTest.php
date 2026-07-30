@@ -1,6 +1,6 @@
 <?php
 /**
- * SHARED GOLDEN VECTOR for the agent self-update beat 1 (ARM) wire contract.
+ * SHARED GOLDEN VECTOR for the agent self-update ARM wire contract.
  *
  * This is the PHP half. The Go half lives in apps/api/internal/agentcmd and
  * pins the SAME literals. Both halves are deliberately redundant: the defects
@@ -13,14 +13,16 @@
  * THE CONTRACT, authoritative.
  *
  * status, exactly five strings:
- *   "scheduled"          verified and staged, cron event spawned. Carries
- *                        to_version and expires_at.
+ *   "scheduled"          verified, lock taken, and applying in the tail of this
+ *                        same request. Carries to_version, expires_at and
+ *                        apply_id.
  *   "up_to_date"         the verified manifest offers nothing newer than what
  *                        is installed.
  *   "not_eligible"       this build cannot self-update (wp.org build) or the
  *                        site is not enrolled.
- *   "already_scheduled"  a staged record from a previous arm is still live.
- *                        Carries to_version and expires_at. NOT a failure.
+ *   "already_scheduled"  another apply holds this site's lock. Carries
+ *                        to_version, expires_at and the holder's apply_id. NOT
+ *                        a failure.
  *   "error"              the arm failed. Carries a human-readable detail.
  *
  * cron_mode, exactly two strings:
@@ -29,10 +31,10 @@
  *                the site relies on system cron.
  *
  * "failed", "disabled" and "alternate" are NOT part of this contract. The agent
- * has never emitted any of them from beat 1. ("failed" remains a legitimate
- * value of the separate BEAT 3 apply-result record stored in
+ * has never emitted any of them from the ARM beat. ("failed" remains a
+ * legitimate value of the separate apply-result record stored in
  * AgentSelfUpdateCommand::OPTION_RESULT, which is a different field on a
- * different wire; the assertions below scope themselves to beat 1.)
+ * different wire; the assertions below scope themselves to the ARM.)
  *
  * @package WPMgr\Agent\Tests
  */
@@ -42,7 +44,6 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 use WPMgr\Agent\Commands\AgentSelfUpdateCommand;
-use WPMgr\Agent\Support\UpdateChecker;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -85,8 +86,13 @@ final class AgentSelfUpdateWireContractTest extends TestCase
     private const NEVER_EMITTED = ['failed', 'disabled', 'alternate'];
 
     /**
-     * The exact response shape. Beat 1 answers exactly these keys, always,
+     * The exact response shape. The ARM answers exactly these keys, always,
      * whichever status it carries.
+     *
+     * apply_id is additive: an agent that predates it simply never sends the
+     * key, and the control plane's decoder reads that as the empty string,
+     * which it treats as "this move cannot be attributed to the run that armed
+     * it".
      *
      * @var list<string>
      */
@@ -98,6 +104,7 @@ final class AgentSelfUpdateWireContractTest extends TestCase
         'detail',
         'cron_mode',
         'expires_at',
+        'apply_id',
     ];
 
     // -------------------------------------------------------------------------
@@ -124,7 +131,7 @@ final class AgentSelfUpdateWireContractTest extends TestCase
             $this->assertNotContains(
                 $ghost,
                 self::GOLDEN_STATUSES,
-                "'{$ghost}' is not a beat 1 status; it was removed from the contract because the agent never emitted it"
+                "'{$ghost}' is not an ARM status; it was removed from the contract because the agent never emitted it"
             );
             $this->assertNotContains($ghost, self::GOLDEN_CRON_MODES);
         }
@@ -135,7 +142,7 @@ final class AgentSelfUpdateWireContractTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * Every status literal the two beat 1 answer builders can produce, taken
+     * Every status literal the two ARM answer builders can produce, taken
      * from the source rather than from a doc block, must be exactly the golden
      * set. Not a subset: adding a sixth status fails here, and so does dropping
      * one, which is what keeps the two halves honest.
@@ -153,7 +160,7 @@ final class AgentSelfUpdateWireContractTest extends TestCase
         $this->assertSame(
             self::GOLDEN_STATUSES,
             $emitted,
-            'the beat 1 status set drifted from the wire contract. Statuses found in the agent source: '
+            'the ARM status set drifted from the wire contract. Statuses found in the agent source: '
             . implode(', ', $emitted)
         );
     }
@@ -176,52 +183,6 @@ final class AgentSelfUpdateWireContractTest extends TestCase
                 . (implode(', ', $modes) ?: '(none, so the expression was refactored and this vector needs re-pinning)')
             );
         }
-    }
-
-    // -------------------------------------------------------------------------
-    // Timing, the other half of the contract
-    // -------------------------------------------------------------------------
-
-    /**
-     * The staged record MUST outlive the control plane's patience.
-     *
-     * The CP waits for beat 3 for a window chosen by the cron_mode this agent
-     * reported in beat 1: 20 minutes for "loopback", 90 minutes for "external"
-     * (agentConfirmDeadline and agentConfirmDeadlineExternalCron in
-     * apps/api/internal/update/agent_worker.go). A staged TTL shorter than the
-     * longer of the two is a defect, not a tuning choice: a site whose system
-     * cron runs hourly expires its own staged record before the tick that
-     * would have applied it, so the canary false-fails and the rollout halts
-     * with nothing wrong with the build.
-     */
-    public function test_staged_ttl_outlives_the_control_planes_longest_confirm_deadline(): void
-    {
-        $cpLoopbackDeadline = 20 * 60;
-        $cpExternalDeadline = 90 * 60;
-
-        // The control plane declares this floor itself, as
-        // SelfUpdateStagedTTLFloor in
-        // apps/api/internal/agentcmd/agent_self_update_contract.go. Assert the
-        // SAME number rather than a locally derived "deadline plus headroom":
-        // a weaker local sum let this constant be lowered to a value that kept
-        // both suites green while violating the floor the other half publishes,
-        // which is the exact class of two-halves-disagree defect this whole
-        // contract test exists to catch.
-        $cpDeclaredFloor = 2 * 60 * 60;
-
-        $this->assertGreaterThan(
-            $cpLoopbackDeadline,
-            UpdateChecker::STAGED_TTL_SECONDS,
-            'a stage that expires before the loopback confirm window cannot be applied in time'
-        );
-
-        $this->assertGreaterThanOrEqual(
-            $cpDeclaredFloor,
-            UpdateChecker::STAGED_TTL_SECONDS,
-            'STAGED_TTL_SECONDS must be at least the control plane\'s declared floor ('
-            . $cpDeclaredFloor . 's, SelfUpdateStagedTTLFloor), which already carries headroom over its longest'
-            . ' confirm deadline (' . $cpExternalDeadline . 's, external cron). Raise the TTL first, then the CP window.'
-        );
     }
 
     // -------------------------------------------------------------------------
@@ -258,7 +219,8 @@ final class AgentSelfUpdateWireContractTest extends TestCase
             $this->assertIsString($answer['from_version']);
             $this->assertSame('', $answer['to_version'], 'only scheduled/already_scheduled carry a target version');
             $this->assertIsString($answer['detail']);
-            $this->assertSame(0, $answer['expires_at'], 'expires_at is 0 unless a record was staged');
+            $this->assertSame(0, $answer['expires_at'], 'expires_at is 0 unless an apply was armed');
+            $this->assertSame('', $answer['apply_id'], 'apply_id is empty unless an apply was armed or is running');
         }
     }
 

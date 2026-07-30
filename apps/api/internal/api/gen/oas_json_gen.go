@@ -16542,14 +16542,21 @@ func (s *AgentMetadataAgentSelfUpdate) encodeFields(e *jx.Encoder) {
 			s.At.Encode(e)
 		}
 	}
+	{
+		if s.ApplyID.Set {
+			e.FieldStart("apply_id")
+			s.ApplyID.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAgentMetadataAgentSelfUpdate = [5]string{
+var jsonFieldsNameOfAgentMetadataAgentSelfUpdate = [6]string{
 	0: "status",
 	1: "from_version",
 	2: "to_version",
 	3: "detail",
 	4: "at",
+	5: "apply_id",
 }
 
 // Decode decodes AgentMetadataAgentSelfUpdate from json.
@@ -16609,6 +16616,16 @@ func (s *AgentMetadataAgentSelfUpdate) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"at\"")
+			}
+		case "apply_id":
+			if err := func() error {
+				s.ApplyID.Reset()
+				if err := s.ApplyID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"apply_id\"")
 			}
 		default:
 			return d.Skip()

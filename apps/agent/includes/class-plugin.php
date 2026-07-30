@@ -144,9 +144,10 @@ final class Plugin
 
     /**
      * Highest agent version this site has already confirmed to the control
-     * plane by pushing metadata from it. Drives beat 3 of the CP-commanded
-     * self-update (see maybePushVersionChangedMetadata): a boot whose
-     * WPMGR_AGENT_VERSION differs from this value pushes once, then stamps.
+     * plane by pushing metadata from it. Drives the CONFIRM beat of the
+     * CP-commanded self-update (see maybePushVersionChangedMetadata): a boot
+     * whose WPMGR_AGENT_VERSION differs from this value pushes once, then
+     * stamps.
      * Non-autoloaded.
      */
     public const OPTION_REPORTED_VERSION = 'wpmgr_agent_reported_version';
@@ -984,56 +985,37 @@ final class Plugin
         // isEnrolled() inside UpdateChecker::install(); idempotent (static guard).
         // Skipped for the wp.org distribution build (WPMGR_WPORG_BUILD constant).
         //
-        // The two bindings below belong to the CP-commanded three-beat
-        // self-update and are deliberately INSIDE this null guard: on the
-        // wp.org build $this->updateChecker is null and class-update-checker.php
-        // is not shipped at all, so no scheduled event and no boot hook may ever
-        // reference the missing class. (The agent_self_update COMMAND itself is
-        // registered unconditionally in commands(); it is null-tolerant by
-        // construction and answers "not_eligible" there, which is a better CP
-        // experience than an unknown-command 404.)
+        // The bindings below belong to the CP-commanded self-update and are
+        // deliberately INSIDE this null guard: on the wp.org build
+        // $this->updateChecker is null and class-update-checker.php is not
+        // shipped at all, so no boot hook may ever reference the missing class.
+        // (The agent_self_update COMMAND itself is registered unconditionally in
+        // commands(); it is null-tolerant by construction and answers
+        // "not_eligible" there, which is a better CP experience than an
+        // unknown-command 404.)
+        //
+        // THE APPLY IS NOT BOUND HERE AT ALL, AND THAT IS THE POINT. It runs
+        // inside the signed command request, from core's own
+        // rest_pre_serve_request filter, which the self-updater registers on
+        // itself once it has verified an update and taken its lock. There is no
+        // cron event and no request-bound backstop any more: both of them ran
+        // the upgrade from a position where core's temp-backup rollback could
+        // never be dispatched, which is the defect this replaced.
         if ($this->updateChecker !== null) {
             $this->updateChecker->install();
 
-            // BEAT 2 (APPLY): a separate WordPress bootstrap runs the upgrade,
-            // so no CP response rides on the request that copies the files.
-            // Single-shot: the staged record is claimed and deleted before any
-            // upgrade work starts, and nothing here schedules a follow-up.
-            add_action(UpdateChecker::HOOK_APPLY, [$this->updateChecker, 'applyStagedSelfUpdate'], 10, 1);
-
-            // BEAT 2, SECOND ENTRY POINT: the WP-Cron-INDEPENDENT backstop.
-            // The cron event above used to be the only way beat 2 ever ran, so
-            // a single site whose loopback cron is blocked, whose
-            // wp_schedule_single_event was short-circuited by another plugin,
-            // or that simply never gets a tick, staged an update that nothing
-            // was left to apply. It then sat at "scheduled" until the control
-            // plane's confirm window ran out, on a site that was otherwise
-            // perfectly healthy and answering every request it was sent.
-            //
-            // This is the same treatment GitHub issues #226 and #232 already
-            // gave the snapshot reclaim and the stalled-backup reaper, and for
-            // the same reason: every request the agent serves (including the
-            // control plane's own heartbeat and uptime hits) is a far more
-            // reliable clock than WP-Cron. maybeApplyStagedSelfUpdate() is
-            // gated on a staged record actually existing, which on essentially
-            // every request of essentially every site is false, and the record
-            // is autoloaded so that gate costs no query while one is live.
-            //
-            // BEAT 2 STILL RUNS IN A DIFFERENT REQUEST FROM THE ARM, and that
-            // isolation is the whole reason the three-beat design exists: the
-            // swap must not happen inside the request that has to report the
-            // outcome. plugins_loaded is what preserves it. On the ARM's own
-            // request this hook fires during the plugin-loading phase, long
-            // before the REST callback that writes the staged record runs, so
-            // the gate correctly finds nothing and arms nothing. Only a LATER
-            // request can see the record.
-            add_action('plugins_loaded', [$this, 'maybeApplyStagedSelfUpdate']);
-
-            // BEAT 3 (CONFIRM): the only trustworthy success signal is the NEW
-            // code phoning home, so the freshly-installed build pushes metadata
-            // once on its first boot rather than waiting up to 30 minutes for
-            // the metadata cron.
+            // CONFIRM: the only trustworthy success signal is the NEW code
+            // phoning home, so the freshly-installed build pushes metadata once
+            // on its first boot rather than waiting up to 30 minutes for the
+            // metadata cron.
             add_action('plugins_loaded', [$this, 'maybePushVersionChangedMetadata']);
+
+            // A FAILED apply changes no version, so the push above never fires
+            // for it and its record would otherwise sit until the next metadata
+            // cron, which is longer than the control plane's shortest confirm
+            // deadline. The self-updater fires this action from shutdown once it
+            // has recorded a non-applied outcome.
+            add_action('wpmgr_agent_self_update_recorded', [$this, 'pushMetadataNow']);
         }
 
         // Email (Phase 2) — register the pre_wp_mail interception hook.
@@ -1815,16 +1797,17 @@ final class Plugin
     }
 
     /**
-     * BEAT 3 (CONFIRM) of the CP-commanded self-update: push metadata once, on
-     * the first boot that runs a version this site has not yet reported.
+     * CONFIRM beat of the CP-commanded self-update: push metadata once, on the
+     * first boot that runs a version this site has not yet reported.
      *
-     * A "scheduled" acknowledgement from beat 1 is never success, and beat 2
-     * runs in a request that cannot be trusted to report its own outcome (it is
-     * replacing the code that would do the reporting). The only trustworthy
-     * signal is the NEW code phoning home, which is exactly what this is: the
-     * metadata payload already carries agent_version, so a push from the new
-     * build IS the confirmation. Without it the CP would wait up to 30 minutes
-     * for the metadata cron.
+     * A "scheduled" acknowledgement from the ARM beat is never success, and the
+     * apply itself runs in a request that cannot be trusted to report its own
+     * outcome (it is replacing the code that would do the reporting, and the
+     * response it might have ridden on has already been released). The only
+     * trustworthy signal is the NEW code phoning home, which is exactly what
+     * this is: the metadata payload already carries agent_version, so a push
+     * from the new build IS the confirmation. Without it the CP would wait up
+     * to 30 minutes for the metadata cron.
      *
      * Bound on plugins_loaded behind registerHooks()'s updateChecker-not-null
      * guard, so the wp.org distribution build never registers it.
@@ -1873,92 +1856,32 @@ final class Plugin
     }
 
     /**
-     * BEAT 2 (APPLY), the WP-Cron-independent entry point. See registerHooks()'s
-     * binding comment for the root cause this closes and for why plugins_loaded
-     * is the hook that keeps the arm's own request from ever applying.
+     * Push metadata now, on demand.
      *
-     * Mirrors maybeGcSnapshots() / maybeSweepStalledBackups() in shape:
-     *   - Gated on isEnrolled(): a site with no control plane is never told to
-     *     update itself, so it can never have a staged record.
-     *   - Gated on a staged record EXISTING, which is the cheap part. There is
-     *     no separate throttle option because the record IS the throttle: it is
-     *     claimed atomically and deleted by the first caller that applies it, so
-     *     the work runs at most once per stage no matter how many requests see
-     *     it. That is a stronger guarantee than a time window, and it needs no
-     *     second option to maintain.
-     *   - Wrapped in try/catch: an update that cannot be applied right now must
-     *     never break the request that happened to notice it.
-     *
-     * THE APPLY IS DEFERRED TO 'shutdown', WHICH IS NOT OPTIONAL. Unlike every
-     * other plugins_loaded backstop in this class, the work here downloads a
-     * package and then overwrites the agent's own directory. Running that inline
-     * at plugins_loaded would replace this plugin's files while WordPress is
-     * still only part-way through booting the very request executing them, so
-     * anything autoloaded later in that request could come from the new build
-     * while the loaded classes came from the old one. At shutdown the request's
-     * own work is finished and nothing is left to mix. The response is released
-     * first through the SAPI-aware ConnectionFinisher (fastcgi on PHP-FPM,
-     * litespeed_finish_request on OpenLiteSpeed, portable flush elsewhere), so
-     * whoever made the request is never held open for the upgrade.
-     *
-     * @return bool True when this call armed the apply. Returned for
-     *              testability; WordPress ignores an action callback's return.
-     */
-    public function maybeApplyStagedSelfUpdate(): bool
-    {
-        if ($this->updateChecker === null) {
-            return false;
-        }
-        if (!function_exists('add_action')) {
-            return false;
-        }
-        if (!$this->settings->isEnrolled()) {
-            return false;
-        }
-
-        try {
-            if (!$this->updateChecker->hasStagedSelfUpdate()) {
-                return false;
-            }
-        } catch (\Throwable $e) {
-            return false;
-        }
-
-        add_action('shutdown', [$this, 'applyStagedSelfUpdateOnShutdown'], 9997);
-
-        return true;
-    }
-
-    /**
-     * Shutdown callback for the request-bound apply beat.
+     * Bound to the wpmgr_agent_self_update_recorded action the self-updater
+     * fires from shutdown once it has recorded an apply outcome that did NOT
+     * change the version on disk. A successful apply announces itself through
+     * pushVersionChangedMetadata(); a failed one changes nothing, so without
+     * this its record would wait for the next metadata cron and miss the
+     * control plane's confirm window entirely.
      *
      * Public so WordPress can call it as a named hook callback. Swallows every
-     * failure: the staged record is claimed before any upgrade work starts, so
-     * a throw here is already recorded as an outcome by the self-updater and
-     * must never disturb the request it rides on.
-     *
-     * Passes NO stage token on purpose. The token exists so a STALE cron event
-     * cannot consume a newer stage; this entry point is not an event and cannot
-     * be stale, so it applies whatever is staged right now.
+     * failure: a report that cannot be delivered right now is picked up by the
+     * next metadata cron, and must never disturb the request it rides on.
      *
      * @return void
      */
-    public function applyStagedSelfUpdateOnShutdown(): void
+    public function pushMetadataNow(): void
     {
-        if ($this->updateChecker === null) {
-            return;
-        }
-
         try {
-            (new ConnectionFinisher())->finish();
-            $this->updateChecker->applyStagedSelfUpdate('');
+            $this->enrollment->pushMetadata();
         } catch (\Throwable $e) {
-            DebugLog::write('WPMgr Agent: request-bound self-update apply failed: ' . $e->getMessage());
+            DebugLog::write('WPMgr Agent: self-update outcome metadata push failed: ' . $e->getMessage());
         }
     }
 
     /**
-     * Shutdown callback for the beat-3 confirmation push.
+     * Shutdown callback for the CONFIRM push.
      *
      * Public so WordPress can call it as a named hook callback. Swallows every
      * failure: a confirmation that cannot be delivered right now is picked up
@@ -2081,11 +2004,11 @@ final class Plugin
             // FilesRestorer, DbRestorer) inside the cron worker.
             new RestoreCommand(),
             new UpdateCommand(),
-            // BEAT 1 (ARM) of the CP-commanded agent self-update. UpdateCommand
+            // The ARM beat of the CP-commanded agent self-update. UpdateCommand
             // above REFUSES any task that targets the agent's own directory
             // (Phase 1) and keeps doing so; this is the separate, dedicated
-            // channel that replaces it. Verify-only: nothing on disk moves in
-            // the request that answers the CP.
+            // channel that replaces it. Verify-only: nothing on disk moves
+            // before the CP's answer is on the wire.
             //
             // Registered UNCONDITIONALLY, including on the wp.org build where
             // $this->updateChecker is null: the command is null-tolerant and

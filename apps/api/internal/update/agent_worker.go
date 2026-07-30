@@ -22,14 +22,17 @@ const (
 	// once per run (see AgentRunEvaluation.Changed).
 	ActionRunHalted = "update.run.halted"
 	// ActionAgentSelfUpdateArmed records a successful beat 1: the agent
-	// verified a newer build and scheduled the cron event that will apply it.
+	// verified a newer build and began applying it inside the same request.
 	// It is NOT a success record, the task is still running at this point.
 	ActionAgentSelfUpdateArmed = "update.agent.armed"
 )
 
-// Confirmation timing. These bound beat 3: how long the control plane waits
+// Confirmation timing. These bound beat 2: how long the control plane waits
 // for the NEW agent code to phone home before declaring the upgrade
-// unconfirmed.
+// unconfirmed. The arm-then-apply request (beats 1 and 2) runs inline and has
+// already finished, one way or another, long before either window below
+// expires; both only bound how long the CP waits for the site's own
+// confirmation, not whether or when the apply itself runs.
 const (
 	// agentConfirmPoll is how often the confirm job re-reads the site's
 	// reported agent version. The signal it waits for is a push from the site
@@ -38,21 +41,18 @@ const (
 	agentConfirmPoll = 30 * time.Second
 
 	// agentConfirmDeadline is the confirmation window when the agent reported
-	// ordinary loopback cron: beat 2 is spawned during beat 1 and normally
-	// lands within seconds, so anything past this window means the cron
-	// request never happened or the upgrade did not complete.
+	// ordinary loopback cron: the site's own periodic metadata heartbeat runs
+	// on WordPress's own schedule, so anything past this window with no
+	// version-changed push means the apply never completed.
 	agentConfirmDeadline = 20 * time.Minute
 
 	// agentConfirmDeadlineExternalCron is the confirmation window when the
 	// agent reported that loopback cron cannot run (agentcmd.CronModeExternal).
-	// Beat 2 then depends on an external scheduler whose period the control
-	// plane cannot see, commonly every 15 minutes but sometimes hourly. Using
-	// the narrow window here would declare a healthy, still-queued upgrade
+	// The site's periodic metadata heartbeat then depends on an external
+	// scheduler whose period the control plane cannot see, commonly every 15
+	// minutes but sometimes hourly. Using the narrow window here would declare
+	// a healthy site that simply has not had its heartbeat run yet
 	// "unconfirmed" and halt a rollout that was fine.
-	//
-	// This is the LONGEST deadline the channel has, so it is the one the
-	// agent's staged record must outlive: it may never be widened past
-	// agentcmd.SelfUpdateStagedTTLFloor.
 	agentConfirmDeadlineExternalCron = 90 * time.Minute
 
 	// agentWaveGatePoll is how often a task whose wave has not opened yet
@@ -71,18 +71,18 @@ type AgentSelfUpdateCommander interface {
 
 // AgentVersionLookup reads a site's last self-reported agent version
 // (sites.agent_version), written by the agent's signed metadata push. This is
-// the ONLY channel beat 3 trusts: it is the new code speaking for itself.
+// the ONLY channel beat 2 trusts: it is the new code speaking for itself.
 type AgentVersionLookup interface {
 	AgentVersion(ctx context.Context, tenantID, siteID uuid.UUID) (string, error)
 }
 
-// AgentApplyResult is the agent's OWN account of beat 2, the apply. The agent
-// records it on disk when the cron request runs and replays it on its next
-// signed metadata push.
+// AgentApplyResult is the agent's OWN account of the apply. The agent records
+// it on disk as the apply finishes and replays it on its next signed metadata
+// push.
 //
 // It is the only way a failed apply reaches the control plane at all: the apply
-// runs inside a cron request with no CP response to ride on, so nothing else
-// carries the outcome back. Status is one of applied|failed|expired|
+// releases its response before the swap begins, so nothing else carries the
+// outcome back. Status is one of applied|failed|expired|
 // already_applied, kept as a plain string so a status a newer agent introduces
 // reaches an operator verbatim.
 type AgentApplyResult struct {
@@ -92,10 +92,16 @@ type AgentApplyResult struct {
 	Detail      string
 	// At is when the agent stamped the record; the zero time when it did not say.
 	At time.Time
+	// ApplyID is the opaque per-apply identifier the agent stamped this record
+	// with; "" for a record written by an agent that predates it, or one that
+	// simply never said. Compared whole against AgentConfirmArgs.ApplyID by
+	// agentApplyAttributed; never parsed as a version or a time, and never
+	// compared to either.
+	ApplyID string
 }
 
 // AgentApplyResultLookup reads the last apply-beat record a site reported.
-// Optional throughout: an unwired lookup, a site that never staged an upgrade,
+// Optional throughout: an unwired lookup, a site that never ran an upgrade,
 // and an agent too old to send the record all produce (zero, false, nil), and
 // the channel behaves exactly as it did before the record existed.
 type AgentApplyResultLookup interface {
@@ -108,7 +114,7 @@ type AgentReleaseReader interface {
 	LatestVersion(ctx context.Context) string
 }
 
-// AgentConfirmEnqueuer schedules the beat-3 confirmation poll job.
+// AgentConfirmEnqueuer schedules the beat-2 confirmation poll job.
 type AgentConfirmEnqueuer interface {
 	EnqueueAgentConfirm(ctx context.Context, args AgentConfirmArgs) error
 }
@@ -125,13 +131,13 @@ type AgentSelfUpdateDeps struct {
 	// being false (no signing key configured means no signed command can be
 	// minted, and an unsigned one must never be sent).
 	Cmd AgentSelfUpdateCommander
-	// Versions reads sites.agent_version for beat 3.
+	// Versions reads sites.agent_version for beat 2.
 	Versions AgentVersionLookup
 	// Waves is the run-scoped wave gate persistence.
 	Waves AgentWaveRepo
 	// Tasks enqueues a wave's tasks once the gate opens for it.
 	Tasks Enqueuer
-	// Confirms enqueues the beat-3 poll job after a successful arm.
+	// Confirms enqueues the beat-2 poll job after a successful arm.
 	Confirms AgentConfirmEnqueuer
 	// Releases reports the currently published agent version. It is what makes
 	// an "up_to_date" answer checkable: the control plane only ever creates a
@@ -159,7 +165,7 @@ func (d AgentSelfUpdateDeps) ready() bool {
 func (w *Worker) SetAgentSelfUpdate(d AgentSelfUpdateDeps) { w.agent = d }
 
 // runAgentSelfUpdate executes ONE agent self-update task: beats 1 and the
-// handoff to beat 3. It is a wholly distinct branch from runApply/runDry, and
+// handoff to beat 2. It is a wholly distinct branch from runApply/runDry, and
 // deliberately does NOT reuse them.
 //
 // Two things runApply does are absent here, on purpose:
@@ -451,26 +457,14 @@ func upToDateNotConfirmedDetail(planned, from, published string) string {
 }
 
 // armed handles a "scheduled" or "already_scheduled" acknowledgement. The task
-// stays RUNNING: an arm ack is never success, because nothing has been applied
-// yet and the cron request that will apply it may never happen (a site with
-// broken loopback cron simply never reaches beat 2, which is safe, nothing was
-// touched, but must surface as unconfirmed, not as a silent success).
+// stays RUNNING: an arm ack is never success. The agent releases that ack
+// BEFORE it begins the swap, precisely so the upgrade is not running against a
+// connection someone is timing, which means the ack is sent while the outcome
+// is still unknown and can never stand in for one. An upgrade that then fails
+// is restored by WordPress from its own backup, which is safe, nothing was
+// kept, but it must surface as unconfirmed rather than as a silent success.
 func (w *Worker) armed(ctx context.Context, args TaskArgs, task Task, from string, resp agentcmd.AgentSelfUpdateResponse) error {
 	deadline := time.Now().Add(confirmWindowFor(resp.CronMode))
-
-	// The staged record has to outlive this control plane's patience, or a slow
-	// site expires its own stage and then false-fails its wave (see
-	// agentcmd.SelfUpdateStagedTTLFloor). Nothing here can repair that, // shortening the deadline would only fail the same site sooner, but the
-	// control plane must not be silent about it.
-	if resp.ExpiresAt > 0 {
-		if expiry := time.Unix(resp.ExpiresAt, 0); expiry.Before(deadline) {
-			w.logger.Warn("agent self-update: the site's staged record expires before this control plane stops waiting",
-				slog.String("task_id", task.ID.String()),
-				slog.String("site_id", task.SiteID.String()),
-				slog.Time("staged_expires_at", expiry.UTC()),
-				slog.Time("confirm_deadline", deadline))
-		}
-	}
 
 	if err := w.agent.Confirms.EnqueueAgentConfirm(ctx, AgentConfirmArgs{
 		TenantID:      task.TenantID,
@@ -481,13 +475,19 @@ func (w *Worker) armed(ctx context.Context, args TaskArgs, task Task, from strin
 		ExpectVersion: resp.ToVersion,
 		CronMode:      resp.CronMode,
 		DeadlineAt:    deadline,
+		// ApplyID travels through unmodified from the beat-1 answer, on BOTH
+		// the "scheduled" and "already_scheduled" paths (this function handles
+		// both identically, see runAgentSelfUpdate). An agent that predates
+		// this field leaves it "", which is what keeps beat 2 confirming on
+		// version movement alone for that agent (see agentConfirmOutcome).
+		ApplyID: resp.ApplyID,
 	}); err != nil {
 		// Without the confirmation job nothing would ever establish whether
 		// this upgrade landed, and the task would sit running until the
 		// reaper swept it. Fail it now, honestly: the agent may well apply the
 		// upgrade, but this control plane can no longer prove it.
 		return w.finishAgentTask(ctx, task, TaskFailed, from, resp.ToVersion,
-			"the agent scheduled its upgrade but the confirmation poll could not be enqueued", err.Error())
+			"the agent accepted the upgrade but the confirmation poll could not be enqueued", err.Error())
 	}
 
 	w.logger.Info("agent self-update armed",
@@ -497,6 +497,7 @@ func (w *Worker) armed(ctx context.Context, args TaskArgs, task Task, from strin
 		slog.String("from_version", from),
 		slog.String("to_version", resp.ToVersion),
 		slog.String("cron_mode", resp.CronMode),
+		slog.String("apply_id", shortApplyID(resp.ApplyID)),
 		slog.Time("confirm_deadline", deadline))
 
 	if w.audit != nil {
@@ -514,13 +515,19 @@ func (w *Worker) armed(ctx context.Context, args TaskArgs, task Task, from strin
 				"to_version":   resp.ToVersion,
 				"cron_mode":    resp.CronMode,
 				"deadline_at":  deadline.UTC().Format(time.RFC3339),
+				// Truncated to 8 characters: enough to correlate against the
+				// full id in the site's own apply record without putting a
+				// whole opaque token in the audit log. A repeat of an
+				// unattributed-confirmation incident is diagnosable from this
+				// log alone, see agentApplyAttributed.
+				"apply_id": shortApplyID(resp.ApplyID),
 			},
 		})
 	}
 	return nil
 }
 
-// confirmWindowFor picks the beat-3 deadline from the cron mode the agent
+// confirmWindowFor picks the beat-2 deadline from the cron mode the agent
 // reported. The wire carries exactly two modes; anything else (an omitted
 // field, or a value this control plane does not know) gets the NARROW window,
 // because widening on an unrecognized value would let a typo silently buy an
@@ -661,10 +668,10 @@ func detailOr(primary, fallback string) string {
 }
 
 // ---------------------------------------------------------------------------
-// BEAT 3, confirmation
+// BEAT 2, confirmation
 // ---------------------------------------------------------------------------
 
-// AgentConfirmArgs is the River job payload for the beat-3 confirmation poll.
+// AgentConfirmArgs is the River job payload for the beat-2 confirmation poll.
 // The deadline is an ABSOLUTE time carried in the args, so it survives the
 // job snoozing itself repeatedly and cannot be reset by a retry.
 type AgentConfirmArgs struct {
@@ -674,7 +681,7 @@ type AgentConfirmArgs struct {
 	SiteID   uuid.UUID `json:"site_id"`
 	// FromVersion is what the site ran when it armed.
 	FromVersion string `json:"from_version,omitempty"`
-	// ExpectVersion is the version the agent said beat 2 would install. Empty
+	// ExpectVersion is the version the agent said it would install. Empty
 	// when the agent did not say, in which case any strictly newer well-formed
 	// version confirms.
 	ExpectVersion string `json:"expect_version,omitempty"`
@@ -683,6 +690,14 @@ type AgentConfirmArgs struct {
 	CronMode string `json:"cron_mode,omitempty"`
 	// DeadlineAt is when an unconfirmed upgrade becomes a failure.
 	DeadlineAt time.Time `json:"deadline_at"`
+	// ApplyID is the opaque per-apply identifier carried unmodified from the
+	// beat-1 answer that armed this task (agentcmd.AgentSelfUpdateResponse.
+	// ApplyID), on BOTH the "scheduled" and "already_scheduled" paths. "" for
+	// an agent that predates this field. It is compared WHOLE against the
+	// ApplyID on the site's own stored apply record: only a match lets a
+	// version movement be credited to THIS run rather than to something else
+	// that happened to move the site's version. See agentApplyAttributed.
+	ApplyID string `json:"apply_id,omitempty"`
 }
 
 // Kind implements river.JobArgs.
@@ -694,7 +709,7 @@ func (a AgentConfirmArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{Queue: QueueForTenant(a.TenantID)}
 }
 
-// AgentConfirmWorker is beat 3: it waits for the NEW agent code to phone home.
+// AgentConfirmWorker is beat 2: it waits for the NEW agent code to phone home.
 //
 // This is the only place an agent self-update is allowed to become
 // TaskSucceeded. The ARM acknowledgement from beat 1 says only that a cron
@@ -762,74 +777,227 @@ func (c *AgentConfirmWorker) Work(ctx context.Context, job *river.Job[AgentConfi
 		w.logger.Warn("agent self-update: version read failed",
 			slog.String("site_id", a.SiteID.String()), slog.Any("error", err))
 	} else if agentSelfUpdateConfirmed(reported, a.FromVersion, a.ExpectVersion) {
-		// BEAT 3. The new code reported its own version over the signed
-		// metadata channel. This is the only success this channel recognizes.
-		return w.finishAgentTask(ctx, task, TaskSucceeded, a.FromVersion, reported,
-			fmt.Sprintf("upgraded and confirmed: the agent reported %s over its signed metadata channel", reported), "")
+		// BEAT 2. The new code reported its own version over the signed
+		// metadata channel. Version movement alone is the only evidence an
+		// agent that predates apply ids can ever offer, so it still confirms
+		// for that agent (see agentConfirmOutcome). For an agent that DOES
+		// report apply ids, movement alone is not enough: it must also be
+		// attributed to THIS run's own apply before it may open the next
+		// wave, or a canary that moved for an unrelated reason (a person, an
+		// unrelated apply, WordPress's own machinery) could authorise touching
+		// every other site in the fleet on evidence this run never produced.
+		//
+		// Reading that attribution can itself fail transiently, and that read
+		// failure must be treated exactly like the version read's above: it
+		// proves nothing either way, so it must not resolve this task. Without
+		// this the CP would turn a genuinely successful, confirmed upgrade
+		// into a skipped task on nothing more than one unlucky poll of a
+		// different table (see agentApplyResult).
+		res, resErr := w.agentApplyResult(ctx, a.TenantID, a.SiteID)
+		if resErr != nil {
+			w.logger.Warn("agent self-update: apply-result read failed",
+				slog.String("site_id", a.SiteID.String()), slog.Any("error", resErr))
+		} else {
+			status, toVersion, detail := agentConfirmOutcome(a, reported, res)
+			return w.finishAgentTask(ctx, task, status, a.FromVersion, toVersion, detail, "")
+		}
 	}
 
 	if !c.now().Before(a.DeadlineAt) {
+		// The deadline has passed regardless of whether this last read of the
+		// apply-result record succeeded; its error is discarded here on
+		// purpose. Unlike the confirmed branch above, this task is failing
+		// either way, so a failed read only means the failure explanation is
+		// less detailed, never that the failure itself was wrongly declared.
+		res, _ := w.agentApplyResult(ctx, a.TenantID, a.SiteID)
 		return w.finishAgentTask(ctx, task, TaskFailed, a.FromVersion, a.ExpectVersion,
-			unconfirmedDetail(a, reported, w.agentApplyResult(ctx, a.TenantID, a.SiteID)), "agent_self_update_unconfirmed")
+			unconfirmedDetail(a, reported, res), "agent_self_update_unconfirmed")
 	}
 	return river.JobSnooze(c.poll)
 }
 
-// agentApplyResult reads the agent's own account of its last apply beat, or nil
-// when there is nothing to read. Best-effort by design: this only ever enriches
-// an explanation, so an unwired lookup, a read failure, or a site that never
-// reported one all resolve to "the agent said nothing" rather than changing any
-// outcome.
-func (w *Worker) agentApplyResult(ctx context.Context, tenantID, siteID uuid.UUID) *AgentApplyResult {
+// agentApplyResult reads the agent's own account of its last apply beat.
+//
+// It returns (nil, nil) when there is genuinely NOTHING to read: the lookup
+// was never wired, the site never reported an apply outcome, or it reported
+// one with an empty status. Every caller may treat that case as "the agent
+// said nothing" without changing any outcome, exactly as before this field
+// existed.
+//
+// It returns (nil, err) when the READ ITSELF failed. That is a different
+// fact, and callers must NOT collapse it into the case above: a transient
+// database blip proves nothing about whether the apply happened, so it must
+// never be read as an absent or unattributed record. The confirmed branch in
+// AgentConfirmWorker.Work treats this exactly like a failed read of the
+// agent's version beside it, keeping the task open rather than resolving it,
+// because doing otherwise turns one unlucky poll into a halted rollout for an
+// upgrade that may already have succeeded. A caller that only enriches the
+// text of an ALREADY-failing timeout (unconfirmedDetail) may still discard
+// this error, since nothing about that task's outcome turns on the text.
+func (w *Worker) agentApplyResult(ctx context.Context, tenantID, siteID uuid.UUID) (*AgentApplyResult, error) {
 	if w.agent.Results == nil {
-		return nil
+		return nil, nil
 	}
 	res, ok, err := w.agent.Results.AgentSelfUpdateResult(ctx, tenantID, siteID)
 	if err != nil {
-		w.logger.Debug("agent self-update: apply-result read failed",
-			slog.String("site_id", siteID.String()), slog.Any("error", err))
-		return nil
+		return nil, err
 	}
 	if !ok || res.Status == "" {
-		return nil
+		return nil, nil
 	}
-	return &res
+	return &res, nil
+}
+
+// agentApplyAttributed reports whether the site's stored apply record was
+// written by THIS run. Apply ids are opaque and compared whole. Nothing else
+// participates: versions cannot, because a record may legitimately carry an
+// empty to_version (a "not_eligible" or "error" record has none), and times
+// cannot, because a retry re-arms with a fresh deadline against the same
+// site and its earlier record is still sitting there with an earlier
+// timestamp. An agent that reports no apply id at all (a.ApplyID == "") can
+// never attribute anything: PROVENANCE requires a channel that can name its
+// own apply, and one that cannot name it cannot be checked against it either.
+func agentApplyAttributed(a AgentConfirmArgs, res *AgentApplyResult) bool {
+	return a.ApplyID != "" && res != nil && res.ApplyID != "" && res.ApplyID == a.ApplyID
+}
+
+// shortApplyID truncates an opaque apply id to a stable prefix for logs, audit
+// metadata and operator-facing detail text: enough to correlate two mentions
+// of the SAME apply without putting a whole opaque token in a log line built
+// to be read by a person.
+func shortApplyID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+// agentConfirmOutcome classifies a version-moved beat-2 signal into a task
+// outcome. Version movement alone is never enough on its own to open the next
+// wave: it must also be attributed to THIS run's own apply, or a canary that
+// moved for a reason this run did not cause could authorise touching every
+// other site in the fleet on no evidence at all.
+//
+//   - a.ApplyID == "": the agent predates the apply-id channel. Version
+//     movement is the only evidence such an agent can ever offer, so it
+//     still confirms, but the detail hedges the cause rather than claiming
+//     it. This branch MUST exist: without it, the very release that
+//     introduces apply ids could never roll out through the channel that
+//     ships it, because every site in its first wave is still running the
+//     agent that predates them.
+//   - a.ApplyID != "" and the site's stored record is attributed to this run
+//     (agentApplyAttributed) and its status is "applied": the strongest
+//     case, confirmed twice over, by the signed metadata channel AND by the
+//     agent's own apply record naming this exact run as the cause.
+//   - a.ApplyID != "" and NOT attributed: the version moved, but nothing
+//     ties the move to this run (a record from a different apply, a record
+//     that carries no apply id, or no record at all). Skipped, not
+//     succeeded, and ToVersion is left empty to match the non-confirming
+//     precedent in upToDate: a canary here must never open the next wave.
+//   - a.ApplyID != "" and attributed but the record's status is not
+//     "applied": the machine signature of a record that IS this run's own
+//     apply, saying it did NOT install what the site is now running (an
+//     "already_applied" or "failed" record sitting next to a version that
+//     nonetheless moved, for some other reason). Skipped: whatever moved
+//     this site's version, this run's own apply says it was not the cause.
+func agentConfirmOutcome(a AgentConfirmArgs, reported string, res *AgentApplyResult) (status, toVersion, detail string) {
+	if a.ApplyID == "" {
+		return TaskSucceeded, reported, fmt.Sprintf(
+			"upgraded: the agent reported %s over its signed metadata channel. This site's agent does not report an apply id, "+
+				"so this control plane cannot show that this run caused the move rather than a person or WordPress itself. "+
+				"The version is right; the cause is unproven.", reported)
+	}
+
+	if agentApplyAttributed(a, res) {
+		if res.Status == agentApplyApplied {
+			return TaskSucceeded, reported, fmt.Sprintf(
+				"upgraded and confirmed: the agent reported %s over its signed metadata channel, and its own apply record "+
+					"for %s says this channel installed it.", reported, shortApplyID(a.ApplyID))
+		}
+		return TaskSkipped, "", fmt.Sprintf(
+			"not confirmed: the agent now reports %s, at or beyond this run's target, but its own apply record for this run "+
+				"(%s) reads %q, so this run's own apply did not install the build this site is now running.",
+			reported, shortApplyID(a.ApplyID), res.Status)
+	}
+
+	return TaskSkipped, "", fmt.Sprintf(
+		"not confirmed: the agent now reports %s, at or beyond this run's target, but nothing ties that move to this run, "+
+			"so it proves nothing about this upgrade and no further site may be opened on the strength of it. %s",
+		reported, unattributedRecordClause(a, res))
+}
+
+// unattributedRecordClause names WHICH of the three unattributed cases
+// applies, so the operator reading a "not confirmed" detail knows what to go
+// look at rather than just that attribution failed.
+func unattributedRecordClause(a AgentConfirmArgs, res *AgentApplyResult) string {
+	switch {
+	case res == nil:
+		return "This site holds no apply record at all."
+	case res.ApplyID == "":
+		return "This site's apply record carries no apply id."
+	default:
+		return fmt.Sprintf("This site's apply record belongs to a different apply (%s), not to the one this run armed (%s).",
+			shortApplyID(res.ApplyID), shortApplyID(a.ApplyID))
+	}
 }
 
 // unconfirmedDetail explains a deadline expiry in terms an operator can act
 // on, including the crucial fact that nothing was necessarily applied: a site
-// that never reached beat 2 was never touched.
+// whose apply never ran was never touched.
 //
 // When the agent left an account of its own apply beat, that account is what
-// turns this from a shrug into a diagnosis: "the cron run never happened" and
-// "the cron run happened and the upgrade failed" produce the identical timeout
+// turns this from a shrug into a diagnosis: "the apply never ran" and
+// "the apply ran and the upgrade failed" produce the identical timeout
 // here, and only the agent can tell them apart.
 func unconfirmedDetail(a AgentConfirmArgs, reported string, res *AgentApplyResult) string {
 	still := reported
 	if still == "" {
 		still = "an unknown version"
 	}
-	base := fmt.Sprintf("unconfirmed: the agent scheduled its upgrade to %s but never reported it (still reporting %s). "+
-		"The site was not necessarily modified: an upgrade that never reached its cron run leaves the agent exactly as it was.",
+	base := fmt.Sprintf("unconfirmed: the agent accepted the upgrade to %s but never reported it (still reporting %s). "+
+		"The site was not necessarily modified: WordPress keeps a backup of the previous build for the duration of the swap "+
+		"and restores it when an upgrade does not complete.",
 		fromOr(a.ExpectVersion, "the published build"), still)
 	if a.CronMode == agentcmd.CronModeExternal {
-		base += " This site reports that WordPress loopback cron is unavailable, so the upgrade depends on an external scheduler this control plane cannot see."
+		base += " This site reports that WordPress loopback cron is unavailable. That does not hold up the upgrade itself, which runs inside the command request, " +
+			"but it does mean the confirmation push depends on site traffic or on an external scheduler this control plane cannot see."
 	}
-	if s := applyResultSentence(res); s != "" {
+	if s := applyResultSentence(a, res); s != "" {
 		base += " " + s
 	}
 	return base
 }
 
 // applyResultSentence renders the agent's apply-beat record as one operator-
-// facing sentence, or "" when there is no record. The four statuses the agent
-// reports each mean something different about where to look next, so each gets
-// its own wording rather than a generic dump; an unrecognized status (a newer
-// agent) is still surfaced verbatim rather than swallowed.
-func applyResultSentence(res *AgentApplyResult) string {
-	if res == nil || res.Status == "" {
+// facing sentence, or "" when there is no record. A record is only ever given
+// a CAUSAL reading (this run's own apply DID this) when it is attributed to
+// THIS run's own apply id (agentApplyAttributed); an unattributed record is
+// still rendered in full, status, versions and detail included, never
+// suppressed, but its causation is hedged rather than claimed
+// (unattributedApplyResultSentence). The four attributed statuses the agent
+// reports each mean something different about where to look next, so each
+// gets its own wording rather than a generic dump; an unrecognized status (a
+// newer agent) is still surfaced verbatim rather than swallowed.
+func applyResultSentence(a AgentConfirmArgs, res *AgentApplyResult) string {
+	if res == nil {
+		if a.ApplyID == "" {
+			// A legacy arm carries nothing to compare a record against, and an
+			// old agent predating the record entirely is exactly what "no
+			// record" already meant before apply ids existed. Read exactly as
+			// it did before this field existed.
+			return ""
+		}
+		return fmt.Sprintf("This site's agent reports apply ids but holds no record for %s, so this run's apply command reached the site but no "+
+			"outcome was ever stored or pushed back for it. Look at whether the apply itself began, or whether its metadata push reached this control plane.",
+			shortApplyID(a.ApplyID))
+	}
+	if res.Status == "" {
 		return ""
 	}
+	if !agentApplyAttributed(a, res) {
+		return unattributedApplyResultSentence(a, res)
+	}
+
 	when := ""
 	if !res.At.IsZero() {
 		when = " at " + res.At.UTC().Format(time.RFC3339)
@@ -838,22 +1006,54 @@ func applyResultSentence(res *AgentApplyResult) string {
 	if res.Detail != "" {
 		detail = ": " + res.Detail
 	}
-	move := fmt.Sprintf("%s to %s", fromOr(res.FromVersion, "an unreported version"), fromOr(res.ToVersion, "the staged build"))
+	move := fmt.Sprintf("%s to %s", fromOr(res.FromVersion, "an unreported version"), fromOr(res.ToVersion, "the target build"))
+	label := fmt.Sprintf("The agent's apply record for %s", shortApplyID(a.ApplyID))
 
 	switch res.Status {
 	case agentApplyApplied:
-		return fmt.Sprintf("The agent's own record says it DID apply the upgrade (%s)%s, so the apply ran and it is the version report that has not arrived; "+
-			"look at the site's metadata push rather than at the upgrade%s.", move, when, detail)
+		return fmt.Sprintf("%s says it DID apply the upgrade (%s)%s, so the apply ran and it is the version report that has not arrived; "+
+			"look at the site's metadata push rather than at the upgrade%s.", label, move, when, detail)
 	case agentApplyFailed:
-		return fmt.Sprintf("The agent's own record says the apply FAILED (%s)%s, so the cron run did happen and the upgrade is what did not%s.", move, when, detail)
+		return fmt.Sprintf("%s says the apply FAILED (%s)%s, so the apply did run and the upgrade is what did not%s.", label, move, when, detail)
 	case agentApplyExpired:
-		return fmt.Sprintf("The agent's own record says the staged upgrade EXPIRED before any apply request ran%s, so the cron run never happened in time "+
-			"and nothing was applied%s.", when, detail)
+		return fmt.Sprintf("%s says the upgrade EXPIRED before it was applied%s, so nothing was applied%s.", label, when, detail)
 	case agentApplyAlreadyApplied:
-		return fmt.Sprintf("The agent's own record says the on-disk version was ALREADY at or past the staged target (%s)%s%s.", move, when, detail)
+		return fmt.Sprintf("%s says the on-disk version was ALREADY at or past the target (%s)%s%s.", label, move, when, detail)
 	default:
-		return fmt.Sprintf("The agent's own record of its last apply reads %q (%s)%s%s.", res.Status, move, when, detail)
+		return fmt.Sprintf("%s of its last apply reads %q (%s)%s%s.", label, res.Status, move, when, detail)
 	}
+}
+
+// unattributedApplyResultSentence renders a record this control plane cannot
+// tie to the current run. The record is still rendered IN FULL, status,
+// versions, detail and time, because a hidden record helps nobody; what
+// changes is that every sentence here explicitly refuses to read it as the
+// cause of anything about this run's own timeout.
+func unattributedApplyResultSentence(a AgentConfirmArgs, res *AgentApplyResult) string {
+	when := "an unreported time"
+	if !res.At.IsZero() {
+		when = res.At.UTC().Format(time.RFC3339)
+	}
+	move := fmt.Sprintf("%s to %s", fromOr(res.FromVersion, "an unreported version"), fromOr(res.ToVersion, "the target build"))
+	detail := ""
+	if res.Detail != "" {
+		detail = ", detail: " + res.Detail
+	}
+
+	if a.ApplyID == "" {
+		// This run's own arm predates apply ids, so it has nothing to compare
+		// the record against at all, whatever the record itself says.
+		return fmt.Sprintf("This site's agent does not report an apply id, so no record it holds can be tied to this run. "+
+			"Its last apply record reads %q (%s) at %s%s. It may or may not be an account of this run.", res.Status, move, when, detail)
+	}
+	if res.ApplyID == "" {
+		return fmt.Sprintf("This site does hold an apply record, but it carries no apply id, not the one this run armed (%s), "+
+			"so it is not an account of this run: it reads %q (%s at %s%s). Do not read it as the cause of this timeout.",
+			shortApplyID(a.ApplyID), res.Status, move, when, detail)
+	}
+	return fmt.Sprintf("This site does hold an apply record, but it belongs to a different apply (%s) and not to the one this run armed (%s), "+
+		"so it is not an account of this run: it reads %q (%s at %s%s). Do not read it as the cause of this timeout.",
+		shortApplyID(res.ApplyID), shortApplyID(a.ApplyID), res.Status, move, when, detail)
 }
 
 // The apply-beat statuses the agent reports. Mirrored here as constants so the

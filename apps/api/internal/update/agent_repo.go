@@ -269,7 +269,7 @@ func (r *pgRepo) HaltAgentRun(ctx context.Context, tenantID, runID uuid.UUID, re
 // marked halted.
 //
 // ONLY PENDING TASKS ARE CANCELLED. A running task has already had its command
-// delivered and, for an agent self-update, a cron event spawned on the site.
+// delivered and, for an agent self-update, the upgrade applied inline on the site.
 // Cancelling it would record a falsehood, model.go defines TaskCancelled as
 // "nothing was ever sent to this site", and, worse, blind the control plane:
 // AgentConfirmWorker.Work short-circuits on a terminal status, so the confirm

@@ -180,6 +180,7 @@ func TestAgentSelfUpdateApplyRecordIsPersistedAndReadBack(t *testing.T) {
 			ToVersion:   "0.62.0",
 			Detail:      "Upgrader threw: could not create directory",
 			At:          1785000000,
+			ApplyID:     "9f1c2e3a4b5d6e7f",
 		},
 	})
 	if m.AgentSelfUpdate == nil {
@@ -207,6 +208,13 @@ func TestAgentSelfUpdateApplyRecordIsPersistedAndReadBack(t *testing.T) {
 	}
 	if got.At != 1785000000 {
 		t.Fatalf("at = %d, want the agent's stamp", got.At)
+	}
+	// The apply id is what lets the confirmation worker tell THIS run's own
+	// apply apart from an unrelated version movement (see
+	// update.agentApplyAttributed). Dropping it anywhere on this path silently
+	// defeats that check.
+	if got.ApplyID != "9f1c2e3a4b5d6e7f" {
+		t.Fatalf("apply_id did not round-trip: got %q", got.ApplyID)
 	}
 }
 
@@ -237,6 +245,7 @@ func TestAgentSelfUpdateApplyRecordIsBoundedAndOptional(t *testing.T) {
 				ToVersion:   strings.Repeat("2", 200),
 				Detail:      strings.Repeat("d", 4000),
 				At:          -1,
+				ApplyID:     strings.Repeat("a", 200),
 			},
 		}).AgentSelfUpdate
 		if got == nil {
@@ -253,6 +262,9 @@ func TestAgentSelfUpdateApplyRecordIsBoundedAndOptional(t *testing.T) {
 		}
 		if got.At != 0 {
 			t.Fatalf("a negative timestamp must normalize to unset, got %d", got.At)
+		}
+		if len(got.ApplyID) != maxSelfUpdateApplyID {
+			t.Fatalf("apply_id len = %d, want %d", len(got.ApplyID), maxSelfUpdateApplyID)
 		}
 	})
 

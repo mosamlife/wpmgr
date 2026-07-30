@@ -3,10 +3,10 @@ package agentcmd
 import (
 	"encoding/json"
 	"testing"
-	"time"
 )
 
-// SHARED GOLDEN VECTOR for the agent self-update beat 1 (ARM) wire contract.
+// SHARED GOLDEN VECTOR for the agent self-update beat 1 (ARM then APPLY) wire
+// contract.
 //
 // This is the Go half. The PHP half is
 // apps/agent/tests/AgentSelfUpdateWireContractTest.php and pins the SAME
@@ -21,14 +21,16 @@ import (
 //
 // status, exactly five strings:
 //
-//	"scheduled"          verified and staged, cron event spawned. Carries
+//	"scheduled"          verified; this request's own tail is registered to
+//	                     apply it once the response is released. Carries
 //	                     to_version and expires_at.
 //	"up_to_date"         the verified manifest offers nothing newer than what
 //	                     is installed.
 //	"not_eligible"       this build cannot self-update (wordpress.org build) or
 //	                     the site is not enrolled.
-//	"already_scheduled"  a staged record from a previous arm is still live.
-//	                     Carries to_version and expires_at. NOT a failure.
+//	"already_scheduled"  another apply for this site already holds the
+//	                     upgrader lock. Carries to_version and expires_at.
+//	                     NOT a failure.
 //	"error"              the arm failed. Carries a human-readable detail.
 //
 // cron_mode, exactly two strings:
@@ -126,7 +128,8 @@ func TestAgentSelfUpdateResponseDecodesTheWireShape(t *testing.T) {
 		"to_version": "0.62.0",
 		"detail": "an upgrade to 0.62.0 is already staged",
 		"cron_mode": "external",
-		"expires_at": 1780000000
+		"expires_at": 1780000000,
+		"apply_id": "9f1c2e3a4b5d6e7f"
 	}`
 
 	var got AgentSelfUpdateResponse
@@ -149,11 +152,18 @@ func TestAgentSelfUpdateResponseDecodesTheWireShape(t *testing.T) {
 		t.Fatal("detail was dropped: it is the whole diagnostic value of an error, and the operator-facing note of every other status")
 	}
 	if got.ExpiresAt != 1780000000 {
-		t.Fatalf("expires_at = %d: a staged record whose expiry the control plane cannot read cannot be checked against its own deadline", got.ExpiresAt)
+		t.Fatalf("expires_at = %d: dropping this field silently loses the (informational) expiry of the apply lock the agent reported", got.ExpiresAt)
+	}
+	if got.ApplyID != "9f1c2e3a4b5d6e7f" {
+		t.Fatalf("apply_id = %q: dropping this field silently defeats every attribution check downstream", got.ApplyID)
 	}
 
 	// An agent that omits cron_mode must decode to the zero value, which the
-	// control plane treats as the narrow (honest) window.
+	// control plane treats as the narrow (honest) window. An agent that
+	// predates apply ids (every agent before 0.61.108) must decode ApplyID to
+	// "", which is what keeps beat 2 confirming on version movement alone for
+	// that agent rather than collapsing every one of its confirmations to
+	// unattributed.
 	var minimal AgentSelfUpdateResponse
 	if err := json.Unmarshal([]byte(`{"status":"up_to_date","from_version":"0.62.0"}`), &minimal); err != nil {
 		t.Fatalf("unmarshal minimal: %v", err)
@@ -164,23 +174,7 @@ func TestAgentSelfUpdateResponseDecodesTheWireShape(t *testing.T) {
 	if minimal.ExpiresAt != 0 {
 		t.Fatalf("an omitted expires_at must decode to 0, got %d", minimal.ExpiresAt)
 	}
-}
-
-// TestStagedTTLFloorExceedsEveryConfirmDeadline is the timing half of the
-// contract, stated where the constant lives. The staged record must outlive the
-// control plane's patience: a stage that lapses first means beat 2 finds
-// nothing to apply, and the site false-fails a build it was never given a
-// chance to install. The agent holds a stage for 7200s
-// (UpdateChecker::STAGED_TTL_SECONDS); the CP's longest window is 90 minutes
-// (update.agentConfirmDeadlineExternalCron), and that side pins the same
-// inequality from its own constants.
-func TestStagedTTLFloorExceedsEveryConfirmDeadline(t *testing.T) {
-	const cpLongestConfirmDeadline = 90 * time.Minute
-	if SelfUpdateStagedTTLFloor <= cpLongestConfirmDeadline {
-		t.Fatalf("SelfUpdateStagedTTLFloor = %s, must exceed the control plane's longest confirm deadline (%s)",
-			SelfUpdateStagedTTLFloor, cpLongestConfirmDeadline)
-	}
-	if headroom := SelfUpdateStagedTTLFloor - cpLongestConfirmDeadline; headroom < 15*time.Minute {
-		t.Fatalf("headroom = %s: raise the agent's staged TTL first, then the control plane window, and keep the margin", headroom)
+	if minimal.ApplyID != "" {
+		t.Fatalf("an omitted apply_id must decode to the empty string, got %q", minimal.ApplyID)
 	}
 }

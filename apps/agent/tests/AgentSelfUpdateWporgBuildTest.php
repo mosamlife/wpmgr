@@ -24,10 +24,10 @@
  *
  * The static companions go further than the command file. includes/class-plugin.php
  * also survives the rsync and is the ONLY surviving file that names the
- * self-updater in executable code (`new UpdateChecker(...)` and
- * `UpdateChecker::HOOK_APPLY`), each safe only because it sits inside a guard.
- * Those namings are checked here with the same analyser the agent-zip-wporg
- * build-time assertion runs against the staged artifact.
+ * self-updater in executable code (`new UpdateChecker(...)`), which is safe
+ * only because it sits inside a guard. That naming is checked here with the
+ * same analyser the agent-zip-wporg build-time assertion runs against the
+ * staged artifact.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -117,18 +117,17 @@ final class AgentSelfUpdateWporgBuildTest extends TestCase
      *
      * The test above inspects class-agent-self-update-command.php, which by
      * design names the self-updater nowhere, so it can never fail on the real
-     * hazard. includes/class-plugin.php is the file that does name it, twice,
-     * in executable code:
+     * hazard. includes/class-plugin.php is the file that does name it in
+     * executable code:
      *
      *   new UpdateChecker(...)          inside a WPMGR_WPORG_BUILD guard
-     *   UpdateChecker::HOOK_APPLY       inside an updateChecker-not-null guard
      *
      * class-plugin.php SURVIVES the wp.org rsync while
-     * includes/support/class-update-checker.php does not, so either line, if
+     * includes/support/class-update-checker.php does not, so that line, if
      * dedented out of its guard, is a hard class fetch that raises
      * "Class WPMgr\Agent\Support\UpdateChecker not found" on every request of
-     * every wp.org install. Both sit among roughly a dozen visually identical
-     * unconditional add_action() calls, which makes that dedent a plausible
+     * every wp.org install. It sits among roughly a dozen visually identical
+     * unconditional constructor calls, which makes that dedent a plausible
      * refactor rather than an exotic one.
      *
      * Shares its analyser with the build-time assertion the agent-zip-wporg

@@ -49,6 +49,19 @@ if (!defined('ABSPATH')) {
  */
 final class ConnectionFinisher
 {
+    /**
+     * The rung names finish() returns when it TRULY detached the connection,
+     * as opposed to the portable last rung, which only flushes what is already
+     * buffered and leaves the worker attached to the client.
+     *
+     * Named here so that a caller deciding AFTER the flush (from the rung
+     * finish() returned) and a caller deciding BEFORE it (from canDetach())
+     * are reading one list rather than two that can drift apart.
+     *
+     * @var list<string>
+     */
+    public const DETACHING_RUNGS = ['fpm', 'litespeed'];
+
     /** @var callable(string):bool */
     private $available;
 
@@ -101,6 +114,30 @@ final class ConnectionFinisher
 
         ($this->fallback)();
         return 'fallback';
+    }
+
+    /**
+     * Whether this SAPI offers a rung that truly detaches the connection.
+     * Answers the question WITHOUT flushing anything, so it is safe to ask
+     * before the response is ready to be released.
+     *
+     * finish() reports which rung fired, which is the right shape for a caller
+     * that has already committed to the work. It is the wrong shape for a
+     * caller whose decision to start the work at all depends on the answer:
+     * the CP-commanded self-update has told the control plane what it is about
+     * to do by the time it releases the response, so it asks this first and
+     * declines the whole operation up front instead of abandoning it after the
+     * acknowledgement has gone out.
+     *
+     * Asks the SAME two questions finish() asks, through the same injected
+     * probe, so the two can only ever agree.
+     *
+     * @return bool True when finish() would return one of DETACHING_RUNGS.
+     */
+    public function canDetach(): bool
+    {
+        return ($this->available)('fastcgi_finish_request')
+            || ($this->available)('litespeed_finish_request');
     }
 
     /**

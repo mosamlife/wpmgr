@@ -40,11 +40,11 @@
  *   - WP_Error is returned on any download/sha failure (aborts the update
  *     visibly; temp file is unlinked before returning).
  *
- * This file also carries the CP-commanded three-beat self-update (ARM in the
- * signed command request, APPLY in a separate cron bootstrap, CONFIRM by the
- * new code phoning home). It lives HERE, and not in a new file, because
- * `make agent-zip-wporg` physically excludes this one path from the wp.org
- * distribution build; see the block comment above stageSelfUpdate().
+ * This file also carries the CP-commanded self-update (ARM plus APPLY inside
+ * the signed command request, CONFIRM by the new code phoning home). It lives
+ * HERE, and not in a new file, because `make agent-zip-wporg` physically
+ * excludes this one path from the wp.org distribution build; see the block
+ * comment above planSelfUpdate().
  *
  * @package WPMgr\Agent\Support
  */
@@ -114,80 +114,111 @@ final class UpdateChecker
     public const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 
     /**
-     * Cron hook that runs beat 2 (APPLY) of the three-beat self-update
-     * protocol, in its own WordPress bootstrap. Bound in Plugin::registerHooks()
-     * behind the same updateChecker-not-null guard that skips this whole class
-     * on the wp.org distribution build, so the event can never fire into a
-     * missing class there.
+     * Core's own cross-request upgrader lock for this channel, taken with
+     * WP_Upgrader::create_lock() and released with WP_Upgrader::release_lock().
+     * One apply per site at a time, decided by a single INSERT IGNORE, which is
+     * the same primitive WordPress uses to serialise its own background
+     * updates. It replaces the hand-rolled claim, in-flight marker and stage
+     * token this channel used to carry.
+     *
+     * The release timeout handed to create_lock() is
+     * LongRunningJob::TIME_LIMIT_SECONDS (900), deliberately the SAME number as
+     * the PHP execution budget the apply arms for itself: the lock must outlive
+     * an apply that runs to its own cap and not one second longer, so a worker
+     * killed mid apply blocks the next attempt for exactly as long as it could
+     * conceivably still have been alive. Pinned by a test.
      */
-    public const HOOK_APPLY = 'wpmgr_agent_self_update_apply';
+    private const APPLY_LOCK = 'wpmgr_agent_self_update';
 
     /**
-     * wp-option holding the single staged self-update record written by beat 1
-     * (ARM). Shape:
-     *   ['from_version'=>string,'to_version'=>string,'staged_at'=>int,
-     *    'expires_at'=>int,'token'=>string]
+     * wp-option holding the apply id of the run that currently owns APPLY_LOCK.
      *
-     * AUTOLOADED on purpose, which is a change from the original cron-only
-     * design. Beat 2 is no longer reachable only through the cron event: Plugin
-     * binds a request-bound backstop on plugins_loaded whose ENTIRE gate is
-     * "does this record exist", so while a record is live it is read on every
-     * request the site serves. An autoloaded row rides the alloptions read
-     * WordPress already performs on every boot, so the gate costs no extra query
-     * in the one window where it is read often. The record is deleted the moment
-     * it is claimed, so it exists for minutes in the whole life of a site.
+     * Core's lock row stores a timestamp and nothing else, so without this an
+     * arm that finds the lock held could name no apply at all, and the control
+     * plane would be left confirming on version movement alone, which is
+     * exactly the unattributed confirmation this channel is trying to stop
+     * making. Written by the run that takes the lock, echoed to any later arm
+     * that finds it held, deleted with the lock.
+     *
+     * Read only on the rare request that is arming a self-update, so it is
+     * deliberately not autoloaded.
      */
-    public const OPTION_STAGED = 'wpmgr_agent_self_update_staged';
+    private const OPTION_APPLY_ID = 'wpmgr_agent_self_update_apply_id';
 
     /**
-     * wp-option marking an apply that is CURRENTLY RUNNING: a unix timestamp
-     * written by the request that won the claim, deleted when that apply reaches
-     * any terminal path.
+     * Apply-result status recorded when this site's PHP SAPI cannot release
+     * the control-plane connection, so no apply was run.
      *
-     * The atomic claim of OPTION_STAGED (claimStagedRecord) already guarantees
-     * that exactly one caller ever applies a GIVEN staged record, which is what
-     * keeps the cron event and the request-bound backstop from both applying the
-     * same stage. This marker covers the other overlap, the one the backstop
-     * newly widens: a control plane that arms a SECOND update while the first is
-     * still copying files stages a second record, and the backstop would claim
-     * it on the very next request. Two Plugin_Upgrader runs over the agent's own
-     * directory at once is precisely the outcome the three-beat design exists to
-     * prevent.
-     *
-     * Read only on the rare request that has ALREADY found a staged record, so
-     * it is deliberately not autoloaded. Stale-safe: a marker older than
-     * LongRunningJob::TIME_LIMIT_SECONDS is ignored, the same bound the apply
-     * itself runs under, so a hard-killed apply cannot block the next one for
-     * longer than it could legitimately have run.
+     * NOT an ARM status. The ARM answers 'not_eligible', which is one of the
+     * five pinned wire values, and carries this reason in its detail; this name
+     * only ever appears in the apply-result record, where it lets an operator
+     * tell "this site can never self-update" apart from "an apply was attempted
+     * and failed".
      */
-    private const OPTION_APPLYING = 'wpmgr_agent_self_update_applying';
+    private const RESULT_SAPI_CANNOT_DETACH = 'sapi_cannot_detach';
 
     /**
-     * Seconds a staged record stays claimable. Beat 2 discards (never retries)
-     * an expired record: a site whose loopback cron is broken simply never
-     * reaches beat 2, which is safe because ARM moved nothing on disk.
-     *
-     * COUPLED TO THE CONTROL PLANE'S CONFIRM DEADLINE. Read this before
-     * changing either number.
-     *
-     * The CP waits for beat 3 (the new build phoning home) for a bounded
-     * window that depends on the cron_mode this agent reported in beat 1:
-     *
-     *   cron_mode "loopback" : 20 minutes  (agentConfirmDeadline)
-     *   cron_mode "external" : 90 minutes  (agentConfirmDeadlineExternalCron)
-     *
-     * Both live in apps/api/internal/update/agent_worker.go. The stage MUST
-     * outlive the CP's LONGEST patience, otherwise a site whose system cron
-     * runs hourly expires its own staged record before the cron tick that
-     * would have applied it, and the CP records a confirm timeout for a build
-     * that was never given a chance to install. On a fleet that is not an edge
-     * case, it is a coin flip, and it halts canary rollouts for no reason.
-     *
-     * 7200s (2 hours) sits 30 minutes clear of the 90-minute external-cron
-     * deadline. If the CP window is ever raised, raise this FIRST and keep the
-     * headroom. This value must never fall below agentConfirmDeadlineExternalCron.
+     * The reason both the ARM answer and the apply-result record carry when the
+     * detach gate refuses, held once so the control plane reads the same
+     * sentence whichever of the two it is looking at.
      */
-    public const STAGED_TTL_SECONDS = 7200;
+    private const DETACH_REFUSAL_DETAIL = 'This PHP SAPI offers neither fastcgi_finish_request nor '
+        . 'litespeed_finish_request, so the agent cannot release the control-plane connection before replacing its '
+        . 'own directory, and it will not run an upgrade on a connection something else can time out mid swap. '
+        . 'Nothing on disk was touched. Update this site from its WordPress dashboard instead.';
+
+    /**
+     * Every agent class that can still be reached AFTER the plugin directory
+     * has been swapped. warmPostSwapClasses() loads each one before the swap
+     * starts, so the code that runs between the swap and the end of the request
+     * is already in memory when its file stops existing.
+     *
+     * The post-swap surface is finite and enumerable here, which is the whole
+     * reason the apply moved into the request body: what remains after the swap
+     * is the return into WP_REST_Server::serve_request(), the die() that
+     * follows it, and the shutdown queue. A test walks every
+     * add_action('shutdown', ...) binding in the agent and fails when a
+     * callback's class is missing from this list, because a list like this rots
+     * silently otherwise.
+     *
+     * @var list<string>
+     */
+    public const POST_SWAP_CLASSES = [
+        'WPMgr\\Agent\\Support\\Maintenance',
+        'WPMgr\\Agent\\Support\\DebugLog',
+        'WPMgr\\Agent\\Support\\LongRunningJob',
+        'WPMgr\\Agent\\Support\\ErrorMonitor',
+        'WPMgr\\Agent\\Support\\UpdateGuard',
+        'WPMgr\\Agent\\Support\\ConnectionFinisher',
+        'WPMgr\\Agent\\Support\\UpdateChecker',
+        'WPMgr\\Agent\\Commands\\AgentSelfUpdateCommand',
+        'WPMgr\\Agent\\HeartbeatCatchup',
+        'WPMgr\\Agent\\Enrollment',
+        'WPMgr\\Agent\\Settings',
+        'WPMgr\\Agent\\Plugin',
+    ];
+
+    /**
+     * Shutdown priority of restoreAgentIfDirectoryMissing().
+     *
+     * ABOVE core's two temp-backup callbacks, and that is the whole point.
+     * WP_Upgrader::run() registers restore_temp_backup at priority 10
+     * (class-wp-upgrader.php:936) and delete_temp_backup at 100 (:953). A fatal
+     * raised inside a shutdown callback abandons the rest of the queue, so a
+     * guard placed AHEAD of core's restore could kill the very rollback it
+     * exists to back up. Running after both gives identical coverage and can
+     * shadow neither: on the WP_Error path core has already restored, so this
+     * guard's precondition is false; on the path core never got to register
+     * anything (a max_execution_time fatal raised inside install_package) this
+     * guard is the only thing left.
+     */
+    private const RESTORE_GUARD_PRIORITY = 101;
+
+    /**
+     * Shutdown priority of pushOutcomeNow(). Sits after the restore guard, so
+     * what it pushes is the post-rollback truth rather than a mid-flight guess.
+     */
+    private const OUTCOME_PUSH_PRIORITY = 9998;
 
     /**
      * Clock-skew grace for the exp field (seconds). The agent rejects a manifest
@@ -266,15 +297,24 @@ final class UpdateChecker
     private ReplayCache $replayCache;
 
     /**
+     * The SAPI-aware early-flush ladder, held rather than constructed on the
+     * spot because the CP-commanded self-update asks it TWO questions in one
+     * request and both answers have to come from the same probe: can this SAPI
+     * detach at all (at the arm, before anything is promised), and which rung
+     * actually fired (after the acknowledgement has been released).
+     */
+    private ConnectionFinisher $finisher;
+
+    /**
      * Why the most recent fetchManifest()/verifyManifest() pair returned null.
      *
      * fetchManifest() collapses "the CP published nothing" and "the manifest
      * failed verification" into the same null return, which is exactly the
-     * right shape for the transient-injection path but not for beat 1 of the
-     * self-update protocol: the control plane has to be able to tell
+     * right shape for the transient-injection path but not for the ARM beat of
+     * the self-update protocol: the control plane has to be able to tell
      * "up_to_date" (benign, nothing to do) apart from "error" (worth surfacing).
      * Every terminal path of the two methods tags itself here so
-     * stageSelfUpdate() can classify a null without re-running any check.
+     * planSelfUpdate() can classify a null without re-running any check.
      *
      * Values: '' (never run), 'ok', 'no_update' (HTTP 204), 'up_to_date'
      * (signed manifest verified but not newer than on-disk), 'unavailable'
@@ -283,26 +323,65 @@ final class UpdateChecker
      */
     private string $lastManifestOutcome = '';
 
+    /**
+     * The apply this request armed and has not yet run, or null.
+     *
+     * Set by planSelfUpdate() once the manifest is verified and the apply lock
+     * is held, read exactly once by serveThenApply() after the acknowledgement
+     * has been released to the control plane. Nulled as it is read, so a second
+     * dispatch of the filter can never start a second apply.
+     *
+     * @var array{apply_id:string,from:string,to:string}|null
+     */
+    private ?array $pendingApply = null;
+
+    /**
+     * The Plugin_Upgrader instance of the apply that is running, or null.
+     *
+     * Held on the object only so the shutdown guard can call core's own public
+     * restorer with core's own argument shape. Nulled when the apply returns.
+     *
+     * @var object|null
+     */
+    private ?object $upgrader = null;
+
+    /**
+     * True once a recorded outcome has queued its own metadata push, so a
+     * request cannot queue two.
+     */
+    private bool $outcomePushQueued = false;
+
     // -------------------------------------------------------------------------
     // Constructor
     // -------------------------------------------------------------------------
 
     /**
-     * @param Signer      $signer      Builds the four X-WPMgr-* auth headers.
-     * @param Settings    $settings    Provides isEnrolled(), siteId(), cpUrl().
-     * @param Keystore    $keystore    Provides the CP Ed25519 public key.
-     * @param ReplayCache $replayCache jti single-use store.
+     * @param Signer                 $signer      Builds the four X-WPMgr-* auth headers.
+     * @param Settings               $settings    Provides isEnrolled(), siteId(), cpUrl().
+     * @param Keystore               $keystore    Provides the CP Ed25519 public key.
+     * @param ReplayCache            $replayCache jti single-use store.
+     * @param ConnectionFinisher|null $finisher   The early-flush ladder. Injectable
+     *                                            because neither finish-request
+     *                                            function can be defined in a test
+     *                                            process without flipping
+     *                                            function_exists() for every other
+     *                                            test in it, and whether this SAPI
+     *                                            can detach is the single input that
+     *                                            decides whether a site self-updates
+     *                                            at all.
      */
     public function __construct(
         Signer $signer,
         Settings $settings,
         Keystore $keystore,
-        ReplayCache $replayCache
+        ReplayCache $replayCache,
+        ?ConnectionFinisher $finisher = null
     ) {
         $this->signer      = $signer;
         $this->settings    = $settings;
         $this->keystore    = $keystore;
         $this->replayCache = $replayCache;
+        $this->finisher    = $finisher ?? new ConnectionFinisher();
     }
 
     // -------------------------------------------------------------------------
@@ -646,7 +725,7 @@ final class UpdateChecker
                 $onDisk
             ));
             // A correctly signed manifest that simply is not newer is the
-            // steady state, not a failure. Tag it so beat 1 can answer
+            // steady state, not a failure. Tag it so the ARM can answer
             // "up_to_date" instead of "error".
             $this->lastManifestOutcome = 'up_to_date';
             return null;
@@ -981,13 +1060,13 @@ final class UpdateChecker
         // below is a cURL budget; it says nothing about PHP's own
         // max_execution_time, which is 30s on a great many hosts and which was
         // killing this request mid-download with the temp file half written.
-        // applyStagedSelfUpdate() already armed the same bound for the whole
-        // beat-2 request, and this second call is deliberate rather than
-        // redundant: it re-arms the counter from zero so the download's budget
-        // is measured from the transfer's own start instead of inheriting
-        // whatever the manifest round trip above already spent, and it is the
-        // only arming on the other route into this filter (an operator-initiated
-        // or WordPress-auto-update install, which never passes through beat 2).
+        // serveThenApply() already armed the same bound for the whole apply, and
+        // this second call is deliberate rather than redundant: it re-arms the
+        // counter from zero so the download's budget is measured from the
+        // transfer's own start instead of inheriting whatever the manifest round
+        // trip above already spent, and it is the only arming on the other route
+        // into this filter (an operator-initiated or WordPress-auto-update
+        // install, which never passes through the CP-commanded apply).
         //
         // Safe to place here because the not-ours bail-out above has already
         // returned: this can only ever raise the limit for OUR package, never
@@ -1197,36 +1276,35 @@ final class UpdateChecker
     }
 
     // -------------------------------------------------------------------------
-    // Three-beat CP-commanded self-update
+    // CP-commanded self-update, in two beats
     //
     // A normal update command cannot be used on the agent's own directory: the
     // plugin would overwrite its own files while its code is the code doing the
-    // overwriting, inside the request that has to report the outcome. If that
-    // request dies partway there is no working code left to report it, and the
-    // snapshot + automatic rollback that protects every other plugin update
-    // deliberately does NOT arm for the agent's own directory (whatever performs
-    // the rollback is what is being replaced). Recovery would need per-site
-    // filesystem access; across a fleet that is unrecoverable.
+    // overwriting. What that really demands is that the swap runs somewhere
+    // WordPress's own upgrade machinery is still fully functional, and "a
+    // separate request" turned out to be the wrong way to buy it. An apply that
+    // ran from a shutdown callback sat PAST the point at which core's own
+    // temp-backup rollback can still be dispatched, so the one protection that
+    // makes a failed swap survivable was silently unreachable.
     //
-    // So the CP-commanded path is split into three beats, each in its own
-    // request:
-    //   1. ARM    (stageSelfUpdate, inside the signed command request):
-    //             verify only. Nothing on disk moves.
-    //   2. APPLY  (applyStagedSelfUpdate): a SEPARATE WordPress bootstrap runs
-    //             Plugin_Upgrader::upgrade(). No CP response rides on that
-    //             request, so a mid-copy death is not a lost answer. Reached
-    //             from the cron event AND from a request-bound plugins_loaded
-    //             backstop, so a site whose WP-Cron never fires still applies.
-    //   3. CONFIRM: the only trustworthy success signal is the NEW code
-    //             phoning home: the version-changed boot metadata push in
-    //             Plugin. A "scheduled" acknowledgement is NEVER success.
+    // Two beats now, and the first of them is one request:
+    //   1. ARM then APPLY. planSelfUpdate() runs inside the signed command
+    //      request and verifies only; nothing on disk moves. It takes core's own
+    //      upgrader lock and registers serveThenApply() on core's
+    //      rest_pre_serve_request filter, which runs the upgrade AFTER the
+    //      acknowledgement is on the wire and the connection has been released.
+    //      See serveThenApply() for why that position, and only that position,
+    //      keeps core's rollback dispatchable.
+    //   2. CONFIRM. The only trustworthy success signal is the NEW code phoning
+    //      home: the version-changed boot metadata push in Plugin. A
+    //      "scheduled" acknowledgement is NEVER a success.
     // -------------------------------------------------------------------------
 
     /**
-     * BEAT 1 (ARM). Verify that a newer agent build is on offer and, if so,
-     * stage it for the apply cron. NOTHING on disk is moved, unpacked or
-     * overwritten here; the only writes are the staged wp-option record and
-     * the manifest site-transient.
+     * THE ARM. Verify that a newer agent build is on offer and, if so, take
+     * the apply lock and register the in-request apply. NOTHING on disk is
+     * moved, unpacked or overwritten here: the only writes are the verified
+     * manifest site-transient, core's lock row, and the apply id beside it.
      *
      * Runs the FULL existing verification chain by way of fetchManifest():
      * Ed25519 signature, cmd/slug/aud binding, iat/exp window, jti replay,
@@ -1234,9 +1312,15 @@ final class UpdateChecker
      * allowlist and package size cap. Nothing new is trusted here that the
      * one-click path does not already trust.
      *
-     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int}
+     * EVERY REASON THIS SITE CANNOT BE UPGRADED IS DECIDED HERE, before the
+     * answer goes out, because an answer the control plane has to wait out a
+     * confirm deadline to disbelieve costs a rollout wave. That includes the
+     * SAPI detach gate, which is a property of the host and not of the
+     * manifest.
+     *
+     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int,apply_id:string}
      */
-    public function stageSelfUpdate(): array
+    public function planSelfUpdate(): array
     {
         $onDisk = $this->onDiskVersion();
 
@@ -1252,23 +1336,51 @@ final class UpdateChecker
             return $this->stageAnswer('not_eligible', $onDisk, '', 'Site is not enrolled.');
         }
 
-        if (!function_exists('update_option') || !function_exists('wp_schedule_single_event')) {
-            return $this->stageAnswer('not_eligible', $onDisk, '', 'WordPress option or cron API unavailable.');
+        if (!function_exists('update_option')) {
+            return $this->stageAnswer('not_eligible', $onDisk, '', 'WordPress option API unavailable.');
         }
 
-        // An unexpired record is already staged: never stage twice, and never
-        // re-schedule. The existing event owns this window.
-        $existing = $this->readStagedRecord();
-        if ($existing !== null && time() <= (int) $existing['expires_at']) {
-            $answer = $this->stageAnswer(
-                'already_scheduled',
-                (string) $existing['from_version'],
-                (string) $existing['to_version'],
-                'A self-update is already staged for this site.'
-            );
-            $answer['expires_at'] = (int) $existing['expires_at'];
+        // Shed the retired staging state BEFORE the manifest fetch. A site that
+        // is already current answers up_to_date and returns below, so a cleanup
+        // placed after that return would never run on the sites most likely to
+        // still be carrying the leftovers.
+        $this->clearRetiredStagingState();
 
-            return $answer;
+        // THE DETACH GATE, ASKED HERE BECAUSE IT IS ANSWERABLE HERE.
+        //
+        // The apply only runs on a SAPI that can genuinely release the
+        // control-plane connection first. ConnectionFinisher's last rung is a
+        // portable flush that leaves the worker attached, and a multi-minute
+        // upgrade on an attached connection is on a timer nobody here controls
+        // (a reverse-proxy read timeout the control plane cannot raise, or a
+        // process manager reaping the worker on client disconnect). That
+        // refusal is real and stays; what moved is WHEN it is made.
+        //
+        // It used to be made after the acknowledgement had already gone out, so
+        // a mod_php or plain-CGI site answered "scheduled", the control plane
+        // waited out its full confirm deadline, and only then recorded a
+        // failure. In wave 0 that halts the entire rollout, and every retry
+        // costs another deadline, over a site whose answer was knowable in the
+        // first millisecond. Nothing about it depends on the manifest, so it is
+        // answered before the manifest is even fetched.
+        //
+        // It answers "not_eligible", which the control plane scores as skipped
+        // rather than failed, and which is the honest word for it: this site
+        // cannot use this channel at all, exactly like the wordpress.org build
+        // and the un-enrolled site above. The specific reason travels in the
+        // detail and in the apply-result record, so neither the operator nor a
+        // later diagnostic has to infer it.
+        if (!$this->finisher->canDetach()) {
+            $this->recordSelfUpdateResult(
+                '',
+                self::RESULT_SAPI_CANNOT_DETACH,
+                $onDisk,
+                '',
+                self::DETACH_REFUSAL_DETAIL,
+                false
+            );
+
+            return $this->stageAnswer('not_eligible', $onDisk, '', self::DETACH_REFUSAL_DETAIL);
         }
 
         $claims = $this->fetchManifest();
@@ -1294,7 +1406,7 @@ final class UpdateChecker
         }
 
         // Cache the verified claims (package_url stripped, since it is a bearer
-        // credential) so beat 2's injectUpdate() offers this exact build to
+        // credential) so the apply's injectUpdate() offers this exact build to
         // Plugin_Upgrader without another CP round trip. Identical shape to the
         // caching injectUpdate() already performs.
         $toCache = $claims;
@@ -1303,301 +1415,560 @@ final class UpdateChecker
             set_site_transient(self::TRANSIENT_MANIFEST, $toCache, 12 * HOUR_IN_SECONDS);
         }
 
-        $now    = time();
-        $token  = bin2hex(random_bytes(16));
-        $record = [
-            'from_version' => $onDisk,
-            'to_version'   => $toVersion,
-            'staged_at'    => $now,
-            'expires_at'   => $now + self::STAGED_TTL_SECONDS,
-            'token'        => $token,
-        ];
-        update_option(self::OPTION_STAGED, $record, true);
+        // WP_Upgrader::create_lock is a static on the upgrader class, so the
+        // wp-admin includes have to be loaded before the lock, not just before
+        // the upgrade.
+        if (!$this->loadUpgraderApi()) {
+            return $this->stageAnswer('error', $onDisk, '', 'The WordPress upgrader API is unavailable in this request.');
+        }
 
-        // Drop any previous outcome so a stale 'failed' from an earlier run can
+        // Core's own cross-request lock: one atomic INSERT IGNORE, self-expiring
+        // after the release timeout. This is what replaces the hand-rolled
+        // claim, the in-flight marker and the stage token.
+        if (!\WP_Upgrader::create_lock(self::APPLY_LOCK, LongRunningJob::TIME_LIMIT_SECONDS)) {
+            $answer = $this->stageAnswer(
+                'already_scheduled',
+                $onDisk,
+                $toVersion,
+                'Another self-update apply already holds this site lock.'
+            );
+            $answer['expires_at'] = $this->applyLockExpiry();
+            // The apply id of the run that holds the lock, so the control plane
+            // can still tie the outcome record to a real apply instead of
+            // confirming on version movement alone.
+            $answer['apply_id'] = $this->currentApplyId();
+
+            return $answer;
+        }
+
+        $applyId = bin2hex(random_bytes(16));
+        update_option(self::OPTION_APPLY_ID, $applyId, false);
+
+        // Drop any previous outcome so a stale record from an earlier run can
         // never be read back as the result of THIS one.
         if (function_exists('delete_option')) {
             delete_option(AgentSelfUpdateCommand::OPTION_RESULT);
         }
 
-        // The token rides in the event args for two reasons: it makes each
-        // stage a distinct event (WP silently drops a duplicate single event
-        // scheduled within 10 minutes of an identical one), and it lets beat 2
-        // ignore a stale event left over from an earlier stage.
-        $scheduled = wp_schedule_single_event($now, self::HOOK_APPLY, [$token]);
+        if (!function_exists('add_filter')) {
+            // No filter API means no seam to apply from. Release the lock rather
+            // than hold it for 900 seconds over an apply that cannot happen.
+            $this->releaseApplyLock();
 
-        if (function_exists('spawn_cron')) {
-            @spawn_cron(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- spawn_cron may emit a harmless notice when DISABLE_WP_CRON is set; @-suppressed intentionally
+            return $this->stageAnswer('error', $onDisk, '', 'WordPress filter API unavailable; the apply has no seam to run from.');
         }
 
-        // THIS RETURN VALUE USED TO BE DISCARDED, AND THAT WAS THE DEFECT.
-        // wp_schedule_single_event answers false whenever another plugin
-        // short-circuits the pre_schedule_event filter, whenever a schedule_event
-        // filter returns something falsy, and for a duplicate single event
-        // scheduled within ten minutes of an identical one. Beat 1 reported
-        // "scheduled" in every one of those cases, so the control plane armed a
-        // confirmation poll and then sat out its entire confirm window waiting
-        // for a cron beat that had never been created. A site can be perfectly
-        // healthy and chatty while this happens, which is what made it so hard
-        // to read from the outside.
-        //
-        // The staged record is deliberately KEPT here rather than rolled back.
-        // The apply no longer depends on the cron event at all: Plugin's
-        // request-bound plugins_loaded backstop applies the very same record on
-        // the next request this site serves, which on any site the control plane
-        // can reach is seconds away. Deleting the record would throw that
-        // recovery away and leave a fleet permanently unable to update itself
-        // for as long as the offending filter is installed. The answer is still
-        // "error" because the arm genuinely failed to do the thing it tried to
-        // do, and an immediate, named failure is worth far more to an operator
-        // than a twenty-minute silence. A re-run then answers already_scheduled
-        // (record still live) or up_to_date (backstop already applied it), and
-        // both of those resolve correctly at the control plane.
-        if ($scheduled === false || (function_exists('is_wp_error') && is_wp_error($scheduled))) {
-            return $this->stageAnswer(
-                'error',
-                $onDisk,
-                '',
-                'WordPress refused to schedule the apply event, so no cron beat exists for this stage '
-                . '(a plugin or filter on this site is blocking wp_schedule_single_event). The stage was '
-                . 'kept and the agent applies it from its own request-bound backstop instead; re-run this '
-                . 'command to pick up the outcome.'
-            );
-        }
+        $this->pendingApply = [
+            'apply_id' => $applyId,
+            'from'     => $onDisk,
+            'to'       => $toVersion,
+        ];
 
-        $answer = $this->stageAnswer('scheduled', $onDisk, $toVersion, 'Self-update staged; apply runs in a separate request.');
-        $answer['expires_at'] = $record['expires_at'];
+        add_filter('rest_pre_serve_request', [$this, 'serveThenApply'], 999, 4);
+
+        $answer = $this->stageAnswer(
+            'scheduled',
+            $onDisk,
+            $toVersion,
+            'Self-update verified; the agent applies it in this request once the response is released.'
+        );
+        $answer['expires_at'] = time() + LongRunningJob::TIME_LIMIT_SECONDS;
+        $answer['apply_id']   = $applyId;
 
         return $answer;
     }
 
     /**
-     * True when a staged self-update record is present. This is the WHOLE gate
-     * for Plugin's request-bound plugins_loaded backstop, and it is why that
-     * backstop is close to free: on the overwhelmingly common boot there is no
-     * record, and OPTION_STAGED is autoloaded so a live one costs no query at
-     * all.
+     * THE SEAM. Core's own documented "send the response yourself" filter
+     * (wp-includes/rest-api/class-wp-rest-server.php, whose docblock reads
+     * "Allow sending the request manually"). serve_request() has already set the
+     * status and sent every header by the time it fires, so only the body is
+     * ours to emit.
      *
-     * Deliberately does NOT apply the expiry. An expired record still needs an
-     * apply beat to run so that beat can DISCARD it and record 'expired', which
-     * is the only way that outcome ever reaches the control plane.
+     * WHY HERE AND NOT ON 'shutdown'. rest_api_loaded() calls die() after
+     * serve_request() returns (wp-includes/rest-api.php), and die() runs PHP's
+     * shutdown functions, among them shutdown_action_hook (registered in
+     * wp-settings.php, defined in wp-includes/load.php), which is the sole
+     * dispatcher of do_action('shutdown'). So while this method runs,
+     * do_action('shutdown') has NOT started. The
+     * add_action('shutdown', restore_temp_backup, 10) that WP_Upgrader::run()
+     * registers on install failure (class-wp-upgrader.php) therefore lands in a
+     * hook at nesting level 0 and is dispatched normally, as is
+     * delete_temp_backup at 100. From a shutdown callback at priority 9997 both
+     * were skipped outright by WP_Hook::resort_active_iterations, which is why
+     * the control-plane commanded self-update has never had a working rollback.
      *
-     * @return bool
+     * It is also the only position where core's stated reason for putting the
+     * rollback on shutdown still holds: a max_execution_time fatal raised HERE
+     * is a fatal in the request body, and PHP still runs the shutdown queue
+     * afterwards.
+     *
+     * THE DETACH GATE, SECOND OF TWO. The swap only runs when ConnectionFinisher
+     * reports that it truly detached the connection (PHP-FPM or LiteSpeed). Its
+     * third rung is a portable flush that does NOT detach, and running a
+     * multi-minute upgrade on a still-attached connection puts it on a timer
+     * nobody here controls: a reverse-proxy or CDN read timeout the control
+     * plane cannot raise, or a process manager reaping the worker on client
+     * disconnect, which is a signal ignore_user_abort() cannot intercept. A site
+     * that is not upgraded is fine. A site that is half upgraded is not.
+     *
+     * The PRIMARY gate is at the arm (planSelfUpdate), which asks the same
+     * ladder the same question before it promises the control plane anything.
+     * This one is belt and braces: it judges the rung that actually fired
+     * rather than the rung that was predicted, and it is what would stop a swap
+     * if those two ever disagreed.
+     *
+     * @param mixed $served  Whether the response has already been sent.
+     * @param mixed $result  The response object core was about to serialise.
+     * @param mixed $request The request being served (unused).
+     * @param mixed $server  The WP_REST_Server instance.
+     * @return mixed True once this method has emitted the body itself.
      */
-    public function hasStagedSelfUpdate(): bool
+    public function serveThenApply($served = false, $result = null, $request = null, $server = null)
     {
-        if (defined('WPMGR_WPORG_BUILD') && constant('WPMGR_WPORG_BUILD')) {
-            return false;
+        unset($request);
+
+        $pending = $this->pendingApply;
+        if ($pending === null) {
+            return $served;
         }
 
-        return $this->readStagedRecord() !== null;
-    }
+        // Read once and clear: a second dispatch of this filter, from whatever
+        // cause, can never start a second apply.
+        $this->pendingApply = null;
 
-    /**
-     * BEAT 2 (APPLY). Runs in a SEPARATE WordPress bootstrap from the one that
-     * answered the control plane. No CP response rides on this request, so a
-     * death mid-copy is not a lost answer.
-     *
-     * TWO ENTRY POINTS, ONE APPLY. The cron event (HOOK_APPLY) was originally
-     * the only one, and a single blocked or never-firing WP-Cron therefore
-     * stranded the whole update with nothing left to retry it. Plugin now ALSO
-     * binds a request-bound backstop on plugins_loaded, the same WP-Cron-
-     * independence treatment GitHub issues #226 and #232 already applied to the
-     * snapshot reclaim and the stalled-backup reaper. Both entry points land
-     * here, and the claim below is what keeps them from ever both applying.
-     *
-     * THE REQUEST-ISOLATION INVARIANT IS PRESERVED, AND IT IS LOAD-BEARING. The
-     * swap must never happen inside the request that has to report the outcome.
-     * The backstop's gate runs on plugins_loaded, which on the arm's own request
-     * fires long BEFORE the REST callback writes the staged record, so the arm
-     * request finds nothing and arms nothing. Every apply therefore still
-     * happens in a later request than the arm.
-     *
-     * Single-shot by construction: the staged record is CLAIMED before any
-     * upgrade work begins, with a single atomic statement rather than a
-     * read-then-delete, so two racing requests cannot both proceed. A request
-     * that dies partway can never be retried. An expired record is discarded,
-     * not retried. Nothing here schedules a follow-up event.
-     *
-     * Reuses the existing upgrader_pre_download / upgrader_source_selection
-     * chain unchanged; there is zero new download, verification or unzip code
-     * on this path.
-     *
-     * EVERY EXIT LEAVES A TRACE. Two of these paths used to return in total
-     * silence, and because the recorded result is the only channel beat 2 has
-     * back to the control plane, a stuck site was indistinguishable from a site
-     * that had never been asked. A silent early return on a path whose entire
-     * job is to report back is the same defect class as an arm reporting a
-     * success it never verified.
-     *
-     * @param string $token Stage token carried in the cron event args. Empty
-     *                      from the request-bound backstop, which is not an
-     *                      event and therefore cannot be a STALE event.
-     * @return void
-     */
-    public function applyStagedSelfUpdate(string $token = ''): void
-    {
-        if (defined('WPMGR_WPORG_BUILD') && constant('WPMGR_WPORG_BUILD')) {
-            // Unreachable by construction (the wp.org build does not ship this
-            // file at all), recorded anyway so no exit on this method is silent.
-            $this->recordDiagnosticExit('not_eligible', '', '', 'Self-update is not part of this distribution build.');
-            return;
-        }
-        if (!function_exists('get_option') || !function_exists('delete_option')) {
-            // recordDiagnosticExit needs the very option API that is missing, so
-            // it will no-op. Called regardless so this exit is not special-cased
-            // into silence if the guard is ever relaxed.
-            $this->recordDiagnosticExit('no_option_api', '', '', 'WordPress option API unavailable in the apply request.');
-            return;
-        }
-
-        $record = $this->readStagedRecord();
-        if ($record === null) {
-            // Nothing staged, or already claimed by the other entry point. Both
-            // are ordinary, and both used to be invisible. Recorded (once, see
-            // recordDiagnosticExit) so an operator can tell "the apply beat ran
-            // and found nothing" apart from "the apply beat never ran", which
-            // from the control plane look identical.
-            $this->recordDiagnosticExit(
-                'not_staged',
-                $this->onDiskVersion(),
-                '',
-                'An apply beat ran with no staged record to apply.'
-            );
-            return;
-        }
-
-        $recordToken = (string) $record['token'];
-        if ($token !== '' && $recordToken !== '' && !hash_equals($recordToken, $token)) {
-            // A stale duplicate event from an earlier stage. Leave the current
-            // record alone so its own event, or the request-bound backstop, can
-            // still claim it.
-            $this->recordDiagnosticExit(
-                'token_mismatch',
-                (string) $record['from_version'],
-                (string) $record['to_version'],
-                'A stale apply event was ignored; its token does not match the live staged record.'
-            );
-            return;
-        }
-
-        // An apply that is ALREADY RUNNING owns the plugin directory. Checked
-        // BEFORE the claim on purpose: bailing out here must leave the record
-        // staged, so the next request applies it once the running one is done.
-        // Only the claim WINNER takes ownership of the marker (below), so a
-        // request that loses the claim can never clear a marker it does not own.
-        if ($this->applyInProgress()) {
-            $this->recordDiagnosticExit(
-                'apply_in_progress',
-                (string) $record['from_version'],
-                (string) $record['to_version'],
-                'Another apply beat is already running; the stage was left in place for it.'
-            );
-            return;
-        }
-
-        // CLAIM, atomically. Everything below runs at most once per staged
-        // record, however many requests reach this line at the same moment.
-        if (!$this->claimStagedRecord()) {
-            $this->recordDiagnosticExit(
-                'claim_lost',
-                (string) $record['from_version'],
-                (string) $record['to_version'],
-                'Another request claimed this staged record first.'
-            );
-            return;
-        }
-
-        $this->beginApply();
+        $applyId = (string) $pending['apply_id'];
+        $from    = (string) $pending['from'];
+        $to      = (string) $pending['to'];
 
         try {
-            $this->applyClaimedRecord($record);
+            $this->emitAck((bool) $served, $result, $server);
+        } catch (\Throwable $e) {
+            // NEVER SWAP WITHOUT HAVING ANSWERED. The whole point of taking over
+            // the body is that the control plane is told what is about to happen
+            // before it happens. If that failed, hand the response back to core
+            // and leave the site exactly as it is: an un-upgraded site re-arms
+            // on the next command, a site upgraded behind the control plane's
+            // back does not.
+            DebugLog::write('WPMgr Agent: self-update could not emit its acknowledgement: ' . $e->getMessage());
+            $this->recordSelfUpdateResult(
+                $applyId,
+                'failed',
+                $from,
+                $to,
+                'The acknowledgement could not be written to the response, so the apply was abandoned before it started.'
+            );
+            $this->releaseApplyLock();
+
+            return $served;
+        }
+
+        $rung = 'fallback';
+        try {
+            $rung = $this->finisher->finish();
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Agent: self-update could not release the connection: ' . $e->getMessage());
+        }
+
+        $this->applyPendingUpdate($rung, $applyId, $from, $to);
+
+        return true;
+    }
+
+    /**
+     * Everything that happens once the response has been released: the detach
+     * gate, the background-job arming, and the upgrade.
+     *
+     * Split from serveThenApply() because the rung is the ONE input that decides
+     * whether this site is upgraded at all, and a decision that important is
+     * worth being able to exercise directly rather than only through whichever
+     * SAPI the test process happens to be running under.
+     *
+     * @param string $rung    The rung ConnectionFinisher reported.
+     * @param string $applyId Opaque id of this apply.
+     * @param string $from    On-disk version at arm time.
+     * @param string $to      Verified target version.
+     * @return void
+     */
+    private function applyPendingUpdate(string $rung, string $applyId, string $from, string $to): void
+    {
+        try {
+            // BELT AND BRACES. planSelfUpdate() already refused this site
+            // before it answered, using the same ladder and the same question,
+            // so in practice a non-detaching rung cannot reach this line: the
+            // arm would never have registered the seam that leads here. It is
+            // checked again anyway because the two readings are taken at
+            // different moments and the cost of the later one being wrong is a
+            // half-replaced plugin directory. Unlike the arm, this one HAS
+            // already answered the control plane, so its refusal has to be
+            // delivered out of band, which recordSelfUpdateResult() arranges.
+            if (!in_array($rung, ConnectionFinisher::DETACHING_RUNGS, true)) {
+                $this->recordSelfUpdateResult(
+                    $applyId,
+                    self::RESULT_SAPI_CANNOT_DETACH,
+                    $from,
+                    $to,
+                    self::DETACH_REFUSAL_DETAIL
+                );
+
+                return;
+            }
+
+            // The client is gone and the request is now a background job. The
+            // execution cap is bounded on purpose: max_execution_time is the ONE
+            // timer whose fatal still runs shutdown functions, which is exactly
+            // what the rollback depends on.
+            if (function_exists('ignore_user_abort')) {
+                ignore_user_abort(true);
+            }
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- bounded-but-generous cap so a hung self-update apply hits a recoverable max_execution_time fatal rather than only an unrecoverable hard-kill; @-guarded, no-op when disabled
+            }
+
+            self::warmPostSwapClasses();
+
+            $this->runUpgrade($applyId, $from, $to);
+        } catch (\Throwable $e) {
+            $this->recordSelfUpdateResult($applyId, 'failed', $from, $to, 'Self-update apply threw: ' . $e->getMessage());
         } finally {
-            $this->endApply();
+            $this->releaseApplyLock();
         }
     }
 
     /**
-     * The apply itself, once this caller is the confirmed sole owner of the
-     * staged record AND of the in-flight marker. Split out so the claim/discard
-     * state machine above reads as one, and so the marker is released on every
-     * path through a single finally.
+     * Load every agent class that is still reachable AFTER the plugin directory
+     * has been replaced, so none of them has to be read off a path that no
+     * longer exists.
      *
-     * @param array{from_version:string,to_version:string,staged_at:int,expires_at:int,token:string} $record Claimed record.
+     * The list is POST_SWAP_CLASSES and a test walks the agent's shutdown
+     * bindings against it, because a warm list maintained by hand rots the first
+     * time somebody adds a callback.
+     *
      * @return void
      */
-    private function applyClaimedRecord(array $record): void
+    private static function warmPostSwapClasses(): void
     {
-        $from      = (string) $record['from_version'];
-        $to        = (string) $record['to_version'];
-        $expiresAt = (int) $record['expires_at'];
-
-        if ($expiresAt > 0 && time() > $expiresAt) {
-            $this->recordSelfUpdateResult('expired', $from, $to, 'Staged self-update expired before the apply request ran.');
-            return;
+        foreach (self::POST_SWAP_CLASSES as $className) {
+            try {
+                class_exists($className);
+            } catch (\Throwable $e) {
+                // A class that will not load now would not have loaded after the
+                // swap either. Nothing useful to do about it from here.
+                continue;
+            }
         }
-
-        $onDisk = $this->onDiskVersion();
-        if (!version_compare($this->normalizeVersion($to), $this->normalizeVersion($onDisk), '>')) {
-            // Already at (or past) the target: a second event for a build that
-            // landed some other way. Discard rather than reinstall.
-            $this->recordSelfUpdateResult('already_applied', $from, $to, 'On-disk version already at or past the staged target.');
-            return;
-        }
-
-        // BEAT 2 IS A LONG-RUNNING BACKGROUND JOB AND HAS TO BE ARMED AS ONE.
-        // Everything below pulls a few MiB over the network and then runs
-        // WordPress's non-atomic install_package() over the result, inside a
-        // wp-cron request whose PHP max_execution_time is 30s on a great many
-        // hosts. Without this the download is killed by PHP long before the HTTP
-        // client's own budget expires and the apply silently never happens: the
-        // record was already CLAIMED by the caller, so nothing retries it, and
-        // the control plane is left with a confirm timeout for a build that was
-        // cut off mid-fetch.
-        //
-        // Bounded, never 0 (infinite). LongRunningJob's class doc and
-        // UpdateCommand::APPLY_TIME_LIMIT_SECONDS carry the full reasoning:
-        // max_execution_time is the ONE timer whose fatal still runs shutdown
-        // functions, and discarding it leaves only an FPM SIGTERM that runs none
-        // of them. 900s is the same bound every other long job in the agent
-        // uses, and it also keeps a worst-case apply inside the control plane's
-        // SHORTEST beat-3 confirm deadline (20 minutes on loopback cron), so a
-        // site that does hit this cap still gets to report the failure instead
-        // of going quiet past the deadline. PACKAGE_TIMEOUT (300s) is sized to
-        // sit at one third of it, so the transfer can never be the thing that
-        // exhausts this budget.
-        //
-        // Placed HERE, past every early exit in the caller, on purpose. A cron
-        // request runs every due event and the request-bound backstop runs on
-        // every request at all, so the normal case is a caller that found
-        // nothing to do; neither must raise the limit for whatever unrelated
-        // work follows it in the same request.
-        if (function_exists('set_time_limit')) {
-            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- bounded-but-generous cap so a hung self-update apply hits a recoverable max_execution_time fatal rather than only an unrecoverable FPM hard-kill; @-guarded, no-op when disabled
-        }
-
-        $this->runUpgrade($from, $to);
     }
 
     /**
-     * The Plugin_Upgrader half of beat 2, split out so applyStagedSelfUpdate()
-     * reads as the claim/discard state machine it is.
+     * Emit the acknowledgement body ourselves, because returning true from
+     * rest_pre_serve_request tells core not to.
      *
-     * Mirrors UpdateRunner's plugin branch: it captures active state BEFORE the
-     * upgrade (Plugin_Upgrader::upgrade() silently deactivates and never
-     * re-activates) and clears maintenance mode on EVERY terminal path, so a
-     * failed apply leaves a working, active site rather than a deactivated
-     * agent behind a maintenance page.
+     * response_to_data() is public on WP_REST_Server; get_json_encode_options()
+     * is protected, so the encode goes through wp_json_encode(). The
+     * rest_pre_echo_response filter is deliberately not applied here: this body
+     * is a machine-to-machine acknowledgement with a pinned shape, and running
+     * an arbitrary third-party filter over it inside the request that is about
+     * to replace this plugin's directory buys nothing and can throw.
      *
-     * @param string $from On-disk version at stage time.
-     * @param string $to   Verified target version.
+     * @param bool  $served Whether another filter already sent the response.
+     * @param mixed $result The response object core was about to serialise.
+     * @param mixed $server The WP_REST_Server instance.
      * @return void
      */
-    private function runUpgrade(string $from, string $to): void
+    private function emitAck(bool $served, $result, $server): void
     {
+        if ($served) {
+            return;
+        }
+        if (!is_object($result) || !is_object($server) || !method_exists($server, 'response_to_data')) {
+            return;
+        }
+        if (!function_exists('wp_json_encode')) {
+            return;
+        }
+
+        $body = wp_json_encode($server->response_to_data($result, false));
+        if (!is_string($body)) {
+            return;
+        }
+
+        echo $body; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON produced by core's own response_to_data() and wp_json_encode(); escaping it would corrupt the response body
+    }
+
+    /**
+     * The Plugin_Upgrader half of the apply, run from serveThenApply() with the
+     * response already released.
+     *
+     * Runs the upgrade with wp_doing_cron() forced true for its duration, which
+     * buys two documented core behaviours and is the reason this method no
+     * longer has to restore the plugin's active state by hand:
+     * Plugin_Upgrader::deactivate_plugin_before_upgrade() returns early under
+     * cron without touching active_plugins, so the agent is never silently
+     * deactivated, and active_before()/active_after() put maintenance mode over
+     * the destructive window and take it off again.
+     *
+     * @param string $applyId Opaque id of this apply, stamped into the outcome.
+     * @param string $from    On-disk version at arm time.
+     * @param string $to      Verified target version.
+     * @return void
+     */
+    private function runUpgrade(string $applyId, string $from, string $to): void
+    {
+        if (!$this->loadUpgraderApi() || !class_exists('\Plugin_Upgrader') || !class_exists('\Automatic_Upgrader_Skin')) {
+            $this->recordSelfUpdateResult($applyId, 'failed', $from, $to, 'Upgrader API unavailable.');
+            return;
+        }
+
+        // Plugin_Upgrader::upgrade() reads the plugin update transient to find
+        // the package and bails to its up_to_date branch when the entry is
+        // absent, returning a bare false with nothing else said. THIS PATH USED
+        // TO DELETE THAT TRANSIENT A FEW LINES ABOVE THE CALL, which is why the
+        // CP-commanded self-update never applied on any site. Rebuild it the way
+        // core's own background updater does. wp_update_plugins() writes the
+        // transient BEFORE it calls api.wordpress.org, so a site that cannot
+        // reach wordpress.org still ends up with an object here, and reading it
+        // back runs our own site_transient_update_plugins filter, which is what
+        // offers the build this arm just verified.
+        $offer = function_exists('get_site_transient') ? get_site_transient('update_plugins') : null;
+        if (!is_object($offer) && function_exists('wp_update_plugins')) {
+            wp_update_plugins();
+            $offer = get_site_transient('update_plugins');
+        }
+
+        if (!is_object($offer) || !isset($offer->response[self::PLUGIN_KEY])) {
+            // At or past the target already: the build landed some other way
+            // between the arm and this line. Benign, and it must not be reported
+            // as a failure.
+            if (
+                is_object($offer)
+                && isset($offer->no_update[self::PLUGIN_KEY])
+                && !version_compare($this->normalizeVersion($to), $this->normalizeVersion($this->onDiskVersion()), '>')
+            ) {
+                $this->recordSelfUpdateResult(
+                    $applyId,
+                    'already_applied',
+                    $from,
+                    $to,
+                    'On-disk version is already at or past the verified target.'
+                );
+                return;
+            }
+
+            $this->recordSelfUpdateResult(
+                $applyId,
+                'failed',
+                $from,
+                $to,
+                'No update offer reached the upgrader: the plugin update transient carried no entry for this plugin.'
+            );
+            return;
+        }
+
+        // A fatal skips every try/finally, so maintenance mode gets a shutdown
+        // backstop of its own before anything destructive begins.
+        Maintenance::armShutdownGuard();
+
+        $upgrader       = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
+        $this->upgrader = $upgrader;
+
+        if (function_exists('add_action')) {
+            add_action('shutdown', [$this, 'restoreAgentIfDirectoryMissing'], self::RESTORE_GUARD_PRIORITY);
+        }
+
+        $result = null;
+        $thrown = '';
+
+        try {
+            if (function_exists('add_filter')) {
+                add_filter('wp_doing_cron', '__return_true', 9999);
+            }
+            $result = $upgrader->upgrade(self::PLUGIN_KEY);
+        } catch (\Throwable $e) {
+            $thrown = $e->getMessage();
+        } finally {
+            if (function_exists('remove_filter')) {
+                remove_filter('wp_doing_cron', '__return_true', 9999);
+            }
+            // GUARANTEE: maintenance mode is cleared on every terminal path of
+            // this upgrade, whether it succeeded, returned a WP_Error, or threw.
+            Maintenance::clear($upgrader);
+        }
+
+        if ($thrown !== '') {
+            // A Throwable escaping upgrade() means WP_Upgrader::run() never
+            // reached the branch where it registers core's shutdown restore, so
+            // call core's own public restorer directly. It is precondition-gated
+            // (see restoreAgentIfDirectoryMissing), which is what keeps it from
+            // reverting an install that had already succeeded before some later
+            // listener threw.
+            $this->restoreAgentIfDirectoryMissing();
+            $this->recordSelfUpdateResult($applyId, 'failed', $from, $to, 'Upgrader threw: ' . $thrown);
+            return;
+        }
+
+        if (is_object($result) && method_exists($result, 'get_error_message')) {
+            $code    = method_exists($result, 'get_error_code') ? (string) $result->get_error_code() : '';
+            $message = (string) $result->get_error_message();
+            $this->recordSelfUpdateResult(
+                $applyId,
+                'failed',
+                $from,
+                $to,
+                'WP_Error' . ($code !== '' ? ' (' . $code . ')' : '') . ': ' . $message
+            );
+            return;
+        }
+
+        // ONLY LITERAL TRUE IS A SUCCESS. This is a default deny, not a list of
+        // known-bad values, and the difference is the point.
+        //
+        // Plugin_Upgrader::upgrade() returns literal true down exactly one path
+        // (class-plugin-upgrader.php:268), reached only after WP_Upgrader's
+        // $result property came back truthy and not a WP_Error
+        // (class-plugin-upgrader.php:250). That property is assigned in ONE
+        // place, inside install_package() (class-wp-upgrader.php:719, and again
+        // at :733 when the upgrader_post_install filter rewrote it), and run()
+        // never resets it. So true is the only value that positively proves
+        // install_package ran to completion, and every other value is either a
+        // known failure or something this method has no way to enumerate.
+        //
+        // Two of those it could not enumerate. run()'s early bails, an
+        // fs_connect that returns false and a download or unpack WP_Error,
+        // never touch the property at all, and Plugin_Upgrader redeclares
+        // `public $result;` with NO initialiser (class-plugin-upgrader.php:31),
+        // shadowing WP_Upgrader's `= array()`, so upgrade() hands those bails
+        // back as null. Separately, a WP_Error returned by the
+        // upgrader_install_package_result filter (class-wp-upgrader.php:917)
+        // rewrites a LOCAL inside run() and never touches the property, so it
+        // changes run()'s return value and never reaches this one. Naming
+        // values to refuse cannot cover a set shaped like that. Requiring the
+        // one value that means success can, and under apply-id attribution a
+        // wrong answer here would now travel with a matching id and be believed.
+        if ($result !== true) {
+            $this->recordSelfUpdateResult(
+                $applyId,
+                'failed',
+                $from,
+                $to,
+                'The upgrader did not report success. The commonest cause is WordPress being unable to connect to '
+                . 'the filesystem, which makes its upgrader bail before it copies anything.'
+            );
+            return;
+        }
+
+        // The new files are on disk, but THIS request is still running the old
+        // code, so it is in no position to declare success to anyone. It records
+        // a local outcome and stops. The CONFIRM beat, the version-changed boot
+        // metadata push from the NEW code, is the only success signal the CP
+        // trusts. Core clears the plugin caches itself through its own
+        // upgrader_process_complete binding, so nothing is deleted here.
+        $this->flushCache();
+        $this->recordSelfUpdateResult($applyId, 'applied', $from, $to, $this->installNotes());
+    }
+
+    /**
+     * Restore the agent's directory from core's own temp backup, but only when
+     * the directory is genuinely missing and the backup is genuinely there.
+     *
+     * This is not a hand-rolled swap: it calls CORE's public restorer with
+     * CORE's own argument shape, on the condition that core's own backup is
+     * present and the plugin is not. It exists because core registers its
+     * restore only AFTER install_package() has returned a WP_Error, so a fatal
+     * raised INSIDE install_package skips the registration entirely and nothing
+     * at all is left to put the directory back.
+     *
+     * BOUND AT A PRIORITY ABOVE CORE'S, NOT BELOW IT. See
+     * RESTORE_GUARD_PRIORITY: a Throwable escaping a shutdown callback abandons
+     * the rest of the queue, so a guard placed ahead of core's restore could
+     * kill the very rollback it is backing up. Running after core costs nothing,
+     * because on every path where core did restore, the precondition below is
+     * false and this is a no-op.
+     *
+     * Public so WordPress can call it as a named hook callback. Never throws.
+     *
+     * @return void
+     */
+    public function restoreAgentIfDirectoryMissing(): void
+    {
+        try {
+            $upgrader = $this->upgrader;
+            if ($upgrader === null || !method_exists($upgrader, 'restore_temp_backup')) {
+                return;
+            }
+            if (!defined('WP_PLUGIN_DIR') || !defined('WP_CONTENT_DIR')) {
+                return;
+            }
+            // restore_temp_backup() dereferences the global filesystem object,
+            // which is null when the upgrade died before fs_connect().
+            if (!isset($GLOBALS['wp_filesystem']) || !is_object($GLOBALS['wp_filesystem'])) {
+                return;
+            }
+
+            $pluginDir = (string) constant('WP_PLUGIN_DIR') . '/' . self::PLUGIN_SLUG;
+            $backupDir = (string) constant('WP_CONTENT_DIR') . '/upgrade-temp-backup/plugins/' . self::PLUGIN_SLUG;
+
+            // The directories moved inside this very process, so the stat cache
+            // is not to be trusted about either of them.
+            clearstatcache();
+
+            if (is_dir($pluginDir) || !is_dir($backupDir)) {
+                return;
+            }
+
+            $restored = $upgrader->restore_temp_backup([
+                [
+                    'slug' => self::PLUGIN_SLUG,
+                    'src'  => constant('WP_PLUGIN_DIR'),
+                    'dir'  => 'plugins',
+                ],
+            ]);
+
+            if (function_exists('is_wp_error') && is_wp_error($restored)) {
+                DebugLog::write(
+                    'WPMgr Agent: self-update rollback could not restore the plugin directory from its temporary backup.'
+                );
+            }
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Agent: self-update rollback guard threw: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Fire the recorded-outcome action from shutdown, so an apply that FAILED
+     * still reaches the control plane inside its confirm window.
+     *
+     * A successful apply reports itself through the CONFIRM beat, the
+     * version-changed push from the new code. A failed apply changes no version,
+     * so without this its record would wait for the 30-minute metadata cron,
+     * which is longer than the shortest confirm deadline the control plane runs.
+     *
+     * Public so WordPress can call it as a named hook callback. Never throws.
+     *
+     * @return void
+     */
+    public function pushOutcomeNow(): void
+    {
+        try {
+            if (function_exists('do_action')) {
+                do_action('wpmgr_agent_self_update_recorded');
+            }
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Agent: self-update outcome push failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Load the wp-admin upgrader API. Idempotent (require_once).
+     *
+     * @return bool True when WP_Upgrader is available afterwards.
+     */
+    private function loadUpgraderApi(): bool
+    {
+        if (class_exists('\WP_Upgrader')) {
+            return true;
+        }
         if (!defined('ABSPATH')) {
-            $this->recordSelfUpdateResult('failed', $from, $to, 'ABSPATH is not defined; upgrader unavailable.');
-            return;
+            return false;
         }
 
         $adminDir = (string) constant('ABSPATH') . 'wp-admin/includes/';
@@ -1607,296 +1978,114 @@ final class UpdateChecker
             }
         }
 
-        if (!class_exists('\Plugin_Upgrader') || !class_exists('\Automatic_Upgrader_Skin')) {
-            $this->recordSelfUpdateResult('failed', $from, $to, 'Upgrader API unavailable.');
-            return;
-        }
-
-        $wasActive        = function_exists('is_plugin_active')             ? \is_plugin_active(self::PLUGIN_KEY) : false;
-        $wasNetworkActive = function_exists('is_plugin_active_for_network') ? \is_plugin_active_for_network(self::PLUGIN_KEY) : false;
-
-        // Force WordPress to rebuild the plugin-update transient so the
-        // site_transient_update_plugins filter (injectUpdate) offers the build
-        // stage() just verified. Plugin_Upgrader::upgrade() reads that transient
-        // to find the package.
-        if (function_exists('delete_site_transient')) {
-            delete_site_transient('update_plugins');
-        }
-
-        $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
-        $result   = null;
-        $thrown   = '';
-
-        try {
-            $result = $upgrader->upgrade(self::PLUGIN_KEY);
-        } catch (\Throwable $e) {
-            $thrown = $e->getMessage();
-        } finally {
-            // GUARANTEE: maintenance mode is cleared on every terminal path of
-            // this upgrade, whether it succeeded, returned a WP_Error, or threw.
-            Maintenance::clear($upgrader);
-        }
-
-        if ($thrown !== '') {
-            $this->recordSelfUpdateResult('failed', $from, $to, 'Upgrader threw: ' . $thrown);
-            $this->restoreActiveState($wasActive, $wasNetworkActive);
-            return;
-        }
-
-        if (is_object($result) && method_exists($result, 'get_error_message')) {
-            $code    = method_exists($result, 'get_error_code') ? (string) $result->get_error_code() : '';
-            $message = (string) $result->get_error_message();
-            $this->recordSelfUpdateResult(
-                'failed',
-                $from,
-                $to,
-                'WP_Error' . ($code !== '' ? ' (' . $code . ')' : '') . ': ' . $message
-            );
-            $this->restoreActiveState($wasActive, $wasNetworkActive);
-            return;
-        }
-
-        if ($result === false || $result === null) {
-            $this->recordSelfUpdateResult('failed', $from, $to, 'Upgrader reported no result.');
-            $this->restoreActiveState($wasActive, $wasNetworkActive);
-            return;
-        }
-
-        // The new files are on disk, but THIS request is still running the old
-        // code, so it is in no position to declare success to anyone. It records
-        // a local outcome and stops. Beat 3, the version-changed boot metadata
-        // push from the NEW code, is the only success signal the CP trusts.
-        $this->restoreActiveState($wasActive, $wasNetworkActive);
-        $this->flushCache();
-        if (function_exists('delete_site_transient')) {
-            delete_site_transient('update_plugins');
-        }
-        $this->recordSelfUpdateResult('applied', $from, $to, '');
+        return class_exists('\WP_Upgrader');
     }
 
     /**
-     * Re-activate the agent when Plugin_Upgrader::upgrade() left it deactivated.
+     * Release the apply lock and the apply id stored beside it.
      *
-     * WordPress's upgrader registers an upgrader_pre_install hook that calls
-     * deactivate_plugins($plugin, silent=true) and does NOT re-activate
-     * afterwards. For any other plugin that is merely untidy; for the agent it
-     * would sever the control-plane connection, so restoring the pre-upgrade
-     * state is part of "leave the site working".
-     *
-     * @param bool $wasActive        Site-level active state before the upgrade.
-     * @param bool $wasNetworkActive Network active state before the upgrade.
      * @return void
      */
-    private function restoreActiveState(bool $wasActive, bool $wasNetworkActive): void
+    private function releaseApplyLock(): void
     {
-        if (!$wasActive && !$wasNetworkActive) {
-            return;
+        if (class_exists('\WP_Upgrader') && method_exists('\WP_Upgrader', 'release_lock')) {
+            \WP_Upgrader::release_lock(self::APPLY_LOCK);
         }
-        if (!function_exists('activate_plugin')) {
-            return;
-        }
-
-        // Refresh the plugin cache first: the upgrade may have rewritten the
-        // main plugin file, so the cached header data is stale.
-        if (function_exists('wp_clean_plugins_cache')) {
-            \wp_clean_plugins_cache(true);
-        }
-
-        try {
-            $activated = \activate_plugin(self::PLUGIN_KEY, '', $wasNetworkActive, true);
-            if (function_exists('is_wp_error') && \is_wp_error($activated)) {
-                error_log('wpmgr-agent: UpdateChecker post-apply reactivation failed.');
-            }
-        } catch (\Throwable $e) {
-            error_log('wpmgr-agent: UpdateChecker post-apply reactivation threw: ' . $e->getMessage());
+        if (function_exists('delete_option')) {
+            delete_option(self::OPTION_APPLY_ID);
         }
     }
 
     /**
-     * Read and shape-validate the staged record. Returns null when absent or
-     * malformed (a malformed record is treated as "nothing staged").
+     * The apply id of whoever currently holds the lock ('' when unreadable).
      *
-     * Does NOT apply the expiry; callers decide what an expired record means
-     * (beat 1 re-stages over it, beat 2 discards it and records the reason).
-     *
-     * @return array{from_version:string,to_version:string,staged_at:int,expires_at:int,token:string}|null
+     * @return string
      */
-    private function readStagedRecord(): ?array
+    private function currentApplyId(): string
     {
         if (!function_exists('get_option')) {
-            return null;
+            return '';
         }
+        $stored = get_option(self::OPTION_APPLY_ID, '');
 
-        $stored = get_option(self::OPTION_STAGED, null);
-        if (!is_array($stored)) {
-            return null;
-        }
-
-        $to = isset($stored['to_version']) && is_string($stored['to_version']) ? $stored['to_version'] : '';
-        if ($to === '') {
-            return null;
-        }
-
-        return [
-            'from_version' => isset($stored['from_version']) && is_string($stored['from_version']) ? $stored['from_version'] : '',
-            'to_version'   => $to,
-            'staged_at'    => isset($stored['staged_at']) && is_numeric($stored['staged_at']) ? (int) $stored['staged_at'] : 0,
-            'expires_at'   => isset($stored['expires_at']) && is_numeric($stored['expires_at']) ? (int) $stored['expires_at'] : 0,
-            'token'        => isset($stored['token']) && is_string($stored['token']) ? $stored['token'] : '',
-        ];
+        return is_string($stored) ? $stored : '';
     }
 
     /**
-     * ATOMICALLY claim the staged record: delete it in ONE statement and answer
-     * whether THIS caller is the one that removed it.
+     * When the currently-held apply lock self-expires. Core stores the moment
+     * the lock was taken in the option it names <lock>.lock, and honours it for
+     * the release timeout that was passed to create_lock().
      *
-     * The original read-then-delete_option pair was a claim in name only. Two
-     * requests could both read the record and both call delete_option, and both
-     * would then run Plugin_Upgrader over the agent's own directory at the same
-     * time. That window was narrow while a cron event was the only way in; with
-     * the request-bound backstop firing on every request of a chatty site it is
-     * not narrow at all. A single DELETE is decided by the database, so exactly
-     * one caller can ever see one row removed, across processes AND across
-     * nodes, which an flock() would not cover on a shared filesystem.
-     *
-     * The option caches are invalidated immediately afterwards because the raw
-     * statement bypasses them. Correctness does not rest on that: a caller
-     * served a stale cached record still has to win its own DELETE, and it
-     * cannot.
-     *
-     * Degrades to the plain delete_option when there is no usable $wpdb (there
-     * always is one inside WordPress; this keeps the method callable from a
-     * bare unit-test bootstrap).
-     *
-     * @return bool True when this caller removed the row and now owns the apply.
+     * @return int Unix timestamp.
      */
-    private function claimStagedRecord(): bool
+    private function applyLockExpiry(): int
     {
-        global $wpdb;
-
-        $usable = isset($wpdb)
-            && is_object($wpdb)
-            && isset($wpdb->options)
-            && is_string($wpdb->options)
-            && $wpdb->options !== ''
-            && method_exists($wpdb, 'query')
-            && method_exists($wpdb, 'prepare');
-
-        if (!$usable) {
-            if (function_exists('delete_option')) {
-                delete_option(self::OPTION_STAGED);
-            }
-
-            return true;
-        }
-
-        $table = $wpdb->options;
-
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- compare-and-delete claim of one option row; get_option/delete_option is a read-then-write with no atomicity and no core API exposes an atomic equivalent, and a cached read is exactly what must not decide the winner
-        $deleted = $wpdb->query(
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table is $wpdb->options, a WordPress-derived table name, never user input; the only value is bound through prepare()
-            $wpdb->prepare("DELETE FROM {$table} WHERE option_name = %s", self::OPTION_STAGED)
-        );
-
-        // The statement went behind WordPress's back, so drop what it cached.
-        if (function_exists('wp_cache_delete')) {
-            wp_cache_delete(self::OPTION_STAGED, 'options');
-            wp_cache_delete('alloptions', 'options');
-        }
-
-        return is_numeric($deleted) && (int) $deleted === 1;
-    }
-
-    /**
-     * True when another apply beat is running and has not yet passed its own
-     * execution ceiling. See OPTION_APPLYING for what this covers that the
-     * record claim does not.
-     *
-     * @return bool
-     */
-    private function applyInProgress(): bool
-    {
-        if (!function_exists('get_option')) {
-            return false;
-        }
-
-        $startedAt = (int) get_option(self::OPTION_APPLYING, 0);
+        $startedAt = function_exists('get_option') ? (int) get_option(self::APPLY_LOCK . '.lock', 0) : 0;
         if ($startedAt <= 0) {
-            return false;
+            $startedAt = time();
         }
 
-        // A marker older than the ceiling the apply itself runs under belongs to
-        // a request that can no longer be alive. Ignore it rather than let one
-        // hard-killed apply block this site's updates forever.
-        return (time() - $startedAt) < LongRunningJob::TIME_LIMIT_SECONDS;
+        return $startedAt + LongRunningJob::TIME_LIMIT_SECONDS;
     }
 
     /**
-     * Take ownership of the in-flight marker. Called ONLY by the caller that
-     * won the record claim, so the release in its finally can never clear a
-     * marker belonging to somebody else.
+     * Delete the wp-options and the cron event of the retired staging design.
+     *
+     * Named by STRING literal rather than by constant on purpose: the staged
+     * record, the in-flight marker and the apply event no longer exist in this
+     * class, and reintroducing constants for them would put them back into its
+     * vocabulary. A site upgrading from an agent that predates the in-request
+     * apply sheds them the first time it is asked to self-update.
      *
      * @return void
      */
-    private function beginApply(): void
-    {
-        if (function_exists('update_option')) {
-            update_option(self::OPTION_APPLYING, time(), false);
-        }
-    }
-
-    /**
-     * Release the in-flight marker. Runs in a finally, so it also runs when the
-     * apply threw.
-     *
-     * @return void
-     */
-    private function endApply(): void
+    private function clearRetiredStagingState(): void
     {
         if (function_exists('delete_option')) {
-            delete_option(self::OPTION_APPLYING);
+            delete_option('wpmgr_agent_self_update_staged');
+            delete_option('wpmgr_agent_self_update_applying');
+        }
+        if (function_exists('wp_clear_scheduled_hook')) {
+            wp_clear_scheduled_hook('wpmgr_agent_self_update_apply');
         }
     }
 
     /**
-     * Record an apply-beat outcome for a path that did NO work, so no exit of
-     * beat 2 is invisible from the control plane.
+     * Non-secret notes recorded alongside a successful apply.
      *
-     * NEVER OVERWRITES. A terminal outcome (applied, failed, expired,
-     * already_applied) is written unconditionally by recordSelfUpdateResult;
-     * this one writes only when nothing is stored at all. Two reasons, both
-     * load-bearing:
+     * The one fact worth carrying is whether the install was atomic. Core's
+     * move_dir() tries a filesystem move first and only falls back to a
+     * recursive copy when that fails, and a move across devices always fails, so
+     * a site whose upgrade working directory and plugin directory sit on
+     * different mounts has a real half-written window where a same-device site
+     * has essentially none. Nobody can say how much of a fleet that is by
+     * reasoning about it, so it is measured and reported instead.
      *
-     *   - Both entry points run in the same wp-cron request when a cron tick
-     *     also carries the due apply event. Whichever runs second finds nothing
-     *     staged, and without this rule it would clobber the winner's 'applied'
-     *     with a 'not_staged' and report the exact opposite of what happened.
-     *   - The in-flight path is reached by every request that arrives while an
-     *     apply is running. Writing on each of those would be an option write
-     *     per request for as long as the apply takes.
-     *
-     * Beat 1 deletes the stored result when it stages, so "nothing is stored"
-     * means "nothing has been recorded for THIS cycle yet", which is exactly the
-     * scope wanted.
-     *
-     * @param string $status Diagnostic status (not one of the terminal four).
-     * @param string $from   Best-known on-disk version (may be empty).
-     * @param string $to     Staged target version (may be empty).
-     * @param string $detail Human-readable, non-secret detail.
-     * @return void
+     * @return string
      */
-    private function recordDiagnosticExit(string $status, string $from, string $to, string $detail): void
+    private function installNotes(): string
     {
-        if (!function_exists('get_option') || !function_exists('update_option')) {
-            return;
+        if (!defined('WP_CONTENT_DIR') || !defined('WP_PLUGIN_DIR')) {
+            return '';
         }
 
-        $stored = get_option(AgentSelfUpdateCommand::OPTION_RESULT, null);
-        if (is_array($stored) && isset($stored['status']) && is_string($stored['status']) && $stored['status'] !== '') {
-            return;
+        $working = (string) constant('WP_CONTENT_DIR') . '/upgrade';
+        $plugins = (string) constant('WP_PLUGIN_DIR');
+        if (!is_dir($working) || !is_dir($plugins)) {
+            return '';
         }
 
-        $this->recordSelfUpdateResult($status, $from, $to, $detail);
+        $workingStat = @stat($working); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort device probe; an unreadable path simply yields no note
+        $pluginsStat = @stat($plugins); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort device probe; an unreadable path simply yields no note
+        if (!is_array($workingStat) || !is_array($pluginsStat)) {
+            return '';
+        }
+        if (!isset($workingStat['dev'], $pluginsStat['dev']) || $workingStat['dev'] === $pluginsStat['dev']) {
+            return '';
+        }
+
+        return 'The working directory and the plugin directory are on different devices, '
+            . 'so the install is a copy rather than a rename.';
     }
 
     /**
@@ -1907,19 +2096,46 @@ final class UpdateChecker
      * is a short-lived bearer credential that must never reach a CP-visible
      * field or a log line.
      *
-     * @param string $status A terminal outcome (applied|failed|expired|
-     *                       already_applied) or, through recordDiagnosticExit,
-     *                       one of the did-no-work diagnostics. The control
-     *                       plane branches on the four it knows and surfaces
-     *                       anything else verbatim, so a status added here needs
-     *                       no control-plane change to reach an operator.
-     * @param string $from   On-disk version at stage time.
-     * @param string $to     Staged target version.
-     * @param string $detail Human-readable, non-secret detail (may be empty).
+     * SINGLE WRITER. Every terminal outcome of the apply comes through here, so
+     * every one of them is stamped with the same apply id. That id is what lets
+     * the control plane say whether the version it now sees moved BECAUSE of the
+     * run it armed, rather than assuming it.
+     *
+     * The one caller that passes an EMPTY apply id is the arm's own detach
+     * refusal, which is not an apply outcome at all: no apply was taken, so
+     * there is no id to name, and the empty string is exactly what an
+     * unattributable record should say about itself.
+     *
+     * @param string $applyId       Opaque id of the apply that produced this
+     *                              outcome, or '' when no apply was taken.
+     * @param string $status        A terminal outcome (applied|failed|expired|
+     *                              already_applied) or a named diagnostic. The
+     *                              control plane branches on the four it knows
+     *                              and surfaces anything else verbatim, so a
+     *                              status added here needs no control-plane
+     *                              change to reach an operator.
+     * @param string $from          On-disk version at arm time.
+     * @param string $to            Verified target version.
+     * @param string $detail        Human-readable, non-secret detail (may be empty).
+     * @param bool   $pushOutOfBand Whether this outcome needs its own delivery.
+     *                              True for anything decided AFTER the response
+     *                              was released, which is the whole reason the
+     *                              push exists. False for the arm's own detach
+     *                              refusal: that reason is already in the answer
+     *                              this very request is about to return, and on a
+     *                              SAPI that by definition cannot detach, a push
+     *                              queued on shutdown would hold the control
+     *                              plane's own connection open to re-send it.
      * @return void
      */
-    private function recordSelfUpdateResult(string $status, string $from, string $to, string $detail): void
-    {
+    private function recordSelfUpdateResult(
+        string $applyId,
+        string $status,
+        string $from,
+        string $to,
+        string $detail,
+        bool $pushOutOfBand = true
+    ): void {
         if (!function_exists('update_option')) {
             return;
         }
@@ -1937,19 +2153,44 @@ final class UpdateChecker
                 'to_version'   => $to,
                 'detail'       => $scrubbed,
                 'at'           => time(),
+                'apply_id'     => $applyId,
             ],
             false
         );
+
+        if ($pushOutOfBand) {
+            $this->queueOutcomePush($status);
+        }
     }
 
     /**
-     * Build a beat-1 answer in the single shape the control plane parses.
+     * Queue the outcome push for a NON-applied outcome, at most once per
+     * request. A successful apply needs no push: the new code announces itself.
+     *
+     * @param string $status The status just recorded.
+     * @return void
+     */
+    private function queueOutcomePush(string $status): void
+    {
+        if ($status === 'applied' || $this->outcomePushQueued) {
+            return;
+        }
+        if (!function_exists('add_action')) {
+            return;
+        }
+
+        $this->outcomePushQueued = true;
+        add_action('shutdown', [$this, 'pushOutcomeNow'], self::OUTCOME_PUSH_PRIORITY);
+    }
+
+    /**
+     * Build an ARM answer in the single shape the control plane parses.
      *
      * @param string $status One of not_eligible|up_to_date|scheduled|already_scheduled|error.
      * @param string $from   On-disk version.
      * @param string $to     Target version ('' when there is none).
      * @param string $detail Human-readable, non-secret detail.
-     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int}
+     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int,apply_id:string}
      */
     private function stageAnswer(string $status, string $from, string $to, string $detail): array
     {
@@ -1957,13 +2198,17 @@ final class UpdateChecker
             'status'       => $status,
             // 'scheduled' is an ACKNOWLEDGEMENT, never a success: the update has
             // not been applied and may never be. The CP treats it as unconfirmed
-            // until the new code phones home (beat 3).
+            // until the new code phones home (the CONFIRM beat).
             'ok'           => $status !== 'error',
             'from_version' => $from,
             'to_version'   => $to,
             'detail'       => $detail,
             'cron_mode'    => (defined('DISABLE_WP_CRON') && constant('DISABLE_WP_CRON')) ? 'external' : 'loopback',
             'expires_at'   => 0,
+            // Overwritten by the two answers that name a real apply. Empty
+            // everywhere else, which is exactly what an unattributable answer
+            // should say about itself.
+            'apply_id'     => '',
         ];
     }
 

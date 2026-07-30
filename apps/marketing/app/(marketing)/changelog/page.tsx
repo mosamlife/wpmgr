@@ -39,6 +39,38 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.108",
+    date: "2026-07-30",
+    summary: "Fleet agent updates actually apply now: a transient-deletion bug meant every run silently did nothing, and the apply moved to where WordPress's own rollback still works.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Fleet agent self-updates have never actually applied on any site, in any release. WordPress's plugin upgrader looks for the update_plugins transient to find the package it's about to install, and the code that started the apply was deleting that same transient right before the upgrader read it. With nothing to find, the upgrader quietly did nothing while the run still reported an acknowledgement, so every fleet agent self-update to date has been a no-op that looked like progress. The apply now rebuilds that transient immediately before calling the upgrader, the same way WordPress's own background updater does, so the build a run verifies is the build that actually gets installed.",
+      },
+      {
+        tag: "Fixed",
+        text: "The apply now runs inside the same request as the control plane's command instead of a separate WordPress cron event, which is what lets WordPress's own automatic restore of a failed update work again. The previous design ran the apply from a point past where WordPress's restore could still fire, so a failed swap had no rollback at all. It now runs right after the acknowledgement is written to the response and the connection released, which keeps it inside the part of the request where WordPress's own restore still runs.",
+      },
+      {
+        tag: "Fixed",
+        text: "The site's own WordPress maintenance mode now covers the swap, the same as it does for any other plugin update: visitors see the maintenance page for the few seconds the plugin directory is actually being replaced, then the site serves normally again. That maintenance mode is guaranteed to clear even if the apply fails partway through.",
+      },
+      {
+        tag: "Fixed",
+        text: "A new outcome, sapi_cannot_detach, covers hosting where PHP has no way to release the connection back to the control plane before the swap starts, such as plain mod_php or CGI setups without PHP-FPM or LiteSpeed. On hosting like that, the agent now touches nothing and records a plain explanation in the task detail instead of a rollout that silently never reaches the site; use the one-click update in the site's own WordPress dashboard there instead.",
+      },
+      {
+        tag: "Changed",
+        text: "A fleet agent update confirmed success as soon as the site reported a newer version, without checking whether the agent's own record of the upgrade actually named this run as the cause. Normally that made no difference, since the version moved because this run's own command told the agent to install it. But if a site's version happened to move for some other reason while an unrelated record from an earlier attempt was still sitting on the agent, the control plane could credit that unrelated movement to a rollout that never touched the site, and a canary confirming a move it did not cause could open every later wave on evidence that was never real. The control plane now checks a per-apply identifier the agent stamps into its own outcome record and compares it against the one this run sent, so a version movement only counts toward a rollout's evidence when the agent's own record agrees it was the cause. A site whose agent does not yet report this identifier still confirms on its version report alone, exactly as before.",
+      },
+      {
+        tag: "Changed",
+        text: "When a confirmation times out, the explanation the dashboard shows now holds the agent's leftover apply record to the same standard: a record that cannot be tied to the run that timed out is still shown in full, but it is no longer described as an account of what happened in this run.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.106",
     date: "2026-07-30",
     summary: "Fleet agent updates no longer depend on WordPress's scheduler, plus clearer reporting when an update can't proceed.",

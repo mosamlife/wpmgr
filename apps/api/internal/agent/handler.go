@@ -134,6 +134,11 @@ type agentSelfUpdateResultDTO struct {
 	// At is the unix timestamp the agent stamped the record with. Decoded into
 	// a pointer so a missing field stays distinguishable from a zero one.
 	At *int64 `json:"at,omitempty"`
+	// ApplyID is the opaque per-apply identifier this record was stamped with,
+	// mirroring agentcmd.AgentSelfUpdateResponse.ApplyID. Additive: absent from
+	// every agent that predates it, and from every record an old agent already
+	// wrote before it upgraded.
+	ApplyID flexString `json:"apply_id"`
 }
 
 // hostFlagsDTO mirrors the defined()-based hosting fingerprint the agent
@@ -279,6 +284,7 @@ func (d metadataDTO) toMetadata() Metadata {
 			ToVersion:   string(d.AgentSelfUpdate.ToVersion),
 			Detail:      string(d.AgentSelfUpdate.Detail),
 			At:          int64PtrOrZero(d.AgentSelfUpdate.At),
+			ApplyID:     string(d.AgentSelfUpdate.ApplyID),
 		}
 	}
 	return m
@@ -356,6 +362,11 @@ type AgentSelfUpdateResult struct {
 	// At is the unix timestamp the agent stamped the record with; 0 when it did
 	// not say.
 	At int64
+	// ApplyID is the opaque per-apply identifier this record was stamped with;
+	// "" for a record written by an agent that predates it. It is what lets
+	// the control plane distinguish ITS OWN apply's outcome from an unrelated
+	// version movement, see update.agentApplyAttributed.
+	ApplyID string
 }
 
 // Component is one installed plugin/theme. AvailableUpdate is set when the
