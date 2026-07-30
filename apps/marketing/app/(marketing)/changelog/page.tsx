@@ -39,6 +39,17 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.109",
+    date: "2026-07-31",
+    summary: "A deliberate no-op release, so the rebuilt agent update path from 0.61.108 has something real to install.",
+    items: [
+      {
+        tag: "Changed",
+        text: "Version bump only, with no functional change to the agent, the control plane or the dashboard. 0.61.108 rebuilt how a fleet agent update installs itself, and that path can only be tested by an agent that already has it: a site still on an older build applies updates with the old, broken step, so pointing it at 0.61.108 exercises nothing. Publishing a release that is identical in behaviour gives a site already on 0.61.108 something genuine to install, so the rebuilt path can be run end to end before anyone depends on it. Sites will be offered an update whose only difference is the version number, which is safe to take.",
+      },
+    ],
+  },
+  {
     version: "0.61.108",
     date: "2026-07-30",
     summary: "Fleet agent updates actually apply now: a transient-deletion bug meant every run silently did nothing, and the apply moved to where WordPress's own rollback still works.",
@@ -69,6 +80,17 @@ const RELEASES: ChangeEntry[] = [
       },
     ],
     featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
+    version: "0.61.107",
+    date: "2026-07-30",
+    summary: "A no-op release published to give the agent update path something to install.",
+    items: [
+      {
+        tag: "Changed",
+        text: "Version bump only, with no functional change to the agent, the control plane or the dashboard. The agent's fleet update path was rebuilt across the preceding releases, and publishing a release identical in behaviour gave that path something genuine to install so it could be exercised. Sites were offered an update whose only difference is the version number.",
+      },
+    ],
   },
   {
     version: "0.61.106",
