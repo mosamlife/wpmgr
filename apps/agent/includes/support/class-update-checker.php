@@ -172,6 +172,55 @@ final class UpdateChecker
     /** Outbound GET timeout in seconds. */
     private const GET_TIMEOUT = 10;
 
+    /**
+     * Whole-operation timeout, in seconds, for the PACKAGE download in
+     * verifyDownload(). Distinct from GET_TIMEOUT, which covers the small JSON
+     * manifest fetch. This is a cURL total-transfer cap and not an idle cap: the
+     * transfer gets this long in wall clock from the first byte requested to the
+     * last byte written, so it is exactly the slowest AVERAGE rate a site may
+     * sustain and still self-update.
+     *
+     * WHY 60 WAS TOO LOW. The published package is about 3.4 MiB (3405063 bytes
+     * at the time of writing). At 60s that demanded 3405063/60 = 56751 B/s,
+     * roughly 55 KB/s sustained across the whole transfer. The slow-consumer
+     * band the control plane's own package-stream work measured and set out to
+     * carry sat between 25 and 40 KB/s, entirely BELOW that floor: those sites
+     * downloaded happily for 60 seconds, were cut off mid-file, failed the size
+     * check, and retried the identical failure every six hours forever. The
+     * control plane now bounds PROGRESS rather than duration and carries a
+     * transfer that keeps moving up to a size-derived ceiling
+     * (packageStreamTotalLimit in
+     * apps/api/internal/agent/update_package_limits.go, about 55 minutes for a
+     * package this size), which left this value as the only floor on the path.
+     *
+     * WHY 300. The same package now demands 3405063/300 = 11350 B/s, about
+     * 11 KB/s. That is under half the bottom of the measured band, so a site at
+     * 25 KB/s finishes in 133s and one at 40 KB/s in 83s, both with room to
+     * spare. It is also short enough that a transfer which is genuinely dead
+     * rather than merely slow parks one cron request for five minutes, not for
+     * the quarter hour PHP would otherwise let it hold.
+     *
+     * HOW THIS RELATES TO THE EXECUTION LIMIT, WHICH IS THE POINT. The apply
+     * path arms LongRunningJob::TIME_LIMIT_SECONDS (900s) through
+     * set_time_limit() before any of this runs, and re-arms it immediately
+     * before the transfer below, so this budget always starts against a full
+     * 900s PHP clock. 300 is one third of 900. A download that burns its ENTIRE
+     * budget therefore still leaves 600s for the unzip, the non-atomic copy and
+     * the reactivation that follow it. cURL is guaranteed to give up before PHP
+     * does, which is what makes a too-slow site fail as a clean WP_Error with
+     * the temp file discarded rather than as a max_execution_time fatal partway
+     * through the write, leaving a partial temp file behind. THAT ORDERING IS
+     * THE INVARIANT: this value must stay well under the execution limit, and
+     * moving either number without the other reintroduces the defect.
+     *
+     * COUPLED TO THE PACKAGE SIZE. This is a fixed wall-clock cap sized for a
+     * 3.4 MiB package. MAX_PACKAGE_BYTES permits 64 MiB, and a package near that
+     * would need 218 KB/s to fit in 300s, which is the original defect again at
+     * a different scale. If the shipped package grows materially, recompute the
+     * implied rate before shipping it.
+     */
+    private const PACKAGE_TIMEOUT = 300;
+
     // -------------------------------------------------------------------------
     // Collaborators
     // -------------------------------------------------------------------------
@@ -896,10 +945,32 @@ final class UpdateChecker
             );
         }
 
+        // ARM THE PHP CLOCK IMMEDIATELY BEFORE THE TRANSFER. PACKAGE_TIMEOUT
+        // below is a cURL budget; it says nothing about PHP's own
+        // max_execution_time, which is 30s on a great many hosts and which was
+        // killing this request mid-download with the temp file half written.
+        // applyStagedSelfUpdate() already armed the same bound for the whole
+        // beat-2 request, and this second call is deliberate rather than
+        // redundant: it re-arms the counter from zero so the download's budget
+        // is measured from the transfer's own start instead of inheriting
+        // whatever the manifest round trip above already spent, and it is the
+        // only arming on the other route into this filter (an operator-initiated
+        // or WordPress-auto-update install, which never passes through beat 2).
+        //
+        // Safe to place here because the not-ours bail-out above has already
+        // returned: this can only ever raise the limit for OUR package, never
+        // for the unrelated plugin/theme downloads this global filter also sees.
+        //
+        // Bounded, never 0 (infinite), for the reason set out in
+        // LongRunningJob's class doc and UpdateCommand::APPLY_TIME_LIMIT_SECONDS.
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- bounded-but-generous cap so PHP cannot kill a slow package download mid-transfer; @-guarded, no-op when disabled
+        }
+
         $response = wp_remote_get(
             $packageUrl,
             [
-                'timeout'     => 60,
+                'timeout'     => self::PACKAGE_TIMEOUT,
                 'redirection' => 0,
                 'stream'      => true,
                 'filename'    => $this->tempFilePath(),
@@ -1290,6 +1361,35 @@ final class UpdateChecker
             // landed some other way. Discard rather than reinstall.
             $this->recordSelfUpdateResult('already_applied', $from, $to, 'On-disk version already at or past the staged target.');
             return;
+        }
+
+        // BEAT 2 IS A LONG-RUNNING BACKGROUND JOB AND HAS TO BE ARMED AS ONE.
+        // Everything below pulls a few MiB over the network and then runs
+        // WordPress's non-atomic install_package() over the result, inside a
+        // wp-cron request whose PHP max_execution_time is 30s on a great many
+        // hosts. Without this the download is killed by PHP long before the HTTP
+        // client's own budget expires and the apply silently never happens: the
+        // record was CLAIMED above, so nothing retries it, and the control plane
+        // is left with a confirm timeout for a build that was cut off mid-fetch.
+        //
+        // Bounded, never 0 (infinite). LongRunningJob's class doc and
+        // UpdateCommand::APPLY_TIME_LIMIT_SECONDS carry the full reasoning:
+        // max_execution_time is the ONE timer whose fatal still runs shutdown
+        // functions, and discarding it leaves only an FPM SIGTERM that runs none
+        // of them. 900s is the same bound every other long job in the agent
+        // uses, and it also keeps a worst-case apply inside the control plane's
+        // SHORTEST beat-3 confirm deadline (20 minutes on loopback cron), so a
+        // site that does hit this cap still gets to report the failure instead
+        // of going quiet past the deadline. PACKAGE_TIMEOUT (300s) is sized to
+        // sit at one third of it, so the transfer can never be the thing that
+        // exhausts this budget.
+        //
+        // Placed HERE and not at the top of the method on purpose: a cron
+        // request runs every due event, and a tick with nothing staged (the
+        // normal state on every site, handled by the early returns above) must
+        // not raise the limit for whatever unrelated event runs after it.
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- bounded-but-generous cap so a hung self-update apply hits a recoverable max_execution_time fatal rather than only an unrecoverable FPM hard-kill; @-guarded, no-op when disabled
         }
 
         $this->runUpgrade($from, $to);

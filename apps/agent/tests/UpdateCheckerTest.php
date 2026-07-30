@@ -998,6 +998,191 @@ final class UpdateCheckerTest extends TestCase
         @unlink($result); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- test-only temp-file cleanup
     }
 
+    // ---- package download budget + PHP execution limit (0.61.105) ----
+
+    /**
+     * THE DOWNLOAD BUDGET. wp_remote_get's 'timeout' is a cURL WHOLE-operation
+     * cap, so it is the slowest average rate a site may sustain and still
+     * self-update. At the old 60s a 3.4 MiB package demanded about 55 KB/s,
+     * which is above the entire 25 to 40 KB/s slow-consumer band the control
+     * plane's package-stream work exists to carry: those sites were cut off
+     * mid-file and failed the size check every six hours forever. 300s puts the
+     * demand at about 11 KB/s.
+     *
+     * The three security-relevant download arguments are asserted alongside it,
+     * because widening a timeout is exactly the kind of edit that quietly takes
+     * 'redirection' => 0 with it.
+     *
+     * Fails against the pre-fix code: the timeout assertion sees 60.
+     */
+    public function test_verifyDownload_uses_the_raised_package_download_budget(): void
+    {
+        $packageContent = str_repeat('Q', 128);
+        $claims         = $this->makeClaims([
+            'version'        => '0.11.0',
+            'package_size'   => 128,
+            'package_sha256' => hash('sha256', $packageContent),
+        ]);
+        $envelopeJson = (string) json_encode($this->signClaims($claims));
+
+        $callCount     = 0;
+        $downloadArgs  = null;
+        Functions\when('wp_remote_get')->alias(
+            function (string $url, array $args = []) use ($envelopeJson, &$callCount, &$downloadArgs, $packageContent) {
+                $callCount++;
+                if ($callCount === 1) {
+                    return ['response' => ['code' => 200], 'body' => $envelopeJson, 'filename' => ''];
+                }
+                $downloadArgs = $args;
+                $tmpFile      = $args['filename'] ?? (sys_get_temp_dir() . '/wpmgr-test-' . bin2hex(random_bytes(4)) . '.zip');
+                file_put_contents($tmpFile, $packageContent);
+
+                return ['response' => ['code' => 200], 'body' => '', 'filename' => $tmpFile];
+            }
+        );
+        Functions\when('wp_remote_retrieve_response_code')->alias(fn ($response) => $response['response']['code'] ?? 0);
+        Functions\when('wp_remote_retrieve_body')->alias(fn ($response) => $response['body'] ?? '');
+        Functions\when('is_wp_error')->justReturn(false);
+
+        $result = $this->makeChecker()->verifyDownload(
+            false,
+            UpdateChecker::PACKAGE_SENTINEL,
+            null,
+            ['plugin' => UpdateChecker::PLUGIN_KEY]
+        );
+
+        $this->assertIsArray($downloadArgs, 'precondition: the package download must have been attempted');
+        $this->assertSame(
+            300,
+            $downloadArgs['timeout'],
+            'the package download budget must be 300s: 60s demanded about 55 KB/s of a 3.4 MiB package, above the whole slow-consumer band'
+        );
+        $this->assertSame(0, $downloadArgs['redirection'], 'redirection must stay 0: it is part of the anti-SSRF boundary');
+        $this->assertTrue($downloadArgs['stream'], 'the package must still stream to disk rather than through memory');
+        $this->assertIsString($downloadArgs['filename']);
+
+        if (is_string($result) && is_file($result)) {
+            @unlink($result); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- test-only temp-file cleanup
+        }
+    }
+
+    /**
+     * THE EXECUTION LIMIT, AND ITS ORDERING AGAINST THE DOWNLOAD. The cURL
+     * budget above says nothing about PHP's own max_execution_time, which is 30s
+     * on a great many hosts. Pre-fix there was no set_time_limit() anywhere on
+     * this path, so a download that finished well inside the HTTP budget was
+     * killed by PHP first and the apply silently never happened.
+     *
+     * Asserted as INTENT (the call and its argument), never as an observed OS
+     * effect: set_time_limit() is a no-op under most CLI SAPIs and under
+     * disable_functions, so proving the limit was honoured is not something a
+     * unit test can do.
+     *
+     * The ordering assertion is the load-bearing half. 300 must sit under 900
+     * AND the 900 must be armed before the transfer starts, or PHP fires first
+     * and leaves a partial temp file behind, which is the shape of the original
+     * bug.
+     *
+     * Fails against the pre-fix code: $limits is empty, so both the "before the
+     * download" and the 900 assertions fail.
+     */
+    public function test_verifyDownload_raises_the_php_execution_limit_before_downloading(): void
+    {
+        $packageContent = str_repeat('R', 96);
+        $claims         = $this->makeClaims([
+            'version'        => '0.11.0',
+            'package_size'   => 96,
+            'package_sha256' => hash('sha256', $packageContent),
+        ]);
+        $envelopeJson = (string) json_encode($this->signClaims($claims));
+
+        /** @var list<string> $sequence */
+        $sequence = [];
+        /** @var list<int> $limits */
+        $limits = [];
+
+        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$sequence, &$limits): bool {
+            $limits[]   = $seconds;
+            $sequence[] = 'set_time_limit:' . $seconds;
+
+            return true;
+        });
+
+        $callCount = 0;
+        Functions\when('wp_remote_get')->alias(
+            function (string $url, array $args = []) use ($envelopeJson, &$callCount, &$sequence, $packageContent) {
+                $callCount++;
+                if ($callCount === 1) {
+                    $sequence[] = 'manifest_fetch';
+
+                    return ['response' => ['code' => 200], 'body' => $envelopeJson, 'filename' => ''];
+                }
+                $sequence[] = 'package_download';
+                $tmpFile    = $args['filename'] ?? (sys_get_temp_dir() . '/wpmgr-test-' . bin2hex(random_bytes(4)) . '.zip');
+                file_put_contents($tmpFile, $packageContent);
+
+                return ['response' => ['code' => 200], 'body' => '', 'filename' => $tmpFile];
+            }
+        );
+        Functions\when('wp_remote_retrieve_response_code')->alias(fn ($response) => $response['response']['code'] ?? 0);
+        Functions\when('wp_remote_retrieve_body')->alias(fn ($response) => $response['body'] ?? '');
+        Functions\when('is_wp_error')->justReturn(false);
+
+        $result = $this->makeChecker()->verifyDownload(
+            false,
+            UpdateChecker::PACKAGE_SENTINEL,
+            null,
+            ['plugin' => UpdateChecker::PLUGIN_KEY]
+        );
+
+        $this->assertContains('package_download', $sequence, 'precondition: the package download must have been attempted');
+        $this->assertNotSame([], $limits, 'the download path must raise PHP execution limit; without it max_execution_time (30s on many hosts) kills a slow but healthy download');
+
+        $limitIndex    = array_search('set_time_limit:900', $sequence, true);
+        $downloadIndex = array_search('package_download', $sequence, true);
+        $this->assertIsInt($limitIndex, 'the execution limit must be raised to the bounded 900s job cap');
+        $this->assertLessThan(
+            $downloadIndex,
+            $limitIndex,
+            'the execution limit must be raised BEFORE the transfer starts, or PHP kills the request mid-download and leaves a partial temp file'
+        );
+
+        foreach ($limits as $seconds) {
+            $this->assertSame(900, $seconds, 'bounded, never 0 (infinite): only max_execution_time still runs shutdown functions');
+            $this->assertGreaterThan(
+                300,
+                $seconds,
+                'the execution limit must exceed the 300s download budget, so cURL always gives up before PHP does'
+            );
+        }
+
+        if (is_string($result) && is_file($result)) {
+            @unlink($result); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- test-only temp-file cleanup
+        }
+    }
+
+    /**
+     * The limit raise sits AFTER the not-ours bail-out, so this global filter
+     * cannot reach into an unrelated plugin's download and change the execution
+     * limit of a request that has nothing to do with the agent.
+     */
+    public function test_verifyDownload_does_not_touch_the_execution_limit_for_another_plugin(): void
+    {
+        /** @var list<int> $limits */
+        $limits = [];
+        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
+            $limits[] = $seconds;
+
+            return true;
+        });
+
+        $checker = $this->makeChecker();
+        $checker->verifyDownload(false, 'https://example.com/other-plugin.zip', null, ['plugin' => 'other/other.php']);
+        $checker->verifyDownload(false, null, null, ['plugin' => 'other/other.php']);
+
+        $this->assertSame([], $limits, 'a download that is not ours must leave the execution limit alone');
+    }
+
     public function test_verifyDownload_sha256_mismatch_returns_wp_error_and_unlinks(): void
     {
         $checker = $this->makeChecker();

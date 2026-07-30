@@ -8,6 +8,13 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.105] - 2026-07-30
+
+### Fixed
+
+- The agent's self-update download could fail forever on a slower site. The download was bound by a single 60 second time limit covering the whole transfer, which for the current package works out to roughly 55 kilobytes per second sustained. The sites this feature exists to serve often download at roughly 25 to 40 kilobytes per second, below what that limit demanded, so they would download for the full minute, get cut off partway, discard the incomplete file because it failed its size check, and try again on the next check, failing the same way indefinitely. The limit is now 300 seconds, which asks for roughly 11 kilobytes per second for the same package, so a site downloading at 25 kilobytes per second now finishes comfortably. The control plane side of this was already fixed in an earlier release; this was the remaining limit on the path, and it was the binding one.
+- Separately, nothing raised the PHP execution time limit while an agent update was being applied. Many hosts stop a script after 30 seconds by default, so on those hosts the update could be stopped partway even when the download itself finished within its own budget. The apply step now raises the execution limit to 900 seconds, the same bound the ordinary plugin update path already uses, and does so before the download starts, so the download's own budget always begins against a full clock. The 300 second download budget sits well inside that 900 second limit on purpose: a download that is simply too slow now ends cleanly with a clear error and the partial file discarded, rather than the whole script being killed partway through writing files.
+
 ## [0.61.104] - 2026-07-30
 
 ### Fixed
