@@ -329,10 +329,10 @@ func (s AgentWaveState) DispatchableTasks() []Task {
 	return out
 }
 
-// agentSelfUpdateConfirmed decides beat 3: has the NEW code phoned home?
+// agentSelfUpdateConfirmed decides beat 2: has the NEW code phoned home?
 //
 // reported is the version the site last pushed over its signed metadata
-// channel (sites.agent_version). expect is the version the agent said beat 2
+// channel (sites.agent_version). expect is the version the agent said it
 // would install; from is what it was running when the run was armed.
 //
 // The comparison is delegated to agentrelease.Classify, the same classifier

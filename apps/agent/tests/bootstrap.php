@@ -456,3 +456,149 @@ if (!class_exists('WP_User')) {
         public array $roles = [];
     }
 }
+
+// ---------------------------------------------------------------------------
+// Minimal WP upgrader doubles for the CP-commanded agent self-update.
+//
+// The apply takes core's own WP_Upgrader lock and then runs Plugin_Upgrader
+// over the agent's own directory, so a unit test needs all three names to
+// exist. They live here rather than in a test file because class definitions
+// are process-global either way, and bootstrap.php is where this suite keeps
+// its WP class doubles (wp-stubs.php is functions only, by its own rule).
+//
+// DELIBERATELY NOT DEFINED: WP_Ajax_Upgrader_Skin, Theme_Upgrader and
+// Core_Upgrader. UpdateRunner guards every one of its upgrader paths on the
+// ajax skin as well as the upgrader class, so leaving that name absent keeps
+// those tests seeing exactly the world they saw before these doubles existed.
+// ---------------------------------------------------------------------------
+
+if (!class_exists('WP_Upgrader')) {
+    /**
+     * Faithful double of the two static lock helpers, implemented over the
+     * option store exactly as core does: the lock row holds the moment it was
+     * taken, and a lock older than the release timeout is reclaimed rather than
+     * respected. Everything else on the real class is out of scope here.
+     */
+    class WP_Upgrader
+    {
+        /**
+         * @param string   $lock_name       Lock name.
+         * @param int|null $release_timeout Seconds the lock is respected.
+         * @return bool True when this caller now owns the lock.
+         */
+        public static function create_lock($lock_name, $release_timeout = null): bool
+        {
+            $releaseTimeout = (int) ($release_timeout ?: 3600);
+            $option         = $lock_name . '.lock';
+            $existing       = (int) get_option($option, 0);
+
+            if ($existing > 0) {
+                if ($existing > (time() - $releaseTimeout)) {
+                    return false;
+                }
+                self::release_lock($lock_name);
+            }
+
+            update_option($option, time(), false);
+
+            return true;
+        }
+
+        /**
+         * @param string $lock_name Lock name.
+         * @return bool
+         */
+        public static function release_lock($lock_name): bool
+        {
+            delete_option($lock_name . '.lock');
+
+            return true;
+        }
+    }
+}
+
+if (!class_exists('Automatic_Upgrader_Skin')) {
+    /** Placeholder: the agent only ever hands this to Plugin_Upgrader. */
+    class Automatic_Upgrader_Skin
+    {
+    }
+}
+
+if (!class_exists('Plugin_Upgrader')) {
+    /**
+     * Programmable double. A test sets $behaviour to decide what upgrade()
+     * does (return true, return a WP_Error, throw, register a shutdown
+     * callback of its own), and reads $calls / $restoreCalls back afterwards.
+     * Reset the three statics in set_up(): they are process-global.
+     */
+    class Plugin_Upgrader
+    {
+        /** @var callable|null Invoked by upgrade(); receives ($plugin, $upgrader). */
+        public static $behaviour = null;
+
+        /** @var array<int,string> Plugin keys passed to upgrade(). */
+        public static array $calls = [];
+
+        /** @var array<int,array<int,array<string,string>>> Arguments of every restore_temp_backup() call. */
+        public static array $restoreCalls = [];
+
+        /** @var object|null Skin handed to the constructor. */
+        public $skin;
+
+        /**
+         * @param object|null $skin Upgrader skin.
+         */
+        public function __construct($skin = null)
+        {
+            $this->skin = $skin;
+        }
+
+        /**
+         * @param string             $plugin Plugin key.
+         * @param array<string,bool> $args   Upgrade arguments.
+         * @return mixed Whatever $behaviour returns; true by default.
+         */
+        public function upgrade($plugin, $args = [])
+        {
+            self::$calls[] = $plugin;
+
+            $behaviour = self::$behaviour;
+
+            return $behaviour === null ? true : $behaviour($plugin, $this);
+        }
+
+        /**
+         * Records the call and, like core's own restorer, puts the directory
+         * back. Recreating it is what makes a second, later call a genuine
+         * no-op, which is exactly the behaviour the agent's shutdown guard
+         * relies on.
+         *
+         * @param array<int,array<string,string>> $temp_backups Backup descriptors.
+         * @return bool
+         */
+        public function restore_temp_backup(array $temp_backups = [])
+        {
+            self::$restoreCalls[] = $temp_backups;
+
+            foreach ($temp_backups as $backup) {
+                if (!isset($backup['src'], $backup['slug'])) {
+                    continue;
+                }
+                $destination = rtrim((string) $backup['src'], '/') . '/' . $backup['slug'];
+                if (!is_dir($destination)) {
+                    @mkdir($destination, 0755, true);
+                }
+            }
+
+            return true;
+        }
+
+        /**
+         * @param bool $enable Whether maintenance mode is being turned on.
+         * @return void
+         */
+        public function maintenance_mode($enable = false): void
+        {
+        }
+    }
+}

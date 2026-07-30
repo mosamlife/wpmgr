@@ -137,7 +137,7 @@ func (c *Client) RefreshInventory(ctx context.Context, siteID uuid.UUID, siteURL
 // enrollment UUID, bound into the JWT's aud claim.
 //
 // This call NEVER applies anything: a 200 with status "scheduled" only means
-// the agent verified a newer build and queued the cron event that will apply
+// the agent verified a newer build and applied it inside this same request
 // it in a separate WordPress bootstrap. Success is established later and
 // elsewhere, by the NEW code reporting its version (see
 // update.AgentConfirmWorker); callers must never record a "scheduled" ack as a

@@ -1,6 +1,6 @@
 <?php
 /**
- * Agent self-update command: BEAT 1 (ARM) of the three-beat self-update.
+ * Agent self-update command: the ARM beat of the two-beat self-update.
  *
  * Wire contract (CP -> agent):
  *   POST /wp-json/wpmgr/v1/command/agent_self_update
@@ -13,14 +13,21 @@
  *       "to_version":   string,   // "" unless status is scheduled/already_scheduled
  *       "detail":       string,
  *       "cron_mode":    "loopback"|"external",
- *       "expires_at":   int       // Unix ts; 0 unless a record was staged
+ *       "expires_at":   int,      // Unix ts; 0 unless an apply was armed
+ *       "apply_id":     string    // "" unless an apply was armed or is running
  *     }
  *
  * "scheduled" is an ACKNOWLEDGEMENT, never a success. Nothing on disk has moved
- * when it is returned, and on a site whose loopback cron is broken nothing ever
- * will, which is the SAFE outcome, and must surface at the CP as unconfirmed.
- * The only trustworthy success signal is the NEW code phoning home: the
- * version-changed boot metadata push (beat 3).
+ * when it is returned: the response is released first, and the upgrade then runs
+ * in the tail of this same request, so it may still fail or never happen at all.
+ * That is the SAFE outcome, and it must surface at the CP as unconfirmed. The
+ * only trustworthy success signal is the NEW code phoning home: the
+ * version-changed boot metadata push (the CONFIRM beat).
+ *
+ * "apply_id" is an opaque per-apply identifier the agent mints when it takes its
+ * apply lock and stamps into the outcome record it stores. It is compared whole,
+ * and it is what lets the control plane say the version moved BECAUSE of the run
+ * it armed rather than assume it.
  *
  * WHY THIS FILE IS A THIN SHELL
  * -----------------------------
@@ -53,13 +60,13 @@ namespace WPMgr\Agent\Commands;
 final class AgentSelfUpdateCommand implements CommandInterface
 {
     /**
-     * wp-option holding the outcome of the last APPLY beat, so the next
-     * metadata push carries it to the control plane. Declared HERE rather than
-     * on the self-updater because MetadataCommand reads it and must keep
-     * working in the wp.org build, where the self-updater does not exist.
+     * wp-option holding the outcome of the last APPLY, so the next metadata push
+     * carries it to the control plane. Declared HERE rather than on the
+     * self-updater because MetadataCommand reads it and must keep working in the
+     * wp.org build, where the self-updater does not exist.
      *
      * Shape: ['status'=>string,'from_version'=>string,'to_version'=>string,
-     *         'detail'=>string,'at'=>int]
+     *         'detail'=>string,'at'=>int,'apply_id'=>string]
      */
     public const OPTION_RESULT = 'wpmgr_agent_self_update_result';
 
@@ -134,12 +141,12 @@ final class AgentSelfUpdateCommand implements CommandInterface
         if ($checker === null || !class_exists(self::CHECKER_CLASS)) {
             return $this->answer('not_eligible', 'The self-updater is not available in this build.');
         }
-        if (!method_exists($checker, 'stageSelfUpdate')) {
-            return $this->answer('not_eligible', 'The self-updater does not support staged updates.');
+        if (!method_exists($checker, 'planSelfUpdate')) {
+            return $this->answer('not_eligible', 'The self-updater does not support commanded updates.');
         }
 
         try {
-            $staged = $checker->stageSelfUpdate();
+            $staged = $checker->planSelfUpdate();
         } catch (\Throwable $e) {
             // ARM moves nothing on disk, so a throw here leaves the site
             // exactly as it was. Report it rather than letting the Router turn
@@ -160,7 +167,7 @@ final class AgentSelfUpdateCommand implements CommandInterface
      *
      * @param string $status One of not_eligible|error.
      * @param string $detail Human-readable, non-secret detail.
-     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int}
+     * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int,apply_id:string}
      */
     private function answer(string $status, string $detail): array
     {
@@ -172,6 +179,8 @@ final class AgentSelfUpdateCommand implements CommandInterface
             'detail'       => $detail,
             'cron_mode'    => (defined('DISABLE_WP_CRON') && constant('DISABLE_WP_CRON')) ? 'external' : 'loopback',
             'expires_at'   => 0,
+            // No apply was armed on any path that reaches this builder.
+            'apply_id'     => '',
         ];
     }
 }

@@ -2454,8 +2454,23 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// flight). A missing signing key leaves selfUpdateCmd nil, which disables
 	// the channel exactly as the flag does, an unsigned self-update command
 	// must never be sent.
+	//
+	// Built on updateApplyCmd (cfg.Update.ApplyHTTPTimeout, default 5m), NOT
+	// the shared 30s `commander`, and for the identical reason main.go:686-695
+	// already gives the plugin-apply path its own dedicated commander: on a
+	// SAPI where ConnectionFinisher reaches its portable fallback rung (mod_php,
+	// plain CGI, no fastcgi_finish_request/litespeed_finish_request), the
+	// agent's connection to this command is never truly detached, so the
+	// control plane ends up waiting for the upgrade itself rather than for a
+	// same-request acknowledgement. The snappy 30s timeout drove a spurious
+	// CP-recorded failure on exactly that host class even when the agent
+	// genuinely applied the upgrade. On PHP-FPM and LiteSpeed, the overwhelming
+	// majority, the connection detaches and the acknowledgement still returns
+	// in well under a second exactly as before; updateJobTimeout (derived from
+	// the same ApplyHTTPTimeout) already covers the worst case at the River job
+	// level, see Worker.Timeout.
 	var selfUpdateCmd update.AgentSelfUpdateCommander
-	if suc, ok := commander.(update.AgentSelfUpdateCommander); ok {
+	if suc, ok := updateApplyCmd.(update.AgentSelfUpdateCommander); ok {
 		selfUpdateCmd = suc
 	}
 	updateSvc.SetAgentSelfUpdate(cfg.Update.AgentSelfUpdateEnabled, agentReleaseReader)

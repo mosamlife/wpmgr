@@ -201,6 +201,56 @@ final class ConnectionFinisherTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // (e2) canDetach() answers the SAME question finish() answers, without
+    //      flushing. A caller whose decision to start work at all depends on
+    //      whether the connection can be released has to ask BEFORE the
+    //      response is ready (the CP-commanded self-update refuses the whole
+    //      operation at its arm on this answer), so the two must agree on every
+    //      configuration or that caller refuses sites that would have worked,
+    //      or promises sites that cannot.
+    // -------------------------------------------------------------------------
+
+    public function test_can_detach_agrees_with_the_rung_finish_would_return(): void
+    {
+        $configurations = [
+            'fpm'       => ['fastcgi_finish_request'],
+            'litespeed' => ['litespeed_finish_request'],
+            'both'      => ['fastcgi_finish_request', 'litespeed_finish_request'],
+            'neither'   => [],
+        ];
+
+        foreach ($configurations as $label => $available) {
+            $probe = static fn (string $fn): bool => in_array($fn, $available, true);
+            $noop  = static function (string $fn): void {
+            };
+
+            // Two instances, because finish() has side effects and canDetach()
+            // must not need them to have happened.
+            $canDetach = (new ConnectionFinisher($probe, $noop, static function (): void {
+            }))->canDetach();
+            $rung = (new ConnectionFinisher($probe, $noop, static function (): void {
+            }))->finish();
+
+            self::assertSame(
+                in_array($rung, ConnectionFinisher::DETACHING_RUNGS, true),
+                $canDetach,
+                "canDetach() disagrees with finish() on the '{$label}' SAPI, which returned '{$rung}'"
+            );
+        }
+    }
+
+    /**
+     * The rung-name list is the shared vocabulary between a caller that decides
+     * before the flush and one that decides after, so it is pinned rather than
+     * left to drift.
+     */
+    public function test_the_detaching_rung_names_are_pinned(): void
+    {
+        self::assertSame(['fpm', 'litespeed'], ConnectionFinisher::DETACHING_RUNGS);
+        self::assertNotContains('fallback', ConnectionFinisher::DETACHING_RUNGS);
+    }
+
+    // -------------------------------------------------------------------------
     // (f) defaultFallbackFlush() — the ONLY case touching real PHP internals.
     //     In the PHPUnit CLI SAPI, function_exists('fastcgi_finish_request')
     //     and function_exists('litespeed_finish_request') are both naturally

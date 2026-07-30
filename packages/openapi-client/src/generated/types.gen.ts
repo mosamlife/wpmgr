@@ -709,6 +709,17 @@ export type AgentMetadata = {
      * Unix timestamp the agent stamped the record with.
      */
     at?: number;
+    /**
+     * Opaque per-apply identifier the agent mints when it takes its
+     * apply and stamps into this record. Additive: absent from every
+     * agent that predates it. The control plane compares it whole
+     * against the apply id it carried on the arm command it sent, so
+     * a version movement can only be credited to the run that caused
+     * it rather than to some other event that happened to move the
+     * site's version.
+     *
+     */
+    apply_id?: string;
   };
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;

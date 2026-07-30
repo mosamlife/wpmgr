@@ -1241,6 +1241,11 @@ export const AgentMetadataSchema = {
           format: "int64",
           description: "Unix timestamp the agent stamped the record with.",
         },
+        apply_id: {
+          type: "string",
+          description:
+            "Opaque per-apply identifier the agent mints when it takes its\napply and stamps into this record. Additive: absent from every\nagent that predates it. The control plane compares it whole\nagainst the apply id it carried on the arm command it sent, so\na version movement can only be credited to the run that caused\nit rather than to some other event that happened to move the\nsite's version.\n",
+        },
       },
     },
     plugins: {

@@ -110,10 +110,11 @@ final class MetadataCommand implements CommandInterface
             }
         }
 
-        // Outcome of the last self-update APPLY beat, when there is one. The
-        // apply runs in a cron request that has no CP response to ride on, so
-        // the next metadata push is how a FAILED apply reaches the control
-        // plane at all. Only ever present on a site that actually staged one.
+        // Outcome of the last self-update APPLY, when there is one. The apply
+        // runs in the tail of the command request, after the response has
+        // already been released, so it has no response left to ride on: the next
+        // metadata push is how a FAILED apply reaches the control plane at all.
+        // Only ever present on a site that actually armed one.
         $selfUpdate = $this->selfUpdateResult();
         if ($selfUpdate !== null) {
             $payload['agent_self_update'] = $selfUpdate;
@@ -130,7 +131,15 @@ final class MetadataCommand implements CommandInterface
      * and this collector runs in both builds. The option key constant lives on
      * AgentSelfUpdateCommand, which is present in both.
      *
-     * @return array{status:string,from_version:string,to_version:string,detail:string,at:int}|null
+     * THIS IS THE ONLY PRODUCER OF THE agent_self_update WIRE PAYLOAD, and the
+     * key list below is a whitelist: anything the self-updater stores and this
+     * method does not name is dropped before the push is signed. apply_id is
+     * therefore load bearing rather than decorative. Without it every apply
+     * reaches the control plane unattributed, a correct upgrade is recorded as
+     * unproven, and a canary that upgraded perfectly halts its own rollout. A
+     * test pins these keys.
+     *
+     * @return array{status:string,from_version:string,to_version:string,detail:string,at:int,apply_id:string}|null
      */
     private function selfUpdateResult(): ?array
     {
@@ -154,6 +163,9 @@ final class MetadataCommand implements CommandInterface
             'to_version'   => isset($stored['to_version'])   && is_string($stored['to_version'])   ? $stored['to_version']   : '',
             'detail'       => isset($stored['detail'])       && is_string($stored['detail'])       ? $stored['detail']       : '',
             'at'           => isset($stored['at']) && is_numeric($stored['at']) ? (int) $stored['at'] : 0,
+            // Empty on a record written by an agent that predates apply-id
+            // stamping, which the control plane reads as "not attributable".
+            'apply_id'     => isset($stored['apply_id']) && is_string($stored['apply_id']) ? $stored['apply_id'] : '',
         ];
     }
 

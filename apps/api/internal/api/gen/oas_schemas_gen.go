@@ -6301,6 +6301,14 @@ type AgentMetadataAgentSelfUpdate struct {
 	Detail      OptString `json:"detail"`
 	// Unix timestamp the agent stamped the record with.
 	At OptInt64 `json:"at"`
+	// Opaque per-apply identifier the agent mints when it takes its
+	// apply and stamps into this record. Additive: absent from every
+	// agent that predates it. The control plane compares it whole
+	// against the apply id it carried on the arm command it sent, so
+	// a version movement can only be credited to the run that caused
+	// it rather than to some other event that happened to move the
+	// site's version.
+	ApplyID OptString `json:"apply_id"`
 }
 
 // GetStatus returns the value of Status.
@@ -6328,6 +6336,11 @@ func (s *AgentMetadataAgentSelfUpdate) GetAt() OptInt64 {
 	return s.At
 }
 
+// GetApplyID returns the value of ApplyID.
+func (s *AgentMetadataAgentSelfUpdate) GetApplyID() OptString {
+	return s.ApplyID
+}
+
 // SetStatus sets the value of Status.
 func (s *AgentMetadataAgentSelfUpdate) SetStatus(val OptString) {
 	s.Status = val
@@ -6351,6 +6364,11 @@ func (s *AgentMetadataAgentSelfUpdate) SetDetail(val OptString) {
 // SetAt sets the value of At.
 func (s *AgentMetadataAgentSelfUpdate) SetAt(val OptInt64) {
 	s.At = val
+}
+
+// SetApplyID sets the value of ApplyID.
+func (s *AgentMetadataAgentSelfUpdate) SetApplyID(val OptString) {
+	s.ApplyID = val
 }
 
 // Present only when WordPress core has an update available.

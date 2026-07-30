@@ -375,22 +375,13 @@ func TestConfirmDeadlineWidensForExternalCron(t *testing.T) {
 	}
 }
 
-// TestConfirmDeadlinesFitTheStagedTTLFloor is the control plane's half of the
-// timing contract. The agent's staged record must outlive the CP's patience,
-// or a slow site expires its own stage, beat 2 finds nothing to apply, and the
-// canary false-fails a build that was never given a chance. The agent holds a
-// stage for agentcmd.SelfUpdateStagedTTLFloor; this side may never widen a
-// deadline past it. Raise the agent's TTL first, then this window.
-func TestConfirmDeadlinesFitTheStagedTTLFloor(t *testing.T) {
-	if agentConfirmDeadline >= agentcmd.SelfUpdateStagedTTLFloor {
-		t.Fatalf("the loopback confirm deadline (%s) must sit inside the agent's staged TTL (%s)",
-			agentConfirmDeadline, agentcmd.SelfUpdateStagedTTLFloor)
-	}
-	if agentConfirmDeadlineExternalCron >= agentcmd.SelfUpdateStagedTTLFloor {
-		t.Fatalf("the external-cron confirm deadline (%s) must sit inside the agent's staged TTL (%s): "+
-			"a control plane that waits longer than the site holds its stage fails sites that did nothing wrong",
-			agentConfirmDeadlineExternalCron, agentcmd.SelfUpdateStagedTTLFloor)
-	}
+// TestConfirmDeadlineExternalCronIsWider pins the one invariant that still
+// holds between the two confirmation windows now that neither one bounds the
+// apply itself (see the const block in agent_worker.go): the external-cron
+// window must stay the wider of the two, or a site whose periodic metadata
+// heartbeat runs on a slower external schedule would be declared unconfirmed
+// before it ever had a realistic chance to phone home.
+func TestConfirmDeadlineExternalCronIsWider(t *testing.T) {
 	if agentConfirmDeadlineExternalCron <= agentConfirmDeadline {
 		t.Fatalf("the external-cron window (%s) must be the wider of the two (%s)",
 			agentConfirmDeadlineExternalCron, agentConfirmDeadline)
@@ -1139,6 +1130,327 @@ func TestConfirmationIsTheOnlySuccess(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// PROVENANCE: apply-id attribution
+// ---------------------------------------------------------------------------
+
+// TestArmCapturesTheApplyID pins the plumbing change 38 depends on: the apply
+// id the agent hands back on the beat-1 answer must survive onto
+// AgentConfirmArgs unmodified, on BOTH the "scheduled" and "already_scheduled"
+// paths (armed() handles them identically), and an agent that predates the
+// field must arm with an empty one rather than the enqueue failing or the
+// field defaulting to something else.
+func TestArmCapturesTheApplyID(t *testing.T) {
+	t.Run("scheduled carries it", func(t *testing.T) {
+		arm := agentcmd.AgentSelfUpdateResponse{
+			Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+			CronMode: agentcmd.CronModeLoopback, ApplyID: "apply-abc123",
+		}
+		versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+		h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+		if err := h.work(context.Background(), 0); err != nil {
+			t.Fatalf("Work: %v", err)
+		}
+		if len(h.enq.confirms) != 1 {
+			t.Fatalf("want exactly one confirm enqueued, got %d", len(h.enq.confirms))
+		}
+		if got := h.enq.confirms[0].ApplyID; got != "apply-abc123" {
+			t.Fatalf("AgentConfirmArgs.ApplyID = %q, want the beat-1 answer's apply id", got)
+		}
+	})
+
+	t.Run("already_scheduled carries it exactly like scheduled", func(t *testing.T) {
+		arm := agentcmd.AgentSelfUpdateResponse{
+			Status: agentcmd.SelfUpdateAlreadyScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+			CronMode: agentcmd.CronModeLoopback, ApplyID: "apply-abc123",
+		}
+		versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+		h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+		if err := h.work(context.Background(), 0); err != nil {
+			t.Fatalf("Work: %v", err)
+		}
+		if got := h.enq.confirms[0].ApplyID; got != "apply-abc123" {
+			t.Fatalf("already_scheduled must carry the apply id exactly like scheduled, got %q", got)
+		}
+	})
+
+	t.Run("an agent that predates apply ids arms with an empty one", func(t *testing.T) {
+		arm := agentcmd.AgentSelfUpdateResponse{
+			Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+			CronMode: agentcmd.CronModeLoopback,
+		}
+		versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+		h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+		if err := h.work(context.Background(), 0); err != nil {
+			t.Fatalf("Work: %v", err)
+		}
+		if got := h.enq.confirms[0].ApplyID; got != "" {
+			t.Fatalf("a legacy arm must carry an empty apply id, not invent one, got %q", got)
+		}
+	})
+}
+
+// TestVersionMovedWithoutAttributionDoesNotConfirm is the #319 regression
+// test. The site's REPORTED version moved to at or beyond this run's target
+// (agentSelfUpdateConfirmed would say yes), but the site's own stored apply
+// record belongs to a DIFFERENT apply than the one this run armed. Before
+// attribution existed, version movement alone was the whole confirmation
+// signal, so this shape confirmed: a canary that moved for a reason this run
+// did not cause could open every later wave on evidence that was never real.
+func TestVersionMovedWithoutAttributionDoesNotConfirm(t *testing.T) {
+	arm := agentcmd.AgentSelfUpdateResponse{
+		Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+		CronMode: agentcmd.CronModeLoopback, ApplyID: "this-run-apply-id",
+	}
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	args := h.enq.confirms[0]
+	if args.ApplyID != "this-run-apply-id" {
+		t.Fatalf("test setup: ApplyID not captured, got %q", args.ApplyID)
+	}
+
+	// The version moved (someone or something else updated the site), but the
+	// site's stored apply record belongs to a DIFFERENT apply than this run's.
+	versions.versions[args.SiteID] = agentPlanTarget
+	results := &fakeApplyResults{results: map[uuid.UUID]AgentApplyResult{
+		args.SiteID: {Status: "applied", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, ApplyID: "a-different-run-apply-id"},
+	}}
+	h.withApplyResults(results)
+
+	cw := NewAgentConfirmWorker(h.w)
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work: %v", err)
+	}
+
+	task := h.store.Task(0)
+	if task.Status != TaskSkipped {
+		t.Fatalf("status = %q, want %q: a version move this run cannot attribute to itself must not confirm", task.Status, TaskSkipped)
+	}
+	if task.ToVersion != "" {
+		t.Fatalf("to_version = %q, want it left empty: matching the non-confirming precedent in upToDate", task.ToVersion)
+	}
+	if !strings.Contains(task.Detail, "nothing ties that move to this run") {
+		t.Fatalf("detail must say the move is unattributed: %q", task.Detail)
+	}
+	if !strings.Contains(task.Detail, "different apply") {
+		t.Fatalf("detail must name the case: a record from a different apply: %q", task.Detail)
+	}
+
+	// tallyWave must score this as Other, never as Confirmed: haltReasonFor's
+	// Confirmed == 0 rule is what keeps a canary that "confirmed" nothing from
+	// opening wave 1.
+	var tasks []Task
+	for i := 0; i < 10; i++ {
+		tasks = append(tasks, h.store.Task(i))
+	}
+	tally := tallyWave(waveOrder(tasks), WaveRange{Start: 0, End: 1})
+	if tally.Confirmed != 0 || tally.Other != 1 {
+		t.Fatalf("wave 0 tally = %+v, want Confirmed=0 Other=1", tally)
+	}
+
+	if h.store.RunStatus() != RunHalted {
+		t.Fatalf("run status = %q, want %q", h.store.RunStatus(), RunHalted)
+	}
+	// The halt reason must be the honest "confirmed no site" shape (the wave
+	// proved nothing), never "the canary failed": nothing here failed, the
+	// site upgraded fine, it just was not THIS run that did it.
+	reason := h.waves.lastHaltReason()
+	if !strings.Contains(reason, "confirmed no site") {
+		t.Fatalf("halt reason = %q, want the zero-confirmation shape", reason)
+	}
+	if strings.Contains(reason, "canary") && strings.Contains(reason, "failed") {
+		t.Fatalf("halt reason must not read as a canary failure: %q", reason)
+	}
+}
+
+// TestApplyResultReadFailureKeepsWaitingWhenConfirmed is the regression test
+// for the asymmetry between the two reads a confirmed poll makes. A transient
+// failure reading the agent's own apply-result record must be treated exactly
+// like a transient failure reading its reported version: it proves nothing
+// either way, so it must leave the task open rather than resolve it. Before
+// this test the read error was silently read as "no record", which fed
+// agentConfirmOutcome an unattributed nil and turned a genuinely confirmed
+// upgrade into a Skipped task that halted the whole run on a single unlucky
+// database blip.
+func TestApplyResultReadFailureKeepsWaitingWhenConfirmed(t *testing.T) {
+	arm := agentcmd.AgentSelfUpdateResponse{
+		Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+		CronMode: agentcmd.CronModeLoopback, ApplyID: "the-run-apply-id",
+	}
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	args := h.enq.confirms[0]
+
+	// The site already reports the run's target: this poll is squarely in the
+	// "confirmed" branch, the one that needs the apply-result read to decide
+	// attribution.
+	versions.versions[args.SiteID] = agentPlanTarget
+	results := &fakeApplyResults{err: errors.New("database unavailable")}
+	h.withApplyResults(results)
+
+	cw := NewAgentConfirmWorker(h.w)
+	err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args})
+	if !isSnooze(err) {
+		t.Fatalf("a transient apply-result read failure must snooze and try again, got %v", err)
+	}
+	task := h.store.Task(0)
+	if terminal(task.Status) {
+		t.Fatalf("a transient read failure must never resolve the task, got status %q", task.Status)
+	}
+	if task.Status != TaskRunning {
+		t.Fatalf("status = %q, want %q: the task must stay exactly as it was", task.Status, TaskRunning)
+	}
+	// The regression this guards against halts the run on Confirmed == 0; a
+	// task that correctly stayed open must never trigger that.
+	if h.store.RunStatus() == RunHalted {
+		t.Fatalf("run status = %q: a transient read failure must never halt the run", h.store.RunStatus())
+	}
+
+	// Once the read succeeds, the SAME poll (retried, as the deadline-driven
+	// snooze loop would do) reaches the real, correct outcome: attributed and
+	// applied confirms as success.
+	results.err = nil
+	results.results = map[uuid.UUID]AgentApplyResult{
+		args.SiteID: {Status: "applied", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, ApplyID: "the-run-apply-id"},
+	}
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work after recovery: %v", err)
+	}
+	task = h.store.Task(0)
+	if task.Status != TaskSucceeded {
+		t.Fatalf("status = %q, want %q once the read recovers", task.Status, TaskSucceeded)
+	}
+	if task.ToVersion != agentPlanTarget {
+		t.Fatalf("to_version = %q, want %q", task.ToVersion, agentPlanTarget)
+	}
+}
+
+// TestLegacyAgentStillConfirms is the guard that lets 0.61.108 itself roll
+// out: an agent that predates apply ids (a.ApplyID == "") arms, its version
+// then moves to the run's target, and it must still confirm on that movement
+// alone, with the cause hedged rather than claimed, exactly like every agent
+// in the very first wave of the release that introduces attribution.
+func TestLegacyAgentStillConfirms(t *testing.T) {
+	arm := agentcmd.AgentSelfUpdateResponse{
+		Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+		CronMode: agentcmd.CronModeLoopback, // no ApplyID: an agent that predates 0.61.108
+	}
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	args := h.enq.confirms[0]
+	if args.ApplyID != "" {
+		t.Fatalf("test setup: want no apply id from a legacy arm, got %q", args.ApplyID)
+	}
+	versions.versions[args.SiteID] = agentPlanTarget
+
+	cw := NewAgentConfirmWorker(h.w)
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work: %v", err)
+	}
+
+	task := h.store.Task(0)
+	if task.Status != TaskSucceeded {
+		t.Fatalf("status = %q, want %q: a legacy agent's version movement must still confirm, or this release could never roll out", task.Status, TaskSucceeded)
+	}
+	if task.ToVersion != agentPlanTarget {
+		t.Fatalf("to_version = %q, want %q", task.ToVersion, agentPlanTarget)
+	}
+	if !strings.Contains(task.Detail, "does not report an apply id") {
+		t.Fatalf("detail must hedge the cause for an unattributed legacy confirmation: %q", task.Detail)
+	}
+	// Confirming the canary is what opens wave 1, and only wave 1: the whole
+	// point of this test is that a legacy confirmation is STILL a real
+	// confirmation for wave-gating purposes.
+	if len(h.enq.tasks) != 3 {
+		t.Fatalf("confirming the canary must still open wave 1, got %d enqueued", len(h.enq.tasks))
+	}
+}
+
+// TestAttributionIgnoresVersionsAndTimes pins agentApplyAttributed as a pure
+// function of the two apply ids and nothing else: C2 requires that a record
+// with an empty to_version (a legitimate "not_eligible" or "error" record)
+// still attributes on a matching id, and that neither an older nor a newer
+// timestamp changes the verdict. The verdict must move ONLY with the apply id.
+func TestAttributionIgnoresVersionsAndTimes(t *testing.T) {
+	cases := []struct {
+		name string
+		args AgentConfirmArgs
+		res  *AgentApplyResult
+		want bool
+	}{
+		{
+			name: "matching apply id with an empty to_version still attributes",
+			args: AgentConfirmArgs{ApplyID: "apply-1"},
+			res:  &AgentApplyResult{ApplyID: "apply-1", Status: "not_eligible", ToVersion: ""},
+			want: true,
+		},
+		{
+			name: "matching apply id with a zero time still attributes",
+			args: AgentConfirmArgs{ApplyID: "apply-1"},
+			res:  &AgentApplyResult{ApplyID: "apply-1", Status: "applied", At: time.Time{}},
+			want: true,
+		},
+		{
+			name: "matching apply id with an OLDER time still attributes",
+			args: AgentConfirmArgs{ApplyID: "apply-1"},
+			res:  &AgentApplyResult{ApplyID: "apply-1", Status: "applied", At: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)},
+			want: true,
+		},
+		{
+			name: "matching apply id with a NEWER time still attributes",
+			args: AgentConfirmArgs{ApplyID: "apply-1"},
+			res:  &AgentApplyResult{ApplyID: "apply-1", Status: "applied", At: time.Now().Add(time.Hour)},
+			want: true,
+		},
+		{
+			name: "a different apply id never attributes, whatever the versions say",
+			args: AgentConfirmArgs{ApplyID: "apply-1"},
+			res:  &AgentApplyResult{ApplyID: "apply-2", Status: "applied", FromVersion: "0.61.80", ToVersion: "0.62.0"},
+			want: false,
+		},
+		{
+			name: "no record never attributes",
+			args: AgentConfirmArgs{ApplyID: "apply-1"},
+			res:  nil,
+			want: false,
+		},
+		{
+			name: "an empty args apply id never attributes, even against a record that also has none",
+			args: AgentConfirmArgs{ApplyID: ""},
+			res:  &AgentApplyResult{ApplyID: "", Status: "applied"},
+			want: false,
+		},
+		{
+			name: "a record with no apply id never attributes, even against a non-empty args id",
+			args: AgentConfirmArgs{ApplyID: "apply-1"},
+			res:  &AgentApplyResult{ApplyID: "", Status: "applied"},
+			want: false,
+		},
+		{
+			name: "a retry that re-arms with a new apply id does not inherit an old attribution",
+			args: AgentConfirmArgs{ApplyID: "apply-2"},
+			res:  &AgentApplyResult{ApplyID: "apply-1", Status: "applied"},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentApplyAttributed(tc.args, tc.res); got != tc.want {
+				t.Fatalf("agentApplyAttributed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestConfirmTimeoutCarriesTheAgentsOwnAccountOfTheApply covers the one thing
 // this control plane cannot work out for itself.
 //
@@ -1151,15 +1463,24 @@ func TestConfirmationIsTheOnlySuccess(t *testing.T) {
 //
 // The agent records which of the two it was and replays it on its next metadata
 // push. Discarding that record throws away the only account of what happened.
+//
+// Every case below that expects a CAUSAL reading of the record ("FAILED", "DID
+// apply", and so on) gives the arm AND the record the SAME apply id, so the
+// record is attributed to this run: that is the scenario the four per-status
+// sentences exist to describe. TestStaleRecordIsNeverRenderedAsTheCause covers
+// the opposite: a record that carries a DIFFERENT apply id must never be read
+// this way. The three cases with no record at all leave this run's arm apply
+// id EMPTY, standing in for an agent that predates apply ids entirely, so the
+// timeout reads exactly as it did before this field existed.
 func TestConfirmTimeoutCarriesTheAgentsOwnAccountOfTheApply(t *testing.T) {
-	arm := agentcmd.AgentSelfUpdateResponse{
-		Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
-		CronMode: agentcmd.CronModeLoopback,
-	}
+	const attributedApplyID = "confirm-test-apply-id"
 	stamped := time.Date(2026, 7, 28, 9, 30, 0, 0, time.UTC)
 
 	cases := []struct {
 		name string
+		// applyID is the apply id THIS run's arm carried. "" reproduces an
+		// agent that predates apply ids.
+		applyID string
 		// result is what the agent reported; nil means it reported nothing,
 		// which is what every agent predating the record does.
 		result *AgentApplyResult
@@ -1171,54 +1492,67 @@ func TestConfirmTimeoutCarriesTheAgentsOwnAccountOfTheApply(t *testing.T) {
 		notWant  []string
 	}{
 		{
-			name:   "the apply ran and failed",
-			result: &AgentApplyResult{Status: "failed", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, Detail: "Upgrader threw: could not create directory", At: stamped},
-			want:   []string{"FAILED", "could not create directory", agentPlanTarget, "2026-07-28T09:30:00Z"},
+			name:    "the apply ran and failed",
+			applyID: attributedApplyID,
+			result:  &AgentApplyResult{Status: "failed", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, Detail: "Upgrader threw: could not create directory", At: stamped, ApplyID: attributedApplyID},
+			want:    []string{"FAILED", "could not create directory", agentPlanTarget, "2026-07-28T09:30:00Z"},
 		},
 		{
-			name:   "the staged upgrade expired before any apply ran",
-			result: &AgentApplyResult{Status: "expired", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, Detail: "Staged self-update expired before the apply request ran.", At: stamped},
-			want:   []string{"EXPIRED", "never happened in time"},
+			// An agent old enough to still report "expired" (the retired staged
+			// design) must keep rendering, so this case stays. What it must NOT
+			// do any more is describe a cron run: nothing schedules one.
+			name:    "an older agent reporting expired still renders, without claiming a cron run",
+			applyID: attributedApplyID,
+			result:  &AgentApplyResult{Status: "expired", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, Detail: "Staged self-update expired before the apply request ran.", At: stamped, ApplyID: attributedApplyID},
+			want:    []string{"EXPIRED", "nothing was applied"},
+			notWant: []string{"cron run"},
 		},
 		{
-			name:   "the agent says it did apply, so the version report is what is missing",
-			result: &AgentApplyResult{Status: "applied", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, At: stamped},
-			want:   []string{"DID apply", "metadata push"},
+			name:    "the agent says it did apply, so the version report is what is missing",
+			applyID: attributedApplyID,
+			result:  &AgentApplyResult{Status: "applied", FromVersion: agentPlanFrom, ToVersion: agentPlanTarget, At: stamped, ApplyID: attributedApplyID},
+			want:    []string{"DID apply", "metadata push"},
 		},
 		{
-			name:   "the on-disk version was already at the target",
-			result: &AgentApplyResult{Status: "already_applied", FromVersion: agentPlanTarget, ToVersion: agentPlanTarget, At: stamped},
-			want:   []string{"ALREADY at or past"},
+			name:    "the on-disk version was already at the target",
+			applyID: attributedApplyID,
+			result:  &AgentApplyResult{Status: "already_applied", FromVersion: agentPlanTarget, ToVersion: agentPlanTarget, At: stamped, ApplyID: attributedApplyID},
+			want:    []string{"ALREADY at or past"},
 		},
 		{
 			// Forward compatibility: a status a newer agent introduces must
 			// reach the operator verbatim rather than being swallowed by an
 			// older control plane that does not recognise it.
-			name:   "a status this control plane does not recognise",
-			result: &AgentApplyResult{Status: "quarantined", ToVersion: agentPlanTarget, Detail: "held by the host", At: stamped},
-			want:   []string{`"quarantined"`, "held by the host"},
+			name:    "a status this control plane does not recognise",
+			applyID: attributedApplyID,
+			result:  &AgentApplyResult{Status: "quarantined", ToVersion: agentPlanTarget, Detail: "held by the host", At: stamped, ApplyID: attributedApplyID},
+			want:    []string{`"quarantined"`, "held by the host"},
 		},
 		{
 			// Old agents send nothing. The timeout must read exactly as it did
 			// before this record existed.
 			name:    "the agent reported nothing",
 			result:  nil,
-			notWant: []string{"The agent's own record"},
+			notWant: []string{"The agent's own record", "The agent's apply record"},
 		},
 		{
 			name:      "the site read fails",
 			lookupErr: errors.New("database unavailable"),
-			notWant:   []string{"The agent's own record", "database unavailable"},
+			notWant:   []string{"The agent's own record", "The agent's apply record", "database unavailable"},
 		},
 		{
 			name:     "the lookup was never wired",
 			noLookup: true,
-			notWant:  []string{"The agent's own record"},
+			notWant:  []string{"The agent's own record", "The agent's apply record"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			arm := agentcmd.AgentSelfUpdateResponse{
+				Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+				CronMode: agentcmd.CronModeLoopback, ApplyID: tc.applyID,
+			}
 			versions := &fakeVersions{versions: map[uuid.UUID]string{}}
 			h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
 			if err := h.work(context.Background(), 0); err != nil {
@@ -1265,6 +1599,66 @@ func TestConfirmTimeoutCarriesTheAgentsOwnAccountOfTheApply(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStaleRecordIsNeverRenderedAsTheCause is the exact production shape of
+// C1(a): a 09:17 record for an EARLIER, unrelated apply (0.61.104 to 0.61.105)
+// sitting on the agent when THIS run (11:41, 0.61.106 to 0.61.107) times out
+// waiting for its own confirmation. Before attribution existed, the stale
+// record's "applied" status rendered as "The agent's own record says it DID
+// apply the upgrade", which reads as an account of THIS run. It is not: it is
+// a leftover from a different apply entirely, and must be named as one.
+func TestStaleRecordIsNeverRenderedAsTheCause(t *testing.T) {
+	arm := agentcmd.AgentSelfUpdateResponse{
+		Status: agentcmd.SelfUpdateScheduled, FromVersion: "0.61.106", ToVersion: "0.61.107",
+		CronMode: agentcmd.CronModeLoopback, ApplyID: "run-1141-apply",
+	}
+	stamped := time.Date(2026, 7, 28, 9, 17, 0, 0, time.UTC)
+
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	args := h.enq.confirms[0]
+	if args.ApplyID != "run-1141-apply" {
+		t.Fatalf("test setup: ApplyID not captured at arm time, got %q", args.ApplyID)
+	}
+	versions.versions[args.SiteID] = "0.61.106" // never moved: this run's own apply never landed
+
+	results := &fakeApplyResults{results: map[uuid.UUID]AgentApplyResult{
+		args.SiteID: {
+			Status: "applied", FromVersion: "0.61.104", ToVersion: "0.61.105",
+			ApplyID: "run-0917-apply", At: stamped,
+		},
+	}}
+	h.withApplyResults(results)
+
+	args.DeadlineAt = time.Now().Add(-time.Second)
+	cw := NewAgentConfirmWorker(h.w)
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work: %v", err)
+	}
+
+	task := h.store.Task(0)
+	if task.Status != TaskFailed {
+		t.Fatalf("status = %q, want %q", task.Status, TaskFailed)
+	}
+	if strings.Contains(task.Detail, "DID apply") {
+		t.Fatalf("a record from a DIFFERENT apply must never be read as this run's own cause: %q", task.Detail)
+	}
+	if !strings.Contains(task.Detail, "different apply") {
+		t.Fatalf("the stale record must be named as belonging to a different apply, not silently dropped: %q", task.Detail)
+	}
+	// The record is still shown in full, hedged, not suppressed: its own
+	// status and versions must still be visible for an operator who wants to
+	// look at it, they just must not be read as an account of THIS run.
+	if !strings.Contains(task.Detail, "0.61.104") || !strings.Contains(task.Detail, "0.61.105") {
+		t.Fatalf("the stale record's own versions must still be rendered, hedged rather than suppressed: %q", task.Detail)
+	}
+	if !strings.Contains(task.Detail, "Do not read it as the cause") {
+		t.Fatalf("the hedge itself must be explicit: %q", task.Detail)
 	}
 }
 

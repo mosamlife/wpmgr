@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.107
+  version: 0.61.108
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -13262,6 +13262,16 @@ components:
               type: integer
               format: int64
               description: Unix timestamp the agent stamped the record with.
+            apply_id:
+              type: string
+              description: |
+                Opaque per-apply identifier the agent mints when it takes its
+                apply and stamps into this record. Additive: absent from every
+                agent that predates it. The control plane compares it whole
+                against the apply id it carried on the arm command it sent, so
+                a version movement can only be credited to the run that caused
+                it rather than to some other event that happened to move the
+                site's version.
         plugins:
           type: array
           items:

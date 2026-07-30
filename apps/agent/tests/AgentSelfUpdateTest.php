@@ -1,12 +1,11 @@
 <?php
 /**
- * Tests for the CP-commanded three-beat agent self-update.
+ * Tests for the ARM beat of the CP-commanded agent self-update.
  *
- * BEAT 1 (ARM) is UpdateChecker::stageSelfUpdate(), reached through the thin
- * AgentSelfUpdateCommand shell. BEAT 2 (APPLY) is
- * UpdateChecker::applyStagedSelfUpdate(), which runs in a separate WordPress
- * bootstrap. BEAT 3 (CONFIRM) lives in Plugin and is covered by
- * PluginVersionChangedPushTest.
+ * ARM is UpdateChecker::planSelfUpdate(), reached through the thin
+ * AgentSelfUpdateCommand shell. The APPLY that follows it in the same request
+ * is covered by SelfUpdateInRequestApplyTest. CONFIRM lives in Plugin and is
+ * covered by PluginVersionChangedPushTest.
  *
  * The fixture mirrors UpdateCheckerTest: a real per-test Ed25519 keypair so the
  * signature chain is exercised authentically, Brain Monkey for the WordPress
@@ -31,6 +30,7 @@ use WPMgr\Agent\Keystore;
 use WPMgr\Agent\ReplayCache;
 use WPMgr\Agent\Settings;
 use WPMgr\Agent\Signer;
+use WPMgr\Agent\Support\ConnectionFinisher;
 use WPMgr\Agent\Support\UpdateChecker;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -40,6 +40,13 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class AgentSelfUpdateTest extends TestCase
 {
+    /**
+     * The wp-option core's WP_Upgrader lock writes. Named by literal because the
+     * agent's lock-name constant is private and this is the row the agent has to
+     * be observed taking.
+     */
+    private const LOCK_OPTION = 'wpmgr_agent_self_update.lock';
+
     /** Raw 64-byte CP Ed25519 secret key (for signing manifests). */
     private string $cpSecret;
 
@@ -88,23 +95,6 @@ final class AgentSelfUpdateTest extends TestCase
     /** Set true to make the site look un-enrolled. */
     public bool $forceUnenrolled = false;
 
-    /**
-     * What the wp_schedule_single_event stub answers. false is exactly what
-     * WordPress returns when another plugin short-circuits pre_schedule_event,
-     * when a schedule_event filter returns something falsy, and for a duplicate
-     * single event scheduled within ten minutes of an identical one.
-     *
-     * @var mixed
-     */
-    public $scheduleReturn = true;
-
-    /**
-     * When true the delete_option stub leaves OPTION_STAGED in place. Used only
-     * by the concurrency test, to model two entry points that both READ the
-     * record before either one's claim lands.
-     */
-    public bool $pinStagedRecord = false;
-
     protected function set_up(): void
     {
         parent::set_up();
@@ -125,8 +115,6 @@ final class AgentSelfUpdateTest extends TestCase
         $this->scheduledEvents = [];
         $this->httpCalls       = [];
         $this->forceUnenrolled = false;
-        $this->scheduleReturn  = true;
-        $this->pinStagedRecord = false;
         unset($GLOBALS['wpdb']);
 
         Functions\when('get_option')->alias(function (string $name, $default = false) {
@@ -137,9 +125,6 @@ final class AgentSelfUpdateTest extends TestCase
             return true;
         });
         Functions\when('delete_option')->alias(function (string $name) {
-            if ($this->pinStagedRecord && $name === UpdateChecker::OPTION_STAGED) {
-                return true;
-            }
             unset($this->options[$name]);
             return true;
         });
@@ -148,8 +133,10 @@ final class AgentSelfUpdateTest extends TestCase
         // PHPUnit run, and this file sorts FIRST in the suite, so stubbing a
         // function nothing on these code paths calls would flip
         // function_exists() to true inside unrelated, later tests that
-        // legitimately rely on it being absent. Only stub what beat 1 and
-        // beat 2 actually reach.
+        // legitimately rely on it being absent. Only stub what the ARM beat
+        // actually reaches. The apply, which does read that transient, is
+        // exercised in SelfUpdateInRequestApplyTest, which sorts after the
+        // files that already stub it.
         Functions\when('set_site_transient')->alias(function (string $key, $value, int $ttl = 0) {
             $this->siteTransients[$key] = $value;
             return true;
@@ -161,12 +148,15 @@ final class AgentSelfUpdateTest extends TestCase
         Functions\when('wp_parse_url')->alias(fn (string $url) => parse_url($url));
         Functions\when('get_plugin_data')->alias(fn () => ['Version' => $this->onDiskVersion]);
         Functions\when('is_wp_error')->justReturn(false);
-        Functions\when('spawn_cron')->justReturn(true);
+        Functions\when('wp_clear_scheduled_hook')->justReturn(1);
 
+        // Kept purely so the assertions below can prove the arm schedules
+        // NOTHING. The apply is no longer an event, and a stub that records a
+        // call nobody makes is exactly how that stays true.
         Functions\when('wp_schedule_single_event')->alias(
             function (int $timestamp, string $hook, array $args = []) {
                 $this->scheduledEvents[] = ['hook' => $hook, 'args' => $args, 'timestamp' => $timestamp];
-                return $this->scheduleReturn;
+                return true;
             }
         );
 
@@ -366,78 +356,59 @@ final class AgentSelfUpdateTest extends TestCase
         Functions\when('wp_remote_retrieve_body')->alias(fn ($response) => $response['body'] ?? '');
     }
 
-    private function makeChecker(): UpdateChecker
-    {
-        return new UpdateChecker($this->signer, $this->settings, $this->keystore, $this->replayCache);
-    }
-
     /**
-     * Install a $wpdb double that answers the compare-and-delete claim the way
-     * a real database does under contention: the first DELETE removes the row
-     * and reports one affected row, every later one reports none.
+     * Build an UpdateChecker whose SAPI probe is injected.
      *
-     * @return object The double, so a test can read deleteAttempts back.
+     * The arm refuses outright on a SAPI that cannot release the
+     * control-plane connection, and under the PHPUnit CLI SAPI neither
+     * fastcgi_finish_request nor litespeed_finish_request exists, so an
+     * un-injected checker would answer "not_eligible" to every arm in this
+     * file. Neither function can be DEFINED here either: that flips
+     * function_exists() process-wide and changes what every other test in the
+     * suite observes. So the probe is handed in, exactly as ConnectionFinisher's
+     * own tests hand it in, and the refusal gets its own test below.
+     *
+     * @param bool $detachable Whether the fake SAPI exposes a detaching rung.
+     * @return UpdateChecker
      */
-    private function installRacingWpdb(): object
+    private function makeChecker(bool $detachable = true): UpdateChecker
     {
-        $fake = new class {
-            /** Options table name, the only wpdb property the claim reads. */
-            public string $options = 'wp_options';
-
-            /** How many claim statements were issued. */
-            public int $deleteAttempts = 0;
-
-            /** @var list<int> Rows affected, in order, per DELETE. */
-            public array $answers = [1, 0];
-
-            /**
-             * @param string $query    SQL with placeholders.
-             * @param mixed  ...$args  Bound values.
-             * @return string
-             */
-            public function prepare(string $query, ...$args): string
-            {
-                foreach ($args as $arg) {
-                    $query = (string) preg_replace('/%[sdi]/', (string) $arg, $query, 1);
-                }
-
-                return $query;
+        $finisher = new ConnectionFinisher(
+            static fn (string $fn): bool => $detachable && $fn === 'fastcgi_finish_request',
+            static function (string $fn): void {
+            },
+            static function (): void {
             }
+        );
 
-            /**
-             * @param string $sql Prepared statement.
-             * @return int Rows affected.
-             */
-            public function query(string $sql): int
-            {
-                $this->deleteAttempts++;
-                $next = array_shift($this->answers);
-
-                return $next === null ? 0 : (int) $next;
-            }
-        };
-
-        $GLOBALS['wpdb'] = $fake;
-
-        return $fake;
+        return new UpdateChecker($this->signer, $this->settings, $this->keystore, $this->replayCache, $finisher);
     }
 
     // =========================================================================
-    // BEAT 1 (ARM)
+    // ARM
     // =========================================================================
 
     /**
-     * A signed manifest offering a newer build stages a record, schedules the
-     * apply cron, and moves NOTHING on disk. The disk snapshot is the load-
-     * bearing assertion here: "scheduled" must mean "nothing has happened yet".
+     * A signed manifest offering a newer build takes the apply lock, registers
+     * the in-request apply, and moves NOTHING on disk. The disk snapshot is the
+     * load-bearing assertion here: "scheduled" must mean "nothing has happened
+     * yet", and it stays true even now that the apply runs later in this same
+     * request, because the arm returns long before the response is released.
+     *
+     * The registration is asserted as a LITERAL hook name. That hook is the
+     * whole mechanism: rest_pre_serve_request runs in the request BODY, before
+     * do_action('shutdown') has started, which is the only position from which
+     * core's own temp-backup rollback is still dispatchable.
      */
-    public function test_stage_schedules_the_apply_cron_and_touches_nothing_on_disk(): void
+    public function test_the_arm_touches_nothing_on_disk_and_registers_the_in_request_apply(): void
     {
         $claims = $this->makeClaims(['version' => $this->targetVersion]);
         $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
 
+        $checker = $this->makeChecker();
+
         $before = $this->snapshotDisk();
-        $answer = $this->makeChecker()->stageSelfUpdate();
+        $answer = $checker->planSelfUpdate();
         $after  = $this->snapshotDisk();
 
         $this->assertSame('scheduled', $answer['status']);
@@ -446,18 +417,25 @@ final class AgentSelfUpdateTest extends TestCase
         $this->assertSame($this->targetVersion, $answer['to_version']);
         $this->assertSame('loopback', $answer['cron_mode']);
         $this->assertGreaterThan(time(), $answer['expires_at']);
+        $this->assertMatchesRegularExpression(
+            '/^[0-9a-f]{32}$/',
+            (string) $answer['apply_id'],
+            'a scheduled arm must mint an apply id, or nothing it does can ever be attributed to it'
+        );
 
         $this->assertSame($before, $after, 'ARM must not create, delete or modify a single byte on disk');
 
-        $staged = $this->options[UpdateChecker::OPTION_STAGED] ?? null;
-        $this->assertIsArray($staged, 'ARM must persist exactly one staged record');
-        $this->assertSame($this->targetVersion, $staged['to_version']);
-        $this->assertSame($this->onDiskVersion, $staged['from_version']);
-        $this->assertNotSame('', (string) $staged['token']);
+        $this->assertTrue(
+            has_filter('rest_pre_serve_request', [$checker, 'serveThenApply']) !== false,
+            'the apply must be registered on rest_pre_serve_request, which runs in the request body'
+        );
+        $this->assertSame([], $this->scheduledEvents, 'the apply is no longer an event; nothing may be scheduled');
 
-        $this->assertCount(1, $this->scheduledEvents, 'ARM must schedule exactly one apply event');
-        $this->assertSame(UpdateChecker::HOOK_APPLY, $this->scheduledEvents[0]['hook']);
-        $this->assertSame([$staged['token']], $this->scheduledEvents[0]['args'], 'the event must carry the stage token');
+        $this->assertNotSame(
+            0,
+            (int) ($this->options[self::LOCK_OPTION] ?? 0),
+            'the arm must hold core\'s own upgrader lock for the duration of the apply'
+        );
 
         $this->assertCount(1, $this->httpCalls, 'ARM must make exactly one CP call (the manifest fetch) and no package download');
     }
@@ -465,158 +443,205 @@ final class AgentSelfUpdateTest extends TestCase
     /**
      * The CP publishing nothing (HTTP 204) is the steady state, not an error.
      */
-    public function test_stage_returns_up_to_date_when_the_cp_publishes_nothing(): void
+    public function test_arm_returns_up_to_date_when_the_cp_publishes_nothing(): void
     {
         $this->stubManifestEndpoint(204, '');
 
-        $answer = $this->makeChecker()->stageSelfUpdate();
+        $answer = $this->makeChecker()->planSelfUpdate();
 
         $this->assertSame('up_to_date', $answer['status']);
         $this->assertTrue($answer['ok']);
         $this->assertSame('', $answer['to_version']);
-        $this->assertArrayNotHasKey(UpdateChecker::OPTION_STAGED, $this->options);
+        $this->assertSame('', $answer['apply_id']);
+        $this->assertArrayNotHasKey(self::LOCK_OPTION, $this->options, 'an up-to-date site must not take the apply lock');
         $this->assertSame([], $this->scheduledEvents);
     }
 
     /**
      * A correctly signed manifest that is not NEWER than the on-disk build is
      * also up_to_date, not an error: the existing downgrade guard rejects it
-     * and beat 1 must classify that rejection as benign.
+     * and the arm must classify that rejection as benign.
      */
-    public function test_stage_returns_up_to_date_when_the_published_build_is_not_newer(): void
+    public function test_arm_returns_up_to_date_when_the_published_build_is_not_newer(): void
     {
         $claims = $this->makeClaims(['version' => $this->onDiskVersion]);
         $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
 
-        $answer = $this->makeChecker()->stageSelfUpdate();
+        $answer = $this->makeChecker()->planSelfUpdate();
 
         $this->assertSame('up_to_date', $answer['status']);
-        $this->assertArrayNotHasKey(UpdateChecker::OPTION_STAGED, $this->options);
+        $this->assertArrayNotHasKey(self::LOCK_OPTION, $this->options);
         $this->assertSame([], $this->scheduledEvents);
     }
 
     /**
-     * A manifest that fails the signature chain is an ERROR, and stages
-     * nothing. Distinguishing this from up_to_date is the whole reason the
-     * outcome tag exists.
+     * A manifest that fails the signature chain is an ERROR, and arms nothing.
+     * Distinguishing this from up_to_date is the whole reason the outcome tag
+     * exists.
      */
-    public function test_stage_returns_error_when_the_manifest_fails_verification(): void
+    public function test_arm_returns_error_when_the_manifest_fails_verification(): void
     {
         $claims                = $this->makeClaims();
         $envelope              = $this->signClaims($claims);
         $envelope['signature'] = $this->b64url(random_bytes(SODIUM_CRYPTO_SIGN_BYTES));
         $this->stubManifestEndpoint(200, (string) json_encode($envelope));
 
-        $answer = $this->makeChecker()->stageSelfUpdate();
+        $answer = $this->makeChecker()->planSelfUpdate();
 
         $this->assertSame('error', $answer['status']);
         $this->assertFalse($answer['ok']);
-        $this->assertArrayNotHasKey(UpdateChecker::OPTION_STAGED, $this->options);
+        $this->assertSame('', $answer['apply_id']);
+        $this->assertArrayNotHasKey(self::LOCK_OPTION, $this->options);
         $this->assertSame([], $this->scheduledEvents);
     }
 
     /**
-     * A second ARM inside the staging window is a no-op: one staged record, one
-     * scheduled event, no second CP round trip.
+     * A second arm while the lock is held is NOT a second apply.
+     *
+     * This replaces two separate tests (a second arm inside the staging window,
+     * and a retry after a scheduling failure) because there is now exactly one
+     * mechanism behind both: core's own upgrader lock, one atomic INSERT IGNORE,
+     * which is what the hand-rolled claim, in-flight marker and stage token were
+     * all approximating.
+     *
+     * The answer must still name the apply that holds the lock. An
+     * already_scheduled that carries no apply id leaves the control plane with
+     * nothing to attribute a later version move to, and confirming on version
+     * movement alone is precisely the unproven confirmation this channel exists
+     * to stop making.
      */
-    public function test_stage_refuses_to_stage_twice_inside_the_window(): void
+    public function test_a_second_arm_while_the_lock_is_held_answers_already_scheduled(): void
     {
         $claims = $this->makeClaims(['version' => $this->targetVersion]);
         $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
 
         $checker = $this->makeChecker();
-        $first   = $checker->stageSelfUpdate();
-        $second  = $checker->stageSelfUpdate();
+        $first   = $checker->planSelfUpdate();
+        $second  = $checker->planSelfUpdate();
 
         $this->assertSame('scheduled', $first['status']);
         $this->assertSame('already_scheduled', $second['status']);
         $this->assertSame($this->targetVersion, $second['to_version']);
-        $this->assertCount(1, $this->scheduledEvents, 'a second ARM must not schedule a second apply event');
-        $this->assertCount(1, $this->httpCalls, 'a second ARM must not re-hit the CP manifest endpoint');
-    }
-
-    /**
-     * THE ARM MUST NOT REPORT A SUCCESS IT DID NOT VERIFY.
-     *
-     * wp_schedule_single_event answers false when another plugin short-circuits
-     * pre_schedule_event, when a schedule_event filter returns something falsy,
-     * and for a duplicate single event scheduled within ten minutes of an
-     * identical one. Its return value used to be discarded, so beat 1 answered
-     * "scheduled" in every one of those cases and the control plane then sat out
-     * its entire twenty-minute confirm window waiting for a cron beat that had
-     * never been created. A site can be perfectly healthy and answering every
-     * request while this happens, which is what made it unreadable from outside.
-     *
-     * The stage is deliberately KEPT. The apply no longer depends on the cron
-     * event: the request-bound backstop applies this very record on the next
-     * request the site serves. Rolling it back would trade a diagnosable failure
-     * for a fleet that can never update itself while the offending filter is
-     * installed.
-     *
-     * Fails against the pre-fix code: the answer is "scheduled".
-     */
-    public function test_stage_answers_error_when_the_apply_event_cannot_be_scheduled(): void
-    {
-        $this->scheduleReturn = false;
-
-        $claims = $this->makeClaims(['version' => $this->targetVersion]);
-        $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
-
-        $answer = $this->makeChecker()->stageSelfUpdate();
-
-        $this->assertSame(
-            'error',
-            $answer['status'],
-            'an event WordPress refused to schedule must never be reported as scheduled'
-        );
-        $this->assertFalse($answer['ok'], 'the control plane has to be able to fail this task immediately');
-        $this->assertStringContainsString(
-            'wp_schedule_single_event',
-            $answer['detail'],
-            'the detail is the whole diagnostic value of an error answer, so it must name what failed'
-        );
-        $this->assertSame('', $answer['to_version'], 'only scheduled/already_scheduled carry a target version');
-
-        $this->assertIsArray(
-            $this->options[UpdateChecker::OPTION_STAGED] ?? null,
-            'the stage is kept so the request-bound backstop can still apply it'
-        );
-    }
-
-    /**
-     * The same arm, re-run. The kept record is what makes the retry meaningful:
-     * it answers already_scheduled, which the control plane treats as armed and
-     * confirms through beat 3 once the backstop has applied it.
-     */
-    public function test_a_retry_after_a_scheduling_failure_answers_already_scheduled(): void
-    {
-        $this->scheduleReturn = false;
-
-        $claims = $this->makeClaims(['version' => $this->targetVersion]);
-        $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
-
-        $checker = $this->makeChecker();
-        $this->assertSame('error', $checker->stageSelfUpdate()['status']);
-
-        $second = $checker->stageSelfUpdate();
-        $this->assertSame('already_scheduled', $second['status']);
-        $this->assertSame($this->targetVersion, $second['to_version']);
         $this->assertGreaterThan(time(), $second['expires_at']);
+        $this->assertSame(
+            $first['apply_id'],
+            $second['apply_id'],
+            'the second arm must name the apply that actually holds the lock, not a fresh id and not an empty one'
+        );
+        $this->assertCount(2, $this->httpCalls, 'the second arm still verifies a manifest; only the apply is refused');
     }
 
     /**
      * An un-enrolled site has no control plane to obey.
      */
-    public function test_stage_is_not_eligible_when_the_site_is_not_enrolled(): void
+    public function test_arm_is_not_eligible_when_the_site_is_not_enrolled(): void
     {
         $this->forceUnenrolled = true;
         $this->settings        = new Settings();
 
-        $answer = $this->makeChecker()->stageSelfUpdate();
+        $answer = $this->makeChecker()->planSelfUpdate();
 
         $this->assertSame('not_eligible', $answer['status']);
-        $this->assertArrayNotHasKey(UpdateChecker::OPTION_STAGED, $this->options);
+        $this->assertArrayNotHasKey(self::LOCK_OPTION, $this->options);
         $this->assertSame([], $this->scheduledEvents);
+    }
+
+    /**
+     * A SITE WHOSE PHP SAPI CANNOT DETACH IS REFUSED AT THE ARM, IMMEDIATELY.
+     *
+     * The apply has to release the control-plane connection before it starts,
+     * because a multi-minute upgrade on a still-attached connection is on a
+     * timer nobody here controls. On mod_php or plain CGI there is no way to
+     * release it, so the upgrade must not run at all.
+     *
+     * That refusal used to be discovered AFTER the acknowledgement had gone
+     * out: such a site answered "scheduled", the control plane waited out its
+     * whole 20-minute confirm deadline, and only then recorded a failed task,
+     * which in wave 0 halts the entire rollout and costs another 20 minutes on
+     * every retry. Detachability is a property of the host and of nothing else,
+     * knowable in the first millisecond, so it is answered here.
+     *
+     * "not_eligible" is the answer because it is the existing status for "this
+     * channel does not apply to this site", and the control plane scores it as
+     * skipped rather than failed. The specific reason rides in the detail and
+     * in the apply-result record, so no sixth ARM status is invented for it.
+     */
+    public function test_a_sapi_that_cannot_detach_is_refused_at_the_arm(): void
+    {
+        $claims = $this->makeClaims(['version' => $this->targetVersion]);
+        $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
+
+        $checker = $this->makeChecker(false);
+
+        $before = $this->snapshotDisk();
+        $answer = $checker->planSelfUpdate();
+
+        $this->assertSame(
+            'not_eligible',
+            $answer['status'],
+            'the control plane scores this as skipped; "error" would fail the task and halt the wave'
+        );
+        $this->assertTrue($answer['ok'], 'an ineligible host is informational, never a failure');
+        $this->assertSame('', $answer['to_version']);
+        $this->assertSame('', $answer['apply_id'], 'nothing was armed, so there is no apply to name');
+        $this->assertSame(0, $answer['expires_at']);
+        $this->assertStringContainsString(
+            'fastcgi_finish_request',
+            (string) $answer['detail'],
+            'the reason must be specific enough for an operator to act on'
+        );
+
+        $this->assertSame($before, $this->snapshotDisk(), 'a refused arm touches nothing on disk');
+        $this->assertSame(
+            [],
+            $this->httpCalls,
+            'the answer depends on the host and not on the manifest, so it must not cost a CP round trip'
+        );
+        $this->assertArrayNotHasKey(self::LOCK_OPTION, $this->options, 'and it must not take the apply lock');
+        $this->assertFalse(
+            has_filter('rest_pre_serve_request', [$checker, 'serveThenApply']),
+            'no apply seam may be registered for an apply that will never run'
+        );
+
+        $record = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
+        $this->assertIsArray($record, 'the refusal is recorded as well as answered');
+        $this->assertSame('sapi_cannot_detach', $record['status']);
+        $this->assertSame('', $record['apply_id'], 'no apply was taken, so the record names none');
+        $this->assertSame(
+            $answer['detail'],
+            $record['detail'],
+            'the answer and the record must carry one sentence, not two that can drift'
+        );
+    }
+
+    /**
+     * A site arriving from the retired cron-and-stage design sheds its leftovers
+     * on the first arm, and it does so BEFORE the manifest fetch. Once a fleet
+     * is current the common answer is up_to_date, which returns early, so a
+     * cleanup placed after that return would never run on the sites most likely
+     * to still be carrying an autoloaded staged row.
+     */
+    public function test_the_arm_sheds_the_retired_staging_state_even_when_up_to_date(): void
+    {
+        $this->options['wpmgr_agent_self_update_staged']   = ['to_version' => '9.9.9'];
+        $this->options['wpmgr_agent_self_update_applying'] = time();
+
+        /** @var list<string> $cleared */
+        $cleared = [];
+        Functions\when('wp_clear_scheduled_hook')->alias(function (string $hook) use (&$cleared): int {
+            $cleared[] = $hook;
+
+            return 1;
+        });
+
+        $this->stubManifestEndpoint(204, '');
+
+        $answer = $this->makeChecker()->planSelfUpdate();
+
+        $this->assertSame('up_to_date', $answer['status']);
+        $this->assertArrayNotHasKey('wpmgr_agent_self_update_staged', $this->options);
+        $this->assertArrayNotHasKey('wpmgr_agent_self_update_applying', $this->options);
+        $this->assertContains('wpmgr_agent_self_update_apply', $cleared);
     }
 
     // =========================================================================
@@ -628,7 +653,7 @@ final class AgentSelfUpdateTest extends TestCase
         $this->assertSame('agent_self_update', (new AgentSelfUpdateCommand())->name());
     }
 
-    public function test_command_forwards_the_stage_answer_verbatim(): void
+    public function test_command_forwards_the_arm_answer_verbatim(): void
     {
         $claims = $this->makeClaims(['version' => $this->targetVersion]);
         $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
@@ -637,6 +662,7 @@ final class AgentSelfUpdateTest extends TestCase
 
         $this->assertSame('scheduled', $result['status']);
         $this->assertSame($this->targetVersion, $result['to_version']);
+        $this->assertNotSame('', (string) $result['apply_id']);
     }
 
     /**
@@ -677,418 +703,12 @@ final class AgentSelfUpdateTest extends TestCase
     }
 
     // =========================================================================
-    // BEAT 2 (APPLY)
+    // What reaches the control plane
     // =========================================================================
-
-    /**
-     * NO EXIT OF THE APPLY BEAT MAY BE SILENT.
-     *
-     * This path used to return without a trace, and the recorded result is the
-     * ONLY channel beat 2 has back to the control plane. "The apply beat ran and
-     * found nothing staged" and "the apply beat never ran at all" are the two
-     * things an operator most needs told apart, and from the control plane they
-     * looked identical: both were a confirm timeout and total silence.
-     *
-     * Fails against the pre-fix code: nothing is recorded.
-     */
-    public function test_apply_records_an_outcome_when_there_is_no_staged_record(): void
-    {
-        $this->makeChecker()->applyStagedSelfUpdate('some-token');
-
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result, 'a beat that ran and found nothing must still say so');
-        $this->assertSame('not_staged', $result['status']);
-        $this->assertNotSame('', (string) $result['detail']);
-    }
-
-    /**
-     * A diagnostic exit must NEVER clobber a real outcome. Both entry points run
-     * in the same wp-cron request whenever a tick also carries the due apply
-     * event: the winner applies, and the loser then finds nothing staged. If
-     * that loser overwrote the winner's record, the control plane would be told
-     * the exact opposite of what happened.
-     */
-    public function test_a_diagnostic_exit_never_overwrites_a_recorded_outcome(): void
-    {
-        $applied = [
-            'status'       => 'applied',
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'detail'       => '',
-            'at'           => time(),
-        ];
-        $this->options[AgentSelfUpdateCommand::OPTION_RESULT] = $applied;
-
-        // The second entry point of the same request, finding the record gone.
-        $this->makeChecker()->applyStagedSelfUpdate('some-token');
-
-        $this->assertSame(
-            $applied,
-            $this->options[AgentSelfUpdateCommand::OPTION_RESULT],
-            'the apply that actually happened owns the record'
-        );
-    }
-
-    /**
-     * A site whose loopback cron is broken never reaches beat 2 in time. The
-     * record must then be DISCARDED, not retried: no disk was touched at ARM,
-     * so an expired stage is safely a non-event that surfaces as unconfirmed.
-     */
-    public function test_apply_discards_an_expired_staged_record_without_retrying(): void
-    {
-        $this->options[UpdateChecker::OPTION_STAGED] = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time() - (UpdateChecker::STAGED_TTL_SECONDS + 120),
-            'expires_at'   => time() - 120,
-            'token'        => 'stale-token',
-        ];
-
-        $this->makeChecker()->applyStagedSelfUpdate('stale-token');
-
-        $this->assertArrayNotHasKey(
-            UpdateChecker::OPTION_STAGED,
-            $this->options,
-            'an expired record must be discarded, never left behind for a later tick to retry'
-        );
-        $this->assertSame([], $this->scheduledEvents, 'the apply beat must never schedule a retry');
-
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result);
-        $this->assertSame('expired', $result['status']);
-        $this->assertSame($this->targetVersion, $result['to_version']);
-    }
-
-    /**
-     * The staged record is CLAIMED (deleted) before any upgrade work starts, so
-     * an apply that dies partway can never be retried by a later cron tick. The
-     * upgrader is deliberately unavailable in this process, which exercises the
-     * failure path: the record is gone, a failure is recorded for the next
-     * metadata push, and nothing is rescheduled.
-     */
-    public function test_apply_claims_the_record_before_upgrading_and_never_retries_a_failure(): void
-    {
-        $this->options[UpdateChecker::OPTION_STAGED] = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time(),
-            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
-            'token'        => 'live-token',
-        ];
-
-        $before = $this->snapshotDisk();
-        $this->makeChecker()->applyStagedSelfUpdate('live-token');
-        $after = $this->snapshotDisk();
-
-        $this->assertSame($before, $after);
-        $this->assertArrayNotHasKey(
-            UpdateChecker::OPTION_STAGED,
-            $this->options,
-            'the record must be claimed and deleted before the upgrade, so a mid-copy death cannot loop'
-        );
-        $this->assertSame([], $this->scheduledEvents, 'a failed apply must not schedule a retry');
-
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result);
-        $this->assertSame('failed', $result['status']);
-        $this->assertSame($this->targetVersion, $result['to_version']);
-    }
-
-    /**
-     * BEAT 2 RUNS IN A WP-CRON REQUEST, where PHP's max_execution_time is 30s on
-     * a great many hosts, and it pulls a few MiB over the network before running
-     * WordPress's non-atomic install_package() over the result. Pre-fix there
-     * was no set_time_limit() anywhere on this path, so a download that would
-     * have completed comfortably inside the HTTP client's own budget was killed
-     * by PHP first. The record had already been CLAIMED by then, so nothing
-     * retried it and the control plane saw only a confirm timeout.
-     *
-     * Asserted as INTENT (the call and its argument), not as an observed OS
-     * effect: set_time_limit() is a no-op under most CLI SAPIs and under
-     * disable_functions, so a unit test cannot prove the limit was honoured.
-     *
-     * Bounded, never 0: max_execution_time is the ONE timer whose fatal still
-     * runs shutdown functions, so discarding it leaves only an FPM SIGTERM that
-     * runs none of them.
-     *
-     * Fails against the pre-fix code: $limits is empty.
-     */
-    public function test_apply_raises_a_bounded_php_execution_limit_before_upgrading(): void
-    {
-        /** @var list<int> $limits */
-        $limits = [];
-        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
-            $limits[] = $seconds;
-
-            return true;
-        });
-
-        $this->options[UpdateChecker::OPTION_STAGED] = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time(),
-            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
-            'token'        => 'live-token',
-        ];
-
-        $this->makeChecker()->applyStagedSelfUpdate('live-token');
-
-        $this->assertNotSame(
-            [],
-            $limits,
-            'beat 2 must raise the PHP execution limit before any download; without it max_execution_time (30s on many hosts) kills the apply'
-        );
-        $this->assertSame(
-            900,
-            $limits[0],
-            'the apply cap must be the same bounded 900s every other long-running agent job uses, never 0 (infinite)'
-        );
-        $this->assertGreaterThan(
-            300,
-            $limits[0],
-            'the execution limit must exceed the 300s package download budget, so cURL gives up before PHP does'
-        );
-    }
-
-    /**
-     * A wp-cron request runs EVERY due event. A tick with nothing staged is the
-     * normal state on every site, and it must not raise the execution limit for
-     * whatever unrelated event runs after it. This is why the raise sits after
-     * the claim rather than at the top of the method.
-     */
-    public function test_apply_leaves_the_execution_limit_alone_when_nothing_is_staged(): void
-    {
-        /** @var list<int> $limits */
-        $limits = [];
-        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
-            $limits[] = $seconds;
-
-            return true;
-        });
-
-        $this->makeChecker()->applyStagedSelfUpdate('some-token');
-
-        $this->assertSame([], $limits, 'a cron tick with nothing staged must not touch the execution limit of the request');
-    }
-
-    /**
-     * An expired stage is discarded, not applied, so it must not raise the limit
-     * either: no download and no copy follow it.
-     */
-    public function test_apply_leaves_the_execution_limit_alone_for_an_expired_record(): void
-    {
-        /** @var list<int> $limits */
-        $limits = [];
-        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
-            $limits[] = $seconds;
-
-            return true;
-        });
-
-        $this->options[UpdateChecker::OPTION_STAGED] = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time() - (UpdateChecker::STAGED_TTL_SECONDS + 120),
-            'expires_at'   => time() - 120,
-            'token'        => 'stale-token',
-        ];
-
-        $this->makeChecker()->applyStagedSelfUpdate('stale-token');
-
-        $this->assertSame([], $limits, 'a discarded stage does no work, so it must not raise the execution limit');
-    }
-
-    /**
-     * A stale duplicate event from an earlier stage must not consume the record
-     * belonging to the CURRENT stage. It must also not vanish without trace:
-     * this was the second of the two silent exits.
-     *
-     * Fails against the pre-fix code: nothing is recorded.
-     */
-    public function test_apply_ignores_an_event_whose_token_does_not_match_the_record(): void
-    {
-        $record = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time(),
-            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
-            'token'        => 'current-token',
-        ];
-        $this->options[UpdateChecker::OPTION_STAGED] = $record;
-
-        $this->makeChecker()->applyStagedSelfUpdate('token-from-an-earlier-stage');
-
-        $this->assertSame($record, $this->options[UpdateChecker::OPTION_STAGED]);
-
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result, 'an ignored stale event must still leave a trace');
-        $this->assertSame('token_mismatch', $result['status']);
-        $this->assertSame($this->targetVersion, $result['to_version']);
-    }
-
-    // =========================================================================
-    // BEAT 2: the two entry points must never both apply
-    // =========================================================================
-
-    /**
-     * THE CLAIM HAS TO BE ATOMIC, NOT A READ FOLLOWED BY A DELETE.
-     *
-     * The cron event and the request-bound plugins_loaded backstop both land in
-     * applyStagedSelfUpdate. A read-then-delete_option pair lets two requests
-     * that both read the record before either delete lands BOTH run
-     * Plugin_Upgrader over the agent's own directory, which is exactly the
-     * outcome the three-beat design exists to prevent. That window was narrow
-     * while cron was the only way in; with a backstop on every request of a
-     * chatty site it is not narrow at all.
-     *
-     * The race is modelled honestly: the option store keeps handing the record
-     * out (both callers read before either claim landed) and only the single
-     * DELETE statement arbitrates, which is what the database guarantees.
-     *
-     * Fails against the pre-fix code: no claim statement is issued at all
-     * (deleteAttempts is 0) and BOTH callers proceed to raise the execution
-     * limit, so two applies are underway.
-     */
-    public function test_two_entry_points_cannot_both_apply_the_same_staged_record(): void
-    {
-        /** @var list<int> $limits */
-        $limits = [];
-        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
-            $limits[] = $seconds;
-
-            return true;
-        });
-
-        $wpdb = $this->installRacingWpdb();
-        $this->pinStagedRecord = true;
-
-        $this->options[UpdateChecker::OPTION_STAGED] = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time(),
-            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
-            'token'        => 'live-token',
-        ];
-
-        $checker = $this->makeChecker();
-        $checker->applyStagedSelfUpdate('live-token'); // the cron event
-        $checker->applyStagedSelfUpdate('');           // the request-bound backstop
-
-        $this->assertSame(
-            2,
-            $wpdb->deleteAttempts,
-            'both entry points must attempt the claim; the database decides which one owns it'
-        );
-        $this->assertCount(
-            1,
-            $limits,
-            'exactly one caller may get past the claim, so exactly one apply is ever underway'
-        );
-
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result);
-        $this->assertSame(
-            'failed',
-            $result['status'],
-            'the winner owns the outcome; the loser records a diagnostic that must not overwrite it'
-        );
-    }
-
-    /**
-     * The other overlap the record claim cannot see: a control plane that arms a
-     * SECOND update while the first is still copying files stages a second
-     * record, and the backstop would otherwise claim it on the very next
-     * request. The stage is LEFT IN PLACE so the next request applies it once
-     * the running apply is done.
-     */
-    public function test_apply_defers_to_an_apply_that_is_already_running(): void
-    {
-        // Written by the request that won the claim. Named by literal because
-        // the constant is private; it is asserted here so a rename cannot
-        // silently disable this guard.
-        $this->options['wpmgr_agent_self_update_applying'] = time();
-
-        $record = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time(),
-            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
-            'token'        => 'live-token',
-        ];
-        $this->options[UpdateChecker::OPTION_STAGED] = $record;
-
-        $this->makeChecker()->applyStagedSelfUpdate('live-token');
-
-        $this->assertSame(
-            $record,
-            $this->options[UpdateChecker::OPTION_STAGED] ?? null,
-            'a busy site must keep its stage so the next request can apply it'
-        );
-
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result);
-        $this->assertSame('apply_in_progress', $result['status']);
-    }
-
-    /**
-     * A hard-killed apply leaves its marker behind. It must not block this
-     * site's updates forever: a marker older than the ceiling the apply itself
-     * runs under belongs to a request that can no longer be alive.
-     */
-    public function test_a_stale_in_flight_marker_does_not_block_the_next_apply(): void
-    {
-        $this->options['wpmgr_agent_self_update_applying'] = time() - 901;
-
-        $this->options[UpdateChecker::OPTION_STAGED] = [
-            'from_version' => '0.10.5',
-            'to_version'   => $this->targetVersion,
-            'staged_at'    => time(),
-            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
-            'token'        => 'live-token',
-        ];
-
-        $this->makeChecker()->applyStagedSelfUpdate('live-token');
-
-        $this->assertArrayNotHasKey(
-            UpdateChecker::OPTION_STAGED,
-            $this->options,
-            'the stale marker must be ignored and the record claimed'
-        );
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result);
-        $this->assertSame('failed', $result['status'], 'the apply ran (and failed for want of an upgrader)');
-
-        $this->assertArrayNotHasKey(
-            'wpmgr_agent_self_update_applying',
-            $this->options,
-            'the marker is released on every terminal path, including a failed one'
-        );
-    }
-
-    /**
-     * A target the site is already running is discarded rather than reinstalled.
-     */
-    public function test_apply_discards_a_record_whose_target_is_already_on_disk(): void
-    {
-        $this->options[UpdateChecker::OPTION_STAGED] = [
-            'from_version' => '0.10.4',
-            'to_version'   => $this->onDiskVersion,
-            'staged_at'    => time(),
-            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
-            'token'        => 'live-token',
-        ];
-
-        $this->makeChecker()->applyStagedSelfUpdate('live-token');
-
-        $this->assertArrayNotHasKey(UpdateChecker::OPTION_STAGED, $this->options);
-        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($result);
-        $this->assertSame('already_applied', $result['status']);
-    }
 
     /**
      * The apply outcome reaches the control plane through the next metadata
-     * push, which is the ONLY channel a cron-side failure has.
+     * push, which is the ONLY channel a failed apply has.
      */
     public function test_metadata_payload_carries_the_last_apply_outcome(): void
     {
@@ -1098,7 +718,7 @@ final class AgentSelfUpdateTest extends TestCase
         $this->assertArrayNotHasKey(
             'agent_self_update',
             $collector->collect(),
-            'a site that never staged a self-update must not carry the key at all'
+            'a site that never armed a self-update must not carry the key at all'
         );
 
         $this->options[AgentSelfUpdateCommand::OPTION_RESULT] = [
@@ -1107,12 +727,77 @@ final class AgentSelfUpdateTest extends TestCase
             'to_version'   => $this->targetVersion,
             'detail'       => 'Upgrader API unavailable.',
             'at'           => time(),
+            'apply_id'     => 'ff00ff00ff00ff00ff00ff00ff00ff00',
         ];
 
         $payload = $collector->collect();
         $this->assertArrayHasKey('agent_self_update', $payload);
         $this->assertSame('failed', $payload['agent_self_update']['status']);
         $this->assertSame($this->targetVersion, $payload['agent_self_update']['to_version']);
+    }
+
+    /**
+     * THE METADATA PAYLOAD IS THE ONLY PRODUCER OF THIS WIRE FIELD, AND IT IS A
+     * WHITELIST.
+     *
+     * MetadataCommand rebuilds the record key by key before Enrollment signs it,
+     * so anything the self-updater stores that this list does not name is
+     * dropped on the floor. That is not a theoretical hazard: with apply_id
+     * missing from the list, every apply reaches the control plane
+     * unattributable, a perfectly successful upgrade is recorded as unproven,
+     * and a canary that upgraded exactly as asked halts its own rollout. Pin the
+     * keys, in both directions, so adding a field to the record and forgetting
+     * this list fails here.
+     */
+    public function test_the_metadata_payload_pins_the_self_update_wire_keys(): void
+    {
+        Functions\when('is_multisite')->justReturn(false);
+
+        $this->options[AgentSelfUpdateCommand::OPTION_RESULT] = [
+            'status'       => 'applied',
+            'from_version' => '0.10.5',
+            'to_version'   => $this->targetVersion,
+            'detail'       => '',
+            'at'           => 1750000000,
+            'apply_id'     => 'abcdef0123456789abcdef0123456789',
+            'ignored_key'  => 'must not travel',
+        ];
+
+        $payload = (new \WPMgr\Agent\Commands\MetadataCommand())->collect();
+
+        $this->assertSame(
+            ['status', 'from_version', 'to_version', 'detail', 'at', 'apply_id'],
+            array_keys($payload['agent_self_update']),
+            'the agent_self_update wire shape is pinned; change it here and in the control plane contract together'
+        );
+        $this->assertSame(
+            'abcdef0123456789abcdef0123456789',
+            $payload['agent_self_update']['apply_id'],
+            'apply_id must survive the whitelist, or attribution is impossible by construction'
+        );
+    }
+
+    /**
+     * An agent that predates apply-id stamping stored no such key. Its record
+     * must still travel, with an empty apply id, which the control plane reads
+     * as "cannot be attributed" rather than as a malformed payload.
+     */
+    public function test_a_record_from_an_older_agent_travels_with_an_empty_apply_id(): void
+    {
+        Functions\when('is_multisite')->justReturn(false);
+
+        $this->options[AgentSelfUpdateCommand::OPTION_RESULT] = [
+            'status'       => 'failed',
+            'from_version' => '0.61.106',
+            'to_version'   => '0.61.107',
+            'detail'       => 'Upgrader reported no result.',
+            'at'           => 1750000000,
+        ];
+
+        $payload = (new \WPMgr\Agent\Commands\MetadataCommand())->collect();
+
+        $this->assertSame('failed', $payload['agent_self_update']['status']);
+        $this->assertSame('', $payload['agent_self_update']['apply_id']);
     }
 
     /**
@@ -1126,15 +811,18 @@ final class AgentSelfUpdateTest extends TestCase
         $method  = new \ReflectionMethod($checker, 'recordSelfUpdateResult');
         $method->invoke(
             $checker,
+            'apply-id-under-test',
             'failed',
             '0.10.5',
             $this->targetVersion,
             'download failed: https://storage.googleapis.com/bucket/a.zip?X-Goog-Signature=deadbeef'
         );
 
-        $detail = (string) $this->options[AgentSelfUpdateCommand::OPTION_RESULT]['detail'];
+        $record = $this->options[AgentSelfUpdateCommand::OPTION_RESULT];
+        $detail = (string) $record['detail'];
         $this->assertStringNotContainsString('X-Goog-Signature', $detail);
         $this->assertStringNotContainsString('https://', $detail);
         $this->assertStringContainsString('[url]', $detail);
+        $this->assertSame('apply-id-under-test', $record['apply_id']);
     }
 }
