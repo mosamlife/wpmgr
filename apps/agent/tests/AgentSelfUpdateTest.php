@@ -613,6 +613,110 @@ final class AgentSelfUpdateTest extends TestCase
     }
 
     /**
+     * BEAT 2 RUNS IN A WP-CRON REQUEST, where PHP's max_execution_time is 30s on
+     * a great many hosts, and it pulls a few MiB over the network before running
+     * WordPress's non-atomic install_package() over the result. Pre-fix there
+     * was no set_time_limit() anywhere on this path, so a download that would
+     * have completed comfortably inside the HTTP client's own budget was killed
+     * by PHP first. The record had already been CLAIMED by then, so nothing
+     * retried it and the control plane saw only a confirm timeout.
+     *
+     * Asserted as INTENT (the call and its argument), not as an observed OS
+     * effect: set_time_limit() is a no-op under most CLI SAPIs and under
+     * disable_functions, so a unit test cannot prove the limit was honoured.
+     *
+     * Bounded, never 0: max_execution_time is the ONE timer whose fatal still
+     * runs shutdown functions, so discarding it leaves only an FPM SIGTERM that
+     * runs none of them.
+     *
+     * Fails against the pre-fix code: $limits is empty.
+     */
+    public function test_apply_raises_a_bounded_php_execution_limit_before_upgrading(): void
+    {
+        /** @var list<int> $limits */
+        $limits = [];
+        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
+            $limits[] = $seconds;
+
+            return true;
+        });
+
+        $this->options[UpdateChecker::OPTION_STAGED] = [
+            'from_version' => '0.10.5',
+            'to_version'   => $this->targetVersion,
+            'staged_at'    => time(),
+            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
+            'token'        => 'live-token',
+        ];
+
+        $this->makeChecker()->applyStagedSelfUpdate('live-token');
+
+        $this->assertNotSame(
+            [],
+            $limits,
+            'beat 2 must raise the PHP execution limit before any download; without it max_execution_time (30s on many hosts) kills the apply'
+        );
+        $this->assertSame(
+            900,
+            $limits[0],
+            'the apply cap must be the same bounded 900s every other long-running agent job uses, never 0 (infinite)'
+        );
+        $this->assertGreaterThan(
+            300,
+            $limits[0],
+            'the execution limit must exceed the 300s package download budget, so cURL gives up before PHP does'
+        );
+    }
+
+    /**
+     * A wp-cron request runs EVERY due event. A tick with nothing staged is the
+     * normal state on every site, and it must not raise the execution limit for
+     * whatever unrelated event runs after it. This is why the raise sits after
+     * the claim rather than at the top of the method.
+     */
+    public function test_apply_leaves_the_execution_limit_alone_when_nothing_is_staged(): void
+    {
+        /** @var list<int> $limits */
+        $limits = [];
+        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
+            $limits[] = $seconds;
+
+            return true;
+        });
+
+        $this->makeChecker()->applyStagedSelfUpdate('some-token');
+
+        $this->assertSame([], $limits, 'a cron tick with nothing staged must not touch the execution limit of the request');
+    }
+
+    /**
+     * An expired stage is discarded, not applied, so it must not raise the limit
+     * either: no download and no copy follow it.
+     */
+    public function test_apply_leaves_the_execution_limit_alone_for_an_expired_record(): void
+    {
+        /** @var list<int> $limits */
+        $limits = [];
+        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
+            $limits[] = $seconds;
+
+            return true;
+        });
+
+        $this->options[UpdateChecker::OPTION_STAGED] = [
+            'from_version' => '0.10.5',
+            'to_version'   => $this->targetVersion,
+            'staged_at'    => time() - (UpdateChecker::STAGED_TTL_SECONDS + 120),
+            'expires_at'   => time() - 120,
+            'token'        => 'stale-token',
+        ];
+
+        $this->makeChecker()->applyStagedSelfUpdate('stale-token');
+
+        $this->assertSame([], $limits, 'a discarded stage does no work, so it must not raise the execution limit');
+    }
+
+    /**
      * A stale duplicate event from an earlier stage must not consume the record
      * belonging to the CURRENT stage.
      */

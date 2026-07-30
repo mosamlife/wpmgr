@@ -240,11 +240,14 @@ var errPackageStreamTotal = errors.New("agent: package stream exceeded its whole
 // above the 1 KB/s that ceiling demands:
 //
 //   - THE AGENT'S OWN BUDGET, which is the binding one. It downloads with
-//     wp_remote_get('timeout' => 60), a WHOLE-operation cap, so a 3 MiB package
-//     has to average 3145728/60 = 52428 B/s, about 52 KB/s. That is 51x the rate
-//     this ceiling asks for, and in wall clock the agent has abandoned the
-//     request 51 minutes before the ceiling could fire. A transfer that reaches
-//     this ceiling has no agent waiting on the other end of it.
+//     wp_remote_get using a WHOLE-operation cap, 300s as of agent 0.61.105, so a
+//     3 MiB package has to average 3145728/300 = 10486 B/s, about 11 KB/s. That
+//     is still an order of magnitude above the rate this ceiling asks for, and in
+//     wall clock the agent has abandoned the request roughly 46 minutes before
+//     the ceiling could fire. A transfer that reaches this ceiling has no agent
+//     waiting on the other end of it. The cap was 60s before 0.61.105, which
+//     demanded about 55 KB/s and therefore sat ABOVE the 25 to 40 KB/s band this
+//     path exists to carry: raising it is what let those sites finish at all.
 //   - THE MEASURED SLOW-CONSUMER BAND. The population this work exists to
 //     protect sat between 25 and 40 KB/s (see streamPackage's table), which is
 //     25x to 40x the ceiling's floor.
@@ -262,7 +265,7 @@ var errPackageStreamTotal = errors.New("agent: package stream exceeded its whole
 // Enforcing it mid-body would cap every response at five minutes of wall clock
 // with 200 and Content-Length already flushed, which is the original defect
 // verbatim, just with a five minute cap instead of a 15s one. It would also bind
-// the control plane to one agent's timeout: the 60s budget above is documented
+// the control plane to one agent's timeout: the agent budget above is documented
 // as movable, and an operator who raises it for genuinely slow sites would find
 // this route truncating them for a reason no log on either side names. The
 // presigned-storage design this replaced checked its expiry at request start and
@@ -322,7 +325,7 @@ var (
 // blocks depends on the consumer's read granularity and on TCP window-update
 // timing, neither of which the control plane can observe or predict. The real
 // floor sat between 25 and 40 KB/s rather than the 3.28 KB/s the chunk size
-// reasons to, which for a small package is inside the range the agent's own 60s
+// reasons to, which for a small package is inside the range the agent's own
 // budget still allows: a 30 KB/s site pulling a 1.2 MiB package has 41s of agent
 // budget and would be cut off here at about 840 KB, with 200 and Content-Length
 // already flushed, so it fails its size and sha256 check and never self-updates.

@@ -39,6 +39,22 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.105",
+    date: "2026-07-30",
+    summary: "Agent updates now complete on slower sites instead of failing forever.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The agent's self-update download was bound by a single 60 second limit for the whole transfer, which needed roughly 55 kilobytes per second sustained. Sites downloading at the roughly 25 to 40 kilobytes per second this feature is meant to serve were cut off every time, discarded the incomplete file, and retried forever with no way to finish. The limit is now 300 seconds, comfortably covering slower connections.",
+      },
+      {
+        tag: "Fixed",
+        text: "Nothing raised PHP's execution time limit while an update was being applied, so on hosts that stop scripts after 30 seconds by default, an update could be cut off even within its own download budget. The apply step now raises it to 900 seconds, the same bound the ordinary plugin update path uses, before the download starts.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.104",
     date: "2026-07-30",
     summary: "Fleet agent updates work now: the command that starts them was rejecting every request, and a second command had been silently broken since launch.",

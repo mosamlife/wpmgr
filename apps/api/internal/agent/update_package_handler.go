@@ -321,21 +321,22 @@ func (h *UpdateHandler) packageDownload(c *gin.Context) {
 	// update channel for every site on the instance. packageStreamTotalLimit
 	// bounds the TOTAL for that reason, derived from the package size at 1 KB/s
 	// and clamped to [30 min, 2 h], which is two orders of magnitude clear of the
-	// slowest legitimate consumer and 51x clear of what the agent's own 60s
-	// budget already demands of it. The arithmetic, and why the token's expiry is
+	// slowest legitimate consumer and far clear of what the agent's own download
+	// budget demands of it. The arithmetic, and why the token's expiry is
 	// deliberately not revalidated mid-stream instead, are on that function.
 	//
-	// THE END-TO-END FLOOR THAT REMAINS IS THE AGENT'S, AND IT IS UNCHANGED. The
-	// agent downloads with wp_remote_get('timeout' => 60) in
-	// apps/agent/includes/support/class-update-checker.php, a WHOLE-operation cap
-	// this change deliberately leaves alone. A site therefore still has to average
-	// package_size/60s, about 52 KB/s for a 3 MiB package, where the control
-	// plane's old 15s cap demanded roughly 200 KB/s. Below that floor the download
-	// still fails; what changed is that it now fails on the AGENT side as a
-	// WP_Error that retries on the next check, instead of arriving as a truncated
-	// zip that fails the size check every six hours forever. Anyone moving the
-	// agent's 60s moves this floor, and after this change it is the ONLY floor
-	// left on the path.
+	// THE END-TO-END FLOOR THAT REMAINS IS THE AGENT'S. The agent downloads with
+	// wp_remote_get in apps/agent/includes/support/class-update-checker.php using
+	// a WHOLE-operation cap, raised from 60s to 300s in agent 0.61.105 precisely
+	// because the old value was the binding constraint once the control plane
+	// stopped being one. At 60s a 3 MiB package demanded about 55 KB/s, which sat
+	// ABOVE the 25 to 40 KB/s band this whole path exists to carry: those sites
+	// downloaded for a full minute, were cut off, failed the size check, and
+	// retried the identical failure forever. At 300s the same package demands
+	// about 11 KB/s. Below that the download still fails, but on the AGENT side as
+	// a WP_Error that retries on the next check rather than arriving truncated.
+	// Anyone moving the agent's download cap moves this floor, and it is the ONLY
+	// floor left on the path.
 	//
 	// streamCtx is this request's context plus a cancel that fires the moment this
 	// handler gives up, so when the WRITE side is the one that timed out the
