@@ -1,6 +1,9 @@
 package agentplugin
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestIs pins both directions of the slug-only matcher. Matching too little
 // would let an agent self-update advisory reach an operator; matching too much
@@ -155,5 +158,53 @@ func TestDistributionNoneIsZeroValue(t *testing.T) {
 	var zero Distribution
 	if zero != DistributionNone {
 		t.Fatalf("zero Distribution = %q, want %q", zero, DistributionNone)
+	}
+}
+
+// TestIsReleaseVersionSegment pins the shape of the ONE value that ever reaches
+// the agent release object key. Both ends of that channel depend on it: the
+// control plane rebuilds the key from a PUBLISHED version when it serves the
+// package, and the upstream mirror builds it from a FETCHED version when it
+// writes one.
+func TestIsReleaseVersionSegment(t *testing.T) {
+	valid := []string{"0.61.99", "1.0.0-beta.1", "0.10.6-test", "v1.2.3", "1_2_3", "1.0.0+build.5", "9"}
+	for _, v := range valid {
+		if !IsReleaseVersionSegment(v) {
+			t.Errorf("IsReleaseVersionSegment(%q) = false, want true", v)
+		}
+	}
+	invalid := []string{
+		"",
+		"..",
+		"../../backups/tenant-a/2026-07",
+		"1.0.0/../../secrets",
+		"a/b",
+		"a\\b",
+		"a b c",
+		"v1?x=1",
+		"%2e%2e%2f",
+		"1.0.0#frag",
+		"1.0.0\n",
+		strings.Repeat("9", 101),
+		// Every character in these is legal, which is exactly why they need
+		// naming: a version with no digit is not a version. "latest.json" is
+		// the pointer object's own name, and accepting it would build
+		// agent-releases/latest.json/wpmgr-agent.zip, a key that reads as a
+		// child of the pointer beside it and collides with it outright on any
+		// filesystem-backed store.
+		".",
+		"latest.json",
+		"nightly",
+		// A leading separator: not a version, and a leading dot is a relative
+		// path to anything that materialises these keys on disk.
+		".json",
+		"-1.0.0",
+		"_1.0",
+		"+1.0",
+	}
+	for _, v := range invalid {
+		if IsReleaseVersionSegment(v) {
+			t.Errorf("IsReleaseVersionSegment(%q) = true, want false", v)
+		}
 	}
 }

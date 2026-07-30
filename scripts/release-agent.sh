@@ -14,7 +14,18 @@
 # the real protection; this script is the trust boundary that must not foot-gun.
 #
 # Usage:
-#   scripts/release-agent.sh [--dry-run]
+#   scripts/release-agent.sh [--dry-run] [--out PATH]
+#
+#   --dry-run   compute + write the manifest, upload nothing.
+#   --out PATH  write the manifest to PATH instead of release/latest.json.
+#
+# Combining the two emits the manifest and touches no storage at all, which is
+# how release.yml produces the agent-release.json GitHub Release asset. That
+# asset carries the fields the GitHub Releases API cannot express (min_version,
+# requires, requires_php, tested, sections), so a self-hosted control plane can
+# mirror our public release into its OWN bucket with the same guarantees as the
+# object-storage channel. Both channels are generated here, from the same zip,
+# by the same field construction, so they describe a build identically.
 #
 # Env overrides:
 #   WPMGR_RELEASE_BUCKET   (default: wpmgr-chunks-prod)
@@ -24,8 +35,27 @@
 #
 set -euo pipefail
 
+die() { echo "release-agent: $*" >&2; exit 1; }
+
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+OUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --out)
+      [[ $# -ge 2 && -n "$2" ]] || die "--out requires a path"
+      OUT="$2"; shift 2 ;;
+    --out=*)
+      OUT="${1#--out=}"
+      [[ -n "$OUT" ]] || die "--out requires a path"
+      shift ;;
+    -h|--help)
+      echo "usage: release-agent.sh [--dry-run] [--out PATH]"
+      exit 0 ;;
+    *) die "unknown argument: $1 (usage: release-agent.sh [--dry-run] [--out PATH])" ;;
+  esac
+done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -38,8 +68,6 @@ TESTED="${WPMGR_AGENT_TESTED:-6.8}"
 ZIP="release/wpmgr-agent.zip"
 SLUG="wpmgr-agent"
 PLUGIN_FILE="wpmgr-agent/wpmgr-agent.php"
-
-die() { echo "release-agent: $*" >&2; exit 1; }
 
 # --- preconditions -----------------------------------------------------------
 command -v unzip >/dev/null || die "unzip is required"
@@ -71,8 +99,11 @@ SHA256="$(sha256_of "$ZIP")"
 SIZE="$(wc -c < "$ZIP" | tr -d ' ')"
 OBJECT_KEY="${PREFIX}/${VERSION}/wpmgr-agent.zip"
 
-# --- write latest.json -------------------------------------------------------
-LATEST="release/latest.json"
+# --- write the manifest ------------------------------------------------------
+# One construction, both channels: latest.json for object storage and the
+# agent-release.json GitHub Release asset are byte-identical for a given zip.
+LATEST="${OUT:-release/latest.json}"
+mkdir -p "$(dirname "$LATEST")"
 cat > "$LATEST" <<JSON
 {
   "slug": "${SLUG}",
@@ -97,7 +128,7 @@ echo "release-agent: manifest -> gs://${BUCKET}/${PREFIX}/latest.json"
 echo "release-agent: wrote ${LATEST}"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "release-agent: --dry-run, not uploading. latest.json contents:"
+  echo "release-agent: --dry-run, not uploading. ${LATEST} contents:"
   cat "$LATEST"
   exit 0
 fi

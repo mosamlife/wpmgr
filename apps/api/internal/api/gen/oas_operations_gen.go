@@ -14,6 +14,7 @@ const (
 	AgentAckPerfConfigOperation                OperationName = "AgentAckPerfConfig"
 	AgentAutologinConsumeOperation             OperationName = "AgentAutologinConsume"
 	AgentDisconnectOperation                   OperationName = "AgentDisconnect"
+	AgentDownloadUpdatePackageOperation        OperationName = "AgentDownloadUpdatePackage"
 	AgentFetchSuppressionDeltasOperation       OperationName = "AgentFetchSuppressionDeltas"
 	AgentFontsResultsOperation                 OperationName = "AgentFontsResults"
 	AgentGetHibpRangeOperation                 OperationName = "AgentGetHibpRange"

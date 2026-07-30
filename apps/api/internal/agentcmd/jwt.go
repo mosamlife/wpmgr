@@ -89,6 +89,11 @@ type jwtHeader struct {
 // username the agent should establish a session as. An empty Tgt means "agent
 // picks the first administrator". omitempty keeps the claim absent for all
 // other commands so the existing M3/M4 contract is byte-identical.
+//
+// Ver is set ONLY by the "update_package" token (GH #302, see
+// package_token.go): it pins one agent release version to one download token.
+// Like Tgt it is omitempty, so every other command's signed bytes are
+// unchanged.
 type jwtClaims struct {
 	JTI string `json:"jti"`
 	Exp int64  `json:"exp"`
@@ -97,6 +102,7 @@ type jwtClaims struct {
 	Aud string `json:"aud"`
 	Cmd string `json:"cmd"`
 	Tgt string `json:"tgt,omitempty"`
+	Ver string `json:"ver,omitempty"`
 }
 
 // Mint produces a signed compact JWT valid for JWTTTL from now, bound to the
@@ -134,18 +140,30 @@ func (s *Signer) MintAutologin(now time.Time, aud, targetWPUser string) (token, 
 	return token, jti, err
 }
 
-// mintWithJTI is the shared signing primitive: marshal header+claims, sign the
-// canonical "header.payload" with the CP private key, return the compact JWT.
+// mintWithJTI is the shared signing primitive for AGENT-VERIFIED command
+// tokens: it always uses JWTTTL, because the agent refuses any token whose exp
+// is more than 60s out (Connector::MAX_FUTURE_EXP).
 func (s *Signer) mintWithJTI(now time.Time, aud, cmd, jti, tgt string) (string, error) {
+	return s.mintClaims(now, JWTTTL, aud, cmd, jti, tgt, "")
+}
+
+// mintClaims marshals header+claims, signs the canonical "header.payload" with
+// the CP private key, and returns the compact JWT. ttl is explicit because not
+// every token minted with this key is verified by the agent: the update_package
+// download token (package_token.go) is verified by the CONTROL PLANE, so it is
+// not bound by the agent's 60s future-exp clamp and instead matches the lifetime
+// of the presigned URL it replaces.
+func (s *Signer) mintClaims(now time.Time, ttl time.Duration, aud, cmd, jti, tgt, ver string) (string, error) {
 	header := jwtHeader{Alg: "EdDSA", Typ: "JWT"}
 	claims := jwtClaims{
 		JTI: jti,
-		Exp: now.Add(JWTTTL).Unix(),
+		Exp: now.Add(ttl).Unix(),
 		Iat: now.Unix(),
 		Iss: Issuer,
 		Aud: aud,
 		Cmd: cmd,
 		Tgt: tgt,
+		Ver: ver,
 	}
 
 	headerJSON, err := json.Marshal(header)

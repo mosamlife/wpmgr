@@ -32,6 +32,9 @@ import type {
   AgentDisconnectData,
   AgentDisconnectErrors,
   AgentDisconnectResponses,
+  AgentDownloadUpdatePackageData,
+  AgentDownloadUpdatePackageErrors,
+  AgentDownloadUpdatePackageResponses,
   AgentFetchSuppressionDeltasData,
   AgentFetchSuppressionDeltasErrors,
   AgentFetchSuppressionDeltasResponses,
@@ -3805,6 +3808,43 @@ export const agentGetUpdateManifest = <ThrowOnError extends boolean = false>(
     url: "/agent/v1/update/manifest",
     ...options,
   });
+
+/**
+ * Download the published agent package from the control plane (token-authorised, GH
+ *
+ * Streams the published `agent-releases/<version>/wpmgr-agent.zip` object
+ * from THIS install's own object storage, so a site never needs a
+ * per-site package-host override in `wp-config.php`.
+ *
+ * Mounted on the root engine and NOT behind the agent signed-request
+ * middleware: the agent downloads its package with a bare request that
+ * carries no `Authorization` header and does not follow redirects, so
+ * this route answers `200` with the bytes directly. The short-lived
+ * `token` query parameter is the entire authorisation. It is minted by
+ * the control plane's own Ed25519 signing key, in the same compact EdDSA
+ * JWS every CP command token uses, and binds the download to one site
+ * (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd`
+ * pinned to `update_package` so no other command token can be redeemed
+ * here.
+ *
+ * The token is issued only inside the signed manifest returned by
+ * `GET /agent/v1/update/manifest` (as its `package_url`), with the same
+ * lifetime the presigned object-storage URL previously had. Nothing the
+ * caller supplies reaches the object key: the key is rebuilt from the
+ * version in the published manifest, and a token naming any other version
+ * or site is refused.
+ *
+ */
+export const agentDownloadUpdatePackage = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<AgentDownloadUpdatePackageData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    AgentDownloadUpdatePackageResponses,
+    AgentDownloadUpdatePackageErrors,
+    ThrowOnError
+  >({ url: "/agent/v1/update/package/{siteId}", ...options });
 
 /**
  * Push a page of enumerated media attachments (agent-authenticated)

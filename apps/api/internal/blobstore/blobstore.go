@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -47,6 +48,13 @@ type Config struct {
 	// (the default) means "bucket root", the pre-existing behaviour for the
 	// CP-global Store.
 	PathPrefix string
+	// StreamStallTimeout overrides how long a LARGE-object transfer
+	// (GetStreamViaPresign, PutViaPresign) may make no progress before it is
+	// torn down. Zero, the normal setting, uses the StreamStallTimeout default.
+	// It exists so a backend with unusual latency can be accommodated without
+	// reintroducing a whole-request cap, and so tests can compress the window
+	// instead of sleeping through it.
+	StreamStallTimeout time.Duration
 }
 
 // Store is the S3-compatible object-store handle.
@@ -55,6 +63,9 @@ type Store struct {
 	presigner  *s3.PresignClient
 	bucket     string
 	pathPrefix string
+	// stallTimeout is the inter-byte bound applied to every transfer on
+	// presignStreamClient. Never zero: New defaults it.
+	stallTimeout time.Duration
 }
 
 // New builds a Store from static credentials and a (possibly custom) endpoint.
@@ -88,12 +99,17 @@ func New(cfg Config) (*Store, error) {
 			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		},
 	}
+	stall := cfg.StreamStallTimeout
+	if stall <= 0 {
+		stall = StreamStallTimeout
+	}
 	client := s3.New(s3.Options{}, opts...)
 	return &Store{
-		client:     client,
-		presigner:  s3.NewPresignClient(client),
-		bucket:     cfg.Bucket,
-		pathPrefix: strings.Trim(cfg.PathPrefix, "/"),
+		client:       client,
+		presigner:    s3.NewPresignClient(client),
+		bucket:       cfg.Bucket,
+		pathPrefix:   strings.Trim(cfg.PathPrefix, "/"),
+		stallTimeout: stall,
 	}, nil
 }
 
@@ -175,10 +191,63 @@ func (s *Store) Put(ctx context.Context, key string, body io.Reader, size int64)
 	return s.PutViaPresign(ctx, key, body, size)
 }
 
-// presignUploadClient bounds CP-side uploads of objects via presigned PUT URLs.
-// Larger timeout than the small-object fetch client (RUCSS source bundles can be
-// up to ~16 MiB of page HTML + CSS).
-var presignUploadClient = &http.Client{Timeout: 60 * time.Second}
+// streamTransport bounds the phases of a LARGE-object transfer that the control
+// plane can actually predict (connect, TLS, and the wait for response headers)
+// while deliberately leaving the BODY unbounded in wall-clock terms.
+//
+// It is shared by the streaming read (GetStreamViaPresign) and the presigned
+// upload (PutViaPresign) because both carry a multi-megabyte body whose duration
+// is set by the peer's throughput, not by anything knowable at dial time.
+//
+// ResponseHeaderTimeout is the piece that keeps this honest: on a read it caps
+// how long storage may sit silent before the first byte, and on a write the Go
+// transport measures it only AFTER the request body has been fully written, so a
+// slow upload is never killed by it.
+//
+// NOTHING HERE BOUNDS THE BODY. ResponseHeaderTimeout is spent by the time the
+// first byte arrives and does not apply mid-body, and the Dialer keepalive only
+// notices a socket whose peer has vanished, not one that is alive and silent.
+// That is what StreamStallTimeout and the stall guard in stall.go exist for, and
+// why BOTH transfer methods on this client wrap their body in one: every
+// transfer on presignStreamClient carries a progress bound.
+var streamTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+}
+
+// presignStreamClient carries LARGE objects to and from storage: the agent
+// package the control plane streams to a site (GetStreamViaPresign) and CP-side
+// uploads (PutViaPresign).
+//
+// It has NO whole-request Timeout, on purpose. http.Client.Timeout covers
+// READING THE RESPONSE BODY as well as sending the request, so any fixed value
+// turns "the consumer on the far end is slow" into "the storage transfer died
+// mid-body", i.e. a truncated object rather than a slow one. On the download
+// path that truncation reaches a WordPress site as a short zip it refuses to
+// install; on the upload path it aborts a package the control plane had already
+// spent the bandwidth on.
+//
+// What bounds a transfer instead, in order of what usually fires first: the
+// PROGRESS WATCHDOG (StreamStallTimeout, see stall.go) which tears down any
+// transfer that stops moving bytes; the CALLER'S CONTEXT (a disconnected
+// consumer or a cancelled job cancels the transfer immediately); and
+// streamTransport's dial/TLS/response-header timeouts. The watchdog is the one
+// that does not depend on the caller getting anything right, which is why it is
+// applied inside this package rather than left to call sites.
+var presignStreamClient = &http.Client{Transport: streamTransport}
+
+// presignStreamTTL is the presign window for a large-object transfer. S3
+// evaluates a presigned URL's expiry when the request ARRIVES, not while the
+// body is streaming, so this only has to cover the gap between minting the URL
+// and issuing the request; the extra headroom over the small-object window is
+// for a busy control plane, not for the transfer itself.
+const presignStreamTTL = 5 * time.Minute
 
 // PutViaPresign uploads an object by minting a short-lived presigned PUT URL and
 // PUTting the bytes over plain HTTP, instead of a live SDK PutObject.
@@ -188,19 +257,46 @@ var presignUploadClient = &http.Client{Timeout: 60 * time.Second}
 // exists for reads), whereas presigned query-param SigV4 is accepted — which is
 // why the agent's presigned chunk uploads work but a CP-side PutObject 403s. The
 // presigned URL is a bearer credential — never log it.
+//
+// TIMEOUT POSTURE (H1b). This used to run on a client with a 60s whole-request
+// Timeout, which covered the body: an object near the size cap needed a sustained
+// upload rate the control plane cannot promise itself, and missing it aborted the
+// write. It now runs on presignStreamClient, which has no whole-request cap.
+//
+// THAT MOVE CHANGED EVERY CALLER, so the replacement bound is applied HERE
+// rather than left to them. Four callers (the release mirror, the screenshot
+// worker, the report worker and the backup index writer) run under River jobs
+// that carry a job Timeout, but the RUCSS ingest stash (internal/perf/rucss.go)
+// runs on the agent's REQUEST path, where dropping the whole-request cap would
+// have left the calling agent hanging up as the only bound. The progress
+// watchdog below gives all six the same deadline: an upload that keeps moving is
+// never cut off, and one that stops moving for StreamStallTimeout is torn down.
+// Pass a cancellable ctx as well; the two bounds are independent.
 func (s *Store) PutViaPresign(ctx context.Context, key string, body io.Reader, size int64) error {
 	url, err := s.PresignPut(ctx, key, 5*time.Minute)
 	if err != nil {
 		return fmt.Errorf("blobstore: presign put %q: %w", key, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
+
+	// The derived context is what the watchdog cancels; cancelling it is the only
+	// thing that unblocks a transport parked on a socket write to a silent peer.
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	guard := NewStallGuard(cancel, s.stallTimeout)
+	defer guard.Stop()
+
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodPut, url, body)
 	if err != nil {
 		return err
 	}
 	if size >= 0 {
 		req.ContentLength = size
 	}
-	resp, err := presignUploadClient.Do(req)
+	guardRequestBody(req, guard)
+	resp, err := presignStreamClient.Do(req)
+	if err != nil && guard.Stalled() {
+		return fmt.Errorf("blobstore: put %q: %w: no progress for %s", key, ErrStreamStalled, guard.Window())
+	}
 	if err != nil {
 		return fmt.Errorf("blobstore: put %q: %w", key, err)
 	}
@@ -227,6 +323,12 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 }
 
 // presignFetchClient bounds CP-side fetches of small objects via presigned URLs.
+//
+// This 15s cap covers reading the response body, so it is only ever correct for
+// an object the control plane consumes IMMEDIATELY and in full (latest.json, a
+// RUCSS bundle). Do NOT raise it to accommodate a large or slowly-consumed
+// object: use GetStreamViaPresign, which is built for that. Callers that want a
+// short, decisive bound depend on this staying short.
 var presignFetchClient = &http.Client{Timeout: 15 * time.Second}
 
 // GetViaPresign downloads a (small) object by minting a short-lived presigned
@@ -261,6 +363,60 @@ func (s *Store) GetViaPresign(ctx context.Context, key string) (io.ReadCloser, e
 		return nil, fmt.Errorf("blobstore: fetch %q: unexpected status %d", key, resp.StatusCode)
 	}
 	return resp.Body, nil
+}
+
+// GetStreamViaPresign downloads a LARGE object by minting a short-lived
+// presigned GET URL and handing the caller the live response body to stream
+// from. Returns ErrNotFound on a 404. The caller MUST close the returned
+// ReadCloser. The presigned URL is a bearer credential and is never logged.
+//
+// Use this, not GetViaPresign, whenever the bytes are (a) large or (b) consumed
+// at someone else's pace, e.g. proxied onward to a client. GetViaPresign's client
+// has a 15s whole-request Timeout that covers reading the body, so a consumer
+// slower than object_size/15s makes the STORAGE read fail mid-body with "context
+// deadline exceeded while reading body". At a few MiB that floor lands around
+// 200 KB/s, which plenty of shared hosting misses, and the caller has usually
+// already committed a 200 and a Content-Length by then, so the failure surfaces
+// as a silently truncated download rather than an error.
+//
+// This path has no whole-request timeout at all (see presignStreamClient). What
+// bounds it instead is PROGRESS: the returned body is wrapped in a stall guard
+// (stall.go) that tears the transfer down once StreamStallTimeout passes with no
+// bytes moving, so a backend that sends headers and one chunk and then goes
+// quiet cannot hold the caller open. Duration was never the right dimension; a
+// large read is allowed to take as long as it needs while it is moving.
+//
+// Pass the consumer's request context too, so a disconnect tears the storage
+// read down immediately rather than waiting out the stall window. The caller
+// MUST Close the returned body: Close is what releases the derived context and
+// the underlying connection.
+func (s *Store) GetStreamViaPresign(ctx context.Context, key string) (io.ReadCloser, error) {
+	url, err := s.PresignGet(ctx, key, presignStreamTTL)
+	if err != nil {
+		return nil, fmt.Errorf("blobstore: presign get %q: %w", key, err)
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, url, nil)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp, err := presignStreamClient.Do(req)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("blobstore: stream %q: %w", key, err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		_ = resp.Body.Close()
+		cancel()
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		cancel()
+		return nil, fmt.Errorf("blobstore: stream %q: unexpected status %d", key, resp.StatusCode)
+	}
+	return newGuardedBody(resp.Body, cancel, s.stallTimeout), nil
 }
 
 // Head reports an object's size and whether it exists. exists is false (with a

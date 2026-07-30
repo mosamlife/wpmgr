@@ -4401,6 +4401,38 @@ func (s *AgentDisconnectOK) SetOk(val OptBool) {
 
 func (*AgentDisconnectOK) agentDisconnectRes() {}
 
+type AgentDownloadUpdatePackageInternalServerError Error
+
+func (*AgentDownloadUpdatePackageInternalServerError) agentDownloadUpdatePackageRes() {}
+
+type AgentDownloadUpdatePackageNotFound Error
+
+func (*AgentDownloadUpdatePackageNotFound) agentDownloadUpdatePackageRes() {}
+
+type AgentDownloadUpdatePackageNotImplemented Error
+
+func (*AgentDownloadUpdatePackageNotImplemented) agentDownloadUpdatePackageRes() {}
+
+type AgentDownloadUpdatePackageOK struct {
+	Data io.Reader
+}
+
+// Read reads data from the Data reader.
+//
+// Kept to satisfy the io.Reader interface.
+func (s AgentDownloadUpdatePackageOK) Read(p []byte) (n int, err error) {
+	if s.Data == nil {
+		return 0, io.EOF
+	}
+	return s.Data.Read(p)
+}
+
+func (*AgentDownloadUpdatePackageOK) agentDownloadUpdatePackageRes() {}
+
+type AgentDownloadUpdatePackageUnauthorized Error
+
+func (*AgentDownloadUpdatePackageUnauthorized) agentDownloadUpdatePackageRes() {}
+
 // Ref: #/components/schemas/AgentEmailLogIngestRequest
 type AgentEmailLogIngestRequest struct {
 	Entries []AgentEmailLogIngestRequestEntriesItem `json:"entries"`

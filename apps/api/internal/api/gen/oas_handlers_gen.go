@@ -1369,6 +1369,171 @@ func (s *Server) handleAgentDisconnectRequest(args [0]string, argsEscaped bool, 
 	}
 }
 
+// handleAgentDownloadUpdatePackageRequest handles agentDownloadUpdatePackage operation.
+//
+// Streams the published `agent-releases/<version>/wpmgr-agent.zip` object
+// from THIS install's own object storage, so a site never needs a
+// per-site package-host override in `wp-config.php`.
+// Mounted on the root engine and NOT behind the agent signed-request
+// middleware: the agent downloads its package with a bare request that
+// carries no `Authorization` header and does not follow redirects, so
+// this route answers `200` with the bytes directly. The short-lived
+// `token` query parameter is the entire authorisation. It is minted by
+// the control plane's own Ed25519 signing key, in the same compact EdDSA
+// JWS every CP command token uses, and binds the download to one site
+// (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd`
+// pinned to `update_package` so no other command token can be redeemed
+// here.
+// The token is issued only inside the signed manifest returned by
+// `GET /agent/v1/update/manifest` (as its `package_url`), with the same
+// lifetime the presigned object-storage URL previously had. Nothing the
+// caller supplies reaches the object key: the key is rebuilt from the
+// version in the published manifest, and a token naming any other version
+// or site is refused.
+//
+// GET /agent/v1/update/package/{siteId}
+func (s *Server) handleAgentDownloadUpdatePackageRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("agentDownloadUpdatePackage"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.HTTPRouteKey.String("/agent/v1/update/package/{siteId}"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), AgentDownloadUpdatePackageOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: AgentDownloadUpdatePackageOperation,
+			ID:   "agentDownloadUpdatePackage",
+		}
+	)
+	params, err := decodeAgentDownloadUpdatePackageParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	var rawBody []byte
+
+	var response AgentDownloadUpdatePackageRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    AgentDownloadUpdatePackageOperation,
+			OperationSummary: "Download the published agent package from the control plane (token-authorised, GH",
+			OperationID:      "agentDownloadUpdatePackage",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params: middleware.Parameters{
+				{
+					Name: "siteId",
+					In:   "path",
+				}: params.SiteId,
+				{
+					Name: "token",
+					In:   "query",
+				}: params.Token,
+			},
+			Raw: r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = AgentDownloadUpdatePackageParams
+			Response = AgentDownloadUpdatePackageRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			unpackAgentDownloadUpdatePackageParams,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.AgentDownloadUpdatePackage(ctx, params)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.AgentDownloadUpdatePackage(ctx, params)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeAgentDownloadUpdatePackageResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleAgentFetchSuppressionDeltasRequest handles agentFetchSuppressionDeltas operation.
 //
 // Returns org-wide + this-site suppression deltas so the agent can

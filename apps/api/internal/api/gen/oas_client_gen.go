@@ -106,6 +106,30 @@ type Invoker interface {
 	//
 	// POST /agent/v1/disconnect
 	AgentDisconnect(ctx context.Context, request OptAgentDisconnect) (AgentDisconnectRes, error)
+	// AgentDownloadUpdatePackage invokes agentDownloadUpdatePackage operation.
+	//
+	// Streams the published `agent-releases/<version>/wpmgr-agent.zip` object
+	// from THIS install's own object storage, so a site never needs a
+	// per-site package-host override in `wp-config.php`.
+	// Mounted on the root engine and NOT behind the agent signed-request
+	// middleware: the agent downloads its package with a bare request that
+	// carries no `Authorization` header and does not follow redirects, so
+	// this route answers `200` with the bytes directly. The short-lived
+	// `token` query parameter is the entire authorisation. It is minted by
+	// the control plane's own Ed25519 signing key, in the same compact EdDSA
+	// JWS every CP command token uses, and binds the download to one site
+	// (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd`
+	// pinned to `update_package` so no other command token can be redeemed
+	// here.
+	// The token is issued only inside the signed manifest returned by
+	// `GET /agent/v1/update/manifest` (as its `package_url`), with the same
+	// lifetime the presigned object-storage URL previously had. Nothing the
+	// caller supplies reaches the object key: the key is rebuilt from the
+	// version in the published manifest, and a token naming any other version
+	// or site is refused.
+	//
+	// GET /agent/v1/update/package/{siteId}
+	AgentDownloadUpdatePackage(ctx context.Context, params AgentDownloadUpdatePackageParams) (AgentDownloadUpdatePackageRes, error)
 	// AgentFetchSuppressionDeltas invokes agentFetchSuppressionDeltas operation.
 	//
 	// Returns org-wide + this-site suppression deltas so the agent can
@@ -4136,6 +4160,134 @@ func (c *Client) sendAgentDisconnect(ctx context.Context, request OptAgentDiscon
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentDisconnectResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// AgentDownloadUpdatePackage invokes agentDownloadUpdatePackage operation.
+//
+// Streams the published `agent-releases/<version>/wpmgr-agent.zip` object
+// from THIS install's own object storage, so a site never needs a
+// per-site package-host override in `wp-config.php`.
+// Mounted on the root engine and NOT behind the agent signed-request
+// middleware: the agent downloads its package with a bare request that
+// carries no `Authorization` header and does not follow redirects, so
+// this route answers `200` with the bytes directly. The short-lived
+// `token` query parameter is the entire authorisation. It is minted by
+// the control plane's own Ed25519 signing key, in the same compact EdDSA
+// JWS every CP command token uses, and binds the download to one site
+// (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd`
+// pinned to `update_package` so no other command token can be redeemed
+// here.
+// The token is issued only inside the signed manifest returned by
+// `GET /agent/v1/update/manifest` (as its `package_url`), with the same
+// lifetime the presigned object-storage URL previously had. Nothing the
+// caller supplies reaches the object key: the key is rebuilt from the
+// version in the published manifest, and a token naming any other version
+// or site is refused.
+//
+// GET /agent/v1/update/package/{siteId}
+func (c *Client) AgentDownloadUpdatePackage(ctx context.Context, params AgentDownloadUpdatePackageParams) (AgentDownloadUpdatePackageRes, error) {
+	res, err := c.sendAgentDownloadUpdatePackage(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendAgentDownloadUpdatePackage(ctx context.Context, params AgentDownloadUpdatePackageParams) (res AgentDownloadUpdatePackageRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("agentDownloadUpdatePackage"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/agent/v1/update/package/{siteId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, AgentDownloadUpdatePackageOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/agent/v1/update/package/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "token" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "token",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			return e.EncodeValue(conv.StringToString(params.Token))
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeAgentDownloadUpdatePackageResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
