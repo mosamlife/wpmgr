@@ -189,13 +189,24 @@ func (s *Service) Sync(ctx context.Context, tenantID, siteID uuid.UUID, p domain
 	if s.cmd == nil {
 		return SyncResult{}, domain.ServiceUnavailable("media_agent_unwired", "media agent client is not wired")
 	}
-	if _, err := s.cmd.MediaSync(ctx, siteID, si.URL, agentcmd.MediaSyncRequest{
+	ack, err := s.cmd.MediaSync(ctx, siteID, si.URL, agentcmd.MediaSyncRequest{
 		JobID:            jobID,
 		BatchEndpoint:    s.callbackURL("/agent/v1/media/sync-batch"),
 		FinalizeEndpoint: s.callbackURL("/agent/v1/media/sync-finalize"),
-	}); err != nil {
+	})
+	if err != nil {
 		s.failJob(ctx, tenantID, siteID, jobID, "sync dispatch failed: "+err.Error())
 		return SyncResult{}, domain.Internal("media_sync_dispatch_failed", "failed to dispatch media sync").WithCause(err)
+	}
+	// The ack's ok field is the agent REFUSING the command on an otherwise fine
+	// 200. This work is asynchronous (the agent pushes pages back to
+	// BatchEndpoint), so a refused dispatch means no callback will ever arrive
+	// and the job would sit "running" forever. Only the transport error was
+	// checked before, which left exactly that hole.
+	if !ack.OK {
+		detail := detailOr(ack.Detail, "agent returned ok=false")
+		s.failJob(ctx, tenantID, siteID, jobID, "sync rejected by agent: "+detail)
+		return SyncResult{}, domain.Internal("media_sync_rejected", "agent rejected media sync: "+detail)
 	}
 	return SyncResult{JobID: jobID, StartedAt: job.CreatedAt}, nil
 }
@@ -313,7 +324,9 @@ func (s *Service) StartOptimize(ctx context.Context, tenantID, siteID uuid.UUID,
 		// but bound it so a hung agent POST cannot leak a goroutine forever.
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer cancel()
-		if _, err := s.cmd.MediaOptimize(bg, siteID, siteURL, dispatchReq); err != nil {
+		ack, err := s.cmd.MediaOptimize(bg, siteID, siteURL, dispatchReq)
+		switch {
+		case err != nil:
 			// Genuine dispatch failures (agent unreachable, 4xx/5xx ack, or — with
 			// a slow-acking agent — an http.Client.Timeout) still fail the batch's
 			// jobs so the UI does not show them stuck "optimizing" forever. This
@@ -323,6 +336,17 @@ func (s *Service) StartOptimize(ctx context.Context, tenantID, siteID uuid.UUID,
 			s.logger.Error("media optimize dispatch failed", "site_id", siteID.String(), "err", err.Error())
 			for _, jid := range jobIDsCopy {
 				s.failJob(bg, tenantID, siteID, jid, "optimize dispatch failed: "+err.Error())
+			}
+		case !ack.OK:
+			// A 200 whose body says ok=false is the agent refusing the batch. It
+			// produces exactly the "stuck optimizing forever" state the transport
+			// branch above exists to prevent, because the agent will never call
+			// PresignEndpoint or ReadyEndpoint. Fail the jobs through the same
+			// guarded path.
+			detail := detailOr(ack.Detail, "agent returned ok=false")
+			s.logger.Error("media optimize rejected by agent", "site_id", siteID.String(), "detail", detail)
+			for _, jid := range jobIDsCopy {
+				s.failJob(bg, tenantID, siteID, jid, "optimize rejected by agent: "+detail)
 			}
 		}
 	}()
@@ -382,14 +406,25 @@ func (s *Service) StartRestore(ctx context.Context, tenantID, siteID uuid.UUID, 
 	if s.cmd == nil {
 		return BatchResult{}, domain.ServiceUnavailable("media_agent_unwired", "media agent client is not wired")
 	}
-	if _, err := s.cmd.MediaRestore(ctx, siteID, si.URL, agentcmd.MediaRestoreRequest{
+	ack, err := s.cmd.MediaRestore(ctx, siteID, si.URL, agentcmd.MediaRestoreRequest{
 		Jobs:           jobs,
 		StatusEndpoint: s.callbackURL("/agent/v1/media/restore-status"),
-	}); err != nil {
+	})
+	if err != nil {
 		for _, jid := range jobIDs {
 			s.failJob(ctx, tenantID, siteID, jid, "restore dispatch failed: "+err.Error())
 		}
 		return BatchResult{}, domain.Internal("media_restore_dispatch_failed", "failed to dispatch media restore").WithCause(err)
+	}
+	// ok=false on a 200 means the agent refused: no restore ran and no callback to
+	// StatusEndpoint will arrive. Reporting the batch as queued here would tell
+	// the operator their originals were being restored when nothing was.
+	if !ack.OK {
+		detail := detailOr(ack.Detail, "agent returned ok=false")
+		for _, jid := range jobIDs {
+			s.failJob(ctx, tenantID, siteID, jid, "restore rejected by agent: "+detail)
+		}
+		return BatchResult{}, domain.Internal("media_restore_rejected", "agent rejected media restore: "+detail)
 	}
 	return BatchResult{BatchJobID: batchID, QueuedCount: len(jobIDs)}, nil
 }
@@ -446,14 +481,26 @@ func (s *Service) StartDeleteOriginals(ctx context.Context, tenantID, siteID uui
 	if s.cmd == nil {
 		return BatchResult{}, domain.ServiceUnavailable("media_agent_unwired", "media agent client is not wired")
 	}
-	if _, err := s.cmd.MediaDeleteOriginals(ctx, siteID, si.URL, agentcmd.MediaDeleteOriginalsRequest{
+	ack, err := s.cmd.MediaDeleteOriginals(ctx, siteID, si.URL, agentcmd.MediaDeleteOriginalsRequest{
 		Jobs:           jobs,
 		StatusEndpoint: s.callbackURL("/agent/v1/media/job-status"),
-	}); err != nil {
+	})
+	if err != nil {
 		for _, jid := range jobIDs {
 			s.failJob(ctx, tenantID, siteID, jid, "delete-originals dispatch failed: "+err.Error())
 		}
 		return BatchResult{}, domain.Internal("media_delete_dispatch_failed", "failed to dispatch delete originals").WithCause(err)
+	}
+	// ok=false on a 200 means the agent refused the (irreversible) delete. The
+	// operator already consented and the consent is audited above, so silently
+	// reporting the batch as queued would leave the audit trail claiming a
+	// destructive action that never happened.
+	if !ack.OK {
+		detail := detailOr(ack.Detail, "agent returned ok=false")
+		for _, jid := range jobIDs {
+			s.failJob(ctx, tenantID, siteID, jid, "delete-originals rejected by agent: "+detail)
+		}
+		return BatchResult{}, domain.Internal("media_delete_rejected", "agent rejected delete originals: "+detail)
 	}
 	return BatchResult{BatchJobID: batchID, QueuedCount: len(jobIDs)}, nil
 }
@@ -615,6 +662,16 @@ func (s *Service) resolveAssets(ctx context.Context, tenantID, siteID uuid.UUID,
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// detailOr returns primary when it is non-empty, else fallback. Used to keep the
+// agent's own rejection detail in a dispatch failure message without emitting an
+// empty "rejected by agent: " string when the agent sent ok=false and no detail.
+func detailOr(primary, fallback string) string {
+	if primary != "" {
+		return primary
+	}
+	return fallback
 }
 
 // failJob transitions a NON-TERMINAL job to failed + publishes media.job.failed

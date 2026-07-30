@@ -10,8 +10,8 @@
  * The Router's permission_callback already enforces the signed-JWT contract
  * (Ed25519 signature, aud=siteId, cmd="refresh_inventory", jti anti-replay)
  * via Connector::verifyCommand. By the time execute() runs the request is
- * authenticated; the command itself just (1) refuses anything other than an
- * empty body, (2) forces WP to re-poll its plugin/theme/core update endpoints
+ * authenticated; the command itself just (1) ignores the request body (it takes
+ * no parameters), (2) forces WP to re-poll its plugin/theme/core update endpoints
  * (bypassing Scheduler's 5-minute lock — this is human-initiated), (3) pushes
  * the resulting inventory to the control plane.
  *
@@ -69,17 +69,19 @@ final class RefreshInventoryCommand implements CommandInterface
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused — Router
      *                                    already enforced aud + cmd binding).
-     * @param array<string,mixed> $params Request parameters; MUST be empty.
+     * @param array<string,mixed> $params Request parameters. This command takes
+     *                                    none, and IGNORES anything that arrives.
      * @return array{ok:bool,detail:string}
      */
     public function execute(array $claims, array $params): array
     {
-        // Body shape: refuse anything beyond an empty object. This keeps the
-        // command surface unambiguous; future extensions go behind explicit
-        // named params, not "we'll silently accept whatever".
-        if ($params !== []) {
-            return ['ok' => false, 'detail' => 'body must be an empty object'];
-        }
+        // Body shape: this command takes no parameters, so whatever arrives is
+        // ignored rather than rejected. Refusing an unexpected body only turned
+        // an inventory refresh into a silent no-op, because the caller reads the
+        // transport status and not the ok flag. The intent still stands: future
+        // extensions go behind explicit named params read by key, not "we'll
+        // silently accept whatever and act on it".
+        unset($params);
 
         // Force a fresh poll of update_plugins / update_themes / update_core.
         // bypass=true (human-initiated): a CP-issued refresh should not be

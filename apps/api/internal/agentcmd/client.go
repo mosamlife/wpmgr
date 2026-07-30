@@ -808,6 +808,27 @@ func (c *Client) Do(ctx context.Context, siteID uuid.UUID, siteURL, command stri
 // post mints a fresh JWT bound to siteID (aud) and command (cmd), POSTs body to
 // the named command endpoint at siteURL, and decodes the JSON response into
 // out. A non-2xx response is an error.
+//
+// post does NOT inspect the decoded body's ok field, and CANNOT: out is an
+// untyped any, and the response shapes are not uniform (some commands carry no
+// ok at all, the file_* family reports failure through an Error envelope, and
+// the update family reports it per item). The ok=false-is-an-error rule is
+// therefore applied by the individual wrapper methods, and only by the config
+// PUSH family: SyncErrorConfig, SyncSecurityConfig, SyncSecurityHardening,
+// SyncSecurityPolicy, SyncLoginBrand, SyncMediaConfig, SyncPerfConfig,
+// SyncEmailConfig, UnblockIP, RucssCompute, CacheEnable, CacheDisable,
+// CachePurge and CachePreload. Those are fire-and-forget pushes with no
+// callback, so folding ok=false into the error is the only way their callers
+// can tell the push did not land.
+//
+// Every OTHER wrapper returns the decoded response untouched and leaves the ok
+// field to the caller. That split is incidental (each command added its own
+// check, or did not, as it was written) rather than principled, and it is a
+// trap: a caller of one of those methods that branches only on the returned
+// error will silently treat a refusal as a success. A refresh_inventory that
+// had been rejected on every call since it shipped stayed invisible in exactly
+// that way. If you add a command here, either check ok in the wrapper or make
+// sure the caller does, and say in a comment which one you chose.
 func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command string, body, out any) error {
 	data, err := c.postRaw(ctx, siteID, siteURL, command, body)
 	if err != nil {

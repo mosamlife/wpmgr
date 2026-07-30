@@ -269,6 +269,10 @@ func (s *Service) Test(ctx context.Context, tenantID, siteID uuid.UUID, password
 	}
 
 	resultJSON, _ := json.Marshal(result)
+	// DELIBERATE: an ok=false test result is a legitimate answer, not an error.
+	// It is recorded verbatim, leaves passed_at NULL (which keeps the Enable
+	// handshake gate closed, so a failing test cannot be mistaken for a passing
+	// one), is published on the SSE event below, and is returned to the caller.
 	var passedAt *time.Time
 	if result.OK {
 		now := time.Now().UTC()

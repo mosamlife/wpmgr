@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +43,48 @@ func TestRefreshInventoryWorkerHappyPath(t *testing.T) {
 	}
 	if cmd.calls != 1 || cmd.gotSiteID != siteID {
 		t.Fatalf("commander not called as expected: %+v", cmd)
+	}
+}
+
+// TestRefreshInventoryWorkerAgentOkFalseIsFailure is the regression test for the
+// control-plane blind spot that hid a refresh_inventory broken since it shipped.
+// The agent answered HTTP 200 (so the transport error is nil) with a body of
+// {"ok":false,"detail":"body must be an empty object"} and never refreshed or
+// pushed anything, while the worker branched only on the transport error and
+// logged "refresh inventory: ok" every time.
+//
+// The worker MUST report a failure here, and MUST keep the agent's own detail in
+// the error so the reason is not discarded.
+func TestRefreshInventoryWorkerAgentOkFalseIsFailure(t *testing.T) {
+	cmd := &fakeRefreshCmd{resp: agentcmd.RefreshInventoryResponse{
+		OK:     false,
+		Detail: "body must be an empty object",
+	}}
+	w := NewRefreshInventoryWorker(cmd, nil, nil)
+	err := w.Work(context.Background(), &river.Job[RefreshInventoryArgs]{
+		Args: RefreshInventoryArgs{TenantID: uuid.New(), SiteID: uuid.New(), SiteURL: "https://example.com", Source: "api"},
+	})
+	if err == nil {
+		t.Fatal("a 200 carrying ok=false is the agent refusing the command; the worker must report a failure, not success")
+	}
+	if !strings.Contains(err.Error(), "body must be an empty object") {
+		t.Fatalf("the agent's own detail must be preserved in the error, got %q", err.Error())
+	}
+}
+
+// TestRefreshInventoryWorkerOkFalseWithoutDetail proves the failure path is still
+// legible when the agent refuses without sending a detail string.
+func TestRefreshInventoryWorkerOkFalseWithoutDetail(t *testing.T) {
+	cmd := &fakeRefreshCmd{resp: agentcmd.RefreshInventoryResponse{OK: false}}
+	w := NewRefreshInventoryWorker(cmd, nil, nil)
+	err := w.Work(context.Background(), &river.Job[RefreshInventoryArgs]{
+		Args: RefreshInventoryArgs{TenantID: uuid.New(), SiteID: uuid.New(), SiteURL: "https://example.com"},
+	})
+	if err == nil {
+		t.Fatal("ok=false with no detail must still be a failure")
+	}
+	if !strings.Contains(err.Error(), "ok=false") {
+		t.Fatalf("error must explain the refusal, got %q", err.Error())
 	}
 }
 

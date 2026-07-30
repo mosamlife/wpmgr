@@ -161,30 +161,92 @@ if (!class_exists('WP_Error')) {
 }
 
 if (!class_exists('WP_REST_Request')) {
+    /**
+     * Faithful double for WP core's WP_REST_Request.
+     *
+     * The parameter model is NOT a flat array in WordPress. Core keeps one
+     * bucket per source (URL / GET / POST / FILES / JSON / defaults) and
+     * resolves reads and writes through get_parameter_order(), whose FIRST
+     * entry is 'JSON' whenever the request carries a JSON Content-Type. That
+     * detail is load bearing: set_param() with a key core has never seen
+     * writes into order[0], so on a JSON request an internally-stashed param
+     * lands inside the JSON bucket and comes straight back out of
+     * get_json_params(). A flat-array double hides that entirely, which is
+     * how a body the control plane genuinely sends reached production
+     * untested. Mirror core here rather than simplifying.
+     *
+     * Legacy convenience kept for the existing suite: passing an array as the
+     * first constructor argument seeds the URL bucket directly, which is what
+     * the previous flat double did.
+     */
     class WP_REST_Request
     {
-        /** @var array<string,mixed> */
-        private array $params = [];
+        /** @var array<string,mixed> One bucket per parameter source, as in core. */
+        private array $params = [
+            'URL'      => [],
+            'GET'      => [],
+            'POST'     => [],
+            'FILES'    => [],
+            // Stays null until parse_json_params() runs, exactly as in core.
+            'JSON'     => null,
+            'defaults' => [],
+        ];
 
         /** @var array<string,string> */
         private array $headers = [];
 
+        private string $method = '';
+
+        private string $route = '';
+
+        private string $body = '';
+
+        private bool $parsed_json = false;
+
         /**
-         * @param array<string,mixed> $params Initial params.
+         * @param array<string,mixed>|string $method Request method, or a legacy
+         *                                           array of URL params.
+         * @param string                     $route  Request route.
          */
-        public function __construct(array $params = [])
+        public function __construct($method = '', string $route = '')
         {
-            $this->params = $params;
+            if (is_array($method)) {
+                $this->params['URL'] = $method;
+            } else {
+                $this->method = strtoupper($method);
+            }
+            $this->route = $route;
         }
 
-        public function get_param(string $key): mixed
+        public function get_method(): string
         {
-            return $this->params[$key] ?? null;
+            return $this->method;
         }
 
-        public function set_param(string $key, mixed $value): void
+        public function set_method(string $method): void
         {
-            $this->params[$key] = $value;
+            $this->method = strtoupper($method);
+        }
+
+        public function get_route(): string
+        {
+            return $this->route;
+        }
+
+        public function set_route(string $route): void
+        {
+            $this->route = $route;
+        }
+
+        public function get_body(): string
+        {
+            return $this->body;
+        }
+
+        public function set_body(string $body): void
+        {
+            $this->body        = $body;
+            $this->parsed_json = false;
         }
 
         public function get_header(string $key): string
@@ -198,11 +260,143 @@ if (!class_exists('WP_REST_Request')) {
         }
 
         /**
+         * @return array<string,string>|null
+         */
+        public function get_content_type(): ?array
+        {
+            $value = $this->get_header('Content-Type');
+            if ($value === '') {
+                return null;
+            }
+
+            $parameters = '';
+            if (strpos($value, ';') !== false) {
+                [$value, $parameters] = explode(';', $value, 2);
+            }
+
+            $value = strtolower($value);
+            if (strpos($value, '/') === false) {
+                return null;
+            }
+
+            [$type, $subtype] = explode('/', $value, 2);
+
+            return array_map('trim', compact('value', 'type', 'subtype', 'parameters'));
+        }
+
+        public function is_json_content_type(): bool
+        {
+            $contentType = $this->get_content_type();
+
+            return isset($contentType['value'])
+                && preg_match('#^application/([a-z0-9\.\+\-]+\+)?json(\+oembed)?$#', $contentType['value']) === 1;
+        }
+
+        /**
          * @return array<string,mixed>
          */
-        public function get_json_params(): array
+        public function get_url_params(): array
         {
-            return [];
+            $urlParams = $this->params['URL'];
+
+            return is_array($urlParams) ? $urlParams : [];
+        }
+
+        /**
+         * @param array<string,mixed> $params URL params.
+         */
+        public function set_url_params(array $params): void
+        {
+            $this->params['URL'] = $params;
+        }
+
+        public function get_param(string $key): mixed
+        {
+            foreach ($this->get_parameter_order() as $type) {
+                if (isset($this->params[$type][$key])) {
+                    return $this->params[$type][$key];
+                }
+            }
+
+            return null;
+        }
+
+        /**
+         * Mirrors core: update every bucket that already holds the key,
+         * otherwise create it in the FIRST bucket of the parameter order.
+         */
+        public function set_param(string $key, mixed $value): void
+        {
+            $order    = $this->get_parameter_order();
+            $foundKey = false;
+
+            foreach ($order as $type) {
+                if ($type !== 'defaults' && is_array($this->params[$type]) && array_key_exists($key, $this->params[$type])) {
+                    $this->params[$type][$key] = $value;
+                    $foundKey                  = true;
+                }
+            }
+
+            if (!$foundKey) {
+                $this->params[$order[0]][$key] = $value;
+            }
+        }
+
+        /**
+         * @return array<string,mixed>|null
+         */
+        public function get_json_params(): ?array
+        {
+            $this->parse_json_params();
+
+            $json = $this->params['JSON'];
+
+            return is_array($json) ? $json : null;
+        }
+
+        /**
+         * @return array<int,string>
+         */
+        private function get_parameter_order(): array
+        {
+            $order = [];
+
+            if ($this->is_json_content_type()) {
+                $order[] = 'JSON';
+            }
+
+            $this->parse_json_params();
+
+            if (in_array($this->method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+                $order[] = 'POST';
+            }
+
+            $order[] = 'GET';
+            $order[] = 'URL';
+            $order[] = 'defaults';
+
+            return $order;
+        }
+
+        private function parse_json_params(): void
+        {
+            if ($this->parsed_json) {
+                return;
+            }
+
+            $this->parsed_json = true;
+
+            if (!$this->is_json_content_type() || $this->body === '') {
+                return;
+            }
+
+            $decoded = json_decode($this->body, true);
+            if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+                $this->parsed_json = false;
+                return;
+            }
+
+            $this->params['JSON'] = $decoded;
         }
     }
 }

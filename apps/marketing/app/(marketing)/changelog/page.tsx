@@ -39,6 +39,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.104",
+    date: "2026-07-30",
+    summary: "Fleet agent updates work now: the command that starts them was rejecting every request, and a second command had been silently broken since launch.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Starting a fleet agent update failed immediately with a \"takes no parameters\" error, and the rollout stopped after its first site. The agent was mixing its own verified command details into the request body, so a command expecting an empty body saw something in it and refused. This never showed up in manual testing, since only a request sent with the JSON content type triggered it. The agent no longer does that, and commands that expect an empty body now ignore anything that arrives instead of refusing.",
+      },
+      {
+        tag: "Fixed",
+        text: "The Refresh inventory action on a site was affected the same way and had never worked: it reported success while doing nothing, because the control plane only checked that the request was delivered, not what the agent said back. It reads the agent's answer now, so refreshing a site's inventory actually refreshes it.",
+      },
+      {
+        tag: "Fixed",
+        text: "More broadly, the control plane checked only whether a command reached a site, not whether the agent accepted it. A refused rollback could be recorded as \"rolled back\", an update dry run was always recorded as successful, and some jobs would wait forever for a result a refusal never sends. All of these now treat a refusal as a failure. If you're reviewing past update history, a task marked rolled back may not have been, for this reason.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.103",
     date: "2026-07-30",
     summary: "Self-hosted installs can now get agent updates, mirrored from GitHub into their own storage and off by default.",

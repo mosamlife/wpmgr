@@ -194,6 +194,13 @@ func (s *Service) IgnoreFinding(ctx context.Context, tenantID, findingID uuid.UU
 // FetchFile calls the agent's get_file command for a path that is already a
 // stored finding (server-side guard). Returns the GetFileResponse base64 content.
 // Access is audited with scan.file_fetched.
+//
+// DELIBERATE: an ok=false response is NOT converted into an error here. get_file
+// is a read whose per-file outcome is part of the answer, and the response's ok
+// plus error fields are passed through verbatim to the operator by the handler's
+// fetchFileResponseDTO (and recorded in the audit metadata below), so a refusal
+// is visible rather than swallowed. This is the tolerated case, not an oversight:
+// the caller never reports success on the agent's behalf.
 func (s *Service) FetchFile(ctx context.Context, tenantID, findingID uuid.UUID, p domain.Principal) (agentcmd.GetFileResponse, error) {
 	if s.cmd == nil || s.siteLookup == nil {
 		return agentcmd.GetFileResponse{}, domain.ServiceUnavailable("scan_agent_unwired", "scan agent client is not wired")

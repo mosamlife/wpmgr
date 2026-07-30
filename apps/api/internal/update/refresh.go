@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strconv"
@@ -51,6 +52,11 @@ type RefreshCommander interface {
 // the worker records an audit warning and returns nil so River won't retry to
 // death; on any other transport/agent error it returns the error and River
 // retries with its default backoff.
+//
+// A 200 response is NOT by itself success: the agent reports its own verdict in
+// the body's ok field, and Client.RefreshInventory deliberately leaves that flag
+// for this caller to read (see the note on agentcmd.Client.post). An ok=false is
+// treated as a failure here.
 type RefreshInventoryWorker struct {
 	river.WorkerDefaults[RefreshInventoryArgs]
 	cmd    RefreshCommander
@@ -75,8 +81,21 @@ func (w *RefreshInventoryWorker) Work(ctx context.Context, job *river.Job[Refres
 		w.logger.Warn("refresh inventory: command client unavailable", slog.String("site_id", a.SiteID.String()))
 		return river.JobCancel(errors.New("refresh_inventory: CP->agent commands are disabled"))
 	}
-	_, err := w.cmd.RefreshInventory(ctx, a.SiteID, a.SiteURL, agentcmd.RefreshInventoryRequest{})
+	resp, err := w.cmd.RefreshInventory(ctx, a.SiteID, a.SiteURL, agentcmd.RefreshInventoryRequest{})
 	if err == nil {
+		// A 200 is only the TRANSPORT succeeding. The agent still reports its own
+		// verdict in the body's ok field, and an ok=false there means it refused
+		// the command and will never push metadata back over /agent/v1/metadata.
+		// This branch previously logged "ok" on the transport result alone, which
+		// is how a refresh_inventory that had been rejected on every single call
+		// since the feature shipped still looked healthy in the logs: the agent
+		// answered 200 {"ok":false,...} and nothing here ever read the flag.
+		// Treat the agent's no as a failure and keep ITS detail in the error, so
+		// the reason is visible in the River job's error rather than discarded.
+		if !resp.OK {
+			return fmt.Errorf("refresh_inventory rejected by agent: %s",
+				detailOr(resp.Detail, "agent returned ok=false with no detail"))
+		}
 		w.logger.Debug("refresh inventory: ok",
 			slog.String("site_id", a.SiteID.String()),
 			slog.String("source", a.Source))
