@@ -32,6 +32,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentupstream"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
@@ -1667,6 +1668,74 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// the debounced enqueuer are wired below once riverClient is up.
 	vulnAlertDispatchWorker := vuln.NewAlertDispatchWorker(nil /*svc: wired below*/, logger)
 
+	// GH #302 — upstream agent-release MIRROR. A self-hosted install has no
+	// published agent release at all: the release pipeline writes into the HOSTED
+	// service's bucket, so that install's agent-releases/latest.json never exists,
+	// the dashboard has no reference version, and no site is ever offered an
+	// upgrade. When enabled, this job reads the public GitHub release, verifies it
+	// end to end, and publishes the SAME two objects into THIS install's own
+	// storage — after which every existing path (the ADR-042 mint path,
+	// agentrelease.Reader, the task planner) is unchanged and unaware.
+	//
+	// SHIPS DARK: cfg.Update.AgentMirrorEnabled defaults to false, so wiring it
+	// here changes nothing until an operator sets
+	// WPMGR_UPDATE_AGENT_MIRROR_ENABLED. The worker is registered either way so
+	// queued jobs drain during a rolling redeploy; it checks the flag immediately
+	// before doing any work.
+	//
+	// The store is built fresh from cfg.S3 (like the ADR-042 manifest store and
+	// the agent-release reader further down) because every earlier store is scoped
+	// inside another block, and this one has to exist BEFORE startRiver.
+	var agentMirror *agentupstream.Mirror
+	if cfg.S3.Enabled() {
+		agentMirrorStore, amerr := blobstore.New(blobstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			Region:         cfg.S3.Region,
+			Bucket:         cfg.S3.Bucket,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			ForcePathStyle: cfg.S3.ForcePathStyle,
+		})
+		if amerr != nil {
+			return fmt.Errorf("agent release mirror store: %w", amerr)
+		}
+		// A DEDICATED SSRF-hardened client, mirroring the vuln-feed/update-apply
+		// precedent: the shared 30s ssrfClient is tuned for CP->agent traffic and
+		// is too short for a multi-MB release download over a slow link.
+		// MaxRetries: 0 — the unauthenticated GitHub API allows 60 requests/hour
+		// per IP, and an in-process retry loop would spend that budget on an
+		// upstream that is either down or publishing something already refused.
+		// The next scheduled run, six hours later, is the retry.
+		agentMirrorHTTPClient := httpclient.New(httpclient.Config{
+			Timeout:    2 * time.Minute,
+			MaxRetries: 0,
+		})
+		// allowRollback is passed EXPLICITLY (and defaults false) so this call
+		// site states the publish posture rather than inheriting it: the mirror
+		// only moves this install's published agent version forward unless an
+		// operator has asked it to follow a genuine upstream rollback.
+		agentMirror = agentupstream.NewMirrorWithRollback(
+			agentMirrorStore,
+			agentMirrorHTTPClient,
+			cfg.Update.AgentMirrorOwner,
+			cfg.Update.AgentMirrorRepo,
+			cfg.Update.AgentMirrorAllowRollback,
+			logger,
+		)
+	}
+	agentMirrorWorker := agentupstream.NewMirrorWorker(cfg.Update.AgentMirrorEnabled, agentMirror, logger)
+	if cfg.Update.AgentMirrorEnabled {
+		if agentMirror == nil {
+			logger.Warn("agent release mirror is ENABLED but object storage is not configured (WPMGR_S3_*): nothing will be mirrored")
+		} else {
+			logger.Info("agent release mirror is ENABLED: upstream agent releases will be published into this install's own object storage",
+				"owner", cfg.Update.AgentMirrorOwner, "repo", cfg.Update.AgentMirrorRepo)
+			if cfg.Update.AgentMirrorAllowRollback {
+				logger.Warn("agent release mirror ROLLBACK is allowed: an upstream release OLDER than the one already mirrored will be published (WPMGR_UPDATE_AGENT_MIRROR_ALLOW_ROLLBACK)")
+			}
+		}
+	}
+
 	riverClient, err := startRiver(ctx, pool.Pool, logger, riverDeps{
 		healthChecker:            healthChecker,
 		healthInterval:           cfg.Agent.HealthInterval,
@@ -1729,8 +1798,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		cronKickInterval: cronKickInterval,
 		// m79 — vulnerability scanner workers (always non-nil; feed worker no-ops
 		// when WPMGR_WORDFENCE_API_KEY is unset).
-		vulnFeedWorker:   vulnFeedWorker,
-		vulnRescanWorker: vulnRescanWorker,
+		vulnFeedWorker:    vulnFeedWorker,
+		vulnRescanWorker:  vulnRescanWorker,
+		agentMirrorWorker: agentMirrorWorker,
 		// m103 (GH #247) — batched vulnerability-alert dispatch (always wired).
 		vulnAlertDispatchWorker: vulnAlertDispatchWorker,
 		// m82 — file-transfers GC (always non-nil; object deletion is a no-op
@@ -2299,6 +2369,28 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			manifestTTL = 5 * time.Minute
 		}
 		updateAgentH = agent.NewUpdateHandler(manifestStore, manifestSigner, manifestTTL)
+
+		// GH #302: serve the mirrored package from the control plane itself.
+		// Arming this switches the signed manifest's package_url from a presigned
+		// object-storage URL (whose host differs per install, which is why every
+		// site needed a WPMGR_AGENT_PACKAGE_HOST edit) to this control plane's own
+		// streaming route, authorised by a short-lived token minted with the SAME
+		// signing key. The TTL is unchanged, so the manifest's expiry semantics are
+		// identical either way.
+		//
+		// Ships OFF (see config.UpdateConfig.AgentPackageServeEnabled): only agents
+		// new enough to trust their own control-plane host accept a CP-hosted
+		// package_url, so the operator decides when their fleet is ready.
+		if cfg.Update.AgentPackageServeEnabled {
+			packageBase := strings.TrimRight(strings.TrimSpace(cfg.Update.AgentPackageBaseURL), "/")
+			if packageBase == "" {
+				packageBase = strings.TrimRight(strings.TrimSpace(os.Getenv("WPMGR_PUBLIC_BASE_URL")), "/")
+			}
+			updateAgentH.EnablePackageServing(manifestSigner, packageBase)
+			logger.Info("GH #302 control-plane agent package serving ENABLED",
+				"base_url", packageBase,
+				"derived_from_request", packageBase == "")
+		}
 
 		// Boot probe: exercise the exact storage ops the manifest handler relies
 		// on (read agent-releases/latest.json + mint a presigned GET) so a
@@ -2931,6 +3023,10 @@ type riverDeps struct {
 	// WPMGR_WORDFENCE_API_KEY is not set.
 	vulnFeedWorker   *vuln.FeedWorker
 	vulnRescanWorker *vuln.RescanSiteWorker
+	// GH #302 — upstream agent-release mirror. Always wired; the worker no-ops
+	// when WPMGR_UPDATE_AGENT_MIRROR_ENABLED is false (the default) or when
+	// object storage is not configured.
+	agentMirrorWorker *agentupstream.MirrorWorker
 	// m103 (GH #247) — batched vulnerability-alert dispatch worker. Always wired.
 	vulnAlertDispatchWorker *vuln.AlertDispatchWorker
 	// m82 — File-transfers GC: deletes stale file_transfers rows (and best-effort
@@ -3386,6 +3482,31 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	if d.vulnRescanWorker != nil {
 		river.AddWorker(workers, d.vulnRescanWorker)
 		queues[vuln.RescanSiteQueue] = river.QueueConfig{MaxWorkers: 8}
+	}
+
+	// GH #302 — mirror the public upstream agent release into THIS install's own
+	// object storage, so a self-hosted control plane has a release channel at all.
+	// ONE JOB PER INSTALL (not per site, not per tenant), every 6 hours with
+	// jitter, MaxWorkers 1. RunOnStart: false — boot is not the moment to reach
+	// out to the public internet, and the first tick is at most 6 hours away.
+	//
+	// The worker is registered unconditionally so jobs already queued drain during
+	// a rolling redeploy; it no-ops when the feature is off (the default) or when
+	// object storage is not configured.
+	if d.agentMirrorWorker != nil {
+		river.AddWorker(workers, d.agentMirrorWorker)
+		queues[agentupstream.MirrorQueue] = river.QueueConfig{MaxWorkers: 1}
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(agentupstream.MirrorInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				// Fresh jitter per tick (see agentupstream.MirrorJitter): every
+				// self-hosted install would otherwise fetch on a boundary derived
+				// from its own boot time, and installs that boot together would
+				// hit GitHub in lockstep.
+				return agentupstream.MirrorArgs{}, agentupstream.PeriodicInsertOpts()
+			},
+			&river.PeriodicJobOpts{RunOnStart: false},
+		))
 	}
 	// m103 (GH #247) — batched vulnerability-alert dispatch. Debounced
 	// enqueue happens in RescanSiteWorker.Work (5-minute delay + 10-minute

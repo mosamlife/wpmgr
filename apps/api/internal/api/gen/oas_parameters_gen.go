@@ -212,6 +212,118 @@ func decodeAddSiteEmailSuppressionParams(args [1]string, argsEscaped bool, r *ht
 	return params, nil
 }
 
+// AgentDownloadUpdatePackageParams is parameters of agentDownloadUpdatePackage operation.
+type AgentDownloadUpdatePackageParams struct {
+	// The site the token was minted for. Must equal the token's `aud`.
+	SiteId uuid.UUID
+	// Short-lived signed download token minted by the control plane.
+	Token string
+}
+
+func unpackAgentDownloadUpdatePackageParams(packed middleware.Parameters) (params AgentDownloadUpdatePackageParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "siteId",
+			In:   "path",
+		}
+		params.SiteId = packed[key].(uuid.UUID)
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "token",
+			In:   "query",
+		}
+		params.Token = packed[key].(string)
+	}
+	return params
+}
+
+func decodeAgentDownloadUpdatePackageParams(args [1]string, argsEscaped bool, r *http.Request) (params AgentDownloadUpdatePackageParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Decode path: siteId.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "siteId",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.SiteId = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "siteId",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode query: token.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "token",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToString(val)
+				if err != nil {
+					return err
+				}
+
+				params.Token = c
+				return nil
+			}); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "token",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // AgentFetchSuppressionDeltasParams is parameters of agentFetchSuppressionDeltas operation.
 type AgentFetchSuppressionDeltasParams struct {
 	// Opaque keyset cursor from a previous call's `next_cursor`.

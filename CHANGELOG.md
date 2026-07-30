@@ -8,6 +8,23 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.103] - 2026-07-30
+
+### Added
+
+- A self-hosted install can now mirror the published WPMgr agent release from our public GitHub releases into its own object storage (GH #302, driven by GH #310 and GH #255). A self-hosted install previously had no way to get agent updates at all: the published release lives in the hosted service's storage, and a self-hosted install has its own storage that nothing ever writes to, so the dashboard had no agent update to offer and neither did a site's own wp-admin. One operator documented the workaround they had been using instead: build the plugin zip by hand, upload it, verify the storage endpoint, add a setting to every single site's wp-config.php, and clear caches, which does not scale across many sites on many servers. Once mirroring is turned on, everything works exactly as it does on the hosted service: the dashboard knows the current agent version, sites are offered the update, and the fleet update flow works.
+- This ships off by default and is turned on with a single setting.
+- The control plane downloads the release once, not once per site, and sites themselves never contact GitHub; they only ever talk to the control plane they already trust.
+- The download is verified three ways before anything is published: a checksum published alongside the release, the checksum GitHub itself reports for the asset, and a checksum computed over the bytes actually received. All three have to agree.
+- Sites no longer need a per-site setting to trust where the package comes from, because the control plane serves it from its own address, which every agent already knows. This is the part that removes the per-site wp-config.php edit the old workaround required.
+- WPMgr will never overwrite a release an operator published themselves. If it finds a release it did not publish, it stands down and says so, so an operator running their own builds is never taken over.
+- A mirrored release is only ever replaced by a genuinely newer one, so it will not move a fleet backwards.
+
+### Fixed
+
+- Downloading the agent package could fail on a slow connection (GH #302). A site downloading steadily but slowly used to be cut off partway through, leaving it unable to update at all. It now completes as long as it keeps making progress; a download that genuinely stops making progress is still ended, and no single download can run indefinitely.
+- Shutting down the control plane now waits for in-progress agent package downloads to finish, within the normal shutdown allowance, so a restart or a deployment no longer cuts one off partway through.
+
 ## [0.61.102] - 2026-07-29
 
 ### Fixed

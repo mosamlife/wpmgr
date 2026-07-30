@@ -12326,6 +12326,61 @@ export type AgentGetUpdateManifestResponses = {
 export type AgentGetUpdateManifestResponse =
   AgentGetUpdateManifestResponses[keyof AgentGetUpdateManifestResponses];
 
+export type AgentDownloadUpdatePackageData = {
+  body?: never;
+  path: {
+    /**
+     * The site the token was minted for. Must equal the token's `aud`.
+     */
+    siteId: string;
+  };
+  query: {
+    /**
+     * Short-lived signed download token minted by the control plane.
+     */
+    token: string;
+  };
+  url: "/agent/v1/update/package/{siteId}";
+};
+
+export type AgentDownloadUpdatePackageErrors = {
+  /**
+   * update_package_unauthorized: the token is missing, malformed,
+   * forged, expired, or minted for a different site. Every one of those
+   * returns the same code on purpose.
+   *
+   */
+  401: Error;
+  /**
+   * update_package_not_published (no release is published) or
+   * update_package_version_unavailable (the token names a version that
+   * is not the published one).
+   *
+   */
+  404: Error;
+  /**
+   * update_manifest_invalid / update_manifest_read_failed / update_package_read_failed
+   */
+  500: Error;
+  /**
+   * update_package_serving_disabled, control-plane package serving is not enabled on this install
+   */
+  501: Error;
+};
+
+export type AgentDownloadUpdatePackageError =
+  AgentDownloadUpdatePackageErrors[keyof AgentDownloadUpdatePackageErrors];
+
+export type AgentDownloadUpdatePackageResponses = {
+  /**
+   * The agent package zip
+   */
+  200: Blob | File;
+};
+
+export type AgentDownloadUpdatePackageResponse =
+  AgentDownloadUpdatePackageResponses[keyof AgentDownloadUpdatePackageResponses];
+
 export type AgentMediaSyncBatchData = {
   body: AgentMediaSyncBatch;
   path?: never;

@@ -5,7 +5,10 @@ import type { FleetAgentVersions } from "@wpmgr/api";
 import { renderWithProviders } from "@/test/render";
 import { mockQueryResult } from "@/test/query-mocks";
 
-import { AgentFleetSummaryCard } from "./AgentFleetSummaryCard";
+import {
+  AGENT_MIRROR_ENV_VAR,
+  AgentFleetSummaryCard,
+} from "./AgentFleetSummaryCard";
 import { useFleetAgentVersions } from "./use-fleet-agents";
 
 // GH #255 (reported against 0.61.97, self-hosted, 24 sites): the card used to
@@ -95,6 +98,25 @@ describe("AgentFleetSummaryCard", () => {
       screen.getByText((text) => text.includes("cannot tell which of your")),
     ).toBeInTheDocument();
     expect(screen.getByText("24")).toBeInTheDocument();
+  });
+
+  it("names the cause and the opt-in mirror setting when there is no reference version (GH #302)", () => {
+    mock(
+      buildData({
+        reference_source: "none",
+        latest_version: "unknown",
+        counts: { current: 0, outdated: 0, unknown: 24, ineligible: 0 },
+      }),
+    );
+    renderWithProviders(<AgentFleetSummaryCard />);
+
+    expect(
+      screen.getByText((text) =>
+        text.includes("No agent release channel is configured for this install"),
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(AGENT_MIRROR_ENV_VAR)).toBeInTheDocument();
+    expect(AGENT_MIRROR_ENV_VAR).toBe("WPMGR_UPDATE_AGENT_MIRROR_ENABLED");
   });
 
   it("still names ineligible (not self-updating) sites when there is no reference version", () => {

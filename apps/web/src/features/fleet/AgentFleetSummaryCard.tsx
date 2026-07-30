@@ -12,6 +12,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AGENT_STATUS_LABEL } from "@/components/status";
 import { useFleetAgentVersions } from "./use-fleet-agents";
 
+// GH #302: the opt-in, off-by-default control-plane setting that mirrors the
+// published agent release into a self-hosted install's own object storage.
+// Named here, once, so the "none" copy below and its tests share one source
+// of truth. This is copy only: the card never checks whether the mirror is
+// enabled or has run, it only tells the operator how to get a channel.
+export const AGENT_MIRROR_ENV_VAR = "WPMGR_UPDATE_AGENT_MIRROR_ENABLED";
+
 export function AgentFleetSummaryCardSkeleton() {
   return (
     <Card>
@@ -50,6 +57,13 @@ export function AgentFleetSummaryCardSkeleton() {
  *     to "fleet", so the copy below must not imply this install has no
  *     channel; it says only that no reference version is available.
  *
+ *     GH #302: on a self-hosted install this is normally the FIRST of those
+ *     two causes, and it has an actual fix, not just an explanation, so the
+ *     copy also names it: no agent release channel is configured, and
+ *     AGENT_MIRROR_ENV_VAR turns one on. This card never dials out to check
+ *     whether the mirror is already enabled or has run; it only points at
+ *     the one setting that would give this install a reference version.
+ *
  * Best-effort: a site-scoped collaborator with no org-level access gets a
  * 403 from GET /api/v1/fleet/agents, which this card treats the same as
  * "nothing to show" (return null) rather than a page-level error on a page
@@ -82,7 +96,11 @@ export function AgentFleetSummaryCard() {
             WPMgr has no reference agent version for this install, so it
             cannot tell which of your{" "}
             <span className="font-mono tabular-nums">{total}</span> sites are
-            behind.
+            behind. No agent release channel is configured for this install;
+            set{" "}
+            <span className="font-mono">{AGENT_MIRROR_ENV_VAR}</span> to
+            mirror the published agent release into this install's own
+            storage.
             {counts.ineligible > 0 ? (
               <>
                 {" "}

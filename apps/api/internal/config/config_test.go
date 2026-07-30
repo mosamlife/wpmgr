@@ -106,6 +106,69 @@ func TestLoadUpdateApplyHTTPTimeoutEnv(t *testing.T) {
 	}
 }
 
+// TestLoadAgentMirrorDefaults is the GH #302 off-by-default lock. The upstream
+// agent-release mirror is the one job that fetches from the public internet and
+// writes a binary into the operator's own storage, so merging it must change
+// nothing until an operator explicitly opts in. Owner/repo default to the
+// upstream project so an operator who opts in has nothing else to configure.
+func TestLoadAgentMirrorDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Update.AgentMirrorEnabled {
+		t.Fatal("Update.AgentMirrorEnabled = true by default; the upstream mirror must ship OFF")
+	}
+	if got := cfg.Update.AgentMirrorOwner; got != "mosamlife" {
+		t.Fatalf("Update.AgentMirrorOwner = %q, want the upstream owner", got)
+	}
+	if got := cfg.Update.AgentMirrorRepo; got != "wpmgr" {
+		t.Fatalf("Update.AgentMirrorRepo = %q, want the upstream repo", got)
+	}
+	// The mirror only ever moves this install's published agent version FORWARD.
+	// Rollback is the deliberate escape hatch for a genuine upstream yank, and it
+	// must be something an operator asks for: left on by default it is what would
+	// let a yanked-then-restored upstream flap the published version.
+	if cfg.Update.AgentMirrorAllowRollback {
+		t.Fatal("Update.AgentMirrorAllowRollback = true by default; the mirror must refuse an older upstream unless asked")
+	}
+}
+
+// TestLoadAgentMirrorEnv verifies the three mirror knobs are readable from the
+// environment, including pointing a fork at its own releases.
+func TestLoadAgentMirrorEnv(t *testing.T) {
+	t.Setenv("WPMGR_UPDATE_AGENT_MIRROR_ENABLED", "true")
+	t.Setenv("WPMGR_UPDATE_AGENT_MIRROR_OWNER", "some-fork")
+	t.Setenv("WPMGR_UPDATE_AGENT_MIRROR_REPO", "their-wpmgr")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Update.AgentMirrorEnabled {
+		t.Fatal("Update.AgentMirrorEnabled = false, want true from the environment")
+	}
+	if got := cfg.Update.AgentMirrorOwner; got != "some-fork" {
+		t.Fatalf("Update.AgentMirrorOwner = %q, want some-fork", got)
+	}
+	if got := cfg.Update.AgentMirrorRepo; got != "their-wpmgr" {
+		t.Fatalf("Update.AgentMirrorRepo = %q, want their-wpmgr", got)
+	}
+}
+
+// TestLoadAgentMirrorAllowRollbackEnv proves the escape hatch is reachable: an
+// operator following a genuine upstream rollback has one switch to set, so the
+// strictly-newer rule is deliberate rather than unrecoverable.
+func TestLoadAgentMirrorAllowRollbackEnv(t *testing.T) {
+	t.Setenv("WPMGR_UPDATE_AGENT_MIRROR_ALLOW_ROLLBACK", "true")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Update.AgentMirrorAllowRollback {
+		t.Fatal("Update.AgentMirrorAllowRollback = false, want true from the environment")
+	}
+}
+
 // TestLoadBackupStallDefaults verifies the GH #279 two-tier progress watchdog
 // defaults: a 3m soft threshold and a 30m hard threshold, with hard well
 // above soft (the whole point of a two-tier policy).

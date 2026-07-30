@@ -589,6 +589,138 @@ final class UpdateCheckerTest extends TestCase
     }
 
     // =========================================================================
+    // Control-plane host allowlist tests (GH #302)
+    // =========================================================================
+
+    /**
+     * A self-hosted control plane mirrors the agent package into its own
+     * storage and serves it from its own host, which differs per install and
+     * can never be a shipped default. The agent therefore always trusts the
+     * host of the control-plane URL it is already enrolled with, so an
+     * operator never edits wp-config.php on a single site.
+     *
+     * Pre-change this test FAILS: the allowlist was only
+     * ['storage.googleapis.com'] and cp.example.com was refused.
+     */
+    public function test_control_plane_host_is_trusted_with_no_constant_set(): void
+    {
+        $claims   = $this->makeClaims([
+            'package_url' => 'https://cp.example.com/agent/v1/update/package/0.11.0/wpmgr-agent.zip',
+        ]);
+        $envelope = $this->signClaims($claims);
+
+        $this->assertIsArray(
+            $this->makeChecker()->verifyManifest($envelope),
+            'The enrolled control-plane host must be trusted with no configuration at all.'
+        );
+    }
+
+    /**
+     * WPMGR_AGENT_PACKAGE_HOST keeps its REPLACE semantics for the baseline
+     * object-storage host (operators who set it to drop the managed host must
+     * keep that behaviour), but it can never remove the control-plane host,
+     * which is unioned in after it.
+     *
+     * Pre-change this test FAILS on the control-plane assertion: the constant
+     * replaced the whole list, so cp.example.com was not in it.
+     *
+     * Separate process because WPMGR_AGENT_PACKAGE_HOST is a real PHP constant
+     * and can never be undefined for the rest of a PHPUnit process (same idiom
+     * as SizeProbeWporgGuardTest / UpdateRunnerTempDirTest). The rejected case
+     * is asserted against the composed allowlist rather than through
+     * verifyManifest(), because a rejection there writes an error_log() line
+     * and a child process that emits output fails the separate-process runner.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_control_plane_host_is_trusted_when_constant_names_another_host(): void
+    {
+        if (!defined('WPMGR_AGENT_PACKAGE_HOST')) {
+            define('WPMGR_AGENT_PACKAGE_HOST', 'minio.example.test');
+        }
+
+        $checker = $this->makeChecker();
+
+        $method = new \ReflectionMethod(UpdateChecker::class, 'allowedPackageHosts');
+        /** @var array<int,string> $hosts */
+        $hosts = $method->invoke($checker);
+
+        $this->assertContains(
+            'cp.example.com',
+            $hosts,
+            'The control-plane host must stay in the allowlist even when the constant names a different host.'
+        );
+        $this->assertContains(
+            'minio.example.test',
+            $hosts,
+            'The host named by the constant must be in the allowlist.'
+        );
+        $this->assertNotContains(
+            'storage.googleapis.com',
+            $hosts,
+            'The constant must keep REPLACING the baseline host, so the managed host is no longer trusted.'
+        );
+
+        // End to end through the real verification chain for the case that made
+        // GH #302 necessary: a mirrored package served by the control plane.
+        $cpEnvelope = $this->signClaims($this->makeClaims([
+            'package_url' => 'https://cp.example.com/agent/v1/update/package/0.11.0/wpmgr-agent.zip',
+        ]));
+        $this->assertIsArray(
+            $checker->verifyManifest($cpEnvelope),
+            'A package served by the enrolled control plane must verify with the constant set elsewhere.'
+        );
+    }
+
+    /**
+     * The filter stays an absolute override, including over the control-plane
+     * host, so an operator who needs strict pinning can still express a closed
+     * list.
+     */
+    public function test_filter_overrides_even_the_control_plane_host(): void
+    {
+        \Brain\Monkey\Functions\when('apply_filters')->alias(function ($hook, $value) {
+            return $hook === 'wpmgr_agent_package_hosts' ? ['pinned.example.test'] : $value;
+        });
+
+        $checker = $this->makeChecker();
+
+        $pinnedEnvelope = $this->signClaims($this->makeClaims([
+            'package_url' => 'https://pinned.example.test/agent-releases/0.11.0/wpmgr-agent.zip',
+        ]));
+        $this->assertIsArray(
+            $checker->verifyManifest($pinnedEnvelope),
+            'The pinned host must be trusted.'
+        );
+
+        $cpEnvelope = $this->signClaims($this->makeClaims([
+            'package_url' => 'https://cp.example.com/agent/v1/update/package/0.11.0/wpmgr-agent.zip',
+        ]));
+        $this->assertNull(
+            $checker->verifyManifest($cpEnvelope),
+            'The filter must be able to drop even the control-plane host.'
+        );
+    }
+
+    /**
+     * Trusting the control-plane host widens nothing else: a host that is
+     * neither the control plane nor the baseline nor configured is still
+     * refused.
+     */
+    public function test_third_party_host_is_refused_alongside_the_control_plane_host(): void
+    {
+        $envelope = $this->signClaims($this->makeClaims([
+            'package_url' => 'https://cp.example.com.evil.test/wpmgr-agent.zip',
+        ]));
+
+        $this->assertNull(
+            $this->makeChecker()->verifyManifest($envelope),
+            'A host that is neither the control plane nor an allowlisted storage host must be refused.'
+        );
+    }
+
+    // =========================================================================
     // injectUpdate tests
     // =========================================================================
 

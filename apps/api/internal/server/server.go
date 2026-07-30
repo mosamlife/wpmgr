@@ -258,6 +258,47 @@ func (s *Server) Handler() http.Handler {
 	return s.http.Handler
 }
 
+// newHTTPServer builds the process's one http.Server, and is where the
+// SERVER-LEVEL timeout posture is decided. Split out from New so the decision is
+// pinned by a test (server_timeouts_test.go) rather than living as a comment
+// somebody re-opens later.
+//
+// ReadHeaderTimeout IS SET (10s). It bounds a client that opens a connection and
+// dribbles request headers, which no legitimate caller does and which costs a
+// goroutine each. It never touches a response.
+//
+// WriteTimeout IS DELIBERATELY UNSET. It is a whole-response deadline measured
+// from the end of the request headers, applied to EVERY handler in the process.
+// The routes that would break first are the ones that are supposed to stay open:
+// the update-run and backup-run SSE streams and the connection-lifecycle event
+// bus, all of which hold a single response open for minutes by design; a
+// WriteTimeout would cut them at a fixed wall clock and the dashboard would lose
+// live progress. The agent package download has the same problem from the other
+// end: a legitimately slow site needs minutes for a multi-megabyte zip, and a
+// duration cap on that response is exactly the defect this work exists to fix.
+// The bound those responses actually need is a PROGRESS bound, which is per
+// response and therefore belongs on the response: the package route takes over
+// its own connection and runs a stall watchdog restarted by every partial write
+// the socket accepts (see internal/agent/update_package_limits.go,
+// streamPackage), which bounds a consumer that has stopped accepting bytes,
+// imposes no rate on one that is merely slow, and touches no other handler.
+//
+// IdleTimeout IS DELIBERATELY UNSET. It would only bound keep-alive connections
+// BETWEEN requests, so it is harmless to SSE, but it is not free: this API sits
+// behind a Google Cloud load balancer whose own backend idle timeout is 600s,
+// and a backend that closes an idle connection sooner than the balancer expects
+// races the balancer into reusing a socket the server is closing, which surfaces
+// to users as sporadic 502s. Any IdleTimeout added here must therefore exceed
+// the balancer's, at which point it bounds almost nothing that matters. If one
+// is ever wanted, set it above 620s and say so here.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+}
+
 // New builds the Gin engine and HTTP server.
 func New(deps Deps) *Server {
 	if deps.Config.IsProduction() {
@@ -291,11 +332,7 @@ func New(deps Deps) *Server {
 	s := &Server{
 		deps: deps,
 		log:  deps.Logger,
-		http: &http.Server{
-			Addr:              deps.Config.HTTPAddr,
-			Handler:           engine,
-			ReadHeaderTimeout: 10 * time.Second,
-		},
+		http: newHTTPServer(deps.Config.HTTPAddr, engine),
 	}
 
 	s.registerSystem(engine)
@@ -310,6 +347,19 @@ func New(deps Deps) *Server {
 
 	// Public agent enrollment (no session/tenant; the pairing code authorizes).
 	deps.SiteH.RegisterPublic(engine)
+
+	// GH #302: public agent package download:
+	// GET /agent/v1/update/package/:siteId?token=<signed>. Mounted on the ROOT
+	// engine, deliberately NOT on the agent-authenticated group below: the agent
+	// downloads the package with a bare request carrying no credentials and no
+	// redirect following, so a signed, short-lived, site- and version-bound token
+	// in the query string is the entire authorisation (see
+	// internal/agent/update_package_handler.go). Must NOT use sessionAuthGroup
+	// (H2 note above). Until EnablePackageServing arms the handler this route
+	// refuses everything, which is the self-host-off default.
+	if deps.UpdateAgentH != nil {
+		deps.UpdateAgentH.RegisterPublic(engine)
+	}
 
 	// Public RUM ingest (M56): POST /rum/ingest. No session, no tenant gate.
 	// The beacon key is the only credential. Isolated from /api/v1 and /agent/v1.
@@ -643,9 +693,62 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Info("shutdown signal received, draining connections")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.deps.Config.Shutdown.Timeout)
 		defer cancel()
-		if err := s.http.Shutdown(shutdownCtx); err != nil {
+		err := s.http.Shutdown(shutdownCtx)
+		// Shutdown does not cover everything this process is serving, so the
+		// return is deliberately held until the rest has drained on the SAME
+		// budget. See drainPackageStreams.
+		s.drainPackageStreams(shutdownCtx)
+		if err != nil {
 			return err
 		}
 		return nil
 	}
+}
+
+// drainPackageStreams waits out the in-flight agent package downloads that
+// http.Server.Shutdown does NOT wait for, inside whatever is left of the
+// shutdown budget.
+//
+// WHY THIS IS NOT COVERED BY Shutdown. Shutdown's contract excludes HIJACKED
+// connections, and the agent package route hijacks its connection so the write
+// half can observe partial writes and run a real progress bound (see
+// internal/agent/update_package_limits.go, streamPackage). Measured against that
+// handler with a download mid-body, same handler and same state in both rows:
+//
+//	HIJACKED  Shutdown returned after 0s      (err=nil)                     in-flight=1
+//	FALLBACK  Shutdown returned after 5.002s  (err=context deadline exceeded) in-flight=1
+//
+// So taking the connection over silently stopped this route draining on
+// SIGTERM. On a revision rollout or a scale-down the process would exit
+// immediately with up to maxConcurrentPackageStreams zips mid-transfer; each of
+// those sites fails its size and sha256 check and retries on its next check.
+// Nothing is lost, but "agent updates fail whenever we deploy" is a symptom that
+// gets attributed to almost anything else, so the streams are drained rather
+// than documented.
+//
+// BOUNDED BY THE SAME BUDGET, DELIBERATELY. ctx here is the shutdown context, so
+// a slow stream can only ever consume time Shutdown itself did not, and can
+// never hold a deploy past Shutdown.Timeout. When the budget runs out this logs
+// what was still in flight and returns; the process exits and those connections
+// die exactly as they did before.
+func (s *Server) drainPackageStreams(ctx context.Context) {
+	if s.deps.UpdateAgentH == nil {
+		return
+	}
+	inFlight := s.deps.UpdateAgentH.PackageStreamsInFlight()
+	if inFlight == 0 {
+		return
+	}
+
+	s.log.Info("waiting for in-flight agent package downloads",
+		slog.Int("in_flight", inFlight))
+	start := time.Now()
+	if left := s.deps.UpdateAgentH.WaitForPackageStreams(ctx); left > 0 {
+		s.log.Warn("shutdown budget expired with agent package downloads still in flight; those sites receive a truncated zip, fail their integrity check and retry on their next update check",
+			slog.Int("in_flight", left),
+			slog.Duration("waited", time.Since(start)))
+		return
+	}
+	s.log.Info("in-flight agent package downloads drained",
+		slog.Duration("waited", time.Since(start)))
 }

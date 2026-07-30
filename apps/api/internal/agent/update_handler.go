@@ -96,8 +96,18 @@ type signedManifestClaims struct {
 // (a live SDK GetObject 403s against GCS — see blobstore.GetViaPresign) and
 // returns blobstore.ErrNotFound when it is absent; PresignGet mints a
 // short-lived GET URL for the package object the agent downloads.
+//
+// GetStreamViaPresign is the LARGE-object read, used only by the package
+// download route. It is a separate method rather than a flag on GetViaPresign
+// because the two have opposite timeout postures, and getting them confused is
+// what truncates a package mid-stream: GetViaPresign's client caps the whole
+// request (body included) at 15s, which a site downloading a multi-megabyte zip
+// over a slow link will exceed. It is part of this interface, not an optional
+// type assertion, so a store that cannot stream fails to compile here instead of
+// silently falling back to the capped path.
 type ManifestStore interface {
 	GetViaPresign(ctx context.Context, key string) (io.ReadCloser, error)
+	GetStreamViaPresign(ctx context.Context, key string) (io.ReadCloser, error)
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
@@ -107,11 +117,25 @@ type ManifestSigner interface {
 	SignManifest(payload []byte) string
 }
 
-// UpdateHandler serves GET /agent/v1/update/manifest.
+// UpdateHandler serves GET /agent/v1/update/manifest, and (GH #302, once armed
+// via EnablePackageServing) the unauthenticated package download route in
+// update_package_handler.go.
 type UpdateHandler struct {
 	store      ManifestStore
 	signer     ManifestSigner
 	presignTTL time.Duration
+
+	// tokens and packageBase are set only by EnablePackageServing (GH #302).
+	// While tokens is nil, package_url stays a presigned object-storage URL and
+	// the download route refuses every request.
+	tokens      PackageTokenSigner
+	packageBase string
+
+	// streams and redemptions bound the unauthenticated package download route
+	// so it cannot be used as a bandwidth or goroutine amplifier. Always
+	// non-nil; both are per instance, see update_package_limits.go.
+	streams     *packageStreamSemaphore
+	redemptions *packageTokenRedemptions
 }
 
 // NewUpdateHandler wires the self-update manifest handler. presignTTL bounds how
@@ -121,7 +145,13 @@ func NewUpdateHandler(store ManifestStore, signer ManifestSigner, presignTTL tim
 	if presignTTL <= 0 || presignTTL > 5*time.Minute {
 		presignTTL = 5 * time.Minute
 	}
-	return &UpdateHandler{store: store, signer: signer, presignTTL: presignTTL}
+	return &UpdateHandler{
+		store:       store,
+		signer:      signer,
+		presignTTL:  presignTTL,
+		streams:     newPackageStreamSemaphore(maxConcurrentPackageStreams),
+		redemptions: newPackageTokenRedemptions(maxPackageTokenRedemptions),
+	}
 }
 
 // Register mounts the route on the agent-authenticated group.
@@ -157,11 +187,16 @@ func (h *UpdateHandler) manifest(c *gin.Context) {
 		return
 	}
 
-	// Mint a fresh, short-lived presigned GET for the package. The agent fetches
+	// Mint a fresh, short-lived download URL for the package. The agent fetches
 	// this manifest fresh at install time and downloads within the TTL.
-	pkgURL, err := h.store.PresignGet(c.Request.Context(), rel.PackageObjectKey, h.presignTTL)
+	//
+	// Which ORIGIN that URL points at is decided by packageURL: a presigned
+	// object-storage URL by default, or this control plane's own streaming route
+	// once EnablePackageServing has armed it (GH #302). Either way the lifetime
+	// is h.presignTTL, so the manifest's exp semantics below are unchanged.
+	pkgURL, err := h.packageURL(c, id.SiteID, rel)
 	if err != nil {
-		slog.ErrorContext(c.Request.Context(), "ADR-042 presign failed", slog.String("err", err.Error()), slog.String("key", rel.PackageObjectKey), slog.String("site_id", id.SiteID.String()))
+		slog.ErrorContext(c.Request.Context(), "ADR-042 package url mint failed", slog.String("err", err.Error()), slog.String("key", rel.PackageObjectKey), slog.String("site_id", id.SiteID.String()))
 		httpx.Error(c, domain.Internal("update_presign_failed", "failed to presign release package").WithCause(err))
 		return
 	}

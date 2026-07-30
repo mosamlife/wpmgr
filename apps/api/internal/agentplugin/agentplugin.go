@@ -136,6 +136,59 @@ func Is(key string) bool {
 	return DistributionOf(key, "") != DistributionNone
 }
 
+// IsReleaseVersionSegment reports whether a version string is safe to place in
+// the agent's release object key (agent-releases/<version>/<slug>.zip): a
+// non-empty run of version characters, with no path separator and no dot-run
+// that could traverse.
+//
+// It lives here, next to the slug that forms the rest of that key, because BOTH
+// ends of the release channel have to agree on it: the control plane rebuilds
+// the key from the published version when it serves the package
+// (internal/agent), and the upstream mirror builds the same key from a FETCHED
+// version when it writes one (internal/agentupstream). A version is the only
+// caller-influenced value that ever reaches that key, so the write side and the
+// read side must apply the same rule, from one definition.
+//
+// This is deliberately looser than a well-formed-version check (see
+// agentrelease.WellFormed): it answers "is this safe as an object-key segment",
+// not "is this a version we are willing to order". It is NOT, however, willing
+// to accept a segment that is not a version at all: see the leading-separator
+// and digit rules below, which are what keep "." and "latest.json" out of the
+// release prefix.
+func IsReleaseVersionSegment(v string) bool {
+	if v == "" || len(v) > 100 || strings.Contains(v, "..") {
+		return false
+	}
+	hasDigit := false
+	for i, r := range v {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case r == '.' || r == '-' || r == '_' || r == '+':
+			// A separator may not LEAD the segment. That rejects "." outright,
+			// and it matters beyond tidiness: a key segment beginning with a dot
+			// reads as a relative path to anything that ever materialises these
+			// keys on a filesystem, and no real version starts with one.
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	// At least one digit, which is what stops a bare word being accepted as a
+	// version. The case that matters is "latest.json": every character in it is
+	// legal above, so it would otherwise build agent-releases/latest.json/<slug>.zip,
+	// a key that reads as a CHILD of the pointer object beside it. On the S3 and
+	// GCS key spaces those two are merely confusable; on anything filesystem
+	// backed they collide outright, because the same name cannot be both a file
+	// and a directory. Every real version carries a digit (the release pipeline
+	// derives it from the plugin's WPMGR_AGENT_VERSION constant), so requiring
+	// one costs nothing and closes the whole class.
+	return hasDigit
+}
+
 // pluginDirectory reduces an inventory key to its lowercased plugin directory:
 // leading slash stripped, first path segment only, a trailing ".php" removed so
 // the single-file form collapses onto the same value.

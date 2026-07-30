@@ -39,6 +39,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.103",
+    date: "2026-07-30",
+    summary: "Self-hosted installs can now get agent updates, mirrored from GitHub into their own storage and off by default.",
+    items: [
+      {
+        tag: "Added",
+        text: "Self-hosted installs previously had no way to get agent updates at all: the published release lives in the hosted service's storage, which a self-hosted install never receives (GH #302, driven by GH #310 and GH #255). WPMgr can now mirror the published agent release from our public GitHub releases into your own storage instead of hand-building and uploading the zip yourself. Off by default, turned on with a single setting; once it's on, the dashboard, wp-admin, and the fleet update flow all work exactly as they do on the hosted service.",
+      },
+      {
+        tag: "Added",
+        text: "The control plane downloads the release once, not once per site, and sites never contact GitHub themselves; they only talk to the control plane they already trust. The download is verified three ways before anything is published: a checksum published with the release, the checksum GitHub reports for the asset, and one computed over the bytes actually received.",
+      },
+      {
+        tag: "Added",
+        text: "Sites no longer need a per-site setting to trust where the package comes from, since the control plane now serves it from its own address. WPMgr never overwrites a release you published yourself, and a mirrored release only ever replaces an older one, so it can't move a fleet backwards.",
+      },
+      {
+        tag: "Fixed",
+        text: "Downloading the agent package no longer fails partway through on a slow connection; a download that genuinely stops making progress is still ended. Shutting down the control plane now waits for in-progress agent downloads to finish.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.102",
     date: "2026-07-29",
     summary: "Agent updates from GitHub release assets now agree with the built-in update channel on version numbers.",

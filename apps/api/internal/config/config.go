@@ -370,12 +370,74 @@ type BackupConfig struct {
 // un-brick anyone, the agent's downgrade guard refuses to install anything
 // older than what it is already running. Turning this off is therefore the
 // only thing that actually stops an agent rollout in progress.
+//
+// AgentMirrorEnabled (WPMGR_UPDATE_AGENT_MIRROR_ENABLED) is the switch for the
+// upstream agent-release MIRROR (GH #302, internal/agentupstream), and it too
+// DEFAULTS TO FALSE. While false the mirror job no-ops: nothing is fetched from
+// the public internet and nothing is written into the operator's bucket.
+//
+// It exists because a self-hosted install has no published agent release at all:
+// the release pipeline writes into the hosted service's bucket, and nothing ever
+// writes into a self-hoster's own storage, so their dashboard has no reference
+// version and their sites are never offered an upgrade. Turning this on makes the
+// control plane read the public GitHub release, verify it end to end, and publish
+// the very same two objects into its OWN storage, after which every existing path
+// is unchanged and unaware.
+//
+// AgentMirrorOwner/AgentMirrorRepo (WPMGR_UPDATE_AGENT_MIRROR_OWNER /
+// WPMGR_UPDATE_AGENT_MIRROR_REPO) name the upstream GitHub repository, so a fork
+// can mirror its own releases instead. They default to the upstream project. Both
+// are interpolated into a URL path and are shape-validated before use.
+//
+// AgentMirrorAllowRollback (WPMGR_UPDATE_AGENT_MIRROR_ALLOW_ROLLBACK) relaxes
+// the mirror's strictly-newer rule, and DEFAULTS TO FALSE. Normally the mirror
+// only ever moves this install's published agent version forward: an upstream
+// release older than the one already mirrored is refused, because repointing
+// backwards does not downgrade any site (the agent refuses to install something
+// older than it is running) but it does make the fleet dashboard report the
+// wrong reference version and offer a newly enrolled site the wrong build.
+//
+// The one case that rule gets wrong is a GENUINE upstream rollback: a bad
+// release is yanked, /releases/latest starts answering with the previous one,
+// and an operator who wants their install to follow it back needs to be able to
+// say so. This is that switch. It is deliberately explicit rather than the
+// default, because left on permanently it is also what would let a
+// yanked-then-restored upstream flap the published version. It does NOT let the
+// mirror overwrite a pointer it did not publish; that protection has no switch.
+//
+// AgentPackageServeEnabled (WPMGR_UPDATE_AGENT_PACKAGE_SERVE_ENABLED) is the
+// second half of GH #302 and it too DEFAULTS TO FALSE. While false the signed
+// manifest's package_url stays a presigned object-storage URL, exactly as before,
+// and the control plane's own package route refuses everything. Turning it on
+// makes the control plane SERVE the mirrored package itself, which is what
+// removes the per-site WPMGR_AGENT_PACKAGE_HOST edit: a mirrored object presigns
+// onto the operator's own storage host, which differs per install and so can
+// never be an agent default, whereas the control plane's host is one the agent is
+// already enrolled with.
+//
+// It defaults to false because of ROLLOUT ORDER, not doubt about the design. Only
+// agents new enough to trust their own control-plane host accept a CP-hosted
+// package_url; an older agent refuses it on its host allowlist. Flipping this on
+// for a fleet whose agents predate that change would stop their self-update
+// instead of starting it, so the switch belongs to the operator, who knows which
+// build their sites are on.
+//
+// AgentPackageBaseURL (WPMGR_UPDATE_AGENT_PACKAGE_BASE_URL) optionally pins the
+// public origin used to build that URL. Left empty, the origin is derived from
+// the control-plane URL the agent itself used to fetch the manifest, so a
+// self-hosted install needs no value here at all.
 type UpdateConfig struct {
-	PerTenantParallelism   int           `koanf:"per_tenant_parallelism"`
-	HTTPTimeout            time.Duration `koanf:"http_timeout"`
-	HTTPRetries            int           `koanf:"http_retries"`
-	ApplyHTTPTimeout       time.Duration `koanf:"apply_http_timeout"`
-	AgentSelfUpdateEnabled bool          `koanf:"agent_self_update_enabled"`
+	PerTenantParallelism     int           `koanf:"per_tenant_parallelism"`
+	HTTPTimeout              time.Duration `koanf:"http_timeout"`
+	HTTPRetries              int           `koanf:"http_retries"`
+	ApplyHTTPTimeout         time.Duration `koanf:"apply_http_timeout"`
+	AgentSelfUpdateEnabled   bool          `koanf:"agent_self_update_enabled"`
+	AgentMirrorEnabled       bool          `koanf:"agent_mirror_enabled"`
+	AgentMirrorOwner         string        `koanf:"agent_mirror_owner"`
+	AgentMirrorRepo          string        `koanf:"agent_mirror_repo"`
+	AgentMirrorAllowRollback bool          `koanf:"agent_mirror_allow_rollback"`
+	AgentPackageServeEnabled bool          `koanf:"agent_package_serve_enabled"`
+	AgentPackageBaseURL      string        `koanf:"agent_package_base_url"`
 }
 
 // AgentConfig holds the control-plane agent-protocol configuration.
@@ -589,69 +651,89 @@ func defaults() map[string]any {
 		// Fleet-wide kill switch for the agent's own upgrade channel. Ships
 		// DISABLED: merging the channel changes nothing until an operator
 		// explicitly turns it on. See UpdateConfig.AgentSelfUpdateEnabled.
-		"update.agent_self_update_enabled":  false,
-		"s3.endpoint":                       "",
-		"s3.region":                         "us-east-1",
-		"s3.bucket":                         "",
-		"s3.access_key":                     "",
-		"s3.secret_key":                     "",
-		"s3.force_path_style":               true,
-		"backup.presign_ttl":                "1h",
-		"backup.retention_days":             30,
-		"backup.monthly_archive_keep":       12,
-		"backup.schedule_interval":          "5m",
-		"backup.gc_interval":                "1h",
-		"backup.http_timeout":               "10m",
-		"backup.stall_soft_timeout":         "3m",
-		"backup.stall_hard_timeout":         "30m",
-		"clickhouse.addr":                   "",
-		"clickhouse.db":                     "wpmgr_metrics",
-		"clickhouse.username":               "default",
-		"clickhouse.password":               "",
-		"smtp.host":                         "",
-		"smtp.port":                         587,
-		"smtp.username":                     "",
-		"smtp.password":                     "",
-		"smtp.from":                         "",
-		"smtp.tls_mode":                     "starttls",
-		"uptime.probe_interval":             "60s",
-		"uptime.probe_timeout":              "15s",
-		"uptime.probe_concurrency":          10,
-		"uptime.alert_interval":             "60s",
-		"uptime.down_threshold":             2,
-		"uptime.cron_kick_enabled":          true,
-		"uptime.cron_kick_interval":         "5m",
-		"uptime.cron_kick_timeout":          "5s",
-		"uptime.cron_kick_concurrency":      10,
-		"uptime.app_probe_enabled":          true,
-		"uptime.app_probe_interval":         "300s",
-		"uptime.app_probe_timeout":          "10s",
-		"uptime.app_alert_threshold":        5,
-		"uptime.app_alert_breaker_ratio":    0.25,
-		"uptime.max_fleet_size":             2000,
-		"river.media_schema":                "media_encoder",
-		"autologin.require_2fa_step_up":     false,
-		"conn.degrade_after":                "300s",
-		"conn.degrade_miss_threshold":       3,
-		"conn.disconnect_after":             "900s",
-		"conn.active_verify":                true,
-		"conn.verify_timeout":               "8s",
-		"conn.verify_concurrency":           8,
-		"hosted.enabled":                    false,
-		"billing.stripe.secret_key":         "",
-		"billing.stripe.webhook_secret":     "",
-		"billing.stripe.price_starter":      "",
-		"billing.stripe.price_agency":       "",
-		"billing.stripe.price_scale":        "",
-		"billing.razorpay.key_id":           "",
-		"billing.razorpay.key_secret":       "",
-		"billing.razorpay.webhook_secret":   "",
-		"billing.razorpay.plan_starter_usd": "",
-		"billing.razorpay.plan_starter_inr": "",
-		"billing.razorpay.plan_agency_usd":  "",
-		"billing.razorpay.plan_agency_inr":  "",
-		"billing.razorpay.plan_scale_usd":   "",
-		"billing.razorpay.plan_scale_inr":   "",
+		"update.agent_self_update_enabled": false,
+		// GH #302 — mirror the public upstream agent release into THIS install's
+		// own object storage. Ships DISABLED: an install that already has a
+		// release channel (the hosted service) does not need it, and an install
+		// that does need it should opt in. Owner/repo default to the upstream
+		// project; a fork points them at its own releases.
+		"update.agent_mirror_enabled": false,
+		"update.agent_mirror_owner":   "mosamlife",
+		"update.agent_mirror_repo":    "wpmgr",
+		// The mirror only ever moves the published version FORWARD. This is the
+		// deliberate escape hatch for a genuine upstream rollback (a yanked
+		// release), and it is off unless an operator asks for it.
+		"update.agent_mirror_allow_rollback": false,
+		// GH #302: serve that mirrored package from the control plane itself, so
+		// no site needs a package-host override in wp-config.php. Ships DISABLED
+		// for rollout order: only agents new enough to trust their own
+		// control-plane host accept a CP-hosted package_url. See
+		// UpdateConfig.AgentPackageServeEnabled. An empty base URL means "derive
+		// the origin from the request the agent made".
+		"update.agent_package_serve_enabled": false,
+		"update.agent_package_base_url":      "",
+		"s3.endpoint":                        "",
+		"s3.region":                          "us-east-1",
+		"s3.bucket":                          "",
+		"s3.access_key":                      "",
+		"s3.secret_key":                      "",
+		"s3.force_path_style":                true,
+		"backup.presign_ttl":                 "1h",
+		"backup.retention_days":              30,
+		"backup.monthly_archive_keep":        12,
+		"backup.schedule_interval":           "5m",
+		"backup.gc_interval":                 "1h",
+		"backup.http_timeout":                "10m",
+		"backup.stall_soft_timeout":          "3m",
+		"backup.stall_hard_timeout":          "30m",
+		"clickhouse.addr":                    "",
+		"clickhouse.db":                      "wpmgr_metrics",
+		"clickhouse.username":                "default",
+		"clickhouse.password":                "",
+		"smtp.host":                          "",
+		"smtp.port":                          587,
+		"smtp.username":                      "",
+		"smtp.password":                      "",
+		"smtp.from":                          "",
+		"smtp.tls_mode":                      "starttls",
+		"uptime.probe_interval":              "60s",
+		"uptime.probe_timeout":               "15s",
+		"uptime.probe_concurrency":           10,
+		"uptime.alert_interval":              "60s",
+		"uptime.down_threshold":              2,
+		"uptime.cron_kick_enabled":           true,
+		"uptime.cron_kick_interval":          "5m",
+		"uptime.cron_kick_timeout":           "5s",
+		"uptime.cron_kick_concurrency":       10,
+		"uptime.app_probe_enabled":           true,
+		"uptime.app_probe_interval":          "300s",
+		"uptime.app_probe_timeout":           "10s",
+		"uptime.app_alert_threshold":         5,
+		"uptime.app_alert_breaker_ratio":     0.25,
+		"uptime.max_fleet_size":              2000,
+		"river.media_schema":                 "media_encoder",
+		"autologin.require_2fa_step_up":      false,
+		"conn.degrade_after":                 "300s",
+		"conn.degrade_miss_threshold":        3,
+		"conn.disconnect_after":              "900s",
+		"conn.active_verify":                 true,
+		"conn.verify_timeout":                "8s",
+		"conn.verify_concurrency":            8,
+		"hosted.enabled":                     false,
+		"billing.stripe.secret_key":          "",
+		"billing.stripe.webhook_secret":      "",
+		"billing.stripe.price_starter":       "",
+		"billing.stripe.price_agency":        "",
+		"billing.stripe.price_scale":         "",
+		"billing.razorpay.key_id":            "",
+		"billing.razorpay.key_secret":        "",
+		"billing.razorpay.webhook_secret":    "",
+		"billing.razorpay.plan_starter_usd":  "",
+		"billing.razorpay.plan_starter_inr":  "",
+		"billing.razorpay.plan_agency_usd":   "",
+		"billing.razorpay.plan_agency_inr":   "",
+		"billing.razorpay.plan_scale_usd":    "",
+		"billing.razorpay.plan_scale_inr":    "",
 	}
 }
 

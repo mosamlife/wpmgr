@@ -23,9 +23,11 @@
  *   8. Downgrade guard: version_compare(claims.version, on-disk, '>') AND
  *      version_compare(on-disk, claims.min_version, '>=').
  *   9. Host allowlist on package_url: scheme must be exactly 'https', host must
- *      be an exact (hash_equals) match for a configured allowed host (default
- *      'storage.googleapis.com', overridable via WPMGR_AGENT_PACKAGE_HOST /
- *      'wpmgr_agent_package_hosts' for self-hosted object storage); the download
+ *      be an exact (hash_equals) match for a configured allowed host (baseline
+ *      'storage.googleapis.com', replaceable via WPMGR_AGENT_PACKAGE_HOST for
+ *      self-hosted object storage, always unioned with the agent's own
+ *      control-plane host, and absolutely overridable via the
+ *      'wpmgr_agent_package_hosts' filter; see allowedPackageHosts); the download
  *      itself uses redirection=>0. package_size must be > 0 and <= MAX_PACKAGE_BYTES.
  *      An exact-host allowlist inherently rejects literal IPs (incl. the cloud
  *      metadata IP) and look-alike hosts, which is the anti-SSRF boundary.
@@ -607,10 +609,13 @@ final class UpdateChecker
             error_log('wpmgr-agent: UpdateChecker package_url scheme is not https.');
             return null;
         }
-        // Host must be in the configured allowlist (constant-time). The default is
-        // the managed CP's GCS host; a self-hosted deployment overrides it via the
-        // WPMGR_AGENT_PACKAGE_HOST constant or the 'wpmgr_agent_package_hosts'
-        // filter (see allowedPackageHosts). A literal IP, a look-alike host, or
+        // Host must be in the configured allowlist (constant-time). The baseline
+        // is the managed CP's GCS host, the agent's own control-plane host is
+        // always included, and a self-hosted deployment can further adjust the
+        // list via the WPMGR_AGENT_PACKAGE_HOST constant or the
+        // 'wpmgr_agent_package_hosts' filter (see allowedPackageHosts, which
+        // documents which layer replaces and which unions). A literal IP, a
+        // look-alike host, or
         // the cloud-metadata IP (169.254.169.254) never matches an allowlisted
         // hostname, so this single exact-host check is the anti-SSRF boundary.
         if (!$this->isAllowedPackageHost($host)) {
@@ -1565,11 +1570,34 @@ final class UpdateChecker
     }
 
     /**
-     * The allowlisted hosts a package_url may point at. Defaults to the managed
-     * control plane's GCS host. A self-hosted deployment whose object storage
-     * lives elsewhere (MinIO/SeaweedFS/managed S3/…) overrides this via the
-     * WPMGR_AGENT_PACKAGE_HOST constant (comma-separated) or the
-     * 'wpmgr_agent_package_hosts' filter.
+     * The allowlisted hosts a package_url may point at.
+     *
+     * Resolution order, and why each layer behaves the way it does:
+     *
+     *   1. Baseline: the managed control plane's object-storage host.
+     *   2. WPMGR_AGENT_PACKAGE_HOST (comma-separated) REPLACES the baseline.
+     *      This REPLACE semantic is deliberately preserved. Operators running a
+     *      self-hosted install already set that constant to point the agent at
+     *      their own object storage, and several of them set it precisely so the
+     *      managed baseline host stops being trusted. Turning it into an append
+     *      would silently re-trust a host they chose to drop, so the constant
+     *      keeps meaning "these are the object-storage hosts, instead of ours".
+     *   3. The agent's OWN control-plane host is UNIONED in, after the constant,
+     *      so the constant cannot remove it. A self-hosted control plane mirrors
+     *      the agent package into its own bucket, and a mirrored object presigns
+     *      onto a storage host that differs per install, so no default host list
+     *      can ever cover it. Trusting the control plane the agent is already
+     *      enrolled with (and already fetches the signed manifest from) is what
+     *      removes the per-site wp-config.php edit: the agent derives this host
+     *      from the control-plane URL it was enrolled with, so there is nothing
+     *      new to configure on any site. The union is safe because that host is
+     *      the same origin that signs the manifest; an operator who can change
+     *      it already controls the update channel end to end.
+     *   4. The 'wpmgr_agent_package_hosts' filter remains an ABSOLUTE override,
+     *      including over the control-plane host from step 3. That is intended:
+     *      an operator who needs strict pinning (for example, allowing only one
+     *      internal mirror) must have a way to express a closed list, and code
+     *      in wp-config.php or an mu-plugin is the right place for it.
      *
      * The package_url is INSIDE the signed, sha256-verified manifest, so the host
      * is already operator-controlled; this exact-host allowlist is defense in
@@ -1592,6 +1620,13 @@ final class UpdateChecker
             }
         }
 
+        // Union, never replace: this runs AFTER the constant so the constant
+        // cannot drop the control plane the agent is enrolled with.
+        $cpHost = $this->controlPlaneHost();
+        if ($cpHost !== '') {
+            $hosts[] = $cpHost;
+        }
+
         if (function_exists('apply_filters')) {
             $filtered = apply_filters('wpmgr_agent_package_hosts', $hosts);
             if (is_array($filtered) && $filtered !== []) {
@@ -1599,7 +1634,33 @@ final class UpdateChecker
             }
         }
 
-        return array_map('strtolower', array_map('strval', $hosts));
+        return array_values(array_unique(array_map('strtolower', array_map('strval', $hosts))));
+    }
+
+    /**
+     * The host of the agent's own control-plane base URL, lower-cased.
+     *
+     * Returns '' when the site is not enrolled, or when the stored URL has no
+     * parseable host. Only the host is taken: any port, path, or credentials in
+     * the stored URL are discarded, and the https-only scheme check on
+     * package_url is enforced separately in verifyManifest(), so a control plane
+     * reachable over plain http still never makes an http package_url passable.
+     *
+     * @return string Lower-cased hostname, or ''.
+     */
+    private function controlPlaneHost(): string
+    {
+        $base = $this->settings->controlPlaneUrl();
+        if ($base === '') {
+            return '';
+        }
+
+        $parsed = function_exists('wp_parse_url') ? wp_parse_url($base) : parse_url($base);
+        if (!is_array($parsed) || !isset($parsed['host']) || !is_string($parsed['host'])) {
+            return '';
+        }
+
+        return strtolower($parsed['host']);
     }
 
     /**

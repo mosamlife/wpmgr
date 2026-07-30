@@ -33,6 +33,10 @@ type AgentDisconnectRes interface {
 	agentDisconnectRes()
 }
 
+type AgentDownloadUpdatePackageRes interface {
+	agentDownloadUpdatePackageRes()
+}
+
 type AgentFetchSuppressionDeltasRes interface {
 	agentFetchSuppressionDeltasRes()
 }

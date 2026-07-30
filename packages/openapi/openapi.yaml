@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.102
+  version: 0.61.103
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -4825,6 +4825,85 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: update_unwired — the self-update channel is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /agent/v1/update/package/{siteId}:
+    get:
+      operationId: agentDownloadUpdatePackage
+      summary: Download the published agent package from the control plane (token-authorised, GH #302)
+      description: |
+        Streams the published `agent-releases/<version>/wpmgr-agent.zip` object
+        from THIS install's own object storage, so a site never needs a
+        per-site package-host override in `wp-config.php`.
+
+        Mounted on the root engine and NOT behind the agent signed-request
+        middleware: the agent downloads its package with a bare request that
+        carries no `Authorization` header and does not follow redirects, so
+        this route answers `200` with the bytes directly. The short-lived
+        `token` query parameter is the entire authorisation. It is minted by
+        the control plane's own Ed25519 signing key, in the same compact EdDSA
+        JWS every CP command token uses, and binds the download to one site
+        (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd`
+        pinned to `update_package` so no other command token can be redeemed
+        here.
+
+        The token is issued only inside the signed manifest returned by
+        `GET /agent/v1/update/manifest` (as its `package_url`), with the same
+        lifetime the presigned object-storage URL previously had. Nothing the
+        caller supplies reaches the object key: the key is rebuilt from the
+        version in the published manifest, and a token naming any other version
+        or site is refused.
+      tags: [agent, updates]
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          description: The site the token was minted for. Must equal the token's `aud`.
+          schema:
+            type: string
+            format: uuid
+        - name: token
+          in: query
+          required: true
+          description: Short-lived signed download token minted by the control plane.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The agent package zip
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: |
+            update_package_unauthorized: the token is missing, malformed,
+            forged, expired, or minted for a different site. Every one of those
+            returns the same code on purpose.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: |
+            update_package_not_published (no release is published) or
+            update_package_version_unavailable (the token names a version that
+            is not the published one).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: update_manifest_invalid / update_manifest_read_failed / update_package_read_failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: update_package_serving_disabled, control-plane package serving is not enabled on this install
           content:
             application/json:
               schema:

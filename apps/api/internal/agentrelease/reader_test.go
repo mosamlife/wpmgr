@@ -262,3 +262,16 @@ func TestReader_EverPublished(t *testing.T) {
 		t.Error("EverPublished() after a later blip = false; want true (it stays true once proven)")
 	}
 }
+
+// TestReader_LatestVersion_ToleratesUnknownFields: the mirrored release channel
+// (internal/agentupstream, GH #302) publishes latest.json with its own
+// provenance stamp added. This Reader is one of that object's consumers, and the
+// fleet freshness dashboard reads the version from it, so an extra field must
+// stay inert here.
+func TestReader_LatestVersion_ToleratesUnknownFields(t *testing.T) {
+	store := &fakeStore{body: `{"version":"0.61.95","mirrored_by":"wpmgr-agent-release-mirror","mirrored_from":"mosamlife/wpmgr@v0.61.102"}`}
+	r := NewReader(store, time.Minute)
+	if got := r.LatestVersion(context.Background()); got != "0.61.95" {
+		t.Errorf("LatestVersion() on a mirrored manifest = %q; want %q", got, "0.61.95")
+	}
+}

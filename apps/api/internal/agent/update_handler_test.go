@@ -35,6 +35,10 @@ func (f *fakeManifestStore) GetViaPresign(_ context.Context, _ string) (io.ReadC
 	return io.NopCloser(bytes.NewReader(f.body)), nil
 }
 
+func (f *fakeManifestStore) GetStreamViaPresign(ctx context.Context, key string) (io.ReadCloser, error) {
+	return f.GetViaPresign(ctx, key)
+}
+
 func (f *fakeManifestStore) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
 	f.gotPresignKey = key
 	if f.presignErr != nil {
@@ -220,5 +224,37 @@ func TestUpdateHandler_TTLClamp(t *testing.T) {
 	h := NewUpdateHandler(store, signer, 2*time.Minute)
 	if h.presignTTL != 2*time.Minute {
 		t.Errorf("ttl preserved = %v, want 2m", h.presignTTL)
+	}
+}
+
+// TestUpdateHandler_ToleratesUnknownManifestFields is the compatibility lock for
+// GH #302's mirrored channel.
+//
+// internal/agentupstream publishes latest.json with a provenance stamp added
+// (an extra "mirrored_by" field), which is how it knows on the next run that the
+// pointer in place is its own and not one the operator published themselves.
+// This handler is the most important consumer of that object: if readLatest ever
+// started rejecting fields it does not name, a mirrored install would serve 500s
+// on the agent self-update path instead of a signed manifest.
+func TestUpdateHandler_ToleratesUnknownManifestFields(t *testing.T) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(validLatestJSON(t), &fields); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	fields["mirrored_by"] = json.RawMessage(`"wpmgr-agent-release-mirror"`)
+	fields["mirrored_from"] = json.RawMessage(`"mosamlife/wpmgr@v0.61.102"`)
+	fields["some_field_from_the_future"] = json.RawMessage(`{"nested":[1,2,3]}`)
+	stamped, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal stamped manifest: %v", err)
+	}
+
+	signer, _ := newTestSigner(t)
+	store := &fakeManifestStore{body: stamped, presignURL: "https://example/x"}
+	h := NewUpdateHandler(store, signer, time.Minute)
+
+	w := callManifest(t, h, uuid.New())
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for a manifest carrying unknown fields, got %d (%s)", w.Code, w.Body.String())
 	}
 }
