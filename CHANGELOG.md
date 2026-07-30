@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.107] - 2026-07-30
+
+### Changed
+
+- Version bump only, with no functional change to the agent, the control plane or the dashboard. The agent's fleet update path was rebuilt across the preceding releases and the final piece, applying an update without depending on WordPress's scheduled task system, has not yet run end to end against a real site. Publishing a release that is identical in behaviour gives that path something genuine to install, so it can be exercised before any operator relies on it. Sites will offer an update whose only difference is the version number, which is safe to take.
+
 ## [0.61.106] - 2026-07-30
 
 ### Fixed
