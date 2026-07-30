@@ -39,6 +39,17 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.111",
+    date: "2026-07-31",
+    summary: "A no-op release, so a site that has been moved onto 0.61.110 has something real for the fleet update path to install.",
+    items: [
+      {
+        tag: "Changed",
+        text: "Version bump only, with no functional change to the agent, the control plane or the dashboard. 0.61.110 removed a restriction that had stopped fleet agent updates from running on common Apache mod_php hosting. That restriction lived in the agent itself, so a site still on 0.61.108 or 0.61.109 refuses the update using its own installed copy of the rule, before it can install the release that removes it. Such a site needs one manual update from its own WordPress dashboard to reach a fixed build; this release then gives that build something genuine to install so the path can be exercised end to end. Sites will be offered an update whose only difference is the version number, which is safe to take.",
+      },
+    ],
+  },
+  {
     version: "0.61.110",
     date: "2026-07-31",
     summary: "Fleet agent updates now run on Apache with mod_php and plain CGI hosting instead of refusing outright, and a rollout halt banner no longer misreports a site that answered as one that was never reached.",

@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.111] - 2026-07-31
+
+### Changed
+
+- Version bump only, with no functional change to the agent, the control plane or the dashboard. 0.61.110 removed a restriction that had stopped the fleet update channel from running on common Apache mod_php hosting. That restriction lived in the agent, so a site still running 0.61.108 or 0.61.109 refuses the update using its own installed copy of the rule, before it can ever install the release that removes it. The only way onto a fixed build is to update the agent once from the site's own WordPress dashboard, and this release then gives that fixed build something genuine to install so the update path can be exercised end to end. Sites will be offered an update whose only difference is the version number, which is safe to take.
+
 ## [0.61.110] - 2026-07-31
 
 ### Fixed
