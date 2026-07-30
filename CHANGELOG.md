@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.109] - 2026-07-31
+
+### Changed
+
+- Version bump only, with no functional change to the agent, the control plane or the dashboard. 0.61.108 rebuilt how a fleet agent update actually installs itself, and that path can only be tested by an agent that already has it: a site still running an older build applies updates with the old, broken step, so pointing it at 0.61.108 exercises nothing. Publishing a release that is identical in behaviour gives a site already on 0.61.108 something genuine to install, so the rebuilt path can be run end to end before any operator depends on it. Sites will be offered an update whose only difference is the version number, which is safe to take.
+
 ## [0.61.108] - 2026-07-30
 
 ### Fixed
