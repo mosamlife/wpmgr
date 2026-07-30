@@ -8,6 +8,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.110] - 2026-07-31
+
+### Fixed
+
+- Fleet agent updates no longer refuse to run on Apache with mod_php or plain CGI hosting, which is common on shared and self managed servers. The previous release added a check that declined to update the agent itself unless the web server could hand the connection back to WordPress before the file swap started, on the reasoning that a lost connection mid swap was unsafe on that kind of hosting. That reasoning did not hold up: WordPress's own plugin and core updater performs exactly the same file swap, protected by exactly the same safeguards, on that same kind of hosting every day, whenever an operator clicks "Update now" in wp-admin. The fleet update now runs that identical, already safe swap instead of refusing outright, so a site on this kind of hosting updates itself from the fleet dashboard the same way it already updates from its own wp-admin.
+- Because the control plane now waits out the whole install on this kind of hosting instead of getting an instant acknowledgement, the time it is willing to wait for that one request was raised from 5 to 8 minutes, so a slower host has room to finish both the download and the file swap in the same request, not just the download.
+- A control plane request that times out while an agent update is still applying is no longer recorded as a failed rollout. On this kind of hosting the agent's acknowledgement is only written after the whole swap finishes, so a slow answer is not evidence anything went wrong, it usually just means the swap is still running. The rollout now waits for the site's own report of the version it is running before deciding the outcome, exactly as it already does for an ordinary acknowledgement.
+- A rollout's halt banner could read "The rollout was halted before any site could be contacted" for a site that was, in fact, contacted and answered, when all that actually happened was the site politely declining the update rather than failing or never receiving it at all. The summary now counts a declined site as contacted and says so plainly.
+
 ## [0.61.109] - 2026-07-31
 
 ### Changed

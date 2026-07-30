@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.109
+  version: 0.61.110
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -13272,6 +13272,16 @@ components:
                 a version movement can only be credited to the run that caused
                 it rather than to some other event that happened to move the
                 site's version.
+            rung:
+              type: string
+              description: |
+                Connection-release rung the apply actually ran on: fpm or
+                litespeed released the response before the swap, the portable
+                fallback held the caller's connection for its whole duration.
+                Diagnostic only, it gates nothing. It exists so a fleet-wide
+                read can tell which sites upgrade on an attached connection,
+                which is what keeps that decision evidence-based. Absent from
+                every agent before 0.61.110.
         plugins:
           type: array
           items:

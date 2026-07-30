@@ -25,6 +25,13 @@ const (
 	// verified a newer build and began applying it inside the same request.
 	// It is NOT a success record, the task is still running at this point.
 	ActionAgentSelfUpdateArmed = "update.agent.armed"
+	// ActionAgentSelfUpdateArmUncertain records a beat-1 request whose own
+	// HTTP round trip timed out before this control plane read an answer. It
+	// is deliberately a DIFFERENT action from ActionAgentSelfUpdateArmed: it
+	// is not evidence the agent armed anything, only that this request could
+	// not wait for the answer (see armUncertain). The confirm poll enqueued
+	// alongside it is what actually decides the task's outcome.
+	ActionAgentSelfUpdateArmUncertain = "update.agent.arm_uncertain"
 )
 
 // Confirmation timing. These bound beat 2: how long the control plane waits
@@ -261,6 +268,24 @@ func (w *Worker) runAgentSelfUpdate(ctx context.Context, args TaskArgs, task Tas
 			return w.finishAgentTask(ctx, claimed, TaskSkipped, claimed.FromVersion, "",
 				"not attempted: this site's agent predates the self-update channel and has no self-update route, "+
 					"so it cannot upgrade itself and must be upgraded another way. Nothing was sent to the site and nothing was applied.", "")
+		}
+		// A timeout on THIS command is not evidence the upgrade failed. On a
+		// SAPI that cannot detach the connection (mod_php, plain CGI), the
+		// agent writes its beat-1 acknowledgement only after the whole apply
+		// finishes, so this control plane's own read timing out here most
+		// often means the request arrived and the apply is still running (or
+		// already succeeded), not that the site rejected it. Asserting
+		// TaskFailed on that evidence is exactly the failure mode
+		// cfg.Update.ApplyHTTPTimeout's own doc comment records happening in
+		// production. Score it as uncertain and let the beat-2 confirm poll,
+		// the only channel that ever decided this outcome, observe whether
+		// the site's version actually moved.
+		if agentcmd.IsTimeoutErr(err) {
+			w.logger.Warn("agent self-update: arm command timed out before an answer was read; confirming on version movement instead of failing the task",
+				slog.String("task_id", claimed.ID.String()),
+				slog.String("site_id", claimed.SiteID.String()),
+				slog.Any("error", err))
+			return w.armUncertain(ctx, args, claimed)
 		}
 		return w.finishAgentTask(ctx, claimed, TaskFailed, claimed.FromVersion, "",
 			"agent self-update arm command failed", err.Error())
@@ -521,6 +546,85 @@ func (w *Worker) armed(ctx context.Context, args TaskArgs, task Task, from strin
 				// unattributed-confirmation incident is diagnosable from this
 				// log alone, see agentApplyAttributed.
 				"apply_id": shortApplyID(resp.ApplyID),
+			},
+		})
+	}
+	return nil
+}
+
+// armUncertain handles a beat-1 arm command whose HTTP round trip itself
+// timed out (agentcmd.IsTimeoutErr) before this control plane read an
+// answer. On a SAPI that cannot detach the connection, the agent's ack is
+// only ever written AFTER the whole apply, so this control plane's own read
+// deadline expiring on that specific request proves nothing: the arm may
+// never have reached the site, or the site may already be running the new
+// build. It is neither armed() nor a failure, and it is handled separately
+// from both rather than folded into either, so it is never mistaken in a log
+// or an audit trail for a beat-1 acknowledgement this control plane never
+// actually read.
+//
+// It enqueues the SAME beat-2 confirm poll armed() would, so the outcome is
+// still decided by the one channel this protocol ever trusted: whether the
+// site's reported version actually moves. Two differences from a normal arm,
+// because the fields they would come from were never read:
+//
+//   - ExpectVersion is the run's own PLANNED target (task.DesiredVersion,
+//     resolved and persisted at plan time; see planAgentTasks), not an
+//     agent-reported to_version this control plane never received.
+//   - CronMode is agentcmd.CronModeUnknown, which confirmWindowFor already
+//     treats identically to an agent that simply omitted the field: the
+//     narrow window, because widening on missing evidence would buy false
+//     patience rather than honesty.
+//   - ApplyID is "", the same shape an agent that predates that field
+//     produces; agentConfirmOutcome already confirms on version movement
+//     alone in that case (see agentApplyAttributed).
+//
+// If the arm truly never reached the site, nothing moves and the confirm
+// poll fails the task honestly at its deadline (agent_self_update_unconfirmed)
+// instead of asserting a cause this control plane never observed.
+func (w *Worker) armUncertain(ctx context.Context, args TaskArgs, task Task) error {
+	deadline := time.Now().Add(confirmWindowFor(agentcmd.CronModeUnknown))
+
+	if err := w.agent.Confirms.EnqueueAgentConfirm(ctx, AgentConfirmArgs{
+		TenantID:      task.TenantID,
+		RunID:         task.RunID,
+		TaskID:        task.ID,
+		SiteID:        task.SiteID,
+		FromVersion:   task.FromVersion,
+		ExpectVersion: task.DesiredVersion,
+		CronMode:      agentcmd.CronModeUnknown,
+		DeadlineAt:    deadline,
+		ApplyID:       "",
+	}); err != nil {
+		// Without the confirm job nothing would ever establish whether this
+		// upgrade landed, and the task would sit running until the reaper
+		// swept it. This IS a genuine failure of the control plane's own
+		// bookkeeping (not of the upgrade), so it is recorded as one.
+		return w.finishAgentTask(ctx, task, TaskFailed, task.FromVersion, "",
+			"the arm command timed out before an answer was read, and the confirmation poll that would have decided the outcome could not be enqueued either",
+			err.Error())
+	}
+
+	w.logger.Info("agent self-update arm uncertain: confirming on version movement",
+		slog.String("task_id", task.ID.String()),
+		slog.String("site_id", task.SiteID.String()),
+		slog.String("from_version", task.FromVersion),
+		slog.String("expect_version", task.DesiredVersion),
+		slog.Time("confirm_deadline", deadline))
+
+	if w.audit != nil {
+		_, _ = w.audit.Record(ctx, audit.Event{
+			TenantID:   task.TenantID,
+			ActorType:  audit.ActorSystem,
+			Action:     ActionAgentSelfUpdateArmUncertain,
+			TargetType: "update_task",
+			TargetID:   task.ID.String(),
+			Metadata: map[string]any{
+				"run_id":         args.RunID.String(),
+				"site_id":        task.SiteID.String(),
+				"from_version":   task.FromVersion,
+				"expect_version": task.DesiredVersion,
+				"deadline_at":    deadline.UTC().Format(time.RFC3339),
 			},
 		})
 	}

@@ -317,6 +317,12 @@ type AgentSelfUpdateResult struct {
 	// to THIS run's own apply when the two match. Never treated as a version
 	// or a time, and never parsed: compared whole.
 	ApplyID string `json:"apply_id,omitempty"`
+	// Rung is the connection-release rung the apply ran on: fpm, litespeed, or
+	// the portable fallback that held the caller's connection for the whole
+	// swap. Diagnostic only, it gates nothing, and it is how a fleet-wide read
+	// can tell which sites upgrade on an attached connection. Empty for every
+	// agent before 0.61.110.
+	Rung string `json:"rung,omitempty"`
 }
 
 // MetadataExtras carries the ADR-037 Sprint 1 sparse-metadata expansion. The

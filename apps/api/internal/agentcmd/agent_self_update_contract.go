@@ -43,21 +43,26 @@ package agentcmd
 //   filter, and answers "scheduled". NOTHING on disk has moved when either
 //   acknowledgement is returned.
 //
-//   The response is then written and the connection released (the same
-//   fastcgi_finish_request / litespeed_finish_request detach the agent's
-//   other long-running jobs use) BEFORE anything is touched. Only once the
-//   connection is confirmed detached does this SAME request continue: it
-//   forces wp_doing_cron() true for the duration, which is what lets core's
-//   unmodified Plugin_Upgrader run the swap without deactivating the plugin
-//   and with its own maintenance-mode window covering the destructive part,
-//   then runs the upgrade through core's ordinary upgrader machinery. A SAPI
-//   that cannot detach the connection (neither of the two functions above)
-//   refuses to run the upgrade at all rather than run it on a connection
-//   something else can time out mid-swap; nothing on disk moves on that path,
-//   and the site is told to update itself from its dashboard instead. If the
-//   acknowledgement itself cannot be written, the apply is abandoned before
-//   anything is touched, and an un-upgraded site simply re-arms on its next
-//   command.
+//   The response is then written, and the connection is released where the
+//   SAPI can do it (the same fastcgi_finish_request / litespeed_finish_request
+//   detach the agent's other long-running jobs use) BEFORE anything is
+//   touched. This SAME request then continues regardless of whether that
+//   detach was possible: it forces wp_doing_cron() true for the duration,
+//   which is what lets core's unmodified Plugin_Upgrader run the swap without
+//   deactivating the plugin and with its own maintenance-mode window covering
+//   the destructive part, then runs the upgrade through core's ordinary
+//   upgrader machinery. A SAPI that cannot release the connection (mod_php,
+//   plain CGI) still runs the SAME swap, on an ordinary attached connection,
+//   exactly as WordPress's own plugin/core upgrader already does on that same
+//   hosting on an ordinary wp-admin request; this is why
+//   internal/config.UpdateConfig.ApplyHTTPTimeout exists at CP-scaled
+//   duration rather than the snappy shared command timeout, and why a
+//   transport timeout reading THIS specific command's answer is treated as
+//   uncertain rather than as proof of failure (see update.Worker.armUncertain):
+//   on that SAPI class the acknowledgement this response carries is written
+//   only after the swap already finished. If the acknowledgement itself
+//   cannot be written, the apply is abandoned before anything is touched, and
+//   an un-upgraded site simply re-arms on its next command.
 //
 //   This position, the tail of the SAME request that answered, is what makes
 //   a failed swap survivable. WP_Upgrader::run() registers core's own
@@ -127,14 +132,19 @@ const (
 	// because the CP only creates a task for a site it already classified as
 	// outdated, so this answer means the two disagree.
 	SelfUpdateUpToDate = "up_to_date"
-	// SelfUpdateNotEligible: this build cannot self-update. Three reasons reach
+	// SelfUpdateNotEligible: this build cannot self-update. Two reasons reach
 	// it: the wordpress.org build ships without a self-updater and is upgraded
-	// by the directory; the site is not enrolled; or the site's PHP setup cannot
-	// release the response before doing further work, so the upgrade would run
-	// against a connection the caller is still timing. The last one is decided
-	// at arm time on purpose, so such a site answers immediately instead of
-	// consuming a whole confirmation window and then failing its wave. Carries a
-	// Detail naming which. The channel does not apply to this site at all.
+	// by the directory; or the site is not enrolled. Carries a Detail naming
+	// which. The channel does not apply to this site at all.
+	//
+	// A third reason, the site's PHP setup being unable to release the
+	// response before running the swap, USED TO reach this status: an earlier
+	// design refused the whole upgrade on a SAPI that could not detach the
+	// connection (mod_php, plain CGI). That refusal is gone; such a site now
+	// runs the identical swap on an attached connection instead, the same way
+	// WordPress's own plugin/core upgrader already does on that hosting every
+	// day. See the protocol notes above and update.Worker.armUncertain for
+	// what replaced it on the control plane side.
 	SelfUpdateNotEligible = "not_eligible"
 	// SelfUpdateError: the arm failed, manifest fetch/verification failed, or
 	// the site could not take the upgrade seam (the WordPress filter API was

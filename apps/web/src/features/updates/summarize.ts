@@ -80,9 +80,27 @@ export function isAgentNotEligible(
  * apps/api/internal/update/agent_repo.go haltLocked), so any cancelled task
  * in the run carries the same reason. A run can halt with zero cancelled
  * tasks (e.g. a single-site canary already terminal when the gate re-judged
- * it); in that case fall back to a summary built from the run's own counts,
- * which is still grounded in real data even though it is not the backend's
- * literal sentence. Returns null for a run that has not halted.
+ * it, which is exactly what happens when its one task comes back `skipped`
+ * rather than `cancelled`: haltLocked only cancels tasks still `pending`, and
+ * `haltReasonFor` (apps/api/internal/update/agent_wave.go) is the backend's
+ * own reason string for that shape of halt, but it is only ever computed and
+ * logged/audited, never persisted onto the run row itself, so there is
+ * nothing for this client to read back verbatim here). In that case fall
+ * back to a summary built from the run's own task counts, mirroring the
+ * backend's own wave tally (`tallyWave`/`haltReasonFor`) rather than
+ * re-deriving different arithmetic client-side:
+ *
+ *   - `contacted` is `succeeded + failed + rolled_back + skipped`. A skipped
+ *     task WAS contacted and answered (an old agent with no self-update
+ *     route, a build the channel does not apply to, an "up to date" answer
+ *     that did not match this run's premise), so it is not a site nobody
+ *     heard from and it must never be folded into "nobody was contacted".
+ *     Only `cancelled` means nothing was ever sent (see summarizeTasks
+ *     above).
+ *   - `failed` is `failed + rolled_back`, matching the backend's own
+ *     tallyWave grouping.
+ *
+ * Returns null for a run that has not halted.
  */
 export function haltReason(
   run: Pick<UpdateRun, "status" | "tasks"> | undefined,
@@ -97,11 +115,15 @@ export function haltReason(
       : cancelledDetail;
   }
   const { counts } = summarizeTasks(run.tasks ?? []);
-  const contacted = counts.succeeded + counts.failed + counts.rolled_back;
+  const failed = counts.failed + counts.rolled_back;
+  const contacted = counts.succeeded + failed + counts.skipped;
   if (contacted === 0) {
     return "The rollout was halted before any site could be contacted.";
   }
-  return `The rollout was halted after ${counts.failed} of ${contacted} contacted site${contacted === 1 ? "" : "s"} failed to confirm the upgrade.`;
+  if (counts.succeeded === 0) {
+    return `The rollout was halted because no site confirmed the upgrade (${failed} failed, ${counts.skipped} skipped, of ${contacted} contacted).`;
+  }
+  return `The rollout was halted after ${failed} of ${contacted} contacted site${contacted === 1 ? "" : "s"} failed to confirm the upgrade.`;
 }
 
 /** Build a site id -> name lookup from the sites list cache. */

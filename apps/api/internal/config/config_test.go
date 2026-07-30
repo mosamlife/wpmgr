@@ -88,8 +88,8 @@ func TestLoadUpdateApplyHTTPTimeoutDefault(t *testing.T) {
 	if got := cfg.Update.ApplyHTTPTimeout; got > cfg.Backup.HTTPTimeout {
 		t.Fatalf("Update.ApplyHTTPTimeout = %v, want <= Backup.HTTPTimeout (%v) — an update apply is lighter than a full-site backup", got, cfg.Backup.HTTPTimeout)
 	}
-	if got := cfg.Update.ApplyHTTPTimeout; got != 5*time.Minute {
-		t.Fatalf("Update.ApplyHTTPTimeout = %v, want 5m default", got)
+	if got := cfg.Update.ApplyHTTPTimeout; got != 8*time.Minute {
+		t.Fatalf("Update.ApplyHTTPTimeout = %v, want 8m default", got)
 	}
 }
 

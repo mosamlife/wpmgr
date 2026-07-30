@@ -202,12 +202,11 @@ final class ConnectionFinisherTest extends TestCase
 
     // -------------------------------------------------------------------------
     // (e2) canDetach() answers the SAME question finish() answers, without
-    //      flushing. A caller whose decision to start work at all depends on
-    //      whether the connection can be released has to ask BEFORE the
-    //      response is ready (the CP-commanded self-update refuses the whole
-    //      operation at its arm on this answer), so the two must agree on every
-    //      configuration or that caller refuses sites that would have worked,
-    //      or promises sites that cannot.
+    //      flushing. It is a preference a caller may express before the
+    //      response is ready, never a precondition for doing work: nothing in
+    //      the agent declines an operation because of it. The two must still
+    //      agree on every configuration, or a caller that prefers a detaching
+    //      rung would arrange for one it does not get.
     // -------------------------------------------------------------------------
 
     public function test_can_detach_agrees_with_the_rung_finish_would_return(): void
@@ -240,14 +239,143 @@ final class ConnectionFinisherTest extends TestCase
     }
 
     /**
-     * The rung-name list is the shared vocabulary between a caller that decides
-     * before the flush and one that decides after, so it is pinned rather than
-     * left to drift.
+     * The rung-name list is the shared vocabulary between a caller reading the
+     * rung it got and one asking beforehand, so it is pinned rather than left to
+     * drift.
      */
     public function test_the_detaching_rung_names_are_pinned(): void
     {
         self::assertSame(['fpm', 'litespeed'], ConnectionFinisher::DETACHING_RUNGS);
         self::assertNotContains('fallback', ConnectionFinisher::DETACHING_RUNGS);
+    }
+
+    // -------------------------------------------------------------------------
+    // (e3) detachReason(): the sentence, and the evidence behind it.
+    //
+    // Two very different hosts reach the same last rung, and only one of them
+    // has anything an administrator can change. Saying "disable_functions" on a
+    // host whose SAPI never shipped the function sends that administrator to
+    // edit a list that was never involved, so the claim is made only when both
+    // halves are true: this SAPI would ship the function, AND its name is
+    // literally in the parsed list.
+    //
+    // The SAPI name and the ini reader are constructor-injected because PHP_SAPI
+    // is a compile-time constant, so a test can only reach these branches by
+    // being handed the value.
+    // -------------------------------------------------------------------------
+
+    public function test_detach_reason_is_empty_when_the_connection_can_be_released(): void
+    {
+        $finisher = self::probing(['fastcgi_finish_request'], 'fpm-fcgi', '');
+
+        self::assertSame('', $finisher->detachReason(), 'there is nothing to explain when a detaching rung exists');
+    }
+
+    /**
+     * CASE A: the SAPI never shipped one. The overwhelming majority of these
+     * hosts. It must NOT blame a setting.
+     */
+    public function test_detach_reason_says_the_sapi_provides_none_when_it_never_shipped_one(): void
+    {
+        // A production apache2handler host, with a disable_functions list that
+        // is populated but names nothing relevant. The list must not be read as
+        // the cause just because it is non-empty.
+        $finisher = self::probing([], 'apache2handler', 'exec, shell_exec, passthru');
+        $reason   = $finisher->detachReason();
+
+        self::assertStringContainsString('apache2handler', $reason);
+        self::assertStringContainsString('provides no finish-request function', $reason);
+        self::assertStringNotContainsString(
+            'disable_functions',
+            $reason,
+            'this SAPI never had one to disable, so the setting is not the cause and must not be named'
+        );
+    }
+
+    /**
+     * CASE B: the SAPI ships one and disable_functions names it. The only case
+     * an operator can act on, so it is the only case allowed to say so.
+     */
+    public function test_detach_reason_names_disable_functions_only_when_the_list_really_names_it(): void
+    {
+        $finisher = self::probing([], 'fpm-fcgi', 'exec,fastcgi_finish_request , shell_exec');
+        $reason   = $finisher->detachReason();
+
+        self::assertStringContainsString('fpm-fcgi', $reason);
+        self::assertStringContainsString('fastcgi_finish_request', $reason);
+        self::assertStringContainsString('disable_functions on this host names it', $reason);
+    }
+
+    /**
+     * The list is parsed, not searched. Spacing is whatever whoever wrote the
+     * ini file used and PHP function names are case-insensitive, so a real
+     * entry must still be recognised through both.
+     */
+    public function test_detach_reason_parses_the_disable_functions_list_rather_than_matching_raw_text(): void
+    {
+        $spaced = self::probing([], 'litespeed', "  LITESPEED_FINISH_REQUEST ,exec ")->detachReason();
+
+        self::assertStringContainsString('disable_functions on this host names it', $spaced);
+
+        // A near miss must not count: a longer name that merely CONTAINS the
+        // function name is a different function.
+        $nearMiss = self::probing([], 'litespeed', 'my_litespeed_finish_request_wrapper')->detachReason();
+
+        self::assertStringNotContainsString('disable_functions on this host names it', $nearMiss);
+        self::assertStringContainsString('does not expose it', $nearMiss);
+    }
+
+    /**
+     * CASE C: the SAPI ships one, the list does not name it, and it is still
+     * absent. Rare, and the sentence says exactly that rather than picking
+     * whichever of the other two sounds better.
+     */
+    public function test_detach_reason_claims_neither_cause_when_the_evidence_supports_neither(): void
+    {
+        $reason = self::probing([], 'fpm-fcgi', '')->detachReason();
+
+        self::assertStringContainsString('fpm-fcgi', $reason);
+        self::assertStringContainsString('normally ships fastcgi_finish_request', $reason);
+        self::assertStringContainsString('does not expose it', $reason);
+    }
+
+    /**
+     * The sentence is stored and shipped onward, so the SAPI token it is built
+     * around is normalised to the shape PHP_SAPI actually has, and an empty one
+     * still produces a sentence rather than a gap where a word should be.
+     */
+    public function test_detach_reason_normalises_the_sapi_token(): void
+    {
+        $reason = self::probing([], "apache2handler\n<b>x</b>", '')->detachReason();
+
+        self::assertStringNotContainsString('<', $reason);
+        self::assertStringNotContainsString("\n", $reason);
+
+        $empty = self::probing([], '', '')->detachReason();
+
+        self::assertStringContainsString('unknown', $empty);
+    }
+
+    /**
+     * Build a finisher with every seam pinned: which functions exist, what the
+     * SAPI is called, and what disable_functions says.
+     *
+     * @param list<string> $available         Functions this fake SAPI exposes.
+     * @param string       $sapi              PHP_SAPI stand-in.
+     * @param string       $disableFunctions  disable_functions stand-in.
+     * @return ConnectionFinisher
+     */
+    private static function probing(array $available, string $sapi, string $disableFunctions): ConnectionFinisher
+    {
+        return new ConnectionFinisher(
+            static fn (string $fn): bool => in_array($fn, $available, true),
+            static function (string $fn): void {
+            },
+            static function (): void {
+            },
+            static fn (): string => $sapi,
+            static fn (string $name) => $name === 'disable_functions' ? $disableFunctions : ''
+        );
     }
 
     // -------------------------------------------------------------------------

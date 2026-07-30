@@ -39,6 +39,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.110",
+    date: "2026-07-31",
+    summary: "Fleet agent updates now run on Apache with mod_php and plain CGI hosting instead of refusing outright, and a rollout halt banner no longer misreports a site that answered as one that was never reached.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Fleet agent updates no longer refuse to run on Apache with mod_php or plain CGI hosting, which is common on shared and self managed servers. The previous release declined to update the agent itself unless the web server could hand the connection back to WordPress before the file swap started, reasoning that a lost connection mid swap was unsafe there. That reasoning did not hold up: WordPress's own plugin and core updater performs exactly the same file swap, protected by exactly the same safeguards, on that same kind of hosting every day, whenever an operator clicks \"Update now\" in wp-admin. The fleet update now runs that identical, already safe swap instead of refusing outright, so a site on this kind of hosting updates itself from the fleet dashboard the same way it already updates from its own wp-admin.",
+      },
+      {
+        tag: "Fixed",
+        text: "Because the control plane now waits out the whole install on this kind of hosting instead of getting an instant acknowledgement, the time it is willing to wait for that one request was raised from 5 to 8 minutes, so a slower host has room to finish both the download and the file swap in the same request.",
+      },
+      {
+        tag: "Fixed",
+        text: "A control plane request that times out while an agent update is still applying is no longer recorded as a failed rollout. On this kind of hosting the agent's acknowledgement is only written after the whole swap finishes, so a slow answer is not evidence anything went wrong. The rollout now waits for the site's own report of the version it is running before deciding the outcome, exactly as it already does for an ordinary acknowledgement.",
+      },
+      {
+        tag: "Fixed",
+        text: "A rollout's halt banner could read \"The rollout was halted before any site could be contacted\" for a site that was, in fact, contacted and answered, when all that actually happened was the site politely declining the update rather than failing or never receiving it at all. The summary now counts a declined site as contacted and says so plainly.",
+      },
+    ],
+    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+  },
+  {
     version: "0.61.109",
     date: "2026-07-31",
     summary: "A deliberate no-op release, so the rebuilt agent update path from 0.61.108 has something real to install.",

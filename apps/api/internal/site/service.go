@@ -452,6 +452,7 @@ func fromAgentSelfUpdateResult(r *agentpkg.AgentSelfUpdateResult) *AgentSelfUpda
 		Detail:      r.Detail,
 		At:          r.At,
 		ApplyID:     r.ApplyID,
+		Rung:        r.Rung,
 	}
 }
 
@@ -488,6 +489,8 @@ const (
 	// maxSelfUpdateApplyID bounds the opaque per-apply identifier. Generous
 	// for a hex-encoded random token, still a hard cap on agent-supplied text.
 	maxSelfUpdateApplyID = 64
+	// maxSelfUpdateRung bounds the diagnostic connection-release rung name.
+	maxSelfUpdateRung = 32
 )
 
 // truncateRunes returns s truncated to at most n runes, never splitting a
@@ -605,6 +608,7 @@ func sanitizeAgentSelfUpdate(r *AgentSelfUpdateResult) *AgentSelfUpdateResult {
 		Detail:      truncateRunes(r.Detail, maxSelfUpdateDetail),
 		At:          at,
 		ApplyID:     truncateRunes(strings.TrimSpace(r.ApplyID), maxSelfUpdateApplyID),
+		Rung:        truncateRunes(strings.TrimSpace(r.Rung), maxSelfUpdateRung),
 	}
 }
 

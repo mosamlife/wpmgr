@@ -139,7 +139,7 @@ final class MetadataCommand implements CommandInterface
      * unproven, and a canary that upgraded perfectly halts its own rollout. A
      * test pins these keys.
      *
-     * @return array{status:string,from_version:string,to_version:string,detail:string,at:int,apply_id:string}|null
+     * @return array{status:string,from_version:string,to_version:string,detail:string,at:int,apply_id:string,rung:string}|null
      */
     private function selfUpdateResult(): ?array
     {
@@ -166,6 +166,13 @@ final class MetadataCommand implements CommandInterface
             // Empty on a record written by an agent that predates apply-id
             // stamping, which the control plane reads as "not attributable".
             'apply_id'     => isset($stored['apply_id']) && is_string($stored['apply_id']) ? $stored['apply_id'] : '',
+            // Which ConnectionFinisher rung the apply ran on: 'fpm' or
+            // 'litespeed' when the control-plane connection was genuinely
+            // released before the swap, 'fallback' when the worker stayed
+            // attached for it. Purely diagnostic, and additive: empty on any
+            // agent that predates it. Nothing on either side branches on it,
+            // and no site is ever refused an upgrade for its value.
+            'rung'         => isset($stored['rung']) && is_string($stored['rung']) ? $stored['rung'] : '',
         ];
     }
 

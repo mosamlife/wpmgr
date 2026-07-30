@@ -176,7 +176,7 @@ func (w *Worker) Timeout(*river.Job[TaskArgs]) time.Duration { return w.jobTimeo
 //
 //  1. applyHTTPTimeout: the ONE apply/rollback command round trip
 //     (cfg.Update.ApplyHTTPTimeout; see UpdateConfig's doc comment in
-//     internal/config for how its 5m default was picked).
+//     internal/config for how its 8m default was picked).
 //  2. the agent-first reachability ladder (verifyAgentHealthWithRetry, GH #291
 //     Phase 4): up to len(probeRetryDelays)+1 attempts, each hard-capped at
 //     agentVerifyTimeout via context.WithTimeout, plus the sleep between
@@ -194,9 +194,9 @@ func (w *Worker) Timeout(*river.Job[TaskArgs]) time.Duration { return w.jobTimeo
 //     (internal/httpclient.Client.Do; not separately itemized above to keep
 //     this arithmetic reviewable).
 //
-// With the production defaults (applyHTTPTimeout=5m, probeHTTPTimeout=30s,
+// With the production defaults (applyHTTPTimeout=8m, probeHTTPTimeout=30s,
 // agentVerifyTimeout=8s, probeRetryDelays summing to ~21s across 4 delays)
-// this computes to 5m + 61s + 171s + 2m = 10m52s, comfortably under
+// this computes to 8m + 61s + 171s + 2m = 13m52s, comfortably under
 // staleTaskThreshold (45m), so the periodic reaper still cannot terminalize a
 // task that is legitimately still running.
 //

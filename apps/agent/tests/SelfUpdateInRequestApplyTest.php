@@ -312,13 +312,15 @@ final class SelfUpdateInRequestApplyTest extends TestCase
     /**
      * Build an UpdateChecker whose SAPI probe is injected.
      *
-     * The arm refuses outright on a SAPI that cannot release the control-plane
-     * connection, and under the PHPUnit CLI SAPI neither finish-request
-     * function exists, so an un-injected checker arms nothing at all. Defining
-     * either function here would flip function_exists() process-wide and change
+     * Under the PHPUnit CLI SAPI neither finish-request function exists, and
+     * defining either here would flip function_exists() process-wide and change
      * which rung every other test observes, so the probe is handed in instead.
-     * The un-injected default is exercised deliberately, by the arm-refusal
-     * test below, which is the one case where the real CLI SAPI IS the fixture.
+     * The un-injected default is exercised deliberately by the test that meets
+     * the last rung as a real mod_php host does, which is the one case where the
+     * real CLI SAPI IS the fixture.
+     *
+     * The arm behaves identically either way. The probe changes which rung the
+     * apply reports, never whether there is one.
      *
      * @param bool $detachable Whether the fake SAPI exposes a detaching rung.
      * @return UpdateChecker
@@ -382,10 +384,9 @@ final class SelfUpdateInRequestApplyTest extends TestCase
      * makeChecker() injects the arm's probe: neither fastcgi_finish_request nor
      * litespeed_finish_request can be defined in this process without flipping
      * function_exists() process-wide and changing which rung every other test
-     * observes. The rung is the one input that decides whether this site is
-     * upgraded at all, so it is exercised through the seam the class exposes for
-     * it. What the real CLI SAPI does with an un-injected checker has its own
-     * tests below.
+     * observes. The apply runs on every rung, so what this seam exercises is
+     * which rung gets RECORDED and that no rung is skipped. What the real CLI
+     * SAPI does with an un-injected checker has its own test below.
      *
      * @param bool $replayShutdown Whether to replay the shutdown queue after.
      * @return array<string,mixed> The arm answer.
@@ -565,31 +566,24 @@ final class SelfUpdateInRequestApplyTest extends TestCase
     }
 
     // =========================================================================
-    // The SAPI detach gate
+    // The rung: recorded, never obeyed
     // =========================================================================
 
     /**
-     * A SAPI THAT CANNOT DETACH NEVER REACHES THE APPLY AT ALL.
-     *
-     * On mod_php or plain CGI, ConnectionFinisher's third rung is a portable
-     * flush that does not actually release the connection. Running a
-     * multi-minute upgrade on a connection something else is timing (a reverse
-     * proxy read timeout the control plane cannot raise, a process manager
-     * reaping the worker on client disconnect) risks a directory that is half
-     * replaced with nothing alive to finish it. A site that is not upgraded is
-     * fine. A site that is half upgraded is not.
-     *
-     * The gate lives at the ARM, where the answer is knowable and where saying
-     * so costs the control plane nothing. Its full behaviour, including the
-     * status the CP scores, is pinned in AgentSelfUpdateTest; what this file
-     * cares about is the consequence: no apply is armed, so the seam that would
-     * have run one is never registered and the response is left to core.
+     * A SAPI THAT CANNOT DETACH ARMS AND SWAPS LIKE ANY OTHER.
      *
      * The fixture is the REAL default probe under the real CLI SAPI, which
-     * exposes neither finish-request function. No injection at all: this is the
-     * gate as a mod_php or plain-CGI host actually meets it.
+     * exposes neither finish-request function, so nothing is injected at all:
+     * this is the last rung as a mod_php or plain-CGI host actually meets it.
+     *
+     * Both halves of the old refusal are pinned as gone here. The arm answers
+     * scheduled and registers the seam, and dispatching that seam runs the
+     * upgrade rather than recording a refusal. WordPress applies plugin updates
+     * on exactly this host class from wp-admin every day, on a fully attached
+     * browser connection, and refusing here left a large share of shared
+     * hosting on an agent the fleet could never upgrade.
      */
-    public function test_a_sapi_that_cannot_detach_arms_nothing_and_swaps_nothing(): void
+    public function test_a_sapi_that_cannot_detach_arms_and_applies(): void
     {
         $this->stubSignedOffer();
         $this->siteTransients['update_plugins'] = $this->offerTransient();
@@ -597,41 +591,46 @@ final class SelfUpdateInRequestApplyTest extends TestCase
         $checker = new UpdateChecker($this->signer, $this->settings, $this->keystore, $this->replayCache);
         $answer  = $checker->planSelfUpdate();
 
-        $this->assertSame('not_eligible', $answer['status']);
-        $this->assertSame([], $this->filters, 'no apply seam may be registered for an apply that will never run');
-        $this->assertFalse(
-            $checker->serveThenApply(false, null, null, null),
-            'and a dispatch of the seam from any other cause must hand the response straight back to core'
+        $this->assertSame('scheduled', $answer['status']);
+        $this->assertContains(
+            'rest_pre_serve_request@999',
+            $this->filters,
+            'the apply seam must be registered on a host that cannot detach, exactly as on one that can'
+        );
+        $this->assertNotSame(
+            0,
+            (int) ($this->options[self::LOCK_OPTION] ?? 0),
+            'the arm holds the upgrader lock on this host class too'
         );
 
-        $this->assertSame([], \Plugin_Upgrader::$calls, 'no upgrade may start on a connection that is still attached');
+        $this->assertTrue(
+            $checker->serveThenApply(false, null, null, null),
+            'the seam takes over the response here as it does anywhere else'
+        );
 
-        $record = $this->record();
-        $this->assertIsArray($record, 'the refusal must be reported, not silent');
-        $this->assertSame('sapi_cannot_detach', $record['status']);
-        $this->assertStringContainsString('fastcgi_finish_request', (string) $record['detail']);
-
-        $this->assertArrayNotHasKey(
-            self::LOCK_OPTION,
-            $this->options,
-            'a refused arm must never take the lock in the first place'
+        $this->assertSame(
+            [UpdateChecker::PLUGIN_KEY],
+            \Plugin_Upgrader::$calls,
+            'the upgrade must run on a still-attached connection, which is what core itself does here'
+        );
+        $this->assertSame('applied', (string) ($this->record()['status'] ?? ''));
+        $this->assertSame(
+            'fallback',
+            (string) ($this->record()['rung'] ?? ''),
+            'and the record must say which rung it ran on, so a fleet reading can still tell'
         );
     }
 
     /**
-     * THE SAME GATE, ASKED A SECOND TIME AFTER THE RESPONSE WAS RELEASED.
+     * THE APPLY PROCEEDS ON A NON-DETACHING RUNG, AND SAYS SO.
      *
-     * The arm predicts the rung; this judges the one that actually fired. In
-     * practice the two cannot disagree, since both ask the same ladder the same
-     * question inside one request, which is exactly why this backstop needs a
-     * test of its own: nothing else would ever exercise it, and the cost of it
-     * being absent on the day they DID disagree is a half-replaced directory.
-     *
-     * Reached through the seam the class exposes for the rung, because the
-     * fixture has to be an armed apply that then meets a non-detaching rung,
-     * which no real SAPI would produce.
+     * This is the inverse of the assertion this file used to carry. A rung of
+     * 'fallback' after the acknowledgement used to abandon the apply and record
+     * a refusal; it now runs the identical upgrade the detaching rungs run and
+     * records the rung beside the outcome. Reached through the seam the class
+     * exposes for the rung, because no real SAPI in this process produces one.
      */
-    public function test_a_non_detaching_rung_after_the_ack_still_refuses_the_swap(): void
+    public function test_a_non_detaching_rung_after_the_ack_still_applies(): void
     {
         $this->stubSignedOffer();
         $this->pinFinisherRung('fallback');
@@ -639,22 +638,27 @@ final class SelfUpdateInRequestApplyTest extends TestCase
 
         $answer = $this->runApply();
 
-        $this->assertSame('scheduled', $answer['status'], 'the arm armed, so the backstop is what refuses');
-        $this->assertSame([], \Plugin_Upgrader::$calls, 'no upgrade may start on a connection that is still attached');
+        $this->assertSame('scheduled', $answer['status']);
+        $this->assertSame(
+            [UpdateChecker::PLUGIN_KEY],
+            \Plugin_Upgrader::$calls,
+            'the rung is a diagnostic; it may not decide whether the upgrade happens'
+        );
 
         $record = $this->record();
-        $this->assertIsArray($record, 'the refusal must be reported, not silent');
-        $this->assertSame('sapi_cannot_detach', $record['status']);
+        $this->assertIsArray($record);
+        $this->assertSame('applied', $record['status']);
+        $this->assertSame('fallback', $record['rung']);
         $this->assertSame(
             $answer['apply_id'],
             $record['apply_id'],
-            'this one DID take an apply, so its record must name it'
+            'the outcome must name the apply that produced it'
         );
 
         $this->assertArrayNotHasKey(
             self::LOCK_OPTION,
             $this->options,
-            'a refused apply must release the lock rather than hold it for its full window'
+            'and the lock is released when the apply returns, on every rung'
         );
     }
 
@@ -671,6 +675,68 @@ final class SelfUpdateInRequestApplyTest extends TestCase
 
         $this->assertSame([UpdateChecker::PLUGIN_KEY], \Plugin_Upgrader::$calls);
         $this->assertSame('applied', (string) ($this->record()['status'] ?? ''));
+        $this->assertSame('fpm', (string) ($this->record()['rung'] ?? ''));
+    }
+
+    /**
+     * THE EXECUTION GUARDS ARE ARMED ON EVERY RUNG. THIS IS THE HOIST.
+     *
+     * ignore_user_abort(true) and the bounded set_time_limit() used to sit
+     * BELOW a rung check that returned early on 'fallback', which made them
+     * dead code on precisely the host class where they are the only defence:
+     * on a SAPI that cannot release the connection, ignore_user_abort() is what
+     * keeps a peer hanging up from ending the swap halfway. Removing that early
+     * return is what put them on every rung, so a future edit that reintroduces
+     * any rung-keyed skip above them has to fail here.
+     *
+     * set_time_limit() is observed directly (it is stubbed by this fixture).
+     * ignore_user_abort() is left real, because it is not redefinable and a
+     * Patchwork redefinition would leak across the suite, so it is observed
+     * through its own return value: called with no argument it reports the
+     * current setting without changing it.
+     */
+    public function test_the_apply_arms_its_execution_guards_on_every_rung(): void
+    {
+        $wasIgnoring = ignore_user_abort();
+
+        try {
+            foreach (['fpm', 'litespeed', 'fallback'] as $rung) {
+                ignore_user_abort(false);
+
+                // Clear only what one cycle leaves behind. Wiping the whole
+                // option store would take the site's own keypair with it, and an
+                // arm that cannot sign never reaches an apply at all.
+                unset($this->options[AgentSelfUpdateCommand::OPTION_RESULT], $this->options[self::LOCK_OPTION]);
+                $this->filters           = [];
+                $this->actions           = [];
+                $this->timeLimits        = [];
+                \Plugin_Upgrader::$calls = [];
+
+                $this->stubSignedOffer();
+                $this->pinFinisherRung($rung);
+                $this->siteTransients['update_plugins'] = $this->offerTransient();
+
+                $this->runApply(false);
+
+                $this->assertSame(
+                    [UpdateChecker::PLUGIN_KEY],
+                    \Plugin_Upgrader::$calls,
+                    "the '{$rung}' rung must reach the upgrade"
+                );
+                $this->assertContains(
+                    LongRunningJob::TIME_LIMIT_SECONDS,
+                    $this->timeLimits,
+                    "the '{$rung}' rung must arm the bounded execution cap before the swap"
+                );
+                $this->assertSame(
+                    1,
+                    ignore_user_abort(),
+                    "the '{$rung}' rung must set ignore_user_abort, which is the last rung's only defence"
+                );
+            }
+        } finally {
+            ignore_user_abort((bool) $wasIgnoring);
+        }
     }
 
     // =========================================================================
@@ -794,25 +860,27 @@ final class SelfUpdateInRequestApplyTest extends TestCase
     }
 
     /**
-     * A SAPI that cannot detach never gets that far, so it must not raise the
-     * limit of the request it declined to use. Both refusal points are covered:
-     * the arm, which is the real CLI SAPI's own answer, and the post-ack
-     * backstop reached through the rung seam.
+     * A REQUEST THAT ARMED NOTHING IS LEFT EXACTLY AS IT WAS FOUND.
+     *
+     * The seam is registered by the arm, but it is a public filter callback and
+     * anything at all may dispatch it. With no pending apply it must hand the
+     * response back and touch nothing: no execution limit raised, no upgrade
+     * started, no outcome recorded. This used to be covered incidentally by the
+     * SAPI refusal, which arrived at the same state for a reason that no longer
+     * exists, so it is now asserted for its own sake.
      */
-    public function test_a_refused_apply_leaves_the_execution_limit_alone(): void
+    public function test_a_seam_dispatch_with_nothing_armed_leaves_the_request_alone(): void
     {
-        $this->stubSignedOffer();
+        $checker = $this->makeChecker();
 
-        $armRefused = new UpdateChecker($this->signer, $this->settings, $this->keystore, $this->replayCache);
-        $armRefused->planSelfUpdate();
-        $armRefused->serveThenApply(false, null, null, null);
+        $this->assertFalse(
+            $checker->serveThenApply(false, null, null, null),
+            'with nothing pending the response belongs to core'
+        );
 
-        $this->assertSame([], $this->timeLimits, 'an arm that refused must not touch the request it declined to use');
-
-        $this->pinFinisherRung('fallback');
-        $this->runApply(false);
-
-        $this->assertSame([], $this->timeLimits, 'and neither must the backstop');
+        $this->assertSame([], $this->timeLimits, 'a request that armed nothing must not have its limits rewritten');
+        $this->assertSame([], \Plugin_Upgrader::$calls, 'and nothing may be swapped');
+        $this->assertNull($this->record(), 'and no outcome may be recorded for an apply that never existed');
     }
 
     /**

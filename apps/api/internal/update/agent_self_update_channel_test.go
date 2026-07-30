@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -498,6 +499,156 @@ func TestArmErrorNeverLosesTheAgentsDetail(t *testing.T) {
 	}
 	if task.Error == agentcmd.SelfUpdateError {
 		t.Fatal("the task error must be the agent's reason, not the bare status string")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Beat 1: a CP-side transport timeout is not evidence of failure
+// ---------------------------------------------------------------------------
+
+// agentArmTimedOut is the error agentcmd.Client.AgentSelfUpdate really
+// produces when the control plane's own read/deadline expires before an
+// answer arrives: postRaw wraps the transport failure with "%w", so the
+// chain still satisfies agentcmd.IsTimeoutErr via errors.Is(context.
+// DeadlineExceeded). Written out with the real wrapping rather than a bare
+// context.DeadlineExceeded, so a change to that wrapping (or to
+// IsTimeoutErr's own errors.As/errors.Is walk) fails this test instead of
+// silently un-branching the code under it.
+func agentArmTimedOut() error {
+	return fmt.Errorf("agent_self_update command transport: %w", context.DeadlineExceeded)
+}
+
+// TestArmTimeoutIsUncertainNotFailed is the GH self-update mod_php unlock's
+// CP-side guard. On a SAPI that cannot detach the connection, the agent
+// writes its beat-1 acknowledgement only after the WHOLE apply finishes, so
+// the control plane's own ApplyHTTPTimeout expiring on that specific request
+// most often means the apply is still running (or already succeeded), not
+// that the site rejected it. Recording that as TaskFailed is exactly the
+// spurious-failure regression cfg.Update.ApplyHTTPTimeout's own doc comment
+// records happening in production; asserting it again here for the very host
+// class this change exists to unlock would recreate the failure discarding
+// its own fix. The task must stay open and the confirm poll must still get
+// its chance to observe whether the site's version actually moved.
+func TestArmTimeoutIsUncertainNotFailed(t *testing.T) {
+	cmd := &recordingSelfUpdater{err: agentArmTimedOut()}
+	h := newAgentHarness(t, 10, cmd, &fakeVersions{}, true)
+
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	task := h.store.Task(0)
+	if task.Status == TaskFailed {
+		t.Fatalf("a CP-side transport timeout on the arm command is not evidence the upgrade failed: %+v", task)
+	}
+	if terminal(task.Status) {
+		t.Fatalf("an uncertain arm must leave the task un-finished, got status %q", task.Status)
+	}
+	if task.Status != TaskRunning {
+		t.Fatalf("status = %q, want %q", task.Status, TaskRunning)
+	}
+	for _, fin := range h.repo.finished {
+		if fin.TaskID == task.ID {
+			t.Fatalf("an uncertain arm must never be finished outright: %+v", fin)
+		}
+	}
+
+	// The run must not advance: wave 1 stays shut behind an unconfirmed
+	// canary, exactly as a genuine "scheduled" ack behaves.
+	if len(h.enq.tasks) != 0 {
+		t.Fatalf("no further wave may be enqueued while the canary's own outcome is still uncertain: %+v", h.enq.tasks)
+	}
+	if h.store.RunStatus() == RunHalted {
+		t.Fatal("an uncertain arm must never halt the run on its own")
+	}
+
+	// What it MUST do is give the site's own reported version the chance to
+	// decide the outcome, on the run's own planned target: the arm response
+	// that would have carried the agent's own to_version was never read.
+	if len(h.enq.confirms) != 1 {
+		t.Fatalf("an uncertain arm must schedule exactly one confirmation poll, got %d", len(h.enq.confirms))
+	}
+	got := h.enq.confirms[0]
+	if got.ExpectVersion != agentPlanTarget {
+		t.Fatalf("ExpectVersion = %q, want the run's own planned target %q", got.ExpectVersion, agentPlanTarget)
+	}
+	if got.FromVersion != agentPlanFrom {
+		t.Fatalf("FromVersion = %q, want %q", got.FromVersion, agentPlanFrom)
+	}
+	if got.ApplyID != "" {
+		t.Fatalf("ApplyID = %q, want empty: the beat-1 answer that would have carried one was never read", got.ApplyID)
+	}
+	// CronMode is unknown (the response was never read), so it must earn the
+	// same NARROW window an agent that simply omitted the field gets, never
+	// the wider external-cron window: widening on missing evidence would buy
+	// false patience.
+	if want := time.Now().Add(agentConfirmDeadline); got.DeadlineAt.After(want.Add(time.Minute)) || got.DeadlineAt.Before(want.Add(-time.Minute)) {
+		t.Fatalf("deadline = %s, want the narrow confirm window (~%s from now)", got.DeadlineAt, agentConfirmDeadline)
+	}
+}
+
+// TestArmTimeoutStillConfirmsOnVersionMove closes the loop: an uncertain arm
+// must not just avoid a false failure, it must still let a REAL upgrade
+// confirm. The confirm poll enqueued after a timed-out arm is read here
+// exactly as a genuine "scheduled" ack's poll would be, and the site
+// reporting the new version must succeed the task and open the next wave.
+func TestArmTimeoutStillConfirmsOnVersionMove(t *testing.T) {
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	cmd := &recordingSelfUpdater{err: agentArmTimedOut()}
+	h := newAgentHarness(t, 10, cmd, versions, true)
+
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	args := h.enq.confirms[0]
+	versions.versions[args.SiteID] = agentPlanTarget // the new code phoned home anyway
+
+	cw := NewAgentConfirmWorker(h.w)
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work: %v", err)
+	}
+	task := h.store.Task(0)
+	if task.Status != TaskSucceeded {
+		t.Fatalf("status = %q, want %q: an arm the CP could not read must still be provable by version movement", task.Status, TaskSucceeded)
+	}
+	if task.ToVersion != agentPlanTarget {
+		t.Fatalf("to_version = %q, want the version the site actually reported %q", task.ToVersion, agentPlanTarget)
+	}
+	// Confirming the canary is what opens wave 1.
+	if len(h.enq.tasks) != 3 {
+		t.Fatalf("confirming the canary must enqueue wave 1's sites, got %d", len(h.enq.tasks))
+	}
+}
+
+// TestArmTimeoutThatNeverReachedTheSiteStillFailsHonestly is the other half:
+// if the arm genuinely never reached the site (the transport timeout was
+// real, not just a slow read of a real answer), nothing moves and the
+// confirm poll must still fail the task once its own deadline passes,
+// exactly as an ordinary unconfirmed "scheduled" ack does. Treating the
+// timeout as uncertain must never turn into treating it as permanently
+// unaccountable.
+func TestArmTimeoutThatNeverReachedTheSiteStillFailsHonestly(t *testing.T) {
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	cmd := &recordingSelfUpdater{err: agentArmTimedOut()}
+	h := newAgentHarness(t, 10, cmd, versions, true)
+
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	args := h.enq.confirms[0]
+	versions.versions[args.SiteID] = agentPlanFrom // never moved
+	args.DeadlineAt = time.Now().Add(-time.Second) // window already closed
+
+	cw := NewAgentConfirmWorker(h.w)
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work: %v", err)
+	}
+	task := h.store.Task(0)
+	if task.Status != TaskFailed {
+		t.Fatalf("status = %q, want %q", task.Status, TaskFailed)
+	}
+	if h.store.RunStatus() != RunHalted {
+		t.Fatalf("run status = %q, want %q", h.store.RunStatus(), RunHalted)
 	}
 }
 
