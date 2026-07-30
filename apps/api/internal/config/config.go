@@ -352,12 +352,29 @@ type BackupConfig struct {
 // pre-update snapshot, download, extract, and core/plugin/theme DB migration
 // all happen inline in one request — and routinely exceeds the snappy 30s
 // HTTPTimeout, which previously drove a spurious CP-recorded "Failed" even
-// though the agent had actually finished. Defaults to 5m: longer than the
-// 30s shared update timeout, shorter than the 10m backup timeout (an update
-// apply + its mandatory snapshot is lighter than a full-site backup), and
-// leaves headroom under the agent's own apply script cap
-// (set_time_limit(900)) for network/transfer overhead on top of the agent's
-// own execution time.
+// though the agent had actually finished.
+//
+// This budget also covers the agent's OWN self-update apply. On a SAPI that
+// cannot detach the connection (mod_php, plain CGI), the control plane holds
+// this same connection open for the agent's entire apply, not just the
+// package download: the agent's own package-download budget alone
+// (PACKAGE_TIMEOUT, 300s) can consume nearly all of a 5m cap and leave
+// nothing for the unzip and swap that follow it. Defaults to 8m: still well
+// inside the 10m backup timeout (an update apply + its mandatory snapshot is
+// lighter than a full-site backup), longer than the 30s shared update
+// timeout, and leaves real headroom over the agent's 300s download budget for
+// the unzip/swap phase.
+//
+// It deliberately does NOT try to cover the agent's own 900s apply cap, and
+// it could not: the range this value is pinned to tops out below that. On a
+// slow non-detaching host this deadline can therefore expire while the apply
+// is still legitimately running. That is not treated as a failure, because it
+// is not evidence of one. A timeout here resolves the task as UNCERTAIN and
+// enqueues the same confirmation poll a normal arm would, so the outcome is
+// decided by the site reporting its own new version rather than by whether
+// one HTTP read outlasted one file swap. Making the control plane wait out
+// the whole apply would be the wrong fix for the same reason: the connection
+// is not the success signal.
 //
 // AgentSelfUpdateEnabled (WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED) is the
 // fleet-wide kill switch for the agent's OWN upgrade channel, and it DEFAULTS
@@ -647,7 +664,7 @@ func defaults() map[string]any {
 		"update.per_tenant_parallelism": 5,
 		"update.http_timeout":           "30s",
 		"update.http_retries":           2,
-		"update.apply_http_timeout":     "5m",
+		"update.apply_http_timeout":     "8m",
 		// Fleet-wide kill switch for the agent's own upgrade channel. Ships
 		// DISABLED: merging the channel changes nothing until an operator
 		// explicitly turns it on. See UpdateConfig.AgentSelfUpdateEnabled.

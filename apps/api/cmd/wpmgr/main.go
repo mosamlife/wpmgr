@@ -687,7 +687,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// finished. Mirror the backup (:729-733) and media (:1219-1223) dedicated
 	// commander pattern via buildUpdateApplyCommander: build a SEPARATE
 	// SSRF-hardened client with a longer per-attempt cap
-	// (cfg.Update.ApplyHTTPTimeout, default 5m — see UpdateConfig's doc
+	// (cfg.Update.ApplyHTTPTimeout, default 8m; see UpdateConfig's doc
 	// comment for how that default was picked) just for the update-apply
 	// commander, falling back to the shared `commander` when no signing key
 	// is configured (the cmdSigner == nil / disabled-commander case, guarded
@@ -695,7 +695,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	updateApplyCmd := buildUpdateApplyCommander(commander, cmdSigner, cfg.Update.ApplyHTTPTimeout)
 	// The update-task River job otherwise inherits River's own 60s default
 	// (river.Config.JobTimeout is unset below), which is shorter than
-	// cfg.Update.ApplyHTTPTimeout (5m) alone, let alone the apply call PLUS the
+	// cfg.Update.ApplyHTTPTimeout (8m) alone, let alone the apply call PLUS the
 	// GH #291 Phase 4 post-update health check that runs after it in the same
 	// job. Mirror the backup worker's jobTimeout pattern (backupJobTimeout,
 	// below): derive a job-level budget that genuinely covers the worst case
@@ -2455,7 +2455,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// the channel exactly as the flag does, an unsigned self-update command
 	// must never be sent.
 	//
-	// Built on updateApplyCmd (cfg.Update.ApplyHTTPTimeout, default 5m), NOT
+	// Built on updateApplyCmd (cfg.Update.ApplyHTTPTimeout, default 8m), NOT
 	// the shared 30s `commander`, and for the identical reason main.go:686-695
 	// already gives the plugin-apply path its own dedicated commander: on a
 	// SAPI where ConnectionFinisher reaches its portable fallback rung (mod_php,

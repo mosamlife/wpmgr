@@ -493,6 +493,18 @@ func isTimeoutErr(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
 }
 
+// IsTimeoutErr is the exported form of isTimeoutErr, for callers outside this
+// package that need to distinguish "the control plane's own read/deadline
+// expired" from every other command failure. The update package's agent
+// self-update worker uses it: on a non-detaching SAPI the agent's ack is
+// written only after the whole apply, so the control plane's read timing out
+// on that specific command is not evidence the upgrade failed, only that this
+// request could not wait for the answer (see agent_worker.go). Every other
+// caller of this predicate (retry/backoff classification, reachability
+// probing) continues to use the unexported form; export only widens visibility,
+// it does not change what the predicate matches.
+func IsTimeoutErr(err error) bool { return isTimeoutErr(err) }
+
 // isTLSErr reports whether err is (or wraps) a TLS handshake failure: an
 // invalid, hostname-mismatched, or untrusted certificate, or a malformed TLS
 // record (e.g. a plaintext response on an https port).

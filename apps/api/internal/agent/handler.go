@@ -114,12 +114,11 @@ type metadataDTO struct {
 	// never sent by an agent old enough to predate the channel.
 	//
 	// It is the only way a FAILED apply reaches the control plane at all: the
-	// apply runs inside a cron request that has no CP response to ride on, so
-	// if it fails, expires, or finds itself already applied, the next metadata
-	// push is the sole carrier of that fact. Without it a confirmation timeout
-	// is indistinguishable between "the cron run never happened" and "the cron
-	// run happened and the upgrade failed", which are different incidents with
-	// different fixes.
+	// apply releases its response before it begins the swap, so if it fails,
+	// expires, or finds itself already applied, the next metadata push is the
+	// sole carrier of that fact. Without it a confirmation timeout is
+	// indistinguishable between "the apply never ran" and "the apply ran and
+	// the upgrade failed", which are different incidents with different fixes.
 	AgentSelfUpdate *agentSelfUpdateResultDTO `json:"agent_self_update,omitempty"`
 }
 
@@ -139,6 +138,14 @@ type agentSelfUpdateResultDTO struct {
 	// every agent that predates it, and from every record an old agent already
 	// wrote before it upgraded.
 	ApplyID flexString `json:"apply_id"`
+	// Rung is the connection-release rung the apply actually ran on: fpm and
+	// litespeed released the response first, the portable fallback did not and
+	// held the caller's connection for the whole swap. Purely diagnostic, it
+	// gates nothing. It exists because the SAPI that cannot release a response
+	// was once refused outright, and knowing which sites upgrade on an attached
+	// connection is how that decision stays evidence-based rather than
+	// re-argued. Absent from every agent before 0.61.110.
+	Rung flexString `json:"rung"`
 }
 
 // hostFlagsDTO mirrors the defined()-based hosting fingerprint the agent
@@ -285,6 +292,7 @@ func (d metadataDTO) toMetadata() Metadata {
 			Detail:      string(d.AgentSelfUpdate.Detail),
 			At:          int64PtrOrZero(d.AgentSelfUpdate.At),
 			ApplyID:     string(d.AgentSelfUpdate.ApplyID),
+			Rung:        string(d.AgentSelfUpdate.Rung),
 		}
 	}
 	return m
@@ -367,6 +375,10 @@ type AgentSelfUpdateResult struct {
 	// the control plane distinguish ITS OWN apply's outcome from an unrelated
 	// version movement, see update.agentApplyAttributed.
 	ApplyID string
+	// Rung is the connection-release rung the apply ran on: fpm, litespeed, or
+	// the portable fallback that could not release the response. Diagnostic
+	// only; it gates nothing. "" for every agent before 0.61.110.
+	Rung string
 }
 
 // Component is one installed plugin/theme. AvailableUpdate is set when the

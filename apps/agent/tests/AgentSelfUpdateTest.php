@@ -547,26 +547,28 @@ final class AgentSelfUpdateTest extends TestCase
     }
 
     /**
-     * A SITE WHOSE PHP SAPI CANNOT DETACH IS REFUSED AT THE ARM, IMMEDIATELY.
+     * A SITE WHOSE PHP SAPI CANNOT DETACH ARMS EXACTLY LIKE ANY OTHER SITE.
      *
-     * The apply has to release the control-plane connection before it starts,
-     * because a multi-minute upgrade on a still-attached connection is on a
-     * timer nobody here controls. On mod_php or plain CGI there is no way to
-     * release it, so the upgrade must not run at all.
+     * The arm used to refuse such a host outright, answering "not_eligible" and
+     * recording a "sapi_cannot_detach" outcome, on the reasoning that an
+     * upgrade on a still-attached connection could be cut mid swap. That
+     * refusal is gone. WordPress has no SAPI check anywhere in its own upgrade
+     * path and updates plugins on these hosts from wp-admin every day, and this
+     * agent's own update command already applies plugin, theme and core
+     * upgrades inline and attached on every SAPI. Refusing here stranded a
+     * large share of shared hosting on an agent that could never be upgraded
+     * from the fleet.
      *
-     * That refusal used to be discovered AFTER the acknowledgement had gone
-     * out: such a site answered "scheduled", the control plane waited out its
-     * whole 20-minute confirm deadline, and only then recorded a failed task,
-     * which in wave 0 halts the entire rollout and costs another 20 minutes on
-     * every retry. Detachability is a property of the host and of nothing else,
-     * knowable in the first millisecond, so it is answered here.
+     * So the fixture is the same manifest and the same site as the ordinary arm
+     * test, with only the SAPI probe flipped, and the expected answer is the
+     * same one: scheduled, the lock taken, the seam registered, a real apply id,
+     * and NO apply-result record, because at arm time nothing has been applied.
      *
-     * "not_eligible" is the answer because it is the existing status for "this
-     * channel does not apply to this site", and the control plane scores it as
-     * skipped rather than failed. The specific reason rides in the detail and
-     * in the apply-result record, so no sixth ARM status is invented for it.
+     * "not_eligible" now has exactly two meanings, both about identity rather
+     * than capability: the wordpress.org distribution build, and an un-enrolled
+     * site. Each has its own test above.
      */
-    public function test_a_sapi_that_cannot_detach_is_refused_at_the_arm(): void
+    public function test_a_sapi_that_cannot_detach_still_arms(): void
     {
         $claims = $this->makeClaims(['version' => $this->targetVersion]);
         $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
@@ -577,40 +579,55 @@ final class AgentSelfUpdateTest extends TestCase
         $answer = $checker->planSelfUpdate();
 
         $this->assertSame(
-            'not_eligible',
+            'scheduled',
             $answer['status'],
-            'the control plane scores this as skipped; "error" would fail the task and halt the wave'
+            'the SAPI is not a reason to decline; a host that cannot detach applies attached instead'
         );
-        $this->assertTrue($answer['ok'], 'an ineligible host is informational, never a failure');
-        $this->assertSame('', $answer['to_version']);
-        $this->assertSame('', $answer['apply_id'], 'nothing was armed, so there is no apply to name');
-        $this->assertSame(0, $answer['expires_at']);
-        $this->assertStringContainsString(
-            'fastcgi_finish_request',
-            (string) $answer['detail'],
-            'the reason must be specific enough for an operator to act on'
+        $this->assertTrue($answer['ok']);
+        $this->assertSame($this->targetVersion, $answer['to_version']);
+        $this->assertMatchesRegularExpression(
+            '/^[0-9a-f]{32}$/',
+            (string) $answer['apply_id'],
+            'an armed apply must be attributable on every host class'
         );
+        $this->assertGreaterThan(time(), $answer['expires_at']);
 
-        $this->assertSame($before, $this->snapshotDisk(), 'a refused arm touches nothing on disk');
-        $this->assertSame(
-            [],
-            $this->httpCalls,
-            'the answer depends on the host and not on the manifest, so it must not cost a CP round trip'
+        $this->assertSame($before, $this->snapshotDisk(), 'the ARM still touches nothing on disk');
+        $this->assertCount(1, $this->httpCalls, 'the arm verifies the manifest here exactly as anywhere else');
+        $this->assertNotSame(
+            0,
+            (int) ($this->options[self::LOCK_OPTION] ?? 0),
+            'the arm must hold core\'s own upgrader lock on this host class too'
         );
-        $this->assertArrayNotHasKey(self::LOCK_OPTION, $this->options, 'and it must not take the apply lock');
-        $this->assertFalse(
+        $this->assertNotFalse(
             has_filter('rest_pre_serve_request', [$checker, 'serveThenApply']),
-            'no apply seam may be registered for an apply that will never run'
+            'the apply seam must be registered, or the swap this arm just promised can never run'
         );
 
-        $record = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
-        $this->assertIsArray($record, 'the refusal is recorded as well as answered');
-        $this->assertSame('sapi_cannot_detach', $record['status']);
-        $this->assertSame('', $record['apply_id'], 'no apply was taken, so the record names none');
-        $this->assertSame(
-            $answer['detail'],
-            $record['detail'],
-            'the answer and the record must carry one sentence, not two that can drift'
+        $this->assertArrayNotHasKey(
+            AgentSelfUpdateCommand::OPTION_RESULT,
+            $this->options,
+            'the arm applies nothing, so it must record no apply outcome at all'
+        );
+    }
+
+    /**
+     * The refused-outcome vocabulary is gone from the shipped source, not just
+     * from the path that used to reach it. A leftover constant or literal is how
+     * a retired refusal quietly comes back, and this string was also visible to
+     * operators, so it is pinned as absent rather than assumed absent.
+     */
+    public function test_the_retired_sapi_refusal_vocabulary_is_gone_from_the_source(): void
+    {
+        $source = (string) file_get_contents(dirname(__DIR__) . '/includes/support/class-update-checker.php');
+
+        $this->assertStringNotContainsString('sapi_cannot_detach', $source);
+        $this->assertStringNotContainsString('RESULT_SAPI_CANNOT_DETACH', $source);
+        $this->assertStringNotContainsString('DETACH_REFUSAL_DETAIL', $source);
+        $this->assertStringNotContainsString(
+            'canDetach',
+            $source,
+            'the self-updater must not ask whether it may detach; it applies either way'
         );
     }
 
@@ -760,13 +777,14 @@ final class AgentSelfUpdateTest extends TestCase
             'detail'       => '',
             'at'           => 1750000000,
             'apply_id'     => 'abcdef0123456789abcdef0123456789',
+            'rung'         => 'fallback',
             'ignored_key'  => 'must not travel',
         ];
 
         $payload = (new \WPMgr\Agent\Commands\MetadataCommand())->collect();
 
         $this->assertSame(
-            ['status', 'from_version', 'to_version', 'detail', 'at', 'apply_id'],
+            ['status', 'from_version', 'to_version', 'detail', 'at', 'apply_id', 'rung'],
             array_keys($payload['agent_self_update']),
             'the agent_self_update wire shape is pinned; change it here and in the control plane contract together'
         );
@@ -774,6 +792,11 @@ final class AgentSelfUpdateTest extends TestCase
             'abcdef0123456789abcdef0123456789',
             $payload['agent_self_update']['apply_id'],
             'apply_id must survive the whitelist, or attribution is impossible by construction'
+        );
+        $this->assertSame(
+            'fallback',
+            $payload['agent_self_update']['rung'],
+            'the rung is how a fleet-wide reading tells an attached apply from a released one; it must survive too'
         );
     }
 
@@ -798,6 +821,11 @@ final class AgentSelfUpdateTest extends TestCase
 
         $this->assertSame('failed', $payload['agent_self_update']['status']);
         $this->assertSame('', $payload['agent_self_update']['apply_id']);
+        $this->assertSame(
+            '',
+            $payload['agent_self_update']['rung'],
+            'the rung is additive in the same way: absent on an older agent, never a decode failure'
+        );
     }
 
     /**

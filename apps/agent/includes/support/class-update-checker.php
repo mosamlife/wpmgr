@@ -146,28 +146,6 @@ final class UpdateChecker
     private const OPTION_APPLY_ID = 'wpmgr_agent_self_update_apply_id';
 
     /**
-     * Apply-result status recorded when this site's PHP SAPI cannot release
-     * the control-plane connection, so no apply was run.
-     *
-     * NOT an ARM status. The ARM answers 'not_eligible', which is one of the
-     * five pinned wire values, and carries this reason in its detail; this name
-     * only ever appears in the apply-result record, where it lets an operator
-     * tell "this site can never self-update" apart from "an apply was attempted
-     * and failed".
-     */
-    private const RESULT_SAPI_CANNOT_DETACH = 'sapi_cannot_detach';
-
-    /**
-     * The reason both the ARM answer and the apply-result record carry when the
-     * detach gate refuses, held once so the control plane reads the same
-     * sentence whichever of the two it is looking at.
-     */
-    private const DETACH_REFUSAL_DETAIL = 'This PHP SAPI offers neither fastcgi_finish_request nor '
-        . 'litespeed_finish_request, so the agent cannot release the control-plane connection before replacing its '
-        . 'own directory, and it will not run an upgrade on a connection something else can time out mid swap. '
-        . 'Nothing on disk was touched. Update this site from its WordPress dashboard instead.';
-
-    /**
      * Every agent class that can still be reached AFTER the plugin directory
      * has been swapped. warmPostSwapClasses() loads each one before the swap
      * starts, so the code that runs between the swap and the end of the request
@@ -297,13 +275,26 @@ final class UpdateChecker
     private ReplayCache $replayCache;
 
     /**
-     * The SAPI-aware early-flush ladder, held rather than constructed on the
-     * spot because the CP-commanded self-update asks it TWO questions in one
-     * request and both answers have to come from the same probe: can this SAPI
-     * detach at all (at the arm, before anything is promised), and which rung
-     * actually fired (after the acknowledgement has been released).
+     * The SAPI-aware early-flush ladder. Held rather than constructed on the
+     * spot so the rung that actually fired and the explanation recorded beside
+     * it come from one probe rather than from two that could disagree.
+     *
+     * Releasing the connection first is a preference, never a precondition. On
+     * the last rung the apply runs anyway, attached, which is what WordPress
+     * itself does on the same hosts through wp-admin every day.
      */
     private ConnectionFinisher $finisher;
+
+    /**
+     * The ConnectionFinisher rung the apply in THIS request ran on, or '' when
+     * no apply ran here.
+     *
+     * Stamped into every apply-result record so a fleet-wide reading can tell
+     * which sites upgraded on an attached connection from which upgraded on a
+     * released one. It is an observation and nothing reads it back to decide
+     * anything.
+     */
+    private string $applyRung = '';
 
     /**
      * Why the most recent fetchManifest()/verifyManifest() pair returned null.
@@ -365,10 +356,8 @@ final class UpdateChecker
      *                                            function can be defined in a test
      *                                            process without flipping
      *                                            function_exists() for every other
-     *                                            test in it, and whether this SAPI
-     *                                            can detach is the single input that
-     *                                            decides whether a site self-updates
-     *                                            at all.
+     *                                            test in it, so the rung a test wants
+     *                                            to exercise has to be handed in.
      */
     public function __construct(
         Signer $signer,
@@ -1314,9 +1303,10 @@ final class UpdateChecker
      *
      * EVERY REASON THIS SITE CANNOT BE UPGRADED IS DECIDED HERE, before the
      * answer goes out, because an answer the control plane has to wait out a
-     * confirm deadline to disbelieve costs a rollout wave. That includes the
-     * SAPI detach gate, which is a property of the host and not of the
-     * manifest.
+     * confirm deadline to disbelieve costs a rollout wave. There are exactly
+     * two such reasons and both are about identity rather than capability: the
+     * wordpress.org distribution build, which ships no self-updater at all, and
+     * a site that is not enrolled. The PHP SAPI is not one of them.
      *
      * @return array{status:string,ok:bool,from_version:string,to_version:string,detail:string,cron_mode:string,expires_at:int,apply_id:string}
      */
@@ -1345,43 +1335,6 @@ final class UpdateChecker
         // placed after that return would never run on the sites most likely to
         // still be carrying the leftovers.
         $this->clearRetiredStagingState();
-
-        // THE DETACH GATE, ASKED HERE BECAUSE IT IS ANSWERABLE HERE.
-        //
-        // The apply only runs on a SAPI that can genuinely release the
-        // control-plane connection first. ConnectionFinisher's last rung is a
-        // portable flush that leaves the worker attached, and a multi-minute
-        // upgrade on an attached connection is on a timer nobody here controls
-        // (a reverse-proxy read timeout the control plane cannot raise, or a
-        // process manager reaping the worker on client disconnect). That
-        // refusal is real and stays; what moved is WHEN it is made.
-        //
-        // It used to be made after the acknowledgement had already gone out, so
-        // a mod_php or plain-CGI site answered "scheduled", the control plane
-        // waited out its full confirm deadline, and only then recorded a
-        // failure. In wave 0 that halts the entire rollout, and every retry
-        // costs another deadline, over a site whose answer was knowable in the
-        // first millisecond. Nothing about it depends on the manifest, so it is
-        // answered before the manifest is even fetched.
-        //
-        // It answers "not_eligible", which the control plane scores as skipped
-        // rather than failed, and which is the honest word for it: this site
-        // cannot use this channel at all, exactly like the wordpress.org build
-        // and the un-enrolled site above. The specific reason travels in the
-        // detail and in the apply-result record, so neither the operator nor a
-        // later diagnostic has to infer it.
-        if (!$this->finisher->canDetach()) {
-            $this->recordSelfUpdateResult(
-                '',
-                self::RESULT_SAPI_CANNOT_DETACH,
-                $onDisk,
-                '',
-                self::DETACH_REFUSAL_DETAIL,
-                false
-            );
-
-            return $this->stageAnswer('not_eligible', $onDisk, '', self::DETACH_REFUSAL_DETAIL);
-        }
 
         $claims = $this->fetchManifest();
         if (!is_array($claims)) {
@@ -1503,20 +1456,13 @@ final class UpdateChecker
      * is a fatal in the request body, and PHP still runs the shutdown queue
      * afterwards.
      *
-     * THE DETACH GATE, SECOND OF TWO. The swap only runs when ConnectionFinisher
-     * reports that it truly detached the connection (PHP-FPM or LiteSpeed). Its
-     * third rung is a portable flush that does NOT detach, and running a
-     * multi-minute upgrade on a still-attached connection puts it on a timer
-     * nobody here controls: a reverse-proxy or CDN read timeout the control
-     * plane cannot raise, or a process manager reaping the worker on client
-     * disconnect, which is a signal ignore_user_abort() cannot intercept. A site
-     * that is not upgraded is fine. A site that is half upgraded is not.
-     *
-     * The PRIMARY gate is at the arm (planSelfUpdate), which asks the same
-     * ladder the same question before it promises the control plane anything.
-     * This one is belt and braces: it judges the rung that actually fired
-     * rather than the rung that was predicted, and it is what would stop a swap
-     * if those two ever disagreed.
+     * THE FLUSH IS ATTEMPTED, NOT REQUIRED. finish() takes the best rung this
+     * SAPI offers and reports which one it was. On PHP-FPM or LiteSpeed that
+     * genuinely releases the control-plane connection and the apply runs with
+     * nobody waiting on it. On every other SAPI the last rung flushes what is
+     * buffered and the worker stays attached, so the control plane holds its
+     * connection until the apply finishes. Both then run the identical apply.
+     * The rung is recorded with the outcome and decides nothing.
      *
      * @param mixed $served  Whether the response has already been sent.
      * @param mixed $result  The response object core was about to serialise.
@@ -1576,13 +1522,30 @@ final class UpdateChecker
     }
 
     /**
-     * Everything that happens once the response has been released: the detach
-     * gate, the background-job arming, and the upgrade.
+     * Everything that happens once the response has been released: the
+     * execution guards, the class warming, and the upgrade.
      *
-     * Split from serveThenApply() because the rung is the ONE input that decides
-     * whether this site is upgraded at all, and a decision that important is
-     * worth being able to exercise directly rather than only through whichever
-     * SAPI the test process happens to be running under.
+     * Split from serveThenApply() because the rung is an input a test cannot
+     * otherwise choose. Neither finish-request function can be defined in a
+     * test process without changing which rung every other test observes, so
+     * the apply is reachable directly with the rung handed in.
+     *
+     * THE RUNG IS RECORDED, NOT OBEYED. This method used to refuse the whole
+     * upgrade when finish() reported the last rung, on the reasoning that a
+     * still-attached connection could be cut mid swap. It no longer does, for
+     * three reasons that hold together. WordPress core has no SAPI check
+     * anywhere in its upgrade path and updates plugins on these same hosts from
+     * wp-admin every day, on a fully attached browser connection. This agent's
+     * own update command already applies plugin, theme and core upgrades inline
+     * and attached on every SAPI, guarded by nothing more than the two calls
+     * below. And those two calls were the guards the refusal made unreachable
+     * on precisely the hosts that need them: on a SAPI that cannot detach,
+     * ignore_user_abort() IS the defence, and it was dead code here.
+     *
+     * What the rung still buys is diagnosis. It is stamped into the apply
+     * result, so a fleet-wide reading can tell which sites upgraded on an
+     * attached connection, and on the last rung the reason this host has no
+     * detaching one is written to the debug log in the same breath.
      *
      * @param string $rung    The rung ConnectionFinisher reported.
      * @param string $applyId Opaque id of this apply.
@@ -1592,32 +1555,24 @@ final class UpdateChecker
      */
     private function applyPendingUpdate(string $rung, string $applyId, string $from, string $to): void
     {
-        try {
-            // BELT AND BRACES. planSelfUpdate() already refused this site
-            // before it answered, using the same ladder and the same question,
-            // so in practice a non-detaching rung cannot reach this line: the
-            // arm would never have registered the seam that leads here. It is
-            // checked again anyway because the two readings are taken at
-            // different moments and the cost of the later one being wrong is a
-            // half-replaced plugin directory. Unlike the arm, this one HAS
-            // already answered the control plane, so its refusal has to be
-            // delivered out of band, which recordSelfUpdateResult() arranges.
-            if (!in_array($rung, ConnectionFinisher::DETACHING_RUNGS, true)) {
-                $this->recordSelfUpdateResult(
-                    $applyId,
-                    self::RESULT_SAPI_CANNOT_DETACH,
-                    $from,
-                    $to,
-                    self::DETACH_REFUSAL_DETAIL
-                );
+        $this->applyRung = $rung;
 
-                return;
+        try {
+            if (!in_array($rung, ConnectionFinisher::DETACHING_RUNGS, true)) {
+                DebugLog::write(rtrim(
+                    'WPMgr Agent: self-update applying on the ' . $rung . ' rung, so the control-plane connection '
+                    . 'stays attached until the apply finishes. ' . $this->finisher->detachReason()
+                ));
             }
 
-            // The client is gone and the request is now a background job. The
-            // execution cap is bounded on purpose: max_execution_time is the ONE
-            // timer whose fatal still runs shutdown functions, which is exactly
-            // what the rollback depends on.
+            // BOTH OF THESE MATTER MOST ON THE RUNG THAT DID NOT DETACH, which
+            // is why they are the first thing the apply does on EVERY rung. On
+            // a detaching rung the client is already gone. On the last rung it
+            // is still there, and ignore_user_abort() is what keeps a peer that
+            // hangs up from ending the swap halfway. The execution cap is
+            // bounded on purpose: max_execution_time is the ONE timer whose
+            // fatal still runs shutdown functions, which is exactly what the
+            // rollback depends on.
             if (function_exists('ignore_user_abort')) {
                 ignore_user_abort(true);
             }
@@ -2101,31 +2056,24 @@ final class UpdateChecker
      * the control plane say whether the version it now sees moved BECAUSE of the
      * run it armed, rather than assuming it.
      *
-     * The one caller that passes an EMPTY apply id is the arm's own detach
-     * refusal, which is not an apply outcome at all: no apply was taken, so
-     * there is no id to name, and the empty string is exactly what an
-     * unattributable record should say about itself.
+     * Every caller is now an apply outcome, so every record names a real apply.
+     * The one caller that used to pass an empty id was the arm's SAPI refusal,
+     * and that refusal is gone: this channel no longer declines a site for the
+     * SAPI it runs on.
      *
-     * @param string $applyId       Opaque id of the apply that produced this
-     *                              outcome, or '' when no apply was taken.
-     * @param string $status        A terminal outcome (applied|failed|expired|
-     *                              already_applied) or a named diagnostic. The
-     *                              control plane branches on the four it knows
-     *                              and surfaces anything else verbatim, so a
-     *                              status added here needs no control-plane
-     *                              change to reach an operator.
-     * @param string $from          On-disk version at arm time.
-     * @param string $to            Verified target version.
-     * @param string $detail        Human-readable, non-secret detail (may be empty).
-     * @param bool   $pushOutOfBand Whether this outcome needs its own delivery.
-     *                              True for anything decided AFTER the response
-     *                              was released, which is the whole reason the
-     *                              push exists. False for the arm's own detach
-     *                              refusal: that reason is already in the answer
-     *                              this very request is about to return, and on a
-     *                              SAPI that by definition cannot detach, a push
-     *                              queued on shutdown would hold the control
-     *                              plane's own connection open to re-send it.
+     * The rung is stamped from the apply that is running, or left empty when
+     * this record was written outside one. It is an observation for a fleet-wide
+     * reading, never an input to anything.
+     *
+     * @param string $applyId Opaque id of the apply that produced this outcome.
+     * @param string $status  A terminal outcome (applied|failed|expired|
+     *                        already_applied) or a named diagnostic. The control
+     *                        plane branches on the four it knows and surfaces
+     *                        anything else verbatim, so a status added here needs
+     *                        no control-plane change to reach an operator.
+     * @param string $from    On-disk version at arm time.
+     * @param string $to      Verified target version.
+     * @param string $detail  Human-readable, non-secret detail (may be empty).
      * @return void
      */
     private function recordSelfUpdateResult(
@@ -2133,8 +2081,7 @@ final class UpdateChecker
         string $status,
         string $from,
         string $to,
-        string $detail,
-        bool $pushOutOfBand = true
+        string $detail
     ): void {
         if (!function_exists('update_option')) {
             return;
@@ -2154,13 +2101,12 @@ final class UpdateChecker
                 'detail'       => $scrubbed,
                 'at'           => time(),
                 'apply_id'     => $applyId,
+                'rung'         => $this->applyRung,
             ],
             false
         );
 
-        if ($pushOutOfBand) {
-            $this->queueOutcomePush($status);
-        }
+        $this->queueOutcomePush($status);
     }
 
     /**

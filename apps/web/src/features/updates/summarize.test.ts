@@ -156,14 +156,32 @@ describe("haltReason", () => {
   it("falls back to a counts-derived summary when no task was cancelled", () => {
     // A single-site canary run: the one task is already terminal (failed) by
     // the time the gate re-judges it, so haltLocked has nothing left to
-    // cancel.
+    // cancel. Zero confirmations, so the "no site confirmed" wording applies.
     expect(
       haltReason({
         status: "halted",
         tasks: [task({ status: "failed" })],
       }),
     ).toBe(
-      "The rollout was halted after 1 of 1 contacted site failed to confirm the upgrade.",
+      "The rollout was halted because no site confirmed the upgrade (1 failed, 0 skipped, of 1 contacted).",
+    );
+  });
+
+  it("counts a partial-confirmation halt against the sites that were actually contacted", () => {
+    // Wave 1 of 3: two sites confirmed, one failed, so the wave's own
+    // failure-rate threshold halted the run. `confirmed` is nonzero here,
+    // which is the branch this case pins.
+    expect(
+      haltReason({
+        status: "halted",
+        tasks: [
+          task({ id: "t1", status: "succeeded" }),
+          task({ id: "t2", status: "succeeded" }),
+          task({ id: "t3", status: "failed" }),
+        ],
+      }),
+    ).toBe(
+      "The rollout was halted after 1 of 3 contacted sites failed to confirm the upgrade.",
     );
   });
 
@@ -174,5 +192,29 @@ describe("haltReason", () => {
         tasks: [task({ status: "cancelled", detail: undefined })],
       }),
     ).toBe("The rollout was halted before any site could be contacted.");
+  });
+
+  // GH self-update mod_php unlock, D-A: a run whose only task came back
+  // `skipped` (the agent answered: an old agent with no self-update route,
+  // a build this channel does not apply to, an unconfirmed "up to date") is
+  // NOT a site nobody heard from. Before this fix `contacted` excluded
+  // `skipped` entirely, so this exact shape rendered the false "before any
+  // site could be contacted" sentence for a site that was, in fact,
+  // contacted and answered.
+  it("counts a skipped task as contacted, not as never-contacted", () => {
+    expect(
+      haltReason({
+        status: "halted",
+        tasks: [
+          task({
+            status: "skipped",
+            detail:
+              "not attempted: this site's agent predates the self-update channel and has no self-update route",
+          }),
+        ],
+      }),
+    ).toBe(
+      "The rollout was halted because no site confirmed the upgrade (0 failed, 1 skipped, of 1 contacted).",
+    );
   });
 });

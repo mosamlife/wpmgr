@@ -31,7 +31,14 @@
  *
  * The three collaborators (availability probe, invocation, fallback) are
  * constructor-injected so every rung is unit testable without a real SAPI —
- * LiteSpeed cannot be reproduced in CI.
+ * LiteSpeed cannot be reproduced in CI. Two more seams, the SAPI name and the
+ * ini reader, are injected for detachReason() for the same reason: PHP_SAPI is
+ * a compile-time constant, so a test can only reach that code by being handed
+ * the value rather than by redefining it.
+ *
+ * Reaching the last rung is a slower path to the same outcome, never an unsafe
+ * one. Nothing in this agent refuses work because of it. detachReason() exists
+ * to SAY which host this is, not to gate anything.
  *
  * @package WPMgr\Agent\Support
  */
@@ -54,13 +61,31 @@ final class ConnectionFinisher
      * as opposed to the portable last rung, which only flushes what is already
      * buffered and leaves the worker attached to the client.
      *
-     * Named here so that a caller deciding AFTER the flush (from the rung
-     * finish() returned) and a caller deciding BEFORE it (from canDetach())
-     * are reading one list rather than two that can drift apart.
+     * Named here so that a caller reading the rung finish() returned and a
+     * caller asking canDetach() beforehand are reading one list rather than two
+     * that can drift apart. It is a vocabulary, not a gate: a caller may prefer
+     * a detaching rung, log which one it got, or ignore the distinction
+     * entirely, and none of those is this class's business.
      *
      * @var list<string>
      */
     public const DETACHING_RUNGS = ['fpm', 'litespeed'];
+
+    /**
+     * Which finish-request function each SAPI is expected to ship, for the SAPIs
+     * that ship one at all. Everything absent from this map (apache2handler,
+     * cgi, cgi-fcgi, cli, cli-server, and the rest) provides none, and saying
+     * that plainly is the whole point of detachReason().
+     *
+     * fastcgi_finish_request is exposed by the PHP-FPM SAPI only. Plain
+     * FastCGI (cgi-fcgi) does NOT carry it, which is why it is not listed here.
+     *
+     * @var array<string,string>
+     */
+    private const SAPI_FINISH_FUNCTIONS = [
+        'fpm-fcgi'  => 'fastcgi_finish_request',
+        'litespeed' => 'litespeed_finish_request',
+    ];
 
     /** @var callable(string):bool */
     private $available;
@@ -70,6 +95,12 @@ final class ConnectionFinisher
 
     /** @var callable():void */
     private $fallback;
+
+    /** @var callable():string */
+    private $sapi;
+
+    /** @var callable(string):(string|false) */
+    private $iniGet;
 
     /**
      * @param callable(string):bool|null $available Returns whether the named
@@ -82,9 +113,21 @@ final class ConnectionFinisher
      * @param callable():void|null       $fallback   The last-rung flush, used
      *        when neither finish-request function is available. Defaults to
      *        defaultFallbackFlush().
+     * @param callable():string|null     $sapi       Returns this process's SAPI
+     *        name. Defaults to PHP_SAPI, which is a compile-time constant and
+     *        therefore cannot be faked in a test any other way. Read only by
+     *        detachReason().
+     * @param callable(string):(string|false)|null $iniGet Reads a php.ini
+     *        directive. Defaults to ini_get(). Read only by detachReason(),
+     *        and only for disable_functions.
      */
-    public function __construct(?callable $available = null, ?callable $invoke = null, ?callable $fallback = null)
-    {
+    public function __construct(
+        ?callable $available = null,
+        ?callable $invoke = null,
+        ?callable $fallback = null,
+        ?callable $sapi = null,
+        ?callable $iniGet = null
+    ) {
         $this->available = $available ?? static fn (string $fn): bool => function_exists($fn);
         $this->invoke    = $invoke ?? static function (string $fn): void {
             $fn();
@@ -92,6 +135,8 @@ final class ConnectionFinisher
         $this->fallback  = $fallback ?? static function (): void {
             self::defaultFallbackFlush();
         };
+        $this->sapi      = $sapi ?? static fn (): string => PHP_SAPI;
+        $this->iniGet    = $iniGet ?? static fn (string $name) => ini_get($name);
     }
 
     /**
@@ -121,13 +166,13 @@ final class ConnectionFinisher
      * Answers the question WITHOUT flushing anything, so it is safe to ask
      * before the response is ready to be released.
      *
-     * finish() reports which rung fired, which is the right shape for a caller
-     * that has already committed to the work. It is the wrong shape for a
-     * caller whose decision to start the work at all depends on the answer:
-     * the CP-commanded self-update has told the control plane what it is about
-     * to do by the time it releases the response, so it asks this first and
-     * declines the whole operation up front instead of abandoning it after the
-     * acknowledgement has gone out.
+     * Detaching first is strictly better wherever it is possible: the caller
+     * gets its response back in milliseconds instead of waiting out the work,
+     * and no worker holds a socket open for minutes. It is a preference and an
+     * optimisation, which is exactly how WordPress core itself treats the same
+     * capability in wp-cron.php ("Don't run cron until the request finishes, if
+     * possible", with no else branch). It is not a precondition for doing work,
+     * and nothing in this agent may use it as one.
      *
      * Asks the SAME two questions finish() asks, through the same injected
      * probe, so the two can only ever agree.
@@ -138,6 +183,91 @@ final class ConnectionFinisher
     {
         return ($this->available)('fastcgi_finish_request')
             || ($this->available)('litespeed_finish_request');
+    }
+
+    /**
+     * Why this host has no detaching rung, in one sentence, or '' when it has
+     * one. Diagnostic only: nothing branches on this string.
+     *
+     * IT READS ITS EVIDENCE INSTEAD OF ASSUMING IT. Two very different hosts
+     * reach the same last rung. One runs a SAPI that never shipped a
+     * finish-request function at all (apache2handler, plain CGI, the CLI
+     * server), where there is nothing for an administrator to turn on. The
+     * other runs a SAPI that does ship one and has had it switched off through
+     * disable_functions, which is a setting somebody can change. Reporting the
+     * second sentence on the first kind of host sends an operator to edit a
+     * list that was never involved, which is the specific mistake this method
+     * exists to stop making.
+     *
+     * So the disable_functions claim is made ONLY when both halves are true:
+     * this SAPI is one that would have shipped the function, AND that exact
+     * name is literally in the parsed list. Otherwise it says the SAPI provides
+     * none, which is the truth on the overwhelming majority of these hosts.
+     *
+     * @return string One sentence, or '' when finish() can detach.
+     */
+    public function detachReason(): string
+    {
+        if ($this->canDetach()) {
+            return '';
+        }
+
+        $sapi     = $this->sapiName();
+        $expected = self::SAPI_FINISH_FUNCTIONS[$sapi] ?? '';
+        $tail     = ' The response is flushed and the worker stays attached to the client until the request ends.';
+
+        if ($expected === '') {
+            return 'The ' . $sapi . ' SAPI provides no finish-request function.' . $tail;
+        }
+
+        if (in_array($expected, $this->disabledFunctions(), true)) {
+            return 'The ' . $sapi . ' SAPI ships ' . $expected
+                . ', but disable_functions on this host names it, so it cannot be called.' . $tail;
+        }
+
+        return 'The ' . $sapi . ' SAPI normally ships ' . $expected
+            . ', but this build does not expose it and disable_functions does not name it.' . $tail;
+    }
+
+    /**
+     * This process's SAPI name, normalised to the bare token shape PHP_SAPI
+     * actually has (letters, digits, dot, dash, underscore), because the
+     * sentence detachReason() builds around it is stored and shipped onward.
+     *
+     * @return string Never empty.
+     */
+    private function sapiName(): string
+    {
+        $name = (string) preg_replace('/[^A-Za-z0-9._-]/', '', (string) ($this->sapi)());
+
+        return $name === '' ? 'unknown' : $name;
+    }
+
+    /**
+     * The disable_functions directive, parsed into lowercase names.
+     *
+     * The directive is a comma-separated list whose spacing is whatever whoever
+     * wrote the ini file used, and PHP function names are case-insensitive, so
+     * both are normalised away before any comparison.
+     *
+     * @return list<string>
+     */
+    private function disabledFunctions(): array
+    {
+        $raw = ($this->iniGet)('disable_functions');
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $names = [];
+        foreach (explode(',', $raw) as $name) {
+            $name = strtolower(trim($name));
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
     }
 
     /**
