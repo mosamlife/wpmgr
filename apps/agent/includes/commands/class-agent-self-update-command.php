@@ -107,17 +107,20 @@ final class AgentSelfUpdateCommand implements CommandInterface
      * @param array<string,mixed> $claims Validated JWT claims (unused; the
      *                                    Router already enforced the aud + cmd
      *                                    binding).
-     * @param array<string,mixed> $params Request parameters; MUST be empty.
+     * @param array<string,mixed> $params Request parameters. This command takes
+     *                                    none, and IGNORES anything that arrives.
      * @return array<string,mixed> See the wire contract in the file header.
      */
     public function execute(array $claims, array $params): array
     {
-        // Body shape: refuse anything beyond an empty object, matching
-        // RefreshInventoryCommand. Future options go behind explicit named
-        // params, not "accept whatever arrives".
-        if ($params !== []) {
-            return $this->answer('error', 'This command takes no parameters.');
-        }
+        // Body shape: this command takes no parameters, so whatever arrives is
+        // ignored rather than rejected. Rejecting an unexpected body buys
+        // nothing here (there is no parameter to misread) and turns a harmless
+        // wire difference into a failed rollout beat, which is not a trade any
+        // fleet-wide command should make. The intent still stands: future
+        // options go behind explicit named params read by key, never "accept
+        // whatever arrives and act on it".
+        unset($params);
 
         // Rule (a): the wp.org distribution build never self-updates.
         if (defined('WPMGR_WPORG_BUILD') && constant('WPMGR_WPORG_BUILD')) {

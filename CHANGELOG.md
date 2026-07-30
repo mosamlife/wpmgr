@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.104] - 2026-07-30
+
+### Fixed
+
+- Starting a fleet agent update failed immediately with "the agent could not arm its self-update: This command takes no parameters", and the rollout halted after its first site. WordPress stores the values that come with a request in separate groups depending on where they came from, and when a value is added that it has not seen before, it puts it in the first of those groups; for a request sent as JSON, that first group is the request body itself. The agent adds the verified details of a signed command to the request after checking it, so those details landed inside what the agent then read back as the body, and a command that expects an empty body saw something in it and refused. This was never visible in manual testing, because a request sent without the JSON content type does not hit this behavior, and only a caller that sets it is affected. The agent no longer mixes its own verified command details into the request body, and the two commands that expect an empty body now ignore anything that arrives rather than refusing.
+- A second command, Refresh inventory on a site, had been failing this way since it shipped and had never actually worked. It returned a success response while doing nothing, and the control plane recorded it as successful because it only checked that the request itself had been delivered, not what the agent said in reply. Refreshing a site's inventory now works, and the control plane reads the agent's answer.
+- Investigating the above turned up a wider gap: the control plane checked only whether a command reached a site, not whether the agent accepted it. A rollback the agent refused was recorded as "rolled back", telling an operator that a site had been restored when it had not; an update dry run was always recorded as successful; and media optimization, restore, and delete-originals jobs would wait forever for a result that was never coming, because a refused command sends no follow-up. All of these now treat a refusal as a failure and keep the agent's own explanation, and where a refusal is genuinely acceptable, that is now stated in the code so the difference is clear. Anyone reviewing past update history should be aware that a task recorded as rolled back may not actually have been, for the reason above.
+
 ## [0.61.103] - 2026-07-30
 
 ### Added

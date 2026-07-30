@@ -340,7 +340,21 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 	if err != nil {
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "dry-run command failed", err.Error())
 	}
+	// A 200 only means the transport worked. resp.OK is the agent's own verdict on
+	// whether it accepted the command at all, and firstResult synthesises an
+	// ItemFailed when the agent sent back no per-item result. Both are failures,
+	// and neither was checked here before: every dry run took the TaskSucceeded
+	// path below, so an agent that had rejected the command outright was still
+	// recorded as a successful "no change".
 	res := firstResult(resp.Results)
+	if !resp.OK {
+		return w.finish(ctx, task, TaskFailed, task.FromVersion, "",
+			"agent rejected the dry-run command", detailOr(res.Log, "agent returned ok=false"))
+	}
+	if res.Status == agentcmd.ItemFailed {
+		return w.finish(ctx, task, TaskFailed, fromOr(res.FromVersion, task.FromVersion), res.ToVersion,
+			"agent reported dry-run failure", res.Log)
+	}
 	detail := "no change"
 	status := TaskSucceeded
 	if res.Status == agentcmd.ItemWouldUpdate {
@@ -359,6 +373,15 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "update command failed", err.Error())
 	}
 	res := firstResult(resp.Results)
+
+	// The agent's own verdict on the command dispatch. An ok=false here means it
+	// never ran the update, so the per-item results below cannot be trusted to
+	// describe what happened on disk; fail the task rather than health-probing a
+	// site that was never touched and then recording it as updated.
+	if !resp.OK {
+		return w.finish(ctx, task, TaskFailed, fromOr(res.FromVersion, task.FromVersion), res.ToVersion,
+			"agent rejected the update command", detailOr(res.Log, "agent returned ok=false"))
+	}
 
 	if res.Status == agentcmd.ItemFailed {
 		return w.finish(ctx, task, TaskFailed, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "agent reported update failure", res.Log)
@@ -665,12 +688,23 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 // ProbeResult to carry it.
 func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, probe agentcmd.ProbeResult, agentConfirmedFatal bool, reason string) error {
 	from := fromOr(res.FromVersion, task.FromVersion)
-	_, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
+	rbResp, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
 		Type:       item.Type,
 		Slug:       item.Slug,
 		SnapshotID: res.SnapshotID,
 		ToVersion:  from,
 	})
+	// A 200 with ok=false is the agent REFUSING the rollback (e.g. the snapshot
+	// is gone or unreadable). The transport succeeded, so rbErr is nil and the
+	// task used to land on the TaskRolledBack line below, telling the operator
+	// the site had been restored when nothing had been restored at all. That is
+	// the most dangerous shape of this bug: the site is still broken and the
+	// record says it was recovered. Report it as a failed rollback instead.
+	if rbErr == nil && !rbResp.OK {
+		return w.finish(ctx, task, TaskFailed, from, res.ToVersion,
+			"rollback REFUSED by agent after unhealthy update: "+reason,
+			detailOr(rbResp.Log, "agent returned ok=false"))
+	}
 	if rbErr != nil {
 		// Rollback itself failed: this is the worst case. Record as failed with
 		// both the health reason and the rollback error so the operator is alerted.

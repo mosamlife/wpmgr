@@ -250,7 +250,7 @@ func (w *EncodeWorker) dispatchApply(ctx context.Context, a model.EncodeArgs, va
 		}
 		variants[i].GetURL = url
 	}
-	_, err = w.apply.MediaApply(ctx, a.SiteID, siteURL, agentcmd.MediaApplyRequest{
+	ack, err := w.apply.MediaApply(ctx, a.SiteID, siteURL, agentcmd.MediaApplyRequest{
 		JobID:          a.JobID,
 		WPAttachmentID: a.WPAttachmentID,
 		TargetFormat:   a.TargetFormat,
@@ -263,7 +263,27 @@ func (w *EncodeWorker) dispatchApply(ctx context.Context, a model.EncodeArgs, va
 		StatusEndpoint: w.cpBaseURL + "/agent/v1/media/job-status",
 		Variants:       variants,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// The agent acks with ok=false when it refuses to apply (on an otherwise
+	// clean 200). Returning nil there would complete the River job while the
+	// media job hangs at "encoded" forever, since the agent will never post the
+	// job-status callback described above. Surface it as an error so the job
+	// retries and the reason is recorded.
+	if !ack.OK {
+		return fmt.Errorf("media_apply rejected by agent: %s", detailOr(ack.Detail, "agent returned ok=false"))
+	}
+	return nil
+}
+
+// detailOr returns primary when it is non-empty, else fallback, so an agent that
+// rejects a command without sending a detail still produces a readable error.
+func detailOr(primary, fallback string) string {
+	if primary != "" {
+		return primary
+	}
+	return fallback
 }
 
 // fetchPresigned mints a presigned GET URL for key and fetches the bytes over

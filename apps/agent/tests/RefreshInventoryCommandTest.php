@@ -48,7 +48,16 @@ final class RefreshInventoryCommandTest extends TestCase
         $this->assertSame('refresh_inventory', $cmd->name());
     }
 
-    public function test_refuses_non_empty_body(): void
+    /**
+     * This command takes no parameters, so an unexpected body is IGNORED, not
+     * rejected. Refusing it only produced a silent no-op: the caller checks the
+     * transport status rather than the ok flag, so a refused refresh looked
+     * exactly like a successful one while refreshing nothing.
+     *
+     * RouterCommandBodyTest covers the wire-level half (what a `{}` body from
+     * the control plane actually becomes by the time it reaches execute()).
+     */
+    public function test_ignores_an_unexpected_body_and_still_does_the_work(): void
     {
         $refreshCalls = 0;
         $pushCalls    = 0;
@@ -64,11 +73,9 @@ final class RefreshInventoryCommandTest extends TestCase
 
         $res = $cmd->execute([], ['unexpected' => true]);
 
-        $this->assertFalse($res['ok']);
-        $this->assertStringContainsString('empty object', $res['detail']);
-        // Body validation runs BEFORE either dependency is touched.
-        $this->assertSame(0, $refreshCalls);
-        $this->assertSame(0, $pushCalls);
+        $this->assertTrue($res['ok']);
+        $this->assertSame(1, $refreshCalls);
+        $this->assertSame(1, $pushCalls);
     }
 
     public function test_success_refreshes_transients_then_pushes_metadata(): void

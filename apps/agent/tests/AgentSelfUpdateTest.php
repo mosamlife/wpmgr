@@ -510,13 +510,26 @@ final class AgentSelfUpdateTest extends TestCase
         $this->assertSame('', $result['to_version']);
     }
 
-    public function test_command_rejects_unexpected_parameters(): void
+    /**
+     * This command takes no parameters, so an unexpected one is IGNORED and
+     * cannot change the answer. It certainly cannot be read as a target
+     * version: the version is whatever the signed manifest says, and a body key
+     * is not a signed input. Rejecting the body instead is what halted a
+     * production rollout wave, so the tolerance is the contract now.
+     */
+    public function test_command_ignores_unexpected_parameters(): void
     {
+        $claims = $this->makeClaims(['version' => $this->targetVersion]);
+        $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
+
         $result = (new AgentSelfUpdateCommand($this->makeChecker()))->execute([], ['version' => '9.9.9']);
 
-        $this->assertSame('error', $result['status']);
-        $this->assertFalse($result['ok']);
-        $this->assertSame([], $this->scheduledEvents);
+        $this->assertSame('scheduled', $result['status']);
+        $this->assertSame(
+            $this->targetVersion,
+            $result['to_version'],
+            'the target version comes from the signed manifest, never from the request body'
+        );
     }
 
     // =========================================================================

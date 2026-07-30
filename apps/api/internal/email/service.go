@@ -390,6 +390,9 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 		// the perf/security pattern for non-fatal agent command failures.
 		return TestSendResult{OK: false, Detail: err.Error()}, nil
 	}
+	// DELIBERATE: the agent's ok=false is carried through as this result's OK,
+	// not raised as an error. Reporting whether the test send worked IS the whole
+	// purpose of this call, and the handler shows OK plus Detail to the operator.
 	return TestSendResult{OK: res.OK, Detail: res.Detail}, nil
 }
 
@@ -839,6 +842,10 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 	if err != nil {
 		return ResendResult{OK: false, Detail: err.Error()}, nil
 	}
+	// DELIBERATE: the agent's ok=false is propagated as this call's OK rather than
+	// raised as an error. Every failure branch above returns the same shape, the
+	// handler renders OK plus Detail to the operator, and BulkResendEmail reports
+	// per-log outcomes from it. Nothing here reports success on a refusal.
 	return ResendResult{OK: res.OK, Detail: res.Detail, MessageID: res.MessageID}, nil
 }
 

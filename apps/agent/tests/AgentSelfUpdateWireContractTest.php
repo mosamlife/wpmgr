@@ -229,24 +229,29 @@ final class AgentSelfUpdateWireContractTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * The command shell's two locally generated answers, exercised for real.
-     * These are the paths that do not need the self-updater, so they run
-     * without a WordPress fixture: a body that carries parameters is an
-     * "error", and a null self-updater is "not_eligible".
+     * The command shell's locally generated answer, exercised for real. This is
+     * the path that does not need the self-updater, so it runs without a
+     * WordPress fixture: a null self-updater is "not_eligible".
+     *
+     * The body is irrelevant to that answer. This command takes no parameters,
+     * so an unexpected one is IGNORED rather than turned into an "error", and
+     * both bodies must produce the identical golden envelope. Rejecting a body
+     * once halted a production rollout wave over a difference the command had
+     * no reason to care about.
      */
     public function test_command_local_paths_answer_only_golden_values(): void
     {
         $command = new AgentSelfUpdateCommand(null);
 
-        $rejected = $command->execute([], ['unexpected' => 1]);
-        $this->assertSame('error', $rejected['status']);
-        $this->assertFalse($rejected['ok'], 'only "error" answers ok=false');
+        $withBody = $command->execute([], ['unexpected' => 1]);
+        $this->assertSame('not_eligible', $withBody['status'], 'an unexpected body is ignored, never an error');
 
         $ineligible = $command->execute([], []);
         $this->assertSame('not_eligible', $ineligible['status']);
         $this->assertTrue($ineligible['ok'], '"not_eligible" is informational, never a failure');
+        $this->assertSame($ineligible, $withBody, 'the body must not change the answer');
 
-        foreach ([$rejected, $ineligible] as $answer) {
+        foreach ([$withBody, $ineligible] as $answer) {
             $this->assertSame(self::RESPONSE_KEYS, array_keys($answer));
             $this->assertContains($answer['status'], self::GOLDEN_STATUSES);
             $this->assertContains($answer['cron_mode'], self::GOLDEN_CRON_MODES);

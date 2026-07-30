@@ -179,6 +179,21 @@ final class Router
             $params = [];
         }
 
+        // Strip the internal claims stash before any command sees the body.
+        //
+        // WP_REST_Request::set_param() does NOT write to a flat array. For a key
+        // WordPress has not already seen it writes into the FIRST bucket of
+        // get_parameter_order(), and on a request whose Content-Type is
+        // application/json that first bucket is 'JSON' itself. authorizeCommand()
+        // above stashes the verified claims with set_param(), so on every real
+        // control-plane call (POST, Content-Type: application/json) the claims
+        // land INSIDE the JSON bucket and come straight back out of
+        // get_json_params(). Commands would then receive a wpmgr_claims key the
+        // control plane never sent, which is exactly what made a `{}` body look
+        // like a non-empty one. Commands must only ever see what was actually
+        // transmitted.
+        unset($params[self::ATTR_CLAIMS]);
+
         return $this->dispatch($name, $claims, $params);
     }
 
