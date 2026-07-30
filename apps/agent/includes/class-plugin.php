@@ -1001,6 +1001,34 @@ final class Plugin
             // upgrade work starts, and nothing here schedules a follow-up.
             add_action(UpdateChecker::HOOK_APPLY, [$this->updateChecker, 'applyStagedSelfUpdate'], 10, 1);
 
+            // BEAT 2, SECOND ENTRY POINT: the WP-Cron-INDEPENDENT backstop.
+            // The cron event above used to be the only way beat 2 ever ran, so
+            // a single site whose loopback cron is blocked, whose
+            // wp_schedule_single_event was short-circuited by another plugin,
+            // or that simply never gets a tick, staged an update that nothing
+            // was left to apply. It then sat at "scheduled" until the control
+            // plane's confirm window ran out, on a site that was otherwise
+            // perfectly healthy and answering every request it was sent.
+            //
+            // This is the same treatment GitHub issues #226 and #232 already
+            // gave the snapshot reclaim and the stalled-backup reaper, and for
+            // the same reason: every request the agent serves (including the
+            // control plane's own heartbeat and uptime hits) is a far more
+            // reliable clock than WP-Cron. maybeApplyStagedSelfUpdate() is
+            // gated on a staged record actually existing, which on essentially
+            // every request of essentially every site is false, and the record
+            // is autoloaded so that gate costs no query while one is live.
+            //
+            // BEAT 2 STILL RUNS IN A DIFFERENT REQUEST FROM THE ARM, and that
+            // isolation is the whole reason the three-beat design exists: the
+            // swap must not happen inside the request that has to report the
+            // outcome. plugins_loaded is what preserves it. On the ARM's own
+            // request this hook fires during the plugin-loading phase, long
+            // before the REST callback that writes the staged record runs, so
+            // the gate correctly finds nothing and arms nothing. Only a LATER
+            // request can see the record.
+            add_action('plugins_loaded', [$this, 'maybeApplyStagedSelfUpdate']);
+
             // BEAT 3 (CONFIRM): the only trustworthy success signal is the NEW
             // code phoning home, so the freshly-installed build pushes metadata
             // once on its first boot rather than waiting up to 30 minutes for
@@ -1842,6 +1870,91 @@ final class Plugin
         add_action('shutdown', [$this, 'pushVersionChangedMetadata'], 9998);
 
         return true;
+    }
+
+    /**
+     * BEAT 2 (APPLY), the WP-Cron-independent entry point. See registerHooks()'s
+     * binding comment for the root cause this closes and for why plugins_loaded
+     * is the hook that keeps the arm's own request from ever applying.
+     *
+     * Mirrors maybeGcSnapshots() / maybeSweepStalledBackups() in shape:
+     *   - Gated on isEnrolled(): a site with no control plane is never told to
+     *     update itself, so it can never have a staged record.
+     *   - Gated on a staged record EXISTING, which is the cheap part. There is
+     *     no separate throttle option because the record IS the throttle: it is
+     *     claimed atomically and deleted by the first caller that applies it, so
+     *     the work runs at most once per stage no matter how many requests see
+     *     it. That is a stronger guarantee than a time window, and it needs no
+     *     second option to maintain.
+     *   - Wrapped in try/catch: an update that cannot be applied right now must
+     *     never break the request that happened to notice it.
+     *
+     * THE APPLY IS DEFERRED TO 'shutdown', WHICH IS NOT OPTIONAL. Unlike every
+     * other plugins_loaded backstop in this class, the work here downloads a
+     * package and then overwrites the agent's own directory. Running that inline
+     * at plugins_loaded would replace this plugin's files while WordPress is
+     * still only part-way through booting the very request executing them, so
+     * anything autoloaded later in that request could come from the new build
+     * while the loaded classes came from the old one. At shutdown the request's
+     * own work is finished and nothing is left to mix. The response is released
+     * first through the SAPI-aware ConnectionFinisher (fastcgi on PHP-FPM,
+     * litespeed_finish_request on OpenLiteSpeed, portable flush elsewhere), so
+     * whoever made the request is never held open for the upgrade.
+     *
+     * @return bool True when this call armed the apply. Returned for
+     *              testability; WordPress ignores an action callback's return.
+     */
+    public function maybeApplyStagedSelfUpdate(): bool
+    {
+        if ($this->updateChecker === null) {
+            return false;
+        }
+        if (!function_exists('add_action')) {
+            return false;
+        }
+        if (!$this->settings->isEnrolled()) {
+            return false;
+        }
+
+        try {
+            if (!$this->updateChecker->hasStagedSelfUpdate()) {
+                return false;
+            }
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        add_action('shutdown', [$this, 'applyStagedSelfUpdateOnShutdown'], 9997);
+
+        return true;
+    }
+
+    /**
+     * Shutdown callback for the request-bound apply beat.
+     *
+     * Public so WordPress can call it as a named hook callback. Swallows every
+     * failure: the staged record is claimed before any upgrade work starts, so
+     * a throw here is already recorded as an outcome by the self-updater and
+     * must never disturb the request it rides on.
+     *
+     * Passes NO stage token on purpose. The token exists so a STALE cron event
+     * cannot consume a newer stage; this entry point is not an event and cannot
+     * be stale, so it applies whatever is staged right now.
+     *
+     * @return void
+     */
+    public function applyStagedSelfUpdateOnShutdown(): void
+    {
+        if ($this->updateChecker === null) {
+            return;
+        }
+
+        try {
+            (new ConnectionFinisher())->finish();
+            $this->updateChecker->applyStagedSelfUpdate('');
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Agent: request-bound self-update apply failed: ' . $e->getMessage());
+        }
     }
 
     /**

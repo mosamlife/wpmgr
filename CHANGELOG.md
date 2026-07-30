@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.106] - 2026-07-30
+
+### Fixed
+
+- A fleet agent update could report that a site had accepted the job, then nothing would happen, and the run would report twenty minutes later that it could not be confirmed. The agent asks WordPress to schedule the actual work for a moment later, in a separate request, and WordPress can decline that request, for example when another plugin on the site blocks scheduling. The agent was not checking whether the request was accepted, so it told WPMgr the work was scheduled whether or not it actually was. The agent now checks, and reports a clear error immediately if the work could not be scheduled, instead of leaving the rollout waiting for a confirmation that was never coming.
+- The step that downloads and installs a new agent version ran only from WordPress's own scheduled task system. On a site where that system is blocked, unreliable, or simply never triggered, the update would never be applied, even though everything else about the site worked normally. WPMgr's other background work was made independent of that scheduler some releases ago for exactly this reason; this one step had not been. It now works the same way: it runs on an ordinary page request whenever an update is waiting, so a site with a blocked scheduler updates normally. The install itself still happens in a separate request from the one that starts it, which is deliberate, since the agent cannot safely replace its own files during the same request that has to report the result.
+- Two of the situations where the install step decides not to proceed used to leave no record at all, so an operator could see only that nothing had happened. Every outcome is now recorded and reported back, so the dashboard can say why. The agent also now guarantees only one install can run at a time, even if two requests start at once.
+
 ## [0.61.105] - 2026-07-30
 
 ### Fixed

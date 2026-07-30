@@ -88,6 +88,23 @@ final class AgentSelfUpdateTest extends TestCase
     /** Set true to make the site look un-enrolled. */
     public bool $forceUnenrolled = false;
 
+    /**
+     * What the wp_schedule_single_event stub answers. false is exactly what
+     * WordPress returns when another plugin short-circuits pre_schedule_event,
+     * when a schedule_event filter returns something falsy, and for a duplicate
+     * single event scheduled within ten minutes of an identical one.
+     *
+     * @var mixed
+     */
+    public $scheduleReturn = true;
+
+    /**
+     * When true the delete_option stub leaves OPTION_STAGED in place. Used only
+     * by the concurrency test, to model two entry points that both READ the
+     * record before either one's claim lands.
+     */
+    public bool $pinStagedRecord = false;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -108,6 +125,9 @@ final class AgentSelfUpdateTest extends TestCase
         $this->scheduledEvents = [];
         $this->httpCalls       = [];
         $this->forceUnenrolled = false;
+        $this->scheduleReturn  = true;
+        $this->pinStagedRecord = false;
+        unset($GLOBALS['wpdb']);
 
         Functions\when('get_option')->alias(function (string $name, $default = false) {
             return $this->options[$name] ?? $default;
@@ -117,6 +137,9 @@ final class AgentSelfUpdateTest extends TestCase
             return true;
         });
         Functions\when('delete_option')->alias(function (string $name) {
+            if ($this->pinStagedRecord && $name === UpdateChecker::OPTION_STAGED) {
+                return true;
+            }
             unset($this->options[$name]);
             return true;
         });
@@ -143,7 +166,7 @@ final class AgentSelfUpdateTest extends TestCase
         Functions\when('wp_schedule_single_event')->alias(
             function (int $timestamp, string $hook, array $args = []) {
                 $this->scheduledEvents[] = ['hook' => $hook, 'args' => $args, 'timestamp' => $timestamp];
-                return true;
+                return $this->scheduleReturn;
             }
         );
 
@@ -212,6 +235,7 @@ final class AgentSelfUpdateTest extends TestCase
 
     protected function tear_down(): void
     {
+        unset($GLOBALS['wpdb']);
         if ($this->keyFile !== '' && is_file($this->keyFile)) {
             @unlink($this->keyFile); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture cleanup
         }
@@ -347,6 +371,57 @@ final class AgentSelfUpdateTest extends TestCase
         return new UpdateChecker($this->signer, $this->settings, $this->keystore, $this->replayCache);
     }
 
+    /**
+     * Install a $wpdb double that answers the compare-and-delete claim the way
+     * a real database does under contention: the first DELETE removes the row
+     * and reports one affected row, every later one reports none.
+     *
+     * @return object The double, so a test can read deleteAttempts back.
+     */
+    private function installRacingWpdb(): object
+    {
+        $fake = new class {
+            /** Options table name, the only wpdb property the claim reads. */
+            public string $options = 'wp_options';
+
+            /** How many claim statements were issued. */
+            public int $deleteAttempts = 0;
+
+            /** @var list<int> Rows affected, in order, per DELETE. */
+            public array $answers = [1, 0];
+
+            /**
+             * @param string $query    SQL with placeholders.
+             * @param mixed  ...$args  Bound values.
+             * @return string
+             */
+            public function prepare(string $query, ...$args): string
+            {
+                foreach ($args as $arg) {
+                    $query = (string) preg_replace('/%[sdi]/', (string) $arg, $query, 1);
+                }
+
+                return $query;
+            }
+
+            /**
+             * @param string $sql Prepared statement.
+             * @return int Rows affected.
+             */
+            public function query(string $sql): int
+            {
+                $this->deleteAttempts++;
+                $next = array_shift($this->answers);
+
+                return $next === null ? 0 : (int) $next;
+            }
+        };
+
+        $GLOBALS['wpdb'] = $fake;
+
+        return $fake;
+    }
+
     // =========================================================================
     // BEAT 1 (ARM)
     // =========================================================================
@@ -461,6 +536,75 @@ final class AgentSelfUpdateTest extends TestCase
     }
 
     /**
+     * THE ARM MUST NOT REPORT A SUCCESS IT DID NOT VERIFY.
+     *
+     * wp_schedule_single_event answers false when another plugin short-circuits
+     * pre_schedule_event, when a schedule_event filter returns something falsy,
+     * and for a duplicate single event scheduled within ten minutes of an
+     * identical one. Its return value used to be discarded, so beat 1 answered
+     * "scheduled" in every one of those cases and the control plane then sat out
+     * its entire twenty-minute confirm window waiting for a cron beat that had
+     * never been created. A site can be perfectly healthy and answering every
+     * request while this happens, which is what made it unreadable from outside.
+     *
+     * The stage is deliberately KEPT. The apply no longer depends on the cron
+     * event: the request-bound backstop applies this very record on the next
+     * request the site serves. Rolling it back would trade a diagnosable failure
+     * for a fleet that can never update itself while the offending filter is
+     * installed.
+     *
+     * Fails against the pre-fix code: the answer is "scheduled".
+     */
+    public function test_stage_answers_error_when_the_apply_event_cannot_be_scheduled(): void
+    {
+        $this->scheduleReturn = false;
+
+        $claims = $this->makeClaims(['version' => $this->targetVersion]);
+        $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
+
+        $answer = $this->makeChecker()->stageSelfUpdate();
+
+        $this->assertSame(
+            'error',
+            $answer['status'],
+            'an event WordPress refused to schedule must never be reported as scheduled'
+        );
+        $this->assertFalse($answer['ok'], 'the control plane has to be able to fail this task immediately');
+        $this->assertStringContainsString(
+            'wp_schedule_single_event',
+            $answer['detail'],
+            'the detail is the whole diagnostic value of an error answer, so it must name what failed'
+        );
+        $this->assertSame('', $answer['to_version'], 'only scheduled/already_scheduled carry a target version');
+
+        $this->assertIsArray(
+            $this->options[UpdateChecker::OPTION_STAGED] ?? null,
+            'the stage is kept so the request-bound backstop can still apply it'
+        );
+    }
+
+    /**
+     * The same arm, re-run. The kept record is what makes the retry meaningful:
+     * it answers already_scheduled, which the control plane treats as armed and
+     * confirms through beat 3 once the backstop has applied it.
+     */
+    public function test_a_retry_after_a_scheduling_failure_answers_already_scheduled(): void
+    {
+        $this->scheduleReturn = false;
+
+        $claims = $this->makeClaims(['version' => $this->targetVersion]);
+        $this->stubManifestEndpoint(200, (string) json_encode($this->signClaims($claims)));
+
+        $checker = $this->makeChecker();
+        $this->assertSame('error', $checker->stageSelfUpdate()['status']);
+
+        $second = $checker->stageSelfUpdate();
+        $this->assertSame('already_scheduled', $second['status']);
+        $this->assertSame($this->targetVersion, $second['to_version']);
+        $this->assertGreaterThan(time(), $second['expires_at']);
+    }
+
+    /**
      * An un-enrolled site has no control plane to obey.
      */
     public function test_stage_is_not_eligible_when_the_site_is_not_enrolled(): void
@@ -537,14 +681,52 @@ final class AgentSelfUpdateTest extends TestCase
     // =========================================================================
 
     /**
-     * No staged record is the normal state on every site: the apply beat is a
-     * silent no-op and records no outcome.
+     * NO EXIT OF THE APPLY BEAT MAY BE SILENT.
+     *
+     * This path used to return without a trace, and the recorded result is the
+     * ONLY channel beat 2 has back to the control plane. "The apply beat ran and
+     * found nothing staged" and "the apply beat never ran at all" are the two
+     * things an operator most needs told apart, and from the control plane they
+     * looked identical: both were a confirm timeout and total silence.
+     *
+     * Fails against the pre-fix code: nothing is recorded.
      */
-    public function test_apply_is_a_silent_no_op_without_a_staged_record(): void
+    public function test_apply_records_an_outcome_when_there_is_no_staged_record(): void
     {
         $this->makeChecker()->applyStagedSelfUpdate('some-token');
 
-        $this->assertArrayNotHasKey(AgentSelfUpdateCommand::OPTION_RESULT, $this->options);
+        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
+        $this->assertIsArray($result, 'a beat that ran and found nothing must still say so');
+        $this->assertSame('not_staged', $result['status']);
+        $this->assertNotSame('', (string) $result['detail']);
+    }
+
+    /**
+     * A diagnostic exit must NEVER clobber a real outcome. Both entry points run
+     * in the same wp-cron request whenever a tick also carries the due apply
+     * event: the winner applies, and the loser then finds nothing staged. If
+     * that loser overwrote the winner's record, the control plane would be told
+     * the exact opposite of what happened.
+     */
+    public function test_a_diagnostic_exit_never_overwrites_a_recorded_outcome(): void
+    {
+        $applied = [
+            'status'       => 'applied',
+            'from_version' => '0.10.5',
+            'to_version'   => $this->targetVersion,
+            'detail'       => '',
+            'at'           => time(),
+        ];
+        $this->options[AgentSelfUpdateCommand::OPTION_RESULT] = $applied;
+
+        // The second entry point of the same request, finding the record gone.
+        $this->makeChecker()->applyStagedSelfUpdate('some-token');
+
+        $this->assertSame(
+            $applied,
+            $this->options[AgentSelfUpdateCommand::OPTION_RESULT],
+            'the apply that actually happened owns the record'
+        );
     }
 
     /**
@@ -718,7 +900,10 @@ final class AgentSelfUpdateTest extends TestCase
 
     /**
      * A stale duplicate event from an earlier stage must not consume the record
-     * belonging to the CURRENT stage.
+     * belonging to the CURRENT stage. It must also not vanish without trace:
+     * this was the second of the two silent exits.
+     *
+     * Fails against the pre-fix code: nothing is recorded.
      */
     public function test_apply_ignores_an_event_whose_token_does_not_match_the_record(): void
     {
@@ -734,7 +919,150 @@ final class AgentSelfUpdateTest extends TestCase
         $this->makeChecker()->applyStagedSelfUpdate('token-from-an-earlier-stage');
 
         $this->assertSame($record, $this->options[UpdateChecker::OPTION_STAGED]);
-        $this->assertArrayNotHasKey(AgentSelfUpdateCommand::OPTION_RESULT, $this->options);
+
+        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
+        $this->assertIsArray($result, 'an ignored stale event must still leave a trace');
+        $this->assertSame('token_mismatch', $result['status']);
+        $this->assertSame($this->targetVersion, $result['to_version']);
+    }
+
+    // =========================================================================
+    // BEAT 2: the two entry points must never both apply
+    // =========================================================================
+
+    /**
+     * THE CLAIM HAS TO BE ATOMIC, NOT A READ FOLLOWED BY A DELETE.
+     *
+     * The cron event and the request-bound plugins_loaded backstop both land in
+     * applyStagedSelfUpdate. A read-then-delete_option pair lets two requests
+     * that both read the record before either delete lands BOTH run
+     * Plugin_Upgrader over the agent's own directory, which is exactly the
+     * outcome the three-beat design exists to prevent. That window was narrow
+     * while cron was the only way in; with a backstop on every request of a
+     * chatty site it is not narrow at all.
+     *
+     * The race is modelled honestly: the option store keeps handing the record
+     * out (both callers read before either claim landed) and only the single
+     * DELETE statement arbitrates, which is what the database guarantees.
+     *
+     * Fails against the pre-fix code: no claim statement is issued at all
+     * (deleteAttempts is 0) and BOTH callers proceed to raise the execution
+     * limit, so two applies are underway.
+     */
+    public function test_two_entry_points_cannot_both_apply_the_same_staged_record(): void
+    {
+        /** @var list<int> $limits */
+        $limits = [];
+        Functions\when('set_time_limit')->alias(function (int $seconds) use (&$limits): bool {
+            $limits[] = $seconds;
+
+            return true;
+        });
+
+        $wpdb = $this->installRacingWpdb();
+        $this->pinStagedRecord = true;
+
+        $this->options[UpdateChecker::OPTION_STAGED] = [
+            'from_version' => '0.10.5',
+            'to_version'   => $this->targetVersion,
+            'staged_at'    => time(),
+            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
+            'token'        => 'live-token',
+        ];
+
+        $checker = $this->makeChecker();
+        $checker->applyStagedSelfUpdate('live-token'); // the cron event
+        $checker->applyStagedSelfUpdate('');           // the request-bound backstop
+
+        $this->assertSame(
+            2,
+            $wpdb->deleteAttempts,
+            'both entry points must attempt the claim; the database decides which one owns it'
+        );
+        $this->assertCount(
+            1,
+            $limits,
+            'exactly one caller may get past the claim, so exactly one apply is ever underway'
+        );
+
+        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
+        $this->assertIsArray($result);
+        $this->assertSame(
+            'failed',
+            $result['status'],
+            'the winner owns the outcome; the loser records a diagnostic that must not overwrite it'
+        );
+    }
+
+    /**
+     * The other overlap the record claim cannot see: a control plane that arms a
+     * SECOND update while the first is still copying files stages a second
+     * record, and the backstop would otherwise claim it on the very next
+     * request. The stage is LEFT IN PLACE so the next request applies it once
+     * the running apply is done.
+     */
+    public function test_apply_defers_to_an_apply_that_is_already_running(): void
+    {
+        // Written by the request that won the claim. Named by literal because
+        // the constant is private; it is asserted here so a rename cannot
+        // silently disable this guard.
+        $this->options['wpmgr_agent_self_update_applying'] = time();
+
+        $record = [
+            'from_version' => '0.10.5',
+            'to_version'   => $this->targetVersion,
+            'staged_at'    => time(),
+            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
+            'token'        => 'live-token',
+        ];
+        $this->options[UpdateChecker::OPTION_STAGED] = $record;
+
+        $this->makeChecker()->applyStagedSelfUpdate('live-token');
+
+        $this->assertSame(
+            $record,
+            $this->options[UpdateChecker::OPTION_STAGED] ?? null,
+            'a busy site must keep its stage so the next request can apply it'
+        );
+
+        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
+        $this->assertIsArray($result);
+        $this->assertSame('apply_in_progress', $result['status']);
+    }
+
+    /**
+     * A hard-killed apply leaves its marker behind. It must not block this
+     * site's updates forever: a marker older than the ceiling the apply itself
+     * runs under belongs to a request that can no longer be alive.
+     */
+    public function test_a_stale_in_flight_marker_does_not_block_the_next_apply(): void
+    {
+        $this->options['wpmgr_agent_self_update_applying'] = time() - 901;
+
+        $this->options[UpdateChecker::OPTION_STAGED] = [
+            'from_version' => '0.10.5',
+            'to_version'   => $this->targetVersion,
+            'staged_at'    => time(),
+            'expires_at'   => time() + UpdateChecker::STAGED_TTL_SECONDS,
+            'token'        => 'live-token',
+        ];
+
+        $this->makeChecker()->applyStagedSelfUpdate('live-token');
+
+        $this->assertArrayNotHasKey(
+            UpdateChecker::OPTION_STAGED,
+            $this->options,
+            'the stale marker must be ignored and the record claimed'
+        );
+        $result = $this->options[AgentSelfUpdateCommand::OPTION_RESULT] ?? null;
+        $this->assertIsArray($result);
+        $this->assertSame('failed', $result['status'], 'the apply ran (and failed for want of an upgrader)');
+
+        $this->assertArrayNotHasKey(
+            'wpmgr_agent_self_update_applying',
+            $this->options,
+            'the marker is released on every terminal path, including a failed one'
+        );
     }
 
     /**

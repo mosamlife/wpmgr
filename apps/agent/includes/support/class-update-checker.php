@@ -124,11 +124,43 @@ final class UpdateChecker
 
     /**
      * wp-option holding the single staged self-update record written by beat 1
-     * (ARM). Non-autoloaded: read only by the apply cron. Shape:
+     * (ARM). Shape:
      *   ['from_version'=>string,'to_version'=>string,'staged_at'=>int,
      *    'expires_at'=>int,'token'=>string]
+     *
+     * AUTOLOADED on purpose, which is a change from the original cron-only
+     * design. Beat 2 is no longer reachable only through the cron event: Plugin
+     * binds a request-bound backstop on plugins_loaded whose ENTIRE gate is
+     * "does this record exist", so while a record is live it is read on every
+     * request the site serves. An autoloaded row rides the alloptions read
+     * WordPress already performs on every boot, so the gate costs no extra query
+     * in the one window where it is read often. The record is deleted the moment
+     * it is claimed, so it exists for minutes in the whole life of a site.
      */
     public const OPTION_STAGED = 'wpmgr_agent_self_update_staged';
+
+    /**
+     * wp-option marking an apply that is CURRENTLY RUNNING: a unix timestamp
+     * written by the request that won the claim, deleted when that apply reaches
+     * any terminal path.
+     *
+     * The atomic claim of OPTION_STAGED (claimStagedRecord) already guarantees
+     * that exactly one caller ever applies a GIVEN staged record, which is what
+     * keeps the cron event and the request-bound backstop from both applying the
+     * same stage. This marker covers the other overlap, the one the backstop
+     * newly widens: a control plane that arms a SECOND update while the first is
+     * still copying files stages a second record, and the backstop would claim
+     * it on the very next request. Two Plugin_Upgrader runs over the agent's own
+     * directory at once is precisely the outcome the three-beat design exists to
+     * prevent.
+     *
+     * Read only on the rare request that has ALREADY found a staged record, so
+     * it is deliberately not autoloaded. Stale-safe: a marker older than
+     * LongRunningJob::TIME_LIMIT_SECONDS is ignored, the same bound the apply
+     * itself runs under, so a hard-killed apply cannot block the next one for
+     * longer than it could legitimately have run.
+     */
+    private const OPTION_APPLYING = 'wpmgr_agent_self_update_applying';
 
     /**
      * Seconds a staged record stays claimable. Beat 2 discards (never retries)
@@ -1180,10 +1212,11 @@ final class UpdateChecker
     // request:
     //   1. ARM    (stageSelfUpdate, inside the signed command request):
     //             verify only. Nothing on disk moves.
-    //   2. APPLY  (applyStagedSelfUpdate, the cron request): a SEPARATE
-    //             WordPress bootstrap runs Plugin_Upgrader::upgrade(). No CP
-    //             response rides on this request, so a mid-copy death is not a
-    //             lost answer.
+    //   2. APPLY  (applyStagedSelfUpdate): a SEPARATE WordPress bootstrap runs
+    //             Plugin_Upgrader::upgrade(). No CP response rides on that
+    //             request, so a mid-copy death is not a lost answer. Reached
+    //             from the cron event AND from a request-bound plugins_loaded
+    //             backstop, so a site whose WP-Cron never fires still applies.
     //   3. CONFIRM: the only trustworthy success signal is the NEW code
     //             phoning home: the version-changed boot metadata push in
     //             Plugin. A "scheduled" acknowledgement is NEVER success.
@@ -1279,7 +1312,7 @@ final class UpdateChecker
             'expires_at'   => $now + self::STAGED_TTL_SECONDS,
             'token'        => $token,
         ];
-        update_option(self::OPTION_STAGED, $record, false);
+        update_option(self::OPTION_STAGED, $record, true);
 
         // Drop any previous outcome so a stale 'failed' from an earlier run can
         // never be read back as the result of THIS one.
@@ -1291,10 +1324,45 @@ final class UpdateChecker
         // stage a distinct event (WP silently drops a duplicate single event
         // scheduled within 10 minutes of an identical one), and it lets beat 2
         // ignore a stale event left over from an earlier stage.
-        wp_schedule_single_event($now, self::HOOK_APPLY, [$token]);
+        $scheduled = wp_schedule_single_event($now, self::HOOK_APPLY, [$token]);
 
         if (function_exists('spawn_cron')) {
             @spawn_cron(); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- spawn_cron may emit a harmless notice when DISABLE_WP_CRON is set; @-suppressed intentionally
+        }
+
+        // THIS RETURN VALUE USED TO BE DISCARDED, AND THAT WAS THE DEFECT.
+        // wp_schedule_single_event answers false whenever another plugin
+        // short-circuits the pre_schedule_event filter, whenever a schedule_event
+        // filter returns something falsy, and for a duplicate single event
+        // scheduled within ten minutes of an identical one. Beat 1 reported
+        // "scheduled" in every one of those cases, so the control plane armed a
+        // confirmation poll and then sat out its entire confirm window waiting
+        // for a cron beat that had never been created. A site can be perfectly
+        // healthy and chatty while this happens, which is what made it so hard
+        // to read from the outside.
+        //
+        // The staged record is deliberately KEPT here rather than rolled back.
+        // The apply no longer depends on the cron event at all: Plugin's
+        // request-bound plugins_loaded backstop applies the very same record on
+        // the next request this site serves, which on any site the control plane
+        // can reach is seconds away. Deleting the record would throw that
+        // recovery away and leave a fleet permanently unable to update itself
+        // for as long as the offending filter is installed. The answer is still
+        // "error" because the arm genuinely failed to do the thing it tried to
+        // do, and an immediate, named failure is worth far more to an operator
+        // than a twenty-minute silence. A re-run then answers already_scheduled
+        // (record still live) or up_to_date (backstop already applied it), and
+        // both of those resolve correctly at the control plane.
+        if ($scheduled === false || (function_exists('is_wp_error') && is_wp_error($scheduled))) {
+            return $this->stageAnswer(
+                'error',
+                $onDisk,
+                '',
+                'WordPress refused to schedule the apply event, so no cron beat exists for this stage '
+                . '(a plugin or filter on this site is blocking wp_schedule_single_event). The stage was '
+                . 'kept and the agent applies it from its own request-bound backstop instead; re-run this '
+                . 'command to pick up the outcome.'
+            );
         }
 
         $answer = $this->stageAnswer('scheduled', $onDisk, $toVersion, 'Self-update staged; apply runs in a separate request.');
@@ -1304,48 +1372,162 @@ final class UpdateChecker
     }
 
     /**
-     * BEAT 2 (APPLY). Runs in the wp-cron request, a SEPARATE WordPress
-     * bootstrap from the one that answered the CP. No CP response rides on this
-     * request, so a death mid-copy is not a lost answer.
+     * True when a staged self-update record is present. This is the WHOLE gate
+     * for Plugin's request-bound plugins_loaded backstop, and it is why that
+     * backstop is close to free: on the overwhelmingly common boot there is no
+     * record, and OPTION_STAGED is autoloaded so a live one costs no query at
+     * all.
      *
-     * Single-shot by construction: the staged record is CLAIMED (deleted)
-     * before any upgrade work begins, so a request that dies partway can never
-     * be retried by a later cron tick. An expired record is discarded, not
-     * retried. Nothing here schedules a follow-up event.
+     * Deliberately does NOT apply the expiry. An expired record still needs an
+     * apply beat to run so that beat can DISCARD it and record 'expired', which
+     * is the only way that outcome ever reaches the control plane.
+     *
+     * @return bool
+     */
+    public function hasStagedSelfUpdate(): bool
+    {
+        if (defined('WPMGR_WPORG_BUILD') && constant('WPMGR_WPORG_BUILD')) {
+            return false;
+        }
+
+        return $this->readStagedRecord() !== null;
+    }
+
+    /**
+     * BEAT 2 (APPLY). Runs in a SEPARATE WordPress bootstrap from the one that
+     * answered the control plane. No CP response rides on this request, so a
+     * death mid-copy is not a lost answer.
+     *
+     * TWO ENTRY POINTS, ONE APPLY. The cron event (HOOK_APPLY) was originally
+     * the only one, and a single blocked or never-firing WP-Cron therefore
+     * stranded the whole update with nothing left to retry it. Plugin now ALSO
+     * binds a request-bound backstop on plugins_loaded, the same WP-Cron-
+     * independence treatment GitHub issues #226 and #232 already applied to the
+     * snapshot reclaim and the stalled-backup reaper. Both entry points land
+     * here, and the claim below is what keeps them from ever both applying.
+     *
+     * THE REQUEST-ISOLATION INVARIANT IS PRESERVED, AND IT IS LOAD-BEARING. The
+     * swap must never happen inside the request that has to report the outcome.
+     * The backstop's gate runs on plugins_loaded, which on the arm's own request
+     * fires long BEFORE the REST callback writes the staged record, so the arm
+     * request finds nothing and arms nothing. Every apply therefore still
+     * happens in a later request than the arm.
+     *
+     * Single-shot by construction: the staged record is CLAIMED before any
+     * upgrade work begins, with a single atomic statement rather than a
+     * read-then-delete, so two racing requests cannot both proceed. A request
+     * that dies partway can never be retried. An expired record is discarded,
+     * not retried. Nothing here schedules a follow-up event.
      *
      * Reuses the existing upgrader_pre_download / upgrader_source_selection
      * chain unchanged; there is zero new download, verification or unzip code
      * on this path.
      *
-     * @param string $token Stage token carried in the cron event args.
+     * EVERY EXIT LEAVES A TRACE. Two of these paths used to return in total
+     * silence, and because the recorded result is the only channel beat 2 has
+     * back to the control plane, a stuck site was indistinguishable from a site
+     * that had never been asked. A silent early return on a path whose entire
+     * job is to report back is the same defect class as an arm reporting a
+     * success it never verified.
+     *
+     * @param string $token Stage token carried in the cron event args. Empty
+     *                      from the request-bound backstop, which is not an
+     *                      event and therefore cannot be a STALE event.
      * @return void
      */
     public function applyStagedSelfUpdate(string $token = ''): void
     {
         if (defined('WPMGR_WPORG_BUILD') && constant('WPMGR_WPORG_BUILD')) {
+            // Unreachable by construction (the wp.org build does not ship this
+            // file at all), recorded anyway so no exit on this method is silent.
+            $this->recordDiagnosticExit('not_eligible', '', '', 'Self-update is not part of this distribution build.');
             return;
         }
         if (!function_exists('get_option') || !function_exists('delete_option')) {
+            // recordDiagnosticExit needs the very option API that is missing, so
+            // it will no-op. Called regardless so this exit is not special-cased
+            // into silence if the guard is ever relaxed.
+            $this->recordDiagnosticExit('no_option_api', '', '', 'WordPress option API unavailable in the apply request.');
             return;
         }
 
         $record = $this->readStagedRecord();
         if ($record === null) {
-            // Nothing staged (or already claimed by an earlier tick). Silent
-            // no-op; this is the normal state on every site.
+            // Nothing staged, or already claimed by the other entry point. Both
+            // are ordinary, and both used to be invisible. Recorded (once, see
+            // recordDiagnosticExit) so an operator can tell "the apply beat ran
+            // and found nothing" apart from "the apply beat never ran", which
+            // from the control plane look identical.
+            $this->recordDiagnosticExit(
+                'not_staged',
+                $this->onDiskVersion(),
+                '',
+                'An apply beat ran with no staged record to apply.'
+            );
             return;
         }
 
         $recordToken = (string) $record['token'];
         if ($token !== '' && $recordToken !== '' && !hash_equals($recordToken, $token)) {
             // A stale duplicate event from an earlier stage. Leave the current
-            // record alone so its own event can still claim it.
+            // record alone so its own event, or the request-bound backstop, can
+            // still claim it.
+            $this->recordDiagnosticExit(
+                'token_mismatch',
+                (string) $record['from_version'],
+                (string) $record['to_version'],
+                'A stale apply event was ignored; its token does not match the live staged record.'
+            );
             return;
         }
 
-        // CLAIM. Everything below runs at most once per staged record.
-        delete_option(self::OPTION_STAGED);
+        // An apply that is ALREADY RUNNING owns the plugin directory. Checked
+        // BEFORE the claim on purpose: bailing out here must leave the record
+        // staged, so the next request applies it once the running one is done.
+        // Only the claim WINNER takes ownership of the marker (below), so a
+        // request that loses the claim can never clear a marker it does not own.
+        if ($this->applyInProgress()) {
+            $this->recordDiagnosticExit(
+                'apply_in_progress',
+                (string) $record['from_version'],
+                (string) $record['to_version'],
+                'Another apply beat is already running; the stage was left in place for it.'
+            );
+            return;
+        }
 
+        // CLAIM, atomically. Everything below runs at most once per staged
+        // record, however many requests reach this line at the same moment.
+        if (!$this->claimStagedRecord()) {
+            $this->recordDiagnosticExit(
+                'claim_lost',
+                (string) $record['from_version'],
+                (string) $record['to_version'],
+                'Another request claimed this staged record first.'
+            );
+            return;
+        }
+
+        $this->beginApply();
+
+        try {
+            $this->applyClaimedRecord($record);
+        } finally {
+            $this->endApply();
+        }
+    }
+
+    /**
+     * The apply itself, once this caller is the confirmed sole owner of the
+     * staged record AND of the in-flight marker. Split out so the claim/discard
+     * state machine above reads as one, and so the marker is released on every
+     * path through a single finally.
+     *
+     * @param array{from_version:string,to_version:string,staged_at:int,expires_at:int,token:string} $record Claimed record.
+     * @return void
+     */
+    private function applyClaimedRecord(array $record): void
+    {
         $from      = (string) $record['from_version'];
         $to        = (string) $record['to_version'];
         $expiresAt = (int) $record['expires_at'];
@@ -1369,8 +1551,9 @@ final class UpdateChecker
         // wp-cron request whose PHP max_execution_time is 30s on a great many
         // hosts. Without this the download is killed by PHP long before the HTTP
         // client's own budget expires and the apply silently never happens: the
-        // record was CLAIMED above, so nothing retries it, and the control plane
-        // is left with a confirm timeout for a build that was cut off mid-fetch.
+        // record was already CLAIMED by the caller, so nothing retries it, and
+        // the control plane is left with a confirm timeout for a build that was
+        // cut off mid-fetch.
         //
         // Bounded, never 0 (infinite). LongRunningJob's class doc and
         // UpdateCommand::APPLY_TIME_LIMIT_SECONDS carry the full reasoning:
@@ -1384,10 +1567,11 @@ final class UpdateChecker
         // sit at one third of it, so the transfer can never be the thing that
         // exhausts this budget.
         //
-        // Placed HERE and not at the top of the method on purpose: a cron
-        // request runs every due event, and a tick with nothing staged (the
-        // normal state on every site, handled by the early returns above) must
-        // not raise the limit for whatever unrelated event runs after it.
+        // Placed HERE, past every early exit in the caller, on purpose. A cron
+        // request runs every due event and the request-bound backstop runs on
+        // every request at all, so the normal case is a caller that found
+        // nothing to do; neither must raise the limit for whatever unrelated
+        // work follows it in the same request.
         if (function_exists('set_time_limit')) {
             @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- bounded-but-generous cap so a hung self-update apply hits a recoverable max_execution_time fatal rather than only an unrecoverable FPM hard-kill; @-guarded, no-op when disabled
         }
@@ -1563,6 +1747,159 @@ final class UpdateChecker
     }
 
     /**
+     * ATOMICALLY claim the staged record: delete it in ONE statement and answer
+     * whether THIS caller is the one that removed it.
+     *
+     * The original read-then-delete_option pair was a claim in name only. Two
+     * requests could both read the record and both call delete_option, and both
+     * would then run Plugin_Upgrader over the agent's own directory at the same
+     * time. That window was narrow while a cron event was the only way in; with
+     * the request-bound backstop firing on every request of a chatty site it is
+     * not narrow at all. A single DELETE is decided by the database, so exactly
+     * one caller can ever see one row removed, across processes AND across
+     * nodes, which an flock() would not cover on a shared filesystem.
+     *
+     * The option caches are invalidated immediately afterwards because the raw
+     * statement bypasses them. Correctness does not rest on that: a caller
+     * served a stale cached record still has to win its own DELETE, and it
+     * cannot.
+     *
+     * Degrades to the plain delete_option when there is no usable $wpdb (there
+     * always is one inside WordPress; this keeps the method callable from a
+     * bare unit-test bootstrap).
+     *
+     * @return bool True when this caller removed the row and now owns the apply.
+     */
+    private function claimStagedRecord(): bool
+    {
+        global $wpdb;
+
+        $usable = isset($wpdb)
+            && is_object($wpdb)
+            && isset($wpdb->options)
+            && is_string($wpdb->options)
+            && $wpdb->options !== ''
+            && method_exists($wpdb, 'query')
+            && method_exists($wpdb, 'prepare');
+
+        if (!$usable) {
+            if (function_exists('delete_option')) {
+                delete_option(self::OPTION_STAGED);
+            }
+
+            return true;
+        }
+
+        $table = $wpdb->options;
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- compare-and-delete claim of one option row; get_option/delete_option is a read-then-write with no atomicity and no core API exposes an atomic equivalent, and a cached read is exactly what must not decide the winner
+        $deleted = $wpdb->query(
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table is $wpdb->options, a WordPress-derived table name, never user input; the only value is bound through prepare()
+            $wpdb->prepare("DELETE FROM {$table} WHERE option_name = %s", self::OPTION_STAGED)
+        );
+
+        // The statement went behind WordPress's back, so drop what it cached.
+        if (function_exists('wp_cache_delete')) {
+            wp_cache_delete(self::OPTION_STAGED, 'options');
+            wp_cache_delete('alloptions', 'options');
+        }
+
+        return is_numeric($deleted) && (int) $deleted === 1;
+    }
+
+    /**
+     * True when another apply beat is running and has not yet passed its own
+     * execution ceiling. See OPTION_APPLYING for what this covers that the
+     * record claim does not.
+     *
+     * @return bool
+     */
+    private function applyInProgress(): bool
+    {
+        if (!function_exists('get_option')) {
+            return false;
+        }
+
+        $startedAt = (int) get_option(self::OPTION_APPLYING, 0);
+        if ($startedAt <= 0) {
+            return false;
+        }
+
+        // A marker older than the ceiling the apply itself runs under belongs to
+        // a request that can no longer be alive. Ignore it rather than let one
+        // hard-killed apply block this site's updates forever.
+        return (time() - $startedAt) < LongRunningJob::TIME_LIMIT_SECONDS;
+    }
+
+    /**
+     * Take ownership of the in-flight marker. Called ONLY by the caller that
+     * won the record claim, so the release in its finally can never clear a
+     * marker belonging to somebody else.
+     *
+     * @return void
+     */
+    private function beginApply(): void
+    {
+        if (function_exists('update_option')) {
+            update_option(self::OPTION_APPLYING, time(), false);
+        }
+    }
+
+    /**
+     * Release the in-flight marker. Runs in a finally, so it also runs when the
+     * apply threw.
+     *
+     * @return void
+     */
+    private function endApply(): void
+    {
+        if (function_exists('delete_option')) {
+            delete_option(self::OPTION_APPLYING);
+        }
+    }
+
+    /**
+     * Record an apply-beat outcome for a path that did NO work, so no exit of
+     * beat 2 is invisible from the control plane.
+     *
+     * NEVER OVERWRITES. A terminal outcome (applied, failed, expired,
+     * already_applied) is written unconditionally by recordSelfUpdateResult;
+     * this one writes only when nothing is stored at all. Two reasons, both
+     * load-bearing:
+     *
+     *   - Both entry points run in the same wp-cron request when a cron tick
+     *     also carries the due apply event. Whichever runs second finds nothing
+     *     staged, and without this rule it would clobber the winner's 'applied'
+     *     with a 'not_staged' and report the exact opposite of what happened.
+     *   - The in-flight path is reached by every request that arrives while an
+     *     apply is running. Writing on each of those would be an option write
+     *     per request for as long as the apply takes.
+     *
+     * Beat 1 deletes the stored result when it stages, so "nothing is stored"
+     * means "nothing has been recorded for THIS cycle yet", which is exactly the
+     * scope wanted.
+     *
+     * @param string $status Diagnostic status (not one of the terminal four).
+     * @param string $from   Best-known on-disk version (may be empty).
+     * @param string $to     Staged target version (may be empty).
+     * @param string $detail Human-readable, non-secret detail.
+     * @return void
+     */
+    private function recordDiagnosticExit(string $status, string $from, string $to, string $detail): void
+    {
+        if (!function_exists('get_option') || !function_exists('update_option')) {
+            return;
+        }
+
+        $stored = get_option(AgentSelfUpdateCommand::OPTION_RESULT, null);
+        if (is_array($stored) && isset($stored['status']) && is_string($stored['status']) && $stored['status'] !== '') {
+            return;
+        }
+
+        $this->recordSelfUpdateResult($status, $from, $to, $detail);
+    }
+
+    /**
      * Persist the apply outcome so the next metadata push carries it to the CP.
      *
      * The stored detail is scrubbed of anything URL-shaped: upgrader and skin
@@ -1570,7 +1907,12 @@ final class UpdateChecker
      * is a short-lived bearer credential that must never reach a CP-visible
      * field or a log line.
      *
-     * @param string $status One of applied|failed|expired|already_applied.
+     * @param string $status A terminal outcome (applied|failed|expired|
+     *                       already_applied) or, through recordDiagnosticExit,
+     *                       one of the did-no-work diagnostics. The control
+     *                       plane branches on the four it knows and surfaces
+     *                       anything else verbatim, so a status added here needs
+     *                       no control-plane change to reach an operator.
      * @param string $from   On-disk version at stage time.
      * @param string $to     Staged target version.
      * @param string $detail Human-readable, non-secret detail (may be empty).
