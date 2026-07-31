@@ -8,6 +8,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.112] - 2026-07-31
+
+### Fixed
+
+- Outgoing email failed completely whenever a plugin set a Reply-To header in the ordinary "Name <email@example.com>" form, which WooCommerce, Fluent Forms and many other plugins do by default (GH #312). The agent stored that header exactly as written and then handed the whole string, display name included, to the mail transport as if it were the address. The transport rejected it as invalid and, because one bad address aborted the entire message, nothing was sent at all. The reported symptom was an "Invalid address" error in the email log with no mail going out. Addresses are now parsed properly wherever a bare address is required, the display name is kept rather than discarded, and a single bad address costs that one recipient instead of the whole email.
+- The same defect applied to the To, Cc and Bcc headers, not only Reply-To, and affected the SMTP and SendGrid providers. It was reported for Reply-To because that is the header plugins most often set this way, but any of the four could trigger it. The Amazon SES, Postmark and Mailgun providers were unaffected, because those build a raw header where this form is already valid.
+- A header carrying more than one address, for example a Cc listing two recipients, was treated as a single malformed address and lost the whole message on the SMTP and SendGrid providers. Address lists are now split correctly, including the case where a quoted display name contains a comma.
+- A display name could redirect an email to a different address than the one shown. Because header values are commonly assembled by dropping a user-supplied name into a template, a name that itself contained an address in angle brackets could take over as the real destination while the intended address was still displayed. Any entry of that shape is now refused outright rather than delivered somewhere the site owner did not intend.
+
 ## [0.61.111] - 2026-07-31
 
 ### Changed

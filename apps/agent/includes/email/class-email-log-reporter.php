@@ -1,6 +1,6 @@
 <?php
 /**
- * EmailLogReporter — fire-and-forget CP push for the local email-send log.
+ * EmailLogReporter: fire-and-forget CP push for the local email-send log.
  *
  * Every 5 minutes (wp-cron, HOOK_PUSH) AND opportunistically right after a
  * send, pages UNPUSHED rows above a stored high-water cursor and POSTs them to:
@@ -301,7 +301,12 @@ final class EmailLogReporter {
 
 	/**
 	 * Split a stored mail_to string (comma- or semicolon-delimited) into a
-	 * trimmed array of non-empty address strings.
+	 * trimmed array of non-empty address entries.
+	 *
+	 * Delegates to AddressParser::split_list() (quote/angle-bracket aware)
+	 * rather than a bare regex split, so a quoted display name that itself
+	 * contains a comma (e.g. '"Rossi, Andrea" <a@x.com>') is reported back to
+	 * the CP as ONE recipient, not shredded into two bogus ones.
 	 *
 	 * @param string $raw Raw mail_to value from the DB.
 	 * @return string[]
@@ -310,22 +315,14 @@ final class EmailLogReporter {
 		if ( $raw === '' ) {
 			return [];
 		}
-		$parts = preg_split( '/[,;]+/', $raw ) ?: [];
-		$out   = [];
-		foreach ( $parts as $part ) {
-			$part = trim( $part );
-			if ( $part !== '' ) {
-				$out[] = $part;
-			}
-		}
-		return $out;
+		return AddressParser::split_list( $raw );
 	}
 
 	/**
 	 * Convert a MySQL UTC DATETIME string (Y-m-d H:i:s) to an RFC3339 UTC
 	 * timestamp (e.g. 2026-06-10T12:34:56Z). Falls back to the current UTC time
 	 * in RFC3339 on empty input or parse failure so the CP always receives a
-	 * valid RFC3339 string — never a bare MySQL datetime or an empty string.
+	 * valid RFC3339 string, never a bare MySQL datetime or an empty string.
 	 *
 	 * @param string $mysql MySQL DATETIME string.
 	 * @return string RFC3339 UTC timestamp.

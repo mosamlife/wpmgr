@@ -1,6 +1,6 @@
 <?php
 /**
- * MailRouter — hooks into WordPress's mail pipeline to route outgoing mail
+ * MailRouter: hooks into WordPress's mail pipeline to route outgoing mail
  * through the configured WPMgr provider handler.
  *
  * Hook strategy (non-destructive):
@@ -9,7 +9,7 @@
  *     default mail path is UNTOUCHED.
  *   - Fallback: If `pre_wp_mail` is unavailable (WP < 5.7), hooks
  *     `wp_mail` (the pluggable function) via a wpmgr_mail() shim registered
- *     only when that hook exists — but in practice WP 5.7+ is the baseline
+ *     only when that hook exists, but in practice WP 5.7+ is the baseline
  *     (Requires at least: 6.2 in the plugin header), so the primary path
  *     always fires.
  *
@@ -76,7 +76,7 @@ final class MailRouter {
 
 		$cfg = EmailConfig::load();
 		if ( ! $cfg->is_configured() ) {
-			// No email config — leave WP's default mail path untouched.
+			// No email config, leave WP's default mail path untouched.
 			return null;
 		}
 
@@ -102,8 +102,12 @@ final class MailRouter {
 	 */
 	public function build_mail_payload( array $atts, EmailConfig $cfg ): array {
 		// -- Recipients -------------------------------------------------------
+		// AddressParser::split_list() is quote-aware, so a bare comma-separated
+		// $to string with a quoted display name that itself contains a comma
+		// (e.g. '"Rossi, Andrea" <a@x.com>, b@y.com') splits into the correct
+		// two entries rather than shredding the name in half.
 		$to_raw = $atts['to'] ?? '';
-		$to     = is_array( $to_raw ) ? $to_raw : array_filter( array_map( 'trim', explode( ',', (string) $to_raw ) ) );
+		$to     = is_array( $to_raw ) ? $to_raw : AddressParser::split_list( (string) $to_raw );
 
 		// -- Headers ----------------------------------------------------------
 		$raw_headers = $atts['headers'] ?? '';
