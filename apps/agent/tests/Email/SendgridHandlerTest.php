@@ -198,4 +198,178 @@ class SendgridHandlerTest extends TestCase
 
         $this->assertSame('site-abc', $captured_body['headers']['X-WPMgr-Site'] ?? null);
     }
+
+    // -------------------------------------------------------------------------
+    // GH #312: a "Name <email>" reply_to/to/cc/bcc must become a bare `email`
+    // field with the name carried in the sibling `name` field, not rejected.
+    // -------------------------------------------------------------------------
+
+    public function test_reporter_exact_reply_to_string_becomes_bare_email_with_name(): void
+    {
+        $mail = $this->base_mail();
+        $mail['reply_to'] = ['Andrea Somigli <salesianalibri@gmail.com>'];
+
+        $captured = null;
+        Functions\when('wp_json_encode')->alias('json_encode');
+        Functions\when('wp_remote_post')->alias(
+            function (string $url, array $args) use (&$captured) {
+                $captured = json_decode((string) $args['body'], true);
+                return ['response' => ['code' => 202], 'body' => '', 'headers' => ['x-message-id' => 'sg-1']];
+            }
+        );
+        Functions\when('is_wp_error')->justReturn(false);
+        Functions\when('wp_remote_retrieve_response_code')->justReturn(202);
+        Functions\when('wp_remote_retrieve_body')->justReturn('');
+        Functions\when('wp_remote_retrieve_header')->justReturn('sg-1');
+
+        $handler = new SendgridHandler();
+        $result  = $handler->send($mail, [], 'SG.key');
+
+        $this->assertTrue($result['ok'], 'a display-name Reply-To must not fail the send');
+        $this->assertSame(
+            ['email' => 'salesianalibri@gmail.com', 'name' => 'Andrea Somigli'],
+            $captured['reply_to'] ?? null
+        );
+    }
+
+    public function test_to_cc_bcc_with_display_names_become_email_name_objects(): void
+    {
+        $mail = $this->base_mail();
+        $mail['to']  = ['Terry To <terry@example.com>'];
+        $mail['cc']  = ['Carla Cee <carla@example.com>'];
+        $mail['bcc'] = ['Bob Bee <bob@example.com>'];
+
+        $captured = null;
+        Functions\when('wp_json_encode')->alias('json_encode');
+        Functions\when('wp_remote_post')->alias(
+            function (string $url, array $args) use (&$captured) {
+                $captured = json_decode((string) $args['body'], true);
+                return ['response' => ['code' => 202], 'body' => '', 'headers' => []];
+            }
+        );
+        Functions\when('is_wp_error')->justReturn(false);
+        Functions\when('wp_remote_retrieve_response_code')->justReturn(202);
+        Functions\when('wp_remote_retrieve_body')->justReturn('');
+        Functions\when('wp_remote_retrieve_header')->justReturn('');
+
+        $handler = new SendgridHandler();
+        $result  = $handler->send($mail, [], 'SG.key');
+
+        $this->assertTrue($result['ok']);
+        $personalisation = $captured['personalizations'][0];
+        $this->assertSame([['email' => 'terry@example.com', 'name' => 'Terry To']], $personalisation['to']);
+        $this->assertSame([['email' => 'carla@example.com', 'name' => 'Carla Cee']], $personalisation['cc']);
+        $this->assertSame([['email' => 'bob@example.com', 'name' => 'Bob Bee']], $personalisation['bcc']);
+    }
+
+    public function test_quoted_comma_display_name_is_parsed_correctly(): void
+    {
+        $mail = $this->base_mail();
+        $mail['to'] = ['"Rossi, Andrea" <a@x.com>'];
+
+        $captured = null;
+        Functions\when('wp_json_encode')->alias('json_encode');
+        Functions\when('wp_remote_post')->alias(
+            function (string $url, array $args) use (&$captured) {
+                $captured = json_decode((string) $args['body'], true);
+                return ['response' => ['code' => 202], 'body' => '', 'headers' => []];
+            }
+        );
+        Functions\when('is_wp_error')->justReturn(false);
+        Functions\when('wp_remote_retrieve_response_code')->justReturn(202);
+        Functions\when('wp_remote_retrieve_body')->justReturn('');
+        Functions\when('wp_remote_retrieve_header')->justReturn('');
+
+        $handler = new SendgridHandler();
+        $result  = $handler->send($mail, [], 'SG.key');
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame(
+            [['email' => 'a@x.com', 'name' => 'Rossi, Andrea']],
+            $captured['personalizations'][0]['to']
+        );
+    }
+
+    public function test_multiple_reply_to_addresses_use_reply_to_list(): void
+    {
+        $mail = $this->base_mail();
+        $mail['reply_to'] = ['a@x.com', 'b@y.com'];
+
+        $captured = null;
+        Functions\when('wp_json_encode')->alias('json_encode');
+        Functions\when('wp_remote_post')->alias(
+            function (string $url, array $args) use (&$captured) {
+                $captured = json_decode((string) $args['body'], true);
+                return ['response' => ['code' => 202], 'body' => '', 'headers' => []];
+            }
+        );
+        Functions\when('is_wp_error')->justReturn(false);
+        Functions\when('wp_remote_retrieve_response_code')->justReturn(202);
+        Functions\when('wp_remote_retrieve_body')->justReturn('');
+        Functions\when('wp_remote_retrieve_header')->justReturn('');
+
+        $handler = new SendgridHandler();
+        $result  = $handler->send($mail, [], 'SG.key');
+
+        $this->assertTrue($result['ok']);
+        $this->assertArrayNotHasKey('reply_to', $captured);
+        $this->assertSame(
+            [['email' => 'a@x.com'], ['email' => 'b@y.com']],
+            $captured['reply_to_list'] ?? null
+        );
+    }
+
+    public function test_malformed_cc_entry_is_dropped_not_fatal(): void
+    {
+        $mail = $this->base_mail();
+        $mail['cc'] = ['not-an-email', 'good@example.com'];
+
+        $captured = null;
+        Functions\when('wp_json_encode')->alias('json_encode');
+        Functions\when('wp_remote_post')->alias(
+            function (string $url, array $args) use (&$captured) {
+                $captured = json_decode((string) $args['body'], true);
+                return ['response' => ['code' => 202], 'body' => '', 'headers' => []];
+            }
+        );
+        Functions\when('is_wp_error')->justReturn(false);
+        Functions\when('wp_remote_retrieve_response_code')->justReturn(202);
+        Functions\when('wp_remote_retrieve_body')->justReturn('');
+        Functions\when('wp_remote_retrieve_header')->justReturn('');
+
+        $handler = new SendgridHandler();
+        $result  = $handler->send($mail, [], 'SG.key');
+
+        $this->assertTrue($result['ok'], 'one malformed Cc entry must not fail the whole send');
+        $this->assertSame(
+            [['email' => 'good@example.com']],
+            $captured['personalizations'][0]['cc']
+        );
+    }
+
+    public function test_empty_reply_to_omits_reply_to_fields(): void
+    {
+        $mail = $this->base_mail();
+        $mail['reply_to'] = [];
+
+        $captured = null;
+        Functions\when('wp_json_encode')->alias('json_encode');
+        Functions\when('wp_remote_post')->alias(
+            function (string $url, array $args) use (&$captured) {
+                $captured = json_decode((string) $args['body'], true);
+                return ['response' => ['code' => 202], 'body' => '', 'headers' => []];
+            }
+        );
+        Functions\when('is_wp_error')->justReturn(false);
+        Functions\when('wp_remote_retrieve_response_code')->justReturn(202);
+        Functions\when('wp_remote_retrieve_body')->justReturn('');
+        Functions\when('wp_remote_retrieve_header')->justReturn('');
+
+        $handler = new SendgridHandler();
+        $result  = $handler->send($mail, [], 'SG.key');
+
+        $this->assertTrue($result['ok']);
+        $this->assertArrayNotHasKey('reply_to', $captured);
+        $this->assertArrayNotHasKey('reply_to_list', $captured);
+    }
 }

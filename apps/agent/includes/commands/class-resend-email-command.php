@@ -1,6 +1,6 @@
 <?php
 /**
- * ResendEmailCommand — re-sends a previously logged email given its local
+ * ResendEmailCommand: re-sends a previously logged email given its local
  * agent_seq (the auto-increment row id from the wpmgr_email_log table).
  *
  * Wire contract (CP -> agent):
@@ -30,6 +30,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Email\AddressParser;
 use WPMgr\Agent\Email\EmailConfig;
 use WPMgr\Agent\Email\ProviderRouter;
 use WPMgr\Agent\Schema;
@@ -71,10 +72,10 @@ final class ResendEmailCommand implements CommandInterface {
 			return array( 'ok' => false, 'detail' => 'agent_seq must be a positive integer', 'message_id' => '' );
 		}
 
-		// Load the email config — required before attempting a resend.
+		// Load the email config, required before attempting a resend.
 		$cfg = EmailConfig::load();
 		if ( ! $cfg->is_configured() ) {
-			return array( 'ok' => false, 'detail' => 'no email config — run sync_email_config first', 'message_id' => '' );
+			return array( 'ok' => false, 'detail' => 'no email config, run sync_email_config first', 'message_id' => '' );
 		}
 
 		// Fetch the log row.
@@ -152,26 +153,17 @@ final class ResendEmailCommand implements CommandInterface {
 	 * @return array<string,mixed> Normalised mail payload.
 	 */
 	private function build_mail_from_row( array $row, EmailConfig $cfg ): array {
+		// AddressParser::split_list() is quote-aware (unlike the bare comma/
+		// semicolon regex this replaced), so a stored recipient whose display
+		// name itself contained a comma round-trips as one entry, not two.
 		$mail_to_raw = (string) ( $row['mail_to'] ?? '' );
-		$to_parts    = preg_split( '/[,;]+/', $mail_to_raw ) ?: array();
-		$to          = array();
-		foreach ( $to_parts as $addr ) {
-			$addr = trim( $addr );
-			if ( $addr !== '' ) {
-				$to[] = $addr;
-			}
-		}
+		$to          = $mail_to_raw !== '' ? AddressParser::split_list( $mail_to_raw ) : array();
 
 		// Parse "Name <addr>" format for the From field.
 		$mail_from_raw = (string) ( $row['mail_from'] ?? '' );
-		$from          = '';
-		$from_name     = '';
-		if ( preg_match( '/^(.+?)\s*<([^>]+)>\s*$/', $mail_from_raw, $m ) ) {
-			$from_name = trim( $m[1] );
-			$from      = trim( $m[2] );
-		} else {
-			$from = trim( $mail_from_raw );
-		}
+		$from_entry    = AddressParser::parse_one( $mail_from_raw );
+		$from          = $from_entry !== null ? $from_entry['address'] : trim( $mail_from_raw );
+		$from_name     = $from_entry !== null ? $from_entry['name'] : '';
 
 		$body = (string) ( $row['body'] ?? '' );
 		// Detect HTML body by looking for opening tags.

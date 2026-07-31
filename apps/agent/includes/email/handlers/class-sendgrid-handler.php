@@ -1,12 +1,12 @@
 <?php
 /**
- * SendgridHandler — sends via the SendGrid Web API v3.
+ * SendgridHandler: sends via the SendGrid Web API v3.
  *
  * Endpoint: POST https://api.sendgrid.com/v3/mail/send
  * Auth:     Authorization: Bearer <api_key>
  * Success:  HTTP 202 Accepted (no body; Message-ID from X-Message-Id header).
  *
- * Config shape: (none — the API key is the sole configuration).
+ * Config shape: (none; the API key is the sole configuration).
  * Secret (from keystore): SendGrid API key.
  *
  * @package WPMgr\Agent\Email\Handlers
@@ -16,6 +16,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Email\Handlers;
 
+use WPMgr\Agent\Email\AddressParser;
 use WPMgr\Agent\Email\ProviderHandlerInterface;
 
 /**
@@ -86,35 +87,44 @@ final class SendgridHandler implements ProviderHandlerInterface {
 	 * @return array<string,mixed>
 	 */
 	private function build_payload( array $mail ): array {
-		// From object.
-		$from_obj = array( 'email' => (string) ( $mail['from'] ?? '' ) );
-		$from_name = (string) ( $mail['from_name'] ?? '' );
+		// From object. $mail['from'] may itself carry the "Display Name <addr>"
+		// form (a wp_mail_from filter or a named connection's from_address can
+		// both return it that way); SendGrid's `email` field must be bare, with
+		// any display name in the sibling `name` field, so parse it first.
+		$from_entry   = AddressParser::parse_one( (string) ( $mail['from'] ?? '' ) );
+		$from_address = $from_entry !== null ? $from_entry['address'] : (string) ( $mail['from'] ?? '' );
+		$from_name    = (string) ( $mail['from_name'] ?? '' );
+		if ( $from_name === '' && $from_entry !== null && $from_entry['name'] !== '' ) {
+			$from_name = $from_entry['name'];
+		}
+		$from_obj = array( 'email' => $from_address );
 		if ( $from_name !== '' ) {
 			$from_obj['name'] = $from_name;
 		}
 
-		// Personalisation: to / cc / bcc / reply_to.
+		// Personalisation: to / cc / bcc / reply_to. Every entry is a raw
+		// wp_mail() header value: a bare address, "Display Name <addr>", or a
+		// single entry that itself packs a comma-separated list (one "Cc:"
+		// header carrying two addresses), so it is parsed via AddressParser
+		// into SendGrid's {email[, name]} object shape before use. A malformed
+		// entry that AddressParser cannot resolve is still passed through in
+		// its raw form, exactly as it was before this parser existed, so
+		// SendGrid stays the judge of anything our own validator does not
+		// recognise. FILTER_VALIDATE_EMAIL refuses an internationalised
+		// domain, so dropping unparsed entries here would silently stop
+		// delivering to every IDN recipient that works today.
 		$personalisation = array(
-			'to' => array_map(
-				fn( $addr ) => array( 'email' => (string) $addr ),
-				(array) ( $mail['to'] ?? array() )
-			),
+			'to' => $this->address_objects( $mail['to'] ?? array() ),
 		);
 
-		$cc = (array) ( $mail['cc'] ?? array() );
+		$cc = $this->address_objects( $mail['cc'] ?? array() );
 		if ( $cc !== array() ) {
-			$personalisation['cc'] = array_map(
-				fn( $addr ) => array( 'email' => (string) $addr ),
-				$cc
-			);
+			$personalisation['cc'] = $cc;
 		}
 
-		$bcc = (array) ( $mail['bcc'] ?? array() );
+		$bcc = $this->address_objects( $mail['bcc'] ?? array() );
 		if ( $bcc !== array() ) {
-			$personalisation['bcc'] = array_map(
-				fn( $addr ) => array( 'email' => (string) $addr ),
-				$bcc
-			);
+			$personalisation['bcc'] = $bcc;
 		}
 
 		$payload = array(
@@ -123,9 +133,15 @@ final class SendgridHandler implements ProviderHandlerInterface {
 			'subject'          => (string) ( $mail['subject'] ?? '' ),
 		);
 
-		$reply_to = (array) ( $mail['reply_to'] ?? array() );
-		if ( $reply_to !== array() ) {
-			$payload['reply_to'] = array( 'email' => (string) $reply_to[0] );
+		// SendGrid's singular `reply_to` field accepts exactly one address;
+		// `reply_to_list` is the documented way to carry more than one, so use
+		// it whenever a header supplied multiple Reply-To addresses instead of
+		// silently keeping only the first (the prior behaviour).
+		$reply_to = $this->address_objects( $mail['reply_to'] ?? array() );
+		if ( count( $reply_to ) === 1 ) {
+			$payload['reply_to'] = $reply_to[0];
+		} elseif ( count( $reply_to ) > 1 ) {
+			$payload['reply_to_list'] = $reply_to;
 		}
 
 		// Content: prefer HTML + plain text; plain text only otherwise.
@@ -192,6 +208,54 @@ final class SendgridHandler implements ProviderHandlerInterface {
 		}
 
 		return $payload;
+	}
+
+	/**
+	 * Turn one raw address field into SendGrid email objects.
+	 *
+	 * Parsed entries become {email, name}; entries AddressParser could not
+	 * resolve are passed through as {email: raw}, which is byte for byte what
+	 * this handler sent before the parser existed. That passthrough exists so
+	 * our own validator can never be stricter than SendGrid's: an
+	 * internationalised domain fails FILTER_VALIDATE_EMAIL, and dropping it
+	 * here would silently stop delivering to a recipient that works today.
+	 * It cannot reintroduce GH #312, because a well-formed "Name <addr>"
+	 * always parses and so never reaches the passthrough.
+	 *
+	 * @param mixed $raw Raw address field from the mail payload.
+	 * @return list<array{email:string}|array{email:string,name:string}>
+	 */
+	private function address_objects( $raw ): array {
+		$entries = AddressParser::parse_list_verbose( $raw );
+		$objects = array();
+
+		foreach ( $entries['valid'] as $entry ) {
+			$objects[] = $this->to_sendgrid_email_object( $entry );
+		}
+		foreach ( $entries['invalid'] as $entry ) {
+			$raw_entry = trim( (string) $entry );
+			// Only pass through something that is at least shaped like an
+			// address. A entry with no "@" is not one our validator merely
+			// failed to recognise, it is garbage, and forwarding it would 400
+			// the whole personalization and lose every other recipient with it.
+			if ( $raw_entry !== '' && strpos( $raw_entry, '@' ) !== false ) {
+				$objects[] = array( 'email' => $raw_entry );
+			}
+		}
+
+		return $objects;
+	}
+
+	/**
+	 * Convert a parsed {address, name} entry into a SendGrid email object.
+	 *
+	 * @param array{address:string,name:string} $entry Parsed address entry.
+	 * @return array{email:string}|array{email:string,name:string}
+	 */
+	private function to_sendgrid_email_object( array $entry ): array {
+		return $entry['name'] !== ''
+			? array( 'email' => $entry['address'], 'name' => $entry['name'] )
+			: array( 'email' => $entry['address'] );
 	}
 
 	/**

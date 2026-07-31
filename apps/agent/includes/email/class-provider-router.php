@@ -1,6 +1,6 @@
 <?php
 /**
- * ProviderRouter — resolves the right provider handler for a given message,
+ * ProviderRouter: resolves the right provider handler for a given message,
  * drives send + one fallback retry, and delegates logging to EmailLogger.
  *
  * Resolution order:
@@ -131,7 +131,7 @@ class ProviderRouter {
 		$primary_error    = (string) ( $result['error'] ?? '' );
 		$primary_response = (string) ( $result['provider_response'] ?? '' );
 
-		// First attempt failed — try fallback unless disabled.
+		// First attempt failed, try fallback unless disabled.
 		if ( ! $disable_fallback ) {
 			$fallback = $this->resolve_fallback( $cfg, $connection['key'] );
 			if ( $fallback !== null ) {
@@ -157,7 +157,7 @@ class ProviderRouter {
 			}
 		}
 
-		// No fallback or fallback handler missing — log the original failure.
+		// No fallback or fallback handler missing, log the original failure.
 		$this->maybe_log( $mail, $connection['key'], $connection['provider'], 'failed', '', $primary_error, $primary_response, 0, $cfg );
 		return array( 'ok' => false, 'message_id' => '', 'detail' => $primary_error );
 	}
@@ -249,7 +249,7 @@ class ProviderRouter {
 				if ( $conn !== null ) {
 					return $conn;
 				}
-				// Key not in registry — fall through to default.
+				// Key not in registry, fall through to default.
 			}
 
 			// Back-compat: pre-m62 inline array shape {provider, config}.
@@ -409,7 +409,13 @@ class ProviderRouter {
 
 		$allowed = array();
 		foreach ( $to as $addr ) {
-			if ( ! $this->suppression_cache->is_suppressed( (string) $addr ) ) {
+			// $addr may carry the "Display Name <addr>" form; the suppression
+			// list is keyed by bare address only, so resolve to a bare address
+			// for the check while keeping the ORIGINAL entry (name included) in
+			// the mail payload passed on to the provider handler.
+			$parsed_addr = AddressParser::parse_one( (string) $addr );
+			$bare_addr   = $parsed_addr !== null ? $parsed_addr['address'] : (string) $addr;
+			if ( ! $this->suppression_cache->is_suppressed( $bare_addr ) ) {
 				$allowed[] = $addr;
 			}
 		}

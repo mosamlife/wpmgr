@@ -39,6 +39,25 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.112",
+    date: "2026-07-31",
+    summary: "Outgoing email failed entirely when a plugin set a Reply-To in the usual Name <email> form. Fixed, along with three related address bugs.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Outgoing email failed completely whenever a plugin set a Reply-To header in the ordinary \"Name <email@example.com>\" form, which WooCommerce, Fluent Forms and many others do by default. The agent stored that header exactly as written and then handed the whole string, display name included, to the mail transport as if it were the address. The transport rejected it, and because one bad address aborted the entire message, nothing was sent. Addresses are now parsed properly wherever a bare address is required, the display name is kept rather than discarded, and a single bad address costs that one recipient instead of the whole email.",
+      },
+      {
+        tag: "Fixed",
+        text: "The same defect applied to the To, Cc and Bcc headers, not only Reply-To, on the SMTP and SendGrid providers. Amazon SES, Postmark and Mailgun were unaffected, because those build a raw header where this form is already valid. A header carrying more than one address, for example a Cc listing two recipients, was also treated as one malformed address and lost the whole message; address lists are now split correctly, including when a quoted display name contains a comma.",
+      },
+      {
+        tag: "Fixed",
+        text: "A display name could redirect an email to a different address than the one shown. Because header values are commonly assembled by dropping a user-supplied name into a template, a name that itself contained an address in angle brackets could take over as the real destination while the intended address was still displayed. Any entry of that shape is now refused rather than delivered somewhere the site owner did not intend.",
+      },
+    ],
+  },
+  {
     version: "0.61.111",
     date: "2026-07-31",
     summary: "A no-op release, so a site that has been moved onto 0.61.110 has something real for the fleet update path to install.",
