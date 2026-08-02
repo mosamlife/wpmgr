@@ -6309,6 +6309,14 @@ type AgentMetadataAgentSelfUpdate struct {
 	// it rather than to some other event that happened to move the
 	// site's version.
 	ApplyID OptString `json:"apply_id"`
+	// Connection-release rung the apply actually ran on: fpm or
+	// litespeed released the response before the swap, the portable
+	// fallback held the caller's connection for its whole duration.
+	// Diagnostic only, it gates nothing. It exists so a fleet-wide
+	// read can tell which sites upgrade on an attached connection,
+	// which is what keeps that decision evidence-based. Absent from
+	// every agent before 0.61.110.
+	Rung OptString `json:"rung"`
 }
 
 // GetStatus returns the value of Status.
@@ -6341,6 +6349,11 @@ func (s *AgentMetadataAgentSelfUpdate) GetApplyID() OptString {
 	return s.ApplyID
 }
 
+// GetRung returns the value of Rung.
+func (s *AgentMetadataAgentSelfUpdate) GetRung() OptString {
+	return s.Rung
+}
+
 // SetStatus sets the value of Status.
 func (s *AgentMetadataAgentSelfUpdate) SetStatus(val OptString) {
 	s.Status = val
@@ -6369,6 +6382,11 @@ func (s *AgentMetadataAgentSelfUpdate) SetAt(val OptInt64) {
 // SetApplyID sets the value of ApplyID.
 func (s *AgentMetadataAgentSelfUpdate) SetApplyID(val OptString) {
 	s.ApplyID = val
+}
+
+// SetRung sets the value of Rung.
+func (s *AgentMetadataAgentSelfUpdate) SetRung(val OptString) {
+	s.Rung = val
 }
 
 // Present only when WordPress core has an update available.
@@ -6534,6 +6552,534 @@ func (*AgentMetadataUnauthorized) agentMetadataRes() {}
 type AgentMetadataUnprocessableEntity Error
 
 func (*AgentMetadataUnprocessableEntity) agentMetadataRes() {}
+
+// Ref: #/components/schemas/AgentMirrorCheckQueued
+type AgentMirrorCheckQueued struct {
+	// Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up
+	// to date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real
+	// outcome.
+	Status   AgentMirrorCheckQueuedStatus `json:"status"`
+	QueuedAt time.Time                    `json:"queued_at"`
+	Message  string                       `json:"message"`
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentMirrorCheckQueued) GetStatus() AgentMirrorCheckQueuedStatus {
+	return s.Status
+}
+
+// GetQueuedAt returns the value of QueuedAt.
+func (s *AgentMirrorCheckQueued) GetQueuedAt() time.Time {
+	return s.QueuedAt
+}
+
+// GetMessage returns the value of Message.
+func (s *AgentMirrorCheckQueued) GetMessage() string {
+	return s.Message
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentMirrorCheckQueued) SetStatus(val AgentMirrorCheckQueuedStatus) {
+	s.Status = val
+}
+
+// SetQueuedAt sets the value of QueuedAt.
+func (s *AgentMirrorCheckQueued) SetQueuedAt(val time.Time) {
+	s.QueuedAt = val
+}
+
+// SetMessage sets the value of Message.
+func (s *AgentMirrorCheckQueued) SetMessage(val string) {
+	s.Message = val
+}
+
+func (*AgentMirrorCheckQueued) checkAgentMirrorNowRes() {}
+
+// Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up
+// to date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real
+// outcome.
+type AgentMirrorCheckQueuedStatus string
+
+const (
+	AgentMirrorCheckQueuedStatusQueued AgentMirrorCheckQueuedStatus = "queued"
+)
+
+// AllValues returns all AgentMirrorCheckQueuedStatus values.
+func (AgentMirrorCheckQueuedStatus) AllValues() []AgentMirrorCheckQueuedStatus {
+	return []AgentMirrorCheckQueuedStatus{
+		AgentMirrorCheckQueuedStatusQueued,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentMirrorCheckQueuedStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentMirrorCheckQueuedStatusQueued:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentMirrorCheckQueuedStatus) UnmarshalText(data []byte) error {
+	switch AgentMirrorCheckQueuedStatus(data) {
+	case AgentMirrorCheckQueuedStatusQueued:
+		*s = AgentMirrorCheckQueuedStatusQueued
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Freshness of the UPSTREAM AGENT-RELEASE MIRROR (internal/agentupstream,
+// WPMGR_UPDATE_AGENT_MIRROR_ENABLED), which on a self-hosted install is what keeps
+// agent-releases/latest.json, and therefore latest_version, up to date (GH #322).
+// This object describes the MIRROR JOB, never the reference version itself. When reference_source is
+// "fleet" or "none" there is no published reference, and these timestamps say nothing about
+// latest_version. When enabled is false there is no mirror at all: on the hosted service the release
+// pipeline writes the manifest directly, so every field here is null and no freshness age should be
+// shown to a user.
+// Ref: #/components/schemas/AgentMirrorStatus
+type AgentMirrorStatus struct {
+	// Whether this install runs the upstream mirror (WPMGR_UPDATE_AGENT_MIRROR_ENABLED). False on the
+	// hosted service and by default. Always emitted so a caller never has to treat "absent" and "off" as
+	// the same undefined thing.
+	Enabled bool `json:"enabled"`
+	// Server-computed roll-up, so the staleness threshold has exactly one definition. "disabled":
+	// mirroring is off, show nothing. "misconfigured": enabled but it cannot run (the last attempt was
+	// not_configured), which never self-heals, so it warns immediately. "standing_down": this install
+	// publishes its own agent releases and the mirror is correctly refusing to overwrite them
+	// (foreign_channel); informational, never a warning. "pending": enabled, no attempt yet. "stale":
+	// nothing confirmed against upstream within stale_after_seconds, or never confirmed. "ok": confirmed
+	// recently.
+	Status AgentMirrorStatusStatus `json:"status"`
+	// The staleness threshold behind status="stale", in seconds (46800, i.e. 13 hours). Emitted so a
+	// client can phrase the warning without duplicating the constant. It is two nominal 6h30m cycles
+	// (the 6h schedule plus up to 30m jitter) and clears the roughly 12h30m gap a single control-plane
+	// restart can legitimately produce (River's periodic-job scheduler recomputes its next run as "now
+	// plus the interval" on restart rather than resuming a prior clock), so reaching it means at least
+	// two consecutive scheduled runs failed to confirm anything.
+	StaleAfterSeconds int32 `json:"stale_after_seconds"`
+	// When this install last CONFIRMED what upstream publishes: the last attempt whose outcome was
+	// mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null
+	// when it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten
+	// minutes ago must never be reported as "checked ten minutes ago".
+	LastSuccessAt NilDateTime `json:"last_success_at"`
+	// Which kind of confirmation last_success_at was. "mirrored": a new release was published here.
+	// "current": upstream examined and this install already publishes exactly it. "unchanged": upstream
+	// answered 304, which is a genuine confirmation because the conditional request is only sent while
+	// the published pointer is unchanged too.
+	LastSuccessOutcome NilAgentMirrorStatusLastSuccessOutcome `json:"last_success_outcome"`
+	// The agent version that confirmation established. Carried forward across an "unchanged" (304)
+	// result, which by definition names the same release.
+	LastSuccessVersion NilString `json:"last_success_version"`
+	// When a mirror run last executed, whatever the result. Null when none ever has. Never render an age
+	// from this field.
+	LastAttemptAt NilDateTime `json:"last_attempt_at"`
+	// "rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and
+	// skipping is expected and must never be presented as an error. "refused" means upstream was reached
+	// and the release was deliberately not published (not newer, or the versions cannot be ordered).
+	// "foreign_channel" means this install publishes its own agent releases and the mirror will never
+	// overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was
+	// tried and it broke.
+	LastAttemptOutcome NilAgentMirrorStatusLastAttemptOutcome `json:"last_attempt_outcome"`
+	// Short non-secret reason for the last attempt, composed by the control plane and capped at 200
+	// characters. Never a raw wrapped error, so it can never carry a presigned URL or any credential.
+	LastAttemptDetail NilString `json:"last_attempt_detail"`
+	// Whether the last attempt was the scheduled tick or an operator-requested check now.
+	LastAttemptTrigger NilAgentMirrorStatusLastAttemptTrigger `json:"last_attempt_trigger"`
+	// When the mirror last actually PUBLISHED a new release into this install's storage, as opposed to
+	// merely confirming the existing one.
+	LastMirroredAt      NilDateTime `json:"last_mirrored_at"`
+	LastMirroredVersion NilString   `json:"last_mirrored_version"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AgentMirrorStatus) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetStatus returns the value of Status.
+func (s *AgentMirrorStatus) GetStatus() AgentMirrorStatusStatus {
+	return s.Status
+}
+
+// GetStaleAfterSeconds returns the value of StaleAfterSeconds.
+func (s *AgentMirrorStatus) GetStaleAfterSeconds() int32 {
+	return s.StaleAfterSeconds
+}
+
+// GetLastSuccessAt returns the value of LastSuccessAt.
+func (s *AgentMirrorStatus) GetLastSuccessAt() NilDateTime {
+	return s.LastSuccessAt
+}
+
+// GetLastSuccessOutcome returns the value of LastSuccessOutcome.
+func (s *AgentMirrorStatus) GetLastSuccessOutcome() NilAgentMirrorStatusLastSuccessOutcome {
+	return s.LastSuccessOutcome
+}
+
+// GetLastSuccessVersion returns the value of LastSuccessVersion.
+func (s *AgentMirrorStatus) GetLastSuccessVersion() NilString {
+	return s.LastSuccessVersion
+}
+
+// GetLastAttemptAt returns the value of LastAttemptAt.
+func (s *AgentMirrorStatus) GetLastAttemptAt() NilDateTime {
+	return s.LastAttemptAt
+}
+
+// GetLastAttemptOutcome returns the value of LastAttemptOutcome.
+func (s *AgentMirrorStatus) GetLastAttemptOutcome() NilAgentMirrorStatusLastAttemptOutcome {
+	return s.LastAttemptOutcome
+}
+
+// GetLastAttemptDetail returns the value of LastAttemptDetail.
+func (s *AgentMirrorStatus) GetLastAttemptDetail() NilString {
+	return s.LastAttemptDetail
+}
+
+// GetLastAttemptTrigger returns the value of LastAttemptTrigger.
+func (s *AgentMirrorStatus) GetLastAttemptTrigger() NilAgentMirrorStatusLastAttemptTrigger {
+	return s.LastAttemptTrigger
+}
+
+// GetLastMirroredAt returns the value of LastMirroredAt.
+func (s *AgentMirrorStatus) GetLastMirroredAt() NilDateTime {
+	return s.LastMirroredAt
+}
+
+// GetLastMirroredVersion returns the value of LastMirroredVersion.
+func (s *AgentMirrorStatus) GetLastMirroredVersion() NilString {
+	return s.LastMirroredVersion
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AgentMirrorStatus) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AgentMirrorStatus) SetStatus(val AgentMirrorStatusStatus) {
+	s.Status = val
+}
+
+// SetStaleAfterSeconds sets the value of StaleAfterSeconds.
+func (s *AgentMirrorStatus) SetStaleAfterSeconds(val int32) {
+	s.StaleAfterSeconds = val
+}
+
+// SetLastSuccessAt sets the value of LastSuccessAt.
+func (s *AgentMirrorStatus) SetLastSuccessAt(val NilDateTime) {
+	s.LastSuccessAt = val
+}
+
+// SetLastSuccessOutcome sets the value of LastSuccessOutcome.
+func (s *AgentMirrorStatus) SetLastSuccessOutcome(val NilAgentMirrorStatusLastSuccessOutcome) {
+	s.LastSuccessOutcome = val
+}
+
+// SetLastSuccessVersion sets the value of LastSuccessVersion.
+func (s *AgentMirrorStatus) SetLastSuccessVersion(val NilString) {
+	s.LastSuccessVersion = val
+}
+
+// SetLastAttemptAt sets the value of LastAttemptAt.
+func (s *AgentMirrorStatus) SetLastAttemptAt(val NilDateTime) {
+	s.LastAttemptAt = val
+}
+
+// SetLastAttemptOutcome sets the value of LastAttemptOutcome.
+func (s *AgentMirrorStatus) SetLastAttemptOutcome(val NilAgentMirrorStatusLastAttemptOutcome) {
+	s.LastAttemptOutcome = val
+}
+
+// SetLastAttemptDetail sets the value of LastAttemptDetail.
+func (s *AgentMirrorStatus) SetLastAttemptDetail(val NilString) {
+	s.LastAttemptDetail = val
+}
+
+// SetLastAttemptTrigger sets the value of LastAttemptTrigger.
+func (s *AgentMirrorStatus) SetLastAttemptTrigger(val NilAgentMirrorStatusLastAttemptTrigger) {
+	s.LastAttemptTrigger = val
+}
+
+// SetLastMirroredAt sets the value of LastMirroredAt.
+func (s *AgentMirrorStatus) SetLastMirroredAt(val NilDateTime) {
+	s.LastMirroredAt = val
+}
+
+// SetLastMirroredVersion sets the value of LastMirroredVersion.
+func (s *AgentMirrorStatus) SetLastMirroredVersion(val NilString) {
+	s.LastMirroredVersion = val
+}
+
+// "rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and
+// skipping is expected and must never be presented as an error. "refused" means upstream was reached
+// and the release was deliberately not published (not newer, or the versions cannot be ordered).
+// "foreign_channel" means this install publishes its own agent releases and the mirror will never
+// overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was
+// tried and it broke.
+type AgentMirrorStatusLastAttemptOutcome string
+
+const (
+	AgentMirrorStatusLastAttemptOutcomeMirrored            AgentMirrorStatusLastAttemptOutcome = "mirrored"
+	AgentMirrorStatusLastAttemptOutcomeCurrent             AgentMirrorStatusLastAttemptOutcome = "current"
+	AgentMirrorStatusLastAttemptOutcomeUnchanged           AgentMirrorStatusLastAttemptOutcome = "unchanged"
+	AgentMirrorStatusLastAttemptOutcomeRateLimited         AgentMirrorStatusLastAttemptOutcome = "rate_limited"
+	AgentMirrorStatusLastAttemptOutcomeRefused             AgentMirrorStatusLastAttemptOutcome = "refused"
+	AgentMirrorStatusLastAttemptOutcomeForeignChannel      AgentMirrorStatusLastAttemptOutcome = "foreign_channel"
+	AgentMirrorStatusLastAttemptOutcomeUpstreamUnavailable AgentMirrorStatusLastAttemptOutcome = "upstream_unavailable"
+	AgentMirrorStatusLastAttemptOutcomeStorageError        AgentMirrorStatusLastAttemptOutcome = "storage_error"
+	AgentMirrorStatusLastAttemptOutcomeNotConfigured       AgentMirrorStatusLastAttemptOutcome = "not_configured"
+)
+
+// AllValues returns all AgentMirrorStatusLastAttemptOutcome values.
+func (AgentMirrorStatusLastAttemptOutcome) AllValues() []AgentMirrorStatusLastAttemptOutcome {
+	return []AgentMirrorStatusLastAttemptOutcome{
+		AgentMirrorStatusLastAttemptOutcomeMirrored,
+		AgentMirrorStatusLastAttemptOutcomeCurrent,
+		AgentMirrorStatusLastAttemptOutcomeUnchanged,
+		AgentMirrorStatusLastAttemptOutcomeRateLimited,
+		AgentMirrorStatusLastAttemptOutcomeRefused,
+		AgentMirrorStatusLastAttemptOutcomeForeignChannel,
+		AgentMirrorStatusLastAttemptOutcomeUpstreamUnavailable,
+		AgentMirrorStatusLastAttemptOutcomeStorageError,
+		AgentMirrorStatusLastAttemptOutcomeNotConfigured,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentMirrorStatusLastAttemptOutcome) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentMirrorStatusLastAttemptOutcomeMirrored:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeCurrent:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeUnchanged:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeRateLimited:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeRefused:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeForeignChannel:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeUpstreamUnavailable:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeStorageError:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptOutcomeNotConfigured:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentMirrorStatusLastAttemptOutcome) UnmarshalText(data []byte) error {
+	switch AgentMirrorStatusLastAttemptOutcome(data) {
+	case AgentMirrorStatusLastAttemptOutcomeMirrored:
+		*s = AgentMirrorStatusLastAttemptOutcomeMirrored
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeCurrent:
+		*s = AgentMirrorStatusLastAttemptOutcomeCurrent
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeUnchanged:
+		*s = AgentMirrorStatusLastAttemptOutcomeUnchanged
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeRateLimited:
+		*s = AgentMirrorStatusLastAttemptOutcomeRateLimited
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeRefused:
+		*s = AgentMirrorStatusLastAttemptOutcomeRefused
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeForeignChannel:
+		*s = AgentMirrorStatusLastAttemptOutcomeForeignChannel
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeUpstreamUnavailable:
+		*s = AgentMirrorStatusLastAttemptOutcomeUpstreamUnavailable
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeStorageError:
+		*s = AgentMirrorStatusLastAttemptOutcomeStorageError
+		return nil
+	case AgentMirrorStatusLastAttemptOutcomeNotConfigured:
+		*s = AgentMirrorStatusLastAttemptOutcomeNotConfigured
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Whether the last attempt was the scheduled tick or an operator-requested check now.
+type AgentMirrorStatusLastAttemptTrigger string
+
+const (
+	AgentMirrorStatusLastAttemptTriggerPeriodic AgentMirrorStatusLastAttemptTrigger = "periodic"
+	AgentMirrorStatusLastAttemptTriggerManual   AgentMirrorStatusLastAttemptTrigger = "manual"
+)
+
+// AllValues returns all AgentMirrorStatusLastAttemptTrigger values.
+func (AgentMirrorStatusLastAttemptTrigger) AllValues() []AgentMirrorStatusLastAttemptTrigger {
+	return []AgentMirrorStatusLastAttemptTrigger{
+		AgentMirrorStatusLastAttemptTriggerPeriodic,
+		AgentMirrorStatusLastAttemptTriggerManual,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentMirrorStatusLastAttemptTrigger) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentMirrorStatusLastAttemptTriggerPeriodic:
+		return []byte(s), nil
+	case AgentMirrorStatusLastAttemptTriggerManual:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentMirrorStatusLastAttemptTrigger) UnmarshalText(data []byte) error {
+	switch AgentMirrorStatusLastAttemptTrigger(data) {
+	case AgentMirrorStatusLastAttemptTriggerPeriodic:
+		*s = AgentMirrorStatusLastAttemptTriggerPeriodic
+		return nil
+	case AgentMirrorStatusLastAttemptTriggerManual:
+		*s = AgentMirrorStatusLastAttemptTriggerManual
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Which kind of confirmation last_success_at was. "mirrored": a new release was published here.
+// "current": upstream examined and this install already publishes exactly it. "unchanged": upstream
+// answered 304, which is a genuine confirmation because the conditional request is only sent while
+// the published pointer is unchanged too.
+type AgentMirrorStatusLastSuccessOutcome string
+
+const (
+	AgentMirrorStatusLastSuccessOutcomeMirrored  AgentMirrorStatusLastSuccessOutcome = "mirrored"
+	AgentMirrorStatusLastSuccessOutcomeCurrent   AgentMirrorStatusLastSuccessOutcome = "current"
+	AgentMirrorStatusLastSuccessOutcomeUnchanged AgentMirrorStatusLastSuccessOutcome = "unchanged"
+)
+
+// AllValues returns all AgentMirrorStatusLastSuccessOutcome values.
+func (AgentMirrorStatusLastSuccessOutcome) AllValues() []AgentMirrorStatusLastSuccessOutcome {
+	return []AgentMirrorStatusLastSuccessOutcome{
+		AgentMirrorStatusLastSuccessOutcomeMirrored,
+		AgentMirrorStatusLastSuccessOutcomeCurrent,
+		AgentMirrorStatusLastSuccessOutcomeUnchanged,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentMirrorStatusLastSuccessOutcome) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentMirrorStatusLastSuccessOutcomeMirrored:
+		return []byte(s), nil
+	case AgentMirrorStatusLastSuccessOutcomeCurrent:
+		return []byte(s), nil
+	case AgentMirrorStatusLastSuccessOutcomeUnchanged:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentMirrorStatusLastSuccessOutcome) UnmarshalText(data []byte) error {
+	switch AgentMirrorStatusLastSuccessOutcome(data) {
+	case AgentMirrorStatusLastSuccessOutcomeMirrored:
+		*s = AgentMirrorStatusLastSuccessOutcomeMirrored
+		return nil
+	case AgentMirrorStatusLastSuccessOutcomeCurrent:
+		*s = AgentMirrorStatusLastSuccessOutcomeCurrent
+		return nil
+	case AgentMirrorStatusLastSuccessOutcomeUnchanged:
+		*s = AgentMirrorStatusLastSuccessOutcomeUnchanged
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Server-computed roll-up, so the staleness threshold has exactly one definition. "disabled":
+// mirroring is off, show nothing. "misconfigured": enabled but it cannot run (the last attempt was
+// not_configured), which never self-heals, so it warns immediately. "standing_down": this install
+// publishes its own agent releases and the mirror is correctly refusing to overwrite them
+// (foreign_channel); informational, never a warning. "pending": enabled, no attempt yet. "stale":
+// nothing confirmed against upstream within stale_after_seconds, or never confirmed. "ok": confirmed
+// recently.
+type AgentMirrorStatusStatus string
+
+const (
+	AgentMirrorStatusStatusDisabled      AgentMirrorStatusStatus = "disabled"
+	AgentMirrorStatusStatusPending       AgentMirrorStatusStatus = "pending"
+	AgentMirrorStatusStatusOk            AgentMirrorStatusStatus = "ok"
+	AgentMirrorStatusStatusStale         AgentMirrorStatusStatus = "stale"
+	AgentMirrorStatusStatusStandingDown  AgentMirrorStatusStatus = "standing_down"
+	AgentMirrorStatusStatusMisconfigured AgentMirrorStatusStatus = "misconfigured"
+)
+
+// AllValues returns all AgentMirrorStatusStatus values.
+func (AgentMirrorStatusStatus) AllValues() []AgentMirrorStatusStatus {
+	return []AgentMirrorStatusStatus{
+		AgentMirrorStatusStatusDisabled,
+		AgentMirrorStatusStatusPending,
+		AgentMirrorStatusStatusOk,
+		AgentMirrorStatusStatusStale,
+		AgentMirrorStatusStatusStandingDown,
+		AgentMirrorStatusStatusMisconfigured,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentMirrorStatusStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentMirrorStatusStatusDisabled:
+		return []byte(s), nil
+	case AgentMirrorStatusStatusPending:
+		return []byte(s), nil
+	case AgentMirrorStatusStatusOk:
+		return []byte(s), nil
+	case AgentMirrorStatusStatusStale:
+		return []byte(s), nil
+	case AgentMirrorStatusStatusStandingDown:
+		return []byte(s), nil
+	case AgentMirrorStatusStatusMisconfigured:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentMirrorStatusStatus) UnmarshalText(data []byte) error {
+	switch AgentMirrorStatusStatus(data) {
+	case AgentMirrorStatusStatusDisabled:
+		*s = AgentMirrorStatusStatusDisabled
+		return nil
+	case AgentMirrorStatusStatusPending:
+		*s = AgentMirrorStatusStatusPending
+		return nil
+	case AgentMirrorStatusStatusOk:
+		*s = AgentMirrorStatusStatusOk
+		return nil
+	case AgentMirrorStatusStatusStale:
+		*s = AgentMirrorStatusStatusStale
+		return nil
+	case AgentMirrorStatusStatusStandingDown:
+		*s = AgentMirrorStatusStatusStandingDown
+		return nil
+	case AgentMirrorStatusStatusMisconfigured:
+		*s = AgentMirrorStatusStatusMisconfigured
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/AgentPerfConfigAck
 type AgentPerfConfigAck struct {
@@ -11698,6 +12244,22 @@ func (*ChangeMyPasswordUnauthorized) changeMyPasswordRes() {}
 type ChangeMyPasswordUnprocessableEntity Error
 
 func (*ChangeMyPasswordUnprocessableEntity) changeMyPasswordRes() {}
+
+type CheckAgentMirrorNowConflict Error
+
+func (*CheckAgentMirrorNowConflict) checkAgentMirrorNowRes() {}
+
+type CheckAgentMirrorNowForbidden Error
+
+func (*CheckAgentMirrorNowForbidden) checkAgentMirrorNowRes() {}
+
+type CheckAgentMirrorNowServiceUnavailable Error
+
+func (*CheckAgentMirrorNowServiceUnavailable) checkAgentMirrorNowRes() {}
+
+type CheckAgentMirrorNowUnauthorized Error
+
+func (*CheckAgentMirrorNowUnauthorized) checkAgentMirrorNowRes() {}
 
 type ChmodSiteFileBadRequest Error
 
@@ -17272,6 +17834,34 @@ func (s *ErrorDetails) init() ErrorDetails {
 	return m
 }
 
+// ErrorHeaders wraps Error with response headers.
+type ErrorHeaders struct {
+	RetryAfter OptInt
+	Response   Error
+}
+
+// GetRetryAfter returns the value of RetryAfter.
+func (s *ErrorHeaders) GetRetryAfter() OptInt {
+	return s.RetryAfter
+}
+
+// GetResponse returns the value of Response.
+func (s *ErrorHeaders) GetResponse() Error {
+	return s.Response
+}
+
+// SetRetryAfter sets the value of RetryAfter.
+func (s *ErrorHeaders) SetRetryAfter(val OptInt) {
+	s.RetryAfter = val
+}
+
+// SetResponse sets the value of Response.
+func (s *ErrorHeaders) SetResponse(val Error) {
+	s.Response = val
+}
+
+func (*ErrorHeaders) checkAgentMirrorNowRes() {}
+
 type ExportSiteEmailLogForbidden Error
 
 func (*ExportSiteEmailLogForbidden) exportSiteEmailLogRes() {}
@@ -18845,7 +19435,8 @@ type FleetAgentVersions struct {
 	// Absent or false while the channel ships dark. The frontend uses this, together with the operator's
 	// role, to decide whether the "Update WPMgr agent" bulk action is shown at all, rather than let an
 	// operator arm a run the control plane will only refuse.
-	SelfUpdateEnabled OptBool `json:"self_update_enabled"`
+	SelfUpdateEnabled OptBool           `json:"self_update_enabled"`
+	AgentMirror       AgentMirrorStatus `json:"agent_mirror"`
 }
 
 // GetLatestVersion returns the value of LatestVersion.
@@ -18873,6 +19464,11 @@ func (s *FleetAgentVersions) GetSelfUpdateEnabled() OptBool {
 	return s.SelfUpdateEnabled
 }
 
+// GetAgentMirror returns the value of AgentMirror.
+func (s *FleetAgentVersions) GetAgentMirror() AgentMirrorStatus {
+	return s.AgentMirror
+}
+
 // SetLatestVersion sets the value of LatestVersion.
 func (s *FleetAgentVersions) SetLatestVersion(val string) {
 	s.LatestVersion = val
@@ -18896,6 +19492,11 @@ func (s *FleetAgentVersions) SetSites(val []FleetAgentSite) {
 // SetSelfUpdateEnabled sets the value of SelfUpdateEnabled.
 func (s *FleetAgentVersions) SetSelfUpdateEnabled(val OptBool) {
 	s.SelfUpdateEnabled = val
+}
+
+// SetAgentMirror sets the value of AgentMirror.
+func (s *FleetAgentVersions) SetAgentMirror(val AgentMirrorStatus) {
+	s.AgentMirror = val
 }
 
 func (*FleetAgentVersions) getFleetAgentVersionsRes() {}
@@ -24818,6 +25419,141 @@ func (s *MembershipList) SetItems(val []Membership) {
 }
 
 func (*MembershipList) listMembersRes() {}
+
+// NewNilAgentMirrorStatusLastAttemptOutcome returns new NilAgentMirrorStatusLastAttemptOutcome with value set to v.
+func NewNilAgentMirrorStatusLastAttemptOutcome(v AgentMirrorStatusLastAttemptOutcome) NilAgentMirrorStatusLastAttemptOutcome {
+	return NilAgentMirrorStatusLastAttemptOutcome{
+		Value: v,
+	}
+}
+
+// NilAgentMirrorStatusLastAttemptOutcome is nullable AgentMirrorStatusLastAttemptOutcome.
+type NilAgentMirrorStatusLastAttemptOutcome struct {
+	Value AgentMirrorStatusLastAttemptOutcome
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAgentMirrorStatusLastAttemptOutcome) SetTo(v AgentMirrorStatusLastAttemptOutcome) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAgentMirrorStatusLastAttemptOutcome) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAgentMirrorStatusLastAttemptOutcome) SetToNull() {
+	o.Null = true
+	var v AgentMirrorStatusLastAttemptOutcome
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAgentMirrorStatusLastAttemptOutcome) Get() (v AgentMirrorStatusLastAttemptOutcome, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAgentMirrorStatusLastAttemptOutcome) Or(d AgentMirrorStatusLastAttemptOutcome) AgentMirrorStatusLastAttemptOutcome {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilAgentMirrorStatusLastAttemptTrigger returns new NilAgentMirrorStatusLastAttemptTrigger with value set to v.
+func NewNilAgentMirrorStatusLastAttemptTrigger(v AgentMirrorStatusLastAttemptTrigger) NilAgentMirrorStatusLastAttemptTrigger {
+	return NilAgentMirrorStatusLastAttemptTrigger{
+		Value: v,
+	}
+}
+
+// NilAgentMirrorStatusLastAttemptTrigger is nullable AgentMirrorStatusLastAttemptTrigger.
+type NilAgentMirrorStatusLastAttemptTrigger struct {
+	Value AgentMirrorStatusLastAttemptTrigger
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAgentMirrorStatusLastAttemptTrigger) SetTo(v AgentMirrorStatusLastAttemptTrigger) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAgentMirrorStatusLastAttemptTrigger) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAgentMirrorStatusLastAttemptTrigger) SetToNull() {
+	o.Null = true
+	var v AgentMirrorStatusLastAttemptTrigger
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAgentMirrorStatusLastAttemptTrigger) Get() (v AgentMirrorStatusLastAttemptTrigger, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAgentMirrorStatusLastAttemptTrigger) Or(d AgentMirrorStatusLastAttemptTrigger) AgentMirrorStatusLastAttemptTrigger {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilAgentMirrorStatusLastSuccessOutcome returns new NilAgentMirrorStatusLastSuccessOutcome with value set to v.
+func NewNilAgentMirrorStatusLastSuccessOutcome(v AgentMirrorStatusLastSuccessOutcome) NilAgentMirrorStatusLastSuccessOutcome {
+	return NilAgentMirrorStatusLastSuccessOutcome{
+		Value: v,
+	}
+}
+
+// NilAgentMirrorStatusLastSuccessOutcome is nullable AgentMirrorStatusLastSuccessOutcome.
+type NilAgentMirrorStatusLastSuccessOutcome struct {
+	Value AgentMirrorStatusLastSuccessOutcome
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAgentMirrorStatusLastSuccessOutcome) SetTo(v AgentMirrorStatusLastSuccessOutcome) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAgentMirrorStatusLastSuccessOutcome) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAgentMirrorStatusLastSuccessOutcome) SetToNull() {
+	o.Null = true
+	var v AgentMirrorStatusLastSuccessOutcome
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAgentMirrorStatusLastSuccessOutcome) Get() (v AgentMirrorStatusLastSuccessOutcome, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAgentMirrorStatusLastSuccessOutcome) Or(d AgentMirrorStatusLastSuccessOutcome) AgentMirrorStatusLastSuccessOutcome {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
 
 // NewNilDateTime returns new NilDateTime with value set to v.
 func NewNilDateTime(v time.Time) NilDateTime {

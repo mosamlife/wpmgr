@@ -31,6 +31,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentupstream"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
@@ -1723,7 +1724,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			logger,
 		)
 	}
-	agentMirrorWorker := agentupstream.NewMirrorWorker(cfg.Update.AgentMirrorEnabled, agentMirror, logger)
+	// GH #322: persisted freshness sentinel for the mirror above, WHEN it
+	// last confirmed against upstream (vs merely attempted), and what that
+	// attempt found. One row per install (agent_mirror_state, m109), no
+	// tenant. Built here (needs only pool) so both the worker (writes) and
+	// the fleet-rollup handler + admin manual-check service (reads), wired
+	// further down, share the exact same Repo instance.
+	agentMirrorRepo := agentmirror.NewRepo(pool)
+	agentMirrorWorker := agentupstream.NewMirrorWorker(cfg.Update.AgentMirrorEnabled, agentMirror, agentMirrorRepo, logger)
 	if cfg.Update.AgentMirrorEnabled {
 		if agentMirror == nil {
 			logger.Warn("agent release mirror is ENABLED but object storage is not configured (WPMGR_S3_*): nothing will be mirrored")
@@ -2328,6 +2336,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// vulnFeedKeySvc already has its feed-refresh enqueuer set (wired in the
 	// vuln River block above), so this call sees a fully-wired service.
 	adminH.SetVulnFeed(vulnRepo, vulnFeedKeySvc)
+	// GH #322: superadmin manual "check now" for the upstream agent-release
+	// mirror. wired=(agentMirror != nil) mirrors the SAME "object storage
+	// actually configured" gate the periodic worker itself checks, so a
+	// manual click gets the identical honest refusal a scheduled tick would.
+	adminH.SetAgentMirror(admin.NewAgentMirrorCheckService(
+		cfg.Update.AgentMirrorEnabled,
+		agentMirror != nil,
+		agentMirrorRepo,
+		agentupstream.NewManualCheckEnqueuer(riverClient),
+	))
 
 	// M16 Phase C1 — superadmin billing-admin panel (accounts / account
 	// detail / revenue / manual controls). Wired unconditionally (cheap,
@@ -2443,6 +2461,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		agentrelease.NewService(agentrelease.NewRepo(pool), agentReleaseReader),
 		cfg.Update.AgentSelfUpdateEnabled,
 	)
+	// GH #322: surface the upstream mirror's freshness on the fleet rollup.
+	// mirrorEnabled MUST be the SAME value agentMirrorWorker was built with,
+	// so the fleet response and the worker agree on whether a mirror job
+	// exists on this install at all.
+	agentReleaseH.SetMirror(agentMirrorRepo, cfg.Update.AgentMirrorEnabled)
 
 	// The agent's OWN upgrade channel (three-beat arm/apply/confirm, staged in
 	// gated waves). SHIPS DARK: cfg.Update.AgentSelfUpdateEnabled defaults to
@@ -3518,7 +3541,7 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 				// self-hosted install would otherwise fetch on a boundary derived
 				// from its own boot time, and installs that boot together would
 				// hit GitHub in lockstep.
-				return agentupstream.MirrorArgs{}, agentupstream.PeriodicInsertOpts()
+				return agentupstream.MirrorArgs{Trigger: agentupstream.TriggerPeriodic}, agentupstream.PeriodicInsertOpts()
 			},
 			&river.PeriodicJobOpts{RunOnStart: false},
 		))

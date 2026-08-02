@@ -6,14 +6,26 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
+
+// fakeMirrorStateReader is a agentrelease.MirrorStateReader test double.
+type fakeMirrorStateReader struct {
+	state agentmirror.State
+	err   error
+}
+
+func (f *fakeMirrorStateReader) Load(context.Context) (agentmirror.State, error) {
+	return f.state, f.err
+}
 
 func init() { gin.SetMode(gin.TestMode) }
 
@@ -212,5 +224,119 @@ func TestAgentLatest_DegradesToUnknown(t *testing.T) {
 	}
 	if resp.Version != "unknown" {
 		t.Errorf("version = %q; want %q", resp.Version, "unknown")
+	}
+}
+
+// agentMirrorWire is the wire shape of the agent_mirror object, decoded with
+// pointer fields so "absent" is distinguishable from "null" is distinguishable
+// from "a value": exactly the distinction GH #322 exists to get right.
+type agentMirrorWire struct {
+	Enabled             *bool   `json:"enabled"`
+	Status              *string `json:"status"`
+	StaleAfterSeconds   *int    `json:"stale_after_seconds"`
+	LastSuccessAt       *string `json:"last_success_at"`
+	LastSuccessOutcome  *string `json:"last_success_outcome"`
+	LastSuccessVersion  *string `json:"last_success_version"`
+	LastAttemptAt       *string `json:"last_attempt_at"`
+	LastAttemptOutcome  *string `json:"last_attempt_outcome"`
+	LastAttemptDetail   *string `json:"last_attempt_detail"`
+	LastAttemptTrigger  *string `json:"last_attempt_trigger"`
+	LastMirroredAt      *string `json:"last_mirrored_at"`
+	LastMirroredVersion *string `json:"last_mirrored_version"`
+}
+
+// TestFleetAgents_AgentMirrorAlwaysPresent proves agent_mirror is emitted on
+// every response, even when SetMirror was never called (mirroring off,
+// matching hosted / a fresh self-hosted install), never absent, mirroring
+// the self_update_enabled precedent this handler already established.
+func TestFleetAgents_AgentMirrorAlwaysPresent(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeSiteLister{byTenant: map[uuid.UUID][]agentrelease.SiteAgentVersion{
+		tenantID: {{SiteID: uuid.New(), SiteName: "s", AgentVersion: "0.61.90"}},
+	}}
+	svc := agentrelease.NewService(repo, &fakeVersionReader{version: "0.61.95"})
+	engine := newTestEngine(agentrelease.NewHandler(svc, false))
+	p := domain.Principal{TenantID: tenantID, Type: domain.PrincipalUser, UserID: uuid.New(), Role: string(authz.RoleViewer)}
+
+	w := doRequest(engine, http.MethodGet, "/api/v1/fleet/agents", p)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /fleet/agents = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		AgentMirror *agentMirrorWire `json:"agent_mirror"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.AgentMirror == nil {
+		t.Fatalf("agent_mirror absent from the response; body=%s", w.Body.String())
+	}
+	if resp.AgentMirror.Enabled == nil || *resp.AgentMirror.Enabled {
+		t.Errorf("agent_mirror.enabled = %v; want false (SetMirror never called)", resp.AgentMirror.Enabled)
+	}
+	if resp.AgentMirror.Status == nil || *resp.AgentMirror.Status != "disabled" {
+		t.Errorf("agent_mirror.status = %v; want %q", resp.AgentMirror.Status, "disabled")
+	}
+	if resp.AgentMirror.LastSuccessAt != nil {
+		t.Errorf("agent_mirror.last_success_at = %v; want null while disabled", resp.AgentMirror.LastSuccessAt)
+	}
+}
+
+// TestFleetAgents_AgentMirrorReflectsPersistedState proves the handler reads
+// through MirrorStateReader and reports the derived status plus the
+// last-success/last-attempt distinction (C1) rather than collapsing them.
+func TestFleetAgents_AgentMirrorReflectsPersistedState(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeSiteLister{byTenant: map[uuid.UUID][]agentrelease.SiteAgentVersion{
+		tenantID: {{SiteID: uuid.New(), SiteName: "s", AgentVersion: "0.61.90"}},
+	}}
+	svc := agentrelease.NewService(repo, &fakeVersionReader{version: "0.61.95"})
+	h := agentrelease.NewHandler(svc, false)
+
+	attemptAt := time.Now().Add(-1 * time.Minute)
+	successAt := time.Now().Add(-agentmirror.StalenessThreshold - time.Hour) // stale: past the threshold
+	reader := &fakeMirrorStateReader{state: agentmirror.State{
+		LastAttemptAt:      &attemptAt,
+		LastAttemptOutcome: agentmirror.OutcomeUpstreamUnavailable,
+		LastAttemptDetail:  "the upstream release could not be reached",
+		LastAttemptTrigger: agentmirror.TriggerPeriodic,
+		LastSuccessAt:      &successAt,
+		LastSuccessOutcome: agentmirror.OutcomeUnchanged,
+		LastSuccessVersion: "0.61.112",
+	}}
+	h.SetMirror(reader, true)
+	engine := newTestEngine(h)
+	p := domain.Principal{TenantID: tenantID, Type: domain.PrincipalUser, UserID: uuid.New(), Role: string(authz.RoleViewer)}
+
+	w := doRequest(engine, http.MethodGet, "/api/v1/fleet/agents", p)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /fleet/agents = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		AgentMirror agentMirrorWire `json:"agent_mirror"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	am := resp.AgentMirror
+	if am.Enabled == nil || !*am.Enabled {
+		t.Fatalf("enabled = %v, want true", am.Enabled)
+	}
+	if am.Status == nil || *am.Status != "stale" {
+		t.Fatalf("status = %v, want %q (success is older than the staleness threshold)", am.Status, "stale")
+	}
+	if am.LastAttemptOutcome == nil || *am.LastAttemptOutcome != "upstream_unavailable" {
+		t.Fatalf("last_attempt_outcome = %v, want %q", am.LastAttemptOutcome, "upstream_unavailable")
+	}
+	if am.LastSuccessOutcome == nil || *am.LastSuccessOutcome != "unchanged" {
+		t.Fatalf("last_success_outcome = %v, want %q", am.LastSuccessOutcome, "unchanged")
+	}
+	if am.LastSuccessVersion == nil || *am.LastSuccessVersion != "0.61.112" {
+		t.Fatalf("last_success_version = %v, want %q", am.LastSuccessVersion, "0.61.112")
+	}
+	// C1: last_attempt_at and last_success_at must be DISTINCT timestamps in
+	// the wire response, never collapsed into one "checked" value.
+	if am.LastAttemptAt == nil || am.LastSuccessAt == nil || *am.LastAttemptAt == *am.LastSuccessAt {
+		t.Fatalf("last_attempt_at (%v) and last_success_at (%v) must be reported separately", am.LastAttemptAt, am.LastSuccessAt)
 	}
 }

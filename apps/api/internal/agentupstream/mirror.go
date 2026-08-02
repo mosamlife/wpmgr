@@ -179,6 +179,16 @@ const MaxPackageBytes = 32 << 20
 // run from spending budget for no new information.
 const minRequestSpacing = 30 * time.Minute
 
+// MinRequestSpacing exports minRequestSpacing for callers outside this
+// package that need to give an honest answer about the SAME spacing rule
+// this package enforces internally, today the manual-check HTTP handler
+// (GH #322), which computes its own pre-flight 429 from the PERSISTED
+// last_request_at (internal/agentmirror), because that handler runs in a
+// different process/request than the one that will actually work the job and
+// so cannot read Mirror's in-memory clock. Duplicating the number instead of
+// exporting it would risk the two answers drifting apart.
+const MinRequestSpacing = minRequestSpacing
+
 // Sentinel errors. Callers (and the worker) distinguish a REFUSAL, which means
 // the upstream release failed verification and the previous mirror was
 // deliberately left in place, from a degradation, which means this run simply
@@ -875,6 +885,24 @@ func (m *Mirror) markMirrored(body []byte, tag string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s cannot be re-encoded: %v", ErrRefused, manifestAssetName, err)
 	}
 	return out, nil
+}
+
+// LastRequestAt returns the wall-clock time this process last issued an
+// ACTUAL upstream HTTP request (any status code), or the zero Time if it
+// never has.
+//
+// This exists so a caller (MirrorWorker, after every Run) can PERSIST this
+// process's view of the request-spacing clock across restarts and replicas
+// (see internal/agentmirror), without this package needing to know anything
+// about persistence itself. It is safe to read regardless of how Run's most
+// recent call ended: if that call's own local guard refused to spend a
+// request (ErrRateLimited raised before any HTTP call), lastRequestAt is
+// simply unchanged from whatever it already was, so persisting it again is a
+// harmless no-op rather than an incorrect advance of the clock.
+func (m *Mirror) LastRequestAt() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastRequestAt
 }
 
 // commitETag records the release-document ETag, together with the pointer state

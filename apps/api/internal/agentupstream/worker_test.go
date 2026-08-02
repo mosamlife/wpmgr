@@ -5,11 +5,44 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/riverqueue/river"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 )
+
+// fakeRecorder is an AttemptRecorder test double capturing every recorded
+// attempt, so tests can assert on Trigger/Outcome/Detail without a real
+// Postgres connection.
+type fakeRecorder struct {
+	mu    sync.Mutex
+	calls []agentmirror.AttemptInput
+}
+
+func (f *fakeRecorder) RecordAttempt(_ context.Context, in agentmirror.AttemptInput) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, in)
+	return nil
+}
+
+func (f *fakeRecorder) last() (agentmirror.AttemptInput, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) == 0 {
+		return agentmirror.AttemptInput{}, false
+	}
+	return f.calls[len(f.calls)-1], true
+}
+
+func (f *fakeRecorder) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
 
 // TestWorkerDisabledDoesNothing is the off-by-default lock. With the flag false
 // (its default, see config.UpdateConfig.AgentMirrorEnabled), the job must make no
@@ -19,7 +52,7 @@ func TestWorkerDisabledDoesNothing(t *testing.T) {
 	f := newFixture(t)
 	store := newFakeStore()
 	doer := wire(f)
-	w := NewMirrorWorker(false, newTestMirror(store, doer), nil)
+	w := NewMirrorWorker(false, newTestMirror(store, doer), nil, nil)
 
 	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
 		t.Fatalf("Work: %v", err)
@@ -37,7 +70,7 @@ func TestWorkerDisabledDoesNothing(t *testing.T) {
 func TestWorkerEnabledMirrors(t *testing.T) {
 	f := newFixture(t)
 	store := newFakeStore()
-	w := NewMirrorWorker(true, newTestMirror(store, wire(f)), nil)
+	w := NewMirrorWorker(true, newTestMirror(store, wire(f)), nil, nil)
 
 	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
 		t.Fatalf("Work: %v", err)
@@ -51,7 +84,7 @@ func TestWorkerEnabledMirrors(t *testing.T) {
 // TestWorkerNilMirrorDoesNothing: object storage not configured leaves the mirror
 // nil. That is a no-op, not a crash.
 func TestWorkerNilMirrorDoesNothing(t *testing.T) {
-	w := NewMirrorWorker(true, nil, nil)
+	w := NewMirrorWorker(true, nil, nil, nil)
 	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
@@ -113,7 +146,7 @@ func TestWorkerNeverReturnsAnError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := NewMirrorWorker(true, tc.build(t), nil)
+			w := NewMirrorWorker(true, tc.build(t), nil, nil)
 			if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
 				t.Fatalf("Work returned %v; this job must always return nil", err)
 			}
@@ -174,5 +207,162 @@ func TestMirrorCadenceIsSaneAgainstTheRateLimit(t *testing.T) {
 	}
 	if minRequestSpacing >= MirrorInterval {
 		t.Fatalf("minRequestSpacing %v >= MirrorInterval %v; the guard would block scheduled runs", minRequestSpacing, MirrorInterval)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GH #322: persisting the attempt outcome instead of failing.
+// ---------------------------------------------------------------------------
+
+// TestWorkerDisabled_RecordsNothing: mirroring off entirely must NOT stamp an
+// attempt. Stamping one would be the same lie in miniature this feature
+// exists to remove: "an attempt happened" when none did.
+func TestWorkerDisabled_RecordsNothing(t *testing.T) {
+	rec := &fakeRecorder{}
+	w := NewMirrorWorker(false, newTestMirror(newFakeStore(), wire(newFixture(t))), rec, nil)
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if n := rec.count(); n != 0 {
+		t.Fatalf("recorded %d attempt(s) while disabled; want 0", n)
+	}
+}
+
+// TestWorkerNilMirror_RecordsNotConfigured: enabled but object storage never
+// wired must record OutcomeNotConfigured: this is an attempt (the operator
+// turned the flag on), and misconfiguration never self-heals so it must be
+// visible.
+func TestWorkerNilMirror_RecordsNotConfigured(t *testing.T) {
+	rec := &fakeRecorder{}
+	w := NewMirrorWorker(true, nil, rec, nil)
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	last, ok := rec.last()
+	if !ok {
+		t.Fatal("no attempt recorded")
+	}
+	if last.Outcome != agentmirror.OutcomeNotConfigured {
+		t.Fatalf("Outcome = %q, want %q", last.Outcome, agentmirror.OutcomeNotConfigured)
+	}
+	if last.Detail == "" {
+		t.Fatal("Detail is empty; operator gets no explanation")
+	}
+}
+
+// TestWorkerMirrored_RecordsSuccessWithVersion proves a genuine publish
+// records OutcomeMirrored (a success) together with the version examined.
+func TestWorkerMirrored_RecordsSuccessWithVersion(t *testing.T) {
+	rec := &fakeRecorder{}
+	f := newFixture(t)
+	w := NewMirrorWorker(true, newTestMirror(newFakeStore(), wire(f)), rec, nil)
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	last, ok := rec.last()
+	if !ok {
+		t.Fatal("no attempt recorded")
+	}
+	if last.Outcome != agentmirror.OutcomeMirrored {
+		t.Fatalf("Outcome = %q, want %q", last.Outcome, agentmirror.OutcomeMirrored)
+	}
+	if !last.Outcome.IsSuccess() {
+		t.Fatal("OutcomeMirrored.IsSuccess() = false, want true")
+	}
+	if last.Version != testVersion {
+		t.Fatalf("Version = %q, want %q", last.Version, testVersion)
+	}
+	if last.LastRequestAt.IsZero() {
+		t.Fatal("LastRequestAt is zero; an actual request was made this run")
+	}
+}
+
+// TestWorkerRateLimited_RecordsRateLimitedNotFailure pins C5: a rate-limited
+// run must record OutcomeRateLimited, which Outcome.IsSuccess() reports as
+// NOT a success, but which is never a FAILURE either: nothing in the
+// recorded outcome vocabulary conflates the two.
+func TestWorkerRateLimited_RecordsRateLimitedNotFailure(t *testing.T) {
+	rec := &fakeRecorder{}
+	f := newFixture(t)
+	d := wire(f)
+	d.handlers[apiURL(testOwner, testRepo)] = func(*http.Request) (*http.Response, error) {
+		return statusResponse(http.StatusTooManyRequests, nil), nil
+	}
+	w := NewMirrorWorker(true, newTestMirror(newFakeStore(), d), rec, nil)
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	last, ok := rec.last()
+	if !ok {
+		t.Fatal("no attempt recorded")
+	}
+	if last.Outcome != agentmirror.OutcomeRateLimited {
+		t.Fatalf("Outcome = %q, want %q", last.Outcome, agentmirror.OutcomeRateLimited)
+	}
+	if last.Outcome.IsSuccess() {
+		t.Fatal("OutcomeRateLimited.IsSuccess() = true; rate-limited is not a confirmation")
+	}
+}
+
+// TestWorkerForeignChannel_RecordsStandingDown pins the "correct, permanent,
+// not a fault" outcome: an install publishing its own agent releases must
+// record OutcomeForeignChannel every time, not OutcomeRefused.
+func TestWorkerForeignChannel_RecordsStandingDown(t *testing.T) {
+	rec := &fakeRecorder{}
+	f := newFixture(t)
+	store := newFakeStore()
+	// Stage a pointer this mirror did NOT write (no provenance stamp), naming
+	// a DIFFERENT version than upstream so the "already current" short
+	// circuit (checked before provenance) does not swallow this case: the
+	// operator's own release channel.
+	store.objects[ManifestKey] = manifestJSON("0.0.1", strings.Repeat("a", 64), 1234, packageObjectKey("0.0.1"))
+	w := NewMirrorWorker(true, newTestMirror(store, wire(f)), rec, nil)
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	last, ok := rec.last()
+	if !ok {
+		t.Fatal("no attempt recorded")
+	}
+	if last.Outcome != agentmirror.OutcomeForeignChannel {
+		t.Fatalf("Outcome = %q, want %q", last.Outcome, agentmirror.OutcomeForeignChannel)
+	}
+}
+
+// TestWorkerJobTrigger_PropagatesToRecordedAttempt proves the RECORDED
+// trigger reflects the actual River job's Args.Trigger, so the manual-check
+// path (which enqueues with Trigger: TriggerManual) is distinguishable from a
+// scheduled tick in the persisted state, never guessed, always read from the
+// job that actually ran.
+func TestWorkerJobTrigger_PropagatesToRecordedAttempt(t *testing.T) {
+	rec := &fakeRecorder{}
+	w := NewMirrorWorker(true, nil, rec, nil)
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{Args: MirrorArgs{Trigger: TriggerManual}}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	last, ok := rec.last()
+	if !ok {
+		t.Fatal("no attempt recorded")
+	}
+	if last.Trigger != agentmirror.TriggerManual {
+		t.Fatalf("Trigger = %q, want %q", last.Trigger, agentmirror.TriggerManual)
+	}
+}
+
+// TestWorkerEmptyTrigger_DefaultsToPeriodic: a job enqueued before the
+// Trigger field existed decodes with the Go zero value (""), which must be
+// treated as a periodic tick, not an unknown/invalid one.
+func TestWorkerEmptyTrigger_DefaultsToPeriodic(t *testing.T) {
+	rec := &fakeRecorder{}
+	w := NewMirrorWorker(true, nil, rec, nil)
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	last, ok := rec.last()
+	if !ok {
+		t.Fatal("no attempt recorded")
+	}
+	if last.Trigger != agentmirror.TriggerPeriodic {
+		t.Fatalf("Trigger = %q, want %q (empty must default to periodic)", last.Trigger, agentmirror.TriggerPeriodic)
 	}
 }

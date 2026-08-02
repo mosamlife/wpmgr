@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.113] - 2026-08-02
+
+### Added
+
+- The fleet Agent column's header popover (Sites page) can now say when the upstream agent release reference was last confirmed, instead of just showing a plain "current" badge computed against a reference that, on a self-hosted install running the upstream mirror, could quietly be hours behind (GH #322). GET /api/v1/fleet/agents now carries an agent_mirror object with the mirror's own status (ok, stale, pending, standing down, misconfigured, or disabled), the time of the last successful confirmation against upstream, and the time and outcome of the last attempt, kept as two separate facts on purpose: a run that failed a few minutes ago is never reported as "checked a few minutes ago" while an older confirmation sits behind it unmentioned.
+- Superadmins on a self-hosted install with the upstream mirror enabled can now trigger an immediate check from the admin console (Admin, Agent mirror) instead of waiting up to six hours for the next scheduled one, via POST /api/v1/admin/agent-mirror/check. The action is install-level, not per organization, so it lives alongside the other instance-wide admin tools rather than on the Sites page. A request inside the mirror's request-spacing window is refused honestly with a wait time, never a false success, and a check already queued or running is reported as such rather than queuing a duplicate.
+- The mirror never treats being rate limited as a failure: that outcome is recorded and reported separately from a real problem such as the upstream being unreachable or this install's own object storage failing to write, so an operator is never alarmed by an outcome that is normal and expected.
+
 ## [0.61.112] - 2026-07-31
 
 ### Fixed

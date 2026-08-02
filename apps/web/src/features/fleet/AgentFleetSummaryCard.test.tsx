@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
-import type { FleetAgentVersions } from "@wpmgr/api";
+import type { AgentMirrorStatus, FleetAgentVersions } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
 import { mockQueryResult } from "@/test/query-mocks";
@@ -32,12 +32,38 @@ vi.mock("./use-fleet-agents", async (importOriginal) => {
 
 const mockedUseFleetAgentVersions = vi.mocked(useFleetAgentVersions);
 
+// The exact wire shape a disabled (or never-wired) upstream mirror sends
+// (see agentrelease/handler.go's buildAgentMirrorDTO: mirrorEnabled=false
+// short-circuits before touching any of the other fields, so every
+// timestamp/outcome is a genuine JSON null). This card renders nothing from
+// `agent_mirror` itself, so any real value here is fine; this is the most
+// common real one. Cast at the boundary, not per-field: packages/openapi is
+// OpenAPI 3.1, where `nullable: true` is not a valid keyword, so the
+// generated AgentMirrorStatus types every one of these fields as a
+// non-nullable string even though the control plane sends a real null (see
+// features/sites/agent-reference-check.ts's module doc for the same note).
+const DISABLED_AGENT_MIRROR = {
+  enabled: false,
+  status: "disabled",
+  stale_after_seconds: 46_800,
+  last_success_at: null,
+  last_success_outcome: null,
+  last_success_version: null,
+  last_attempt_at: null,
+  last_attempt_outcome: null,
+  last_attempt_detail: null,
+  last_attempt_trigger: null,
+  last_mirrored_at: null,
+  last_mirrored_version: null,
+} as unknown as AgentMirrorStatus;
+
 function buildData(overrides: Partial<FleetAgentVersions> = {}): FleetAgentVersions {
   return {
     latest_version: "0.61.97",
     reference_source: "published",
     counts: { current: 20, outdated: 0, unknown: 1, ineligible: 0 },
     sites: [],
+    agent_mirror: DISABLED_AGENT_MIRROR,
     ...overrides,
   };
 }

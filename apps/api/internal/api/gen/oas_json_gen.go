@@ -16548,15 +16548,22 @@ func (s *AgentMetadataAgentSelfUpdate) encodeFields(e *jx.Encoder) {
 			s.ApplyID.Encode(e)
 		}
 	}
+	{
+		if s.Rung.Set {
+			e.FieldStart("rung")
+			s.Rung.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAgentMetadataAgentSelfUpdate = [6]string{
+var jsonFieldsNameOfAgentMetadataAgentSelfUpdate = [7]string{
 	0: "status",
 	1: "from_version",
 	2: "to_version",
 	3: "detail",
 	4: "at",
 	5: "apply_id",
+	6: "rung",
 }
 
 // Decode decodes AgentMetadataAgentSelfUpdate from json.
@@ -16626,6 +16633,16 @@ func (s *AgentMetadataAgentSelfUpdate) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"apply_id\"")
+			}
+		case "rung":
+			if err := func() error {
+				s.Rung.Reset()
+				if err := s.Rung.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rung\"")
 			}
 		default:
 			return d.Skip()
@@ -17082,6 +17099,620 @@ func (s *AgentMetadataUnprocessableEntity) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AgentMetadataUnprocessableEntity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AgentMirrorCheckQueued) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentMirrorCheckQueued) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("status")
+		s.Status.Encode(e)
+	}
+	{
+		e.FieldStart("queued_at")
+		json.EncodeDateTime(e, s.QueuedAt)
+	}
+	{
+		e.FieldStart("message")
+		e.Str(s.Message)
+	}
+}
+
+var jsonFieldsNameOfAgentMirrorCheckQueued = [3]string{
+	0: "status",
+	1: "queued_at",
+	2: "message",
+}
+
+// Decode decodes AgentMirrorCheckQueued from json.
+func (s *AgentMirrorCheckQueued) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMirrorCheckQueued to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "status":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Status.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"status\"")
+			}
+		case "queued_at":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := json.DecodeDateTime(d)
+				s.QueuedAt = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"queued_at\"")
+			}
+		case "message":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Str()
+				s.Message = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"message\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentMirrorCheckQueued")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAgentMirrorCheckQueued) {
+					name = jsonFieldsNameOfAgentMirrorCheckQueued[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentMirrorCheckQueued) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMirrorCheckQueued) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorCheckQueuedStatus as json.
+func (s AgentMirrorCheckQueuedStatus) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AgentMirrorCheckQueuedStatus from json.
+func (s *AgentMirrorCheckQueuedStatus) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMirrorCheckQueuedStatus to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AgentMirrorCheckQueuedStatus(v) {
+	case AgentMirrorCheckQueuedStatusQueued:
+		*s = AgentMirrorCheckQueuedStatusQueued
+	default:
+		*s = AgentMirrorCheckQueuedStatus(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AgentMirrorCheckQueuedStatus) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMirrorCheckQueuedStatus) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AgentMirrorStatus) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentMirrorStatus) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("enabled")
+		e.Bool(s.Enabled)
+	}
+	{
+		e.FieldStart("status")
+		s.Status.Encode(e)
+	}
+	{
+		e.FieldStart("stale_after_seconds")
+		e.Int32(s.StaleAfterSeconds)
+	}
+	{
+		e.FieldStart("last_success_at")
+		s.LastSuccessAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("last_success_outcome")
+		s.LastSuccessOutcome.Encode(e)
+	}
+	{
+		e.FieldStart("last_success_version")
+		s.LastSuccessVersion.Encode(e)
+	}
+	{
+		e.FieldStart("last_attempt_at")
+		s.LastAttemptAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("last_attempt_outcome")
+		s.LastAttemptOutcome.Encode(e)
+	}
+	{
+		e.FieldStart("last_attempt_detail")
+		s.LastAttemptDetail.Encode(e)
+	}
+	{
+		e.FieldStart("last_attempt_trigger")
+		s.LastAttemptTrigger.Encode(e)
+	}
+	{
+		e.FieldStart("last_mirrored_at")
+		s.LastMirroredAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("last_mirrored_version")
+		s.LastMirroredVersion.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAgentMirrorStatus = [12]string{
+	0:  "enabled",
+	1:  "status",
+	2:  "stale_after_seconds",
+	3:  "last_success_at",
+	4:  "last_success_outcome",
+	5:  "last_success_version",
+	6:  "last_attempt_at",
+	7:  "last_attempt_outcome",
+	8:  "last_attempt_detail",
+	9:  "last_attempt_trigger",
+	10: "last_mirrored_at",
+	11: "last_mirrored_version",
+}
+
+// Decode decodes AgentMirrorStatus from json.
+func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMirrorStatus to nil")
+	}
+	var requiredBitSet [2]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "enabled":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Bool()
+				s.Enabled = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"enabled\"")
+			}
+		case "status":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Status.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"status\"")
+			}
+		case "stale_after_seconds":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Int32()
+				s.StaleAfterSeconds = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"stale_after_seconds\"")
+			}
+		case "last_success_at":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				if err := s.LastSuccessAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_success_at\"")
+			}
+		case "last_success_outcome":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				if err := s.LastSuccessOutcome.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_success_outcome\"")
+			}
+		case "last_success_version":
+			requiredBitSet[0] |= 1 << 5
+			if err := func() error {
+				if err := s.LastSuccessVersion.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_success_version\"")
+			}
+		case "last_attempt_at":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
+				if err := s.LastAttemptAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_attempt_at\"")
+			}
+		case "last_attempt_outcome":
+			requiredBitSet[0] |= 1 << 7
+			if err := func() error {
+				if err := s.LastAttemptOutcome.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_attempt_outcome\"")
+			}
+		case "last_attempt_detail":
+			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				if err := s.LastAttemptDetail.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_attempt_detail\"")
+			}
+		case "last_attempt_trigger":
+			requiredBitSet[1] |= 1 << 1
+			if err := func() error {
+				if err := s.LastAttemptTrigger.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_attempt_trigger\"")
+			}
+		case "last_mirrored_at":
+			requiredBitSet[1] |= 1 << 2
+			if err := func() error {
+				if err := s.LastMirroredAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_mirrored_at\"")
+			}
+		case "last_mirrored_version":
+			requiredBitSet[1] |= 1 << 3
+			if err := func() error {
+				if err := s.LastMirroredVersion.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_mirrored_version\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentMirrorStatus")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [2]uint8{
+		0b11111111,
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAgentMirrorStatus) {
+					name = jsonFieldsNameOfAgentMirrorStatus[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentMirrorStatus) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMirrorStatus) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorStatusLastAttemptOutcome as json.
+func (s AgentMirrorStatusLastAttemptOutcome) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AgentMirrorStatusLastAttemptOutcome from json.
+func (s *AgentMirrorStatusLastAttemptOutcome) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMirrorStatusLastAttemptOutcome to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AgentMirrorStatusLastAttemptOutcome(v) {
+	case AgentMirrorStatusLastAttemptOutcomeMirrored:
+		*s = AgentMirrorStatusLastAttemptOutcomeMirrored
+	case AgentMirrorStatusLastAttemptOutcomeCurrent:
+		*s = AgentMirrorStatusLastAttemptOutcomeCurrent
+	case AgentMirrorStatusLastAttemptOutcomeUnchanged:
+		*s = AgentMirrorStatusLastAttemptOutcomeUnchanged
+	case AgentMirrorStatusLastAttemptOutcomeRateLimited:
+		*s = AgentMirrorStatusLastAttemptOutcomeRateLimited
+	case AgentMirrorStatusLastAttemptOutcomeRefused:
+		*s = AgentMirrorStatusLastAttemptOutcomeRefused
+	case AgentMirrorStatusLastAttemptOutcomeForeignChannel:
+		*s = AgentMirrorStatusLastAttemptOutcomeForeignChannel
+	case AgentMirrorStatusLastAttemptOutcomeUpstreamUnavailable:
+		*s = AgentMirrorStatusLastAttemptOutcomeUpstreamUnavailable
+	case AgentMirrorStatusLastAttemptOutcomeStorageError:
+		*s = AgentMirrorStatusLastAttemptOutcomeStorageError
+	case AgentMirrorStatusLastAttemptOutcomeNotConfigured:
+		*s = AgentMirrorStatusLastAttemptOutcomeNotConfigured
+	default:
+		*s = AgentMirrorStatusLastAttemptOutcome(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AgentMirrorStatusLastAttemptOutcome) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMirrorStatusLastAttemptOutcome) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorStatusLastAttemptTrigger as json.
+func (s AgentMirrorStatusLastAttemptTrigger) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AgentMirrorStatusLastAttemptTrigger from json.
+func (s *AgentMirrorStatusLastAttemptTrigger) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMirrorStatusLastAttemptTrigger to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AgentMirrorStatusLastAttemptTrigger(v) {
+	case AgentMirrorStatusLastAttemptTriggerPeriodic:
+		*s = AgentMirrorStatusLastAttemptTriggerPeriodic
+	case AgentMirrorStatusLastAttemptTriggerManual:
+		*s = AgentMirrorStatusLastAttemptTriggerManual
+	default:
+		*s = AgentMirrorStatusLastAttemptTrigger(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AgentMirrorStatusLastAttemptTrigger) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMirrorStatusLastAttemptTrigger) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorStatusLastSuccessOutcome as json.
+func (s AgentMirrorStatusLastSuccessOutcome) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AgentMirrorStatusLastSuccessOutcome from json.
+func (s *AgentMirrorStatusLastSuccessOutcome) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMirrorStatusLastSuccessOutcome to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AgentMirrorStatusLastSuccessOutcome(v) {
+	case AgentMirrorStatusLastSuccessOutcomeMirrored:
+		*s = AgentMirrorStatusLastSuccessOutcomeMirrored
+	case AgentMirrorStatusLastSuccessOutcomeCurrent:
+		*s = AgentMirrorStatusLastSuccessOutcomeCurrent
+	case AgentMirrorStatusLastSuccessOutcomeUnchanged:
+		*s = AgentMirrorStatusLastSuccessOutcomeUnchanged
+	default:
+		*s = AgentMirrorStatusLastSuccessOutcome(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AgentMirrorStatusLastSuccessOutcome) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMirrorStatusLastSuccessOutcome) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorStatusStatus as json.
+func (s AgentMirrorStatusStatus) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AgentMirrorStatusStatus from json.
+func (s *AgentMirrorStatusStatus) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMirrorStatusStatus to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AgentMirrorStatusStatus(v) {
+	case AgentMirrorStatusStatusDisabled:
+		*s = AgentMirrorStatusStatusDisabled
+	case AgentMirrorStatusStatusPending:
+		*s = AgentMirrorStatusStatusPending
+	case AgentMirrorStatusStatusOk:
+		*s = AgentMirrorStatusStatusOk
+	case AgentMirrorStatusStatusStale:
+		*s = AgentMirrorStatusStatusStale
+	case AgentMirrorStatusStatusStandingDown:
+		*s = AgentMirrorStatusStatusStandingDown
+	case AgentMirrorStatusStatusMisconfigured:
+		*s = AgentMirrorStatusStatusMisconfigured
+	default:
+		*s = AgentMirrorStatusStatus(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AgentMirrorStatusStatus) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMirrorStatusStatus) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -31431,6 +32062,158 @@ func (s *ChangeMyPasswordUnprocessableEntity) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *ChangeMyPasswordUnprocessableEntity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes CheckAgentMirrorNowConflict as json.
+func (s *CheckAgentMirrorNowConflict) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes CheckAgentMirrorNowConflict from json.
+func (s *CheckAgentMirrorNowConflict) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode CheckAgentMirrorNowConflict to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = CheckAgentMirrorNowConflict(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *CheckAgentMirrorNowConflict) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *CheckAgentMirrorNowConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes CheckAgentMirrorNowForbidden as json.
+func (s *CheckAgentMirrorNowForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes CheckAgentMirrorNowForbidden from json.
+func (s *CheckAgentMirrorNowForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode CheckAgentMirrorNowForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = CheckAgentMirrorNowForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *CheckAgentMirrorNowForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *CheckAgentMirrorNowForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes CheckAgentMirrorNowServiceUnavailable as json.
+func (s *CheckAgentMirrorNowServiceUnavailable) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes CheckAgentMirrorNowServiceUnavailable from json.
+func (s *CheckAgentMirrorNowServiceUnavailable) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode CheckAgentMirrorNowServiceUnavailable to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = CheckAgentMirrorNowServiceUnavailable(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *CheckAgentMirrorNowServiceUnavailable) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *CheckAgentMirrorNowServiceUnavailable) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes CheckAgentMirrorNowUnauthorized as json.
+func (s *CheckAgentMirrorNowUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes CheckAgentMirrorNowUnauthorized from json.
+func (s *CheckAgentMirrorNowUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode CheckAgentMirrorNowUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = CheckAgentMirrorNowUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *CheckAgentMirrorNowUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *CheckAgentMirrorNowUnauthorized) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -52775,14 +53558,19 @@ func (s *FleetAgentVersions) encodeFields(e *jx.Encoder) {
 			s.SelfUpdateEnabled.Encode(e)
 		}
 	}
+	{
+		e.FieldStart("agent_mirror")
+		s.AgentMirror.Encode(e)
+	}
 }
 
-var jsonFieldsNameOfFleetAgentVersions = [5]string{
+var jsonFieldsNameOfFleetAgentVersions = [6]string{
 	0: "latest_version",
 	1: "reference_source",
 	2: "counts",
 	3: "sites",
 	4: "self_update_enabled",
+	5: "agent_mirror",
 }
 
 // Decode decodes FleetAgentVersions from json.
@@ -52854,6 +53642,16 @@ func (s *FleetAgentVersions) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"self_update_enabled\"")
 			}
+		case "agent_mirror":
+			requiredBitSet[0] |= 1 << 5
+			if err := func() error {
+				if err := s.AgentMirror.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"agent_mirror\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -52864,7 +53662,7 @@ func (s *FleetAgentVersions) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00001111,
+		0b00101111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -70460,6 +71258,138 @@ func (s *MembershipList) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *MembershipList) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorStatusLastAttemptOutcome as json.
+func (o NilAgentMirrorStatusLastAttemptOutcome) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AgentMirrorStatusLastAttemptOutcome from json.
+func (o *NilAgentMirrorStatusLastAttemptOutcome) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAgentMirrorStatusLastAttemptOutcome to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AgentMirrorStatusLastAttemptOutcome
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAgentMirrorStatusLastAttemptOutcome) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAgentMirrorStatusLastAttemptOutcome) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorStatusLastAttemptTrigger as json.
+func (o NilAgentMirrorStatusLastAttemptTrigger) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AgentMirrorStatusLastAttemptTrigger from json.
+func (o *NilAgentMirrorStatusLastAttemptTrigger) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAgentMirrorStatusLastAttemptTrigger to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AgentMirrorStatusLastAttemptTrigger
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAgentMirrorStatusLastAttemptTrigger) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAgentMirrorStatusLastAttemptTrigger) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentMirrorStatusLastSuccessOutcome as json.
+func (o NilAgentMirrorStatusLastSuccessOutcome) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AgentMirrorStatusLastSuccessOutcome from json.
+func (o *NilAgentMirrorStatusLastSuccessOutcome) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAgentMirrorStatusLastSuccessOutcome to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AgentMirrorStatusLastSuccessOutcome
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAgentMirrorStatusLastSuccessOutcome) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAgentMirrorStatusLastSuccessOutcome) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

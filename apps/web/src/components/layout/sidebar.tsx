@@ -8,6 +8,7 @@ import {
   Globe,
   LineChart,
   Mail,
+  RefreshCw,
   Settings,
   Share2,
   Shield,
@@ -181,6 +182,7 @@ const ADMIN_NAV_GROUPS: ReadonlyArray<NavGroup> = [
   { label: "Accounts", icon: Building2, to: "/admin/accounts" },
   { label: "Revenue", icon: TrendingUp, to: "/admin/revenue" },
   { label: "Vulnerability feed", icon: ShieldAlert, to: "/admin/vuln-feed" },
+  { label: "Agent mirror", icon: RefreshCw, to: "/admin/agent-mirror" },
 ];
 
 // Bottom-aligned app-switcher leaf, mirroring how the tenant sidebar
